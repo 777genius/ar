@@ -1,3 +1,4 @@
+import { HostedRemovalRetirementMutex, type HostedRemovalRetirementReferences, type HostedRemovalRetirementWitness } from "./hosted-removal-retirement-mutex";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
@@ -5,7 +6,7 @@ import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, typ
 import { parseImmutableChildSlot, readSystemBusInfrastructureField, readFdCollectorProfileField } from "@vioxen/subscription-runtime/core";
 import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readlinkSync, readSync, opendirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
+  readlinkSync, readSync, opendirSync, readdirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -111,6 +112,59 @@ export function withHostedActivationFence<T>(action: (fence: HostedActivationFen
 }
 export function assertHostedActivationFence(fence: HostedActivationFence): void {
   if (!activeFences.has(fence)) throw new Error("hosted_custody_common_fence_required");
+}
+
+// Private fixed completed-removal composition; deliberately not provider-index API.
+// This REPLACES ordinary finally/rmdir, never nests inside that lifecycle.
+const retirementHandles = new WeakMap<object, HostedRemovalRetirementMutex>();
+export function assertHostedActivationProcessDescriptors(fence: HostedActivationFence): void {
+  assertHostedActivationFence(fence); const handle = retirementHandles.get(fence);
+  if (!handle) { assertHostedProcessDescriptors(); return; }
+  handle.check();
+  for (const fd of [0, 1, 2]) { const s = fstatSync(fd); if (!s.isFIFO() && !s.isSocket()) invalid(); }
+  for (const name of readdirSync("/proc/self/fd")) {
+    const fd = Number(name); if (!/^\d+$/.test(name)) invalid(); if (fd <= 2) continue;
+    try { const s = fstatSync(fd); if ((s.isFile() || s.isDirectory()) && !handle.ownsDescriptor(fd)) invalid(); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== "EBADF") throw e; }
+  }
+}
+export function withHostedRemovalRetirementFence<T>(
+  original: (fence: HostedActivationFence) => HostedRemovalRetirementReferences,
+  retire: (fence: HostedActivationFence) => T,
+  archiveProof: (fence: HostedActivationFence, witness: HostedRemovalRetirementWitness) => void,
+): T {
+  return removalFence(false, (fence, handle) => { const witness = handle.publishWitness(original(fence));
+    const result = retire(fence); synchronous(result); synchronous(archiveProof(fence, witness)); handle.archiveCompleted(); return result; });
+}
+export function withHostedRemovalRetirementReconciliation<T>(
+  completion: (fence: HostedActivationFence, witness: HostedRemovalRetirementWitness) => T,
+  archiveProof: (fence: HostedActivationFence, witness: HostedRemovalRetirementWitness) => void,
+): T {
+  return removalFence(true, (fence, handle) => { const witness = handle.readWitness();
+    const result = completion(fence, witness); synchronous(result); synchronous(archiveProof(fence, witness)); handle.archiveCompleted(); return result; });
+}
+/** Current genuine common fence protects admission while only old archived
+ * metadata is acknowledged. Ordinary finally owns its NEW canonical directory. */
+export function acknowledgeHostedRemovalRetirementArchive(fence:HostedActivationFence,refs:HostedRemovalRetirementReferences,
+  proof:(fence:HostedActivationFence,witness:HostedRemovalRetirementWitness)=>void):void {
+  assertHostedActivationFence(fence);assertHostedActivationOperator();if(retirementHandles.has(fence))invalid();
+  const handle=HostedRemovalRetirementMutex.openArchived(readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim(),refs);
+  if(!handle)return;retirementHandles.set(fence,handle);
+  try { synchronous(proof(fence,handle.readWitness()));handle.acknowledgeArchived(); }
+  finally { retirementHandles.delete(fence);handle.close(); }
+}
+function synchronous(value: unknown): void {
+  if (value && (typeof value === "object" || typeof value === "function") && "then" in value)
+    throw new Error("hosted_custody_synchronous_fence_required");
+}
+function removalFence<T>(existing: boolean, action: (fence: HostedActivationFence, handle: HostedRemovalRetirementMutex) => T): T {
+  assertHostedActivationOperator();
+  if (readHostedActivationBytes("readonly-epoch.lock")) throw new Error("hosted_custody_legacy_lock_recovery_required");
+  const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), handle = HostedRemovalRetirementMutex.open(boot, existing),
+    fence = Object.freeze({ held: true as const });
+  activeFences.add(fence); retirementHandles.set(fence, handle);
+  try { return action(fence, handle); }
+  finally { activeFences.delete(fence); retirementHandles.delete(fence); handle.close(); }
 }
 
 function invalid(): never { throw new Error("hosted_activation_evidence_invalid"); }

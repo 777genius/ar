@@ -1,3 +1,4 @@
+import type { HostedRemovalRetirementWitness } from "../provider-codex/app-server/adapters/hosted-removal-retirement-mutex";
 import { isDependencyCustodyObject } from "@vioxen/subscription-runtime/core";
 import { HostedDependencyRemovalDisposition } from "./hosted-dependency-removal-effects";
 import { HostedDependencyTransactionOutcome } from "./hosted-dependency-transactions";
@@ -14,7 +15,7 @@ import { readOriginalHostedDependencyRemovalClaim, hostedDependencyRemovalRecord
 import { parseHostedDependencyRemovalLock } from "./hosted-dependency-removal-records";
 import { randomUUID } from "node:crypto";
 import { DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner, type DependencyOwnerRecord } from "@vioxen/subscription-runtime/core";
-import { assertHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedActivationFence, assertHostedActivationProcessDescriptors, acknowledgeHostedRemovalRetirementArchive, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyOwnerRoot } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
@@ -170,4 +171,48 @@ export function tryReleaseOriginalHostedDependencyCompletedRemoval(fence:HostedA
     recoveryGuard(fence,access);publishOriginalHostedDependencyRemovalOwner(fence,fenced,next,access);recovery.owner=next;
     recoveryGuard(fence,access);return {outcome:HostedDependencyTransactionOutcome.TrashRemoved,operationId:history.committed.receipt.operationId,removedEntries:v.removedEntries};
   }finally{recovery=undefined;}
+}
+
+/** Fixed original witness join BEFORE completion effects; selector is not authority. */
+export function assertOriginalHostedCompletedRemovalWitness(fence:HostedActivationFence,witness:HostedRemovalRetirementWitness,
+  jobId:string,revision:number,access:symbol) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationProcessDescriptors(fence);
+  const id=witness.claim.path.slice(hostedDependencyRemovalOperations.length+1,-".removal-claim.json".length),
+    proof=readOriginalHostedDependencyRemovalRetirement(fence,id,access),
+    history=readOriginalHostedDependencyRemovalCommittedHistoryWithFence(fence,jobId,revision,access);
+  if(!encode(proof.selected.reference).equals(encode(witness.claim)) || !encode(proof.actorReference).equals(encode(witness.actor)) ||
+    !encode(proof.lock).equals(encode(witness.lock)) || !encode(pinReferenceFile(hostedDependencyRemovalRecordPath(id,"session-closed"),16384).reference).equals(encode(witness.completion)) ||
+    !encode(proof.selected.claim.absent).equals(encode(history.committed)) || !encode(proof.selected.claim.binding).equals(encode(history.actual.binding)))held();
+  return proof;
+}
+/** Separate owner-null archive proof: completion's early return cannot skip
+ * fresh terminal/source/Absent/native checks or supply namespace permission. */
+export function assertOriginalHostedCompletedRemovalArchive(fence:HostedActivationFence,witness:HostedRemovalRetirementWitness,
+  jobId:string,revision:number,access:symbol):void {
+  const proof=assertOriginalHostedCompletedRemovalWitness(fence,witness,jobId,revision,access),claim=proof.selected.claim.claimed;
+  if(claim.owner?.kind!==DependencyOwnerKind.Maintenance || recovery)held();
+  const fenced=parseDependencyOwner({...claim,revision:claim.revision+1,owner:{...claim.owner,phase:DependencyOwnerPhase.Fenced}}),
+    expected=parseDependencyOwner({...fenced,revision:fenced.revision+1,owner:null}),
+    idle=readOriginalHostedDependencyRemovalIdle(fence,expected.workspace,access);
+  if(!idle || !encode(idle.previous).equals(encode(expected)) || !encode(idle.claim).equals(encode(proof.selected.claim)) ||
+    !encode(idle.retirement).equals(encode(proof.retirement)))held();
+  recovery={operationId:claim.owner.attempt.operationId,owner:expected,lock:proof.lock,lockAbsent:true};
+  try {
+    recoveryGuard(fence,access);if(!readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
+    const again=readOriginalHostedDependencyRemovalIdle(fence,expected.workspace,access);
+    if(!again || !encode(again).equals(encode(idle)))held();recoveryGuard(fence,access);assertHostedActivationProcessDescriptors(fence);
+  }finally{recovery=undefined;}
+}
+
+/** Rejoin only the original archived receipt after rename/process death. Current
+ * common fence and original null/idle history precede any retained archive FD. */
+export function acknowledgeOriginalHostedCompletedRemovalArchive(fence:HostedActivationFence,jobId:string,revision:number,access:symbol):void {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  const history=readOriginalHostedDependencyRemovalCommittedHistoryWithFence(fence,jobId,revision,access),
+    idle=readOriginalHostedDependencyRemovalIdle(fence,history.actual.binding.workspace,access);
+  if(!idle || !encode(idle.priorAbsent).equals(encode(history.committed)))held();
+  const proof=readOriginalHostedDependencyRemovalRetirement(fence,idle.attempt.operationId,access),
+    refs={claim:proof.selected.reference,actor:proof.actorReference,lock:proof.lock,
+      completion:pinReferenceFile(hostedDependencyRemovalRecordPath(idle.attempt.operationId,"session-closed"),16384).reference};
+  acknowledgeHostedRemovalRetirementArchive(fence,refs,(current,witness)=>assertOriginalHostedCompletedRemovalArchive(current,witness,jobId,revision,access));
 }

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner, isDependencyCustodyObject, sameDependencyProtectedReference, type DependencyProtectedReference, type DependencyOwnerRecord } from "@vioxen/subscription-runtime/core";
-import { withHostedActivationFence, assertHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { withHostedActivationFence, assertHostedActivationFence, isHostedActivationFenceBusy, assertHostedActivationProcessDescriptors, withHostedRemovalRetirementFence, withHostedRemovalRetirementReconciliation, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "../provider-codex/app-server/adapters/hosted-fd-child";
 import { spawnHostedFdChild, hostedFdLaunch, assertHostedRemoverCloseResultForChild, type HostedRemoverCloseResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
@@ -12,7 +12,7 @@ import { observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile } from
 import { hostedDependencyOwnerRoot } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
-import { claimOriginalHostedDependencyTrashRemoval, tryReleaseOriginalHostedDependencyCompletedRemoval, publishOriginalHostedDependencyRemovalOwner, hostedDependencyRemovalOperations } from "./hosted-dependency-removal-ownership";
+import { claimOriginalHostedDependencyTrashRemoval, tryReleaseOriginalHostedDependencyCompletedRemoval, publishOriginalHostedDependencyRemovalOwner, assertOriginalHostedCompletedRemovalWitness, assertOriginalHostedCompletedRemovalArchive, acknowledgeOriginalHostedCompletedRemovalArchive, hostedDependencyRemovalOperations } from "./hosted-dependency-removal-ownership";
 import { hostedDependencyRemovalRecordPath, readOriginalHostedDependencyRemovalClaim } from "./hosted-dependency-removal-context";
 import { hostedDependencyRemovalAttempt, hostedDependencyRemovalUnit, parseHostedDependencyRemovalActor, parseHostedDependencyRemovalLock, HostedDependencyRemovalRecordKind as Kind, type HostedDependencyRemovalActor } from "./hosted-dependency-removal-records";
 import { encodeReference as encode, pinReferenceFile, writeReferenceOnce } from "./hosted-dependency-legacy-reference-records";
@@ -41,7 +41,7 @@ function owner(selection: Selection): DependencyOwnerRecord {
   try { const owner = store.read(selection.claim.binding.workspace); if (!owner) held(); return owner; } finally { store.close(); }
 }
 function guard(state: ParentContext, fence: HostedActivationFence, access: symbol) {
-  assertOriginalHostedDependencyPhysicalRecordAccess(access); assertHostedActivationFence(fence); assertHostedProcessDescriptors();
+  assertOriginalHostedDependencyPhysicalRecordAccess(access); assertHostedActivationFence(fence); assertHostedActivationProcessDescriptors(fence);
   if (current !== state || !encode(owner(state.selected)).equals(encode(state.owner))) held();
   const attempt = hostedDependencyRemovalAttempt(state.selected.claim), session = new HostedReadonlyHostKernel().operatorSession(), actual = readHostedInstallationActivation();
   if (session.bootId !== attempt.host.bootId || session.supervisorId !== attempt.host.supervisorId || actual.installation.installationId !== attempt.host.installationId ||
@@ -100,7 +100,21 @@ export function recoverOriginalHostedDependencyTrashRemovalParent(jobId:string,r
 async function run(jobId: string, revision: number, access: symbol, action:RemovalAction) {
   assertOriginalHostedDependencyPhysicalRecordAccess(access); if (current) held();
   if (!readHostedDependencyEvictionEnabled()) return { outcome: HostedDependencyTransactionOutcome.Skipped };
-  const completed=withHostedActivationFence(fence=>tryReleaseOriginalHostedDependencyCompletedRemoval(fence,jobId,revision,access));if(completed)return completed;
+  let completed:ReturnType<typeof tryReleaseOriginalHostedDependencyCompletedRemoval>;
+  try {completed=withHostedActivationFence(fence=>{
+    const result=tryReleaseOriginalHostedDependencyCompletedRemoval(fence,jobId,revision,access);
+    if(result && action===RemovalAction.Recover)acknowledgeOriginalHostedCompletedRemovalArchive(fence,jobId,revision,access);
+    return result;
+  });}
+  catch(error) {
+    if(action!==RemovalAction.Recover || !isHostedActivationFenceBusy(error))throw error;
+    // Explicit completion reconciliation only: never mint a fresh remover claim.
+    return withHostedRemovalRetirementReconciliation((fence,witness)=>{
+      assertOriginalHostedCompletedRemovalWitness(fence,witness,jobId,revision,access);
+      const result=tryReleaseOriginalHostedDependencyCompletedRemoval(fence,jobId,revision,access);if(!result)held();return result;
+    },(fence,witness)=>assertOriginalHostedCompletedRemovalArchive(fence,witness,jobId,revision,access));
+  }
+  if(completed)return completed;
   const selected = withHostedActivationFence(fence => claimOriginalHostedDependencyTrashRemoval(fence, jobId, revision, access,action===RemovalAction.Recover)),
     attempt = hostedDependencyRemovalAttempt(selected.claim), unit = hostedDependencyRemovalUnit(attempt.operationId);
   withHostedActivationFence(fence=>{
@@ -141,7 +155,13 @@ async function run(jobId: string, revision: number, access: symbol, action:Remov
       launch.release(fence, "subscription-runtime-remover-fd-release-v1\n", true, () => { guard(state, fence, access); if(!readHostedDependencyEvictionEnabled())held(); }); released = true;
     });
     await closed; state.closed = launch.removerCloseResult(); assertHostedRemoverCloseResultForChild(state.closed, child);
-    return withHostedActivationFence(fence => retireAndRelease(state, fence, access));
+    return withHostedRemovalRetirementFence(fence=>{
+      guard(state,fence,access);assertHostedRemoverCloseResultForChild(state.closed!,state.child);
+      if(!state.actorReference || !state.lockReference)held();
+      return {claim:state.selected.reference,actor:state.actorReference,lock:state.lockReference,
+        completion:pinReferenceFile(hostedDependencyRemovalRecordPath(attempt.operationId,"session-closed"),16384).reference};
+    },fence=>retireAndRelease(state,fence,access),
+      (fence,witness)=>assertOriginalHostedCompletedRemovalArchive(fence,witness,jobId,revision,access));
   } finally {
     if (!released) { hostedFdLaunch(child).invalidate(); child.kill("SIGTERM"); }
     current = undefined;
