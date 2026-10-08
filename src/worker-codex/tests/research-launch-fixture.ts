@@ -57,6 +57,12 @@ export function local(path: string): string {
   if (["/", "/run", "/run/systemd", "/run/user", "/run/user/0", "/var", "/var/lib", "/usr", "/usr/bin", "/opt"].includes(path) || process.execPath.startsWith(path + "/")) return fixture.root;
   return path;
 }
+function syntheticMountInfo(): string {
+  const lines = ["1 0 8:1 / / rw - ext4 /dev/TEST rw"];
+  for (const [pin, target] of fixture.pins) lines.push(`${lines.length + 1} 1 8:1 ${target} ${pin} rw - ext4 /dev/TEST rw`);
+  for (const [target, mount] of fixture.scratchMounts) if (mount) lines.push(`${lines.length + 1} 1 0:11 ${mount.fsroot} ${target} rw - ext4 /dev/TEST-scratch rw`);
+  return lines.join("\n") + "\n";
+}
 vi.mock("node:url", async original => {
   const real = await original<typeof import("node:url")>();
   return { ...real, fileURLToPath: (url: URL | string) => {
@@ -70,16 +76,15 @@ vi.mock("node:fs", async original => {
     lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
     statSync: (path: string) => Object.assign(real.statSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
     fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
-    openSync: (path: string, flags: number | string, mode: number) => { const fd = real.openSync(local(path), flags, mode); fixture.fdPaths.set(fd, path); return fd; },
+    openSync: (path: string, flags: number | string, mode: number) => {
+      const selected = path === "/proc/self/mountinfo" ? join(fixture.root, "mountinfo") : local(path);
+      if (path === "/proc/self/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
+      const fd = real.openSync(selected, flags, mode); fixture.fdPaths.set(fd, path); return fd;
+    },
     existsSync: (path: string) => real.existsSync(local(path)),
     readFileSync: (path: string | number, opts: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "string" && path.startsWith("/proc/")) {
-        if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") {
-          const lines = ["1 0 8:1 / / rw - ext4 /dev/TEST rw"];
-          for (const [pin, target] of fixture.pins) lines.push(`${lines.length + 1} 1 8:1 ${target} ${pin} rw - ext4 /dev/TEST rw`);
-          for (const [target, mount] of fixture.scratchMounts) if (mount) lines.push(`${lines.length + 1} 1 0:11 ${mount.fsroot} ${target} rw - ext4 /dev/TEST-scratch rw`);
-          return lines.join("\n") + "\n";
-        }
+        if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") return syntheticMountInfo();
         if (path.startsWith("/proc/self/fdinfo/")) {
           const selected = (fixture.fdPaths.get(Number(path.split("/").at(-1))) ?? "").replace(/^\/proc\/1\/root/, "");
           const index = [...fixture.pins.keys()].findIndex(pin => selected === pin || selected.startsWith(pin + "/"));

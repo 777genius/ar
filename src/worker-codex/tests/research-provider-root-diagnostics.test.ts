@@ -3,17 +3,41 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { researchHash, researchRead } from "../research-launch-files";
+import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import * as files from "../research-launch-files";
 import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import * as roots from "../research-provider-root";
+import * as mounts from "../host-scratch-mount";
 import { prepareHelper } from "./research-provider-service-fixture";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
+
+describe("private finite launch diagnostics", () => {
+  it("identifies pre-submission plan denial without persisting paths or the selected home", async () => {
+    const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
+    await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
+    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:snapshot" });
+    expect(bytes).not.toContain(secretHome);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".submission")).toThrow();
+  });
+  it("keeps a changed runtime binding denied and records only the capture phase", async () => {
+    const current = prepareHelper();
+    const bindingPath = join(current.directory, "binding.json");
+    const binding = JSON.parse(researchRead(bindingPath).toString()); binding.process.pid++;
+    researchPublish(bindingPath, binding);
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
+      schemaVersion: 1, unit: current.provider, phase: "runtime-capture", check: "captureResearchRuntime",
+    });
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+});
 
 describe("private identity-bound root diagnostics", () => {
   // A real root guard must identify its finite check; the selected private
@@ -28,9 +52,7 @@ describe("private identity-bound root diagnostics", () => {
       if (fault === "owner") host.foreign.add("/usr");
       else if (fault === "accounts") fs.writeFileSync("/etc/group", "TEST-private-account:TEST-private-password:0:\n");
       else {
-        const read = fs.readFileSync;
-        vi.spyOn(fs, "readFileSync").mockImplementation(((path: string, options: never) =>
-          path === "/proc/self/mountinfo" ? "TEST-private-mount-path" : read(path, options)) as typeof fs.readFileSync);
+        vi.spyOn(mounts, "readKernelMountTable").mockReturnValue("TEST-private-mount-path");
       }
       return prepare(...args);
     });

@@ -54,7 +54,7 @@ function boundedRead(path: string, maximum: number): string {
   const fd = openSync(path, constants.O_RDONLY), chunks: Buffer[] = [];
   let total = 0;
   try {
-    const buffer = Buffer.alloc(Math.min(maximum + 1, 64 * 1024));
+    const buffer = Buffer.alloc(Math.min(maximum + 1, 1024 * 1024));
     for (;;) {
       const n = readSync(fd, buffer, 0, Math.min(buffer.length, maximum + 1 - total), null);
       if (n === 0) return Buffer.concat(chunks, total).toString("utf8");
@@ -63,6 +63,8 @@ function boundedRead(path: string, maximum: number): string {
     }
   } finally { closeSync(fd); }
 }
+/** Fixed native Host observation; all consumers retain the complete bounded table. */
+export function readKernelMountTable(): string { return boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024); }
 function opened(fd: number) {
   const info = fstatSync(fd), ids = [...boundedRead(`/proc/self/fdinfo/${fd}`, 4096).matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
   if (!info.isDirectory() || ids.length !== 1) return fail();
@@ -86,7 +88,7 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
   }
   let fresh: number | undefined;
   try {
-    const original = opened(fd), before = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
+    const original = opened(fd), before = readKernelMountTable();
     const line = mountLine(original.mountId, before), record = parseMountRecord(original.mountId, line);
     let result: ScratchMount | undefined;
     if (record.target === path) {
@@ -113,7 +115,7 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
     // the same current FD, named mount ID, namespace and full-table rechecks.
     // A new bind of the same inode changes mount ID without changing named dev/inode.
     fresh = openSync(path, directoryFlags);
-    const after = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
+    const after = readKernelMountTable();
     if (!same(original, opened(fd)) || !same(original, opened(fresh)) || readlinkSync("/proc/self/ns/mnt") !== namespace ||
         JSON.stringify(record) !== JSON.stringify(mountRecord(original.mountId, after))) return fail();
     return result;

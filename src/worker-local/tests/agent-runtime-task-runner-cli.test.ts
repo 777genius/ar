@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   runSubscriptionAgentRuntimeTaskCli,
   type AgentRuntimeTaskWorker,
@@ -546,56 +546,75 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     const stdout: string[] = [];
     let runCalled = false;
     let disposed = false;
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          timeoutMs: 5,
-          task: {
-            kind: "structured-prompt",
-            prompt: "never starts",
+    let markStartEntered!: () => void;
+    const startEntered = new Promise<void>((resolve) => {
+      markStartEntered = resolve;
+    });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const execution = runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "claude",
+          "--state-root",
+          "/tmp/runtime-state",
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            timeoutMs: 5,
+            task: {
+              kind: "structured-prompt",
+              prompt: "never starts",
+            },
+          }),
+          env: {
+            SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
           },
         }),
-        env: {
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {
-          return await new Promise<void>(() => {});
-        },
-        async run() {
-          runCalled = true;
-          return {
-            outputText: "unexpected",
-            warnings: [],
-          };
-        },
-        async dispose() {
-          disposed = true;
-        },
-      }),
-    );
+        () => ({
+          async start() {
+            markStartEntered();
+            return await new Promise<void>(() => {});
+          },
+          async run() {
+            runCalled = true;
+            return {
+              outputText: "unexpected",
+              warnings: [],
+            };
+          },
+          async dispose() {
+            disposed = true;
+          },
+        }),
+      );
 
-    expect(exitCode).toBe(1);
-    expect(runCalled).toBe(false);
-    expect(disposed).toBe(true);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "failed",
-      failure: {
-        code: "task_timeout",
-      },
-    });
+      await Promise.race([
+        startEntered,
+        execution.then(() => {
+          throw new Error("task finished before worker.start entered");
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(5);
+      const exitCode = await execution;
+
+      expect(exitCode).toBe(1);
+      expect(runCalled).toBe(false);
+      expect(disposed).toBe(true);
+      expect(JSON.parse(stdout.join(""))).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "task_timeout",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a timeout result when worker auth seeding never resolves", async () => {
