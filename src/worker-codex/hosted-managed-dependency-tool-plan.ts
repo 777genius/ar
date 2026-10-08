@@ -359,17 +359,7 @@ function admissionSourceRoots(admission:Plan["admission"]):readonly DependencyTo
   return provenance.kind===DependencyToolReadyProvenanceKind.RegistryCompleted?[]:provenance.readonlySources;
 }
 function admissionSourceAncestors(binding:HostedDependencyBinding,admission:Plan["admission"]) {
-  if(admission.status===DependencyToolReadyReadStatus.Ready)return localSourceAncestors(binding,admission.facts.provenance);
-  const roots=admission.execution.sourceRoots;
-  return Object.freeze(admission.execution.sourceLookupAncestors.filter(pin=>pin.canonicalPath!==binding.workspace.canonicalPath &&
-    !roots.some(root=>root.canonicalPath===pin.canonicalPath)).map(pin=>{
-      const stat=lstatSync(pin.canonicalPath,{bigint:true});
-      if(!pin.canonicalPath.startsWith(binding.workspace.canonicalPath+"/") || /[\s:%\\"'\x00-\x1f\x7f]/.test(pin.canonicalPath) ||
-        pin.canonicalPath.slice(binding.workspace.canonicalPath.length+1).split("/").some(part=>part===".git" || part==="node_modules") ||
-        !stat.isDirectory() || stat.uid!==0n || (stat.mode&0o022n) || realpathSync(pin.canonicalPath)!==pin.canonicalPath ||
-        String(stat.dev)!==pin.identity.dev || String(stat.ino)!==pin.identity.ino)fail();
-      return Object.freeze({canonicalPath:pin.canonicalPath,dev:pin.identity.dev,ino:pin.identity.ino});
-    }));
+  return localSourceAncestors(binding,admissionSourceRoots(admission));
 }
 /** Current source directory facts only, never generated install provenance. */
 function assertUsableSources(binding:HostedDependencyBinding,roots:readonly DependencyToolSourceRoot[]):void {
@@ -428,15 +418,13 @@ function assertLocalSources(binding: HostedDependencyBinding, provenance: Depend
 
 /** Derive the finite topology only from the same captive source roots. No
  * caller can nominate an ancestor or substitute a mount/identity descriptor. */
-function localSourceAncestors(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]) {
+function localSourceAncestors(binding: HostedDependencyBinding, sources: readonly DependencyToolSourceRoot[]) {
   const paths = new Set<string>();
-  if ((provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared)) {
-    for (const source of provenance.readonlySources) {
-      if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
-      for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
-        if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
-        paths.add(path);
-      }
+  for (const source of sources) {
+    if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
+    for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
+      if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
+      paths.add(path);
     }
   }
   return Object.freeze([...paths].sort().map(canonicalPath => {
