@@ -319,11 +319,14 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
   });
   it("forged markers select no research authority; actual service membership cannot take the plain child path", async () => {
     expect(admitResearchRuntime(request())).toBeUndefined();
-    // No global policy ancestry exists in this private initial-root fixture.
-    // A forged marker cannot qualify that absence for the management channel.
-    await expect(admitHostedTestEgress({ ...request(), sourceEnv: {
+    // Uninstalled ordinary callers keep API-only egress; a forged profile
+    // supplies neither research authority nor an admitted readonly factory.
+    const sourceEnv = {
       SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: policy.profileId,
-    } })).rejects.toThrow("hosted_readonly_policy_invalid");
+    };
+    const ordinary = await admitHostedTestEgress({ ...request(), sourceEnv });
+    expect(ordinary).toEqual({ profileId: CodexProviderEgressProfileId.ProviderApi, domains: ["api.openai.com"] });
+    expect(admitHostedReadonlyInputs({ ...request(), sourceEnv, providerEgressPolicy: ordinary })).toBeUndefined();
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
     admitted();
     // The default factory has no captured research ticket and remains closed.
