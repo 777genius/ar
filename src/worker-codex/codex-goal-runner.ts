@@ -1,3 +1,4 @@
+import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
@@ -209,7 +210,7 @@ export type CodexGoalProgressSnapshot = {
   readonly currentAccount?: string;
 };
 
-export type CodexGoalRunDeps = {
+export type CodexGoalRunDeps = import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationDependencies & {
   /** Trusted adapter port, never supplied by serialized job configuration. */
   readonly admitProviderEgress?: typeof admitHostedTestEgress;
   readonly createExecutor?: (
@@ -430,6 +431,8 @@ async function runCodexGoalAdmitted(
     });
     await resultRecorder.record(await codexRuntimeResultInput({
       config,
+      ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
+        ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       result,
       executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
@@ -445,6 +448,8 @@ async function runCodexGoalAdmitted(
     const failure = codexRunnerExceptionFailure(error);
     await resultRecorder.record(await codexExceptionRuntimeResultInput({
       config,
+      ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
+        ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       error,
       executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
@@ -828,63 +833,12 @@ function createCodexGoalProgressHeartbeat(input: {
   };
 }
 
-function progressFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): Omit<CodexGoalProgressSnapshot, "schemaVersion" | "taskId" | "updatedAt" | "pid"> {
-  const attempts = attemptsFromResult(result);
-  const lastAttempt = attempts.at(-1);
-  return {
-    status: progressStatusFromResult(result.status),
-    resultStatus: result.status,
-    ...("reason" in result && typeof result.reason === "string"
-      ? { reason: result.reason }
-      : {}),
-    attemptCount: attempts.length,
-    ...(lastAttempt && "accountId" in lastAttempt && typeof lastAttempt.accountId === "string"
-      ? { currentAccount: lastAttempt.accountId }
-      : {}),
-  };
-}
-
-function attemptsFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-) {
-  const attempts = "attempts" in result && Array.isArray(result.attempts)
-    ? result.attempts
-    : [];
-  return attempts;
-}
-
-function attemptCountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): number {
-  return attemptsFromResult(result).length;
-}
-
-function currentAccountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): string | undefined {
-  const lastAttempt = attemptsFromResult(result).at(-1);
-  return lastAttempt && "accountId" in lastAttempt &&
-    typeof lastAttempt.accountId === "string"
-    ? lastAttempt.accountId
-    : undefined;
-}
-
-function progressStatusFromResult(status: string): CodexGoalProgressStatus {
-  if (status === "completed") return "completed";
-  if (status === "waiting_capacity") return "blocked";
-  if (status === "partial") return "partial";
-  if (status === "failed") return "failed";
-  if (status === "aborted") return "aborted";
-  return "failed";
-}
-
 async function codexRuntimeResultInput(input: {
   readonly config: CodexGoalRunConfig;
   readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly publicationAuthority?: import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
   const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
@@ -905,7 +859,7 @@ async function codexRuntimeResultInput(input: {
         ...(input.baseCommit === undefined
           ? {}
           : { expectedBaseCommit: input.baseCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
@@ -951,6 +905,7 @@ async function codexExceptionRuntimeResultInput(input: {
   readonly error: unknown;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly publicationAuthority?: import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const failure = codexRunnerExceptionFailure(input.error);
   const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
@@ -962,7 +917,7 @@ async function codexExceptionRuntimeResultInput(input: {
         ...(input.baseCommit === undefined
           ? {}
           : { expectedBaseCommit: input.baseCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
