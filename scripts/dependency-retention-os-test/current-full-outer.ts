@@ -2,7 +2,7 @@ import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } 
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
-import { retainFullBackingBirth, type FullGuestSelection } from "./current-full-backing-collector.js";
+import { captureFullAdministrativeBirth, retainFullBackingBirth, type FullGuestSelection } from "./current-full-backing-collector.js";
 import { CurrentBackingGeometry, CurrentGeometryQualification, currentBackingStorage } from "./current-backing-geometry.js";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -119,10 +119,11 @@ try {
     const bytes = 6n * 1024n * 1024n * 1024n, free = statfsSync(owned, { bigint: true });
     assert(free.bavail * free.bsize >= bytes && free.ffree >= 100000n, "TEST readonly scratch capacity unavailable");
     dataImage = owned + "/readonly-data.ext4";
+    const administrativeBeforeBirth = captureFullAdministrativeBirth(managedParent);
     const fd = openSync(dataImage, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     let inode: ReturnType<typeof fstatSync>;
     try { inode = fstatSync(fd); assert(inode.isFile() && inode.uid === 0 && inode.nlink === 1);
-      backing = retainFullBackingBirth(id, fd, () => remaining(deadline), managedParent);
+      backing = retainFullBackingBirth(id, fd, () => remaining(deadline), managedParent, administrativeBeforeBirth);
     }
     finally { closeSync(fd); }
     command("/usr/bin/fallocate", ["--length", String(bytes), dataImage], 60000);

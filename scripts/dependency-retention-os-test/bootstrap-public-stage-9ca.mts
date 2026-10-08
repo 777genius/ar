@@ -14,7 +14,7 @@ const NODE_SHA='7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c
 const ADAPTER='3bdceddbaace17e42ee8605be9d3413b1aac240ad5f990d9e717f527b8cdf361';
 const REVIEW='56a24b6d1af74e1eb868f2f63ff5eb091c21d7efc41a4efe89cf087131b3b3b1';
 type Pin=readonly [name:string,size:number,sha256:string];
-const pins:readonly Pin[]=[
+let pins:readonly Pin[]=[
  ['source-9ca302.bundle',9515981,'751d6a7ea31d117372931a3e85753f9c8094d6c8541f931b43e75743f288fe50'],
  ['profile-artifact.zip',462454,'4c13ddadf5a2034c3a5fc5e0790f9ddeb24bb605efce8df9fd7dc16a635f3af3'],
  ['runtime-artifact.zip',109932227,'cafd730f3df83a2dca92e77108d22fb7e23d5bc43a39d1949db73090f97f9c6d'],
@@ -155,7 +155,7 @@ function seal(parent:Held,name:string,data:Buffer):Held {
 }
 try {
  fact(process.platform==='linux'&&process.getuid?.()===0&&process.getgid?.()===0&&process.execPath===NODE&&process.cwd()==='/'
-  &&process.argv.length===2&&/^[a-f0-9]{64}$/.test(process.argv[1]??'')&&process.execArgv.length===3
+  &&process.argv.length===3&&/^[a-f0-9]{64}$/.test(process.argv[1]??'')&&/^[a-f0-9]{64}$/.test(process.argv[2]??'')&&process.execArgv.length===3
   &&process.execArgv[0]==='--input-type=module-typescript'&&process.execArgv[1]==='--eval','fixed authorized ROOT bootstrap invocation/review digest');
  const rootBoundaryReviewSha256=process.argv[1]!;process.umask(0o077);
  const nodeParent=dir('/opt/nodejs/node-v24.21.0-linux-x64/bin'),node=open(`/proc/self/fd/${nodeParent.fd}/node`,false,0o755);
@@ -182,7 +182,7 @@ try {
  fact(generated.every(k=>!Object.hasOwn(environment,k)&&!unset.includes(k)),'preserve systemd-generated invocation metadata');
  const args=['--unit='+UNIT,'--service-type=exec',...Object.entries(properties).map(([k,v])=>`--property=${k}=${v}`),NODE,`${CONTROL}/run-public-stage-9ca.mts`];
  const root=fresh(workers,'public-intake'),base=fresh(root,NAME),intake=fresh(base,HEAD),control=fresh(base,'control');
- const results=fresh(base,'results');fresh(base,'bootstrap-tmp');
+ const results=fresh(base,'results');fresh(base,'bootstrap-tmp');fresh(base,'administrative-work');
  seal(control,'PUBLIC-purpose.json',Buffer.from(JSON.stringify({kind:'FIXED_PUBLIC_BOOTSTRAP_PURPOSE',head:HEAD,unit:UNIT,
   controlGroup:CGROUP,rootBoundaryReviewSha256,pid:process.pid,boot:'f12bc43a-9252-42d4-919d-85b846a176a8',
   targets:[BASE,JOB],protected:immutable.map(x=>({path:x.path,dev:String(x.h.dev),ino:String(x.h.ino),
@@ -190,6 +190,18 @@ try {
   sharedAncestor:held.filter(h=>h.directory&&h.canonical==='/srv/worker-state').map(h=>({path:h.canonical,uid:0,gid:Number(h.gid),
    mode:h.mode,dev:String(h.dev),ino:String(h.ino),mntId:h.mnt})),
   protectedAbsent,missingCount:missing.length,bootstrapSha256:createHash('sha256').update(process.execArgv[2]!).digest('hex'),fullEightAcceptance:'UNPROVEN'})+'\n'));
+ // The original owner transport selects one independently reviewed new
+ // compiled installation closure. Header bytes are DATA pins, not a role grant.
+ // Fixed names only; the old twelve HEAD inputs and adapter remain unchanged.
+ const headerSize=Buffer.alloc(4);fact(fs.readSync(0,headerSize,0,4,null)===4,'administrative fixed header length');
+ const count=headerSize.readUInt32BE(0);fact(count>0&&count<=16384,'administrative header bound');
+ const header=Buffer.alloc(count);let offset=0;while(offset<count){const n=fs.readSync(0,header,offset,count-offset,null);fact(n>0,'administrative header short read');offset+=n;}
+ fact(createHash('sha256').update(header).digest('hex')===process.argv[2],'independently selected administrative delivery');
+ const closure:unknown=JSON.parse(header.toString('utf8'));fact(Array.isArray(closure)&&closure.length===8,'fixed administrative closure');
+ const names=['run-public-stage-9ca.mts','administrative-installation.js','administrative-public-maintenance.js','administration-reviewed-source.json','original-bootstrap-boundary-FREEZE.json','original-bootstrap-boundary-report.md','original-bootstrap-boundary-review.json','administration-independent-review-FREEZE.json'];
+ const extra:Pin[]=closure.map((value,index)=>{fact(Array.isArray(value)&&value.length===3&&value[0]===names[index]&&Number.isSafeInteger(value[1])&&value[1]>0&&value[1]<=1024*1024&&typeof value[2]==='string'&&/^[a-f0-9]{64}$/.test(value[2]),'fixed selected administrative source row');return value as unknown as Pin;});
+ fact(extra[4]![2]==='904c612e066edd7679287cf4e135553cf1d0f625fca0a5c7f89335829ea5c360'&&extra[5]![2]==='909c84f09a3d794263ae29028a5c0aa978b76f99068429c144d350fb5afad245'&&extra[6]![2]==='fbf620e101f4d667dc90cd32e1c08d6237bc998f87cb29a66ad1599e58def87c','actual prior installation boundary review closure');
+ pins=[...pins.slice(0,12),extra[0]!,...pins.slice(13),...extra.slice(1)];
  const buffer=Buffer.alloc(1024*1024);
  for(let index=0;index<pins.length;index++){
   const pin=pins[index]!;guard();const parent=index<12?intake:control,path=`/proc/self/fd/${parent.fd}/${pin[0]}`;
@@ -207,7 +219,7 @@ try {
   originalProtectedInputsUnchanged:true,noActiveOrPersistedReferences:true})+'\n'));
  seal(control,'intake-owner-receipt.sha256',Buffer.from(digest(receipt)+'\n'));
  guard();references();attempt=seal(results,'PUBLIC-submit-once.json',Buffer.from(JSON.stringify({kind:'OWNED_SUBMISSION_RESERVED',head:HEAD,unit:UNIT,
-  ownerReceiptSha256:digest(receipt),rootBoundaryReviewSha256,owned:owned.map(h=>({path:fs.realpathSync(`/proc/self/fd/${h.fd}`),
+  ownerReceiptSha256:digest(receipt),rootBoundaryReviewSha256,sourcePins:pins.slice(12),owned:owned.map(h=>({path:fs.realpathSync(`/proc/self/fd/${h.fd}`),
    dev:String(h.dev),ino:String(h.ino),mode:h.mode,mntId:h.mnt})),argv:args,retry:'HOLD',fullEightAcceptance:'UNPROVEN'})+'\n'));
  guard();references();
  // Exactly one submission. A timeout/error is an uncertain result: never call systemd-run again.

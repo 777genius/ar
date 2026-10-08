@@ -190,6 +190,7 @@ if (process.argv[2] === "supervisor" && process.argv[1] === runtime + "/scripts/
   json(runtime + "/guest-started.json", { schemaVersion: 1, purpose: "TEST_bootstrap_observation_only",
     sourceSha: process.env.TEST_SOURCE_SHA, machineId: readFileSync("/etc/machine-id", "utf8").trim(), pid: process.pid });
   const guest = process.env.TEST_OS_SCENARIO === OwnedOsScenario.CurrentDependency ? "registration-guest.js" : "guest.ts";
+  const administrativeSpawn = guest === "registration-guest.js" ? (await import("./current-administrative-installation.js")).retainOriginalAdministrativeGuestSpawn() : undefined;
   const child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/" + guest, "qualify"],
     { env: { ...cleanEnv, TEST_SOURCE_SHA: process.env.TEST_SOURCE_SHA,
       TEST_OS_SCENARIO: process.env.TEST_OS_SCENARIO }, stdio: ["pipe", "pipe", "pipe"] });
@@ -205,7 +206,9 @@ if (process.argv[2] === "supervisor" && process.argv[1] === runtime + "/scripts/
   };
   child.stderr.on("data", (chunk: Buffer) => collect("stderr", chunk));
   child.stdout.on("data", (chunk: Buffer) => collect("stdout", chunk));
-  child.stdin.on("error", () => {}); child.stdin.end();
+  child.stdin.on("error", () => {});
+  if(administrativeSpawn){assert(child.pid);administrativeSpawn.sealChild(child.pid);child.stdin.end("FIXED_ADMINISTRATIVE_PRODUCER_READY\n");}
+  else child.stdin.end();
   const timeout = setTimeout(() => child.kill("SIGTERM"), 21 * 60 * 1000);
   const failed = (reason: "spawn_failed" | "child_exited_without_evidence", code: number | null, signal: string | null) => {
     clearTimeout(timeout); tails.stdout = ""; tails.stderr = "";

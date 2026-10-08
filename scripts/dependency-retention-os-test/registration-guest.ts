@@ -1,3 +1,4 @@
+import { runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
 /** One owned OS, one ORIGINAL CLOSED C/reference registration. No consumer,
  * baseline install, comparison, R adoption, account or provider is invoked. */
 import assert from "node:assert/strict";
@@ -46,6 +47,7 @@ async function register(): Promise<void> {
   assert.equal(process.env.TEST_OS_SCENARIO, OwnedOsScenario.CurrentDependency);
   assert.match(process.env.TEST_SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
   assert.equal(process.getuid!(), 0); assert.equal(process.geteuid!(), 0);
+  evidence.administrativeInstallation = await runAdministrativeInstallationRegression();
   evidence.phase = RegistrationPhase.Bus;
   const bus = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);

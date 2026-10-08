@@ -1,3 +1,4 @@
+import { publishOriginalAdministrativeTestControl } from "./administrative-test-control.js";
 import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } from "./io-uring.ts";
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
@@ -69,6 +70,7 @@ try {
   remaining(deadline);
   assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry);
   remaining(deadline);
+  publishOriginalAdministrativeTestControl(root);
   let dataImage: string | undefined;
   const storage = geometry === CurrentBackingGeometry.Adoptable ? currentBackingStorage : readonlyStorage;
   if (scenario === OwnedOsScenario.Readonly || geometry === CurrentBackingGeometry.Adoptable) {

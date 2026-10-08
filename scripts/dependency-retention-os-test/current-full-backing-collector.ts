@@ -6,6 +6,7 @@ import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, o
 import { basename, dirname } from "node:path";
 import { assertRetainedCurrentFullParent, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../src/worker-codex/hosted-full-backing-proc.js";
+import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { currentBackingStorage } from "./current-backing-geometry.js";
 
 export enum FullBackingExposure {
@@ -23,6 +24,7 @@ export enum FullBackingExposure {
 }
 export enum FullBackingOwner {
   OriginalTrustedSetup="original_exact_TEST_setup",
+  EstablishedTrustedAdministrator="original_administrative_installation_control_actor",
   KernelUnable="actual_zero_caps_owned_ro_routes",
   BootPid1="exact_trusted_boot_OS_init_scope",
   Unknown="unknown_enforcement_provenance",
@@ -32,6 +34,8 @@ export enum FullBackingRefusal {
   LoopUnavailable="loop_device_unavailable",
   KernelJoinUnavailable="ioctl_backing_join_unavailable",
   OwnerUnclassified="relevant_owner_enforcement_unclassified",
+  AdministrativeReference="established_administrator_has_actual_backing_reference",
+  AdministrativeControlUncertain="fixed_administrative_recipe_has_undischarged_control_route",
   ProcUncertain="proc_identity_or_view_uncertain",
   Bound="bounded_observation_incomplete",
   ContinuityMissing="installed_admission_and_original_guest_fence_join_not_measured",
@@ -231,7 +235,7 @@ function scanFullProcDescriptors(anchor:FullProcTaskAnchor,target:Target,budget:
         const kind=fullBackingDescriptor(stat,target,filesystem);
         if(kind){exposures.add(kind);assert(joins.length<32);const after=statSync(path,{bigint:true});
           assert(same(identity(stat),identity(after)) && stat.rdev===after.rdev && stat.mode===after.mode);
-          joins.push({fd:name,...identity(stat),rdev:String(stat.rdev),mode:String(stat.mode),mountId:source.mount});}
+          joins.push({fd:name,...identity(stat),rdev:String(stat.rdev),mode:String(stat.mode),mountId:source.mount,flags:source.flags,filesystemType:String(filesystem),exposure:kind});}
       }finally{closeSync(metadata);}
     }}finally{directory.close();}
     anchor.revalidate();return {exposures,joins,unaccounted,custody};
@@ -323,7 +327,7 @@ export function retainFullProcTaskView(anchor:FullProcTaskAnchor,budget:()=>void
     return {exe:readlinkSync(prefix+"/exe"),birth:birthAt(prefix,budget),names:names(),statusFields,root:identity(root),user:readlinkSync(prefix+"/ns/user"),mnt:readlinkSync(prefix+"/ns/mnt"),pid:readlinkSync(prefix+"/ns/pid"),cgroup:text(prefix+"/cgroup",4096,budget),uidMap:text(prefix+"/uid_map",4096,budget),gidMap:text(prefix+"/gid_map",4096,budget),cmdline:hash(boundedRead(prefix+"/cmdline",32768,budget)),maps:hash(boundedRead(prefix+"/maps",1024*1024,budget)),mounts:hash(boundedRead(prefix+"/mountinfo",1024*1024,budget))};
   }
   let closed=false;
-  try{for(const name of ["root","exe","ns/user","ns/pid","ns/mnt"]){const fd=open(prefix+"/"+name,constants.O_RDONLY|(name==="root"?constants.O_DIRECTORY:0));
+  try{for(const name of ["root","cwd","exe","ns/user","ns/pid","ns/mnt"]){const fd=open(prefix+"/"+name,constants.O_RDONLY|(name==="root"?constants.O_DIRECTORY:0));
       objects.push({name,fd,stat:fstatSync(fd,{bigint:true}),mount:mountId(fd,budget)});}
     const initial=view();assert(initial.names.length<=4096);
     for(const name of initial.names){assert(/^[0-9]+$/.test(name));const fd=open(prefix+"/fd/"+name,0x200000);
@@ -336,13 +340,73 @@ export function retainFullProcTaskView(anchor:FullProcTaskAnchor,budget:()=>void
     revalidate();return Object.freeze({count:descriptors.length,revalidate,close(){if(closed)return;closed=true;for(const fd of retained)closeObserverDescriptor(fd);}});
   }catch(error){for(const fd of retained)closeObserverDescriptor(fd);throw error;}
 }
+/** Physical original administrative origin and actual references. No caller
+ * role flag/UID list can satisfy this predicate; it issues no custody grant. */
+export function readOriginalAdministrativeTaskReferences(anchor:FullProcTaskAnchor,sourceSha:string,originSha256:string,target:Target,budget:()=>void):Readonly<{actor:NonNullable<ReturnType<typeof readOriginalPublicAdministrativeActor>>;material:boolean;unresolved:readonly FullBackingExposure[]}>|undefined {
+  budget();const actor=readOriginalPublicAdministrativeActor(anchor,sourceSha);if(!actor)return undefined;
+  const origin=readOriginalAdministrativeBirth(sourceSha);assert(origin?.originSha256===originSha256);
+  const descriptors=scanFullProcDescriptors(anchor,target,budget);
+  const controls=new Set([FullBackingExposure.ProcDescriptor,FullBackingExposure.NamespaceDescriptor,FullBackingExposure.SocketDescriptor]);
+  let material=[...descriptors.exposures].some(kind=>kind!==FullBackingExposure.PrivilegeCandidate && !controls.has(kind));
+  const unresolved=new Set<FullBackingExposure>();
+  for(const row of descriptors.joins){
+    const kind=row.exposure as FullBackingExposure;if(!controls.has(kind))continue;
+    let metadata=false;
+    if(kind===FullBackingExposure.ProcDescriptor){
+      assert(typeof row.fd==="string" && typeof row.flags==="string");
+      const fd=openSync(anchor.path+"/fd/"+row.fd,0x200000);
+      try{const actual=fstatSync(fd,{bigint:true});assert(same(identity(actual),{dev:String(row.dev),ino:String(row.ino)}));
+        assert.equal(fullRetainedFilesystemType(fd),0x9fa0n);
+        const flags=BigInt("0o"+row.flags);
+        metadata=actual.isFile() && (flags&3n)===0n && ["stat","status"].some(name=>same(identity(statSync(anchor.path+"/"+name,{bigint:true})),identity(actual)));
+        if(!metadata && actual.isFile() && (flags&3n)===0n){
+          const processFd=openSync("/proc/"+anchor.processPid,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+          try{const prefix=`/proc/self/fd/${processFd}`;assert(same(identity(fstatSync(processFd,{bigint:true})),anchor.procIdentity));assert.equal(fullRetainedFilesystemType(processFd),0x9fa0n);assert.equal(birthAt(prefix,budget),anchor.processBirth);
+            metadata=["stat","status"].some(name=>same(identity(statSync(prefix+"/"+name,{bigint:true})),identity(actual)));
+            assert.equal(birthAt(prefix,budget),anchor.processBirth);anchor.revalidate();
+          }finally{closeSync(processFd);}
+        }
+      }finally{closeSync(fd);}
+    }
+    // Only actual same-birth readonly own stat/status in the closed recipe is
+    // discharged. Other controls violate this finite nondelegating layout;
+    // they are unresolved routes, not automatically material image readers.
+    if(!metadata)unresolved.add(kind);
+  }
+  for(const name of ["root","cwd","exe"]){const object=statSync(anchor.path+"/"+name,{bigint:true});
+    // An implicit host root is ambient admin capability, not an open image
+    // ancestor FD. A cwd at an actual image ancestor IS a concrete reference.
+    material ||= same(identity(object),target.image) || (object.isBlockDevice() && String(object.rdev)===target.loopRdev) || (target.storageDevice!==null && device(object.dev)===target.storageDevice) || (name==="cwd" && target.ancestors.some(value=>same(value,identity(object))));
+  }
+  const mounts=fullBackingMounts(text(anchor.path+"/mountinfo",1024*1024,budget));
+  material ||= target.storageDevice!==null && mounts.some(value=>value.device===target.storageDevice);
+  for(const row of text(anchor.path+"/maps",1024*1024,budget).split("\n")){const match=/^[0-9a-f]+-[0-9a-f]+ [rwxps-]{4} [0-9a-f]+ ([0-9a-f]+):([0-9a-f]+) ([0-9]+)/.exec(row);if(!match)continue;
+    const mappedDevice=String(BigInt("0x"+match[1]!))+":"+String(BigInt("0x"+match[2]!));
+    material ||= mappedDevice===target.storageDevice || (BigInt(match[3]!)===BigInt(target.image.ino) && mappedDevice===device(BigInt(target.image.dev)));
+  }
+  descriptors.revalidate();anchor.revalidate();assert(readOriginalPublicAdministrativeActor(anchor,sourceSha));
+  assert(readOriginalAdministrativeBirth(sourceSha)?.originSha256===originSha256);
+  return Object.freeze({actor,material,unresolved:[...unresolved].sort()});
+}
+const administrativeBirths=new WeakMap<object,Readonly<{parent:object;sourceSha:string;originSha256:string}>>();
+/** Original FULL parent captures the new installer origin before O_EXCL image
+ * birth. Absence preserves the ordinary Unknown/Hold branch. */
+export function captureFullAdministrativeBirth(parent:ReturnType<typeof retainCurrentFullParent>):object|undefined {
+  assertRetainedCurrentFullParent(parent);parent.revalidate();
+  const sourceSha=process.env.TEST_SOURCE_SHA;assert(sourceSha && /^[a-f0-9]{40}$/.test(sourceSha));
+  const origin=readOriginalAdministrativeBirth(sourceSha);if(!origin)return undefined;
+  parent.revalidate();const token=Object.freeze({});
+  administrativeBirths.set(token,{parent,sourceSha,originSha256:origin.originSha256});return token;
+}
 const fullBackingTerminals=new WeakMap<object,object>();
 export function assertFullBackingTerminal(parent:object,result:unknown):void {assert(result!==null && typeof result==="object" && fullBackingTerminals.get(result)===parent);}
 
 /** Keeps the exact exclusively born image and ancestry, before formatting or boot.
 * Only closeAfterTerminal releases observations after original recursive terminal
 * proofs; close() refuses premature release. */
-export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number, parent:ReturnType<typeof retainCurrentFullParent>) {
+export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number, parent:ReturnType<typeof retainCurrentFullParent>,administrativeBeforeBirth?:object) {
+  const administrativeOrigin=administrativeBeforeBirth?administrativeBirths.get(administrativeBeforeBirth):undefined;
+  if(administrativeBeforeBirth){assert(administrativeOrigin?.parent===parent);administrativeBirths.delete(administrativeBeforeBirth);}
   const root=fullNativeOsBase+"/"+id+"/root";
   assert(fullNativeGuestRoot(id,root));
   assert(process.platform==="linux" && process.arch==="x64" && process.geteuid?.()===0);
@@ -695,7 +759,20 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
                   const original=pid===process.pid || (pid===selection!.pid && tid===pid) || originalGuest(pid,prefix,user);
                   const unable=!original && kernelUnable(pid,prefix,user,mnt,caps,mounts,exposures);
                   const os=!original && !unable && bootPid1(pid,tid,prefix,user,mnt);
-                  const classification=original?FullBackingOwner.OriginalTrustedSetup:unable?FullBackingOwner.KernelUnable:os?FullBackingOwner.BootPid1:FullBackingOwner.Unknown;
+                  let administrator=false;
+                  if(!original && !unable && !os && administrativeOrigin){
+                    const disposition=readOriginalAdministrativeTaskReferences(taskAnchor,administrativeOrigin.sourceSha,administrativeOrigin.originSha256,target(),scanBudget);
+                    administrator=disposition!==undefined;
+                    if(administrator){
+                      if(disposition!.material || [...exposures].some(value=>![FullBackingExposure.PrivilegeCandidate,FullBackingExposure.ProcDescriptor,FullBackingExposure.NamespaceDescriptor,FullBackingExposure.SocketDescriptor].includes(value)))refusals.add(FullBackingRefusal.AdministrativeReference);
+                      if(disposition!.unresolved.length>0)refusals.add(FullBackingRefusal.AdministrativeControlUncertain);
+                      const anchored=taskAnchor;memberships.push(()=>{
+                        assert(readOriginalPublicAdministrativeActor(anchored,administrativeOrigin.sourceSha));
+                        const origin=readOriginalAdministrativeBirth(administrativeOrigin.sourceSha);assert(origin?.originSha256===administrativeOrigin.originSha256);
+                      });
+                    }
+                  }
+                  const classification=administrator?FullBackingOwner.EstablishedTrustedAdministrator:original?FullBackingOwner.OriginalTrustedSetup:unable?FullBackingOwner.KernelUnable:os?FullBackingOwner.BootPid1:FullBackingOwner.Unknown;
                   taskAnchor.revalidate();
                   assert.equal(readlinkSync(prefix+"/ns/mnt"),mnt);assert.equal(readlinkSync(prefix+"/ns/user"),user);
                   const afterStatus=text(prefix+"/status",16384,scanBudget);

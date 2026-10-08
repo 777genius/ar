@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-const BASE='/Volumes/Transcend/Codex-artifacts/dependency-retention-execution/native-bootstrap-first-failure-diagnosis-r2-80';
+const BASE='/Volumes/Transcend/Codex-artifacts/dependency-retention-execution/full-established-administrator-installed-publication-100';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node';
 const freeze:unknown=JSON.parse(fs.readFileSync(`${BASE}/FREEZE.json`,'utf8'));
 function fact(ok:unknown,why:string):asserts ok {if(!ok)throw new Error(`PUBLIC sender HOLD: ${why}`);}
@@ -22,7 +22,18 @@ if(process.argv.length===3&&process.argv[2]==='--status'){
 }
 const rootReview=process.argv[2];fact(process.argv.length===3&&rootReview&&/^[a-f0-9]{64}$/.test(rootReview),'exact independently accepted ROOT boundary review digest');
 const source=sealed('bootstrap-public-stage-9ca.mts').toString('utf8');
-const roster:unknown=JSON.parse(sealed('input-roster.json').toString('utf8'));fact(Array.isArray(roster)&&roster.length===15,'fixed15 roster');
+const administrativeHeader=sealed('administrative-transport.json');
+const administrativeDigest=createHash('sha256').update(administrativeHeader).digest('hex');
+const roster:unknown=JSON.parse(sealed('input-roster.json').toString('utf8'));fact(Array.isArray(roster)&&roster.length===22,'fixed22 archive/source roster');
+const administrativeNames=['run-public-stage-9ca.mts','administrative-installation.js','administrative-public-maintenance.js','administration-reviewed-source.json','original-bootstrap-boundary-FREEZE.json','original-bootstrap-boundary-report.md','original-bootstrap-boundary-review.json','administration-independent-review-FREEZE.json'];
+const administrativeRows:unknown=JSON.parse(administrativeHeader.toString('utf8'));
+fact(Array.isArray(administrativeRows)&&administrativeRows.length===8,'fixed administrative header roster');
+const expectedNames=['source-9ca302.bundle','profile-artifact.zip','runtime-artifact.zip','runtime-validated-public.tgz','node-v22.23.3-linux-x64.tar.xz','current-git-role-manifest.json','current-generated-role-manifest.json','runtime-role-manifest.json','actual-current-runtime-inventory.json','node-full-member-manifest.json','DATA-FREEZE.json','DATA-review.json',administrativeNames[0],'stage-public-9ca.mts','adapter-independent-review-FREEZE.json',...administrativeNames.slice(1)];
+for(let index=0;index<roster.length;index++)fact(roster[index]?.name===expectedNames[index],'fixed ordered transport member');
+for(let index=0;index<administrativeNames.length;index++){
+ const row=administrativeRows[index],member=roster[index===0?12:14+index];
+ fact(Array.isArray(row)&&row.length===3&&row[0]===administrativeNames[index]&&member.name===row[0]&&member.bytes===row[1]&&member.sha256===row[2],'header/member exact join');
+}
 type Input=Pin&{name:string;fd:number;ino:bigint;dev:bigint;mtime:bigint;ctime:bigint};
 const inputs:Input[]=[];
 let primaryFailure:unknown;
@@ -45,11 +56,13 @@ try {
  }
  // Fixed existing multiplex alias; sudo is the existing authorized installation/bootstrap exception.
  const remote=['/usr/bin/sudo','-n','--','/usr/bin/env','-i','--chdir=/','PATH=/usr/bin:/bin','LANG=C','LC_ALL=C','HOME=/srv/workers','TMPDIR=/srv/workers',
-  NODE,'--input-type=module-typescript','--eval',source,rootReview].map(quote).join(' ');
+  NODE,'--input-type=module-typescript','--eval',source,rootReview,administrativeDigest].map(quote).join(' ');
  const ssh=spawn('/usr/bin/ssh',['-T','-o','BatchMode=yes','workers-fsn1-01',remote],
   {shell:false,stdio:['pipe','inherit','inherit'],timeout:600000});
  const completion=once(ssh,'close');ssh.stdin.on('error',()=>{/* close/error completion records uncertain transport */});
- try {const buffer=Buffer.alloc(1024*1024);for(const input of inputs){check(input);let position=0;while(position<input.bytes){
+ try {const size=Buffer.alloc(4);size.writeUInt32BE(administrativeHeader.length);
+   await new Promise<void>((resolve,reject)=>ssh.stdin.write(Buffer.concat([size,administrativeHeader]),error=>error?reject(error):resolve()));
+   const buffer=Buffer.alloc(1024*1024);for(const input of inputs){check(input);let position=0;while(position<input.bytes){
    const n=fs.readSync(input.fd,buffer,0,Math.min(buffer.length,input.bytes-position),position);fact(n>0,'owned input short read');
    await new Promise<void>((resolve,reject)=>ssh.stdin.write(buffer.subarray(0,n),error=>error?reject(error):resolve()));position+=n;
   }check(input);}ssh.stdin.end();const [code,signal]=await completion;

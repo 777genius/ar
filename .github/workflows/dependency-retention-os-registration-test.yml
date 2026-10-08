@@ -85,6 +85,11 @@ jobs:
             host-integration/managed-launcher/dependency-full-native-parent-TEST.js
             scripts/dependency-retention-os-test/current-full-outer.js
             scripts/dependency-retention-os-test/current-full-backing-collector.js
+            scripts/dependency-retention-os-test/current-administrative-installation.js
+            scripts/dependency-retention-os-test/administrative-test-control.js
+            scripts/dependency-retention-os-test/administrative-installation-native-TEST.js
+            scripts/dependency-retention-os-test/administrative-maintenance-native-TEST.js
+            scripts/dependency-retention-os-test/administrative-forgery-native-TEST.js
             scripts/dependency-retention-os-test/current-full-backing-interval.node-test.js
             src/worker-codex/hosted-full-backing-proc.js
             host-integration/managed-launcher/launch.mjs
@@ -144,6 +149,14 @@ jobs:
             scripts/dependency-retention-os-test/current-full-outer-input.ts
             scripts/dependency-retention-os-test/current-full-outer.ts
             scripts/dependency-retention-os-test/current-full-backing-collector.ts
+            scripts/dependency-retention-os-test/current-administrative-installation.ts
+            scripts/dependency-retention-os-test/administrative-test-control.ts
+            scripts/dependency-retention-os-test/administrative-installation-native-TEST.ts
+            scripts/dependency-retention-os-test/administrative-maintenance-native-TEST.ts
+            scripts/dependency-retention-os-test/administrative-forgery-native-TEST.ts
+            scripts/dependency-retention-os-test/run-public-stage-9ca.mts
+            scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts
+            scripts/dependency-retention-os-test/send-public-stage-9ca.mts
             scripts/dependency-retention-os-test/current-full-backing-interval.node-test.ts
             src/worker-codex/hosted-full-backing-proc.ts
             scripts/dependency-retention-os-test/current-full-r-entry.ts

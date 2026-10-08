@@ -177,6 +177,15 @@ try {
   journal={fd:attempt,path,directory:false,mode:0o400,dev:created.dev,ino:created.ino,mntId:mountId(attempt)};
   verifyBoundary();
   write(attempt,{kind:'OWNED_PUBLIC_ATTEMPT',unit:UNIT,pid:process.pid,startTicks,invocationId:process.env.INVOCATION_ID,head:HEAD,ownerReceipt:pin.trim()});fs.fsyncSync(results);
+  const administration=open(`/proc/self/fd/${control}/administrative-installation.js`,false,0o400);
+  const selected=open(`/proc/self/fd/${control}/administration-reviewed-source.json`,false,0o400);
+  const catalog=JSON.parse(bytes(selected,16384).toString('utf8')) as {operation:{sha256:string}};
+  const operationHash=sha(administration);requireFact(catalog.operation.sha256===operationHash,'reviewed fixed administrative operation');
+  verifyBoundary();
+  const administrative=await import(`${CONTROL}/administrative-installation.js`) as typeof import('./current-administrative-installation.js');
+  verifyBoundary();requireFact(sha(administration)===operationHash,'fresh named administrative operation import');
+  administrative.submitPublicAdministrativeMaintenance(administrative.retainOriginalAdministrativeProducer());
+  verifyBoundary();
   const result=module.stagePublic9ca(prerequisites);
   verifyBoundary();
   requireFact(sha(adapter)===ADAPTER_SHA&&sha(ownership)===pin.trim(),'changed caller inputs after stage');

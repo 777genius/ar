@@ -106,7 +106,7 @@ const sameBacking = (a: Backing, b: Backing): boolean => a.device === b.device &
 const backingOverlap = (a: Backing, b: Backing): boolean => a.device === b.device && overlaps(a.path, b.path);
 export function researchProviderProtectedPaths(authRoot: string): string[] {
   return ["/run/systemd/private", "/run/systemd/journal", "/dev/log", "/run/dbus", "/run/user",
-    "/var/lib/subscription-runtime-host-policy", "/var/lib/subscription-runtime-full-parent-live", "/run/TEST-full-flow-outbox", researchAuthorityRoot, "/run/docker.sock", "/run/containerd/containerd.sock",
+    "/var/lib/subscription-runtime-host-policy", "/var/lib/subscription-runtime-full-parent-live", "/srv/workers/public-intake", "/run/TEST-full-flow-outbox", researchAuthorityRoot, "/run/docker.sock", "/run/containerd/containerd.sock",
     "/run/podman/podman.sock", "/etc/subscription-runtime/secrets", authRoot];
 }
 function mountTable(host: ResearchProviderRootHost): Mount[] {
