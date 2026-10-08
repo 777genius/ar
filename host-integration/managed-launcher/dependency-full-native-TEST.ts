@@ -154,8 +154,8 @@ function acquire(context:RootContext=RootContext.Launcher){
     pins.hold(fullNativeTmpDir,true,0o700);
     pins.hold(fullNativeInputBase,true,0o700);
     pins.hold(root,true,0o700);
-    const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard"]);
-    for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
+    const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard","hostedHostPolicy"]);
+    for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"],["managed-launcher/hosted-host-policy.mjs","hostedHostPolicy"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
     const tools=fullData(r.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure"]);
     for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"],["/usr/bin/lsns","lsns"],["/usr/lib/systemd/systemd","systemdPid1"],[bootstrapNode,"bootstrapNode"]] as const)pins.publicFile(path,requireDigest(tools[key]));
     // HOST execution uses the HOST loader/DSOs. Guest signed package hashes
