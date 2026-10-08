@@ -19,6 +19,11 @@ const explicitExtensions = new Set([
 
 let rewritten = 0;
 walk("dist");
+// One TypeScript authority for runtime and the standalone installed Host.
+writeFileSync("host-integration/managed-launcher/hosted-host-policy.mjs",
+  "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
+  readFileSync("dist/provider-codex/app-server/adapters/hosted-host-policy.js", "utf8")
+    .replace(/^\/\/# sourceMappingURL=.*$/m, ""));
 console.log(`Rewrote extensionless ESM imports in ${rewritten} dist files.`);
 
 function walk(directory) {

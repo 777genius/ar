@@ -8,8 +8,13 @@ import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core"
 import { requiresHostedProcessAdmission } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedInstallationActivationStore, isHostedOrdinaryRuntime, readHostedInstallationActivation } from "./hosted-installation-activation";
 import { hostedForegroundExitCode } from "./hosted-foreground-result";
+import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 
 export function isHostedGoalLaunch(input: CodexGoalLaunchInput): boolean {
+  return isHostedContainment(input.config.sourceEnv ?? process.env) || isHostedActivatedGoalLaunch(input);
+}
+
+export function isHostedActivatedGoalLaunch(input: CodexGoalLaunchInput): boolean {
   return requiresHostedProcessAdmission(input.config.sourceEnv ?? process.env);
 }
 
@@ -20,7 +25,7 @@ export async function routeHostedGoalLaunch(input: CodexGoalLaunchInput, lifecyc
     await admitHostedControllerLaunch(input);
     return undefined;
   }
-  if (isHostedGoalLaunch(input)) {
+  if (isHostedActivatedGoalLaunch(input)) {
     if (readHostedInstallationActivation().activation.phase === HostedActivationPhase.Ordinary) {
       const [command, ...args] = buildCodexGoalForegroundArgv(input, lifecycle);
       if (!command) throw new Error("hosted_custody_runtime_command_required");
@@ -41,7 +46,7 @@ export async function routeHostedGoalLaunch(input: CodexGoalLaunchInput, lifecyc
 }
 
 export function stopHostedGoalLaunch(input: CodexGoalLaunchInput): void {
-  if (!isHostedGoalLaunch(input)) throw new Error("hosted_custody_stop_route_required");
+  if (!isHostedActivatedGoalLaunch(input)) throw new Error("hosted_custody_stop_route_required");
   const identity = { jobId: input.config.jobId ?? input.config.taskId,
     jobRootDir: input.config.jobRootDir, workspacePath: input.config.workspacePath };
   if (new HostedInstallationActivationStore().stopOrdinaryRuntime(identity)) return;

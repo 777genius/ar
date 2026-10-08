@@ -1,4 +1,5 @@
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
@@ -231,6 +232,7 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
+  config = withHostedGoalIdentity(config);
   await admitHostedDependencyConsumer(config);
   const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath);
   assertHostedMimoGoalConfinement(config);
@@ -496,7 +498,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly controlInbox?: WorkerControlService;
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
-  const { config } = input;
+  const config = withHostedGoalIdentity(input.config);
   const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
@@ -652,6 +654,19 @@ export function buildCodexGoalExecutorOptions(input: {
 
 export function codexGoalProgressPath(config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "progressPath">): string {
   return config.progressPath ?? join(config.jobRootDir, `${config.taskId}.progress.json`);
+}
+
+/** Transport identity from validated goal configuration. It selects no policy
+ * or writable mount; the installed launcher independently validates its layout. */
+function withHostedGoalIdentity(config: CodexGoalRunConfig): CodexGoalRunConfig {
+  const env = config.sourceEnv ?? process.env;
+  if (!isHostedContainment(env)) return config;
+  const jobId = config.jobId ?? config.taskId;
+  if (env.SUBSCRIPTION_RUNTIME_JOB_ID !== undefined && env.SUBSCRIPTION_RUNTIME_JOB_ID !== jobId) {
+    throw new Error("hosted_managed_job_identity_mismatch");
+  }
+  return { ...config, sourceEnv: { ...env, SUBSCRIPTION_RUNTIME_JOB_ID: jobId,
+    SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
 }
 
 export function codexGoalOutputPath(
