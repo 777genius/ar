@@ -135,7 +135,7 @@ describe("post-drain TEST credential finalization", () => {
       if (failure === "completion") f.failNextCompletion();
       const cancelling = coordinator.cancelRetainedSessions(); void cancelling.catch(() => undefined); await ready.pending;
       expect(f.completions).toBe(0); expect(f.driver.retainedManagedRunIds()).toEqual(["TEST-run"]);
-      await expect(f.driver.resumeManagedRun({...f.input,runId:"TEST-run",requestId:"TEST-request",answer:"do not execute",resumeHandle:{providerId:"codex",runId:"TEST-run",workspacePath:f.root}})).rejects.toThrow("codex_managed_run_finalization_pending");
+      await expect(f.driver.resumeManagedRun({...f.input,task:{},runId:"TEST-run",requestId:"TEST-request",answer:"do not execute",resumeHandle:{providerId:"codex",runId:"TEST-run",workspacePath:f.root}})).rejects.toThrow("codex_managed_run_finalization_pending");
       proceed.release(); await expect(cancelling).rejects.toThrow(); expect(f.completions).toBe(0);
       expect(f.driver.retainedManagedRunIds()).toEqual(["TEST-run"]);
       if (failure === "export") await rm(exportPath,{recursive:true});

@@ -745,7 +745,7 @@ class RuntimeKernel {
       }
     })();
     this.finalizationPending = pending;
-    try { await pending; } finally { if (this.finalizationPending === pending) this.finalizationPending = undefined; }
+    try { await pending; } finally { if (this.finalizationPending === pending) delete this.finalizationPending; }
   }
 
   private async settleTaskSession(use:SessionExecutionUse):Promise<ProviderTaskResult> {
