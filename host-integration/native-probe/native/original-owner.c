@@ -1,5 +1,8 @@
 #define _GNU_SOURCE
 #include "original-owner.h"
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+#include "root-producer-native.h"
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -47,20 +50,32 @@ struct np_original_owner {
   char boot_id[37];
   struct np_owner_data data;
   bool launched, reaped;
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+  struct np_origin_child *origin;
+#endif
 };
 /* One native lifetime per original issuer. Even disposal cannot reserve again. */
 static struct np_original_owner *registry;
 static bool issued;
 static pid_t original_issuer;
 static struct { pid_t pid, parent; uint64_t generation, sequence; bool sealed, lost; } helper;
+static int owner_sample(struct np_original_owner *o, uint64_t *out) {
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+  if (o->origin) return np_origin_sample_v1(o->origin, out);
+#endif
+  return np_clock_sample_v1(&o->clock, out);
+}
 static int fail(struct np_original_owner *o, enum np_owner_loss loss, int error) {
   if (o->data.state != NP_OWNER_CLOSED) {
     o->data.state = NP_OWNER_CLOSED; o->data.loss = loss;
     o->data.uncertain = loss != NP_LOSS_STOP;
     uint64_t now;
-    if (!np_clock_sample_v1(&o->clock, &now) && now <= INT64_MAX - NP_ATTEMPT)
+    if (!owner_sample(o, &now) && now <= INT64_MAX - NP_ATTEMPT)
       o->data.attempt_end = now + NP_ATTEMPT < o->clock.cleanup_end ? now + NP_ATTEMPT : o->clock.cleanup_end;
   }
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+  if (o->origin) np_origin_child_close_v1(o->origin);
+#endif
   errno = error; return -1;
 }
 static int member(struct np_original_owner *o) {
@@ -87,7 +102,7 @@ static int retained_ns(int a, int b) {
 static int original(struct np_original_owner *o, uint64_t cutoff) {
   char boot[37]; uint64_t now;
   struct pollfd issuer = { .fd = o->issuer_pidfd, .events = POLLIN };
-  if (poll(&issuer, 1, 0) != 0 || boot_read(o->boot, boot) || strcmp(boot, o->boot_id) || np_clock_sample_v1(&o->clock, &now)) return fail(o, NP_LOSS_ORIGINAL, ESTALE);
+  if (poll(&issuer, 1, 0) != 0 || boot_read(o->boot, boot) || strcmp(boot, o->boot_id) || owner_sample(o, &now)) return fail(o, NP_LOSS_ORIGINAL, ESTALE);
   if (now >= cutoff) return fail(o, NP_LOSS_CUTOFF, ETIMEDOUT);
   return 0;
 }
@@ -187,8 +202,14 @@ int np_original_owner_launch_v1(struct np_original_owner *o) {
   if (o->launched || o->data.state != NP_OWNER_RESERVED) return fail(o, NP_LOSS_PROTOCOL, EALREADY);
   if (original(o, o->data.cold_end)) return -1;
   o->launched = true; /* consume before fork; even failure cannot retry */
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+  if (o->origin && np_origin_child_begin_v1(o->origin, NP_ORIGIN_HELPER)) return fail(o, NP_LOSS_ORIGINAL, ESTALE);
+#endif
   pid_t pid = fork();
   if (pid == 0) fixed_child(&o->channel);
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+  if (o->origin) np_origin_child_end_v1(o->origin);
+#endif
   if (pid < 0) return fail(o, NP_LOSS_SETUP, errno);
   o->data.helper = pid; o->data.state = NP_OWNER_HELD;
   if (np_channel_parent_bind_v1(&o->channel, pid, NP_UID, NP_GID) || np_birth_associate_v1(&o->clock, &o->channel.birth) || original(o, o->data.cold_end) || send_launch(o)) {
@@ -234,7 +255,7 @@ int np_original_owner_observe_v1(struct np_original_owner *o, struct np_owner_da
   if (member(o) || !out) { errno = EINVAL; return -1; }
   if (o->data.state == NP_OWNER_CLOSED) { snapshot(o, out); return 0; }
   uint64_t now;
-  if (np_clock_sample_v1(&o->clock, &now) || now > INT64_MAX - NP_OBSERVATION) { fail(o, NP_LOSS_ORIGINAL, ESTALE); snapshot(o, out); return -1; }
+  if (owner_sample(o, &now) || now > INT64_MAX - NP_OBSERVATION) { fail(o, NP_LOSS_ORIGINAL, ESTALE); snapshot(o, out); return -1; }
   uint64_t cutoff = o->data.state == NP_OWNER_HELD ? o->data.cold_end : o->clock.preparation_end;
   o->data.observation_end = now + NP_OBSERVATION < cutoff ? now + NP_OBSERVATION : cutoff;
   for (unsigned count = 0; count < NP_OWNER_LIMIT; count++) {
@@ -341,3 +362,73 @@ void np_original_helper_loss_v1(void) {
   }
   helper.lost = true; (void)shutdown(NP_ENDPOINT, SHUT_RDWR);
 }
+
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+/* Only the native fixed fork branch can supply this opaque original child. */
+int np_original_owner_poll_fd_v2(struct np_original_owner *o) { return member(o) ? -1 : o->channel.owner; }
+struct np_startup_associated { uint64_t magic, generation, anchor, cold_end, preparation_end, cleanup_end; int64_t issuer; };
+#define NP_ASSOCIATED_MAGIC UINT64_C(0x4e504f5249473032)
+int np_original_owner_from_origin_fork_v2(struct np_origin_child *origin, struct np_original_owner **out) {
+  if (!out || issued || getuid() || geteuid() || getgid() || getegid()) return -1;
+  *out = NULL;
+  struct np_clock clock; uint64_t cold;
+  if (np_origin_child_clock_v1(origin, &clock, &cold)) return -1;
+  issued = true; original_issuer = getpid();
+  struct np_original_owner *o = calloc(1, sizeof *o); if (!o) return -1;
+  o->clock = clock; o->origin = origin; o->issuer = getpid(); o->membership = o; registry = o; *out = o;
+  o->issuer_pidfd = o->boot = -1; o->channel.owner = o->channel.helper = -1;
+  o->channel.birth.pidfd = o->channel.birth.time = o->channel.birth.children = -1;
+  for (unsigned i = 0; i < 4; i++) o->closure[i] = -1;
+  o->data.state = NP_OWNER_RESERVED; o->data.anchor = clock.anchor; o->data.preparation_end = clock.preparation_end; o->data.cleanup_end = clock.cleanup_end; o->data.cold_end = cold;
+  o->issuer_pidfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
+  o->boot = open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  uint64_t generation = 0;
+  if (o->issuer_pidfd < 0 || o->boot < 0 || boot_read(o->boot, o->boot_id) || getrandom(&generation, sizeof generation, 0) != (ssize_t)sizeof generation || !generation || np_channel_create_v1(&o->channel, generation) || np_origin_child_closure_v1(origin, o->closure)) return fail(o, NP_LOSS_SETUP, ESTALE);
+  o->data.generation = generation;
+  struct np_startup_associated memo = { .magic = NP_ASSOCIATED_MAGIC, .generation = generation, .anchor = clock.anchor, .cold_end = cold, .preparation_end = clock.preparation_end, .cleanup_end = clock.cleanup_end, .issuer = getpid() };
+  o->closure[3] = (int)syscall(SYS_memfd_create, "np-associated-startup", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+  if (o->closure[3] < 0 || write(o->closure[3], &memo, sizeof memo) != (ssize_t)sizeof memo || fcntl(o->closure[3], F_ADD_SEALS, NP_STARTUP_SEALS)) return fail(o, NP_LOSS_SETUP, ESTALE);
+  return original(o, cold);
+}
+static int associated_sample(uint64_t cold, uint64_t *high_water) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) || ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L || (uint64_t)ts.tv_sec > INT64_MAX / UINT64_C(1000000000)) return -1;
+  uint64_t now = (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+  if (now > INT64_MAX || now < *high_water || now >= cold) return -1;
+  *high_water = now; return 0;
+}
+static int startup_receive_associated_v2(struct np_frame *initial, uint64_t *cold, uint64_t *last) {
+  struct np_startup_associated memo; struct stat s; struct ucred peer; socklen_t size = sizeof peer; int type, domain;
+  socklen_t length = sizeof type;
+  if (getsockopt(NP_ENDPOINT, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_SEQPACKET) return -1;
+  length = sizeof domain;
+  if (getsockopt(NP_ENDPOINT, SOL_SOCKET, SO_DOMAIN, &domain, &length) || domain != AF_UNIX || getsockopt(NP_ENDPOINT, SOL_SOCKET, SO_PEERCRED, &peer, &size) || size != sizeof peer || peer.pid != getppid() || peer.uid || peer.gid) return -1;
+  if (fstat(7, &s) || !S_ISREG(s.st_mode) || s.st_uid || s.st_gid || s.st_nlink || s.st_size != (off_t)sizeof memo || fcntl(7, F_GET_SEALS) != NP_STARTUP_SEALS || pread(7, &memo, sizeof memo, 0) != (ssize_t)sizeof memo || memo.magic != NP_ASSOCIATED_MAGIC || !memo.generation || memo.issuer != peer.pid || memo.anchor > INT64_MAX - 180 * UINT64_C(1000000000) || memo.cold_end <= memo.anchor || memo.cold_end > memo.anchor + NP_COLD || memo.cold_end > memo.preparation_end || memo.preparation_end < memo.anchor || memo.preparation_end > memo.anchor + 120 * UINT64_C(1000000000) || memo.preparation_end > memo.cleanup_end || memo.cleanup_end > memo.anchor + 180 * UINT64_C(1000000000)) return -1;
+  uint64_t high_water = memo.anchor;
+  for (;;) {
+    struct timespec ts; if (clock_gettime(CLOCK_MONOTONIC, &ts) || ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L || (uint64_t)ts.tv_sec > INT64_MAX / UINT64_C(1000000000)) return -1;
+    uint64_t now = (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+    if (now < high_water || now >= memo.cold_end || getppid() != peer.pid) return -1;
+    high_water = now;
+    ssize_t n = recv(NP_ENDPOINT, initial, sizeof *initial, MSG_DONTWAIT | MSG_TRUNC);
+    if (n >= 0) { if (n != (ssize_t)sizeof *initial || initial->generation != memo.generation) return -1; break; }
+    if (errno != EAGAIN && errno != EINTR && errno != EWOULDBLOCK) return -1;
+    struct pollfd p = { .fd = NP_ENDPOINT, .events = POLLIN | POLLHUP };
+    if (poll(&p, 1, (int)((memo.cold_end-now+999999)/1000000)) < 0 && errno != EINTR) return -1;
+    if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) return -1;
+  }
+  if (associated_sample(memo.cold_end, &high_water) || getppid() != peer.pid) return -1;
+  *cold = memo.cold_end; *last = high_water; return 0;
+}
+int np_original_helper_start_associated_v2(uint64_t *generation) {
+  if (!generation || helper.sealed || helper.lost) return -1;
+  helper.lost = true;
+  struct np_frame initial; uint64_t cold, high_water;
+  if (startup_receive_associated_v2(&initial, &cold, &high_water) || initial.magic != NP_FRAME_MAGIC || initial.version != 1 || initial.kind != NP_HELLO || initial.sequence || initial.slot || initial.result) return -1;
+  helper.pid = getpid(); helper.parent = getppid(); helper.generation = initial.generation;
+  if (close(5) || close(6) || close(7) || associated_sample(cold, &high_water) || getppid() != helper.parent || np_helper_seal_v1() || associated_sample(cold, &high_water) || getppid() != helper.parent) return -1;
+  helper.sealed = true; helper.lost = false;
+  if (np_original_helper_message_v1(NP_HELLO)) return -1;
+  *generation = helper.generation; return 0;
+}
+#endif

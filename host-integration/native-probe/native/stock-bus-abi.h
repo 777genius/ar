@@ -19,6 +19,8 @@ int sd_bus_set_allow_interactive_authorization(sd_bus *, int);
 int sd_bus_start(sd_bus *);
 int sd_bus_is_ready(sd_bus *);
 int sd_bus_get_fd(sd_bus *);
+int sd_bus_get_unique_name(sd_bus *, const char **);
+const char *sd_bus_message_get_sender(sd_bus_message *);
 int sd_bus_process(sd_bus *, sd_bus_message **);
 int sd_bus_wait(sd_bus *, uint64_t);
 int sd_bus_flush(sd_bus *);

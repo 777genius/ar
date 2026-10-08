@@ -86,3 +86,28 @@ precommit seal/generation/slot, copied receiver/foreign environment disposal,
 actual owner death and cutoff equality. These are unproved until the admitted
 native fixture supplies independent original-object observations; source reads
 and a passing compile cannot be counted as those scenarios.
+
+## N1b A5 producer contracts (authored, execution pending)
+
+- Original binary snapshot -> unchanged validator -> full canonical SHA/LF ack:
+  red if effective ends extend, original identity bytes change, declarations or
+  capacities disappear from the full digest, or frame correlation changes.
+  This exercises DATA translation, not fabricated native membership.
+- Binary substitutions/truncation/high-bit identity/zero generation: red before
+  allocation acknowledgement if invalid original bytes are normalized or ignored.
+- Real private C entry with public argv/JSON and no administrative descriptors:
+  red if it creates an origin/effect or changes the independent disposable cwd.
+- Real shared robust mutex and supported libc fork: red if the original live
+  holder wait renews, actual child wait/EOF disappear, or owner death can recover
+  admission after EOWNERDEAD instead of becoming ENOTRECOVERABLE.
+- Actual protected filesystem measurement: red if changed contents or symlinks
+  satisfy the reviewed leaf hash/inode/mode contract. Explicit UID0 fixture skip
+  does not claim an installation or native authority.
+- Separate genuine installed NEWTEST operation: red unless the actual producer
+  returns raw L0 and the retained original observer journal agrees after actual
+  principal wait and both EOF. Default SOURCE CI skips this physical test.
+
+Existing foundation 28, owner 5, raw ingress/digest/DATA IPC cases remain.
+No mocked privileged positive or source-text test is added. Remote strict C17
+warnings-as-errors, native and root TypeScript input checks, transport/installer
+contracts and the independent physical negative matrix are separate gates.
