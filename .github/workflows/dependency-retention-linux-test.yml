@@ -9,6 +9,15 @@ on:
       - 'src/worker-codex/hosted-installation-activation.ts'
       - 'scripts/dependency-retention-test/**'
       - '.github/workflows/dependency-retention-linux-test.yml'
+      - 'scripts/dependency-retention-os-test/**'
+      - '.github/workflows/dependency-retention-os-test.yml'
+      - 'src/worker-codex/hosted-readonly-*.ts'
+      - 'src/worker-codex/hosted-test-egress-*.ts'
+      - 'src/worker-codex/trusted-custody-systemd-launch.ts'
+      - 'src/worker-codex/codex-goal-*.ts'
+      - 'src/provider-codex/app-server/adapters/hosted-*.ts'
+      - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
+      - 'src/core/host-infrastructure/**'
 
 permissions:
   contents: read

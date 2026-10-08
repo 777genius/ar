@@ -12,11 +12,13 @@ on:
           - bus-startup-diagnostic
   pull_request:
     paths:
-      - 'scripts/dependency-retention-os-test/**'
-      - '.github/workflows/dependency-retention-os-test.yml'
       - 'src/**/dependency-environment/**'
       - 'src/**/hosted-dependency-*.ts'
       - 'src/worker-codex/hosted-installation-activation.ts'
+      - 'scripts/dependency-retention-test/**'
+      - '.github/workflows/dependency-retention-linux-test.yml'
+      - 'scripts/dependency-retention-os-test/**'
+      - '.github/workflows/dependency-retention-os-test.yml'
       - 'src/worker-codex/hosted-readonly-*.ts'
       - 'src/worker-codex/hosted-test-egress-*.ts'
       - 'src/worker-codex/trusted-custody-systemd-launch.ts'
