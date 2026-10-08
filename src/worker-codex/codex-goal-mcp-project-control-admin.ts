@@ -2,7 +2,7 @@ import { durableConfirmFilePublication } from "./project-control-operation-file-
 import { enableProjectControllerCheckpoint } from "./codex-goal-mcp-project-control-checkpoint-admin";
 import { createHash } from "node:crypto";
 import { assertProjectControlCanonicalScopeRepair } from "./codex-goal-project-scope-recovery";
-import { applyConfirmedControllerScopeRecovery, type ScopeRecoveryFaultPoint } from "./codex-goal-project-custody-recovery";
+import { applyConfirmedControllerScopeRecovery, configuredProjectControlCustodyDirectories, type ScopeRecoveryFaultPoint } from "./codex-goal-project-custody-recovery";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -607,6 +607,10 @@ export async function projectControlUpdateControllerScopeView(
   let recoveryStore: ProjectControlRecoveryStore | undefined;
   let operationId: string | undefined;
   try {
+    // Retain configured state before the locked reload's canonical checks and
+    // the store factory can yield; later enumeration must not adopt new inodes.
+    const configuredIdentities = await deps.recoveryDirectories?.identities(
+      configuredProjectControlCustodyDirectories(controller.scope));
     const current = await deps.loadProjectControlController(args);
     const currentManifestSha256 = createHash("sha256")
       .update(JSON.stringify(current.controller))
@@ -638,6 +642,7 @@ export async function projectControlUpdateControllerScopeView(
     const result = await applyConfirmedControllerScopeRecovery({
       confirmed: true, controller: current.controller, proposed: proposedScope,
       custody: deps.evidenceCustody, store: recoveryStore, directories: deps.recoveryDirectories,
+      configuredIdentities: configuredIdentities ?? [],
       ...(deps.recoveryFault ? { fault: deps.recoveryFault } : {}),
       confirmManifestDurability: () => durableConfirmFilePublication(codexGoalJobManifestPath({
         registryRootDir: current.registryRootDir, jobId: current.controller.jobId,

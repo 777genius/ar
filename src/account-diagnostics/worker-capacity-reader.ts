@@ -62,9 +62,10 @@ export function workerCapacityToDiagnosticSignal(
     case "disabled":
     case "degraded":
       return {
-        availability: "unhealthy",
+        availability: capacity.reason === "provider_session_invalid" ? "reconnect_required" : "unhealthy",
         source: "cached",
         reason: capacity.reason ?? capacity.availability,
+        ...(capacity.lastLimitSignalAt ? { checkedAt: capacity.lastLimitSignalAt } : {}),
         ...(capacity.details ? { details: capacity.details } : {}),
       };
     case "busy":
