@@ -6,7 +6,6 @@ import {
   InMemoryAttemptJournal,
   InMemoryWorkerAccountCapacityStore,
   InMemoryWorkerAccountLeaseStore,
-  JobStorageIntentKind,
   type SafeExecutionTaskRecord,
   type WorkerAccountLeaseStore,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -81,10 +80,8 @@ describe("project account reservation", () => {
     const foreignStore = new LocalFileWorkerAccountLeaseStore({ rootDir: join(root, "foreign-leases") });
     const now = new Date("2026-07-13T00:00:00.000Z");
     const capacityStore = new InMemoryWorkerAccountCapacityStore();
-    const storage = { generationId: "TEST-original-generation",
-      intent: { kind: JobStorageIntentKind.Continuation, sessionId: "TEST-session" } };
-    Object.assign(scoped.launch.config, { storage,
-      sessionHomeProfile: { kind: CodexSessionHomeProfileKind.Continuation, sessionId: "TEST-session" } });
+    const sessionHomeProfile = { kind: CodexSessionHomeProfileKind.Continuation, sessionId: "TEST-session" };
+    Object.assign(scoped.launch.config, { sessionHomeProfile });
     const originalPath = codexProjectAccountReservationPath(scoped.manifest);
     const foreignPath = codexProjectAccountReservationPath(foreign.manifest);
     await reserveCodexProjectAccount({ ...foreign,
@@ -98,7 +95,7 @@ describe("project account reservation", () => {
       deps: { capacityStore, leaseStore: store, leaseMode: "exclusive", now } });
     const deps = { capacityStore, leaseStore: store as WorkerAccountLeaseStore, leaseMode: "exclusive" as const, now };
     const drift = () => {
-      storage.generationId = "TEST-mutated-generation";
+      sessionHomeProfile.sessionId = "TEST-mutated-session";
       Object.assign(scoped.manifest, { jobId: foreign.manifest.jobId, jobRootDir: foreign.manifest.jobRootDir });
       Object.assign(scoped.launch.config, { authRootDir: foreign.launch.config.authRootDir });
       deps.leaseStore = foreignStore;
