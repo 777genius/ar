@@ -183,6 +183,8 @@ export function sealHostedLegacyReferenceStart(fence:HostedActivationFence,bindi
 function actualEntry(fence:HostedActivationFence,config:CodexGoalRunConfig) {
   const origin=readHostedOrdinaryProcessOrigin(fence),binding=readHostedDependencyBinding(String(origin.start.jobId));
   if (!binding || binding.version!==3) return undefined;
+  // Dependency-only reference purpose cannot discard an explicit NEW policy.
+  if (config.storage !== undefined || config.sessionHomeProfile !== undefined) fail();
   if (origin.profileId!==CodexProviderEgressProfileId.TestNpmQualification || origin.start.jobId!==(config.jobId??config.taskId) ||
       origin.start.jobRootDir!==config.jobRootDir || origin.start.workspacePath!==config.workspacePath || config.childLifetime ||
       config.checkpointPublisherSocketPath || config.allowDangerFullAccess || config.providerSandboxMode==="danger-full-access" ||

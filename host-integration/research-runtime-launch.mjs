@@ -26,7 +26,8 @@ try {
   process.exitCode = result.status === 'completed' ? 0 : 1;
 } catch (error) {
   // Finite observations only. Never expose arbitrary errors, paths or stderr.
-  const { legacyCode, cause, diagnostic, materialRole } = normalizeResearchMaterialFailure(error);
+  const { legacyCode, cause, diagnostic, materialRole, scratchCapacity } = normalizeResearchMaterialFailure(error);
   process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${legacyCode}:${cause}:${diagnostic}:${materialRole}\n`);
+  if (scratchCapacity) process.stderr.write(`hosted_research_runtime_scratch_capacity:${JSON.stringify(scratchCapacity)}\n`);
   process.exitCode = 70;
 }
