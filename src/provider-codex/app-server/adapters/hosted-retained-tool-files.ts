@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { dependencyToolGuestConfig, dependencyToolGuestConfigPath, dependencyToolQualificationRecordName,
   parseDependencyToolQualification, type DependencyToolQualification } from "../../../core/dependency-environment/dependency-tool-profile";
 import { fdCollectorProfilePath } from "../../../core/host-infrastructure/fd-collector-profile";
+import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { hostedFdTable } from "./hosted-fd-table";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
@@ -111,12 +112,12 @@ export function openHostedRetainedToolFiles(context: Readonly<{ unit: string; pa
   let scope: HostedRetainedToolFiles | undefined;
   try {
     for (const name of names) { const leaf = openLeaf(join(root, name), 4 * 1024 * 1024); snapshots.push(leaf); closeSync(leaf.fd); }
-    const installation = json(snapshots[0]!.bytes), inventory = json(snapshots[1]!.bytes), binding = json(snapshots[3]!.bytes),
+    const installation = json(snapshots[0]!.bytes), inventory = decodeHostedInventoryBytes(snapshots[1]!.bytes) as Record<string, unknown>, binding = json(snapshots[3]!.bytes),
       parent = json(snapshots[4]!.bytes), provider = json(snapshots[5]!.bytes), relation = json(snapshots[6]!.bytes);
     const pin = inventory.collectorProfile as { path?: unknown; sha256?: unknown } | undefined;
     if (!snapshots[3]!.bytes.equals(context.bindingBytes) || binding.version !== 2 || binding.jobId !== context.jobId ||
         installation.installationId !== binding.installationId || installation.runtimeSha !== binding.runtimeSha ||
-        installation.inventorySha256 !== hash(snapshots[1]!.bytes) || inventory.schemaVersion !== 4 ||
+        installation.inventorySha256 !== hash(snapshots[1]!.bytes) || ![4, 5].includes(inventory.schemaVersion as number) ||
         !pin || pin.path !== fdCollectorProfilePath || pin.sha256 !== hash(snapshots[2]!.bytes) ||
         parent.unit !== `subscription-runtime-ordinary-${context.parentStartId}.service` || parent.jobId !== context.jobId ||
         provider.unit !== context.unit || provider.jobId !== context.jobId || provider.installationId !== parent.installationId ||

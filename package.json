@@ -156,7 +156,7 @@
   ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs && npm run build:host-inventory-codec",
     "build:agent-runtime-task-artifact": "node scripts/build-agent-runtime-task-artifact.mjs",
     "build:packages": "npm run --prefix packages/agent-account-observability build",
     "prepack": "npm run build",
@@ -201,7 +201,8 @@
     "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
     "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
     "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer && npm run check:agent-runtime-task-artifact",
-    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs && node scripts/check-managed-launch-boundary-self-test.mjs && node scripts/check-managed-launch-boundary.mjs"
+    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs && node scripts/check-managed-launch-boundary-self-test.mjs && node scripts/check-managed-launch-boundary.mjs",
+    "build:host-inventory-codec": "tsc -p tsconfig.host-inventory-codec.json && node scripts/package-host-inventory-codec.mts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.237",

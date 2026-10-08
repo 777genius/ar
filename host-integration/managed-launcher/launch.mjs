@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { constants, lstatSync, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { access, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readlinkSync } from 'node:fs';
@@ -28,16 +29,53 @@ function governedFdProfile(request) {
     const path = root + '/' + name, fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const before = fstatSync(fd);
-      if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o077) || before.size > 65536) denied();
+      if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o077) ||
+          before.size > (name === 'readonly-inventory.json' ? 4 * 1024 * 1024 : 65536)) denied();
       const bytes = readFileSync(fd), after = fstatSync(fd), current = lstatSync(path);
       if (before.dev !== current.dev || before.ino !== current.ino || before.ctimeMs !== after.ctimeMs ||
-          before.mtimeMs !== after.mtimeMs || before.size !== bytes.length) denied();
+          before.mtimeMs !== after.mtimeMs || before.size !== bytes.length ||
+          after.ctimeMs !== current.ctimeMs || after.mtimeMs !== current.mtimeMs) denied();
       return bytes;
     } finally { closeSync(fd); }
   };
-  const bytes = read('readonly-inventory.json'), inventory = JSON.parse(bytes.toString('utf8'));
+  const bytes = read('readonly-inventory.json');
+  let inventory = JSON.parse(bytes.toString('utf8'));
+  if (inventory.schemaVersion === 5) {
+    if (JSON.parse(read('host-installation.json').toString('utf8')).inventorySha256 !==
+        createHash('sha256').update(bytes).digest('hex')) denied();
+    // The installer publishes this measured, zero-import helper before its only
+    // new consumer. Never select a module from inventory or a current pointer.
+    const codecPath = fileURLToPath(new URL('./host-inventory-codec.cjs', import.meta.url));
+    for (let path = new URL('.', import.meta.url);; path = new URL('../', path)) {
+      const directory = lstatSync(fileURLToPath(path));
+      if (!directory.isDirectory() || directory.uid !== 0 || (directory.mode & 0o022)) denied();
+      if (fileURLToPath(path) === '/') break;
+    }
+    const codec = lstatSync(codecPath);
+    if (!codec.isFile() || codec.uid !== 0 || codec.nlink !== 1 || (codec.mode & 0o022)) denied();
+    const profileBytes = read('fd-collector-profile.v1.json');
+    if (inventory.collectorProfile?.path !== root + '/fd-collector-profile.v1.json' ||
+        createHash('sha256').update(profileBytes).digest('hex') !== inventory.collectorProfile?.sha256) denied();
+    const profile = JSON.parse(profileBytes.toString('utf8'));
+    for (const path of [fileURLToPath(import.meta.url), codecPath]) {
+      const pins = profile.bootstraps?.filter(pin => pin.path === path);
+      if (!Array.isArray(pins) || pins.length !== 1) denied();
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const before = fstatSync(fd);
+        if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o022) ||
+            before.size < 1 || before.size > 4 * 1024 * 1024) denied();
+        const body = readFileSync(fd), after = fstatSync(fd), current = lstatSync(path);
+        if (body.length !== before.size || before.dev !== current.dev || before.ino !== current.ino ||
+            before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs ||
+            after.ctimeMs !== current.ctimeMs || after.mtimeMs !== current.mtimeMs ||
+            createHash('sha256').update(body).digest('hex') !== pins[0].sha256) denied();
+      } finally { closeSync(fd); }
+    }
+    inventory = createRequire(import.meta.url)('./host-inventory-codec.cjs').decodeHostedInventoryBytes(bytes);
+  } else if (bytes.length > 65536) denied();
   if ([1, 2, 3].includes(inventory.schemaVersion)) return false;
-  if (inventory.schemaVersion !== 4 || inventory.collectorProfile?.path !== root + '/fd-collector-profile.v1.json' ||
+  if (![4, 5].includes(inventory.schemaVersion) || inventory.collectorProfile?.path !== root + '/fd-collector-profile.v1.json' ||
       !/^[a-f0-9]{64}$/.test(inventory.collectorProfile?.sha256 ?? '') ||
       JSON.parse(read('host-installation.json').toString('utf8')).inventorySha256 !== createHash('sha256').update(bytes).digest('hex')) denied();
   return true;

@@ -38,7 +38,8 @@ import {
   type CodexGoalRunConfig,
 } from "../codex-goal-runner";
 
-export const CODEX_GOAL_DEFAULT_TIMEOUT_MS = 72 * 60 * 60 * 1000;
+import { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
+export { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -51,6 +52,12 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     ? await readGoalConfigFile(resolvePath(cwd, args.configPath))
     : {};
   const merged = mergeDefined(fileConfig, args);
+  return goalLaunchInputFromRecord(merged, cwd);
+}
+
+/** Stored manifests have no config-file transport. Keep their planning pure,
+ * sharing every resolved default with the asynchronous public loader. */
+export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): CodexGoalLaunchInput {
   const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);
   const durableHandoffRootDir = stringValue(merged.durableHandoffRootDir);
   const taskId = requiredRawString(merged.taskId, "taskId");
