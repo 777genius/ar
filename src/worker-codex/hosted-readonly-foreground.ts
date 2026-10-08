@@ -1,5 +1,5 @@
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
-import { ordinaryInstallationRemainingMs } from "./trusted-custody-systemd-launch";
+import { ordinaryInstallationRemainingMs, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import { collectProcessBirth } from "./hosted-readonly-linux-collector";
 import { readFileSync, readlinkSync } from "node:fs";
 import type { HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
@@ -158,7 +158,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
       try {
         if (!proxyBirth || !child.pid || child.exitCode !== null || child.signalCode !== null || collectProcessBirth(String(child.pid)) !== proxyBirth) return;
         const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
-        if (stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[1] !== String(process.pid) || readlinkSync(`/proc/${child.pid}/exe`) !== "/usr/bin/systemd-run") return;
+        if (stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[1] !== String(process.pid) || readlinkSync(`/proc/${child.pid}/exe`) !== trustedCustodySystemdRunExecutable) return;
         ordinaryInstallationRemainingMs(supervisor, true); child.kill(signal);
       } catch { failed = true; /* Original expired/unknown custody stays HELD. */ }
     };

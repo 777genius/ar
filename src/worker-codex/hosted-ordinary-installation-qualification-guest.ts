@@ -1,3 +1,4 @@
+import { trustedOrdinaryQualificationWorkerLaunch, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,7 @@ import { collectBootId, collectProcessBirth, collectProcessCgroup, collectUnitIn
 import type { OrdinaryInstallationOperation } from "./hosted-ordinary-installation-owned";
 import { QualificationChild, QualificationClock, qualificationBootRecipe, qualificationBootUnit, qualificationBytes, qualificationCandidate, qualificationCodec, qualificationCopiedCohort,
   qualificationCreate, qualificationHeld, qualificationJson, qualificationLauncher, qualificationObject, qualificationProfile,
-  qualificationRead, qualificationRoot, qualificationSha, qualificationUnitArgs,
+  qualificationRead, qualificationRoot, qualificationSha,
   type OrdinaryLauncherCandidate } from "./hosted-ordinary-installation-qualification";
 
 const entry = fileURLToPath(import.meta.url);
@@ -82,12 +83,13 @@ async function coordinator(): Promise<void> {
   revalidate(input, bytes, clock);
   let owned: QualificationChild | undefined;
   try {
-    const args = [...qualificationUnitArgs(workerUnit, clock), ...argv]; clock.remaining();
-    const child = spawn("/usr/bin/systemd-run", args,
+    const launch = trustedOrdinaryQualificationWorkerLaunch(input.workerId, clock.remaining(),
+      Math.min(30_000, clock.operation.cleanupEndEpochMs - clock.operation.workEndEpochMs)); clock.remaining();
+    const child = spawn(launch.command, launch.args,
       { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     owned = new QualificationChild(child, workerUnit, clock, qualificationRoot + "/output/worker");
     owned.admitProxy(); owned.endInput();
-    await owned.bind(profile.node.path, argv, "/usr/bin/systemd-run"); await owned.wait(); const worker = owned.closeUnit();
+    await owned.bind(profile.node.path, argv, trustedCustodySystemdRunExecutable); await owned.wait(); const worker = owned.closeUnit();
     revalidate(input, bytes, clock);
     const providerBytes = qualificationRead(qualificationRoot + "/output/provider.json", 65536, true);
     const provider = qualificationObject(qualificationJson(providerBytes), "schemaVersion,operationSha256,inputSha256,sourceScopeSha256,launcherSha256,codecSha256,profileSha256,supervisor,provider,stdoutSha256,stderrSha256,activationGeneration");

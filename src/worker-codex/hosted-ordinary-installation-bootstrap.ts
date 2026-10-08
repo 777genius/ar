@@ -20,7 +20,7 @@ import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, publishReadonlyInventory, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { runHostedRuntimeForeground } from "./hosted-readonly-foreground";
 import { hostedForegroundExitCode } from "./hosted-foreground-result";
-import { ordinaryInstallationManagerProperties } from "./trusted-custody-systemd-launch";
+import { trustedOrdinaryInstallationSupervisorLaunch, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import { withScopedCollectionBudget, requestScopedManagerEffect } from "./hosted-readonly-linux-collector";
 
 export type OrdinaryInstallationPacket = Readonly<{
@@ -190,12 +190,9 @@ function fundOriginalOperation(packet: OrdinaryInstallationPacket | FundedQualif
 async function runFundedInstallationSupervisor(packet: OrdinaryInstallationPacket, operation: OrdinaryInstallationOperation): Promise<Readonly<{ sourceExitCode: number; settled: true; closure: OriginalOrdinaryInstallationClosed }>> {
   budget(packet, false);
   const unit = `subscription-runtime-installation-${packet.operationId}.service`;
-  const args = ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", "--expand-environment=no",
-    "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group", "--property=Delegate=no",
-    "--property=SendSIGKILL=yes", ...ordinaryInstallationManagerProperties(budget(packet, false), budget(packet, true)).map(p => "--property=" + p), "--working-directory=/",
-    "--", packet.node.path, bootstrapPath, "--operation", packet.operationId];
+  const launch = trustedOrdinaryInstallationSupervisorLaunch(packet.operationId, budget(packet, false), budget(packet, true));
   budget(packet, false);
-  const child = spawn("/usr/bin/systemd-run", args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(launch.command, launch.args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "pipe"] });
   const closure = retainOperatorChild(child, packet, unit, operation);
   const wait = await closure;
   budget(packet, true);
@@ -255,7 +252,7 @@ function retainOperatorChild(child: ChildProcess, packet: OrdinaryInstallationPa
         } catch { /* Unbound/replaced/expired original unit stays HELD. */ }
         if (!proxyBirth || child.exitCode !== null || child.signalCode !== null || !child.pid || collectProcessBirth(String(child.pid)) !== proxyBirth) return;
         const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
-        if (stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[1] !== String(process.pid) || readlinkSync(`/proc/${child.pid}/exe`) !== "/usr/bin/systemd-run") return;
+        if (stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[1] !== String(process.pid) || readlinkSync(`/proc/${child.pid}/exe`) !== trustedCustodySystemdRunExecutable) return;
         budget(packet, true); child.kill("SIGTERM");
       } catch { /* Expiry or lost original proxy custody remains HELD. */ }
       finally { stopping = false; }

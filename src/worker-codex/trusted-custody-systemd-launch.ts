@@ -13,6 +13,48 @@ import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrap
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 
+export const trustedCustodySystemdRunExecutable = "/usr/bin/systemd-run";
+const ordinaryRecipeId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+function assertOrdinaryRecipeId(id: string): void {
+  if (!ordinaryRecipeId.test(id)) throw new Error("hosted_ordinary_installation_held");
+}
+
+/** Fixed DATA plans only. The original callers retain funding, profile and
+ * physical input admission, clocks, synchronous spawn and actual child custody. */
+export function trustedOrdinaryInstallationSupervisorLaunch(operationId: string, workMs: number, cleanupMs: number):
+  { command: string; args: string[] } {
+  assertOrdinaryRecipeId(operationId);
+  const unit = `subscription-runtime-installation-${operationId}.service`;
+  return { command: trustedCustodySystemdRunExecutable, args: ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", "--expand-environment=no",
+    "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group", "--property=Delegate=no",
+    "--property=SendSIGKILL=yes", ...ordinaryInstallationManagerProperties(workMs, cleanupMs).map(p => "--property=" + p), "--working-directory=/",
+    "--", process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-bootstrap.js", import.meta.url)), "--operation", operationId] };
+}
+function ordinaryQualificationArgs(unit: string, workMs: number, stopMs: number): string[] {
+  if (!Number.isSafeInteger(workMs) || workMs < 1 || !Number.isSafeInteger(stopMs) || stopMs < 1 || stopMs > 30_000) {
+    throw new Error("ordinary_launcher_qualification_held");
+  }
+  return ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", "--expand-environment=no",
+    "--property=Slice=subscription-runtime-hosted.slice", "--property=Restart=no", "--property=KillMode=control-group",
+    "--property=Delegate=no", "--property=SendSIGKILL=yes", "--property=RuntimeMaxSec=" + workMs / 1000,
+    "--property=TimeoutStopSec=" + stopMs / 1000, "--working-directory=/", "--"];
+}
+export function trustedOrdinaryQualificationOuterLaunch(testId: string, rootfsPath: string, workMs: number, stopMs: number):
+  { command: string; args: string[] } {
+  assertOrdinaryRecipeId(testId);
+  if (!/^\/srv\/workers\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(rootfsPath) || rootfsPath.length > 4096 ||
+      rootfsPath.split("/").some(part => part === "." || part === "..")) throw new Error("ordinary_launcher_qualification_held");
+  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-ordinary-${testId}.service`, workMs, stopMs),
+    "/usr/bin/systemd-nspawn", "--directory=" + rootfsPath, "--machine=ordinary-test-" + testId,
+    "--boot", "--private-users=no", "--private-network", "--register=no", "--settings=no", "--link-journal=no"] };
+}
+export function trustedOrdinaryQualificationWorkerLaunch(workerId: string, workMs: number, stopMs: number):
+  { command: string; args: string[] } {
+  assertOrdinaryRecipeId(workerId);
+  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-hosted-${workerId}.service`, workMs, stopMs),
+    process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-qualification-guest.js", import.meta.url)), "worker"] };
+}
+
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
 
 /** Protected original clocks only limit an existing operation. These bytes do

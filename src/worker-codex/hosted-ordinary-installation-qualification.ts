@@ -1,3 +1,4 @@
+import { trustedOrdinaryQualificationOuterLaunch, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -256,12 +257,6 @@ export class QualificationChild {
     closeSync(original.fd); this.terminal = terminal; return terminal;
   }
 }
-export function qualificationUnitArgs(unit: string, clock: QualificationClock): string[] {
-  return ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", "--expand-environment=no",
-    "--property=Slice=subscription-runtime-hosted.slice", "--property=Restart=no", "--property=KillMode=control-group",
-    "--property=Delegate=no", "--property=SendSIGKILL=yes", "--property=RuntimeMaxSec=" + clock.remaining() / 1000,
-    "--property=TimeoutStopSec=" + Math.min(30, (clock.operation.cleanupEndEpochMs - clock.operation.workEndEpochMs) / 1000), "--working-directory=/", "--"];
-}
 type QualifiedCell = Readonly<{ operation: OrdinaryInstallationOperation; candidate: OrdinaryLauncherCandidate;
   fixture: OrdinaryLauncherQualificationFixture; sourceBytes: Buffer; profileBytes: Buffer; evidenceSha256: string; outer: QualificationChild; clock: QualificationClock }>;
 const qualified = new WeakMap<QualifiedOrdinaryLauncherPair, QualifiedCell>();
@@ -325,7 +320,7 @@ export function validatePreparedOrdinaryLauncherQualification(candidate: Ordinar
       ["testId", "guestMachineId", "guestHostname", "inputSha256", "guestEntrySha256"].some(key => receipt[key] !== fixture[key as keyof OrdinaryLauncherQualificationFixture]) ||
       receipt.sourceScopeSha256 !== candidate.sourceScopeSha256) qualificationHeld();
   const tools = qualificationObject(receipt.tools, "systemdRunSha256,systemdNspawnSha256");
-  for (const [path, key] of [["/usr/bin/systemd-run", "systemdRunSha256"], ["/usr/bin/systemd-nspawn", "systemdNspawnSha256"]])
+  for (const [path, key] of [[trustedCustodySystemdRunExecutable, "systemdRunSha256"], ["/usr/bin/systemd-nspawn", "systemdNspawnSha256"]])
     if (qualificationSha(qualificationRead(path!, 32 * 1024 * 1024)) !== tools[key!]) qualificationHeld();
   const inputBytes = qualificationRead(fixture.rootfsPath + qualificationRoot + "/input.json", 65536, true);
   if (qualificationSha(inputBytes) !== fixture.inputSha256) qualificationHeld();
@@ -383,19 +378,19 @@ export async function runOrdinaryLauncherPairQualification(operation: OrdinaryIn
   assertCopiedHostPolicy(candidate, profileBytes);
   qualificationCreate(fixture.rootfsPath + qualificationRoot + "/funded-operation.json", fundedBytes);
   const unit = `subscription-runtime-ordinary-${fixture.testId}.service`;
-  const payload = ["/usr/bin/systemd-nspawn", "--directory=" + fixture.rootfsPath, "--machine=" + fixture.guestHostname,
-    "--boot", "--private-users=no", "--private-network", "--register=no", "--settings=no", "--link-journal=no"];
   assertOriginalOrdinaryInstallationOperation(operation, true); clock.remaining();
   clock.collect(() => { if (!collectUnitNotFound(unit) || parseScopedManagerJobs(collectJobs()).some(job => job.unit === unit)) qualificationHeld(); });
   let outer: QualificationChild | undefined;
   try {
-    const args = [...qualificationUnitArgs(unit, clock), ...payload]; clock.remaining();
+    const launch = trustedOrdinaryQualificationOuterLaunch(fixture.testId, fixture.rootfsPath, clock.remaining(),
+      Math.min(30_000, clock.operation.cleanupEndEpochMs - clock.operation.workEndEpochMs)); clock.remaining();
+    const payload = launch.args.slice(launch.args.indexOf("--") + 1);
     assertCopiedHostPolicy(candidate, profileBytes); clock.remaining();
-    const child = spawn("/usr/bin/systemd-run", args,
+    const child = spawn(launch.command, launch.args,
       { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     outer = new QualificationChild(child, unit, clock, root + "/qualification-outer"); attempts.set(operation.operationId, outer);
     outer.admitProxy(); outer.endInput();
-    await outer.bind(payload[0]!, payload, "/usr/bin/systemd-run"); await outer.wait(); const terminal = outer.closeUnit();
+    await outer.bind(payload[0]!, payload, trustedCustodySystemdRunExecutable); await outer.wait(); const terminal = outer.closeUnit();
     clock.remaining(); assertOriginalOrdinaryInstallationOperation(operation, true); validatePreparedOrdinaryLauncherQualification(candidate, fixture, operation);
     assertCopiedHostPolicy(candidate, profileBytes);
     const sourceAfter = qualificationCandidate(candidate);

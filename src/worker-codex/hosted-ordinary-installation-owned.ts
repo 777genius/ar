@@ -1,3 +1,4 @@
+import { trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
@@ -172,7 +173,7 @@ export function assertOriginalOrdinaryInstallationOperation(operation: OrdinaryI
 }
 export function retainOriginalOrdinaryInstallationOperator(operation: OrdinaryInstallationOperation, child: ChildProcess): void {
   assertOriginalOrdinaryInstallationOperation(operation);
-  if (originalOperators.has(operation) || child.spawnfile !== "/usr/bin/systemd-run" ||
+  if (originalOperators.has(operation) || child.spawnfile !== trustedCustodySystemdRunExecutable ||
       !child.spawnargs.includes(`--unit=subscription-runtime-installation-${operation.operationId}.service`) || !child.stdin || !child.stdout || !child.stderr) denied();
   const cell = { child, closed: false, code: null as number | null, signal: null as NodeJS.Signals | null, failed: false, stdoutEnded: false, stderrEnded: false };
   originalOperators.set(operation, cell);
