@@ -9,7 +9,7 @@ import { buildTestNpmDependencyInstallKey, buildTestNpmLocalDependencyInstallKey
 import { captureNpmInstallInputs, revalidateNpmInstallInputs, NpmInputCaptureStatus as Status, NpmInputCaptureReason as Reason,
   type NpmInputRevalidation, type QualifiedNpmInstallInputs } from "../worker-local/dependency-environment/capture-npm-install-inputs";
 import { captureNpmLocalClosure, type QualifiedNpmLocalInputs } from "../worker-local/dependency-environment/capture-npm-local-closure";
-import { HostedDependencyInstallerRecipe as Recipe, qualifyHostedDependencyLocalInstallerInputs } from "./hosted-dependency-installer-inputs";
+import { HostedDependencyInstallerRecipe as Recipe, qualifyHostedDependencyLocalInstallerInputs, projectHostedDependencySelectionToolchain } from "./hosted-dependency-installer-inputs";
 import { readHostedDependencyInstallerProfile } from "./hosted-dependency-installer-recipe";
 import { dependencyCoverageRevision, readHostedDependencyReceipt, publishHostedDependencyReceipt,
   readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
@@ -71,8 +71,10 @@ export async function readHostedDependencyKeyInputs(binding: HostedDependencyBin
   // Only an actual unsupported closure may enter the second closed qualifier.
   // Missing/unknown/unsafe/config input never silently changes profile.
   if (capture.status !== Status.Unsupported || capture.reason !== Reason.UnsupportedClosure) throw new HostedDependencyInputCaptureError(capture);
-  const local = await captureNpmLocalClosure({ workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
+  const protectedProfile = profile();
+  const local = await captureNpmLocalClosure({ selectionToolchain: projectHostedDependencySelectionToolchain(protectedProfile.value), workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
     maxInputBytes: 64 * 1024 * 1024, maxEntries: 16384, maxPackages: 128, maxDurationMs: 10000 });
+  if (profile().sha256 !== protectedProfile.sha256) fail();
   if (local.status !== Status.Qualified) throw new HostedDependencyInputCaptureError(local);
   return { recipe: Recipe.NpmLocalNoLifecycleV1, capture: local, lockName: local.lockName,
     packageBytes: Buffer.from(local.packageBytes), lockBytes: Buffer.from(local.lockBytes), ...localKey(local) };

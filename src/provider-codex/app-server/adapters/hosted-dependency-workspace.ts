@@ -23,11 +23,11 @@ type HostedDependencyBindingFields = {
   readonly runtimeSha: string;
   readonly grantDigest: string;
 };
-export enum HostedDependencyReferenceKind { LegacyRegistryV1 = "legacy_registry_reference_v1" }
+export enum HostedDependencyReferenceKind { LegacyRegistryV1 = "legacy_registry_reference_v1", LegacyLocalNoLifecycleV1 = "legacy_local_no_lifecycle_reference_v1" }
 export type HostedDependencyBinding = HostedDependencyBindingFields & (
   | { readonly version: 1 }
   | { readonly version: 2; readonly toolProfile: DependencyToolProfile }
-  | { readonly version: 3; readonly reference: { readonly kind: HostedDependencyReferenceKind.LegacyRegistryV1; readonly operationId: string } }
+  | { readonly version: 3; readonly reference: { readonly kind: HostedDependencyReferenceKind; readonly operationId: string } }
 );
 /** Closed configuration compatibility only. Revisions4/5 are necessary for v2/v3;
  * actual installation/profile/fence proofs are separately required below. */
@@ -69,7 +69,7 @@ export function parseHostedDependencyBinding(value: unknown): HostedDependencyBi
   }
   if (v.version === 3) {
     if (!v.reference || typeof v.reference !== "object" || Array.isArray(v.reference) || Object.keys(v.reference).sort().join(",") !== "kind,operationId" ||
-        v.reference.kind !== HostedDependencyReferenceKind.LegacyRegistryV1 || typeof v.reference.operationId !== "string" ||
+        (v.reference.kind !== HostedDependencyReferenceKind.LegacyRegistryV1 && v.reference.kind !== HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1) || typeof v.reference.operationId !== "string" ||
         !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v.reference.operationId)) invalid();
     return Object.freeze({ ...v, workspace: Object.freeze({ ...v.workspace }), reference: Object.freeze({ ...v.reference }) });
   }

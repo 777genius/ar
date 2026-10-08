@@ -1,7 +1,7 @@
 import { sameDependencyTree, sameDependencyWorkspace, type DependencyTreeIdentity, type DependencyWorkspaceIdentity } from "./dependency-workspace";
 
 export enum DependencyToolReadyReadStatus { Unknown = "unknown", Ready = "ready" }
-export enum DependencyToolReadyProvenanceKind { RegistryCompleted = "registry_completed", LocalCompleted = "local_completed" }
+export enum DependencyToolReadyProvenanceKind { RegistryCompleted = "registry_completed", LocalCompleted = "local_completed", LocalCompared = "local_compared" }
 export type DependencyToolSourceRoot = Readonly<{ canonicalPath: string; identity: DependencyTreeIdentity }>;
 export type DependencyToolReadyIdentity = Readonly<{
   workspace: DependencyWorkspaceIdentity; coverageRevision: string; revision: number;
@@ -11,6 +11,9 @@ export type DependencyToolReadyFacts = DependencyToolReadyIdentity & Readonly<{
   provenance:
     | Readonly<{ kind: DependencyToolReadyProvenanceKind.RegistryCompleted }>
     | Readonly<{ kind: DependencyToolReadyProvenanceKind.LocalCompleted;
+        sourceBinding: Readonly<{ path: string; identity: DependencyTreeIdentity; sha256: string }>;
+        readonlySources: readonly DependencyToolSourceRoot[] }>
+    | Readonly<{ kind: DependencyToolReadyProvenanceKind.LocalCompared; comparisonEvidenceId: string;
         sourceBinding: Readonly<{ path: string; identity: DependencyTreeIdentity; sha256: string }>;
         readonlySources: readonly DependencyToolSourceRoot[] }>;
 }>;

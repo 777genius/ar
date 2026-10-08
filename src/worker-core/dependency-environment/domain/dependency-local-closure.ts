@@ -1,7 +1,7 @@
 import { detectSecretLikeContent } from "../../secret-detection";
 import {
   DependencyInstallKeyError, DependencyInstallKeyFailure as Failure, DependencyInstallProfile,
-  dependencyTestNpmArgv, type DependencyTestNpmInstallKeyInput,
+  dependencyTestNpmArgv, DependencyInstallArchitecture, DependencyLibcFamily, type DependencyTestNpmToolchain, type DependencyTestNpmInstallKeyInput,
 } from "./dependency-install-key";
 
 export enum DependencyLocalClosureKind { PureWorkspaceLink = "pure_workspace_link", PackedDirectory = "packed_directory" }
@@ -26,11 +26,20 @@ export type DependencyLocalEdge = {
 };
 /** Logical observed inputs only. This DTO does not authorize reads, installation,
  * source links, Ready or effects. Physical custody is a separate adapter fact. */
-export type DependencyNpmLocalClosure = {
-  readonly version: 1; readonly profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1;
+export enum DependencyLocalRegistrySelectionRevision { LinuxX64GlibcOptionalAbsentV1 = "linux_x64_glibc_optional_absent_v1" }
+export type DependencyLocalRegistrySelection = {
+  readonly revision: DependencyLocalRegistrySelectionRevision.LinuxX64GlibcOptionalAbsentV1;
+  readonly platform: "linux"; readonly arch: DependencyInstallArchitecture.X64; readonly libc: DependencyLibcFamily.Glibc;
+  readonly excludedScriptPackages: readonly string[];
+  readonly absentOptionalPeers: readonly { readonly declaringPath: string; readonly name: string; readonly spec: string;
+    readonly resolutionSearchPaths: readonly string[] }[];
+};
+type DependencyNpmLocalClosureBody = { readonly profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1;
   readonly layout: DependencyLocalInstallLayout; readonly packages: readonly DependencyLocalPackage[];
   readonly edges: readonly DependencyLocalEdge[];
 };
+export type DependencyNpmLocalClosure = DependencyNpmLocalClosureBody & (
+  { readonly version: 1 } | { readonly version: 2; readonly registrySelection: DependencyLocalRegistrySelection });
 export type DependencyTestNpmLocalInstallKeyInput = DependencyTestNpmInstallKeyInput & { readonly closure: DependencyNpmLocalClosure };
 export type DependencyLocalInstallKey = {
   readonly profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1; readonly canonicalBytes: Uint8Array; readonly installKey: string;
@@ -242,6 +251,25 @@ export function dependencyLocalNpmArgv(layout: DependencyLocalInstallLayout): re
   if (layout !== DependencyLocalInstallLayout.RootWithLiteralWorkspaceInputs) fail(Failure.UnsupportedProfile);
   return Object.freeze([...dependencyTestNpmArgv.slice(0, -1), "--workspaces=true", "--include-workspace-root=true"]);
 }
+/** Closed absent-peer syntax only, never version selection or satisfaction. */
+function supportedAbsentPeerSyntax(spec: string): boolean {
+  const text = spec.replace(/^ +| +$/g, ""); if (text === "*") return true;
+  const atom = /^(?:\^|~|>=|<=|>|<|=)?(0|[1-9][0-9]{0,15})\.(0|[1-9][0-9]{0,15})\.(0|[1-9][0-9]{0,15})$/;
+  return text.length > 0 && text.split("||").every(branch => {
+    const trimmed = branch.replace(/^ +| +$/g, "");
+    return trimmed.length > 0 && trimmed.split(/ +/).every(token => {
+      const match = atom.exec(token); return !!match && match.slice(1).every(component => Number(component) <= 9007199254740990);
+    });
+  });
+}
+/** Fixed selection-only actual-graph recipe. Old graph and ci bytes stay intact. */
+export function dependencyLocalRegistrySelectionVerificationArgv(layout: DependencyLocalInstallLayout): readonly string[] {
+  const argv = ["ls", "--all", "--json", "--ignore-scripts", "--package-lock-only=false", "--install-strategy=hoisted", "--install-links=true",
+    "--include=dev", "--include=optional", "--include=peer", "--strict-peer-deps=false", "--legacy-peer-deps=false", "--workspaces=false"];
+  if (layout === DependencyLocalInstallLayout.RootOnly) return Object.freeze(argv);
+  if (layout !== DependencyLocalInstallLayout.RootWithLiteralWorkspaceInputs) fail(Failure.UnsupportedProfile);
+  return Object.freeze([...argv.slice(0, -1), "--workspaces=true", "--include-workspace-root=true"]);
+}
 function sameMap(a: unknown, b: unknown): boolean {
   const left = a === undefined ? {} : object(a), right = b === undefined ? {} : object(b);
   const keys = Object.keys(left).sort();
@@ -256,7 +284,14 @@ function sourceMatches(entry: Record<string, unknown>, manifest: DependencyLocal
  * Supplied edges are compared with this result, never treated as authority. */
 export function qualifyDependencyNpmLocalClosure(input: {
   readonly packageBytes: Uint8Array; readonly lockBytes: Uint8Array; readonly packages: readonly DependencyLocalPackage[];
+  readonly selectionToolchain?: DependencyTestNpmToolchain;
 }): DependencyNpmLocalClosure {
+  const selection = input.selectionToolchain;
+  if (selection && (selection.platform !== "linux" || selection.arch !== DependencyInstallArchitecture.X64 ||
+      object(selection.libc).family !== DependencyLibcFamily.Glibc || selection.npmVersion !== "10.9.9")) fail(Failure.UnsupportedProfile);
+  const excluded = new Set<string>(), registry = new Set<string>();
+  const incoming = new Map<string, DependencyLocalEdgeField[]>();
+  const absentOptionalPeers: DependencyLocalRegistrySelection["absentOptionalPeers"][number][] = [];
   const root = describeDependencyLocalManifest(input.packageBytes), lock = parse(input.lockBytes);
   allowed(lock, ["name", "version", "lockfileVersion", "requires", "packages"]);
   if (lock.lockfileVersion !== 3 || lock.name !== root.name || lock.version !== root.version ||
@@ -292,15 +327,18 @@ export function qualifyDependencyNpmLocalClosure(input: {
   const installedLocal = new Map<string, string[]>();
   for (const [path, data] of Object.entries(records)) {
     const entry = object(data); allowed(entry, lockKeys);
-    if (entry.hasInstallScript !== undefined && entry.hasInstallScript !== false) fail();
+    const scripted = entry.hasInstallScript !== undefined && entry.hasInstallScript !== false;
+    if (scripted && (!selection || entry.hasInstallScript !== true)) fail();
     dependencies(entry);
     if (path === "") {
+      if (scripted) fail();
       sourceMatches(entry, root);
       if (entry.resolved !== undefined || entry.integrity !== undefined || entry.link !== undefined ||
           JSON.stringify(entry.workspaces ?? []) !== JSON.stringify(root.workspaces)) fail();
       continue;
     }
     if (packages.has(path)) {
+      if (scripted) fail();
       const local = packages.get(path)!;
       sourceMatches(entry, local.manifest, local.value.kind === DependencyLocalClosureKind.PureWorkspaceLink);
       if (entry.link !== undefined || entry.resolved !== undefined || entry.integrity !== undefined || entry.workspaces !== undefined) fail();
@@ -308,12 +346,14 @@ export function qualifyDependencyNpmLocalClosure(input: {
     }
     if (!installedPath.test(path) || path.split("/").some((part) => part === "." || part === "..")) fail();
     if (entry.link === true) {
+      if (scripted) fail();
       allowed(entry, ["resolved", "link"]);
       const target = typeof entry.resolved === "string" ? packages.get(entry.resolved) : undefined;
       if (!target || target.value.kind !== DependencyLocalClosureKind.PureWorkspaceLink ||
           path !== `node_modules/${target.manifest.name}` || !Object.hasOwn(records, target.value.path)) fail();
       installedLocal.set(target.value.path, [...(installedLocal.get(target.value.path) ?? []), path]);
     } else if (typeof entry.resolved === "string" && entry.resolved.startsWith("file:")) {
+      if (scripted) fail();
       const targetPath = resolveDependencyLocalFileSpec("", entry.resolved), target = packages.get(targetPath);
       if (!target || target.value.kind !== DependencyLocalClosureKind.PackedDirectory) fail();
       sourceMatches(entry, target.manifest, false);
@@ -326,17 +366,38 @@ export function qualifyDependencyNpmLocalClosure(input: {
           dependencies(entry).some((edge) => edge.spec.startsWith("file:"))) fail();
       let url: URL; try { url = new URL(entry.resolved); } catch { return fail(); }
       if (url.origin !== "https://registry.npmjs.org" || url.username || url.password || url.search || url.hash || !url.pathname.endsWith(".tgz")) fail();
+      registry.add(path);
+      if (scripted) {
+        const os = entry.os;
+        const recognized = ["aix", "android", "darwin", "freebsd", "linux", "openbsd", "sunos", "win32"];
+        if (["optional", "dev", "devOptional", "peer"].some(key => entry[key] !== undefined && typeof entry[key] !== "boolean") ||
+            entry.cpu !== undefined || entry.libc !== undefined || entry.optional !== true || !Array.isArray(os) || !os.length || os.length > recognized.length ||
+            os.some(value => typeof value !== "string" || !recognized.includes(value)) || new Set(os).size !== os.length ||
+            os.includes("linux") || dependencies(entry).some(edge => edge.field !== DependencyLocalEdgeField.DevDependencies)) fail();
+        excluded.add(path);
+      }
     }
   }
   const sourceManifests = new Map([["", root], ...[...packages].map(([path, data]) => [path, data.manifest] as const)]);
-  const lookup = (declaringPath: string, name: string): string => {
+  const searchPaths = (declaringPath: string, name: string): string[] => {
+    const result: string[] = [];
     let path = declaringPath;
     while (true) {
       const candidate = `${path ? path + "/" : ""}node_modules/${name}`;
-      if (Object.hasOwn(records, candidate)) return candidate;
-      if (!path) return fail();
+      result.push(candidate);
+      if (!path) return result;
       path = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
     }
+  };
+  const resolveEdge = (declaringPath: string, edge: DependencyLocalManifest["dependencies"][number], optionalPeer = false): string | undefined => {
+    const candidates = searchPaths(declaringPath, edge.name);
+    const found = candidates.find(path => Object.hasOwn(records, path));
+    if (!found) {
+      if (!optionalPeer) fail();
+      absentOptionalPeers.push({ declaringPath, name: edge.name, spec: edge.spec, resolutionSearchPaths: candidates });
+      return undefined;
+    }
+    incoming.set(found, [...(incoming.get(found) ?? []), edge.field]); return found;
   };
   for (const [declaringPath, manifest] of sourceManifests) {
     const packed = declaringPath && packages.get(declaringPath)!.value.kind === DependencyLocalClosureKind.PackedDirectory;
@@ -348,13 +409,13 @@ export function qualifyDependencyNpmLocalClosure(input: {
         const workspace = [...packages.values()].find((data) => data.manifest.name === edge.name &&
           data.value.kind === DependencyLocalClosureKind.PureWorkspaceLink);
         if (!workspace) {
-          for (const location of packed ? installedLocal.get(declaringPath) ?? [] : [declaringPath]) lookup(location, edge.name);
+          for (const location of packed ? installedLocal.get(declaringPath) ?? [] : [declaringPath]) resolveEdge(location, edge);
           continue;
         }
         if (packed) fail();
         if (edge.spec !== "*" && edge.spec !== workspace.manifest.version) fail();
         referenced.add(workspace.value.path);
-        if (!installedLocal.get(workspace.value.path)?.includes(lookup(declaringPath, edge.name))) fail();
+        if (!installedLocal.get(workspace.value.path)?.includes(resolveEdge(declaringPath, edge)!)) fail();
         edges.push({ declaringPath, ...edge, resolutionBase: DependencyLocalResolutionBase.SourceDirectory,
           targetPath: workspace.value.path, kind: workspace.value.kind, installedPaths: installedLocal.get(workspace.value.path) ?? [] });
         continue;
@@ -362,7 +423,7 @@ export function qualifyDependencyNpmLocalClosure(input: {
       if (declaringPath && packages.get(declaringPath)!.value.kind === DependencyLocalClosureKind.PackedDirectory) fail();
       const targetPath = resolveDependencyLocalFileSpec(declaringPath, edge.spec), target = packages.get(targetPath);
       if (!target || target.manifest.name !== edge.name) fail();
-      if (!installedLocal.get(targetPath)?.includes(lookup(declaringPath, edge.name))) fail();
+      if (!installedLocal.get(targetPath)?.includes(resolveEdge(declaringPath, edge)!)) fail();
       referenced.add(targetPath);
       edges.push({ declaringPath, ...edge, resolutionBase: DependencyLocalResolutionBase.SourceDirectory,
         targetPath, kind: target.value.kind, installedPaths: installedLocal.get(targetPath) ?? [] });
@@ -372,7 +433,20 @@ export function qualifyDependencyNpmLocalClosure(input: {
     if (!installedPath.test(path)) continue;
     const entry = object(raw);
     if (entry.link === true) continue;
-    for (const edge of dependencies(entry)) if (edge.field !== DependencyLocalEdgeField.DevDependencies) lookup(path, edge.name);
+    for (const edge of dependencies(entry)) if (edge.field !== DependencyLocalEdgeField.DevDependencies) {
+      let optionalPeer = false;
+      if (selection && registry.has(path) && edge.field === DependencyLocalEdgeField.PeerDependencies &&
+          !searchPaths(path, edge.name).some(candidate => Object.hasOwn(records, candidate))) {
+        const peers = object(entry.peerDependencies), metadata = entry.peerDependenciesMeta === undefined ? {} : object(entry.peerDependenciesMeta);
+        for (const [name, raw] of Object.entries(metadata)) {
+          const meta = object(raw); allowed(meta, ["optional"]);
+          if (!Object.hasOwn(peers, name) || typeof meta.optional !== "boolean") fail();
+        }
+        optionalPeer = metadata[edge.name] !== undefined && object(metadata[edge.name]).optional === true;
+        if (optionalPeer && !supportedAbsentPeerSyntax(edge.spec)) fail();
+      }
+      resolveEdge(path, edge, optionalPeer);
+    }
   }
   for (const targetPath of root.workspaces) {
     const target = packages.get(targetPath)!; referenced.add(targetPath);
@@ -381,6 +455,10 @@ export function qualifyDependencyNpmLocalClosure(input: {
       installedPaths: installedLocal.get(targetPath) ?? [] });
   }
   if (!packages.size || paths.some((path) => !referenced.has(path)) || edges.some((edge) => !edge.installedPaths.length)) fail();
+  for (const path of excluded) {
+    const consumed = incoming.get(path);
+    if (!consumed?.length || consumed.some(field => field !== DependencyLocalEdgeField.OptionalDependencies)) fail();
+  }
   const visited = new Set<string>(), active = new Set<string>();
   const visit = (path: string): void => {
     if (active.has(path)) fail(); if (visited.has(path)) return;
@@ -388,7 +466,13 @@ export function qualifyDependencyNpmLocalClosure(input: {
     active.delete(path); visited.add(path);
   };
   visit(""); if (paths.some((path) => !visited.has(path))) fail();
-  return { version: 1, profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1,
+  const selected: { readonly version: 1 } | { readonly version: 2; readonly registrySelection: DependencyLocalRegistrySelection } = excluded.size || absentOptionalPeers.length ? {
+    version: 2 as const, registrySelection: { revision: DependencyLocalRegistrySelectionRevision.LinuxX64GlibcOptionalAbsentV1,
+      platform: "linux" as const, arch: DependencyInstallArchitecture.X64, libc: DependencyLibcFamily.Glibc,
+      excludedScriptPackages: [...excluded].sort(), absentOptionalPeers: absentOptionalPeers.sort((a, b) =>
+        JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0) },
+  } : { version: 1 as const };
+  return { ...selected, profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1,
     layout: root.workspaces.length ? DependencyLocalInstallLayout.RootWithLiteralWorkspaceInputs : DependencyLocalInstallLayout.RootOnly,
     packages: [...packages.values()].map(({ value }) => value).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     edges: edges.map((edge) => ({ ...edge, installedPaths: [...edge.installedPaths].sort() }))

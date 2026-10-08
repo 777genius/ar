@@ -21,9 +21,11 @@ import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-fa
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { admitResearchRuntime, assertResearchRuntimeEngine } from "./research-launch-admission";
 import { assertHostedBaselineIdentity, isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
+import type { CodexGoalAccessConfig } from "./codex-goal-access-plan";
+import { hasUnrestrictedNativeProjectBoundary } from "./codex-goal-native-egress";
 
 export async function admitHostedTestEgress(
-  input: HostedTestEgressIdentity & {
+  input: HostedTestEgressIdentity & CodexGoalAccessConfig & {
     readonly executionEngine?: CodexWorkerExecutionEngine;
     readonly modelBackend?: CodexModelBackend;
     readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
@@ -62,7 +64,8 @@ export async function admitHostedTestEgress(
       throw new Error("hosted_permission_profiles_engine_unsupported");
     }
     return mimo ? codexMimoTokenPlanEgressPolicy() :
-      contained ? codexHostedDefaultEgressPolicy() : codexProviderApiEgressPolicy();
+      contained || hasUnrestrictedNativeProjectBoundary(input)
+        ? codexHostedDefaultEgressPolicy() : codexProviderApiEgressPolicy();
   }
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);

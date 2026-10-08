@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, writeSync } from "node:fs";
-import { observeHostedDependencyLocalStage, type HostedDependencyLocalStage } from "./hosted-dependency-installer-local-stage.js";
+import { hostedDependencyLocalSelectionVerificationArgv, observeHostedDependencyLocalStage, type HostedDependencyLocalStage } from "./hosted-dependency-installer-local-stage.js";
 
 // This exact switch is emitted only by the protected schema4 recipe. EOF on
 // the one newly-created private stdin is the release boundary. No profile,
@@ -33,7 +33,7 @@ enum LockName { PackageLock = "package-lock.json", Shrinkwrap = "npm-shrinkwrap.
 const profile = JSON.parse(readFileSync("/runtime/profile.json", "utf8")) as {
   nodePath: string; npmCliPath: string; nodeVersion: string; npmVersion: string; stagingDirectory: string; installArgv: string[];
   nodeAbi: string; platform: string; arch: string; environment: Record<string, string>; umask: number;
-  lockName: LockName; inputSha256: string; localStage?: HostedDependencyLocalStage;
+  libc: { family: string; version: string }; lockName: LockName; inputSha256: string; localStage?: HostedDependencyLocalStage;
 };
 process.umask(profile.umask);
 const env = profile.environment;
@@ -64,6 +64,11 @@ function refusePreflight(stage: PreflightStage, facts: Readonly<Record<string, b
   finally { process.exit(71); }
 }
 const runtime = { abiMatch: process.versions.modules === profile.nodeAbi, platformMatch: process.platform === profile.platform, archMatch: process.arch === profile.arch };
+if (profile.localStage?.commitment.version === 2) {
+  const report = process.report?.getReport();
+  const header = report && typeof report === "object" && "header" in report ? report.header as { glibcVersionRuntime?: unknown } : undefined;
+  if (profile.libc.family !== "glibc" || header?.glibcVersionRuntime !== profile.libc.version) refusePreflight(PreflightStage.RuntimeIdentity, { glibcMatch: false });
+}
 if (!runtime.abiMatch || !runtime.platformMatch || !runtime.archMatch) refusePreflight(PreflightStage.RuntimeIdentity, runtime);
 function run(args: readonly string[]): { status: number | null; stdout: string; duplicateConfig: boolean } {
   const r = spawnSync(profile.nodePath, args, { cwd: profile.stagingDirectory, env, encoding: "utf8",
@@ -80,6 +85,8 @@ if (install.status !== 0) process.exit(72);
 if (profile.localStage && observeHostedDependencyLocalStage(profile.stagingDirectory, profile.localStage, profile.inputSha256) !== localSnapshot) process.exit(75);
 // Graph verification runs in the same contained lifetime; receipt/capability and
 // full manifest verification remain the final parent admission responsibility.
-const graph = run([profile.npmCliPath, "ls", "--depth=0", "--json", "--ignore-scripts"]);
+const graphArgv = profile.localStage?.commitment.version === 2 ? hostedDependencyLocalSelectionVerificationArgv(profile.localStage) :
+  ["ls", "--depth=0", "--json", "--ignore-scripts"];
+const graph = run([profile.npmCliPath, ...graphArgv]);
 if (profile.localStage && observeHostedDependencyLocalStage(profile.stagingDirectory, profile.localStage, profile.inputSha256) !== localSnapshot) process.exit(75);
 process.exit(graph.status === 0 ? 0 : 73);

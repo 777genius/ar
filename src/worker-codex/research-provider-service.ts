@@ -201,7 +201,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       proxy.once("error", failed);
       proxy.once("exit", (code, signal) => { proxyExited = true; clearTimeout(terminalTimer); process.exitCode = signal ? 70 : code ?? 70; resolve(); });
       // systemd has its own maximum; bound this direct stream transport as well.
-      terminalTimer = setTimeout(failed, request.taskTimeoutMs + 30_000);
+      terminalTimer = setTimeout(failed, researchProviderSetupTimeoutMs + request.taskTimeoutMs + 30_000);
       proxy.stdout.once("error", failed); proxy.stderr.once("error", failed);
       proxy.stdin.on("error", error => {
         if (!inputReleased || (error as NodeJS.ErrnoException).code !== "EPIPE") failed();

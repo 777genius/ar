@@ -125,7 +125,7 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
   const initial = readyReader.readCurrent();
   if (initial.status !== DependencyToolReadyReadStatus.Ready) fail();
   assertLocalSources(binding, initial.facts.provenance);
-  const localRoots = initial.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted ?
+  const localRoots = (initial.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || initial.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) ?
     initial.facts.provenance.readonlySources : [];
   const sourceAncestors = localSourceAncestors(binding, initial.facts.provenance);
   const opened = openHostedRetainedToolFiles({ unit, parentStartId: attempt.launch.startId, jobId: binding.jobId, bindingBytes: encode(binding) });
@@ -249,7 +249,7 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   if (ready.status !== DependencyToolReadyReadStatus.Ready ||
       !(ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted ?
         matchesRegistryDependencyToolReady(expected, ready.facts) :
-        ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted && matchesDependencyToolReadyIdentity(expected, ready.facts)) ||
+        (ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) && matchesDependencyToolReadyIdentity(expected, ready.facts)) ||
       !encode(ready.facts.provenance).equals(encode(plan.provenance)) ||
       q.installationId !== binding.installationId || q.runtimeSha !== binding.runtimeSha || q.grantDigest !== binding.grantDigest ||
       !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== plan.attempt.launch.startId || q.attemptId !== plan.attempt.attemptId ||
@@ -283,11 +283,13 @@ function providerId(unit: string): string {
  * source member, hardlink and inner link against its retained physical walk. */
 function assertLocalSources(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]): void {
   if (provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted) return;
-  if (provenance.kind !== DependencyToolReadyProvenanceKind.LocalCompleted) fail();
+  if (provenance.kind !== DependencyToolReadyProvenanceKind.LocalCompleted && provenance.kind !== DependencyToolReadyProvenanceKind.LocalCompared) fail();
   assertHostedDependencyPhysicalWorkspace(binding);
   const reference = provenance.sourceBinding, parent = `${hostedDependencyPolicyRoot}/dependency-source-bindings/${binding.workspace.dev}-${binding.workspace.ino}`;
   if (!reference.path.startsWith(parent + "/") ||
-      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(reference.path.slice(parent.length + 1)) ||
+      !(provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted
+        ? /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(reference.path.slice(parent.length + 1))
+        : /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.compared-local\.json$/.test(reference.path.slice(parent.length + 1))) ||
       !/^[a-f0-9]{64}$/.test(reference.sha256)) fail();
   const before = lstatSync(reference.path, { bigint: true }), directory = lstatSync(parent, { bigint: true });
   if (!before.isFile() || before.uid !== 0n || before.gid !== 0n || before.nlink !== 1n ||
@@ -319,7 +321,7 @@ function assertLocalSources(binding: HostedDependencyBinding, provenance: Depend
  * caller can nominate an ancestor or substitute a mount/identity descriptor. */
 function localSourceAncestors(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]) {
   const paths = new Set<string>();
-  if (provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted) {
+  if ((provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared)) {
     for (const source of provenance.readonlySources) {
       if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
       for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
@@ -359,7 +361,7 @@ function assertNamespaceMounts(plan: Plan, process: HostedFdProcess) {
     if (!s.isDirectory() || String(s.dev) !== expected.dev || String(s.ino) !== expected.ino) fail();
   };
   directory(plan.binding.workspace.canonicalPath, plan.binding.workspace); directory(tree, q.tree); directory(cache, q.profile.cache);
-  const localRoots = plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted ? plan.provenance.readonlySources : [];
+  const localRoots = (plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) ? plan.provenance.readonlySources : [];
   const workspaceMount = exact(plan.binding.workspace.canonicalPath, false);
   const physicalRoot = (path: string) => workspaceMount.root.replace(/\/$/, "") + path.slice(plan.binding.workspace.canonicalPath.length);
   const ancestorMounts = plan.sourceAncestors.map(ancestor => {
@@ -428,7 +430,7 @@ function assertNamespace(plan: Plan, process: HostedFdProcess, unit: HostedFdUni
     const after = fstatSync(fd, { bigint: true }), current = statSync(prefix + dependencyToolGuestConfigPath, { bigint: true });
     if (after.ctimeNs !== capsule.ctimeNs || after.mtimeNs !== capsule.mtimeNs || current.dev !== capsule.dev || current.ino !== capsule.ino) fail();
   } finally { closeSync(fd); }
-  if (plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted) {
+  if ((plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared)) {
     assertLocalLinkRoutes(prefix, tree, plan.provenance.readonlySources.map(source => source.canonicalPath));
     assertLocalProcessDescriptors(plan, process, unit);
   }
