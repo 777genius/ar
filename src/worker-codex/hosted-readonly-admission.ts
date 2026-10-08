@@ -17,10 +17,11 @@ import { admitResearchProcessFactory, admitResearchRuntime, assertResearchRuntim
 import { withHostedActivationFence, readHostedOrdinaryProcessOrigin, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { captureHostedDependencyToolReadyReader } from "./hosted-dependency-tool-ready-reader";
+import type { HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 
 const guardedFactories = new WeakMap<CodexAppServerProcessFactory, string>();
 const toolFactories = new WeakMap<CodexAppServerProcessFactory, Readonly<{
-  workspacePath: string; assertCurrent: (fence: HostedActivationFence) => void;
+  workspacePath: string; assertCurrent: (fence: HostedActivationFence) => void; entry?: HostedDependencyQualifiedToolEntry;
 }>>();
 
 /** Actual current protected origin selects v2, even if caller options omit or
@@ -38,6 +39,13 @@ export function assertHostedDependencyToolAdmittedFactory(factory: CodexAppServe
     retained.assertCurrent(fence);
   });
 }
+/** Direct executor configuration derives its context from the SAME genuine
+ * factory brand, never from caller options or a late source capture. */
+export function readHostedDependencyToolFactoryEntry(factory: CodexAppServerProcessFactory | undefined,
+  workspacePath: string | undefined): HostedDependencyQualifiedToolEntry | undefined {
+  assertHostedDependencyToolAdmittedFactory(factory, workspacePath);
+  return factory ? toolFactories.get(factory)?.entry : undefined;
+}
 
 export function assertReadonlyAdmittedFactory(factory: CodexAppServerProcessFactory | undefined, workspacePath: string | undefined): void {
   if (!factory || guardedFactories.get(factory) !== workspacePath || workspacePath === undefined) throw new Error("hosted_readonly_admitted_factory_required");
@@ -50,7 +58,7 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   readonly providerEgressPolicy: CodexProviderEgressPolicy;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   readonly sourceEnv: Readonly<Record<string, string | undefined>>;
-}): CodexAppServerProcessFactory | undefined {
+}, toolEntry?: HostedDependencyQualifiedToolEntry): CodexAppServerProcessFactory | undefined {
   const research = admitResearchRuntime(input);
   if (research) {
     assertResearchRuntimeEngine(input);
@@ -75,10 +83,11 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
       throw new Error("hosted_permission_profiles_engine_unsupported");
     }
     return withHostedActivationFence(fence => {
-      const captured = captureHostedDependencyToolReadyReader(fence, input);
+      const captured = captureHostedDependencyToolReadyReader(fence, input, toolEntry);
       if (!captured) return undefined; // V1 keeps genuine default admission.
       const factory = admittedDependencyToolCodexProcessFactory(captured.reader);
-      toolFactories.set(factory, Object.freeze({ workspacePath: input.workspacePath, assertCurrent: captured.assertCurrent }));
+      toolFactories.set(factory, Object.freeze({ workspacePath: input.workspacePath, assertCurrent: captured.assertCurrent,
+        ...(toolEntry ? { entry: toolEntry } : {}) }));
       return factory;
     });
   }
