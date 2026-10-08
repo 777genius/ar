@@ -7,11 +7,14 @@ import { createHash } from 'node:crypto';
 import { prepareManagedJobLayout, captureManagedStoragePin, requireManagedPinCapability, readManagedPinFile, MANAGED_STORAGE_LIFETIME_CONFIG } from '../host-jobs/storage-policy.mjs';
 import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
 import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
+import { hasHostedActivationOrigin, HostedActivationMode, readHostedActivationMode } from './hosted-host-policy.mjs';
 
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
-function governedFdProfile() {
+function governedFdProfile(request) {
+  if (readHostedActivationMode() === HostedActivationMode.Disabled && !hasHostedActivationOrigin() &&
+      request.readonlyPaths === undefined) return false;
   const root = '/var/lib/subscription-runtime-host-policy';
   try { lstatSync(root + '/readonly-inventory.json'); }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -67,7 +70,7 @@ export function parseInvocation(request) {
     if (!/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit) ||
         !payload[0].endsWith('/node') || !safePath(payload[1])) denied();
     if (!payload[1].endsWith('/hosted-app-server-launcher.js') ||
-        !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile()))) denied();
+        !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile(request)))) denied();
     trusted = payload.slice(0, 2);
   }
   if (request.readonlyPaths !== undefined) {
@@ -108,7 +111,9 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
     'ProtectControlGroups=yes',
     ...profileProperties(),
-    ...(governedFdProfile() ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`] : []),
+    ...(governedFdProfile(request) ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`,
+      'SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS',
+      'SystemCallArchitectures=native', 'NoNewPrivileges=yes'] : []),
     ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
     'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
     'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',

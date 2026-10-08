@@ -50,3 +50,30 @@ export interface DependencySourceBindingCompletionVerifier {
 export interface DependencySourceBindingOutputVerifier {
   assertVerifiedOutput(record: DependencySourceBindingRecord): void;
 }
+
+/** Separate comparison mapping. It makes no candidate installer claim. */
+export enum DependencyLegacyLocalSourceBindingKind { LegacyLocalComparedSourceV1 = "legacy_local_compared_source_v1" }
+export type DependencyLegacyLocalSourceBindingRecord = {
+  readonly version: 1; readonly kind: DependencyLegacyLocalSourceBindingKind.LegacyLocalComparedSourceV1;
+  readonly profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1; readonly operationId: string;
+  readonly candidate: DependencyProofBinding;
+  readonly original: { readonly receipt: Extract<DependencyReceipt, { state: DependencyReceiptState.Unverified }>;
+    readonly reference: DependencySourceBindingReference };
+  readonly referenceOutput: DependencySourceBindingReference; readonly closureDigest: string;
+  readonly sourceLinks: readonly DependencyLogicalSourceLink[];
+  readonly directories: readonly DependencySourceDirectoryPin[]; readonly ancestors: readonly DependencySourceDirectoryPin[];
+};
+export type DependencyLegacyComparedReady = Extract<DependencyReceipt, { state: DependencyReceiptState.Ready }> & {
+  readonly provenance: Extract<Extract<DependencyReceipt, { state: DependencyReceiptState.Ready }>["provenance"],
+    { kind: DependencyInstallProofKind.LegacyCompared }>;
+};
+/** Immutable history only. The implementation must authenticate comparison,
+ * original predecessor, actual completed reference output and this mapping. */
+export type DependencyLegacyLocalDetachedTarget = { readonly workspace: DependencyProofBinding["workspace"];
+  readonly name: string; readonly reference: DependencySourceBindingReference };
+export interface DependencyLegacyLocalSourceVerifier {
+  assertReferenceOutput(record: DependencyLegacyLocalSourceBindingRecord): void;
+  assertDetachedTarget?(receipt: DependencyLegacyComparedReady, record: DependencyLegacyLocalSourceBindingRecord, target: DependencyLegacyLocalDetachedTarget): void;
+  assertComparedSource(receipt: DependencyLegacyComparedReady, record: DependencyLegacyLocalSourceBindingRecord,
+    reference: DependencySourceBindingReference): void;
+}

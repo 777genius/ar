@@ -1,6 +1,7 @@
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
-import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory } from "./hosted-readonly-admission";
+import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory, readHostedDependencyToolFactoryEntry } from "./hosted-readonly-admission";
+import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { readAdmittedHostedDependencyToolConfig } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
@@ -31,9 +32,11 @@ import {
   codexMimoTokenPlanEgressPolicy,
   codexModelBackendDefaultModel,
   codexProviderApiEgressPolicy,
+  codexHostedDefaultEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
   hostedCodexExecutableReadPath,
+  hostedCodexResolverReadPaths,
   hostedCodexPermissionProfilesToml,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
@@ -264,12 +267,16 @@ function createCodexAgentDriver(input: {
     // worker is constructed; this is defense in depth for direct callers.
     throw new Error("codex_mimo_backend_requires_app_server_goal_engine");
   }
-  const sourceEnv = options.sourceEnv ?? process.env;
-  const hostedGlobalScanGuard =
-    sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const requestedSourceEnv = options.sourceEnv ?? process.env;
+  const hostedGlobalScanGuard = isHostedContainment(requestedSourceEnv);
+  const sourceEnv = hostedGlobalScanGuard ? {
+    ...requestedSourceEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+  } : requestedSourceEnv;
   const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
+  const resolverReadPaths = hostedCodexResolverReadPaths(sourceEnv, projectReadBoundary);
   assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
-  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath);
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath,
+    readHostedDependencyToolFactoryEntry(options.appServerProcessFactory, options.workspacePath));
   if (dependencyToolConfig && (!hostedGlobalScanGuard || executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_dependency_tool_engine_unsupported");
   }
@@ -282,7 +289,8 @@ function createCodexAgentDriver(input: {
   const providerEgressPolicy = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
     ? codexMimoTokenPlanEgressPolicy()
     : codexProviderEgressPolicy(
-        (options.providerEgressPolicy ?? codexProviderApiEgressPolicy()).profileId,
+        (options.providerEgressPolicy ?? (hostedGlobalScanGuard
+          ? codexHostedDefaultEgressPolicy() : codexProviderApiEgressPolicy())).profileId,
       );
   if (modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan &&
       providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi &&
@@ -292,7 +300,7 @@ function createCodexAgentDriver(input: {
     throw new Error("hosted_test_egress_engine_unsupported");
   }
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.FullInternetV1 &&
-      (process.platform !== "linux" || !hostedGlobalScanGuard ||
+      (process.platform !== "linux" || !projectReadBoundary ||
        (executionEngine !== "app-server" && executionEngine !== "app-server-goal"))) {
     throw new Error("hosted_permission_profiles_engine_unsupported");
   }
@@ -321,11 +329,11 @@ function createCodexAgentDriver(input: {
     : undefined;
   const projectConfigToml = projectReadBoundary && !hostedGlobalScanGuard
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE, dependencyToolConfig)
+        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE, dependencyToolConfig, resolverReadPaths)
     : undefined;
   const mimoConfigToml = workspaceToolsProfile?.configToml ??
     (hostedGlobalScanGuard
-      ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName, dependencyToolConfig)
+      ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName, dependencyToolConfig, resolverReadPaths)
       : projectConfigToml);
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
@@ -448,9 +456,9 @@ function createCodexAgentDriver(input: {
         : projectReadBoundary
         ? {
             configToml: hostedGlobalScanGuard
-              ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, undefined, undefined, dependencyToolConfig)
+              ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, undefined, undefined, dependencyToolConfig, resolverReadPaths)
               : projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-                  modelBackend, mimoApiKeyEnvVarName, undefined, dependencyToolConfig),
+                  modelBackend, mimoApiKeyEnvVarName, undefined, dependencyToolConfig, resolverReadPaths),
           }
         : {}),
     }),
@@ -481,10 +489,11 @@ function projectReadBoundaryConfigToml(
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   privateKeyFilePath?: string,
   dependencyTools?: DependencyToolGuestConfig,
+  resolverReadPaths: readonly string[] = [],
 ): string {
   return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true,
     modelBackend, mimoApiKeyEnvVarName }) +
-    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath, dependencyTools);
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath, dependencyTools, resolverReadPaths);
 }
 
 function hostedGlobalScanConfigToml(
@@ -493,6 +502,7 @@ function hostedGlobalScanConfigToml(
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   dependencyTools?: DependencyToolGuestConfig,
+  resolverReadPaths: readonly string[] = [],
 ): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
@@ -501,7 +511,7 @@ function hostedGlobalScanConfigToml(
   return [
     codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true,
       modelBackend, mimoApiKeyEnvVarName }),
-    hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, undefined, dependencyTools),
+    hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, undefined, dependencyTools, resolverReadPaths),
     "[hooks]",
     "[[hooks.PreToolUse]]",
     'matcher = "Bash|exec"',
