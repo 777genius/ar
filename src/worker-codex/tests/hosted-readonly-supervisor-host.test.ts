@@ -42,7 +42,7 @@ vi.mock("../hosted-readonly-inputs", async original => ({
         createHash("sha256").update(runtimeDirectory).digest("hex") + ".json") return Buffer.from(JSON.stringify({
       schemaVersion: 1, runtimeDirectory, runtimeSha: facts.epoch!.identity.runtimeSha,
       runtimeManifestSha256: facts.epoch!.identity.runtimeManifestSha256,
-    }));
+    }) + "\n");
     throw new Error("unexpected inspected installation record");
   },
 }));

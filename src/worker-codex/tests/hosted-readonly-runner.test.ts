@@ -146,7 +146,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
     if (path === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json") return inventoryBytes();
     if (path === "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json") {
       return Buffer.from(JSON.stringify({ schemaVersion: 1, runtimeDirectory,
-        runtimeSha: policy.runtimeSha, runtimeManifestSha256: policy.runtimeManifestSha256 }));
+        runtimeSha: policy.runtimeSha, runtimeManifestSha256: policy.runtimeManifestSha256 }) + "\n");
     }
     return path.includes("codex-readonly-custody/") ? lease :
       path.includes("codex-readonly-revoked/") && revoked ? Buffer.from("revoked") : null;
