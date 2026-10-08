@@ -37,7 +37,7 @@ test("fixed administrative result keeps bounded facts and drops private captured
     stderr: "Failed to start transient service unit: " + secret };
   const observed = observeTestAdministrativeCommandResult(result);
   assert.deepEqual(observed, { status: 1, signal: "none", spawnError: "none", stdout: "other",
-    stderr: "present", stderrClasses: ["Failed to start transient service unit"] });
+    stderr: "present", transientStartSuffix: "unknown", stderrClasses: ["Failed to start transient service unit"] });
   assert(!JSON.stringify(observed).includes(secret)); assert(Object.isFrozen(observed)); assert(Object.isFrozen(observed.stderrClasses));
   assert.equal(observeTestAdministrativeCommandResult({ ...result, stdout: "DENIED_ACTUAL_NATIVE_ORIGIN\n" }).stdout, "exact_denied");
   assert.equal(observeTestAdministrativeCommandResult({ ...result, stdout: "", stderr: "" }).stdout, "empty");
@@ -54,6 +54,39 @@ test("fixed administrative result keeps bounded facts and drops private captured
   const unknown = observeTestAdministrativeCommandResult(null);
   for (const changed of [{ status: 256 }, { status: -1 }, { status: 0.5 }, { stdout: "x".repeat(16385) }, { stderr: "x".repeat(16385) }])
     assert.deepEqual(observeTestAdministrativeCommandResult({ ...result, ...changed }), unknown);
+});
+
+// This catches a privacy regression that exports raw RPC error text, or a
+// diagnostic regression that confuses duplicates/foreign-target errors with this RPC.
+test("transient RPC suffixes distinguish closed literals without releasing private loginfo", () => {
+  const prefix = "Failed to start transient service unit: ", secret = "TEST-private-actor-path-token";
+  const result = { status: 1, signal: null, stdout: "", stderr: "" };
+  const cases = [
+    ["The name org.freedesktop.systemd1 was not provided by any .service files", "systemd_name_unprovided_literal"],
+    ["Access denied", "access_denied_literal"], ["Interactive authentication required.", "interactive_authorization_literal"],
+    ["Cannot set property RuntimeMaxUSec, or unknown property.", "fixed_property_read_only_literal"],
+    ["Cannot set property StandardOutputFileDescriptor, or unknown property.", "fixed_property_read_only_literal"],
+    ["Unit TEST-administrative-forgery.service was already loaded or has a fragment file.", "fixed_unit_exists_literal"],
+    ["Invalid unit name or type.", "invalid_unit_literal"],
+  ] as const;
+  for (const [suffix, expected] of cases) for (const newline of ["", "\n", "\r\n"])
+    assert.equal(observeTestAdministrativeCommandResult({ ...result, stderr: prefix + suffix + newline }).transientStartSuffix, expected);
+  const policy = 'Rejected send message, 0 matched rules; type="method_call", sender=":1.7" (uid=0 pid=9 comm="' + secret +
+    '") interface="org.freedesktop.systemd1.Manager" member="StartTransientUnit" error name="(unset)" requested_reply="0" destination="org.freedesktop.systemd1" (uid=0 pid=1 comm="' + secret + '")';
+  const observed = observeTestAdministrativeCommandResult({ ...result, stderr: prefix + policy + "\n" });
+  assert.equal(observed.transientStartSuffix, "dbus_rejected_send_rpc_shape");
+  assert(!JSON.stringify(observed).includes(secret)); assert(!JSON.stringify(observed).includes("pid="));
+  assert.equal(observeTestAdministrativeCommandResult({ ...result, stderr: prefix + policy.replace("send message", "receive message") }).transientStartSuffix,
+    "dbus_rejected_receive_rpc_shape");
+  for (const stderr of [prefix + secret, "embedded " + prefix + "Access denied\n", prefix + "Access denied trailing\n",
+    prefix + "Access denied\n" + prefix + "Access denied\n", prefix + "Access denied\n" + secret,
+    prefix + "Cannot set property TEST_PRIVATE, or unknown property.",
+    prefix + "The name org.TEST.private was not provided by any .service files",
+    prefix + policy.replace('member="StartTransientUnit"', 'member="TEST_PRIVATE"'),
+    prefix + policy.replace('destination="org.freedesktop.systemd1"', 'destination="org.TEST.private"'),
+    prefix + policy + " trailing", prefix + policy.replace(secret, "x".repeat(1025)),
+    prefix + "x".repeat(4097), "\u001b[31m" + prefix + "Access denied\u001b[0m"])
+    assert.equal(observeTestAdministrativeCommandResult({ ...result, stderr }).transientStartSuffix, "unknown");
 });
 
 test("administrative result rejects accessor Proxy and counterfeit errno without caller calls", () => {

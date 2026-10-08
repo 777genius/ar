@@ -130,6 +130,40 @@ enum AdministrativeSpawnError {
 }
 enum AdministrativeStdout { Unknown = "unknown", ExactDenied = "exact_denied", Empty = "empty", Other = "other" }
 enum AdministrativeStderr { Unknown = "unknown", Empty = "empty", Present = "present" }
+enum AdministrativeTransientSuffix {
+  Unknown = "unknown", NameUnprovided = "systemd_name_unprovided_literal", AccessDenied = "access_denied_literal",
+  Interactive = "interactive_authorization_literal", FixedProperty = "fixed_property_read_only_literal",
+  FixedUnitExists = "fixed_unit_exists_literal", InvalidUnit = "invalid_unit_literal",
+  PolicySend = "dbus_rejected_send_rpc_shape", PolicyReceive = "dbus_rejected_receive_rpc_shape",
+}
+// Only properties actually emitted by this fixed systemd-run invocation.
+const administrativeTransientProperties = ["Description", "CollectMode", "AddRef", "User", "Group",
+  "NoNewPrivileges", "CapabilityBoundingSet", "AmbientCapabilities", "ProtectSystem", "RuntimeMaxUSec",
+  "WorkingDirectory", "Type", "StandardInputFileDescriptor", "StandardOutputFileDescriptor",
+  "StandardErrorFileDescriptor", "ExecStart"] as const;
+/** One complete RPC-error line only. Exact upstream suffixes and the fixed
+ * StartTransientUnit rejection formatter are observations, never proven causes.
+ * Unknown, duplicate, embedded, trailing or multiline text stays private. */
+function administrativeTransientSuffix(stderr: string): AdministrativeTransientSuffix {
+  const line = stderr.endsWith("\r\n") ? stderr.slice(0, -2) : stderr.endsWith("\n") ? stderr.slice(0, -1) : stderr;
+  const prefix = "Failed to start transient service unit: ";
+  if (line.length > 4096 || !line.startsWith(prefix) || /[\r\n]/.test(line)) return AdministrativeTransientSuffix.Unknown;
+  const suffix = line.slice(prefix.length);
+  switch (suffix) {
+    case "The name org.freedesktop.systemd1 was not provided by any .service files": return AdministrativeTransientSuffix.NameUnprovided;
+    case "Access denied": return AdministrativeTransientSuffix.AccessDenied;
+    case "Interactive authentication required.": return AdministrativeTransientSuffix.Interactive;
+    case "Unit TEST-administrative-forgery.service was already loaded or has a fragment file.": return AdministrativeTransientSuffix.FixedUnitExists;
+    case "Invalid unit name or type.": return AdministrativeTransientSuffix.InvalidUnit;
+  }
+  if (administrativeTransientProperties.some(property => suffix === `Cannot set property ${property}, or unknown property.`))
+    return AdministrativeTransientSuffix.FixedProperty;
+  // DBus1.14.10 complain_about_message formatter. Private connection/loginfo
+  // fields are bounded and discarded; the interface/member/destination are fixed.
+  const policy = /^Rejected (send|receive) message, [0-9]{1,4} matched rules; type="method_call", sender=":[0-9]{1,10}\.[0-9]{1,10}" \([^\r\n]{1,1024}\) interface="org\.freedesktop\.systemd1\.Manager" member="StartTransientUnit" error name="\(unset\)" requested_reply="[01]" destination="org\.freedesktop\.systemd1" \([^\r\n]{1,1024}\)$/.exec(suffix);
+  return policy?.[1] === "send" ? AdministrativeTransientSuffix.PolicySend :
+    policy?.[1] === "receive" ? AdministrativeTransientSuffix.PolicyReceive : AdministrativeTransientSuffix.Unknown;
+}
 // Subset of existing common.setupDiagnostic/runtimeDiagnostic classes. Literal
 // membership describes private captured text, never a cause or bus readiness.
 const administrativeSetupClasses = ["error while loading shared libraries", "cannot open shared object file",
@@ -137,11 +171,11 @@ const administrativeSetupClasses = ["error while loading shared libraries", "can
   "Failed to execute", "Failed at step", "ERR_MODULE_NOT_FOUND", "ERR_UNKNOWN_FILE_EXTENSION", "AssertionError"] as const;
 export type TestAdministrativeCommandObservation = Readonly<{
   status: number | null; signal: AdministrativeSignal; spawnError: AdministrativeSpawnError;
-  stdout: AdministrativeStdout; stderr: AdministrativeStderr; stderrClasses: readonly (typeof administrativeSetupClasses)[number][];
+  stdout: AdministrativeStdout; stderr: AdministrativeStderr; transientStartSuffix: AdministrativeTransientSuffix; stderrClasses: readonly (typeof administrativeSetupClasses)[number][];
 }>;
 const unknownAdministrativeCommand: TestAdministrativeCommandObservation = freeze({ status: null,
   signal: AdministrativeSignal.Unknown, spawnError: AdministrativeSpawnError.Unknown,
-  stdout: AdministrativeStdout.Unknown, stderr: AdministrativeStderr.Unknown, stderrClasses: freeze([]) });
+  stdout: AdministrativeStdout.Unknown, stderr: AdministrativeStderr.Unknown, transientStartSuffix: AdministrativeTransientSuffix.Unknown, stderrClasses: freeze([]) });
 /** One bounded native command-result projection. Reject Proxy/accessor data
  * before reading it; no raw streams, error text, paths, stack or callbacks. */
 export function observeTestAdministrativeCommandResult(result: unknown): TestAdministrativeCommandObservation {
@@ -176,5 +210,6 @@ export function observeTestAdministrativeCommandResult(result: unknown): TestAdm
     spawnError, stdout: stdout === null ? AdministrativeStdout.Unknown : stdout === "DENIED_ACTUAL_NATIVE_ORIGIN\n" ?
       AdministrativeStdout.ExactDenied : stdout === "" ? AdministrativeStdout.Empty : AdministrativeStdout.Other,
     stderr: stderr === null ? AdministrativeStderr.Unknown : stderr === "" ? AdministrativeStderr.Empty : AdministrativeStderr.Present,
+    transientStartSuffix: typeof stderr === "string" ? administrativeTransientSuffix(stderr) : AdministrativeTransientSuffix.Unknown,
     stderrClasses: freeze(typeof stderr === "string" ? administrativeSetupClasses.filter(value => stderr.includes(value)) : []) });
 }
