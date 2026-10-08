@@ -122,6 +122,8 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   readonly durableRootDir: string;
   readonly expectedBaseCommit?: string;
   readonly expectedHeadCommit?: string;
+  /** Trusted runtime adapter only; never part of serialized job configuration. */
+  readonly publicationAuthority?: { readonly assertPublicationAuthorized: () => Promise<void> };
   readonly testHooks?: {
     readonly afterCapture?: (attempt: number) => Promise<void>;
     readonly beforePublish?: (attempt: number) => Promise<void>;
@@ -131,15 +133,17 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   assertSafeHandoffId(input.workerJobId, "worker_job_id");
   assertSafeHandoffId(input.taskId, "task_id");
   const workspacePath = await canonicalDirectory(input.workspacePath, "handoff_workspace");
+  await input.publicationAuthority?.assertPublicationAuthorized();
   await mkdir(input.durableRootDir, { recursive: true, mode: 0o700 });
   const durableRootDir = await canonicalDirectory(
     input.durableRootDir,
     "handoff_durable_root",
   );
-  await chmod(durableRootDir, 0o700);
   if (handoffPathInside(workspacePath, durableRootDir)) {
     throw new Error("handoff_durable_root_inside_workspace");
   }
+  await input.publicationAuthority?.assertPublicationAuthorized();
+  await chmod(durableRootDir, 0o700);
 
   for (let attempt = 1; attempt <= captureAttempts; attempt += 1) {
     const before = await captureWorkspaceIdentity(workspacePath);
@@ -192,6 +196,7 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
         durableRootDir,
         taskId: input.taskId,
         captured,
+        ...(input.publicationAuthority ? { publicationAuthority: input.publicationAuthority } : {}),
         verifyWorkspaceStable: async () => {
           const finalIdentity = await captureWorkspaceIdentity(workspacePath);
           const finalContentSha256 = sameIdentity(publishCheck, finalIdentity)
@@ -567,6 +572,7 @@ async function publishPacket(input: {
   readonly captured: Awaited<ReturnType<typeof capturePacketFiles>>;
   readonly verifyWorkspaceStable: () => Promise<void>;
   readonly afterExistingPacketRead?: () => Promise<void>;
+  readonly publicationAuthority?: { readonly assertPublicationAuthorized: () => Promise<void> };
 }): Promise<MaterializedDurableCodexGoalHandoffPacket> {
   const packetName = `${input.taskId}.${input.captured.generation}.packet`;
   const packetPath = join(input.durableRootDir, packetName);
@@ -579,12 +585,14 @@ async function publishPacket(input: {
   if (existing) {
     await input.afterExistingPacketRead?.();
     await input.verifyWorkspaceStable();
+    await input.publicationAuthority?.assertPublicationAuthorized();
     return packetResult(packetPath, input.captured, existing);
   }
   const temporaryPath = join(
     input.durableRootDir,
     `.${packetName}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
   );
+  await input.publicationAuthority?.assertPublicationAuthorized();
   await mkdir(temporaryPath, { mode: 0o700 });
   try {
     for (const file of input.captured.files) {
@@ -597,6 +605,7 @@ async function publishPacket(input: {
     try { await directory.sync(); } finally { await directory.close(); }
     await input.verifyWorkspaceStable();
     await verifyPublishedPacket(temporaryPath, input.captured.files);
+    await input.publicationAuthority?.assertPublicationAuthorized();
     await rename(temporaryPath, packetPath);
     const root = await open(input.durableRootDir, "r");
     try { await root.sync(); } finally { await root.close(); }
@@ -612,12 +621,14 @@ async function publishPacket(input: {
       if (raced) {
         await input.afterExistingPacketRead?.();
         await input.verifyWorkspaceStable();
+        await input.publicationAuthority?.assertPublicationAuthorized();
         return packetResult(packetPath, input.captured, raced);
       }
     }
     throw error;
   }
   await verifyPublishedPacket(packetPath, input.captured.files);
+  await input.publicationAuthority?.assertPublicationAuthorized();
   return packetResult(packetPath, input.captured);
 }
 

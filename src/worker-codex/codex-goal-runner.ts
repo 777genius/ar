@@ -209,7 +209,7 @@ export type CodexGoalProgressSnapshot = {
   readonly currentAccount?: string;
 };
 
-export type CodexGoalRunDeps = {
+export type CodexGoalRunDeps = import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationDependencies & {
   /** Trusted adapter port, never supplied by serialized job configuration. */
   readonly admitProviderEgress?: typeof admitHostedTestEgress;
   readonly createExecutor?: (
@@ -428,6 +428,8 @@ async function runCodexGoalAdmitted(
     });
     await resultRecorder.record(await codexRuntimeResultInput({
       config,
+      ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
+        ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       result,
       executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
@@ -443,6 +445,8 @@ async function runCodexGoalAdmitted(
     const failure = codexRunnerExceptionFailure(error);
     await resultRecorder.record(await codexExceptionRuntimeResultInput({
       config,
+      ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
+        ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       error,
       executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
@@ -883,6 +887,7 @@ async function codexRuntimeResultInput(input: {
   readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly publicationAuthority?: import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
   const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
@@ -903,7 +908,7 @@ async function codexRuntimeResultInput(input: {
         ...(input.baseCommit === undefined
           ? {}
           : { expectedBaseCommit: input.baseCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
@@ -949,6 +954,7 @@ async function codexExceptionRuntimeResultInput(input: {
   readonly error: unknown;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly publicationAuthority?: import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const failure = codexRunnerExceptionFailure(input.error);
   const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
@@ -960,7 +966,7 @@ async function codexExceptionRuntimeResultInput(input: {
         ...(input.baseCommit === undefined
           ? {}
           : { expectedBaseCommit: input.baseCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
