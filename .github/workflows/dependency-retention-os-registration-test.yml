@@ -84,6 +84,7 @@ jobs:
             host-integration/managed-launcher/dependency-full-native-TEST.js
             host-integration/managed-launcher/dependency-full-native-parent-TEST.js
             scripts/dependency-retention-os-test/current-full-outer.js
+            scripts/dependency-retention-os-test/current-full-monitor-native-TEST.js
             scripts/dependency-retention-os-test/current-full-backing-collector.js
             scripts/dependency-retention-os-test/current-administrative-installation.js
             scripts/dependency-retention-os-test/administrative-test-control.js
@@ -148,6 +149,7 @@ jobs:
             scripts/dependency-retention-os-test/current-full-guest.ts
             scripts/dependency-retention-os-test/current-full-outer-input.ts
             scripts/dependency-retention-os-test/current-full-outer.ts
+            scripts/dependency-retention-os-test/current-full-monitor-native-TEST.ts
             scripts/dependency-retention-os-test/current-full-backing-collector.ts
             scripts/dependency-retention-os-test/current-administrative-installation.ts
             scripts/dependency-retention-os-test/administrative-test-control.ts

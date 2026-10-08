@@ -1,3 +1,4 @@
+import { assertOriginalFullMonitorNativeObservation } from "./current-full-monitor-native-TEST.js";
 import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } from "./io-uring.ts";
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
@@ -160,7 +161,8 @@ try {
     "owned TEST pinned Node preboot failed");
   remaining(deadline);
   }
-  const nspawn = root + "/usr/bin/systemd-nspawn";
+  // HOST loader/DSO provenance is selected independently in the protected FULL tuple.
+  const nspawn = "/usr/bin/systemd-nspawn";
   const version = command(nspawn, ["--version"]).split("\n")[0]!;
   assert.match(version, /^systemd 255(?:\.|\s)/);
   const launch = { schemaVersion: 1, purpose: "dependency-retention-owned-OS-TEST", unit, root: registered,
@@ -171,7 +173,7 @@ try {
   const target = diagnostic ? "TEST-retention-bus-diagnostic.target" : "TEST-retention.target";
   managedParent.revalidate();
   const parentLiveBindings=managedParent.liveBindings().join(" ");
-  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} ${parentLiveBindings} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
+  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nNoNewPrivileges=yes\nAmbientCapabilities=\nPassEnvironment=\nUnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_PROFILE\nCapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP\nStandardInput=null\nStandardOutput=null\nStandardError=null\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --settings=no --link-journal=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} ${parentLiveBindings} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
   const unitPath = "/run/systemd/system/" + unit;
   assert(!existsSync(unitPath)); writeFileSync(unitPath, fragment, { flag: "wx", mode: 0o644 });
   fragmentSha256 = fileDigest(unitPath);
@@ -180,17 +182,23 @@ try {
   managedParent.registerGuest(id,root,fragmentSha256);
   command("/usr/bin/systemctl", ["daemon-reload"]);
   managedParent.revalidate();
-  command("/usr/bin/systemctl", ["start", "--no-block", unit]);
+  managedParent.submitGuest(id);
   invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"]).trim();
   // A queued start may not yet have its invocation. Poll only this registered unit.
   const bootStarted = process.hrtime.bigint();
   const bootDeadline = earlier(deadline, bootStarted + milliseconds(90000));
   if (!diagnostic) {
-    while (!invocationId) {
+    // An InvocationID may precede exec/MainPID. Wait only in this bounded,
+    // unqualified startup phase; never consume or repeat another submission.
+    while (true) {
       remaining(bootDeadline, "owned TEST invocation readiness deadline exhausted");
-      assert(["active", "activating"].includes(command("/usr/bin/systemctl", ["show", unit, "--property=ActiveState", "--value"], Math.min(2000, remaining(bootDeadline))).trim()));
-      invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], Math.min(2000, remaining(bootDeadline))).trim();
-      if (!invocationId) await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining(bootDeadline))));
+      const raw=command("/usr/bin/systemctl",["show",unit,"--property=InvocationID,MainPID,ActiveState,SubState"],Math.min(2000,remaining(bootDeadline)));
+      const values:Record<string,string>={};
+      for(const line of raw.trimEnd().split("\n")){const at=line.indexOf("=");assert(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}
+      assert(Object.keys(values).sort().join(",")==="ActiveState,InvocationID,MainPID,SubState" && ["active","activating"].includes(values.ActiveState??""));
+      invocationId=values.InvocationID;
+      if(invocationId && values.ActiveState==="active" && values.SubState==="running" && /^[1-9][0-9]*$/.test(values.MainPID??""))break;
+      await new Promise(resolve=>setTimeout(resolve,Math.min(1000,remaining(bootDeadline))));
     }
     assert.match(invocationId, /^[a-f0-9]{32}$/);
     // Original once-only seal validates actual current systemctl invocation.
@@ -221,7 +229,12 @@ try {
       assert(isDependencyCustodyObject(request,"schemaVersion,sourceSha,runtimeManifestSha256") && request.schemaVersion===1 && request.sourceSha===fullInput.sourceSha && typeof request.runtimeManifestSha256==="string" && /^[a-f0-9]{64}$/.test(request.runtimeManifestSha256));
       assert(Buffer.from(JSON.stringify(request)+"\n").equals(bytes));assert(backing && registered && invocationId);
       observeGuestBoot(root,registered,unit,invocationId,deadline,undefined,(selection,handles)=>backing!.select(selection,handles));
-      managedParent.revalidate();const facts=backing.qualify();
+      managedParent.revalidate();
+      // Native regression is attached to this genuine parent/pair/collector,
+      // before a positive seal. It cannot replace the complete qualification.
+      const observed=backing.observe();
+      evidence.originalMonitorNativeRegression=assertOriginalFullMonitorNativeObservation(managedParent,id,observed);
+      const facts=backing.qualify();
       evidence.backingIntervalQualified={purpose:"actual_original_parent_backing_interval",factsSha256:digest(JSON.stringify(facts)+"\n")};
     }
     if(evidence.backingIntervalQualified){

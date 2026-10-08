@@ -120,7 +120,7 @@ class Pins {
 /** A catalog is independently reviewed PUBLIC installation data, not path input.
  * It excludes protected control/auth/credentials before any leaf read. */
 export function fullPublicRelative(value:unknown):value is string {
-  return typeof value==="string" && value.length<=240 && /^(?:dist|node_modules|packages|scripts|host-integration)\/[A-Za-z0-9_@+./-]+$/.test(value)
+  return typeof value==="string" && value.length<=240 && (value==="src/worker-codex/hosted-full-backing-proc.js" || /^(?:dist|node_modules|packages|scripts|host-integration)\/[A-Za-z0-9_@+./-]+$/.test(value))
     && !value.split("/").some(p=>p==="." || p===".." || /^(?:auth\.json(?:[.-].*)?|credentials?\.json(?:[.-].*)?|.*\.pem|\.env.*)$/i.test(p))
     && /\.(?:js|mjs|cjs|json|node)$/.test(value);
 }
@@ -128,7 +128,7 @@ function acquire(context:RootContext=RootContext.Launcher){
   initialRoot(context);const pins=new Pins();
   try{
     pins.hold(reviewRoot,true,0o700);
-    const r=fullData(pins.json(reviewPath,4096),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]);
+    const r=fullData(pins.json(reviewPath,32768),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]);
     check(r.schemaVersion===1 && r.sourceBaseSha===sourceBase && sha(r.sourceSha) && sha(r.sourceTree));
     check(typeof r.machineId==="string" && /^[a-f0-9]{32}$/.test(r.machineId) && typeof r.bootId==="string" && /^[a-f0-9-]{36}$/.test(r.bootId));
     check(r.accountName==="account-u" && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
@@ -141,8 +141,22 @@ function acquire(context:RootContext=RootContext.Launcher){
     pins.hold(root,true,0o700);
     const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard"]);
     for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
-    const tools=fullData(r.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode"]);
+    const tools=fullData(r.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure"]);
     for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"],["/usr/bin/lsns","lsns"],["/usr/lib/systemd/systemd","systemdPid1"],[bootstrapNode,"bootstrapNode"]] as const)pins.publicFile(path,requireDigest(tools[key]));
+    // HOST execution uses the HOST loader/DSOs. Guest signed package hashes
+    // cannot prove this separately selected original installation closure.
+    const monitorSources:{path:string;sha256:string;fd:number}[]=[];
+    monitorSources.push({path:"/usr/bin/systemd-nspawn",sha256:requireDigest(tools.systemdNspawn),
+      fd:pins.publicFile("/usr/bin/systemd-nspawn",requireDigest(tools.systemdNspawn))});
+    check(Array.isArray(tools.systemdNspawnClosure) && tools.systemdNspawnClosure.length>0 && tools.systemdNspawnClosure.length<=32);
+    let previousMonitorSource="";
+    for(const entry of tools.systemdNspawnClosure){
+      const row=fullData(entry,["path","sha256"]);
+      check(typeof row.path==="string" && /^\/usr\/lib\/[A-Za-z0-9_.+/-]+$/.test(row.path) &&
+        !row.path.split("/").some(part=>part==="." || part==="..") && row.path>previousMonitorSource);
+      previousMonitorSource=row.path;const expected=requireDigest(row.sha256);
+      monitorSources.push({path:row.path,sha256:expected,fd:pins.publicFile(row.path,expected)});
+    }
     check(tools.bootstrapNode==="7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c" && tools.lsns==="c9fe8adcfe480c47a052adcde50002c78e8fadd4d124bc337893a0f9a9e8cf3b" && tools.systemdPid1==="b472aadf808bef87c0eb203056a77cb64bd268b71b756306013a53de68a94173");
     const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!systemdVersion.error && systemdVersion.status===0 && systemdVersion.signal===null && systemdVersion.stdout.split("\n")[0]===r.systemdVersion);
@@ -166,6 +180,10 @@ function acquire(context:RootContext=RootContext.Launcher){
       }
     }
     for(const top of ["dist","node_modules","packages","scripts","host-integration"])census(source+"/"+top,top);
+    // One emitted external import, not a blanket src tree permission.
+    const procModule="src/worker-codex/hosted-full-backing-proc.js";
+    const procModuleStat=lstatSync(source+"/"+procModule);
+    check(procModuleStat.isFile() && !procModuleStat.isSymbolicLink());expected.add(procModule);
     check(catalog.files.length===expected.size);
     let previous="",total=0;const paths=new Set<string>();
     for(const entry of catalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256) && row.path>previous && expected.has(row.path));previous=row.path;
@@ -180,7 +198,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     const namespace=readlinkSync("/proc/self/ns/mnt"),namespaceFd=pins.mountNamespace();
     if(context===RootContext.Parent)check(namespace!==readlinkSync("/proc/1/ns/mnt"));
     const validate=()=>{initialRoot(context);check(readlinkSync("/proc/self/ns/mnt")===namespace && readlinkSync(`/proc/self/fd/${namespaceFd}`)===namespace);pins.validate();check(readFileSync("/etc/machine-id","utf8").trim()===tuple.machineId && readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()===tuple.bootId);};
-    validate();return {pins,tuple,validate};
+    validate();return {pins,tuple,validate,monitorSources};
   }catch{pins.close();refuse();}
 }
 function fingerprint(machine:string,argv:readonly string[]){return hash(JSON.stringify([fullNativeJob,machine,argv,1800,180,2048,128,100]));}
@@ -277,6 +295,7 @@ export function fullDataArray(value:unknown):readonly [string,string]{
 }
 const erasedEnvironment=["NODE_OPTIONS","NODE_PATH","LD_PRELOAD","LD_LIBRARY_PATH","LD_AUDIT","LD_PROFILE","OPENAI_API_KEY","ANTHROPIC_API_KEY","CODEX_HOME"].join(" ");
 const parentCapabilities="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP";
+const fullMonitorCapabilities=parentCapabilities;
 export function fullNativeArguments(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
     const toolchain=fullNativeInputBase+"/"+custody.sourceSha+"/toolchain";
@@ -291,6 +310,15 @@ export function fullNativeArguments(request:unknown){
 }
 const fullParents=new WeakMap<object,()=>void>();
 const fullParentDescriptors=new WeakMap<object,()=>readonly number[]>();
+export type FullMonitorTaskAnchor=Readonly<{path:string;processPid:number;processBirth:string;birth:string;revalidate():void}>;
+export type FullMonitorTaskFact=Readonly<{pid:number;birth:string;taskBirth:string;invocationId:string;
+  sourceBeforeSubmitSha256:string;mountNamespace:string;namespaceDevice:string;namespaceInode:string}>;
+const fullMonitorReaders=new WeakMap<object,(task:FullMonitorTaskAnchor)=>FullMonitorTaskFact|undefined>();
+/** Facts of ONE causally submitted original monitor, never PID/unit enrollment. */
+export function readOriginalFullMonitorTask(parent:object,task:FullMonitorTaskAnchor):FullMonitorTaskFact|undefined {
+  check(fullParents.has(parent));const read=fullMonitorReaders.get(parent);check(read);return read(task);
+}
+
 /** Exact retained SOURCE/proc custody fact of the genuine original session.
  * No caller can enroll a descriptor or fabricate this private session join. */
 export function retainedCurrentFullParentDescriptors(value:object):readonly number[] {
@@ -300,6 +328,7 @@ export function assertRetainedCurrentFullParent(value:unknown):void {check(value
 export interface FullParentSession {
   readonly unit:string;revalidate():void;liveBindings():readonly string[];
   registerGuest(id:string,root:string,fragmentSha256:string):void;
+  submitGuest(id:string):void;
   observeGuestInvocation(id:string,guestInvocationId:string):void;
   close(terminal:unknown):Promise<void>;
 }
@@ -308,6 +337,10 @@ let retainedFullParent:FullParentSession|undefined;
 export function retainCurrentFullParent():FullParentSession {
   if(retainedFullParent){assertRetainedCurrentFullParent(retainedFullParent);return retainedFullParent;}
   const c=acquire(RootContext.Parent);let closed=false,invocation:string|undefined,guestId:string|undefined,guestHash:string|undefined;
+  let guestSubmitted=false,monitorSourceBeforeSubmit:string|undefined;
+  let monitorCaptureStarted=false;
+  let monitor:Readonly<{pid:number;start:string;anchor:number;exe:number;mnt:number;user:number;pidNamespace:number;
+    procIdentity:string;exeIdentity:string;mountNamespace:string;invocation:string;command:Buffer}>|undefined;
   const procRoot="/proc/"+process.pid,procFds:number[]=[];
   const procIdentity=(fd:number)=>{const s=fstatSync(fd,{bigint:true});check(s.isFile() && retainedFilesystemType(fd)===0x9fa0n);return {dev:String(s.dev),ino:String(s.ino)};};
   function birth(raw:string){const end=raw.lastIndexOf(") "),fields=raw.slice(end+2).trim().split(/\s+/);check(end>0 && raw.startsWith(process.pid+" (") && fields[0] && !["Z","X","x"].includes(fields[0]) && /^[1-9][0-9]*$/.test(fields[19]??""));return fields[19]!;}
@@ -362,6 +395,85 @@ export function retainCurrentFullParent():FullParentSession {
     check(typeof values.InvocationID==="string" && /^[a-f0-9]{32}$/.test(values.InvocationID));check(process.env.INVOCATION_ID===values.InvocationID && process.env.PATH==="/usr/bin:/bin" && process.env.LANG==="C.UTF-8" && process.env.HOME==="/srv/workers/jobs/"+fullNativeJob && process.env.TMPDIR==="/srv/workers/jobs/"+fullNativeJob+"/tmp");if(invocation)check(invocation===values.InvocationID);else invocation=values.InvocationID;
     check(readFileSync("/proc/self/cgroup","utf8").trim()==="0::"+values.ControlGroup);assertParentKernelPolicy(values.ControlGroup);sourceBirth();liveProc();c.validate();record(c,true);
   };
+  function monitorState():Readonly<Record<string,string>> {
+    check(guestId && guestSubmitted);
+    const unit="TEST-retention-os-"+guestId+".service";
+    const keys=["Id","LoadState","ActiveState","SubState","MainPID","InvocationID","ControlGroup","FragmentPath","DropInPaths", "Type","KillMode","Restart","NoNewPrivileges","CapabilityBoundingSet","AmbientCapabilities","RootDirectory","WorkingDirectory","Environment","UnsetEnvironment","StandardInput","StandardOutput","StandardError"];
+    const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property="+keys.join(",")],
+      {env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:8192});
+    check(!result.error && result.status===0 && result.signal===null);const values:Record<string,string>={};
+    for(const line of result.stdout.trimEnd().split("\n")){
+      const at=line.indexOf("=");check(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);
+    }
+    check(Object.keys(values).sort().join(",")===keys.sort().join(","));
+    check(values.Id===unit && values.LoadState==="loaded" && values.ActiveState==="active" && values.SubState==="running" &&
+      values.ControlGroup==="/system.slice/"+unit && values.FragmentPath==="/run/systemd/system/"+unit && values.DropInPaths==="" &&
+      values.Type==="exec" && values.KillMode==="control-group" && values.Restart==="no" && values.NoNewPrivileges==="yes" && values.AmbientCapabilities==="" &&
+      values.RootDirectory==="" && (values.WorkingDirectory==="" || values.WorkingDirectory==="/") &&
+      values.Environment==="SYSTEMD_NSPAWN_USE_CGNS=1" && values.StandardInput==="null" && values.StandardOutput==="null" && values.StandardError==="null");
+    check(values.UnsetEnvironment?.split(" ").sort().join(" ") === ["NODE_OPTIONS","NODE_PATH","LD_PRELOAD","LD_LIBRARY_PATH","LD_AUDIT","LD_PROFILE"].sort().join(" "));
+    check(values.CapabilityBoundingSet?.split(" ").map(value=>value.toUpperCase()).sort().join(" ")===fullMonitorCapabilities.split(" ").sort().join(" "));
+    check(/^[1-9][0-9]*$/.test(values.MainPID??"") && /^[a-f0-9]{32}$/.test(values.InvocationID??""));
+    return Object.freeze(values);
+  }
+  function monitorBirth(path:string,pid:number):string {
+    const raw=readFileSync(path+"/stat","utf8"),end=raw.lastIndexOf(") "),fields=raw.slice(end+2).trim().split(/\s+/);
+    check(end>0 && raw.startsWith(pid+" (") && !["Z","X","x"].includes(fields[0]??"") && /^[1-9][0-9]*$/.test(fields[19]??""));return fields[19]!;
+  }
+  function retainMonitorDescriptor(path:string,flags:number):number {
+    const fd=openSync(path,flags);procFds.push(fd);return fd;
+  }
+  function monitorMappings(path:string):void {
+    const raw=readFileSync(path+"/maps","utf8");check(Buffer.byteLength(raw)<=1024*1024);
+    const selected=c.monitorSources.map(source=>{const stat=fstatSync(source.fd,{bigint:true});
+      const major=((stat.dev>>8n)&0xfffn)|((stat.dev>>32n)&0xfffff000n),minor=(stat.dev&0xffn)|((stat.dev>>12n)&0xffffff00n);
+      return {inode:String(stat.ino),device:major+":"+minor};});
+    let executableMaps=0;
+    for(const row of raw.trimEnd().split("\n")){
+      const match=/^[0-9a-f]+-[0-9a-f]+ ([rwxps-]{4}) [0-9a-f]+ ([0-9a-f]+):([0-9a-f]+) ([0-9]+)(?: +(.+))?$/.exec(row);check(match);
+      if(!match[1]!.includes("x"))continue;check(!match[1]!.includes("w"));
+      if(match[4]==="0"){check(match[5]==="[vdso]" || match[5]==="[vsyscall]");continue;}
+      executableMaps++;check(selected.some(source=>source.inode===match[4] && source.device===BigInt("0x"+match[2]!)+":"+BigInt("0x"+match[3]!)));
+    }
+    check(executableMaps>0);
+  }
+  function rejoinMonitor():void {
+    revalidate();check(monitor && monitorSourceBeforeSubmit && guestId);
+    const before=monitorState();check(before.MainPID===String(monitor.pid) && before.InvocationID===monitor.invocation);
+    const numeric="/proc/"+monitor.pid,held=`/proc/self/fd/${monitor.anchor}`,fresh=openSync(numeric,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+    try{
+      check(identity(fstatSync(fresh))===monitor.procIdentity && identity(fstatSync(monitor.anchor))===monitor.procIdentity &&
+        ancestorMountId(fresh)===ancestorMountId(monitor.anchor) && retainedFilesystemType(monitor.anchor)===0x9fa0n);
+      check(monitorBirth(held,monitor.pid)===monitor.start && monitorBirth(`/proc/self/fd/${fresh}`,monitor.pid)===monitor.start);
+      const status=readFileSync(held+"/status","utf8");check(/^Uid:\s+0\s+0\s+0\s+0$/m.test(status) && /^Gid:\s+0\s+0\s+0\s+0$/m.test(status) && /^NoNewPrivs:\s+1$/m.test(status));
+      const sets=caps(status),bound=0xa82c01fbn;check(sets[0]==="0000000000000000" && sets[4]==="0000000000000000" && BigInt("0x"+sets[3]!)===bound);
+      check(sets.every(value=>(BigInt("0x"+value)&~bound)===0n));
+      check(identity(statSync(held+"/root"))===identity(fstatSync(c.pins.hold("/",true))));
+      check(readFileSync(held+"/cgroup","utf8")==="0::/system.slice/TEST-retention-os-"+guestId+".service\n" && readFileSync(held+"/cmdline").equals(monitor.command));
+      const exe=openSync(held+"/exe",constants.O_RDONLY);try{check(identity(fstatSync(exe))===monitor.exeIdentity && identity(fstatSync(monitor.exe))===monitor.exeIdentity);}finally{closeSync(exe);}
+      check(readlinkSync(held+"/ns/user")==="user:[4026531837]" && readlinkSync(held+"/ns/pid")==="pid:[4026531836]" && readlinkSync(held+"/ns/mnt")===monitor.mountNamespace);
+      for(const [name,fd] of [["user",monitor.user],["pid",monitor.pidNamespace],["mnt",monitor.mnt]] as const){
+        const current=openSync(held+"/ns/"+name,constants.O_RDONLY);try{check(identity(fstatSync(current))===identity(fstatSync(fd)) && retainedFilesystemType(fd)===0x6e736673n);}finally{closeSync(current);}
+      }
+      monitorMappings(held);c.validate();check(c.pins.sourceSnapshot()===monitorSourceBeforeSubmit);
+      check(JSON.stringify(monitorState())===JSON.stringify(before));check(monitorBirth(held,monitor.pid)===monitor.start);
+    }finally{closeSync(fresh);}
+  }
+  function captureMonitor(expectedInvocation:string):void {
+    check(!monitorCaptureStarted && guestId && monitorSourceBeforeSubmit);monitorCaptureStarted=true;
+    const state=monitorState();check(state.InvocationID===expectedInvocation);const pid=Number(state.MainPID);
+    const anchor=retainMonitorDescriptor("/proc/"+pid,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW),path=`/proc/self/fd/${anchor}`;
+    const fragment=readFd(c.pins.hold("/run/systemd/system/TEST-retention-os-"+guestId+".service")).toString("utf8");
+    check(Buffer.byteLength(fragment)<=16384);
+    const commands=[...fragment.matchAll(/^ExecStart=(.+)$/gm)];check(commands.length===1);
+    const argv=commands[0]![1]!.split(" ");check(argv[0]==="/usr/bin/systemd-nspawn" && argv.includes("--settings=no") && argv.includes("--link-journal=no"));
+    const command=Buffer.from([...argv,""].join("\0"));check(command.length<=32768 && readFileSync(path+"/cmdline").equals(command));
+    const exe=retainMonitorDescriptor(path+"/exe",constants.O_RDONLY),selected=fstatSync(c.monitorSources[0]!.fd);
+    check(identity(fstatSync(exe))===identity(selected));
+    const user=retainMonitorDescriptor(path+"/ns/user",constants.O_RDONLY),pidNamespace=retainMonitorDescriptor(path+"/ns/pid",constants.O_RDONLY),mnt=retainMonitorDescriptor(path+"/ns/mnt",constants.O_RDONLY);
+    monitor=Object.freeze({pid,start:monitorBirth(path,pid),anchor,exe,mnt,user,pidNamespace,procIdentity:identity(fstatSync(anchor)),exeIdentity:identity(fstatSync(exe)),mountNamespace:readlinkSync(path+"/ns/mnt"),invocation:expectedInvocation,command});
+    rejoinMonitor();
+  }
   function seal(name:"current-full-pair.json"|"current-full-pair-invocation.json",data:unknown){
     revalidate();check(liveRootCreated);const parent=c.pins.hold(fullNativeLiveRoot,true,0o700);
     const fd=openSync(`/proc/self/fd/${parent}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
@@ -385,10 +497,10 @@ export function retainCurrentFullParent():FullParentSession {
       const publicCatalog=fullData(c.pins.json(reviewRoot+"/public-installation.json",2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
       check(Array.isArray(publicCatalog.files));
       for(const entry of publicCatalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256));
-        if(!row.path.startsWith("host-integration/"))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
-        else if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
+        if(!row.path.startsWith("host-integration/") || ["host-integration/managed-launcher/dependency-full-native-TEST.js","host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
+        if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
       }
-      c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullData(c.pins.json(reviewPath,4096),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]).nodeSha256));
+      c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullData(c.pins.json(reviewPath,32768),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]).nodeSha256));
       const elfFd=c.pins.hold(guestRuntime+"/os-signed-elf-pins.json"),elfBytes=readFd(elfFd);check(elfBytes.length<=256*1024);
       const os=fullData(JSON.parse(elfBytes.toString("utf8")),["schemaVersion","pins"]);check(os.schemaVersion===1 && Array.isArray(os.pins));
       const guestSources:{path:string;sha256:string}[]=[{path:"/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",sha256:hash(readFd(c.pins.hold(guestRuntime+"/toolchain/bin/node")))}];
@@ -402,17 +514,74 @@ export function retainCurrentFullParent():FullParentSession {
       const data={schemaVersion:2,jobId:fullNativeJob,parentUnit:fullNativeUnit,parentInvocationId:invocation,guestMachineId,parentProc:{pid:process.pid,startTicks:parentStartTicks,stat:procFiles[0]!.identity,status:procFiles[1]!.identity,capabilities:parentCapabilities},guestSources,unit,fragmentSha256,root,rootDev:String(rootStat.dev),rootIno:String(rootStat.ino),machineId:c.tuple.machineId,bootId:c.tuple.bootId,sourceSha:c.tuple.sourceSha};
       guestHash=hash(JSON.stringify(data)+"\n");seal("current-full-pair.json",data);guestId=id;
     },
+    submitGuest(id:string){
+      // This private original session owns the existing one submission. A
+      // transport failure consumes it and retains custody; no blind retry.
+      revalidate();check(id===guestId && guestHash && !guestSubmitted);
+      const unit="TEST-retention-os-"+id+".service";
+      const observation=spawnSync("/usr/bin/systemctl",["show",unit,"--property=MainPID,Job,ActiveState,FragmentPath,DropInPaths"],
+        {env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
+      check(!observation.error && observation.status===0 && observation.signal===null);
+      const fields:Record<string,string>={};
+      for(const line of observation.stdout.trimEnd().split("\n")){
+        const split=line.indexOf("=");check(split>0 && !Object.hasOwn(fields,line.slice(0,split)));
+        fields[line.slice(0,split)]=line.slice(split+1);
+      }
+      check(Object.keys(fields).sort().join(",")==="ActiveState,DropInPaths,FragmentPath,Job,MainPID" &&
+        fields.MainPID==="0" && fields.Job==="" && fields.ActiveState==="inactive" &&
+        fields.FragmentPath==="/run/systemd/system/"+unit && fields.DropInPaths==="");
+      revalidate();monitorSourceBeforeSubmit=c.pins.sourceSnapshot();guestSubmitted=true;
+      const submitted=spawnSync("/usr/bin/systemctl",["start","--no-block",unit],
+        {env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
+      check(!submitted.error && submitted.status===0 && submitted.signal===null);revalidate();
+    },
     observeGuestInvocation(id:string,guestInvocationId:string){
-      revalidate();check(id===guestId && guestHash && /^[a-f0-9]{32}$/.test(guestInvocationId));const unit="TEST-retention-os-"+id+".service";
+      revalidate();check(id===guestId && guestHash && guestSubmitted && monitorSourceBeforeSubmit && /^[a-f0-9]{32}$/.test(guestInvocationId));const unit="TEST-retention-os-"+id+".service";
       const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=InvocationID","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
       check(!result.error && result.status===0 && result.signal===null && result.stdout.trim()===guestInvocationId);revalidate();
+      captureMonitor(guestInvocationId);
       seal("current-full-pair-invocation.json",{schemaVersion:1,pairSha256:guestHash,parentInvocationId:invocation,unit,guestInvocationId});
     },async close(terminal:unknown){
       check(!closed);revalidate();
       const module=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-full-backing-collector.js").href);
       module.assertFullBackingTerminal(session,terminal);revalidate();
-      closed=true;for(const fd of procFds.reverse())closeSync(fd);c.pins.close();
-    }});fullParents.set(session,revalidate);fullParentDescriptors.set(session,()=>{check(!closed);return c.pins.descriptors().concat(procFds);});retainedFullParent=session;return session;}catch{for(const fd of procFds.reverse())closeSync(fd);c.pins.close();refuse();}
+      if(monitor){
+        // A recursive terminal brand does not turn a live proc anchor into dead
+        // custody. Reopen the original object: kernel death must be observable.
+        let dead=false;
+        try{readFileSync(`/proc/self/fd/${monitor.anchor}/stat`);}
+        catch(error){check((error as NodeJS.ErrnoException).code==="ESRCH" || (error as NodeJS.ErrnoException).code==="ENOENT");dead=true;}
+        check(dead);
+        const final=spawnSync("/usr/bin/systemctl",["show","TEST-retention-os-"+guestId+".service","--property=InvocationID,MainPID,Job,ActiveState"],
+          {env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
+        check(!final.error && final.status===0 && final.signal===null);const fields:Record<string,string>={};
+        for(const line of final.stdout.trimEnd().split("\n")){const at=line.indexOf("=");check(at>0 && !Object.hasOwn(fields,line.slice(0,at)));fields[line.slice(0,at)]=line.slice(at+1);}
+        check(Object.keys(fields).sort().join(",")==="ActiveState,InvocationID,Job,MainPID" && fields.InvocationID===monitor.invocation &&
+          fields.MainPID==="0" && fields.Job==="" && ["inactive","failed"].includes(fields.ActiveState??""));
+      }
+      revalidate();closed=true;for(const fd of procFds.reverse())closeSync(fd);c.pins.close();
+    }});fullParents.set(session,revalidate);fullMonitorReaders.set(session,(task)=>{
+      if(!monitor || task.processPid!==monitor.pid || task.processBirth!==monitor.start)return undefined;
+      revalidate();rejoinMonitor();task.revalidate();
+      const taskDirectory=openSync(task.path,constants.O_RDONLY|constants.O_DIRECTORY);
+      try{check(retainedFilesystemType(taskDirectory)===0x9fa0n && identity(fstatSync(taskDirectory))===identity(statSync(task.path)));}
+      finally{closeSync(taskDirectory);}
+      const rawTask=readFileSync(task.path+"/stat","utf8"),taskPid=Number(rawTask.slice(0,rawTask.indexOf(" ")));
+      check(Number.isSafeInteger(taskPid) && taskPid>0 && monitorBirth(task.path,taskPid)===task.birth);
+      const held=`/proc/self/fd/${monitor.anchor}`;
+      check(readFileSync(task.path+"/cgroup").equals(readFileSync(held+"/cgroup")) &&
+        readFileSync(task.path+"/cmdline").equals(monitor.command) && identity(statSync(task.path+"/exe"))===monitor.exeIdentity);
+      const status=readFileSync(task.path+"/status","utf8");check(new RegExp("^Tgid:\\s+"+monitor.pid+"$","m").test(status) && new RegExp("^Pid:\\s+"+taskPid+"$","m").test(status));check(/^Uid:\s+0\s+0\s+0\s+0$/m.test(status) && /^Gid:\s+0\s+0\s+0\s+0$/m.test(status) && /^NoNewPrivs:\s+1$/m.test(status));
+      check(JSON.stringify(caps(status))===JSON.stringify(caps(readFileSync(held+"/status","utf8"))));
+      for(const [name,fd] of [["user",monitor.user],["pid",monitor.pidNamespace],["mnt",monitor.mnt]] as const){
+        const actual=openSync(task.path+"/ns/"+name,constants.O_RDONLY);
+        try{check(identity(fstatSync(actual))===identity(fstatSync(fd)) && retainedFilesystemType(actual)===0x6e736673n);}finally{closeSync(actual);}
+      }
+      check(identity(statSync(task.path+"/root"))===identity(statSync(held+"/root")));
+      const namespace=fstatSync(monitor.mnt);rejoinMonitor();task.revalidate();
+      return Object.freeze({pid:monitor.pid,birth:monitor.start,taskBirth:task.birth,invocationId:monitor.invocation,
+        sourceBeforeSubmitSha256:monitorSourceBeforeSubmit!,mountNamespace:monitor.mountNamespace,namespaceDevice:String(namespace.dev),namespaceInode:String(namespace.ino)});
+    });fullParentDescriptors.set(session,()=>{check(!closed);return c.pins.descriptors().concat(procFds);});retainedFullParent=session;return session;}catch{for(const fd of procFds.reverse())closeSync(fd);c.pins.close();refuse();}
 }
 
 /** DATA predicate only; it grants no physical protection or launch permission. */

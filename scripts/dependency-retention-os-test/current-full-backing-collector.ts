@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { assertRetainedCurrentFullParent, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { assertRetainedCurrentFullParent, readOriginalFullMonitorTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../src/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { currentBackingStorage } from "./current-backing-geometry.js";
@@ -611,6 +611,37 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     if(script){const fd=hold(root+script,false);assert.equal(hash(fdBytes(fd,128*1024*1024,budget)),guestSources.get(script));}
     return true;
   }
+  /** Fixed nspawn's own native protocol is the only additional setup route.
+   * Source was selected and held before its single original submit. Datagram
+   * READY/STATUS handling closes received SCM_RIGHTS before credential checks;
+   * the boot synchronization socketpairs carry fixed native setup only. This
+   * does not authorize another executable, namespace handle or named socket. */
+  function originalMonitor(anchor:FullProcTaskAnchor,user:string,mnt:string,joins:readonly Record<string,unknown>[]):boolean {
+    const fact=readOriginalFullMonitorTask(parent,anchor);if(!fact)return false;
+    assert(selection && user==="user:[4026531837]" && fact.mountNamespace===mnt && fact.invocationId===selection.invocationId);
+    assert.equal(mountOwner(anchor.processPid,mnt),user);
+    const allowedNamespaces=new Set([mnt,selection.mnt,selection.pidNamespace,"user:[4026531837]","pid:[4026531836]"]);
+    let sockets=0,notify=0;
+    for(const join of joins){
+      const path=anchor.path+"/fd/"+join.fd;
+      if(join.exposure===FullBackingExposure.NamespaceDescriptor){
+        assert(allowedNamespaces.has(readlinkSync(path)));
+      }else if(join.exposure===FullBackingExposure.ProcDescriptor){
+        // The fixed original nspawn protocol requires no retained proc/control
+        // descriptors after boot. An unexpected route remains a refusal.
+        assert.fail("original monitor retained unsupported proc control");
+      }else if(join.exposure===FullBackingExposure.SocketDescriptor){
+        assert(++sockets<=3);const inode=String(join.ino);
+        const rows=text(anchor.path+"/net/unix",256*1024,budget).trimEnd().split("\n").slice(1).map(row=>row.trim().split(/\s+/)).filter(fields=>fields[6]===inode);
+        assert.equal(rows.length,1);const row=rows[0]!;assert(row.length===7 || row.length===8);
+        // Source-closed unnamed boot socketpair, or the one guest notify
+        // datagram endpoint. No host service/control socket is admitted.
+        if(row[4]==="0005")assert(row.length===7);
+        else {assert(row[4]==="0002" && row[7]==="/run/host/notify" && ++notify<=1);}
+      }
+    }
+    anchor.revalidate();assert(readOriginalFullMonitorTask(parent,anchor));return true;
+  }
   function kernelUnable(pid:number,prefix:string,user:string,mnt:string,caps:readonly string[],mounts:readonly Mount[],exposures:Set<FullBackingExposure>):boolean {
     if(caps.some(cap=>BigInt("0x"+cap)!==0n) || user==="user:[4026531837]" || !/^NoNewPrivs:\s+1$/m.test(text(prefix+"/status",16384,budget)))return false;
     if(text(prefix+"/uid_map",4096,budget).trim().replace(/\s+/g," ")!=="65532 0 1" || text(prefix+"/gid_map",4096,budget).trim().replace(/\s+/g," ")!=="65532 0 1")return false;
@@ -756,7 +787,11 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
                 // nonprivileged host actors. For every actual target/privilege
                 // candidate, ALL such inherited routes remain veto checks.
                 if(relevant){assert(owners.length<256);
-                  const original=pid===process.pid || (pid===selection!.pid && tid===pid) || originalGuest(pid,prefix,user);
+                  const monitor=originalMonitor(taskAnchor,user,mnt,fdJoins);
+                  const original=pid===process.pid || (pid===selection!.pid && tid===pid) || monitor || originalGuest(pid,prefix,user);
+                  if(monitor){const anchored=taskAnchor;memberships.push(()=>{
+                    assert(originalMonitor(anchored,readlinkSync(anchored.path+"/ns/user"),readlinkSync(anchored.path+"/ns/mnt"),fdJoins));
+                  });}
                   const unable=!original && kernelUnable(pid,prefix,user,mnt,caps,mounts,exposures);
                   const os=!original && !unable && bootPid1(pid,tid,prefix,user,mnt);
                   let administrator=false;
