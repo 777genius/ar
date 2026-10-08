@@ -26,6 +26,19 @@ const env={
   PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:control,TMPDIR:control
 }
 ;
+export enum AdministrativeInstallationTestPhase {
+  NotStarted="not_started", Handshake="original_parent_handshake",
+  ForgedLaunch="forged_application_launch", ForgedTerminal="forged_application_terminal",
+  ProducerRetain="retain_original_producer", SubmitReady="original_submit_and_ready",
+  OriginReadback="read_actual_origin", TargetBirth="new_target_birth",
+  NativeAnchor="retain_actual_actor_tasks", CopiedProc="reject_copied_proc",
+  CleanReferences="clean_actor_reference_scan", ProcControl="unexpected_proc_control_veto",
+  ImageFd="readonly_image_fd_veto", Terminal="owned_recursive_terminal",
+  DeadBirth="dead_original_birth_veto", Complete="complete",
+}
+let currentPhase=AdministrativeInstallationTestPhase.NotStarted;
+/** Finite TEST progress only; it grants no source/admission or retry authority. */
+export function observeAdministrativeInstallationTestPhase():AdministrativeInstallationTestPhase { return currentPhase; }
 const deadline=process.hrtime.bigint()+120n*1000000000n;
 function budget():void{
   assert(process.hrtime.bigint()<deadline);
@@ -75,6 +88,7 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
   assert(sourceSha);
   assert.equal(process.getuid?.(),0);
   // Original supervisor publishes actual child birth before releasing stdin.
+  currentPhase=AdministrativeInstallationTestPhase.Handshake;
   const ready=await new Promise<string>((resolve,reject)=>{
     let value="";const timer=setTimeout(()=>reject(new Error("original administrative producer handshake missing")),5000);
     process.stdin.on("data",(chunk:Buffer)=>{
@@ -91,20 +105,27 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
   absent(control+"/administrative-before.json");
   absent(control+"/administrative-origin.json");
   absent(control+"/administrative-ready.json");
+  currentPhase=AdministrativeInstallationTestPhase.ForgedLaunch;
   const denied=command("/usr/bin/systemd-run",["--collect","--wait","--pipe","--unit="+forgedUnit,"--service-type=exec","--property=User=0","--property=Group=0","--property=NoNewPrivileges=yes","--property=CapabilityBoundingSet=","--property=AmbientCapabilities=","--property=ProtectSystem=strict","--property=RuntimeMaxSec=5s","--property=WorkingDirectory=/","--",node,runtime+"/scripts/dependency-retention-os-test/administrative-forgery-native-TEST.js"]);
   assert.equal(denied,"DENIED_ACTUAL_NATIVE_ORIGIN\n");
+  currentPhase=AdministrativeInstallationTestPhase.ForgedTerminal;
   await terminal(forgedUnit);
   absent(control+"/administrative-before.json");
   absent(control+"/administrative-origin.json");
   absent(control+"/administrative-ready.json");
   const unloaded=command("/usr/bin/systemctl",["show",actorUnit,"--property=LoadState","--value"],true);
   assert.equal(unloaded.trim(),"not-found");
-  submitPublicAdministrativeMaintenance(retainOriginalAdministrativeProducer());
+  currentPhase=AdministrativeInstallationTestPhase.ProducerRetain;
+  const original=retainOriginalAdministrativeProducer();
+  currentPhase=AdministrativeInstallationTestPhase.SubmitReady;
+  submitPublicAdministrativeMaintenance(original);
+  currentPhase=AdministrativeInstallationTestPhase.OriginReadback;
   const before=readOriginalAdministrativeBirth(sourceSha);
   assert(before);
   const actorReady=JSON.parse(readFileSync(control+"/administrative-ready.json","utf8")) as Record<string,unknown>;
   assert.deepEqual(actorReady,{schemaVersion:1,pid:before.actor.pid,birth:before.actor.birth,invocationId:before.actor.invocationId});
   // Exclusive NEW target, after actual administrative admission/complete birth.
+  currentPhase=AdministrativeInstallationTestPhase.TargetBirth;
   const fd=openSync(image,C.O_RDWR|C.O_CREAT|C.O_EXCL|C.O_NOFOLLOW,0o600);
   writeFileSync(fd,"NEW_ADMINISTRATIVE_TEST_TARGET\n");
   const stat=fstatSync(fd,{
@@ -127,11 +148,13 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
     ),loopRdev:null,storageDevice:null
   }
   ;
+  currentPhase=AdministrativeInstallationTestPhase.NativeAnchor;
   const parent=retainFullProcProcess(before.actor.pid,budget),anchors=parent.taskIds().map(tid=>parent.retainTask(Number(tid)));
   try{
     assert(anchors.length>0);
     // Actual byte copies of a live process are ordinary files, not a native
     // procfs anchor. Matching birth/content must never admit the copy.
+    currentPhase=AdministrativeInstallationTestPhase.CopiedProc;
     const copied=control+"/TEST-copied-proc";
     mkdirSync(copied,{mode:0o700});
     for(const name of ["stat","status","cgroup"])writeFileSync(copied+"/"+name,readFileSync(anchors[0]!.path+"/"+name),{flag:"wx",mode:0o400});
@@ -143,6 +166,7 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
       path:copied,birth:anchors[0]!.birth,processPid:before.actor.pid,processBirth:before.actor.birth,
       revalidate(){const fresh=statSync(copied,{bigint:true});assert.equal(fresh.dev,copiedIdentity.dev);assert.equal(fresh.ino,copiedIdentity.ino);}
     },sourceSha));
+    currentPhase=AdministrativeInstallationTestPhase.CleanReferences;
     for(const anchor of anchors){
       const disposition=readOriginalAdministrativeTaskReferences(anchor,sourceSha,before.originSha256,target,budget);
       assert.equal(disposition?.actor.pid,before.actor.pid);
@@ -151,6 +175,7 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
       assert.equal(disposition?.material,false);
       assert.deepEqual(disposition.unresolved,[]);
     }
+    currentPhase=AdministrativeInstallationTestPhase.ProcControl;
     writeFileSync(control+"/TEST-inspection-control-open","INSPECT_FIXED_PARENT_CONTROL\n",{
       flag:"wx",mode:0o400
     }
@@ -168,6 +193,7 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
     assert(unresolved);
     // Actual fixed administrative inspection deliberately retains readonly
     // image FD. Every observed task must veto; readonly cannot waive exposure.
+    currentPhase=AdministrativeInstallationTestPhase.ImageFd;
     writeFileSync(control+"/TEST-inspection-open","INSPECT_FIXED_IMAGE_READONLY\n",{
       flag:"wx",mode:0o400
     }
@@ -185,12 +211,15 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
       if(!material)await new Promise<void>(resolve=>setTimeout(resolve,50));
     }
     assert(material);
+    currentPhase=AdministrativeInstallationTestPhase.Terminal;
     command("/usr/bin/systemctl",["stop",actorUnit]);
     await terminal(actorUnit);
     // A retained real proc inode is not a copied file and cannot survive exit
     // as a live birth. This also revokes the prior native origin read.
+    currentPhase=AdministrativeInstallationTestPhase.DeadBirth;
     for(const anchor of anchors)assert.throws(()=>anchor.revalidate());
     assert.throws(()=>readOriginalAdministrativeBirth(sourceSha));
+    currentPhase=AdministrativeInstallationTestPhase.Complete;
     return Object.freeze({
       scope:"one_new_fixed_administrative_installation_actor",forgedJsFieldsDenied:true,sourceHeldBeforeExclusiveSubmit:true,actorBeforeNewTarget:true,actualBirthReadyBeforeNewTarget:true,readonlyImageFdVeto:true,actualProcControlRouteHeld:true,actualRecursiveTerminal:true,copiedProcDenied:true,deadOriginalProcDenied:true,fullReady:false
     }

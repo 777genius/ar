@@ -1,4 +1,4 @@
-import { runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
+import { observeAdministrativeInstallationTestPhase, runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
 /** One owned OS, one ORIGINAL CLOSED C/reference registration. No consumer,
  * baseline install, comparison, R adoption, account or provider is invoked. */
 import assert from "node:assert/strict";
@@ -35,6 +35,7 @@ try { await register(); evidence.status = RegistrationStatus.PartialPass; }
 catch (error: unknown) {
   evidence.failure = "TEST_original_closed_registration_failed";
   evidence.failureObservation = { inputStep, ...observeRegistrationFailure(error) };
+  evidence.administrativeTestFailureObservation = { phase: observeAdministrativeInstallationTestPhase() };
   process.exitCode = 1;
 }
 finally {
