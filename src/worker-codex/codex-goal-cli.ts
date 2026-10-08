@@ -4,7 +4,8 @@ import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
-import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -32,6 +33,7 @@ export type { CodexGoalCliIo } from "./codex-goal-cli-support";
 import {
   runCodexGoal,
   type CodexGoalRunConfig,
+  type CodexGoalRunDeps,
 } from "./codex-goal-runner";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -194,13 +196,22 @@ type HelpCommand = {
   readonly kind: "help";
 };
 
+/** Installed trusted composition only; never serialize or transport to a new process. */
+export type CodexGoalCliTrustedComposition = {
+  readonly runDeps?: CodexGoalRunDeps;
+};
 
 export async function runCodexGoalCli(
   argv = process.argv.slice(2),
   io: CodexGoalCliIo = defaultIo,
+  trusted: CodexGoalCliTrustedComposition = {},
 ): Promise<number> {
   try {
+    const runDeps = trusted.runDeps;
     let command = parseCodexGoalCliArgs(argv, io);
+    if (hasTrustedRunDeps(runDeps) && command.kind !== "run") {
+      throw new Error("codex_goal_cli_trusted_run_command_required");
+    }
     if (command.kind === "help") {
       io.writeStdout(usage());
       return 0;
@@ -327,6 +338,7 @@ export async function runCodexGoalCli(
     if (!command.dryRun && !command.printCommand) {
       command = { ...command, ...mapManagedGoalLayout(command) };
     }
+    assertInProcessRunComposition(command, runDeps);
     if (command.lifecycle) {
       return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
     }
@@ -354,7 +366,7 @@ export async function runCodexGoalCli(
     const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
     if (outerStatus !== undefined) return outerStatus;
     await upsertRunCommandManifest(command);
-    const result = await runCodexGoal(command.config);
+    const result = await runCodexGoal(command.config, runDeps);
     writeJsonOrText(command.format, result, io);
     return result.status === "completed" ? 0 : 1;
   } catch (error) {
@@ -367,6 +379,31 @@ export async function runCodexGoalCli(
     }
     return 2;
   }
+}
+
+function assertInProcessRunComposition(command: RunCommand, deps: CodexGoalRunDeps | undefined): void {
+  const hasStorageData = command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined;
+  if (!hasTrustedRunDeps(deps) && !hasStorageData) return;
+  // Refuse before builders/lifecycle can lose NEW data or trusted ports.
+  if (command.lifecycle || (command.tmuxSession && !(command.dryRun || command.printCommand))) {
+    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
+  }
+  if (command.dryRun || command.printCommand) {
+    assertStorageCommandSerializationSupported(command);
+    return;
+  }
+  assertStorageRegistrySupported(command);
+  if (isHostedGoalLaunch(cliLaunchInput(command)) && !isHostedOrdinaryRuntime()) {
+    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
+  }
+  // Actual routing still verifies private ordinary origin; this adds no authority.
+}
+
+function hasTrustedRunDeps(deps: CodexGoalRunDeps | undefined): boolean {
+  if (deps === undefined) return false;
+  // Empty plain composition is legacy; a prototype may carry inherited authority.
+  return Reflect.ownKeys(deps).length > 0 ||
+    (Object.getPrototypeOf(deps) !== Object.prototype && Object.getPrototypeOf(deps) !== null);
 }
 
 function isBrokenPipeError(error: unknown): boolean {
@@ -455,20 +492,36 @@ export function buildTmuxCommand(command: RunCommand): {
   readonly args: readonly string[];
   readonly preview: string;
 } {
+  assertStorageCommandSerializationSupported(command);
   return buildCodexGoalTmuxCommand(cliLaunchInput(command));
 }
 
 export function buildNoTmuxShellCommand(command: RunCommand): string {
+  assertStorageCommandSerializationSupported(command);
   return buildCodexGoalNoTmuxCommand(cliLaunchInput(command));
+}
+
+function assertStorageCommandSerializationSupported(command: RunCommand): void {
+  if (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined) {
+    throw new Error("codex_goal_cli_storage_preview_unsupported");
+  }
 }
 
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
+  assertStorageRegistrySupported(command);
   return upsertCodexGoalLaunchManifest({
     registryRootDir: command.registryRootDir,
     launch: cliLaunchInput(command),
     ...(command.registryMetadata ? { metadata: command.registryMetadata } : {}),
   });
+}
+
+function assertStorageRegistrySupported(command: RunCommand): void {
+  if (command.registryRootDir !== undefined &&
+      (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined)) {
+    throw new Error("codex_goal_cli_storage_registry_unsupported");
+  }
 }
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {
