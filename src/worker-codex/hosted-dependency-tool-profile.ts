@@ -1,3 +1,4 @@
+import { assertHostedDependencyToolInstalledPins as assertInstalledPins } from "./hosted-dependency-tool-installed-pins";
 import { assertCurrentHostedDependencyExecutionAdmission } from "./hosted-current-dependency-origin";
 import { prepareCurrentHostedDependencyGenerationSourceRetirement, holdCurrentHostedDependencyGenerationSourceUse, readCurrentHostedDependencyGenerationBaseline, captureCurrentHostedDependencyGenerationInputs, bindCurrentHostedDependencyGenerationQualifier, findOriginalHostedDependencyGenerationState } from "./hosted-current-dependency-origin";
 import { types } from "node:util";
@@ -15,7 +16,7 @@ import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPh
   DependencyToolReadyProvenanceKind, type DependencyToolReadyFacts, type DependencyToolSourceRoot, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { DependencyInstallProofKind, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
-import { dependencyToolCachePath, dependencyToolGuestConfig, dependencyToolPins, dependencyToolQualificationRecordName,
+import { dependencyToolCachePath, dependencyToolGuestConfig, dependencyToolQualificationRecordName,
   parseDependencyToolProfile, parseDependencyToolQualification,
   type DependencyToolGuestConfig, type DependencyToolProfile, type DependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
 import { assertHostedDependencyToolProfileFiles as assertProfileFiles } from "./hosted-dependency-tool-profile-files";
@@ -71,13 +72,6 @@ function selectedStart(facts: CurrentHostedDependencyOriginFacts) {
     {name:facts.originReference.path.slice(policyRoot.length+1),bytes:encode(facts.start)} :
     {name:`ordinary-starts/${facts.ordinary.reservation.startId}.json`,bytes:encode(facts.ordinary.start)};
 }
-// Exact supported registry distributions, sourced from the reviewed root lock.
-// This is additional qualification, never a substitute for the full byte proof.
-const toolDistributionIntegrity = Object.freeze({
-  vite: "sha512-h9bXPmJichP5fLmVQo3PyaGSDE2n3aPuomeAlVRm0JLmt4rY6zmPKd59HYI4LNW8oTK7tlTsuC7l/m7awx9Jcw==",
-  vitest: "sha512-flY6ScbCIt9HThs+C5HS7jvGOB560DJtk/Z15IQROTA6zEy49Nh8T/dofWTQL+n3vswqn87sbJNiuqw1SDp5Ig==",
-});
-
 /** v1 has no capability; v2 is strict at the protected provider binding parser. */
 export function hostedDependencyToolProfile(binding: HostedDependencyBinding): DependencyToolProfile | undefined {
   const value: unknown = binding;
@@ -588,26 +582,6 @@ function verifiedRegistry(receipt: Ready): boolean {
 function verifiedLocalComparison(receipt: Ready): boolean {
   return receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared &&
     assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance }).version === 2;
-}
-function assertInstalledPins(workspace: string, profile: DependencyToolProfile, lockBytes: Uint8Array): void {
-  const lock: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(lockBytes));
-  if (!lock || typeof lock !== "object" || Array.isArray(lock) || !("packages" in lock) ||
-      !lock.packages || typeof lock.packages !== "object" || Array.isArray(lock.packages)) fail();
-  const packages = lock.packages as Record<string, unknown>;
-  for (const [name, version] of Object.entries(dependencyToolPins)) {
-    const entry = packages[`node_modules/${name}`];
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !("version" in entry) || entry.version !== version ||
-        !("resolved" in entry) || entry.resolved !== `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz` ||
-        !("integrity" in entry) || entry.integrity !== toolDistributionIntegrity[name as keyof typeof toolDistributionIntegrity]) fail();
-    const path = join(workspace, "node_modules", name, "package.json"), stat = lstatSync(path);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 256 * 1024 || realpathSync(path) !== path) fail();
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (!value || typeof value !== "object" || !("name" in value) || value.name !== name || !("version" in value) || value.version !== version) fail();
-  }
-  for (const dependency of profile.optimizerDependencies) {
-    const path = join(workspace, "node_modules", dependency);
-    if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) fail();
-  }
 }
 function fail(reason = DependencyAdmissionFailure.Unsupported): never { throw new DependencyAdmissionError(reason); }
 
