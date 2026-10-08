@@ -19,6 +19,13 @@ const identity = { jobId: "synthetic", jobRootDir: "/TEST/jobs/job", workspacePa
 const input = { ...identity, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
 const grant: HostedTestEgressGrant = { schemaVersion: 1, ...identity, profileId: CodexProviderEgressProfileId.TestNpmQualification };
 
+// This finite transport suite represents an explicitly Required Host. Real
+// protected mode bytes and default-off behavior are composed separately.
+vi.mock("../../provider-codex/app-server/adapters/hosted-host-policy", async original => {
+  const policy = await original<typeof import("../../provider-codex/app-server/adapters/hosted-host-policy")>();
+  return { ...policy, readHostedActivationMode: () => policy.HostedActivationMode.Required };
+});
+
 // Isolated egress transport tests: synthetic host permission only. The actual
 // exclusive TEST supervisor denies ordinary profiles; its gate is tested separately.
 vi.mock("../hosted-readonly-supervisor-host", () => ({
