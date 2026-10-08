@@ -39,7 +39,15 @@ async function withFixture(
   const binaryPath = join(root, "synthetic-codex.sh");
   const server = createCodexGoalMcpServer();
   const client = new Client({ name: "quota-only-sandbox", version: "0.0.0" });
+  const throttleNames = [
+    "AGENT_ACCOUNT_OBSERVABILITY_CODEX_APP_SERVER_MIN_INTERVAL_MS",
+    "SUBSCRIPTION_RUNTIME_CODEX_APP_SERVER_MIN_INTERVAL_MS",
+  ] as const;
+  const previousThrottle = throttleNames.map((name) => process.env[name]);
   try {
+    // Every provider call here targets our synthetic binary. Production
+    // throttling is covered separately and would only delay this fixture.
+    for (const name of throttleNames) process.env[name] = "0";
     await mkdir(workspacePath);
     await mkdir(jobRootDir);
     await writeFile(join(jobRootDir, "prompt.md"), "Synthetic status fixture; never launch a provider.");
@@ -95,9 +103,17 @@ done
     ]);
     expect(calls[1]?.params).toEqual({ refreshToken: false });
   } finally {
-    await client.close();
-    await server.close();
-    await rm(root, { recursive: true, force: true });
+    try {
+      await client.close();
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    } finally {
+      throttleNames.forEach((name, index) => {
+        const previous = previousThrottle[index];
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
+      });
+    }
   }
 }
 

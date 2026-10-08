@@ -86,3 +86,51 @@ precommit seal/generation/slot, copied receiver/foreign environment disposal,
 actual owner death and cutoff equality. These are unproved until the admitted
 native fixture supplies independent original-object observations; source reads
 and a passing compile cannot be counted as those scenarios.
+
+## N1b A5 producer contracts (authored, execution pending)
+
+- Original binary snapshot -> unchanged validator -> full canonical SHA/LF ack:
+  red if effective ends extend, original identity bytes change, declarations or
+  capacities disappear from the full digest, or frame correlation changes.
+  This exercises DATA translation, not fabricated native membership.
+- Binary substitutions/truncation/high-bit identity/zero generation: red before
+  allocation acknowledgement if invalid original bytes are normalized or ignored.
+- Real private C entry with public argv/JSON and no administrative descriptors:
+  red if it creates an origin/effect or changes the independent disposable cwd.
+- Real shared robust mutex and supported libc fork: red if the original live
+  holder wait renews, actual child wait/EOF disappear, or owner death can recover
+  admission after EOWNERDEAD instead of becoming ENOTRECOVERABLE.
+- Actual protected filesystem measurement: red if changed contents or symlinks
+  satisfy the reviewed leaf hash/inode/mode contract. Explicit UID0 fixture skip
+  does not claim an installation or native authority.
+- Separate genuine installed NEWTEST operation: red unless the actual producer
+  returns raw L0 and the retained original observer journal agrees after actual
+  principal wait and both EOF. Default SOURCE CI skips this physical test.
+
+Existing foundation 28, owner 5, raw ingress/digest/DATA IPC cases remain.
+No mocked privileged positive or source-text test is added. Remote strict C17
+warnings-as-errors, native and root TypeScript input checks, transport/installer
+contracts and the independent physical negative matrix are separate gates.
+
+R3 repairs add one actual fork/IPC regression: a close while the child is
+pending under the original mutex must make the production admission claim
+refuse. The original wait/EOF and absence of the effect file are independent
+observations. This primitive constructs no NativeRoot. The measured-leaf
+fixture uses reviewed 0600 bytes so a restrictive CI umask preserves its valid
+precondition; changed bytes and symlink refusal remain checked.
+
+The admitted NEWTEST negative matrix must also observe: a journal delay cannot
+move API connect past the original work end; packet/StopUnit delay cannot move
+pidfd signals past the first cleanup attempt end; parser/capacity loss stays
+HELD while owned cleanup continues. A real foreign API peer's directed matching
+JobRemoved must enter neither the job journal nor job completion; the original
+held direct-manager event at its exact object path must still complete. These
+physical cases remain pending, not supplied by the source gate fixture.
+
+R4 subprocess boundary is red if an exited fixture parent leaves a real orphan
+holding stdout/stderr and the original invocation end does not kill its owned
+process group and observe pipe closure. A dedicated fork fixture exercises this
+actual failure; it does not mint Origin or prove Native closure. Default native
+gate children arm parent-death SIGKILL, all IPC/child waits have one finite end,
+and stage/assertion stderr is returned on failure. Failed cwd artifacts remain
+under the job-owned scratch temporary tree for remote diagnosis.

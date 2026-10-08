@@ -207,3 +207,60 @@ closure and positive original join for every attempted owner, followed by an
 immediate original tree identity check. A skipped privileged case records no
 original join credit. Cleanup disposition is a separate create-only record;
 failed cleanup has no automatic retry.
+
+### N1b A5 original Root producer SOURCE candidate
+
+This checkpoint supplies the first private native constructor and fixed trusted
+Root administrative observer. The historical missing-issuer/port statements
+above describe the preceding foundation checkpoint. No SOURCE run or physical
+qualification is implied by the new implementation.
+
+The zero-argument administrator reads a protected finite A0 permit and complete
+installation manifest, measures the original Node/C/loader/library/image closure,
+reserves bootstrap/start/cleanup and both streams before spawning, and retains
+create-only original journals. Only the actual inherited observer channel and
+held inputs enter the C constructor. Its native anchor, namespace/boot/pidfd
+custody and shared robust gate survive the supported single-threaded libc fork;
+DATA never supplies a positive native importer. The unchanged full allocation
+validator and canonical JSON plus LF SHA256 acknowledge the native snapshot
+before namespace, manager, scope or helper effects.
+
+Direct systemd methods retain original request/reply/job prefixes. Before the
+single fixed API connection, the original direct manager observes and pins
+active/running/no-job dbus.service, its pidfd, InvocationID and measured executable.
+The API is used only for original RefUnit/UnrefUnit and bounded daemon setup.
+Daemon/listener replacement or death after connect leaves shared interaction
+UNKNOWN_HELD, including after own child cleanup. No shared daemon is started,
+stopped, adopted or repaired. Both manager collision checks remain mandatory.
+
+The Root child enters the fixed private image/PID1/mount/cgroup namespace and
+creates the existing sole helper registry through the private associated-v2
+branch. That branch inherits the original absolute cutoffs and shared effect
+gate; v1 still pins its own unchanged clock and exact anchor+10s fd7 memo.
+The original helper environment loss closes owning admission; a temporary DATA
+request client's EOF does not. The public adapter resolves only the already
+issued tuple and returns bounded observations. Refusal has one public sanitized
+message; private administrator evidence retains the actual error.
+
+Native emits only NATIVE_DEBTS_CLOSED_PRINCIPAL_TERMINAL_PENDING. The independent
+foreground observer additionally requires actual principal exit 0/no signal,
+both stdout/stderr EOF, bounded streams and the enclosing original cleanup end
+before recording ORIGINAL_PRODUCER_L0_RAW. This is raw L0 evidence, never V2,
+CompleteHold, Source, resource, model or WORK qualification.
+
+The existing strict hooks now compile the real producer, associated addon and
+shared robust-gate contract, and run the typed producer contracts. The harness
+retains a hashed SOURCE_CANDIDATE_ONLY directory with actual emitted import
+layout. Root physical setup must separately stage those exact reviewed outputs,
+fixed private Node/image loader/library closure, root-installation.json, protected
+original directory and finite admin permit on a disposable NEWTEST machine with
+systemd v255 and original active dbus.service. The fixed Root installer validates
+all candidate inputs before installed writes, copies only new admitted leaves,
+measures shared host dependencies, and never issues authority.
+
+The genuine installed test runs only with SR_ORIGINAL_PRODUCER_PHYSICAL=NEWTEST
+on that admitted fixture. Generic CI UID0 is insufficient and does not turn the
+explicit skip into acceptance. Initial strict C/TS gates, genuine positive and
+privileged negatives, supported fork/death, preconnect inactive/replacement,
+lost Ref/Unref/response and partial custody, both-manager collisions, exact
+helper loss/wait, principal wait/EOF and scope-kernfs retirement remain required.
