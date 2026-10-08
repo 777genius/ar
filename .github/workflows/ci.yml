@@ -12,17 +12,19 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Portable gates use disposable runners to avoid the shared ARC queue.
+# RUNNER remains an explicit repository/environment override.
 jobs:
   quality:
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run typecheck
@@ -31,7 +33,7 @@ jobs:
       - run: npm run check:boundaries
 
   unit-tests:
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Fetch pinned legacy ledger fixture
@@ -40,8 +42,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - name: Install encrypted checkpoint restore test dependency
@@ -155,27 +157,27 @@ jobs:
           retention-days: 7
 
   package:
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run check:packed-consumer
 
   native-probe-source:
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # Keep JavaScript actions on the ARC runner. The TEST container receives
+      # Keep JavaScript actions on the host runner. The TEST container receives
       # only a Git archive via Docker's API, never runner/auth/socket mounts.
       - name: Run disposable NativeProbe SOURCE container
         id: native
@@ -280,7 +282,7 @@ jobs:
   crash-boundary-shards:
     permissions:
       contents: read
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -296,8 +298,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
@@ -319,7 +321,7 @@ jobs:
       contents: read
     if: ${{ always() }}
     needs: [crash-boundary-shards]
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
@@ -329,7 +331,7 @@ jobs:
   test:
     if: ${{ always() }}
     needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - name: Verify all CI gates passed
         env:
