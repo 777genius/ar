@@ -88,7 +88,7 @@ export function parseDependencyToolUsableExecution(value: unknown): Extract<Depe
     startId:v.startId,attemptId:v.attemptId,epoch:v.epoch,receipt,receiptRevision:v.receiptRevision,
     currentInstallKey:v.currentInstallKey,inputClosureDigest:v.inputClosureDigest,profile,
     capabilities:Object.freeze([DependencyToolOperation.Optimize,DependencyToolOperation.Test]),
-    sourceRoots:roots(v.sourceRoots,128),sourceLookupAncestors:roots(v.sourceLookupAncestors,128)});
+    sourceRoots:roots(v.sourceRoots,128),sourceLookupAncestors:lookupAncestors(v.sourceLookupAncestors,workspace)});
 }
 /** Snapshot the fixed profile schema before its legacy parser reads it. No
  * caller file/path/array accessor or iterator reaches that parser. */
@@ -126,6 +126,24 @@ function roots(value:unknown,maximum:number):readonly DependencyToolSourceRoot[]
   const result=array(value,maximum).map(entry=>{ const v=data(entry,["canonicalPath","identity"]); if (!absolute(v.canonicalPath)) invalid();
     return Object.freeze({canonicalPath:v.canonicalPath,identity:tree(v.identity)}); });
   if (new Set(result.map(entry=>entry.canonicalPath)).size !== result.length) invalid(); return Object.freeze(result);
+}
+/** Captured lookup ancestry is data only. The filesystem root is valid here,
+ * never as a workspace, source root, cache or caller-selected descriptor. */
+function lookupAncestors(value:unknown,workspace:DependencyWorkspaceIdentity):readonly DependencyToolSourceRoot[] {
+  const result=array(value,128).map(entry=>{const v=data(entry,["canonicalPath","identity"]);
+    if(v.canonicalPath!=="/" && !absolute(v.canonicalPath))invalid();
+    return Object.freeze({canonicalPath:v.canonicalPath,identity:tree(v.identity)});});
+  if(result.length===1 && result[0]?.canonicalPath===workspace.canonicalPath) {
+    if(!sameDependencyTree(result[0].identity,workspace))invalid();
+  } else {
+    const paths:string[]=[];
+    for(let path=workspace.canonicalPath;path!=="/";) {
+      const slash=path.lastIndexOf("/");path=slash===0?"/":path.slice(0,slash);
+      if(paths.length>=128)invalid();paths.unshift(path);
+    }
+    if(result.length!==paths.length || result.some((pin,index)=>pin.canonicalPath!==paths[index]))invalid();
+  }
+  return Object.freeze(result);
 }
 function array(value:unknown,maximum:number):readonly unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value)!==Array.prototype) invalid();
