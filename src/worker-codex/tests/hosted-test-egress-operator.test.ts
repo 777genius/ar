@@ -2,8 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostedTestEgressGrant } from "../hosted-test-egress-contract";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 const fs = vi.hoisted(() => ({ readFile: vi.fn(), readlink: vi.fn(), lstat: vi.fn(),
-  mkdir: vi.fn(), open: vi.fn(), realpath: vi.fn(), link: vi.fn(), unlink: vi.fn() }));
+  mkdir: vi.fn(), open: vi.fn(), realpath: vi.fn(), link: vi.fn(), unlink: vi.fn(),
+  readFileSync: vi.fn(), readlinkSync: vi.fn(), lstatSync: vi.fn() }));
 vi.mock("node:fs/promises", () => fs);
+vi.mock("node:fs", async original => {
+  const real = await original<typeof import("node:fs")>();
+  return { ...real,
+    readFileSync: (path: Parameters<typeof real.readFileSync>[0], options: Parameters<typeof real.readFileSync>[1]) =>
+      path === "/proc/self/uid_map" ? fs.readFileSync(path, options) : real.readFileSync(path, options),
+    readlinkSync: (path: Parameters<typeof real.readlinkSync>[0], options: Parameters<typeof real.readlinkSync>[1]) =>
+      typeof path === "string" && /^\/proc\/(?:self|1)\/ns\/(?:user|mnt|pid)$/.test(path)
+        ? fs.readlinkSync(path, options) : real.readlinkSync(path, options),
+    lstatSync: (path: Parameters<typeof real.lstatSync>[0], options: Parameters<typeof real.lstatSync>[1]) =>
+      path === "/var/lib/subscription-runtime-host-policy/dependency-bindings"
+        ? fs.lstatSync(path, options) : real.lstatSync(path, options),
+  };
+});
 import { assertHostedTestEgressOperator, writeHostedTestEgressGrant,
   revokeHostedTestEgressGrant, hostedTestEgressGrantRoot } from "../hosted-test-egress-files";
 
@@ -13,6 +27,11 @@ describe("host operator namespace and publication adapter (mock files only)", ()
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     fs.readFile.mockResolvedValue("0 0 4294967295\n");
     fs.readlink.mockImplementation(async (path: string) => path.split("/").at(-1));
+    // Revoke also checks the synchronous host operator before looking up a
+    // dependency binding. These OS facts belong to the same synthetic host.
+    fs.readFileSync.mockReturnValue("0 0 4294967295\n");
+    fs.readlinkSync.mockImplementation((path: string) => path.split("/").at(-1));
+    fs.lstatSync.mockImplementation(() => { throw Object.assign(new Error("synthetic absent binding"), { code: "ENOENT" }); });
     fs.unlink.mockResolvedValue(undefined);
     fs.realpath.mockImplementation(async (path: string) => path);
     fs.lstat.mockResolvedValue({ isDirectory: () => true, isSymbolicLink: () => false, uid: 0, mode: 0o700 });

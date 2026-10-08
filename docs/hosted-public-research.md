@@ -530,6 +530,11 @@ TEST build root. Run `check-boundaries.mjs`, `check-boundaries-self-test.mjs`,
 `check-managed-launch-boundary.mjs` individually. The three operator/runtime/
 provider MJS entrypoints also pass `node --check`.
 
+For current reruns in these disposable TEST build roots, pass `--imports-only`
+to the rewriter. Full package builds run it without that flag and also generate
+the installed Host policy helper; that installation output does not belong to
+these partial source-verification trees.
+
 The writer's newly created TMPDIR/TEST_ROOT is
 `/srv/worker-state/jobs/subscription-runtime/research-network-v1/jobs/sr-research-network-writer-20261001-r7/tmp/agent/TEST-research-r7`.
 Build output and all test fixtures are disposable and are not installation or

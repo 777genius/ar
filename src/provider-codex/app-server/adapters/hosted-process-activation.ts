@@ -16,6 +16,7 @@ import { CodexModelBackend } from "../../codex-model-backend";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import { basename, dirname, join } from "node:path";
 import type { CodexAppServerChildProcess } from "../application/app-server-process-port";
+import { hasHostedActivationOrigin, HostedActivationMode, isHostedContainment, readHostedActivationMode } from "./hosted-host-policy";
 
 
 const root = "/var/lib/subscription-runtime-host-policy";
@@ -693,11 +694,8 @@ function syncActivationDirectory(path: string): void {
 }
 
 export function requiresHostedProcessAdmission(env: Readonly<Record<string, string | undefined>>): boolean {
-  if (process.platform !== "linux") return false;
-  if (env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" ||
-      /\/subscription-runtime-(?:ordinary|outer|hosted|research)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
-  try { lstatSync(root); return true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  if (process.platform !== "linux" || (process.getuid?.() !== 0 && !isHostedContainment(env))) return false;
+  return readHostedActivationMode() === HostedActivationMode.Required || hasHostedActivationOrigin();
 }
 
 /** Guest-owned launcher calls this after observing its full enqueue graph, before

@@ -49,7 +49,8 @@ test.runIf(process.platform === "linux")("real adapter preserves the root or rej
       { stdio: [probe, "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" }));
     const result = inspectVisibleScratchMount("/"); assert.ok(result);
     const visible = full.filesystems.find((value: { target: string }) => value.target === "/"); assert.ok(visible);
-    assert.deepEqual(result, { target: "/", fsroot: visible.fsroot, ...(typeof visible.uuid === "string" ? { uuid: visible.uuid } : {}) });
+    const record = readKernelMountTable().split("\n").find(line => line.startsWith(String(visible.id) + " "))!;
+    assert.deepEqual(result, { target: "/", fsroot: visible.fsroot, mountId: Number(visible.id), isPrivate: record.split(" - ")[0]!.split(" ").length === 6, ...(typeof visible.uuid === "string" ? { uuid: visible.uuid } : {}) });
   } finally { closeSync(probe); }
 });
 
@@ -58,7 +59,7 @@ test("only the unique visible FD-associated row supplies tuple authority", () =>
   const visible = { ...hidden, id: 30 };
   const table = [row(10, target, hidden.fsroot), row(30, target, hidden.fsroot)].join("\n");
   assert.deepEqual(selectVisibleScratchMount(target, 30, table, query(hidden, visible)),
-    { target, uuid, fsroot: hidden.fsroot });
+    { target, uuid, fsroot: hidden.fsroot, mountId: 30, isPrivate: true });
   assert.throws(() => selectVisibleScratchMount(target, 30, table, query(hidden)), /Ambiguous/);
   assert.throws(() => selectVisibleScratchMount(target, 30, table, query(visible, visible)), /Ambiguous/);
   assert.throws(() => selectVisibleScratchMount(target, 30, `${table}\n${row(30, target)}`, query(visible)), /Ambiguous/);
@@ -67,12 +68,23 @@ test("only the unique visible FD-associated row supplies tuple authority", () =>
 test("unknown visible tuples remain visible, while incoherent kernel records deny", () => {
   const actual = { id: 30, target, uuid: "foreign-volume", fsroot: "/foreign" };
   assert.deepEqual(selectVisibleScratchMount(target, 30, row(30, target, "/foreign"), query(hidden, actual)),
-    { target, uuid: "foreign-volume", fsroot: "/foreign" });
+    { target, uuid: "foreign-volume", fsroot: "/foreign", mountId: 30, isPrivate: true });
   assert.throws(() => selectVisibleScratchMount(target, 30, row(30, target, "/other"), query(actual)), /Ambiguous/);
   assert.throws(() => selectVisibleScratchMount(target, 30, row(10, target), query(actual)), /Ambiguous/);
   const spaced = "/jobs/NEW TEST/tmp", escaped = "/jobs/NEW\\040TEST/tmp";
   assert.deepEqual(selectVisibleScratchMount(spaced, 30, row(30, escaped), query({ id: "30", target: spaced, uuid: null, fsroot: "/" })),
-    { target: spaced, fsroot: "/" });
+    { target: spaced, fsroot: "/", mountId: 30, isPrivate: true });
+});
+
+// RED: shared/slave/unbindable rows are reported private, or malformed tags grant authority.
+test.each(["", "shared:46", "master:7", "master:7 propagate_from:3", "unbindable", "future_tag:1"])("visible propagation facts retain exact mount ID (%s)", tags => {
+  const table = row(30, target, hidden.fsroot).replace(" rw - ", ` rw ${tags ? tags + " " : ""}- `);
+  assert.deepEqual(selectVisibleScratchMount(target, 30, table, query({ ...hidden, id: 30 })),
+    { target, uuid, fsroot: hidden.fsroot, mountId: 30, isPrivate: tags === "" });
+});
+test.each(["shared", "shared:0", "shared:bad", "master:7:8", "propagate_from:0", "unbindable:1", "shared:7 shared:8"])("malformed known propagation denies (%s)", tags => {
+  const table = row(30, target, hidden.fsroot).replace(" rw - ", ` rw ${tags} - `);
+  assert.throws(() => selectVisibleScratchMount(target, 30, table, query({ ...hidden, id: 30 })), /Ambiguous/);
 });
 
 // The real reader owns the descriptor and enforces bytes, independently of parsing.
@@ -127,11 +139,11 @@ test.runIf(process.platform === "linux")("adapter queries the untouched original
   }) as typeof child.execFileSync);
   const before = original + "\n" + unrelated + "\n";
   tables = [before, original.replace("rw shared:7", "ro shared:7") + "\n" + unrelated + "\n"];
-  assert.deepEqual(inspectVisibleScratchMount("/"), { target: "/", fsroot: "/TEST root" }); assert.equal(input, original + "\n");
-  for (const fault of ["wrong-id", "duplicate-id", "changed-record", "closed-fd", "malformed-row"]) {
+  assert.deepEqual(inspectVisibleScratchMount("/"), { target: "/", fsroot: "/TEST root", mountId: id, isPrivate: false }); assert.equal(input, original + "\n");
+  for (const fault of ["wrong-id", "duplicate-id", "changed-record", "closed-fd", "malformed-row", "propagation-drift"]) {
     held = -1; queryId = fault === "wrong-id" ? id + 1 : id; closeHeld = fault === "closed-fd";
     tables = [fault === "duplicate-id" ? before + original + "\n" : fault === "malformed-row" ? `${id} invalid\n` : before,
-      fault === "changed-record" ? before.replace("/TEST\\040root", "/changed") : before];
+      fault === "changed-record" ? before.replace("/TEST\\040root", "/changed") : fault === "propagation-drift" ? before.replace("shared:7", "shared:8") : before];
     assert.throws(() => inspectVisibleScratchMount("/"));
   }
   assert.ok(execute.mock.calls.length >= 1);

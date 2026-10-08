@@ -97,7 +97,8 @@ describe("factory admitted policy propagation", () => {
       expect(homes.slice(2)).toEqual(homes.slice(0, 2));
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification])("defaults inherited spoofed %s to API-only while preserving PATH", async profileId => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification])("ignores inherited spoofed %s and retains full Internet with managed containment", async profileId => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const root = await mkdtemp(join(tmpdir(), "egress-inherited-"));
     vi.stubEnv("SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE", profileId);
     vi.stubEnv("PATH", "/synthetic/inherited/bin");
@@ -124,9 +125,16 @@ describe("factory admitted policy propagation", () => {
         expect(invocation.command).toBe(process.execPath);
         expect(invocation.args[1]).toBe("provider");
         expect(JSON.parse(invocation.args[2]!).operation).toBe("provider");
-        expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.ProviderApi);
+        expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.FullInternetV1);
+        expect(launch.args).toContain("features.network_proxy.enabled=false");
+        expect(launch.args).toContain("features.network_proxy.domains={  }");
         expect(launch.args.join(" ")).not.toContain("registry.npmjs.org");
-        expect(await readFile(join(launch.env!.CODEX_HOME!, "config.toml"), "utf8")).not.toContain("registry.npmjs.org");
+        const config = await readFile(join(launch.env!.CODEX_HOME!, "config.toml"), "utf8");
+        expect(config).not.toContain("registry.npmjs.org");
+        expect(config).toContain("[features.network_proxy]\nenabled = false\ndomains = {  }");
+        expect(config).toContain('default_permissions = "hosted-project-read"');
+        expect(config).toContain('":root" = "deny"');
+        expect(config).toContain("[[hooks.PreToolUse]]");
       }
     } finally { await driver.dispose(); await rm(root, { recursive: true, force: true }); }
   });
@@ -169,7 +177,8 @@ describe("factory admitted policy propagation", () => {
     })).toThrow("hosted_permission_profiles_engine_unsupported");
   });
 
-  it("enforces native project permissions for a brokered job without a hosted marker", async () => {
+  it.each([CodexProviderEgressProfileId.ProviderApi, CodexProviderEgressProfileId.FullInternetV1])(
+    "enforces native project permissions without a hosted marker for %s", async profileId => {
     const root = await mkdtemp(join(tmpdir(), "scoped-permissions-"));
     const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["complete"] });
     const launches: Parameters<typeof fake.create>[0][] = [];
@@ -178,6 +187,7 @@ describe("factory admitted policy propagation", () => {
       codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
       executionEngine: "app-server-goal", warmupPrompt: false,
       sourceEnv: { PATH: "/synthetic/bin" }, enforceProjectReadBoundary: true,
+      providerEgressPolicy: codexProviderEgressPolicy(profileId),
       appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
     });
     const driver = parts.agentDriver as CodexJsonAgentDriver;
