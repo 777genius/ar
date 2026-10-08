@@ -1,4 +1,6 @@
 export * from "./account-diagnostics-adapter";
+export { readCodexEffectiveSeed, materializeCodexEffectiveSeed, publishCodexEffectiveSeed,
+  type CodexEffectiveSeed } from "./codex-effective-seed";
 export * from "./command-policy-runner";
 export * from "./controlled-agent";
 export * from "./codex-provider-runtime-adapter";

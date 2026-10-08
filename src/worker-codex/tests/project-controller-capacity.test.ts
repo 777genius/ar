@@ -53,7 +53,7 @@ describe("project controller capacity signals", () => {
     }
   });
 
-  it("records invalid controller sessions as reconnect cooldowns", async () => {
+  it("records invalid controller sessions as disabled capacity requiring a new session", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-controller-capacity-"));
     try {
       const recorded = recordProjectControllerCapacitySignal({
@@ -84,12 +84,10 @@ describe("project controller capacity signals", () => {
       });
       expect(recorded).toBe(true);
       expect(capacity).toMatchObject({
-        availability: "cooldown",
+        availability: "disabled",
         reason: "provider_session_invalid",
       });
-      expect(capacity?.cooldownUntil?.toISOString()).toBe(
-        "2026-07-05T11:01:30.000Z",
-      );
+      expect(capacity?.cooldownUntil).toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
