@@ -3,6 +3,7 @@ coverage
 .DS_Store
 .worktrees/
 dist
+host-integration/managed-launcher/hosted-host-policy.mjs
 .env
 .env.*
 *.log

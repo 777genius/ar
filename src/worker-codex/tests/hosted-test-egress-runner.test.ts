@@ -8,6 +8,11 @@ import type { HostedTestEgressGrant } from "../hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "../file-backend-codex-runtime-factory";
 
 const files = vi.hoisted(() => ({ read: vi.fn(), operator: vi.fn() }));
+// Grant-only transports explicitly opt in; clearing a job marker cannot opt out.
+vi.mock("../../provider-codex/app-server/adapters/hosted-host-policy", async original => {
+  const policy = await original<typeof import("../../provider-codex/app-server/adapters/hosted-host-policy")>();
+  return { ...policy, readHostedActivationMode: () => policy.HostedActivationMode.Required };
+});
 vi.mock("../hosted-test-egress-files", () => ({
   hostedTestEgressGrantRoot: "/run/user/0/subscription-runtime-host-policy/codex-egress",
   readHostedTestEgressGrantFile: files.read,
@@ -30,7 +35,7 @@ vi.mock("../hosted-readonly-inputs", async importOriginal => ({
 }));
 
 describe("normal runner trusted admission", () => {
-  beforeEach(() => { vi.spyOn(process, "getuid").mockReturnValue(0); });
+  beforeEach(() => { vi.spyOn(process, "platform", "get").mockReturnValue("linux"); vi.spyOn(process, "getuid").mockReturnValue(0); });
   afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
   it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("grant-only runner refuses before executor creation without installed origin/custody: %s", async selectedProfile => {
     const root = await mkdtemp(join(tmpdir(), "egress-runner-"));

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, opendirSync, readFileSync, readlinkSync, type BigIntStats } from "node:fs";
 import { lstat, open, opendir, readFile, readlink, statfs, type FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -19,6 +19,15 @@ const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_
 const pathFlags = 0x200000 | constants.O_NOFOLLOW;
 type Anchor = { handle: FileHandle; before: BigIntStats; mountId: string; parent?: FileHandle; name?: Buffer };
 type CheckedEntry = { parent: FileHandle; name: Buffer; before: BigIntStats; mountId: string };
+type PhysicalPin = { readonly path: readonly Buffer[]; readonly before: BigIntStats; readonly mountId: string;
+  readonly full: boolean; names?: readonly Buffer[]; readonly target?: Buffer };
+type PhysicalRoot = { readonly pins: PhysicalPin[]; storageBytes: number; namespace: DependencyTreeIdentity | null;
+  ancestorBudget: number; directoryBudget: number };
+const sourceExposureBrand = Symbol("dependency_source_exposure");
+export type DependencySourceExposure = Readonly<{ [sourceExposureBrand]: true }>;
+const sourceExposures = new WeakMap<DependencySourceExposure, { readonly roots: readonly PhysicalRoot[];
+  readonly limits: DependencyTreeObservationLimits; closed: boolean }>();
+const exposureCeilings = { maxEntries: 100000, maxTotalBytes: 2 * 1024 ** 3, maxManifestBytes: 32 * 1024 ** 2, maxDurationMs: 30000 };
 class ObservationError extends Error { constructor(readonly reason: Failure) { super(reason); } }
 function fail(reason: Failure): never { throw new ObservationError(reason); }
 const identity = (s: BigIntStats): DependencyTreeIdentity => ({ dev: String(s.dev), ino: String(s.ino) });
@@ -36,6 +45,130 @@ const sameAllocation = (a: BigIntStats, b: BigIntStats): void => {
 };
 const anchored = (parent: FileHandle, name: Buffer): Buffer => Buffer.concat([Buffer.from(`/proc/self/fd/${parent.fd}/`), name]);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+const physicalKey = (path: readonly Buffer[]): string => JSON.stringify(path.map(part => part.toString("base64")));
+const samePhysical = (a: BigIntStats, b: BigIntStats, full: boolean): boolean =>
+  (full ? same(a, b) : sameDirectoryIdentity(a, b)) && a.uid === b.uid && a.gid === b.gid && b.nlink > 0n;
+
+/** Actual source walk only. This opaque in-process relation is neither install
+ * provenance nor writer exclusion; no Complete DTO can create one. */
+export async function captureDependencySourceExposure(input: {
+  readonly roots: readonly { readonly parentPath: string; readonly name: string; readonly expectedTree: DependencyTreeIdentity }[];
+  readonly limits: DependencyTreeObservationLimits;
+}): Promise<{ readonly status: Status.Complete; readonly exposure: DependencySourceExposure } |
+  { readonly status: Status.Incomplete; readonly reason: Failure }> {
+  try {
+    if (!Array.isArray(input.roots) || input.roots.length === 0 || input.roots.length > 128 ||
+        Object.keys(input.limits).length !== 4 || Object.entries(exposureCeilings).some(([k, ceiling]) => {
+          const n = input.limits[k as keyof DependencyTreeObservationLimits]; return !Number.isSafeInteger(n) || n <= 0 || n > ceiling;
+        })) fail(Failure.InvalidRequest);
+    const limits = Object.freeze({ ...input.limits }), selectedRoots = input.roots.map(root => ({
+      parentPath: root.parentPath, name: root.name, expectedTree: { ...root.expectedTree } }));
+    const started = performance.now(), roots: PhysicalRoot[] = [], paths: string[] = [];
+    let entries = 0, bytes = 0, storage = 0, ancestors = 0, directories = 0;
+    for (const root of selectedRoots) {
+      if (typeof root.parentPath !== "string" || typeof root.name !== "string" || !root.expectedTree ||
+          !/^(?:0|[1-9][0-9]{0,19})$/.test(root.expectedTree.dev) || !/^[1-9][0-9]{0,19}$/.test(root.expectedTree.ino)) fail(Failure.InvalidRequest);
+      const path = resolve(root.parentPath, root.name);
+      if (paths.some(other => path === other || path.startsWith(other + "/") || other.startsWith(path + "/"))) fail(Failure.InvalidRequest);
+      paths.push(path);
+      const remaining = { maxEntries: limits.maxEntries - entries, maxTotalBytes: limits.maxTotalBytes - bytes,
+        maxManifestBytes: limits.maxManifestBytes - storage, maxDurationMs: Math.floor(limits.maxDurationMs - (performance.now() - started)) };
+      if (Object.values(remaining).some(n => n <= 0)) fail(Failure.Bounds);
+      const physical: PhysicalRoot = { pins: [], storageBytes: 0, namespace: null, ancestorBudget: 512 - ancestors, directoryBudget: 512 - directories };
+      const observed = await observeNamedRoot({ workspacePath: root.parentPath, treeName: root.name, expectedTree: root.expectedTree, limits: remaining }, physical);
+      if (observed.status !== Status.Complete) return observed;
+      if (!physical.namespace) fail(Failure.UnsafeNamespace);
+      entries += observed.entries.length; bytes += Number(observed.totalBytes); storage += observed.canonicalBytes.length + physical.storageBytes;
+      ancestors += physical.pins.filter(pin => !pin.full).length; directories += physical.pins.filter(pin => pin.full && pin.before.isDirectory()).length;
+      if (ancestors > 512 || directories > 512 || storage > limits.maxManifestBytes || performance.now() - started > limits.maxDurationMs) fail(Failure.Bounds);
+      roots.push(physical);
+    }
+    const exposure: DependencySourceExposure = Object.freeze({ [sourceExposureBrand]: true });
+    sourceExposures.set(exposure, { roots, limits, closed: false });
+    try { assertDependencySourceExposureCurrent(exposure, Math.floor(limits.maxDurationMs - (performance.now() - started))); }
+    catch (error) { closeDependencySourceExposure(exposure); throw error; }
+    return { status: Status.Complete, exposure };
+  } catch (error) { return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason : Failure.Access }; }
+}
+
+/** Reopens the ORIGINAL private baseline, never recaptures it. Caller supplies
+ * at most a stricter remaining deadline, not a path, DTO or permission callback. */
+export function assertDependencySourceExposureCurrent(exposure: DependencySourceExposure, maxDurationMs?: number): void {
+  const state = sourceExposures.get(exposure);
+  if (!state || state.closed) fail(Failure.InvalidRequest);
+  const duration = maxDurationMs ?? state.limits.maxDurationMs, started = performance.now();
+  if (!Number.isSafeInteger(duration) || duration <= 0 || duration > state.limits.maxDurationMs) { state.closed = true; fail(Failure.Bounds); }
+  const checkTime = () => { if (performance.now() - started > duration) fail(Failure.Bounds); };
+  const path = (fd: number, name: Buffer): Buffer => Buffer.concat([Buffer.from(`/proc/self/fd/${fd}/`), name]);
+  const mount = (fd: number): string => {
+    const text = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"), rows = [...text.matchAll(/^mnt_id:\s+([1-9][0-9]{0,19})$/gm)];
+    const id = rows[0]?.[1]; if (text.length > 65536 || rows.length !== 1 || !id) fail(Failure.UnsafeNamespace); return id;
+  };
+  let membershipCount = 0, membershipBytes = 0;
+  try {
+    for (const root of state.roots) {
+      const opened = new Map<string, { readonly fd: number; readonly pin: PhysicalPin }>(), descriptors: number[] = [];
+      let closeFailed = false;
+      try {
+        checkTime(); const ns = openSync("/proc/self/ns/mnt", constants.O_RDONLY); descriptors.push(ns);
+        const namespace = identity(fstatSync(ns, { bigint: true }));
+        if (!root.namespace || namespace.dev !== root.namespace.dev || namespace.ino !== root.namespace.ino) fail(Failure.UnsafeNamespace);
+        for (const pin of root.pins) {
+          checkTime(); const parent = pin.path.length ? opened.get(physicalKey(pin.path.slice(0, -1))) : undefined;
+          if (pin.path.length && !parent) fail(Failure.UnsafeNamespace);
+          const named = parent ? path(parent.fd, pin.path[pin.path.length - 1]!) : "/";
+          const directory = pin.before.isDirectory(), fd = openSync(named, directory ? directoryFlags : pathFlags);
+          if (directory) { descriptors.push(fd); opened.set(physicalKey(pin.path), { fd, pin }); }
+          try {
+          if (!samePhysical(pin.before, fstatSync(fd, { bigint: true }), pin.full)) fail(Failure.IdentityChanged);
+          if (mount(fd) !== pin.mountId) fail(Failure.MountCrossing);
+          if (pin.full && pin.before.isDirectory()) {
+            if (!pin.names) fail(Failure.UnsafeNamespace);
+            const names: Buffer[] = [], stream = opendirSync(`/proc/self/fd/${fd}`, { encoding: "latin1", bufferSize: 1 });
+            try {
+              for (let item = stream.readSync(); item; item = stream.readSync()) {
+                checkTime(); const name = Buffer.from(item.name, "latin1"); membershipCount++; membershipBytes += name.length;
+                if (!name.length || name.includes(0) || name.includes(47)) fail(Failure.UnsafeNamespace);
+                if (membershipCount > state.limits.maxEntries || membershipBytes > state.limits.maxManifestBytes) fail(Failure.Bounds);
+                names.push(name);
+              }
+            } finally { stream.closeSync(); }
+            names.sort(Buffer.compare);
+            if (names.length !== pin.names.length || names.some((name, index) => !name.equals(pin.names![index]!))) fail(Failure.Unstable);
+          }
+          if (pin.target && !readlinkSync(named, { encoding: "buffer" }).equals(pin.target)) fail(Failure.Unstable);
+          if (!directory) {
+            const fresh = openSync(named, pathFlags);
+            try { if (!samePhysical(pin.before, fstatSync(fd, { bigint: true }), true) ||
+                !samePhysical(pin.before, fstatSync(fresh, { bigint: true }), true)) fail(Failure.Unstable);
+              if (mount(fd) !== pin.mountId || mount(fresh) !== pin.mountId) fail(Failure.MountCrossing); }
+            finally { closeSync(fresh); }
+          }
+          } finally { if (!directory) closeSync(fd); }
+        }
+        // Bracket every retained inode and its current parent-anchored name.
+        for (const { fd, pin } of opened.values()) {
+          checkTime(); if (!samePhysical(pin.before, fstatSync(fd, { bigint: true }), pin.full)) fail(Failure.Unstable);
+          const parent = pin.path.length ? opened.get(physicalKey(pin.path.slice(0, -1))) : undefined;
+          const named = parent ? path(parent.fd, pin.path[pin.path.length - 1]!) : "/";
+          const fresh = openSync(named, pin.before.isDirectory() ? directoryFlags : pathFlags);
+          try { if (!samePhysical(pin.before, fstatSync(fresh, { bigint: true }), pin.full)) fail(Failure.IdentityChanged);
+            if (mount(fd) !== pin.mountId || mount(fresh) !== pin.mountId) fail(Failure.MountCrossing); }
+          finally { closeSync(fresh); }
+        }
+        checkTime(); const freshNs = openSync("/proc/self/ns/mnt", constants.O_RDONLY);
+        try { const fresh = identity(fstatSync(freshNs, { bigint: true }));
+          if (fresh.dev !== namespace.dev || fresh.ino !== namespace.ino) fail(Failure.UnsafeNamespace); }
+        finally { closeSync(freshNs); }
+      } finally { for (const fd of descriptors.reverse()) { try { closeSync(fd); } catch { closeFailed = true; } }
+        if (closeFailed) fail(Failure.Access); }
+    }
+    checkTime();
+  } catch (error) { state.closed = true; throw error instanceof ObservationError ? error : new ObservationError(Failure.Access); }
+}
+export function closeDependencySourceExposure(exposure: DependencySourceExposure): void {
+  const state = sourceExposures.get(exposure); if (!state) fail(Failure.InvalidRequest); state.closed = true;
+}
 
 /** Bounded factual inventory under a caller-held exclusion gate. This does not
  * acquire admission, establish provenance, or protect against privileged writers.
@@ -67,8 +200,9 @@ async function observeNamedRoot(input: {
   readonly expectedWorkspace?: DependencyWorkspaceIdentity; readonly expectedTree?: DependencyTreeIdentity;
   readonly limits: DependencyTreeObservationLimits;
   readonly sourceLinkSession?: DependencySourceLinkSession;
-}): Promise<DependencyCapturedTreeObservation> {
+}, exposure?: PhysicalRoot): Promise<DependencyCapturedTreeObservation> {
   const anchors: Anchor[] = [];
+  let sourceNamespace: FileHandle | undefined;
   try {
     if (process.platform !== "linux") fail(Failure.UnsupportedPlatform);
     if (!isAbsolute(input.workspacePath) || resolve(input.workspacePath) !== input.workspacePath ||
@@ -79,6 +213,8 @@ async function observeNamedRoot(input: {
         !Object.values(input.limits).every((n) => Number.isSafeInteger(n) && n > 0) ||
         Object.keys(input.limits).length !== 4) fail(Failure.InvalidRequest);
     if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(Failure.UnsupportedPlatform);
+    if (exposure) { sourceNamespace = await open("/proc/self/ns/mnt", constants.O_RDONLY);
+      exposure.namespace = identity(await sourceNamespace.stat({ bigint: true })); }
     const start = performance.now();
     const checkTime = (): void => { if (performance.now() - start > input.limits.maxDurationMs) fail(Failure.Bounds); };
     const retainDirectory = async (path: string | Buffer, parent?: FileHandle, name?: Buffer, target = false): Promise<Anchor> => {
@@ -114,6 +250,17 @@ async function observeNamedRoot(input: {
     const entries: DependencyManifestEntry[] = [];
     const identities: DependencyObservedEntryIdentity[] = [];
     const checked: CheckedEntry[] = [];
+    const prefix = [...input.workspacePath.split("/").filter(Boolean).map(part => Buffer.from(part)), treeName];
+    const physicalPins = new Map<string, PhysicalPin>();
+    const remember = (path: readonly Buffer[], info: BigIntStats, mountId: string, full: boolean, target?: Buffer): void => {
+      if (!exposure) return;
+      if ((!full && --exposure.ancestorBudget < 0) || (full && info.isDirectory() && --exposure.directoryBudget < 0)) fail(Failure.Bounds);
+      const pin: PhysicalPin = { path, before: info, mountId, full, ...(target ? { target } : {}) };
+      exposure.storageBytes += Buffer.byteLength(JSON.stringify([physicalKey(path), String(info.dev), String(info.ino), String(info.mode),
+        String(info.uid), String(info.gid), String(info.size), String(info.nlink), String(info.ctimeNs), String(info.mtimeNs), mountId])) + (target?.length ?? 0);
+      if (exposure.storageBytes + manifestEstimate > input.limits.maxManifestBytes) fail(Failure.Bounds);
+      exposure.pins.push(pin); physicalPins.set(physicalKey(path), pin);
+    };
     let totalBytes = 0;
     let manifestEstimate = 26;
     const allocated = { [Kind.Directory]: 0n, [Kind.File]: 0n, [Kind.Symlink]: 0n };
@@ -129,6 +276,8 @@ async function observeNamedRoot(input: {
       inodeCounts[entry.kind] += 1n;
       entries.push(entry);
       identities.push({ path: entry.path, identity: identity(info), mountId });
+      if (exposure) remember([...prefix, ...entry.path.map(part => Buffer.from(part, "base64"))], info, mountId, true,
+        entry.kind === Kind.Symlink ? Buffer.from(entry.target, "base64") : undefined);
     };
     const names = async (handle: FileHandle): Promise<Buffer[]> => {
       const result: Buffer[] = [];
@@ -145,6 +294,12 @@ async function observeNamedRoot(input: {
     const walk = async (dir: Anchor, path: readonly string[]): Promise<void> => {
       add({ path, kind: Kind.Directory, mode: Number(dir.before.mode & 0o7777n) }, dir.before, dir.mountId);
       const beforeNames = await names(dir.handle);
+      if (exposure) {
+        const pin = physicalPins.get(physicalKey([...prefix, ...path.map(part => Buffer.from(part, "base64"))]));
+        if (!pin) fail(Failure.UnsafeNamespace); pin.names = beforeNames;
+        exposure.storageBytes += beforeNames.reduce((sum, name) => sum + name.length, 0);
+        if (exposure.storageBytes + manifestEstimate > input.limits.maxManifestBytes) fail(Failure.Bounds);
+      }
       for (const name of beforeNames) {
         checkTime();
         const childPath = anchored(dir.handle, name);
@@ -204,6 +359,8 @@ async function observeNamedRoot(input: {
       if (beforeNames.length !== afterNames.length || beforeNames.some((name, i) => !name.equals(afterNames[i]!)) ||
           !same(dir.before, after)) fail(Failure.Unstable);
     };
+    if (exposure) for (const [index, anchor] of anchors.slice(0, treeAnchorIndex).entries())
+      remember(prefix.slice(0, index), anchor.before, anchor.mountId, false);
     await walk(root, []);
     const presentSourceLinks = validateSymlinks(entries, sourceLinks,
       input.sourceLinkSession ? dependencySourceLinkAllowsSubset(input.sourceLinkSession) : false);
@@ -241,6 +398,7 @@ async function observeNamedRoot(input: {
     if (canonicalBytes.length > input.limits.maxManifestBytes) fail(Failure.Bounds);
     checkTime();
     const digest = hash(canonicalBytes);
+    if (exposure && exposure.storageBytes + canonicalBytes.length > input.limits.maxManifestBytes) fail(Failure.Bounds);
     checkTime();
     return { status: Status.Complete, workspace, tree: identity(root.before), mountId: root.mountId,
       entries, identities, canonicalBytes, digest, totalBytes: String(totalBytes),
@@ -259,6 +417,7 @@ async function observeNamedRoot(input: {
     for (const item of anchors.reverse()) {
       try { await item.handle.close(); } catch { closeFailed = true; }
     }
+    if (sourceNamespace) { try { await sourceNamespace.close(); } catch { closeFailed = true; } }
     if (closeFailed) return { status: Status.Incomplete, reason: Failure.Access };
   }
 }

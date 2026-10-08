@@ -1,9 +1,12 @@
+import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
-import { admitHostedDependencyConsumer } from "./hosted-dependency-admission";
-import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction } from "./hosted-dependency-tool-profile";
+import { admitHostedDependencyEntry } from "./hosted-dependency-admission";
+import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction,
+  invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { researchProviderAdmissionGuard } from "./research-launch-admission";
@@ -231,17 +234,15 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
-  await admitHostedDependencyConsumer(config);
-  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath);
+  config = withHostedGoalIdentity(config);
+  const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
+  try {
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath, toolEntry);
   assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
+    ...hostedGoalAdmissionIdentity(config),
     ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
   const providerEgressPolicy = isMimo
@@ -251,13 +252,9 @@ export async function runCodexGoal(
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
   const appServerProcessFactory = admitHostedReadonlyInputs({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
+    ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
-  });
+  }, toolEntry);
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
   const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
     .then(() => true, (error: unknown) => {
@@ -273,12 +270,13 @@ export async function runCodexGoal(
     await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
       taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
   }
-  return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
+  return await new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
     async () => {
       await prepareHostScratchTemp(config.jobRootDir, config.sourceEnv ?? process.env);
-      return runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit, dependencyToolConfig);
+      return runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit, dependencyToolConfig, toolEntry);
     },
   );
+  } finally { invalidateHostedDependencyQualifiedToolEntry(toolEntry); }
 }
 
 async function runCodexGoalAdmitted(
@@ -288,6 +286,7 @@ async function runCodexGoalAdmitted(
   appServerProcessFactory: CodexAppServerProcessFactory | undefined,
   baseCommit: string | undefined,
   dependencyToolConfig: DependencyToolGuestConfig | undefined,
+  toolEntry: HostedDependencyQualifiedToolEntry | undefined,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
@@ -415,7 +414,7 @@ async function runCodexGoalAdmitted(
       },
       systemPrompt: codexGoalRunSystemPrompt(config, {
         linkedWorktreeHandoff: linkedWorktreeHandoff.enabled,
-        ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig) } : {}),
+        ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig, toolEntry) } : {}),
       }),
       metadata: {
         goal: config.goalSummary ?? config.taskId,
@@ -496,7 +495,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly controlInbox?: WorkerControlService;
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
-  const { config } = input;
+  const config = withHostedGoalIdentity(input.config);
   const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
@@ -824,58 +823,6 @@ function createCodexGoalProgressHeartbeat(input: {
       await writes;
     },
   };
-}
-
-function progressFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): Omit<CodexGoalProgressSnapshot, "schemaVersion" | "taskId" | "updatedAt" | "pid"> {
-  const attempts = attemptsFromResult(result);
-  const lastAttempt = attempts.at(-1);
-  return {
-    status: progressStatusFromResult(result.status),
-    resultStatus: result.status,
-    ...("reason" in result && typeof result.reason === "string"
-      ? { reason: result.reason }
-      : {}),
-    attemptCount: attempts.length,
-    ...(lastAttempt && "accountId" in lastAttempt && typeof lastAttempt.accountId === "string"
-      ? { currentAccount: lastAttempt.accountId }
-      : {}),
-  };
-}
-
-function attemptsFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-) {
-  const attempts = "attempts" in result && Array.isArray(result.attempts)
-    ? result.attempts
-    : [];
-  return attempts;
-}
-
-function attemptCountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): number {
-  return attemptsFromResult(result).length;
-}
-
-function currentAccountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): string | undefined {
-  const lastAttempt = attemptsFromResult(result).at(-1);
-  return lastAttempt && "accountId" in lastAttempt &&
-    typeof lastAttempt.accountId === "string"
-    ? lastAttempt.accountId
-    : undefined;
-}
-
-function progressStatusFromResult(status: string): CodexGoalProgressStatus {
-  if (status === "completed") return "completed";
-  if (status === "waiting_capacity") return "blocked";
-  if (status === "partial") return "partial";
-  if (status === "failed") return "failed";
-  if (status === "aborted") return "aborted";
-  return "failed";
 }
 
 async function codexRuntimeResultInput(input: {

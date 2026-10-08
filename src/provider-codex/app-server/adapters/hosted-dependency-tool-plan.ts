@@ -1,16 +1,16 @@
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, sameDependencyAttempt } from "../../../core/dependency-environment/dependency-owner";
 import { dependencyToolGuestConfigPath, type DependencyToolFile, type DependencyToolQualification } from "../../../core/dependency-environment/dependency-tool-profile";
-import { DependencyToolReadyReadStatus, matchesRegistryDependencyToolReady,
-  type DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
+import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, matchesRegistryDependencyToolReady, matchesDependencyToolReadyIdentity,
+  type DependencyToolReadyReader, type DependencyToolReadyFacts } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin,
   type HostedActivationFence } from "./hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { assertHostedDependencyToolProfileFiles, trustedFile } from "./hosted-dependency-tool-files";
-import { observeHostedFdProcess, readHostedFdProfile, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
+import { observeHostedFdProcess, readHostedFdProfile, hostedFdGroupPids, assertHostedFdInternals, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
 import { openHostedRetainedToolFiles, assertHostedRetainedToolDescriptors, retainHostedToolFilesInvocation, bindHostedToolFilesChild,
   revokeHostedRetainedToolFiles, hostedToolFilesForChild, assertHostedToolCapsuleCopy, type HostedRetainedToolFiles } from "./hosted-retained-tool-files";
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
@@ -19,6 +19,8 @@ import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRe
 
 type Plan = { readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
   readonly readyReader: DependencyToolReadyReader;
+  readonly provenance: DependencyToolReadyFacts["provenance"];
+  readonly sourceAncestors: readonly Readonly<{ canonicalPath: string; dev: string; ino: string }>[];
   readonly qualification: DependencyToolQualification; readonly descriptorScope: HostedRetainedToolFiles;
   readonly attempt: ReturnType<typeof readHostedDependencyAttempt>; readonly parentBirth: string;
   readonly parentGroup: string; readonly sources: readonly string[];
@@ -105,7 +107,7 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
 /** Only a live enrolled origin and its reserved provider can prepare the plan.
  * The returned configuration is not a permit; the retained record FD is private. */
 export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: string, binding: HostedDependencyBinding,
-  root: string, writable: readonly string[], sources: readonly string[], readyReader?: DependencyToolReadyReader): { readonly mounts: readonly string[]; readonly cache: string } | undefined {
+  root: string, writable: readonly string[], sources: readonly string[], readyReader?: DependencyToolReadyReader): { readonly mounts: readonly string[]; readonly cache: string; readonly sourcePaths: readonly string[] } | undefined {
   assertHostedActivationFence(fence);
   if (binding.version === 1) return undefined;
   if (!readyReader) fail();
@@ -117,26 +119,38 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
       root !== `${hostedDependencyPolicyRoot}/dependency-provider-roots/${providerId(unit)}` || writable.length !== 3 ||
       writable[0] !== binding.workspace.canonicalPath || sources.some(path => path === "/" || path === hostedDependencyPolicyRoot)) fail();
   assertHostedDependencyToolProfileFiles(binding.toolProfile, binding.jobRootDir);
-  if (readyReader.readCurrent().status !== DependencyToolReadyReadStatus.Ready) fail();
+  const initial = readyReader.readCurrent();
+  if (initial.status !== DependencyToolReadyReadStatus.Ready) fail();
+  assertLocalSources(binding, initial.facts.provenance);
+  const localRoots = initial.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted ?
+    initial.facts.provenance.readonlySources : [];
+  const sourceAncestors = localSourceAncestors(binding, initial.facts.provenance);
   const opened = openHostedRetainedToolFiles({ unit, parentStartId: attempt.launch.startId, jobId: binding.jobId, bindingBytes: encode(binding) });
   try {
     const q = opened.qualification, path = opened.capsulePath;
     const parentProcess = observeHostedFdProcess(process.pid);
     const rootStat = lstatSync(root, { bigint: true });
-    const plan: Plan = { unit, root, binding, readyReader, qualification: q, descriptorScope: opened.scope, attempt, parentBirth: parentProcess.birth,
+    const plan: Plan = { unit, root, binding, readyReader, provenance: initial.facts.provenance, sourceAncestors,
+      qualification: q, descriptorScope: opened.scope, attempt, parentBirth: parentProcess.birth,
       files: Object.freeze([...q.profile.readonlyFiles, q.profile.node].map(pin => {
         const s = lstatSync(pin.path, { bigint: true }); return Object.freeze({ pin, dev: s.dev, ino: s.ino });
       })),
       rootIdentity: Object.freeze({ dev: rootStat.dev, ino: rootStat.ino }),
       parentGroup: parentProcess.group, sources: Object.freeze([...sources, ...writable, `${binding.workspace.canonicalPath}/.git`,
         `${binding.workspace.canonicalPath}/node_modules`, ...binding.toolProfile.readonlyFiles.map(f => f.path),
-        binding.toolProfile.node.path, binding.toolProfile.cache.canonicalPath, dependencyToolGuestConfigPath]), closed: false };
+        binding.toolProfile.node.path, binding.toolProfile.cache.canonicalPath, dependencyToolGuestConfigPath,
+        ...localRoots.map(source => source.canonicalPath), ...sourceAncestors.map(ancestor => ancestor.canonicalPath)]), closed: false };
     validatePlan(fence, plan);
     prepared.set(plan, true);
     pending.set(unit, plan);
     const tree = `${binding.workspace.canonicalPath}/node_modules`;
-    return Object.freeze({ cache: binding.toolProfile.cache.canonicalPath, mounts: Object.freeze([
+    return Object.freeze({ cache: binding.toolProfile.cache.canonicalPath,
+      sourcePaths: Object.freeze([...sourceAncestors.map(ancestor => ancestor.canonicalPath), ...localRoots.map(source => source.canonicalPath)]), mounts: Object.freeze([
       `BindReadOnlyPaths=${tree}:${tree}:norbind`,
+      // Each ancestor is a RW mountpoint: rename/replacement cannot redirect a
+      // source link around the RO leaf, while ordinary sibling writes remain.
+      ...sourceAncestors.map(ancestor => `BindPaths=${ancestor.canonicalPath}:${ancestor.canonicalPath}:norbind`),
+      ...localRoots.map(source => `BindReadOnlyPaths=${source.canonicalPath}:${source.canonicalPath}:norbind`),
       ...binding.toolProfile.readonlyFiles.map(f => `BindReadOnlyPaths=${f.path}:${f.path}:norbind`),
       ...(sources.includes(binding.toolProfile.node.path) ? [] : [`BindReadOnlyPaths=${binding.toolProfile.node.path}:${binding.toolProfile.node.path}:norbind`]),
       `BindPaths=${binding.toolProfile.cache.canonicalPath}:${binding.toolProfile.cache.canonicalPath}:norbind`,
@@ -197,7 +211,7 @@ export function assertHostedDependencyToolRelease(child: ChildProcess, fence: Ho
   if (binding?.version !== 2) { if (plan) fail(); return; }
   if (!plan || plan.closed || plan.unit !== unit.unit || !child.pid || unit.root !== plan.root) fail();
   validatePlan(fence, plan);
-  assertNamespace(plan, bootstrap);
+  assertNamespace(plan, bootstrap, unit);
   const after = observeHostedFdProcess(bootstrap.pid);
   if (after.birth !== bootstrap.birth || after.mount !== bootstrap.mount || after.group !== bootstrap.group ||
       after.user !== bootstrap.user || after.pidNamespace !== bootstrap.pidNamespace) fail();
@@ -227,13 +241,19 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   // every temporary descriptor before the FD-table checks below. It is retained
   // with this actual invocation/child, never reconstructed from serialized facts.
   const ready = plan.readyReader.readCurrent();
+  const expected = { workspace: binding.workspace, coverageRevision: hash(encode(binding)),
+    revision: q.readyRevision, installKey: q.installKey, tree: q.tree, manifestDigest: q.manifestDigest };
   if (ready.status !== DependencyToolReadyReadStatus.Ready ||
-      !matchesRegistryDependencyToolReady({ workspace: binding.workspace, coverageRevision: hash(encode(binding)),
-        revision: q.readyRevision, installKey: q.installKey, tree: q.tree, manifestDigest: q.manifestDigest }, ready.facts) ||
+      !(ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted ?
+        matchesRegistryDependencyToolReady(expected, ready.facts) :
+        ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted && matchesDependencyToolReadyIdentity(expected, ready.facts)) ||
+      !encode(ready.facts.provenance).equals(encode(plan.provenance)) ||
       q.installationId !== binding.installationId || q.runtimeSha !== binding.runtimeSha || q.grantDigest !== binding.grantDigest ||
       !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== plan.attempt.launch.startId || q.attemptId !== plan.attempt.attemptId ||
       q.epoch !== plan.attempt.epoch ||
       binding.version !== 2 || !encode(q.profile).equals(encode(binding.toolProfile))) fail();
+  assertLocalSources(binding, ready.facts.provenance);
+  if (!encode(localSourceAncestors(binding, ready.facts.provenance)).equals(encode(plan.sourceAncestors))) fail();
   assertHostedRetainedToolDescriptors(plan.descriptorScope);
   assertHostedDependencyToolProfileFiles(q.profile, binding.jobRootDir);
   for (const file of plan.files) {
@@ -255,8 +275,67 @@ function providerId(unit: string): string {
   if (!id) fail(); return id;
 }
 
-function assertNamespace(plan: Plan, process: HostedFdProcess): void {
+/** Only the captive current reader selects these paths. Directory pins are
+ * mount facts; the worker-owned per-entry exposure separately checks every
+ * source member, hardlink and inner link against its retained physical walk. */
+function assertLocalSources(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]): void {
+  if (provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted) return;
+  if (provenance.kind !== DependencyToolReadyProvenanceKind.LocalCompleted) fail();
+  assertHostedDependencyPhysicalWorkspace(binding);
+  const reference = provenance.sourceBinding, parent = `${hostedDependencyPolicyRoot}/dependency-source-bindings/${binding.workspace.dev}-${binding.workspace.ino}`;
+  if (!reference.path.startsWith(parent + "/") ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(reference.path.slice(parent.length + 1)) ||
+      !/^[a-f0-9]{64}$/.test(reference.sha256)) fail();
+  const before = lstatSync(reference.path, { bigint: true }), directory = lstatSync(parent, { bigint: true });
+  if (!before.isFile() || before.uid !== 0n || before.gid !== 0n || before.nlink !== 1n ||
+      (before.mode & 0o7777n) !== 0o600n || before.size < 1n || before.size > 262144n ||
+      String(before.dev) !== reference.identity.dev || String(before.ino) !== reference.identity.ino ||
+      !directory.isDirectory() || directory.uid !== 0n || (directory.mode & 0o7777n) !== 0o700n ||
+      trustedFile(reference.path).sha256 !== reference.sha256) fail();
+  const after = lstatSync(reference.path, { bigint: true });
+  if (before.dev !== after.dev || before.ino !== after.ino || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs) fail();
+  const roots = provenance.readonlySources;
+  if (roots.length > 128) fail();
+  for (let index = 0; index < roots.length; index++) {
+    const source = roots[index]!, path = source.canonicalPath;
+    // Fixed systemd mount syntax has no payload-selected escaping/expansion.
+    if (!path.startsWith(binding.workspace.canonicalPath + "/") || /[\s:%\\"'\x00-\x1f\x7f]/.test(path) || path.length > 4096 ||
+        [".git", "node_modules"].some(name => path === `${binding.workspace.canonicalPath}/${name}` || path.startsWith(`${binding.workspace.canonicalPath}/${name}/`)) ||
+        roots.slice(0, index).some(other => other.canonicalPath >= path || path.startsWith(other.canonicalPath + "/"))) fail();
+    for (let ancestor = path;; ancestor = dirname(ancestor)) {
+      const info = lstatSync(ancestor);
+      if (!info.isDirectory() || info.uid !== 0 || (info.mode & 0o022) || realpathSync(ancestor) !== ancestor) fail();
+      if (ancestor === "/") break;
+    }
+    const info = lstatSync(path, { bigint: true });
+    if (String(info.dev) !== source.identity.dev || String(info.ino) !== source.identity.ino) fail();
+  }
+}
+
+/** Derive the finite topology only from the same captive source roots. No
+ * caller can nominate an ancestor or substitute a mount/identity descriptor. */
+function localSourceAncestors(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]) {
+  const paths = new Set<string>();
+  if (provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted) {
+    for (const source of provenance.readonlySources) {
+      if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
+      for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
+        if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
+        paths.add(path);
+      }
+    }
+  }
+  return Object.freeze([...paths].sort().map(canonicalPath => {
+    const info = lstatSync(canonicalPath, { bigint: true });
+    if (!info.isDirectory() || info.uid !== 0n || (info.mode & 0o022n) || realpathSync(canonicalPath) !== canonicalPath) fail();
+    return Object.freeze({ canonicalPath, dev: String(info.dev), ino: String(info.ino) });
+  }));
+}
+
+function assertNamespaceMounts(plan: Plan, process: HostedFdProcess) {
   const prefix = `/proc/${process.pid}/root`, q = plan.qualification;
+  const root = statSync(prefix, { bigint: true });
+  if (!root.isDirectory() || root.dev !== plan.rootIdentity.dev || root.ino !== plan.rootIdentity.ino) fail();
   const mounts = readFileSync(`/proc/${process.pid}/mountinfo`, "utf8");
   if (Buffer.byteLength(mounts) > 1024 * 1024) fail();
   const rows = mounts.trim().split("\n").map(line => {
@@ -277,24 +356,57 @@ function assertNamespace(plan: Plan, process: HostedFdProcess): void {
     if (!s.isDirectory() || String(s.dev) !== expected.dev || String(s.ino) !== expected.ino) fail();
   };
   directory(plan.binding.workspace.canonicalPath, plan.binding.workspace); directory(tree, q.tree); directory(cache, q.profile.cache);
+  const localRoots = plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted ? plan.provenance.readonlySources : [];
+  const workspaceMount = exact(plan.binding.workspace.canonicalPath, false);
+  const physicalRoot = (path: string) => workspaceMount.root.replace(/\/$/, "") + path.slice(plan.binding.workspace.canonicalPath.length);
+  const ancestorMounts = plan.sourceAncestors.map(ancestor => {
+    directory(ancestor.canonicalPath, ancestor);
+    const mount = exact(ancestor.canonicalPath, false);
+    if (mount.device !== workspaceMount.device || mount.root !== physicalRoot(ancestor.canonicalPath)) fail();
+    return mount;
+  });
+  const localMounts = localRoots.map(source => {
+    directory(source.canonicalPath, source.identity);
+    const mount = exact(source.canonicalPath, true);
+    if (mount.device !== workspaceMount.device || mount.root !== physicalRoot(source.canonicalPath)) fail();
+    return mount;
+  });
   const finitePoints = new Set(["/", ...plan.sources, "/proc", "/dev", "/dev/pts", "/dev/shm", "/sys", "/sys/fs/cgroup", "/sys/module",
     "/proc/sys", "/proc/sysrq-trigger", "/proc/kcore", "/tmp", "/var/tmp"]);
   for (const row of rows) {
     if (!finitePoints.has(row.point)) fail();
     if (row.point.startsWith(tree + "/") || row.point.startsWith(cache + "/")) fail();
+    for (const mount of localMounts) {
+      // Waive only the actual verified RW self-bind tuple on THIS source's
+      // exact derived ancestor. General same-device ancestors still deny.
+      const protectedAncestor = ancestorMounts.some(ancestor => row === ancestor && mount.point.startsWith(ancestor.point + "/"));
+      if (row.point.startsWith(mount.point + "/") || row.device === mount.device && row.point !== mount.point &&
+          row.point !== plan.binding.workspace.canonicalPath && !protectedAncestor && (row.root === mount.root || row.root.startsWith(mount.root + "/") ||
+          mount.root.startsWith(row.root.replace(/\/$/, "") + "/"))) fail();
+    }
     // A host bind ancestor/root/subtree at another path can expose this same
     // tree. The one workspace bind is the sole allowed ancestor, overlaid RO.
     if (row.device === treeMount.device && row.point !== tree && row.point !== plan.binding.workspace.canonicalPath &&
         (row.root === treeMount.root || row.root.startsWith(treeMount.root + "/") || treeMount.root.startsWith(row.root.replace(/\/$/, "") + "/"))) fail();
     if (row.options.includes("rw") && !["/proc", "/tmp", "/var/tmp", "/dev", "/dev/pts", "/dev/shm", cache,
-      plan.binding.workspace.canonicalPath, ...plan.sources.filter(path => path.startsWith(plan.binding.jobRootDir + "/home/"))].some(path => row.point === path ||
+      plan.binding.workspace.canonicalPath, ...ancestorMounts.map(ancestor => ancestor.point),
+      ...plan.sources.filter(path => path.startsWith(plan.binding.jobRootDir + "/home/"))].some(path => row.point === path ||
         (path === "/proc" || path === "/dev") && row.point.startsWith(path + "/"))) fail();
   }
+  return rows;
+}
+function assertNamespace(plan: Plan, process: HostedFdProcess, unit: HostedFdUnit): void {
+  const rows = assertNamespaceMounts(plan, process);
+  const prefix = `/proc/${process.pid}/root`, tree = `${plan.binding.workspace.canonicalPath}/node_modules`;
+  const exact = (path: string) => {
+    const found = rows.filter(row => row.point === path);
+    if (found.length !== 1 || !found[0]!.options.includes("ro")) fail();
+  };
   for (const file of plan.files) {
     const pin = file.pin;
     // Each helper/metadata/Node leaf has an actual nonrecursive RO file mount,
     // even when a preexisting system /usr exposure also covers its parent.
-    exact(pin.path, true);
+    exact(pin.path);
     const fd = openSync(prefix + pin.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const before = fstatSync(fd, { bigint: true });
@@ -305,7 +417,7 @@ function assertNamespace(plan: Plan, process: HostedFdProcess): void {
           trustedFile(pin.path).sha256 !== pin.sha256) fail();
     } finally { closeSync(fd); }
   }
-  exact(dependencyToolGuestConfigPath, true);
+  exact(dependencyToolGuestConfigPath);
   const fd = openSync(prefix + dependencyToolGuestConfigPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const capsule = fstatSync(fd, { bigint: true });
@@ -313,4 +425,102 @@ function assertNamespace(plan: Plan, process: HostedFdProcess): void {
     const after = fstatSync(fd, { bigint: true }), current = statSync(prefix + dependencyToolGuestConfigPath, { bigint: true });
     if (after.ctimeNs !== capsule.ctimeNs || after.mtimeNs !== capsule.mtimeNs || current.dev !== capsule.dev || current.ino !== capsule.ino) fail();
   } finally { closeSync(fd); }
+  if (plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted) {
+    assertLocalLinkRoutes(prefix, tree, plan.provenance.readonlySources.map(source => source.canonicalPath));
+    assertLocalProcessDescriptors(plan, process, unit);
+  }
+}
+
+/** Check the actual mounted dependency links, without following directory
+ * symlinks while walking. Every reachable target must resolve within the RO
+ * tree or one independently authenticated direct source overlay. */
+function assertLocalLinkRoutes(prefix: string, tree: string, roots: readonly string[]): void {
+  const pending = [tree]; let entries = 0, linkBytes = 0;
+  while (pending.length) {
+    const directory = pending.pop()!, before = lstatSync(prefix + directory, { bigint: true });
+    if (!before.isDirectory()) fail();
+    const names = readdirSync(prefix + directory);
+    if ((entries += names.length) > 100000) fail();
+    for (const name of names) {
+      const path = join(directory, name); if (path.length > 4096) fail();
+      const info = lstatSync(prefix + path, { bigint: true });
+      if (info.isDirectory()) pending.push(path);
+      else if (info.isSymbolicLink()) {
+        const target = readlinkSync(prefix + path);
+        if ((linkBytes += Buffer.byteLength(target)) > 32 * 1024 * 1024 || target.startsWith("/")) fail();
+        // Resolve actual guest components, not host realpath text from a proc
+        // magic-link. Intermediate links must also remain in the finite RO set.
+        const intended = resolveLocalGuestLink(prefix, `${dirname(path)}/${target}`, [tree, ...roots]);
+        const actual = statSync(prefix + path, { bigint: true }), targetInfo = statSync(prefix + intended, { bigint: true });
+        if (actual.dev !== targetInfo.dev || actual.ino !== targetInfo.ino) fail();
+        const after = lstatSync(prefix + path, { bigint: true });
+        if (after.dev !== info.dev || after.ino !== info.ino || after.ctimeNs !== info.ctimeNs || after.mtimeNs !== info.mtimeNs ||
+            readlinkSync(prefix + path) !== target) fail();
+      } else if (!info.isFile() || info.nlink !== 1n) fail();
+    }
+    const after = lstatSync(prefix + directory, { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs) fail();
+  }
+}
+
+function resolveLocalGuestLink(prefix: string, path: string, roots: readonly string[]): string {
+  if (path.length > 4096) fail();
+  let links = 0, steps = 0;
+  const pending = path.slice(1).split("/"), components: string[] = [];
+  while (pending.length) {
+    if (++steps > 4096) fail();
+    const name = pending.shift()!;
+    if (!name || name === ".") continue;
+    // Expand a preceding actual link before consuming '..'; lexical path
+    // normalization here would disagree with the kernel's route semantics.
+    if (name === "..") { components.pop(); continue; }
+    const current = "/" + [...components, name].join("/");
+    if (current.length > 4096 || !roots.some(root => current === root || current.startsWith(root + "/") || root.startsWith(current + "/"))) fail();
+    const before = lstatSync(prefix + current, { bigint: true });
+    if (!before.isSymbolicLink()) {
+      if (pending.length && !before.isDirectory()) fail();
+      components.push(name); continue;
+    }
+    const target = readlinkSync(prefix + current);
+    if (++links > 40 || target.startsWith("/") || Buffer.byteLength(target) > 4096) fail();
+    const after = lstatSync(prefix + current, { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.ctimeNs !== after.ctimeNs ||
+        before.mtimeNs !== after.mtimeNs || readlinkSync(prefix + current) !== target) fail();
+    pending.unshift(...target.split("/"));
+  }
+  const resolved = "/" + components.join("/");
+  if (!roots.some(root => resolved === root || resolved.startsWith(root + "/"))) fail();
+  return resolved;
+}
+
+/** No open writable source alias or closed-FD shared writable mapping may
+ * survive in any actual waiting process. The existing FDA proof owns bootstrap
+ * capabilities/namespaces and the genuine three-channel stdio peer relation. */
+function assertLocalProcessDescriptors(plan: Plan, bootstrap: HostedFdProcess, unit: HostedFdUnit): void {
+  const profile = readHostedFdProfile(); if (!profile) fail();
+  const pids = hostedFdGroupPids(unit.group);
+  for (const pid of pids) {
+    const current = observeHostedFdProcess(pid);
+    if (current.group !== `0::${unit.group}`) fail();
+    assertNamespaceMounts(plan, current);
+    assertHostedFdInternals(current, profile);
+    for (const number of [0, 1, 2]) {
+      const fd = current.descriptors.find(fd => fd.fd === number), expected = bootstrap.descriptors.find(fd => fd.fd === number);
+      if (!fd || !expected || fd.dev !== expected.dev || fd.ino !== expected.ino || fd.socket !== expected.socket ||
+          (fd.flags & 3) !== (expected.flags & 3)) fail();
+    }
+    assertNoSharedWritableFileMap(pid);
+    const after = observeHostedFdProcess(pid);
+    if (after.birth !== current.birth || after.group !== current.group || after.mount !== current.mount ||
+        !encode(after.descriptors).equals(encode(current.descriptors))) fail();
+  }
+  assertNoSharedWritableFileMap(process.pid);
+  if (!encode([...pids].sort((a, b) => a - b)).equals(encode([...hostedFdGroupPids(unit.group)].sort((a, b) => a - b)))) fail();
+}
+function assertNoSharedWritableFileMap(pid: number): void {
+  const maps = readFileSync(`/proc/${pid}/maps`, "utf8"); if (Buffer.byteLength(maps) > 1024 * 1024) fail();
+  for (const line of maps.trim().split("\n")) {
+    const fields = /^([a-f0-9]+-[a-f0-9]+) ([r-][w-][x-][ps]) [a-f0-9]+ [a-f0-9]+:[a-f0-9]+ ([0-9]+)(?:\s|$)/.exec(line);
+    if (!fields || fields[2]![1] === "w" && fields[2]![3] === "s" && fields[3] !== "0") fail();
+  }
 }
