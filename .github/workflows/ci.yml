@@ -104,6 +104,43 @@ jobs:
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run check:packed-consumer
 
+  native-probe-source:
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    container: node:24-bookworm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Create disposable protected NativeProbe TEST source
+        run: |
+          mkdir -m 0700 /native-probe-source-workspace
+          mkdir -m 0700 /native-probe-source-workspace/tmp
+          mkdir -m 0700 /native-probe-source-workspace/source
+          cp -R . /native-probe-source-workspace/source/
+      - run: npm ci
+        working-directory: /native-probe-source-workspace/source
+      - name: Strict NativeProbe source typecheck
+        run: npm run typecheck:native-probe
+        working-directory: /native-probe-source-workspace/source
+      - name: Strict root source integration typecheck
+        run: npm run typecheck:native-probe:root-source
+        working-directory: /native-probe-source-workspace/source
+        env:
+          SR_NATIVE_PROBE_TMP: /native-probe-source-workspace/tmp
+      - name: Actual C and Node source contracts
+        run: npm run test:native-probe
+        working-directory: /native-probe-source-workspace/source
+        env:
+          SR_NATIVE_PROBE_TMP: /native-probe-source-workspace/tmp
+      - name: Export NativeProbe SOURCE evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-probe-source-checks
+          path: /native-probe-source-workspace/source/delivery/a0-native-probe/source-check-*.json
+          if-no-files-found: error
+
   crash-boundary-shards:
     permissions:
       contents: read
@@ -155,7 +192,7 @@ jobs:
 
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, archive-root-tests, package, crash-boundary-shards-complete]
+    needs: [quality, unit-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify all CI gates passed
@@ -164,12 +201,14 @@ jobs:
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           ARCHIVE_ROOT_TESTS_RESULT: ${{ needs.archive-root-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
+          NATIVE_PROBE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
              [ "$ARCHIVE_ROOT_TESTS_RESULT" = "success" ] && \
              [ "$PACKAGE_RESULT" = "success" ] && \
+             [ "$NATIVE_PROBE_SOURCE_RESULT" = "success" ] && \
              [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
           fi
@@ -178,5 +217,6 @@ jobs:
           echo "unit-tests: $UNIT_TESTS_RESULT"
           echo "archive-root-tests: $ARCHIVE_ROOT_TESTS_RESULT"
           echo "package: $PACKAGE_RESULT"
+          echo "native-probe-source: $NATIVE_PROBE_SOURCE_RESULT"
           echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1
