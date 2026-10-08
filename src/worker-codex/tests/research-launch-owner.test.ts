@@ -1,6 +1,6 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
 import { bindResearchRuntime, captureResearchRuntime, admitResearchProcessFactory, admitResearchRuntime, researchCurrentStart, researchProviderAdmissionGuard } from "../research-launch-admission";
@@ -19,6 +19,8 @@ import { spawnCodexAppServerProcess } from "../../provider-codex/app-server/adap
 import { ensureCodexAgentTempRoot } from "../../provider-codex/codex-runtime-temp";
 import { hostedTestEgressGrantName, readHostedTestEgressGrantFile } from "../hosted-test-egress-files";
 import { researchCustody } from "../research-launch-files";
+import { normalizeResearchOperatorFailure, ResearchLaunchStage as S, ResearchLaunchCause as C,
+  ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
@@ -85,6 +87,48 @@ describe("authority changes during blocking Host observations", () => {
 });
 
 describe("closed installed research launch owner (real TEST files; proc, mounts and systemd substituted)", () => {
+  it.each([undefined, null, 42, "TEST-FAKE-secret"])("rethrows opaque pin failure %s unchanged", async original => {
+    const processes = await import("node:child_process"), sync = processes.spawnSync;
+    vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
+      if (command === "/usr/bin/mount") throw original;
+      return sync(command, args, options);
+    }) as typeof processes.spawnSync);
+    let rejected = false;
+    try { start(); } catch (error) {
+      rejected = true; expect(error).toBe(original);
+      expect(normalizeResearchOperatorFailure(error)).toEqual({ stage: S.Unknown,
+        diagnostic: D.Unknown, cause: C.None, legacyCode: "unclassified" });
+    }
+    expect(rejected).toBe(true);
+    expect(researchCurrentStart(request().jobId).spec.request.jobId).toBe(request().jobId);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  // RED: a failed outer start loses its exact phase/cause or discards active ownership.
+  it.each(["pin", "submission"] as const)("retains closed %s failure evidence without provider effects", async fault => {
+    const processes = await import("node:child_process"), sync = processes.spawnSync;
+    const original = Object.freeze(Object.assign(new Error("TEST-FAKE-secret=/private/auth.json"), { code: "EACCES" }));
+    vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
+      if (fault === "pin" && command === "/usr/bin/mount") throw original;
+      if (fault === "submission" && command === "/usr/bin/systemd-run") {
+        return { error: Object.assign(new Error("TEST-FAKE-secret"), { code: "ETIMEDOUT" }), status: null, stdout: "", stderr: "TEST-FAKE-secret" };
+      }
+      return sync(command, args, options);
+    }) as typeof processes.spawnSync);
+    let failure: unknown;
+    try { start(); } catch (error) { failure = error; }
+    expect(failure).toBeDefined();
+    if (fault === "pin") expect(failure).toBe(original);
+    expect(normalizeResearchOperatorFailure(failure)).toEqual(fault === "pin"
+      ? { stage: S.PinPreparation, diagnostic: D.EACCES, cause: C.None, legacyCode: "unclassified" }
+      : { stage: S.HostSubmission, diagnostic: D.ResearchAdmission, cause: C.HostCommandTimeout, legacyCode: 0 });
+    const current = researchCurrentStart(request().jobId);
+    expect(existsSync(local(join(current.directory, "spec.json")))).toBe(true);
+    expect(existsSync(local(join(current.directory, "binding.json")))).toBe(false);
+    expect(readdirSync(local(join(current.directory, "providers")))).toEqual([]);
+    expect(host.units.size).toBe(0);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(JSON.stringify(normalizeResearchOperatorFailure(failure))).not.toContain("TEST-FAKE");
+  });
   it("retains the finite identity and bytes of an existing v1 grant through admission", async () => {
     admitted(CodexProviderEgressProfileId.PublicResearchV1);
     const path = join("/run/user/subscription-runtime-research-v1", researchHash(request().jobId), "grant.json");
@@ -96,10 +140,15 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   it("launches an individually owned pinned service and admits its actual retained origin before provider effects", async () => {
+    const processes = await import("node:child_process"), submit = vi.spyOn(processes, "spawnSync");
     const current = admitted();
     const submitted = host.calls.find(c => c.command === "/usr/bin/systemd-run")!;
     expect(submitted.args).toContain("--property=KillMode=control-group");
     expect(submitted.args).toContain("--property=Restart=no");
+    // Regression: inherited systemd90s and operator60s deadlines terminate
+    // namespace setup before exec, despite the admitted finite300s setup bound.
+    expect(submitted.args).toContain("--property=TimeoutStartSec=300s");
+    expect(submit.mock.calls.find(([command]) => command === "/usr/bin/systemd-run")?.[2]).toMatchObject({ timeout: 330_000 });
     expect(submitted.args).toContain("--expand-environment=no");
     expect(submitted.args.at(-3)).toBe("/TEST-artifact/host-integration/research-runtime-launch.mjs");
     expect(host.pins.size).toBe(2);

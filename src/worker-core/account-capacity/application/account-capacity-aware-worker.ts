@@ -106,7 +106,8 @@ export class AccountCapacityAwareWorker<Job, Result>
     } catch (error) {
       const capacity = this.workerCapacity();
       const state = this.observeWorkerCapacity(capacity);
-      if (state && isWorkerAccountLimitCapacity(capacity, this.limitReasons)) {
+      if (state && capacity.reason !== "provider_session_invalid" &&
+          isWorkerAccountLimitCapacity(capacity, this.limitReasons)) {
         await this.recheckState(
           state,
           WorkerAccountCapacityRecheckMode.Refresh,
