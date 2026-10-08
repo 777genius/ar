@@ -45,6 +45,7 @@ import {
 import { FileBackendCodexPrewarmer } from "./file-backend-codex-prewarm";
 import { FileBackendCodexSessionSeeder } from "./file-backend-codex-session-seeding";
 import { FileBackendCodexSessionBinding } from "./file-backend-codex-session-binding";
+import { delay, refreshConflictDelayMs, shouldRetryRefreshConflict } from "./file-backend-codex-refresh-conflict-retry";
 
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
 export type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
@@ -523,37 +524,6 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     }
   }
 }
-
-function shouldRetryRefreshConflict(result: RefreshThenRunResult): boolean {
-  if (result.status !== "blocked") return false;
-  if (result.reason === "stale_generation") return true;
-  return (
-    result.reason === "permission_required" &&
-    /session refresh is already leased/i.test(result.safeMessage)
-  );
-}
-
-function refreshConflictDelayMs(attempt: number): number {
-  return Math.min(1_000, 100 * 2 ** Math.max(0, attempt - 1));
-}
-
-function delay(ms: number, abortSignal: AbortSignal): Promise<void> {
-  if (abortSignal.aborted) {
-    return Promise.reject(new Error("subscription_worker_run_aborted"));
-  }
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    abortSignal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("subscription_worker_run_aborted"));
-      },
-      { once: true },
-    );
-  });
-}
-
 
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
