@@ -28,6 +28,8 @@ import { readHostedDependencyKeyInputs, readHostedDependencyReceipt, assertHoste
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import type { HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
 
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
+
 const policyRoot = "/var/lib/subscription-runtime-host-policy";
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 type Ready = Extract<DependencyReceipt, { state: DependencyReceiptState.Ready }>;
@@ -80,7 +82,7 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   if (!receipt || receipt.state !== DependencyReceiptState.Ready || !matchesHostedDependencyReady(binding, receipt, before)) fail(DependencyAdmissionFailure.NeedsInstall);
   const local = receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1;
   if (local ? before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 :
-      receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall || before.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
+      !verifiedRegistry(receipt) || before.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
   const source = receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1
     ? openHostedDependencySourceLinks({ ...receipt, provenance: receipt.provenance }) : undefined;
   let exposure: DependencySourceExposure | undefined;
@@ -151,7 +153,7 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
 }
 
 function currentSources(inputs: HostedDependencyKeyInputs, receipt: Ready): readonly DependencyToolSourceRoot[] {
-  if (receipt.provenance.kind === DependencyInstallProofKind.CompletedInstall) {
+  if (verifiedRegistry(receipt)) {
     if (inputs.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
     return Object.freeze([]);
   }
@@ -213,7 +215,7 @@ function currentEntry(state: EntryState, phase: DependencyOwnerPhase.ExclusiveMu
     installKey: receipt.installKey, tree: receipt.tree, manifestDigest: receipt.manifestDigest };
   if (receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) return Object.freeze({ ...identity,
     provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.LocalCompleted, sourceBinding: receipt.provenance.sourceBinding, readonlySources: state.readonlySources }) });
-  if (receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall) fail();
+  if (!verifiedRegistry(receipt)) fail();
   return Object.freeze({ ...identity, provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.RegistryCompleted }) });
 }
 /** Called under the genuine final fence, after all temporary descriptors close. */
@@ -281,11 +283,18 @@ function assertQualification(q: DependencyToolQualification, binding: HostedDepe
   if (q.installationId !== binding.installationId || q.runtimeSha !== binding.runtimeSha || q.grantDigest !== binding.grantDigest ||
       !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== attempt.launch.startId || q.attemptId !== attempt.attemptId || q.epoch !== attempt.epoch ||
       !receipt || receipt.state !== DependencyReceiptState.Ready ||
-      (receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall &&
+      (!verifiedRegistry(receipt) &&
         (receipt.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1 || !entry)) ||
       q.readyRevision !== receipt.revision || q.installKey !== receipt.installKey || q.manifestDigest !== receipt.manifestDigest ||
       q.tree.dev !== receipt.tree.dev || q.tree.ino !== receipt.tree.ino || !tree.isDirectory() || String(tree.dev) !== q.tree.dev || String(tree.ino) !== q.tree.ino ||
       !encode(q.profile).equals(encode(hostedDependencyToolProfile(binding)))) fail();
+}
+/** Every projection reauthenticates the fixed immutable comparison evidence. */
+function verifiedRegistry(receipt: Ready): boolean {
+  if (receipt.provenance.kind === DependencyInstallProofKind.CompletedInstall) return true;
+  if (receipt.provenance.kind !== DependencyInstallProofKind.LegacyCompared) return false;
+  assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+  return true;
 }
 function assertInstalledPins(workspace: string, profile: DependencyToolProfile, lockBytes: Uint8Array): void {
   const lock: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(lockBytes));

@@ -8,6 +8,8 @@ import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
+
 export enum HostedDependencyHistoryStatus { Known = "known", Unknown = "unknown" }
 export enum HostedDependencyHistoryFailure { Unresolved = "unresolved" }
 export type HostedDependencyCommittedHistory =
@@ -41,6 +43,9 @@ export function readHostedDependencyCommittedHistory(jobId: string): HostedDepen
         (receipt.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) ||
         !encode(readHostedDependencyBinding(jobId)).equals(encode(binding)) ||
         !readHostedActivationBytes("host-installation.json")?.equals(installed) || !readHostedActivationBytes("host-activation.json")?.equals(enrolled)) throw new Error();
+    if (receipt.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+      assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+    }
     assertHostedDependencyPhysicalWorkspace(binding);
     return Object.freeze({ status: HostedDependencyHistoryStatus.Known, binding, receipt });
   } catch {

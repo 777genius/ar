@@ -49,6 +49,7 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     if (config.runtimeHomeRootDir !== undefined && config.runtimeHomeRootDir !== `${config.jobRootDir}/home`) fail(Failure.Unsupported);
     const binding = readHostedDependencyBinding(String(origin.start.jobId));
     if (!binding || binding.grantDigest !== origin.start.grantSha256 || binding.installationId !== origin.start.installationId) fail(Failure.Unsupported);
+    if (binding.version === 3) fail(Failure.Unsupported); // Only the closed CLI reference handler may enter.
     assertHostedDependencyQualifiedInventory();
     assertHostedDependencyPhysicalWorkspace(binding);
     assertHostedDependencyStartAllowed(String(origin.reservation.startId));
@@ -136,6 +137,12 @@ export function assertManagedDependencyGitInputs(workspacePath: string): void {
 /** Mandatory direct-library/prewarm entry, separate from the legacy optional
  * provider callback. A path or a fabricated config cannot mint host authority. */
 export function assertHostedDependencyExecutionWorkspace(workspacePath: string | undefined): void {
+  // Actual reference purpose vetoes every direct-library/prewarm/provider call,
+  // including one hiding the selected workspace behind an absent/foreign cwd.
+  if (isHostedOrdinaryRuntime()) withHostedActivationFence(fence => {
+    const origin = readHostedOrdinaryProcessOrigin(fence);
+    if (readHostedDependencyBinding(String(origin.start.jobId))?.version === 3) fail(Failure.Unsupported);
+  });
   if (workspacePath === undefined || !isHostedDependencyWorkspace(workspacePath)) return;
   withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);

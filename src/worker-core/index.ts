@@ -42,3 +42,6 @@ export * from "./dependency-environment/application/dependency-consumer-ownershi
 export * from "./dependency-environment/application/dependency-maintenance-ownership";
 export * from "./dependency-environment/domain/dependency-install-key";
 export * from "./dependency-environment/domain/dependency-tree-manifest";
+
+export * from "./dependency-environment/domain/dependency-legacy-comparison";
+export * from "./dependency-environment/ports/dependency-legacy-comparison";
