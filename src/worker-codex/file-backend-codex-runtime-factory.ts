@@ -1,6 +1,6 @@
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
-import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory } from "./hosted-readonly-admission";
+import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory, readHostedDependencyToolFactoryEntry } from "./hosted-readonly-admission";
 import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { readAdmittedHostedDependencyToolConfig } from "./hosted-dependency-tool-profile";
@@ -273,7 +273,8 @@ function createCodexAgentDriver(input: {
   } : requestedSourceEnv;
   const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
   assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
-  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath);
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath,
+    readHostedDependencyToolFactoryEntry(options.appServerProcessFactory, options.workspacePath));
   if (dependencyToolConfig && (!hostedGlobalScanGuard || executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_dependency_tool_engine_unsupported");
   }
