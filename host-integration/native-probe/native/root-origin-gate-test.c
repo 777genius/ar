@@ -2,6 +2,8 @@
 #include "root-producer-native.h"
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -50,7 +52,46 @@ int main(void) {
   assert(!pthread_mutex_unlock(mutex));
   assert(np_origin_mutex_take_v1(mutex,now()+NP_ORIGIN_SECOND)==ENOTRECOVERABLE);
   close(pipefd[0]);
+  /* Red on the previous gate-dependent cleanup: ENOTRECOVERABLE must not
+   * prevent original-cutoff observation, exact child signal/wait and pipe EOF.
+   * These kernel primitives construct no NativeRoot or privileged success. */
+  struct np_clock clock={.time=open("/proc/self/ns/time",O_RDONLY|O_CLOEXEC),.children=open("/proc/self/ns/time_for_children",O_RDONLY|O_CLOEXEC),.mount=open("/proc/self/ns/mnt",O_RDONLY|O_CLOEXEC)};
+  int boot=open("/proc/sys/kernel/random/boot_id",O_RDONLY|O_CLOEXEC);
+  char boot_id[37]={0};
+  assert(boot>=0&&pread(boot,boot_id,36,0)==36);
+  assert(!pipe(pipefd));
+  child=fork();
+  assert(child>=0);
+  if(!child){close(pipefd[0]);
+  pause();
+  _exit(1);
+  }
+  close(pipefd[1]);
+  int pidfd=(int)syscall(SYS_pidfd_open,child,0);
+  assert(pidfd>=0);
+  uint64_t high_water=now(),cutoff=high_water+NP_ORIGIN_SECOND,sample;
+  assert(np_origin_mutex_take_v1(mutex,cutoff)==ENOTRECOVERABLE);
+  assert(!np_cleanup_clock_sample_v1(&clock,boot,boot_id,cutoff,&high_water,&sample));
+  assert(!syscall(SYS_pidfd_send_signal,pidfd,SIGKILL,NULL,0));
+  assert(waitpid(child,&status,0)==child&&WIFSIGNALED(status));
+  assert(read(pipefd[0],&byte,1)==0);
+  assert(!np_cleanup_clock_sample_v1(&clock,boot,boot_id,cutoff,&high_water,&sample));
+  uint64_t original_high_water=high_water;
+  assert(np_cleanup_clock_sample_v1(&clock,boot,boot_id,sample,&high_water,&sample)==-1);
+  assert(high_water==original_high_water);
+  assert(np_origin_mutex_take_v1(mutex,cutoff)==ENOTRECOVERABLE);
+  close(pidfd);
+  close(pipefd[0]);
+  close(boot);
+  np_clock_release_v1(&clock);
   assert(!munmap(mutex,sizeof *mutex));
+  /* Actual bounded private DATA artifact boundary. No Origin is constructed. */
+  int directory=open(".",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+  assert(directory>=0);
+  assert(!np_origin_prefix_write_v1(directory,0,7,now(),"test-prefix","cookie=9 unknown=1 quoted=\"held\""));
+  assert(np_origin_prefix_write_v1(directory,0,7,now(),"test-prefix","replay")==-1);
+  assert(np_origin_prefix_write_v1(directory,1024,7,now(),"test-prefix","overflow")==-1);
+  close(directory);
   puts("original shared gate: wait/EOF/death/unrecoverable PASS");
   return 0;
 }

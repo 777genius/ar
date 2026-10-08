@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,8 +46,9 @@ struct np_admin_operation {
 struct shared_origin {
   pthread_mutex_t lock;
   struct np_origin_ends ends;
-  uint64_t high_water, attempt_end;
-  bool closed, broken, slots[NP_ORIGIN_EFFECTS];
+  _Atomic uint64_t high_water, attempt_end;
+  _Atomic bool closed, broken;
+   bool slots[NP_ORIGIN_EFFECTS];
 }
 ;
 struct np_origin_child {
@@ -70,8 +72,12 @@ struct np_root_origin {
   size_t allocation_size;
   uint64_t phase_end;
   bool snapshot_sent, frozen, intent, child_wait, eof[2], helper_wait, child_ready, stopped, namespace_changed;
+  struct np_origin_ends cleanup_ends;
+  uint64_t cleanup_high_water, cleanup_attempt_end;
+  bool cleanup_started, cleanup_uncertain, cleanup_effect, cleanup_slots[NP_ORIGIN_EFFECTS];
   uint64_t sequence[2];
-  unsigned child_state;
+  unsigned child_state, journal_count;
+  bool journal_failed;
 }
 ;
 static struct np_root_origin *sole;
@@ -173,7 +179,8 @@ int np_admin_operation_open_v1(struct np_admin_operation **out) {
   operation_consumed=true;
   DIR *tasks=opendir("/proc/self/task");
   if(!tasks)return -1;
-  unsigned task_count=0;struct dirent *task;
+  unsigned task_count=0;
+  struct dirent *task;
   while((task=readdir(tasks)))if(task->d_name[0]!='.')task_count++;
   closedir(tasks);
   if(task_count!=1)return -1;
@@ -335,6 +342,8 @@ int np_root_origin_begin_v1(struct np_admin_operation *a, struct np_root_origin 
   if(e->cold<=anchor||e->cleanup<=e->work){
     return -1;
   }
+  o->cleanup_ends=*e;
+  o->cleanup_high_water=anchor;
   o->shared->high_water=anchor;
   o->clock.anchor=anchor;
   o->clock.preparation_end=e->work;
@@ -391,6 +400,14 @@ int np_origin_mutex_take_v1(pthread_mutex_t *mutex,uint64_t end) {
     (void)nanosleep(&nap,NULL);
   }
 }
+static void record_close(struct np_root_origin *o) {
+  uint64_t now,observed=atomic_load(&o->shared->high_water);
+  if(monotonic(&now)||now<observed)now=observed;
+  uint64_t end=now<=INT64_MAX-60*NP_ORIGIN_SECOND?minimum(now+60*NP_ORIGIN_SECOND,o->cleanup_ends.cleanup):o->cleanup_ends.cleanup;
+  uint64_t absent=0;
+  (void)atomic_compare_exchange_strong(&o->shared->attempt_end,&absent,end);
+  atomic_store(&o->shared->closed,true);
+}
 static int lock_origin(struct np_root_origin *o, uint64_t end) {
   if(!o||o!=sole||!o->shared){
     return -1;
@@ -400,11 +417,13 @@ static int lock_origin(struct np_root_origin *o, uint64_t end) {
     return 0;
   }
   if(result==EOWNERDEAD){
-    o->shared->closed=true;
+    record_close(o);
     o->shared->broken=true;
     pthread_mutex_unlock(&o->shared->lock);
   }
-  else if(result!=ETIMEDOUT)o->shared->broken=true;
+  else if(result!=ETIMEDOUT){record_close(o);
+  o->shared->broken=true;
+  }
   return -1;
 }
 static int held_context(struct np_root_origin *o, struct np_clock *clock) {
@@ -416,14 +435,33 @@ static int held_context(struct np_root_origin *o, struct np_clock *clock) {
 static int sample_locked(struct np_root_origin *o, struct np_clock *clock, uint64_t *out) {
   uint64_t now;
   if(o->shared->broken||held_context(o,clock)||monotonic(&now)||now<o->shared->high_water){
-    o->shared->closed=true;
+    record_close(o);
+    o->shared->broken=true;
     return -1;
   }
   o->shared->high_water=now;
+  if(getpid()==o->principal)o->cleanup_high_water=now;
   *out=now;
   return 0;
 }
+int np_cleanup_clock_sample_v1(const struct np_clock *clock,int boot,const char *boot_id,uint64_t end,uint64_t *high_water,uint64_t *out) {
+  char actual[37]={0};
+  uint64_t now;
+  if(!clock||!boot_id||!high_water||!out||pread(boot,actual,36,0)!=36||strcmp(actual,boot_id)||current_ns(clock->time,"/proc/self/ns/time",CLONE_NEWTIME)||current_ns(clock->children,"/proc/self/ns/time_for_children",CLONE_NEWTIME)||current_ns(clock->mount,"/proc/self/ns/mnt",CLONE_NEWNS)||monotonic(&now)||now<*high_water||now>=end)return -1;
+  *high_water=now;
+  *out=now;
+  return 0;
+}
+static int cleanup_now(struct np_root_origin *o,uint64_t *out) {
+  if(!o||o!=sole||getpid()!=o->principal||o->cleanup_uncertain)return -1;
+  if(np_cleanup_clock_sample_v1(&o->clock,o->boot,o->admin->boot,minimum(o->cleanup_ends.cleanup,o->cleanup_attempt_end?o->cleanup_attempt_end:o->cleanup_ends.cleanup),&o->cleanup_high_water,out)){
+    o->cleanup_uncertain=true;
+    return -1;
+  }
+  return 0;
+}
 int np_origin_now_v1(struct np_root_origin *o,uint64_t *out) {
+  if(o&&o==sole&&getpid()==o->principal&&o->cleanup_started)return cleanup_now(o,out);
   if(!o||o!=sole||!out||lock_origin(o,o->shared?o->shared->ends.cleanup:0)){
     return -1;
   }
@@ -433,10 +471,17 @@ int np_origin_now_v1(struct np_root_origin *o,uint64_t *out) {
 }
 int np_origin_boundary_v1(struct np_root_origin *o,bool cleanup) {
   uint64_t now;
-  return np_origin_now_v1(o,&now)||now>=(cleanup?o->shared->ends.cleanup:o->shared->ends.work)||(!cleanup&&o->shared->closed)?-1:0;
+  return np_origin_now_v1(o,&now)||now>=(cleanup?o->shared->ends.cleanup:o->shared->ends.work)||(!cleanup&&(o->shared->closed||o->cleanup_started))?-1:0;
 }
 int np_origin_effect_begin_v1(struct np_root_origin *o,enum np_origin_effect effect) {
   bool cleanup=effect==NP_ORIGIN_STOP||effect==NP_ORIGIN_UNREF;
+  if(o&&o==sole&&getpid()==o->principal&&o->cleanup_started){
+    uint64_t now;
+    if(!cleanup||effect>=NP_ORIGIN_EFFECTS||cleanup_now(o,&now)||now>=o->cleanup_attempt_end||o->cleanup_slots[effect])return -1;
+    o->cleanup_slots[effect]=true;
+    o->cleanup_effect=true;
+    return 0;
+  }
   if(effect>=NP_ORIGIN_EFFECTS||lock_origin(o,o->shared->ends.cleanup)){
     return -1;
   }
@@ -446,9 +491,19 @@ int np_origin_effect_begin_v1(struct np_root_origin *o,enum np_origin_effect eff
     return -1;
   }
   o->shared->slots[effect]=true;
+  if(getpid()==o->principal)o->cleanup_slots[effect]=true;
   return 0;
 }
+int np_origin_effect_check_v1(struct np_root_origin *o,bool cleanup,uint64_t end) {
+  if(!o||o!=sole||getpid()!=o->principal)return -1;
+  uint64_t now;
+  if(o->cleanup_started)return !cleanup||cleanup_now(o,&now)||now>=end?-1:0;
+  return sample_locked(o,&o->clock,&now)||o->shared->closed||now>=end||now>=o->cleanup_ends.work?-1:0;
+}
 void np_origin_effect_end_v1(struct np_root_origin *o){
+  if(o&&o==sole&&o->cleanup_effect){o->cleanup_effect=false;
+  return;
+  }
   (void)pthread_mutex_unlock(&o->shared->lock);
 }
 const struct np_origin_ends *np_origin_ends_v1(struct np_root_origin *o){
@@ -470,6 +525,45 @@ int np_origin_daemon_identity_v1(struct np_root_origin *o,uid_t *uid,gid_t *gid)
   *uid=(uid_t)get64(o->admin->record+408);
   *gid=(gid_t)get64(o->admin->record+416);
   return 0;
+}
+int np_origin_prefix_write_v1(int directory,unsigned index,uint64_t generation,uint64_t sample,const char *event,const char *prefix) {
+  if(!event||!prefix||strlen(event)>32||strlen(prefix)>2048||index>=1024)return -1;
+  size_t length=strlen(prefix);
+  char escaped[4097];
+  size_t at=0;
+  for(size_t i=0;i<length;i++){
+    unsigned char byte=(unsigned char)prefix[i];
+    if(byte<32||byte>126)return -1;
+    if(byte=='"'||byte==92)escaped[at++]=92;
+    escaped[at++]=(char)byte;
+  }
+  escaped[at]=0;
+  for(const char *p=event;*p;p++)if(!((*p>='a'&&*p<='z')||*p=='-'))return -1;
+  char bytes[4608],name[64];
+  int count=snprintf(bytes,sizeof bytes,"{\"event\":\"%s\",\"generation\":\"%llu\",\"index\":%u,\"monotonicNs\":\"%llu\",\"prefix\":\"%s\"}\n",event,(unsigned long long)generation,index,(unsigned long long)sample,escaped);
+  if(count<=0||(size_t)count>=sizeof bytes)return -1;
+  snprintf(name,sizeof name,"prefix-%04u.json",index);
+  int fd=openat(directory,name,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+  if(fd<0)return -1;
+  bool failed=write(fd,bytes,(size_t)count)!=count||fsync(fd);
+  close(fd);
+  return failed||fsync(directory)?-1:0;
+}
+int np_origin_journal_v1(struct np_root_origin *o,const char *event,const char *prefix) {
+  if(!o||o!=sole||getpid()!=o->principal||!event||!prefix)return -1;
+  uint64_t now;
+  unsigned limit=o->cleanup_started?1024:896;
+  uint64_t end=o->cleanup_started?o->cleanup_attempt_end:o->cleanup_ends.cleanup;
+  if(o->journal_count>=limit||monotonic(&now)||now<o->cleanup_high_water||now>=end)goto failed;
+  end=minimum(end,now+OBS);
+  o->cleanup_high_water=now;
+  if(np_origin_prefix_write_v1(6,o->journal_count++,o->cleanup_ends.generation,now,event,prefix)||monotonic(&now)||now<o->cleanup_high_water||now>=end)goto failed;
+  o->cleanup_high_water=now;
+  return 0;
+failed:
+  o->journal_failed=true;
+  record_close(o);
+  return -1;
 }
 static int phase_io(struct np_root_origin *o,unsigned char *p,size_t n,bool writing) {
   size_t done=0;
@@ -557,6 +651,9 @@ int np_origin_freeze_allocation_v1(struct np_root_origin *o) {
     }
     close(fd);
   }
+  char prefix[256];
+  snprintf(prefix,sizeof prefix,"allocation=%s principal=%ld work=%llu cleanup=%llu cold=%llu",o->digest,(long)o->principal,(unsigned long long)o->cleanup_ends.work,(unsigned long long)o->cleanup_ends.cleanup,(unsigned long long)o->cleanup_ends.cold);
+  if(np_origin_journal_v1(o,"allocation-frozen",prefix))return -1;
   o->intent=true;
   return np_origin_boundary_v1(o,false);
 }
@@ -564,11 +661,12 @@ struct origin_packet {
   uint64_t magic, generation, sequence;
   uint32_t kind, state;
   uint64_t value;
+  char owner_prefix[768];
 }
 ;
 #define ORIGIN_PACKET UINT64_C(0x4e504f5249474135)
 enum origin_packet_kind {
-  ORIGIN_RELEASE=1, ORIGIN_NAMESPACED, ORIGIN_READY, ORIGIN_START, ORIGIN_STATUS, ORIGIN_STOP, ORIGIN_EXIT }
+  ORIGIN_RELEASE=1, ORIGIN_NAMESPACED, ORIGIN_READY, ORIGIN_START, ORIGIN_STATUS, ORIGIN_STOP, ORIGIN_EXIT, ORIGIN_OWNER_PREFIX }
 ;
 static volatile sig_atomic_t child_stop;
 static void child_signal(int signal_number){
@@ -580,6 +678,11 @@ static int packet_send(struct np_root_origin *o,int fd,unsigned kind,unsigned st
     .magic=ORIGIN_PACKET,.generation=o->shared->ends.generation,.sequence=++o->sequence[child?1:0],.kind=kind,.state=state,.value=value}
   ;
   return send(fd,&p,sizeof p,MSG_NOSIGNAL|MSG_DONTWAIT)==(ssize_t)sizeof p?0:-1;
+}
+static int packet_owner_prefix(struct np_root_origin *o,struct np_original_owner *owner) {
+  struct origin_packet packet={.magic=ORIGIN_PACKET,.generation=o->shared->ends.generation,.sequence=++o->sequence[1],.kind=ORIGIN_OWNER_PREFIX};
+  if(np_original_owner_prefix_v2(owner,packet.owner_prefix,sizeof packet.owner_prefix))return -1;
+  return send(o->branch.endpoint,&packet,sizeof packet,MSG_NOSIGNAL|MSG_DONTWAIT)==(ssize_t)sizeof packet?0:-1;
 }
 static int packet_read(struct np_root_origin *o,int fd,struct origin_packet *p,bool child) {
   union {
@@ -622,6 +725,16 @@ static int packet_read(struct np_root_origin *o,int fd,struct origin_packet *p,b
     return -1;
   }
   o->sequence[child?0:1]=p->sequence;
+  if(!child&&p->kind==ORIGIN_OWNER_PREFIX){
+    if(!memchr(p->owner_prefix,0,sizeof p->owner_prefix)||p->state||p->value||np_origin_journal_v1(o,"helper-original-prefix",p->owner_prefix)){errno=EPROTO;
+    return -1;
+    }
+    errno=EAGAIN;
+    return -1;
+  }
+  for(size_t i=0;i<sizeof p->owner_prefix;i++)if(p->owner_prefix[i]){errno=EPROTO;
+  return -1;
+  }
   return 0;
 }
 static int child_member(struct np_origin_child *c) {
@@ -641,6 +754,24 @@ int np_origin_sample_v1(struct np_origin_child *c,uint64_t *out) {
   pthread_mutex_unlock(&c->origin->shared->lock);
   return result;
 }
+int np_origin_child_work_v1(struct np_origin_child *c) {
+  if(child_member(c)||lock_origin(c->origin,c->origin->shared->ends.work))return -1;
+  uint64_t now;
+  int result=sample_locked(c->origin,&c->clock,&now)||c->origin->shared->closed||now>=c->origin->shared->ends.work?-1:0;
+  pthread_mutex_unlock(&c->origin->shared->lock);
+  return result;
+}
+int np_origin_child_commit_check_v1(struct np_origin_child *c) {
+  uint64_t now;
+  return child_member(c)||sample_locked(c->origin,&c->clock,&now)||c->origin->shared->closed||now>=c->origin->shared->ends.cold?-1:0;
+}
+int np_origin_child_commit_begin_v1(struct np_origin_child *c) {
+  if(child_member(c)||lock_origin(c->origin,c->origin->shared->ends.cold))return -1;
+  if(np_origin_child_commit_check_v1(c)){pthread_mutex_unlock(&c->origin->shared->lock);
+  return -1;
+  }
+  return 0;
+}
 int np_origin_child_begin_v1(struct np_origin_child *c,enum np_origin_effect effect) {
   if(child_member(c)||effect!=NP_ORIGIN_HELPER||lock_origin(c->origin,c->origin->shared->ends.cold)){
     return -1;
@@ -659,7 +790,7 @@ void np_origin_child_end_v1(struct np_origin_child *c){
 }
 void np_origin_child_close_v1(struct np_origin_child *c){
   if(!child_member(c)&&!lock_origin(c->origin,c->origin->shared->ends.cleanup)){
-    c->origin->shared->closed=true;
+    record_close(c->origin);
     pthread_mutex_unlock(&c->origin->shared->lock);
   }
 }
@@ -755,7 +886,7 @@ static void child_run(struct np_root_origin *o) {
   if(child_receive_wait(o,&p,o->shared->ends.cold)||p.kind!=ORIGIN_RELEASE||child_namespace(o)||packet_send(o,c->endpoint,ORIGIN_NAMESPACED,0,0,true))_exit(77);
   if(child_receive_wait(o,&p,o->shared->ends.cold)||p.kind!=ORIGIN_RELEASE)_exit(77);
   struct np_original_owner *owner=NULL;
-  if(np_original_owner_from_origin_fork_v2(c,&owner)||packet_send(o,c->endpoint,ORIGIN_READY,NP_OWNER_RESERVED,0,true))_exit(77);
+  if(np_original_owner_from_origin_fork_v2(c,&owner)||packet_owner_prefix(o,owner)||packet_send(o,c->endpoint,ORIGIN_READY,NP_OWNER_RESERVED,0,true))_exit(77);
   bool started=false,stop=false;
   struct np_owner_data data={
     0}
@@ -786,13 +917,17 @@ static void child_run(struct np_root_origin *o) {
     }
     if(p.kind==ORIGIN_START&&!started){
       started=true;
-      if(np_original_owner_launch_v1(owner))break;
+      int launched=np_original_owner_launch_v1(owner);
+      if(packet_owner_prefix(o,owner)||launched)break;
     }
     else if(p.kind!=ORIGIN_STATUS&&p.kind!=ORIGIN_START)break;
-    if(started&&np_original_owner_observe_v1(owner,&data))break;
+    if(started){int observed=np_original_owner_observe_v1(owner,&data);
+    if(packet_owner_prefix(o,owner)||observed)break;
+    }
     if(packet_send(o,c->endpoint,ORIGIN_STATUS,started?(unsigned)data.state:NP_OWNER_RESERVED,started&&data.committed,true))break;
   }
   np_original_owner_close_v1(owner);
+  (void)packet_owner_prefix(o,owner);
   bool joined=false;
   for(;;){
     uint64_t now;
@@ -807,6 +942,7 @@ static void child_run(struct np_root_origin *o) {
     ;
     nanosleep(&nap,NULL);
   }
+  (void)packet_owner_prefix(o,owner);
   if(joined&&np_original_owner_dispose_v1(owner)==0){
     (void)packet_send(o,c->endpoint,ORIGIN_EXIT,NP_OWNER_CLOSED,1,true);
     _exit(0);
@@ -825,6 +961,11 @@ static int child_ns_pin(struct np_root_origin *o,unsigned slot,const char *name,
     return -1;
   }
   o->child_ns[slot]=fd;
+  struct stat ns,pidfd;
+  if(fstat(fd,&ns)||fstat(o->child_pidfd,&pidfd))return -1;
+  char prefix[256];
+  snprintf(prefix,sizeof prefix,"child=%ld pidfd=%llu:%llu namespace=%s nsfs=%llu:%llu type=%d",(long)o->child,(unsigned long long)pidfd.st_dev,(unsigned long long)pidfd.st_ino,name,(unsigned long long)ns.st_dev,(unsigned long long)ns.st_ino,type);
+  if(np_origin_journal_v1(o,"child-original-namespace",prefix))return -1;
   return 0;
 }
 static int parent_receive(struct np_root_origin *o,struct origin_packet *p,uint64_t end) {
@@ -926,7 +1067,9 @@ int np_origin_output_v1(struct np_root_origin *o,int fd,const void *data,size_t 
   while(done<size){
     if(np_origin_now_v1(o,&now)||now>=end)return -1;
     ssize_t count=write(fd,bytes+done,size-done);
-    if(count>0){done+=(size_t)count;continue;}
+    if(count>0){done+=(size_t)count;
+    continue;
+    }
     if(count==0||!(errno==EAGAIN||errno==EINTR))return -1;
     struct pollfd output={.fd=fd,.events=POLLOUT};
     if(poll(&output,1,1)<0&&errno!=EINTR)return -1;
@@ -1020,7 +1163,7 @@ static int data_request(struct np_root_origin *o,int fd) {
     return -1;
   }
   unsigned kind=request.operation==NP_ROOT_START?ORIGIN_START:request.operation==NP_ROOT_STOP?ORIGIN_STOP:ORIGIN_STATUS;
-  if(packet_send(o,o->channel[0],kind,0,0,false)){
+  if(kind!=ORIGIN_STOP&&packet_send(o,o->channel[0],kind,0,0,false)){
     return -1;
   }
   if(kind==ORIGIN_STOP){
@@ -1099,16 +1242,17 @@ int np_root_origin_close_v1(struct np_root_origin *o,enum np_origin_loss loss) {
   if(o!=sole||!o->shared){
     return -1;
   }
-  uint64_t now;
-  if(lock_origin(o,o->shared->ends.cleanup)){
-    return -1;
+  if(getpid()!=o->principal)return -1;
+  if(!o->cleanup_started){
+    /* Healthy close and associated commit serialize on the sole gate. On
+     * unrecoverable ownership loss, atomic closure precedes independent cleanup. */
+    if(!lock_origin(o,o->cleanup_ends.cleanup)){record_close(o);
+    pthread_mutex_unlock(&o->shared->lock);
+    }
+    else record_close(o);
+    o->cleanup_started=true;
+    o->cleanup_attempt_end=minimum(atomic_load(&o->shared->attempt_end),o->cleanup_ends.cleanup);
   }
-  if(!o->shared->closed){
-    o->shared->closed=true;
-    if(!monotonic(&now)&&now<=INT64_MAX-60*NP_ORIGIN_SECOND)o->shared->attempt_end=minimum(now+60*NP_ORIGIN_SECOND,o->shared->ends.cleanup);
-  }
-  if(!o->shared->attempt_end)o->shared->attempt_end=o->shared->ends.cleanup;
-  pthread_mutex_unlock(&o->shared->lock);
   if(o->child>0&&o->channel[0]>=0)(void)packet_send(o,o->channel[0],ORIGIN_STOP,0,0,false);
   return 0;
 }
@@ -1121,8 +1265,8 @@ int np_root_origin_join_v1(struct np_root_origin *o,struct np_l0_native_data *da
   uint64_t now,signal_at=0;
   bool signalled=false;
   if(o->child>0){
-    while(!o->child_wait||!o->eof[0]||!o->eof[1]) {
-      if(np_origin_now_v1(o,&now)||now>=o->shared->attempt_end)break;
+    while(!o->child_wait||!o->eof[0]||!o->eof[1]||!o->helper_wait) {
+      if(np_origin_now_v1(o,&now)||now>=o->cleanup_attempt_end)break;
       if(streams_drain(o))break;
       struct origin_packet p;
       if(!packet_read(o,o->channel[0],&p,false)&&p.kind==ORIGIN_EXIT)o->helper_wait=p.value==1;
@@ -1132,15 +1276,15 @@ int np_root_origin_join_v1(struct np_root_origin *o,struct np_l0_native_data *da
         if(pid==o->child)o->child_wait=true;
         else if(pid<0)break;
       }
-      if(!signal_at)signal_at=minimum(now+2*NP_ORIGIN_SECOND,o->shared->attempt_end);
-      if(!o->child_wait&&now>=signal_at){
+      if(!signal_at)signal_at=minimum(now+2*NP_ORIGIN_SECOND,o->cleanup_attempt_end);
+      if((!o->child_wait||!o->eof[0]||!o->eof[1]||!o->helper_wait)&&now>=signal_at){
         if(!signalled){
           if(o->managed&&np_managed_stop_v1(o,o->managed))manager_ok=false;
-          (void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGTERM,NULL,0);
+          if(!o->child_wait)(void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGTERM,NULL,0);
           signalled=true;
-          signal_at=minimum(now+2*NP_ORIGIN_SECOND,o->shared->attempt_end);
+          signal_at=minimum(now+2*NP_ORIGIN_SECOND,o->cleanup_attempt_end);
         }
-        else (void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGKILL,NULL,0);
+        else if(!o->child_wait)(void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGKILL,NULL,0);
       }
       struct timespec nap={
         .tv_nsec=10000000}
@@ -1159,7 +1303,7 @@ int np_root_origin_join_v1(struct np_root_origin *o,struct np_l0_native_data *da
   data->helper_wait=o->helper_wait;
   data->manager=manager_ok;
   data->shared_unknown=np_managed_shared_unknown_v1(o->managed);
-  data->closed=data->child_wait&&data->streams&&data->helper_wait&&data->manager&&!data->shared_unknown&&!o->shared->broken&&!np_origin_now_v1(o,&now)&&now<o->shared->attempt_end;
+  data->closed=data->child_wait&&data->streams&&data->helper_wait&&data->manager&&!data->shared_unknown&&!o->shared->broken&&!o->cleanup_uncertain&&!o->journal_failed&&!np_origin_now_v1(o,&now)&&now<o->cleanup_attempt_end;
   /* Socket path and all original records are retained; collection or fd close
   * is never substituted for a manager/reference receipt. */
   return data->closed?0:-1;

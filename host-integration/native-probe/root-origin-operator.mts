@@ -132,7 +132,7 @@ export async function runOriginalRootOperation(): Promise<void> {
   const child=spawn(roles[0],[],{env:{PATH:"/usr/bin:/bin"},stdio:["pipe","pipe","pipe","pipe",recordFd,manifestFd,directoryFd,...files]});
   const channel=child.stdio[3];if(!(channel instanceof Duplex))throw new Error("missing original observer channel");
   let exit: {code: number|null;signal: NodeJS.Signals|null}|undefined, stdoutEof=false,stderrEof=false,raw:Buffer=Buffer.alloc(0),stderr:Buffer=Buffer.alloc(0),ready=false;
-  let failure: unknown;
+  let failure: unknown, issued: NativeProbeAllocation|undefined;
   let readyResolve: (()=>void)|undefined;const readyPromise=new Promise<void>(accept=>{readyResolve=accept;});
   child.stdout!.on("data",(chunk:Buffer)=>{if(raw.length+chunk.length>65536){failure=new Error("original stdout capacity");child.kill("SIGTERM");return;}raw=Buffer.concat([raw,chunk]);if(!ready&&raw.toString("utf8").split("\n").includes('{"stage":"origin-ready"}')){ready=true;readyResolve?.();}});
   child.stderr!.on("data",(chunk:Buffer)=>{if(stderr.length+chunk.length>65536){failure=new Error("original stderr capacity");child.kill("SIGTERM");return;}stderr=Buffer.concat([stderr,chunk]);});
@@ -141,7 +141,7 @@ export async function runOriginalRootOperation(): Promise<void> {
   const closed=new Promise<void>((accept,reject)=>{child.once("close",()=>accept());child.once("error",reject);});
   const killTimer=setTimeout(()=>child.kill("SIGKILL"),Math.max(1,Number((cleanup-process.hrtime.bigint())/1_000_000n)));
   try {
-    const allocation=await phase(channel,context,phaseEnd);
+    const allocation=await phase(channel,context,phaseEnd);issued=allocation;
     const timer=setTimeout(()=>readyResolve?.(),Math.max(1,Number((cold-process.hrtime.bigint())/1_000_000n)));
     await readyPromise;clearTimeout(timer);if(!ready||process.hrtime.bigint()>=cold)throw new Error("original producer did not become ready");
     const request={kind:NativeProbeKind.NativeProbe,operation:NativeProbeOperation.Start,jobId:p.jobId,machineId:p.machineId,allocationDigest:retainedResourceDigest(allocation)};
@@ -151,8 +151,23 @@ export async function runOriginalRootOperation(): Promise<void> {
   await closed;clearTimeout(killTimer);
   closeSync(durable(join(directory,"principal.stdout"),raw));closeSync(durable(join(directory,"principal.stderr"),stderr));
   const lines=raw.toString("utf8").trim().split("\n");let native:unknown;try{native=JSON.parse(lines.at(-1)??"");}catch{native=null;}
+  const prefixRows:Array<{path:string;bytes:number;sha256:string}>=[];
+  try {
+    const names=readdirSync(directory).filter(name=>/^prefix-[0-9]{4}\.json$/.test(name)).sort();
+    if(names.length>1024)throw new Error("native prefix capacity");
+    for(const [index,name] of names.entries()){
+      if(name!==`prefix-${index.toString().padStart(4,"0")}.json`)throw new Error("native prefix gap");
+      const path=join(directory,name),fd=heldFile(path,true);
+      try {const stat=fstatSync(fd);if(stat.size>4608)throw new Error("native prefix byte capacity");
+        const bytes=readFileSync(fd),value=JSON.parse(bytes.toString("utf8")) as {index:number;generation:string};checked(fd,path,true);
+        if(value.index!==index||!bytes.equals(Buffer.from(retainedResourceCanonicalJson(value)+"\n"))||(issued&&value.generation!==BigInt("0x"+issued.declarations[0]!.lifetime.slice(7)).toString()))throw new Error("changed native prefix identity");
+        prefixRows.push({path:name,bytes:bytes.length,sha256:createHash("sha256").update(bytes).digest("hex")});
+      }finally{closeSync(fd);}
+    }
+    closeSync(durable(join(directory,"native-prefixes.json"),Buffer.from(retainedResourceCanonicalJson(prefixRows)+"\n")));
+  }catch(error){failure=error;}
   const finalNow=process.hrtime.bigint();
-  const result={status:finalNow>=anchor&&finalNow<cleanup&&!failure&&exit?.code===0&&exit.signal===null&&stdoutEof&&stderrEof&&native&&typeof native==="object"&&"status" in native&&native.status==="NATIVE_DEBTS_CLOSED_PRINCIPAL_TERMINAL_PENDING"?"ORIGINAL_PRODUCER_L0_RAW":"UNKNOWN_HELD",principalExit:exit??null,stdoutEof,stderrEof,native,error:failure instanceof Error?failure.message:failure?String(failure):null};
+  const result={status:finalNow>=anchor&&finalNow<cleanup&&!failure&&exit?.code===0&&exit.signal===null&&stdoutEof&&stderrEof&&native&&typeof native==="object"&&"status" in native&&native.status==="NATIVE_DEBTS_CLOSED_PRINCIPAL_TERMINAL_PENDING"?"ORIGINAL_PRODUCER_L0_RAW":"UNKNOWN_HELD",nativePrefixCount:prefixRows.length,nativePrefixDigest:retainedResourceDigest(prefixRows),principalExit:exit??null,stdoutEof,stderrEof,native,error:failure instanceof Error?failure.message:failure?String(failure):null};
   const resultFd=durable(join(directory,"l0.json"),Buffer.from(retainedResourceCanonicalJson(result)+"\n"));closeSync(resultFd);fsyncSync(directoryFd);
   for(const fd of held)closeSync(fd);process.stdout.write(retainedResourceCanonicalJson(result)+"\n");if(result.status!=="ORIGINAL_PRODUCER_L0_RAW")process.exitCode=77;
 }

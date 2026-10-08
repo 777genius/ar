@@ -11,7 +11,18 @@ int main(int argc, char **argv) {
     fputs("{\"status\":\"UNKNOWN_HELD\"}\n", stdout);
     return 77;
   }
-  int failed = np_origin_snapshot_v1(origin) || np_origin_freeze_allocation_v1(origin) || np_root_managed_launch_v1(origin) || np_root_origin_run_v1(origin);
+  const char *stage="snapshot";
+  int failed=np_origin_snapshot_v1(origin);
+  if(!failed){stage="allocation";
+  failed=np_origin_freeze_allocation_v1(origin);
+  }
+  if(!failed){stage="managed";
+  failed=np_root_managed_launch_v1(origin);
+  }
+  if(!failed){stage="control";
+  failed=np_root_origin_run_v1(origin);
+  }
+  if(failed)(void)np_origin_journal_v1(origin,"native-failure",stage);
   (void)np_root_origin_close_v1(origin, failed ? NP_ORIGIN_SETUP : NP_ORIGIN_EXPLICIT_STOP);
   int joined = np_root_origin_join_v1(origin, &data);
   char result[512];

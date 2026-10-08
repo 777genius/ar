@@ -47,7 +47,14 @@ test("actual entry rejects public argv/JSON with independently unchanged disposa
 });
 // Red if supported libc fork/robust list loses death detection or renews wait.
 test("actual shared native gate retains original wait/EOF and irreversible owner death",async()=>{
-  const executable=process.env.NP_ROOT_ORIGIN_GATE;assert.ok(executable);const result=await command(executable,[]);assert.equal(result.code,0);assert.equal(result.signal,null);assert.match(result.stdout.toString(),/wait\/EOF\/death\/unrecoverable PASS/);
+  const executable=process.env.NP_ROOT_ORIGIN_GATE;assert.ok(executable);
+  const directory=await mkdtemp(join(tmpdir(),"producer-prefix-"));
+  try {const result=await command(executable,[],undefined,directory);assert.equal(result.code,0);assert.equal(result.signal,null);assert.match(result.stdout.toString(),/wait\/EOF\/death\/unrecoverable PASS/);
+    assert.deepEqual(await readdir(directory),["prefix-0000.json"]);
+    const leaf=await lstat(join(directory,"prefix-0000.json"));assert.equal(leaf.mode&0o777,0o600);assert.equal(leaf.nlink,1);
+    const raw=JSON.parse(await readFile(join(directory,"prefix-0000.json"),"utf8")) as {event:string;generation:string;index:number;monotonicNs:string;prefix:string};
+    assert.equal(raw.event,"test-prefix");assert.equal(raw.generation,"7");assert.equal(raw.index,0);assert.match(raw.monotonicNs,/^[1-9][0-9]*$/);assert.equal(raw.prefix,'cookie=9 unknown=1 quoted="held"');
+  }finally{await rm(directory,{recursive:true});}
 });
 // Red if hash/metadata admission follows symlinks or accepts changed bytes.
 test("measured filesystem leaf rejects changed content and symlink",async t=>{

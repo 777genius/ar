@@ -25,6 +25,9 @@
 #define JOBS 32
 #define MATCH "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.systemd1'"
 struct original_call {
+  struct np_root_origin *origin;
+  unsigned index;
+  char method[64],path[256],interface[128],destination[256],argument[256];
   sd_bus_message *request,*reply;
   sd_bus_slot *slot;
   uint64_t cookie,reply_cookie;
@@ -39,6 +42,7 @@ struct original_job {
 }
 ;
 struct np_managed_original {
+  struct np_root_origin *origin;
   sd_bus *direct,*api,*collision;
   sd_bus_slot *direct_filter,*api_filter;
   struct np_birth manager,daemon;
@@ -77,13 +81,13 @@ static int same(int a,int b){
   return fstat(a,&x)||fstat(b,&y)||x.st_dev!=y.st_dev||x.st_ino!=y.st_ino?-1:0;
 }
 static int boundary(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
-  if(m->lost||np_birth_live_v1(&m->manager)||np_origin_boundary_v1(o,cleanup)){
+  if((m->lost&&!cleanup)||np_birth_live_v1(&m->manager)||np_origin_boundary_v1(o,cleanup)){
     return -1;
   }
   if(m->connect_sent&&(np_birth_live_v1(&m->daemon)||live(m->listener_pidfd))){
     m->shared_unknown=true;
     m->lost=true;
-    return -1;
+    return cleanup?0:-1;
   }
   return 0;
 }
@@ -94,11 +98,12 @@ static int response(sd_bus_message *message,void *data,sd_bus_error *error) {
   const char *sender=sd_bus_message_get_sender(message);
   c->reply=sd_bus_message_ref(message);
   c->done=true;
-  if(!c->sent||sd_bus_message_get_reply_cookie(message,&cookie)<0||cookie!=c->cookie||(c->sender&&(!sender||strcmp(sender,c->sender)))||sd_bus_message_get_cookie(message,&c->reply_cookie)<0||!c->reply_cookie){
-    c->unknown=true;
-    return 0;
-  }
+  if(!c->sent||sd_bus_message_get_reply_cookie(message,&cookie)<0||cookie!=c->cookie||(c->sender&&(!sender||strcmp(sender,c->sender)))||sd_bus_message_get_cookie(message,&c->reply_cookie)<0||!c->reply_cookie)c->unknown=true;
   c->error=sd_bus_message_is_method_error(message,NULL)>0;
+  const sd_bus_error *detail=sd_bus_message_get_error(message);
+  char prefix[2048];
+  snprintf(prefix,sizeof prefix,"call=%u method=%s requestCookie=%llu replyCookie=%llu sender=%s error=%s unknown=%u",c->index,c->method,(unsigned long long)c->cookie,(unsigned long long)c->reply_cookie,sender?sender:"absent",detail&&detail->name?detail->name:"none",c->unknown);
+  if(np_origin_journal_v1(c->origin,"call-reply",prefix))c->unknown=true;
   return 0;
 }
 static int event(sd_bus_message *message,void *data,sd_bus_error *error) {
@@ -136,6 +141,9 @@ static int event(sd_bus_message *message,void *data,sd_bus_error *error) {
     j->id=id;
     j->message=sd_bus_message_ref(message);
     if(copy(j->path,sizeof j->path,path)||copy(j->unit,sizeof j->unit,unit)||copy(j->outcome,sizeof j->outcome,outcome))m->lost=true;
+    char prefix[512];
+    snprintf(prefix,sizeof prefix,"id=%u path=%s unit=%s outcome=%s",id,path,unit,outcome);
+    if(np_origin_journal_v1(m->origin,"job-removed",prefix))m->lost=true;
   }
   return 0;
 }
@@ -171,6 +179,9 @@ static struct original_call *message(struct np_managed_original *m,sd_bus *bus,c
   }
   struct original_call *c=&m->calls[m->call_count++];
   c->sender=sender;
+  c->origin=m->origin;
+  c->index=m->call_count-1;
+  if(copy(c->method,sizeof c->method,method)||copy(c->path,sizeof c->path,path)||copy(c->interface,sizeof c->interface,interface)||copy(c->destination,sizeof c->destination,destination))return NULL;
   if(sd_bus_message_new_method_call(bus,&c->request,destination,path,interface,method)<0||sd_bus_message_set_auto_start(c->request,0)<0||sd_bus_message_set_allow_interactive_authorization(c->request,0)<0){
     return NULL;
   }
@@ -189,11 +200,23 @@ static int dispatch(struct np_root_origin *o,struct np_managed_original *m,sd_bu
   }
   c->sent=true;
   c->unknown=true;
+  char prefix[1536];
+  snprintf(prefix,sizeof prefix,"call=%u method=%s destination=%s path=%s interface=%s argument=%s sent-unknown effect=%d",c->index,c->method,c->destination,c->path,c->interface,c->argument,effect);
+  int journal=np_origin_journal_v1(o,"call-dispatch",prefix);
+  if(journal&&!cleanup){if(effect>=0)np_origin_effect_end_v1(o);
+  return -1;
+  }
+  if((effect>=0?np_origin_effect_check_v1(o,cleanup,end):np_origin_now_v1(o,&now))||(effect<0&&now>=end)){
+    if(effect>=0)np_origin_effect_end_v1(o);
+    return -1;
+  }
   int result=sd_bus_call_async(bus,&c->slot,c->request,response,c,UINT64_C(2000000));
   if(effect>=0)np_origin_effect_end_v1(o);
   if(result<0||sd_bus_message_get_cookie(c->request,&c->cookie)<0||!c->cookie){
     return -1;
   }
+  snprintf(prefix,sizeof prefix,"call=%u requestCookie=%llu",c->index,(unsigned long long)c->cookie);
+  if(np_origin_journal_v1(o,"call-cookie",prefix)&&!cleanup)return -1;
   c->unknown=false;
   while(!c->done){
     if(pump(o,m,cleanup,end)){
@@ -212,6 +235,7 @@ static int simple(struct np_root_origin *o,struct np_managed_original *m,sd_bus 
   if(!c||(argument&&sd_bus_message_append(c->request,"s",argument)<0)){
     return -1;
   }
+  if(argument&&copy(c->argument,sizeof c->argument,argument))return -1;
   if(out)*out=c;
   int result=dispatch(o,m,bus,c,cleanup,effect);
   if(result){
@@ -382,6 +406,11 @@ static int facts(struct np_root_origin *o,struct np_managed_original *m,const ch
   if(!service&&(simple(o,m,m->direct,MANAGER,path,"org.freedesktop.DBus.Properties","GetAll","org.freedesktop.systemd1.Scope",cleanup,-1,NULL,&c)||property_facts(c->reply,f,false)||!(f->seen&32))){
     return -1;
   }
+  char invocation[33];
+  for(unsigned i=0;i<16;i++)snprintf(invocation+2*i,3,"%02x",f->invocation[i]);
+  char prefix[1536];
+  snprintf(prefix,sizeof prefix,"path=%s id=%s active=%s sub=%s invocation=%s job=%u mainPid=%ld cgroup=%s",path,f->id,f->active,f->sub,invocation,f->job,(long)f->pid,f->group);
+  if(np_origin_journal_v1(o,"unit-original-facts",prefix)&&!cleanup)return -1;
   return 0;
 }
 static int lookup(struct np_root_origin *o,struct np_managed_original *m,const char *name,char *path,size_t size) {
@@ -392,13 +421,15 @@ static int lookup(struct np_root_origin *o,struct np_managed_original *m,const c
   const char *object;
   return sd_bus_message_has_signature(c->reply,"o")<=0||sd_bus_message_read(c->reply,"o",&object)<=0||copy(path,size,object)?-1:0;
 }
-static int by_pidfd(struct np_root_origin *o,struct np_managed_original *m,int fd,const char *name,const char *path,bool cleanup) {
+static int by_pidfd(struct np_root_origin *o,struct np_managed_original *m,int fd,const char *name,const char *path,const unsigned char invocation[16],bool cleanup) {
   struct original_call *c=message(m,m->direct,MANAGER,MANAGER_PATH,MANAGER_IFACE,"GetUnitByPIDFD",NULL);
   if(!c||sd_bus_message_append(c->request,"h",fd)<0||dispatch(o,m,m->direct,c,cleanup,-1)){
     return -1;
   }
   const char *unit,*object;
-  return sd_bus_message_has_signature(c->reply,"so")<=0||sd_bus_message_read(c->reply,"so",&unit,&object)<=0||strcmp(unit,name)||strcmp(object,path)?-1:0;
+  const void *identity;
+  size_t size;
+  return sd_bus_message_has_signature(c->reply,"osay")<=0||sd_bus_message_read(c->reply,"os",&object,&unit)<=0||sd_bus_message_read_array(c->reply,'y',&identity,&size)<=0||size!=16||strcmp(unit,name)||strcmp(object,path)||memcmp(identity,invocation,16)?-1:0;
 }
 static int daemon_same(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
   if(boundary(o,m,cleanup)){
@@ -415,7 +446,7 @@ static int daemon_same(struct np_root_origin *o,struct np_managed_original *m,bo
   unsigned char zero[16]={
     0}
   ;
-  if(facts(o,m,m->daemon_path,true,cleanup,&f)||strcmp(f.id,"dbus.service")||strcmp(f.active,"active")||strcmp(f.sub,"running")||f.job||f.pid!=m->daemon_pid||!memcmp(f.invocation,zero,16)||memcmp(f.invocation,m->daemon_invocation,16)||np_birth_live_v1(&m->daemon)||by_pidfd(o,m,m->daemon.pidfd,"dbus.service",m->daemon_path,cleanup)||same(m->daemon_exe,np_origin_daemon_fd_v1(o))){
+  if(facts(o,m,m->daemon_path,true,cleanup,&f)||strcmp(f.id,"dbus.service")||strcmp(f.active,"active")||strcmp(f.sub,"running")||f.job||f.pid!=m->daemon_pid||!memcmp(f.invocation,zero,16)||memcmp(f.invocation,m->daemon_invocation,16)||np_birth_live_v1(&m->daemon)||by_pidfd(o,m,m->daemon.pidfd,"dbus.service",m->daemon_path,m->daemon_invocation,cleanup)||same(m->daemon_exe,np_origin_daemon_fd_v1(o))){
     if(m->connect_sent)m->shared_unknown=true;
     return -1;
   }
@@ -427,6 +458,7 @@ int np_managed_open_v1(struct np_root_origin *o,struct np_managed_original **out
     return -1;
   }
   *out=m;
+  m->origin=o;
   m->manager.pidfd=m->manager.time=m->manager.children=m->daemon.pidfd=m->daemon.time=m->daemon.children=-1;
   m->listener_pidfd=m->daemon_exe=m->daemon_proc=m->events=m->collision_peer=-1;
   if(copy(m->unit,sizeof m->unit,np_origin_unit_v1(o))){
@@ -478,10 +510,20 @@ int np_managed_api_ref_open_v1(struct np_root_origin *o,struct np_managed_origin
   if(m->daemon_exe<0||same(m->daemon_exe,np_origin_daemon_fd_v1(o))||same(m->manager.time,m->daemon.time)||same(m->manager.children,m->daemon.children)||daemon_same(o,m,false)){
     return -1;
   }
+  struct stat exe,time_ns,children_ns;
+  if(fstat(m->daemon_exe,&exe)||fstat(m->daemon.time,&time_ns)||fstat(m->daemon.children,&children_ns))return -1;
+  char invocation[33];
+  for(unsigned i=0;i<16;i++)snprintf(invocation+2*i,3,"%02x",m->daemon_invocation[i]);
+  char original[768];
+  snprintf(original,sizeof original,"managerPid=%ld daemonPid=%ld daemonUid=%u daemonGid=%u invocation=%s exe=%llu:%llu time=%llu:%llu children=%llu:%llu",(long)m->manager.pid,(long)m->daemon.pid,(unsigned)m->daemon.uid,(unsigned)m->daemon.gid,invocation,(unsigned long long)exe.st_dev,(unsigned long long)exe.st_ino,(unsigned long long)time_ns.st_dev,(unsigned long long)time_ns.st_ino,(unsigned long long)children_ns.st_dev,(unsigned long long)children_ns.st_ino);
+  if(np_origin_journal_v1(o,"daemon-preconnect-pin",original))return -1;
   if(np_origin_effect_begin_v1(o,NP_ORIGIN_CONNECT)){
     return -1;
   }
   m->connect_sent=true;
+  if(np_origin_journal_v1(o,"api-connect-armed",original)){np_origin_effect_end_v1(o);
+  return -1;
+  }
   struct ucred peer;
   int fd=connect_fixed("/run/dbus/system_bus_socket",&m->socket_path,&m->listener_pidfd,&peer);
   np_origin_effect_end_v1(o);
@@ -596,7 +638,9 @@ static int collisions(struct np_root_origin *o,struct np_managed_original *m) {
   if(!c||sd_bus_message_append(c->request,"s",np_origin_unit_v1(o))<0){
     return -1;
   }
-  c->sent=true;c->unknown=true;
+  c->sent=true;
+  c->unknown=true;
+  if(np_origin_journal_v1(o,"collision-query-unknown",np_origin_unit_v1(o)))return -1;
   if(sd_bus_call_async(m->collision,&c->slot,c->request,response,c,UINT64_C(2000000))<0||sd_bus_message_get_cookie(c->request,&c->cookie)<0){
     return -1;
   }
@@ -616,8 +660,10 @@ static int collisions(struct np_root_origin *o,struct np_managed_original *m) {
   }
   sd_bus_close_unref(m->collision);
   m->collision=NULL;
-  close(m->collision_peer);m->collision_peer=-1;
+  close(m->collision_peer);
+  m->collision_peer=-1;
   np_directory_release_v1(&m->collision_path);
+  if(np_origin_journal_v1(o,"collision-query-absent",np_origin_unit_v1(o)))return -1;
   m->collision_unknown=false;
   return 0;
 }
@@ -640,12 +686,15 @@ int np_managed_launch_v1(struct np_root_origin *o,struct np_managed_original *m,
   if(sd_bus_message_append(q,"ss",np_origin_unit_v1(o),"fail")<0||sd_bus_message_open_container(q,'a',"(sv)")<0||property(q,"PIDFDs","ah")||sd_bus_message_open_container(q,'a',"h")<0||sd_bus_message_append(q,"h",pidfd)<0||sd_bus_message_close_container(q)<0||property_end(q)||property(q,"KillMode","s")||sd_bus_message_append(q,"s","control-group")<0||property_end(q)||property(q,"TimeoutStopUSec","t")||sd_bus_message_append(q,"t",UINT64_C(2000000))<0||property_end(q)||property(q,"RuntimeMaxUSec","t")||sd_bus_message_append(q,"t",runtime)<0||property_end(q)||sd_bus_message_close_container(q)<0||sd_bus_message_open_container(q,'a',"(sa(sv))")<0||sd_bus_message_close_container(q)<0){
     return -1;
   }
+  char prefix[256];
+  snprintf(prefix,sizeof prefix,"child=%ld originalPidfd=%d unit=%s runtimeUSec=%llu",(long)child,pidfd,np_origin_unit_v1(o),(unsigned long long)runtime);
+  if(np_origin_journal_v1(o,"scope-start-intent",prefix))return -1;
   m->start_sent=true;
   if(dispatch(o,m,m->direct,c,false,NP_ORIGIN_START)){
     return -1;
   }
   const char *job;
-  if(sd_bus_message_has_signature(c->reply,"o")<=0||sd_bus_message_read(c->reply,"o",&job)<=0||copy(m->start_job,sizeof m->start_job,job)||job_done(o,m,m->start_job,false)||lookup(o,m,np_origin_unit_v1(o),m->scope_path,sizeof m->scope_path)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,false)){
+  if(sd_bus_message_has_signature(c->reply,"o")<=0||sd_bus_message_read(c->reply,"o",&job)<=0||copy(m->start_job,sizeof m->start_job,job)||job_done(o,m,m->start_job,false)||lookup(o,m,np_origin_unit_v1(o),m->scope_path,sizeof m->scope_path)){
     return -1;
   }
   struct unit_facts f;
@@ -656,6 +705,7 @@ int np_managed_launch_v1(struct np_root_origin *o,struct np_managed_original *m,
     return -1;
   }
   memcpy(m->scope_invocation,f.invocation,16);
+  if(by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,m->scope_invocation,false))return -1;
   m->associated=true;
   if(np_managed_ref_original_v1(o,m)){
     return -1;
@@ -674,7 +724,7 @@ int np_managed_launch_v1(struct np_root_origin *o,struct np_managed_original *m,
   snprintf(expected,sizeof expected,"0::%s\n",f.group);
   ssize_t length=fd<0?-1:read(fd,content,sizeof content-1);
   if(fd>=0)close(fd);
-  return m->events<0||length<=0||strcmp(content,expected)||live(pidfd)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,false)?-1:0;
+  return m->events<0||length<=0||strcmp(content,expected)||live(pidfd)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,m->scope_invocation,false)?-1:0;
 }
 static int scope_same(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
   struct unit_facts f;
@@ -688,9 +738,11 @@ int np_managed_ref_original_v1(struct np_root_origin *o,struct np_managed_origin
     return -1;
   }
   m->reference=REF_SENT_UNKNOWN;
+  if(np_origin_journal_v1(o,"reference-sent-unknown",m->unit))return -1;
   if(simple(o,m,m->api,m->unique,MANAGER_PATH,MANAGER_IFACE,"RefUnit",np_origin_unit_v1(o),false,NP_ORIGIN_REF,m->unique,NULL)||api_owner(o,m,false)||scope_same(o,m,false)){
     return -1;
   }
+  if(np_origin_journal_v1(o,"reference-ack-held",m->unit))return -1;
   m->reference=REF_ACK_HELD;
   return 0;
 }
@@ -717,9 +769,11 @@ int np_managed_unref_original_v1(struct np_root_origin *o,struct np_managed_orig
     return -1;
   }
   m->reference=REF_RELEASE_UNKNOWN;
+  (void)np_origin_journal_v1(o,"reference-release-unknown",m->unit);
   if(simple(o,m,m->api,m->unique,MANAGER_PATH,MANAGER_IFACE,"UnrefUnit",np_origin_unit_v1(o),true,NP_ORIGIN_UNREF,m->unique,NULL)||api_owner(o,m,true)){
     return -1;
   }
+  (void)np_origin_journal_v1(o,"reference-release-acked",m->unit);
   m->reference=REF_RELEASE_ACKED;
   return 0;
 }

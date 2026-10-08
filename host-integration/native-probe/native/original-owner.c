@@ -108,6 +108,9 @@ static int original(struct np_original_owner *o, uint64_t cutoff) {
 }
 static int committed(struct np_original_owner *o) {
   if (!o->data.committed || o->data.state != NP_OWNER_COMMITTED || o->channel.lost) { errno = ESTALE; return -1; }
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+  if (o->origin && np_origin_child_work_v1(o->origin)) return fail(o, NP_LOSS_ORIGINAL, ESTALE);
+#endif
   if (original(o, o->clock.preparation_end)) return -1;
   /* No helper proc reopen here. These are the actual descriptors collected
    * while the fixed child was held, with live birth checks on both sides. */
@@ -232,7 +235,17 @@ static int receive(struct np_original_owner *o) {
     /* v1 refusal remains observable, but is not turned into authority. The
      * distinct commit consumed the fixed native seal producer's HELLO above. */
     o->data.legacy_refused = np_birth_associate_v1(&o->clock, &o->channel.birth) != 0;
-    o->data.committed = true; o->data.state = NP_OWNER_COMMITTED;
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+    if (o->origin) {
+      if (np_origin_child_commit_begin_v1(o->origin)) return fail(o, NP_LOSS_ORIGINAL, ESTALE);
+      if (np_birth_live_v1(&o->channel.birth) || retained_ns(o->clock.time, o->channel.birth.time) || retained_ns(o->clock.children, o->channel.birth.children) || np_origin_child_commit_check_v1(o->origin)) {
+        np_origin_child_end_v1(o->origin); return fail(o, NP_LOSS_ORIGINAL, ESTALE);
+      }
+      o->data.committed = true; o->data.state = NP_OWNER_COMMITTED;
+      np_origin_child_end_v1(o->origin);
+    } else
+#endif
+    { o->data.committed = true; o->data.state = NP_OWNER_COMMITTED; }
     return committed(o);
   }
   if (frame.kind == NP_CLOSE && (frame.result == 0 || frame.result == NP_ENV_LOSS)) {
@@ -365,6 +378,13 @@ void np_original_helper_loss_v1(void) {
 
 #ifdef NP_ASSOCIATED_ORIGIN_V2
 /* Only the native fixed fork branch can supply this opaque original child. */
+int np_original_owner_prefix_v2(struct np_original_owner *o,char *bytes,size_t capacity) {
+  if(member(o)||!bytes)return -1;
+  struct stat time={0},children={0};
+  bool held=o->channel.birth.time>=0&&o->channel.birth.children>=0&&!fstat(o->channel.birth.time,&time)&&!fstat(o->channel.birth.children,&children);
+  int count=snprintf(bytes,capacity,"helper=%ld generation=%llu sequence=%llu state=%u loss=%u committed=%u reaped=%u nsHeld=%u time=%llu:%llu children=%llu:%llu anchor=%llu work=%llu cleanup=%llu cold=%llu attempt=%llu",(long)o->data.helper,(unsigned long long)o->data.generation,(unsigned long long)o->data.sequence,(unsigned)o->data.state,(unsigned)o->data.loss,o->data.committed,o->reaped,held,(unsigned long long)time.st_dev,(unsigned long long)time.st_ino,(unsigned long long)children.st_dev,(unsigned long long)children.st_ino,(unsigned long long)o->clock.anchor,(unsigned long long)o->clock.preparation_end,(unsigned long long)o->clock.cleanup_end,(unsigned long long)o->data.cold_end,(unsigned long long)o->data.attempt_end);
+  return count<=0||(size_t)count>=capacity?-1:0;
+}
 int np_original_owner_poll_fd_v2(struct np_original_owner *o) { return member(o) ? -1 : o->channel.owner; }
 struct np_startup_associated { uint64_t magic, generation, anchor, cold_end, preparation_end, cleanup_end; int64_t issuer; };
 #define NP_ASSOCIATED_MAGIC UINT64_C(0x4e504f5249473032)
