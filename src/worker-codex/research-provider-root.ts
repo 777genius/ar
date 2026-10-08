@@ -7,6 +7,7 @@ import { parseResearchStartSpec, type ResearchStartSpec } from "./research-launc
 import { researchAuthorityRoot, researchHash, researchInvalid, researchName, researchPath, researchPublish, researchRead } from "./research-launch-files";
 import { researchProviderUnitPattern } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
+import { readKernelMountTable } from "./host-scratch-mount";
 
 /** Private finite observations only; never execution authority or error payloads. */
 export enum ResearchProviderRootCheck {
@@ -81,7 +82,7 @@ export interface ResearchProviderRootHost {
   publish(path: string, value: unknown): void; record(path: string): string;
 }
 const nativeHost: ResearchProviderRootHost = {
-  info: lstatSync, canonical: realpathSync, link: readlinkSync, read: path => readFileSync(path, "utf8"), entries: readdirSync,
+  info: lstatSync, canonical: realpathSync, link: readlinkSync, read: path => path === "/proc/self/mountinfo" ? readKernelMountTable() : readFileSync(path, "utf8"), entries: readdirSync,
   mkdir: (path, mode) => { mkdirSync(path, { mode }); }, symlink: symlinkSync,
   file: path => { writeFileSync(path, "", { mode: 0o644, flag: "wx" }); },
   regular(path, expected, role = ResearchRootReadRole.Dns) {
