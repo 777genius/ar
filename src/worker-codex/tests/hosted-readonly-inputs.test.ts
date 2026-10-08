@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { constants } from "node:fs";
-import { assertHostedReadonlyPolicyBinding, hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy, readHostedReadonlyPolicy, readHostedPrivateBytes } from
+import { assertHostedReadonlyPolicyBinding, hostedReadonlyAuthorityBasesAbsent, hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy, readHostedReadonlyPolicy, readHostedPrivateBytes } from
   "../hosted-readonly-inputs";
 
 const file = vi.hoisted(() => ({ stat: vi.fn() }));
@@ -189,5 +189,74 @@ describe("anchored private reader TEST filesystem interleavings", () => {
     expect(() => readHostedPrivateBytes(root + "/parent/empty", 64)).toThrow("hosted_readonly_policy_invalid");
     expect(fs.openSync).toHaveBeenCalledTimes(1);
     expect(fs.closeSync).toHaveBeenCalledExactlyOnceWith(fs.openSync.mock.results[0]!.value);
+  });
+});
+
+describe("fixed authority bases absence proof", () => {
+  const child = "/subscription-runtime-host-policy";
+  const missing = () => { throw Object.assign(new Error("TEST absent"), { code: "ENOENT" }); };
+  beforeEach(() => {
+    fs.openSync.mockImplementation(path => path === "/run/user/0" ? 41 : 43);
+    fs.fstatSync.mockReturnValue(directoryStat());
+    fs.lstatSync.mockImplementation((path: string) => path.endsWith(child) ? missing() : directoryStat());
+  });
+  it("requires both absent bases, permits public non-writable var/lib and closes both anchors", () => {
+    fs.lstatSync.mockImplementation((path: string) => path.endsWith(child) ? missing() :
+      { ...directoryStat(), mode: path === "/var/lib" ? 0o40755 : 0o40700 });
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(true);
+    expect(fs.closeSync.mock.calls.map(call => call[0])).toEqual([43, 41]);
+    expect(fs.readSync).not.toHaveBeenCalled();
+  });
+  it.each([41, 43])("presence including a dangling symlink at anchor fd %s retains strict admission", fd => {
+    fs.lstatSync.mockImplementation((path: string) => path === `/proc/self/fd/${fd}${child}` ?
+      { isDirectory: () => false } : path.endsWith(child) ? missing() : directoryStat());
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(false);
+    expect(fs.closeSync).toHaveBeenCalledTimes(2);
+  });
+  it.each(["ENOENT", "EACCES", "ENOTDIR", "ELOOP"])("an unavailable anchor (%s) is not child absence", code => {
+    fs.lstatSync.mockImplementation((path: string) => {
+      if (path === "/var/lib") throw Object.assign(new Error("TEST anchor unavailable"), { code });
+      return path.endsWith(child) ? missing() : directoryStat();
+    });
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(false);
+    expect(fs.closeSync).toHaveBeenCalledExactlyOnceWith(41);
+  });
+  it.each(["EACCES", "ENOTDIR", "ELOOP"])("an uncertain child observation (%s) denies", code => {
+    fs.lstatSync.mockImplementation((path: string) => {
+      if (path.endsWith(child)) throw Object.assign(new Error("TEST uncertain child"), { code });
+      return directoryStat();
+    });
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(false);
+    expect(fs.closeSync).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    { uid: 1000 }, { mode: 0o40777 }, { isDirectory: () => false }, { mode: 0o40755 },
+  ])("rejects an unsafe/private anchor %j", change => {
+    fs.lstatSync.mockImplementation((path: string) => path === "/run/user/0" ?
+      { ...directoryStat(), ...change } : directoryStat());
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(false);
+    expect(fs.openSync).not.toHaveBeenCalled();
+  });
+  it.each(["replacement", "disappearance", "proc-anchor", "appearing-base"])("rejects concurrent %s", race => {
+    let childReads = 0;
+    fs.lstatSync.mockImplementation((path: string) => {
+      if (path.endsWith(child)) {
+        childReads++;
+        return race === "appearing-base" && childReads > 2 ? directoryStat() : missing();
+      }
+      if (childReads > 0 && path === "/run/user/0") {
+        if (race === "disappearance") return missing();
+        if (race === "replacement") return { ...directoryStat(), ino: 999 };
+      }
+      return directoryStat();
+    });
+    if (race === "proc-anchor") fs.statSync.mockReturnValue({ ...directoryStat(), ino: 999 });
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(false);
+    expect(fs.closeSync).toHaveBeenCalledTimes(2);
+  });
+  it("attempts both closes and denies when one close fails", () => {
+    fs.closeSync.mockImplementationOnce(() => { throw new Error("TEST close failed"); });
+    expect(hostedReadonlyAuthorityBasesAbsent()).toBe(false);
+    expect(fs.closeSync.mock.calls.map(call => call[0])).toEqual([43, 41]);
   });
 });

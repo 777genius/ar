@@ -84,6 +84,67 @@ export function readHostedReadonlyPolicy(jobId: string): {
   } catch { invalid(); }
 }
 
+/** Fresh routing observation only, never enrollment, de-enrollment or a spawn
+ * permit. Any retained base or uncertain ancestry keeps strict admission. */
+export function hostedReadonlyAuthorityBasesAbsent(): boolean {
+  const anchors = ["/run/user/0", "/var/lib"] as const;
+  const opened: { fd: number; anchor: string; ancestry: { directory: string; stat: Stats }[] }[] = [];
+  let absent = false;
+  try {
+    const safeDirectory = (directory: string, stat: Stats): void => {
+      if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) !== 0 ||
+          (directory === anchors[0] && (stat.mode & 0o077) !== 0)) invalid();
+    };
+    const sameInode = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
+    for (const anchor of anchors) {
+      const parents: string[] = [];
+      for (let directory: string = anchor;; directory = dirname(directory)) {
+        parents.unshift(directory);
+        if (directory === "/") break;
+      }
+      const ancestry = parents.map(directory => {
+        const stat = lstatSync(directory); safeDirectory(directory, stat);
+        return { directory, stat };
+      });
+      const fd = openSync(anchor, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      opened.push({ fd, anchor, ancestry });
+    }
+    const checkAncestry = (): void => {
+      for (const { fd, anchor, ancestry } of opened) {
+        const stat = fstatSync(fd); safeDirectory(anchor, stat);
+        if (!sameInode(stat, ancestry[ancestry.length - 1]!.stat) ||
+            !sameInode(stat, statSync(`/proc/self/fd/${fd}`))) invalid();
+        for (const { directory, stat: initial } of ancestry) {
+          const current = lstatSync(directory); safeDirectory(directory, current);
+          if (!sameInode(current, initial)) invalid();
+        }
+      }
+    };
+    // Observe both children twice through pinned anchors; an existing empty
+    // directory or dangling symlink is retained authority, never absence.
+    for (let pass = 0; pass < 2; pass++) {
+      checkAncestry();
+      for (const { fd } of opened) {
+        let missing = false;
+        try { lstatSync(`/proc/self/fd/${fd}/subscription-runtime-host-policy`); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+          missing = true;
+        }
+        checkAncestry();
+        if (!missing) return false;
+      }
+    }
+    absent = true;
+  } catch { /* Uncertain absence routes through the existing strict readers. */ }
+  finally {
+    for (const { fd } of opened.reverse()) {
+      try { closeSync(fd); } catch { absent = false; }
+    }
+  }
+  return absent;
+}
+
 /** Host filesystem adapter helper; production callers choose fixed private roots. */
 export function readHostedPrivateBytes(path: string, maxBytes: number): Buffer | null {
   try {

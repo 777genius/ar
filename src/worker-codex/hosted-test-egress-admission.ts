@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { assertReadonlyEnrollmentProfile } from "./hosted-readonly-custody";
+import { hostedReadonlyAuthorityBasesAbsent } from "./hosted-readonly-inputs";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import {
@@ -51,7 +52,7 @@ export async function admitHostedTestEgress(
     }
     return mimo ? codexMimoTokenPlanEgressPolicy() : codexProviderApiEgressPolicy();
   }
-  const hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
+  let hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if (mimo || profile === CodexProviderEgressProfileId.MimoTokenPlan) {
@@ -78,7 +79,12 @@ export async function admitHostedTestEgress(
   } catch {
     throw new Error("hosted_test_egress_admission_invalid");
   }
-  assertReadonlyEnrollmentProfile(input.jobId, grant?.profileId === CodexProviderEgressProfileId.TestManagedQualification);
+  // Grant I/O can outlive a routing change; retain all subsequent egress checks.
+  hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
+  const managed = grant?.profileId === CodexProviderEgressProfileId.TestManagedQualification;
+  if (managed || hosted || !hostedReadonlyAuthorityBasesAbsent()) {
+    assertReadonlyEnrollmentProfile(input.jobId, managed);
+  }
   // Research is production authority tied to the installed ordinary origin,
   // not a standalone TEST grant or a namespace/environment classification.
   if (grant?.profileId === CodexProviderEgressProfileId.PublicResearchV1) {

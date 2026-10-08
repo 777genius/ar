@@ -8,7 +8,7 @@ import { admittedReadonlyCodexProcessFactory, CodexProviderEgressProfileId, requ
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { assertReadonlyHostOperator, decodePrivateJson, readReadonlyManagedGrant,
   readReadonlyReview, readonlyIdentityName } from "./hosted-readonly-authority";
-import { readHostedPrivateBytes, readHostedReadonlyPolicy } from "./hosted-readonly-inputs";
+import { hostedReadonlyAuthorityBasesAbsent, readHostedPrivateBytes, readHostedReadonlyPolicy } from "./hosted-readonly-inputs";
 import { readonlyCustodyRoot, readonlyCustodySnapshot, readonlyRevokedRoot,
   createReadonlyPrivateRecord, readonlyServiceRoot, withReadonlyCustodyLock } from "./hosted-readonly-custody";
 
@@ -54,6 +54,7 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
     }
     return undefined; // Genuine default factory performs its own fresh fenced admission.
   }
+  if (!managed && !hosted && hostedReadonlyAuthorityBasesAbsent()) return undefined;
   const name = readonlyIdentityName(input.jobId);
   const initial = readHostedReadonlyPolicy(input.jobId);
   const leaseBytes = readHostedPrivateBytes(join(readonlyCustodyRoot, name), 4096);
