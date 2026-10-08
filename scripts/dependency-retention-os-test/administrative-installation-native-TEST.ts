@@ -17,7 +17,7 @@ import {
   FullBackingExposure, readOriginalAdministrativeTaskReferences, retainFullProcProcess, sampleFullProcDescriptors
 }
 from "./current-full-backing-collector.js";
-import { observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
+import { observeAdministrativeRpcReason, observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
 const control="/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1/control";
 const actorUnit="subscription-runtime-installer-10000000-0000-4000-8000-9ca302fabd07.service";
 const forgedUnit="TEST-administrative-forgery.service";
@@ -41,6 +41,9 @@ let currentPhase=AdministrativeInstallationTestPhase.NotStarted;
 /** Finite TEST progress only; it grants no source/admission or retry authority. */
 export function observeAdministrativeInstallationTestPhase():AdministrativeInstallationTestPhase { return currentPhase; }
 let forgedCommandObservation:TestAdministrativeCommandObservation|undefined;
+let forgedRpcReason:ReturnType<typeof observeAdministrativeRpcReason>|undefined;
+/** Only the original first fixed auth-free TEST result, never permission. */
+export function observeAdministrativeForgedRpcReason():typeof forgedRpcReason { return forgedRpcReason; }
 /** The first fixed forged call's finite TEST facts, never admission or retry. */
 export function observeAdministrativeForgedCommandResult():TestAdministrativeCommandObservation|undefined { return forgedCommandObservation; }
 const deadline=process.hrtime.bigint()+120n*1000000000n;
@@ -53,8 +56,10 @@ function command(path:string,args:string[],notFound=false):string{
     env,cwd:"/",encoding:"utf8",timeout:5000,maxBuffer:16384,stdio:["ignore","pipe","pipe"]
   }
   );
-  if(currentPhase===AdministrativeInstallationTestPhase.ForgedLaunch && forgedCommandObservation===undefined)
+  if(currentPhase===AdministrativeInstallationTestPhase.ForgedLaunch && forgedCommandObservation===undefined){
     forgedCommandObservation=observeTestAdministrativeCommandResult(r);
+    try { forgedRpcReason=observeAdministrativeRpcReason(r); } catch { /* Diagnostic never replaces the original assertion. */ }
+  }
   assert(!r.error && (r.status===0 || (notFound && r.status===4)) && r.signal===null);
   return r.stdout;
 }

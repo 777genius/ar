@@ -1,4 +1,4 @@
-import { observeAdministrativeForgedCommandResult, observeAdministrativeInstallationTestPhase, runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
+import { observeAdministrativeForgedRpcReason, observeAdministrativeForgedCommandResult, observeAdministrativeInstallationTestPhase, runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
 /** One owned OS, one ORIGINAL CLOSED C/reference registration. No consumer,
  * baseline install, comparison, R adoption, account or provider is invoked. */
 import assert from "node:assert/strict";
@@ -17,7 +17,7 @@ import { issueActualSystemBusInfrastructure, issueNativeFdProfile, actualToolcha
 import { enrollReferenceAndAssert, ReferenceEnrollmentPublication } from "./reference-enrollment-assertions.js";
 import { prepareCurrentLocalInputs, registerCurrentTools, currentNativeRecipe } from "./current-tools-fixture.ts";
 import { publishDefaultTestCodexConfig } from "./default-codex-config.ts";
-import { observeRegistrationFailure, RegistrationInputStep } from "./registration-failure-observation.js";
+import { sealAdministrativeRpcDiagnostic, observeRegistrationFailure, RegistrationInputStep } from "./registration-failure-observation.js";
 import { command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, OwnedOsScenario, policy, runtime } from "./common.ts";
 
 enum RegistrationStatus { Failed = "failed", PartialPass = "partial_pass" }
@@ -38,6 +38,16 @@ catch (error: unknown) {
   const forgedCommand = observeAdministrativeForgedCommandResult();
   evidence.administrativeTestFailureObservation = { phase: observeAdministrativeInstallationTestPhase(),
     ...(forgedCommand === undefined ? {} : { forgedCommand }) };
+  // Exact failed first-call scope only. No reason wording enters finite evidence.
+  if (observeAdministrativeInstallationTestPhase() === "forged_application_launch") {
+    try {
+      const reason = observeAdministrativeForgedRpcReason();
+      assert(reason && typeof evidence.sourceSha === "string" && typeof evidence.machineId === "string");
+      assert.match(evidence.sourceSha, /^[a-f0-9]{40}$/); assert.match(evidence.machineId, /^[a-f0-9]{32}$/);
+      json(runtime + "/TEST-fixed-forged-rpc-diagnostic.json",
+        sealAdministrativeRpcDiagnostic(reason, evidence.sourceSha, evidence.machineId), 0o600);
+    } catch { evidence.privateRpcDiagnosticUnavailable = true; }
+  }
   process.exitCode = 1;
 }
 finally {

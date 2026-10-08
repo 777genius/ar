@@ -311,14 +311,18 @@ jobs:
           node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.legacy-comparison-emit.json
           node --test scripts/dependency-retention-os-test/legacy-manifest-comparison.node-test.js
       - name: Run one original CLOSED registration in a private PID1 OS
+        id: native_closed_registration
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           TEST_GEOMETRY_MODE: ${{ github.event.inputs.test_mode || 'qualification' }}
+          TEST_DIAGNOSTIC_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
         run: |
           TEST_NODE="$(readlink -f "$(command -v node)")"
           TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
           sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C GITHUB_ACTIONS=true \
             TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
+            TEST_DIAGNOSTIC_REPOSITORY_PRIVATE="$TEST_DIAGNOSTIC_REPOSITORY_PRIVATE" \
+            TEST_DIAGNOSTIC_STEP_OUTPUT="$GITHUB_OUTPUT" \
             "$TEST_NODE" --experimental-strip-types \
             "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/registration-outer.ts" \
             "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN" "$TEST_GEOMETRY_MODE"
@@ -327,4 +331,12 @@ jobs:
         with:
           name: dependency-retention-closed-registration-${{ github.event.pull_request.head.sha || github.sha }}
           path: dependency-retention-os-evidence.json
+          if-no-files-found: error
+      - name: Retain independently validated private first RPC reason
+        uses: actions/upload-artifact@v4
+        if: always() && github.event.repository.private == true && steps.native_closed_registration.outputs.fixed_rpc_diagnostic == 'READY'
+        with:
+          name: dependency-retention-private-fixed-rpc-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-retention-fixed-forged-rpc-diagnostic.json
+          retention-days: 7
           if-no-files-found: error

@@ -213,3 +213,135 @@ export function observeTestAdministrativeCommandResult(result: unknown): TestAdm
     transientStartSuffix: typeof stderr === "string" ? administrativeTransientSuffix(stderr) : AdministrativeTransientSuffix.Unknown,
     stderrClasses: freeze(typeof stderr === "string" ? administrativeSetupClasses.filter(value => stderr.includes(value)) : []) });
 }
+
+/** Private DATA only for the reviewed auth-free first fixed TEST call. Short
+ * words are not generically secret-safe; this must never serve authenticated FULL. */
+export enum AdministrativeRpcCapture { Complete = "complete", Absent = "absent", Ambiguous = "ambiguous",
+  Overflow = "overflow", Unavailable = "unavailable" }
+enum RpcRedaction { Quoted = "quoted", LogInfo = "loginfo", Path = "path", Identifier = "identifier", Number = "number", Control = "control" }
+enum RpcFormat { Sgr = "sgr", Embedded = "embedded_prefix", Multiline = "multiline" }
+const rpcPrefix = "Failed to start transient service unit: ";
+const rpcPlaceholders = Object.values(RpcRedaction).map(value => `[${value}]`);
+const rpcPublic = [...administrativeTransientProperties, "org.freedesktop.systemd1", "org.freedesktop.systemd1.Manager",
+  "org.freedesktop.DBus", "StartTransientUnit"] as readonly string[];
+type RpcObservation = Readonly<{ capture: AdministrativeRpcCapture; status: number | null; signal: AdministrativeSignal;
+  spawnError: AdministrativeSpawnError; candidateCount: number; reasonLines: readonly string[];
+  redactions: readonly RpcRedaction[]; formats: readonly RpcFormat[] }>;
+export type AdministrativeRpcDiagnostic = RpcObservation & Readonly<{ schemaVersion: 1;
+  purpose: "TEST_first_fixed_auth_free_rpc_reason"; phase: "forged_application_launch"; sourceSha: string; machineId: string }>;
+function rpcSpanEnd(text: string, start: number): number {
+  const quote = text[start]; let end = start + 1;
+  if (quote === '"' || quote === "'") {
+    while (end < text.length) { if (text[end] === "\\") end += 2; else if (text[end++] === quote) break; } return end;
+  }
+  let depth = 1;
+  while (end < text.length && depth) { if (text[end] === '"' || text[end] === "'") end = rpcSpanEnd(text, end);
+    else { if (text[end] === "(") ++depth; if (text[end] === ")") --depth; ++end; } }
+  return end;
+}
+/** Canonical grammar: single-space separated lowercase letter words1..24,
+ * exact public literals, punctuation . , : ; ! ?, or the six placeholders. */
+export function sanitizeAdministrativeRpcReason(text: string): string {
+  if (Buffer.byteLength(text) > 16384) return "[identifier]";
+  const tokens: string[] = []; let i = 0;
+  while (i < text.length) {
+    if (text[i] === " ") { ++i; continue; }
+    const placeholder = rpcPlaceholders.find(value => text.startsWith(value, i));
+    if (placeholder) { tokens.push(placeholder); i += placeholder.length; continue; }
+    if (text[i] === '"' || text[i] === "'") { i = rpcSpanEnd(text, i); tokens.push("[quoted]"); continue; }
+    if (text[i] === "(") { i = rpcSpanEnd(text, i); tokens.push("[loginfo]"); continue; }
+    if (!/[\x20-\x7e]/.test(text[i]!)) { ++i; tokens.push("[control]"); continue; }
+    const start = i; while (i < text.length && !/[\s"'()]/.test(text[i]!)) ++i;
+    if (i === start) { ++i; tokens.push("[identifier]"); continue; }
+    let token = text.slice(start, i); const punctuation: string[] = [];
+    while (/[.,:;!?]$/.test(token)) { punctuation.unshift(token.slice(-1)); token = token.slice(0, -1); }
+    if (token) tokens.push(/[\\/~@]/.test(token) ? "[path]" : token.includes("=") ? "[identifier]" :
+      rpcPublic.includes(token) ? token : /^[0-9]+$/.test(token) ? "[number]" :
+        /^[A-Za-z]{1,24}$/.test(token) ? token.toLowerCase() : "[identifier]");
+    tokens.push(...punctuation);
+  }
+  return tokens.join(" ");
+}
+function rpcRedactions(lines: readonly string[]): readonly RpcRedaction[] {
+  return freeze(Object.values(RpcRedaction).filter(value => lines.some(line => line.includes(`[${value}]`))));
+}
+/** Same actual first-result custody as finite metadata; no raw buffers leave. */
+export function observeAdministrativeRpcReason(result: unknown): RpcObservation {
+  const facts = observeTestAdministrativeCommandResult(result);
+  const base = { status: facts.status, signal: facts.signal, spawnError: facts.spawnError };
+  const empty = (capture: AdministrativeRpcCapture, count = 0): RpcObservation => freeze({ ...base, capture,
+    candidateCount: count, reasonLines: freeze([]), redactions: freeze([]), formats: freeze([]) });
+  if (!result || typeof result !== "object" || isProxy(result)) return empty(AdministrativeRpcCapture.Unavailable);
+  const own = descriptor(result, "stderr");
+  if (!own || !hasOwn(own, "value") || typeof own.value !== "string") return empty(AdministrativeRpcCapture.Unavailable);
+  if (Buffer.byteLength(own.value) > 16384) return empty(AdministrativeRpcCapture.Overflow);
+  if (!facts.status || facts.signal !== AdministrativeSignal.None || facts.spawnError !== AdministrativeSpawnError.None ||
+      facts.stdout !== AdministrativeStdout.Empty) return empty(AdministrativeRpcCapture.Unavailable);
+  const sgr = /\x1b\[[0-9;]{0,32}m/g, decorated = sgr.test(own.value), text = own.value.replace(sgr, "");
+  const candidates: string[] = []; let embedded = false;
+  const starts: number[] = [];
+  for (let at = 0; at < text.length;) {
+    if (text[at] === '"' || text[at] === "'" || text[at] === "(") { at = rpcSpanEnd(text, at); continue; }
+    if ((at === 0 || /[ \t\r\n]/.test(text[at - 1]!)) && text.startsWith(rpcPrefix, at)) {
+      starts.push(at); if (starts.length > 4) return empty(AdministrativeRpcCapture.Overflow, 5); at += rpcPrefix.length;
+    } else ++at;
+  }
+  for (let index = 0; index < starts.length; ++index) { const at = starts[index]!, nextLine = text.indexOf("\n", at);
+    embedded ||= at > 0 && text[at - 1] !== "\n";
+    let end = Math.min(nextLine < 0 ? text.length : nextLine, starts[index + 1] ?? text.length);
+    if (text[end - 1] === "\r") --end;
+    candidates.push(sanitizeAdministrativeRpcReason(text.slice(at + rpcPrefix.length, end)));
+  }
+  if (!candidates.length) return empty(AdministrativeRpcCapture.Absent);
+  const formats = freeze(Object.values(RpcFormat).filter(value => value === RpcFormat.Sgr ? decorated :
+    value === RpcFormat.Embedded ? embedded : text.includes("\n") && text.trimEnd().includes("\n")));
+  return freeze({ ...base, capture: candidates.length === 1 ? AdministrativeRpcCapture.Complete : AdministrativeRpcCapture.Ambiguous,
+    candidateCount: candidates.length, reasonLines: freeze(candidates), redactions: rpcRedactions(candidates), formats });
+}
+export function sealAdministrativeRpcDiagnostic(observation: RpcObservation, sourceSha: string, machineId: string): AdministrativeRpcDiagnostic {
+  const packet: AdministrativeRpcDiagnostic = freeze({ schemaVersion: 1, purpose: "TEST_first_fixed_auth_free_rpc_reason",
+    phase: "forged_application_launch", sourceSha, machineId, ...observation });
+  if (Buffer.byteLength(JSON.stringify(packet) + "\n") <= 4096) return packet;
+  return freeze({ ...packet, capture: AdministrativeRpcCapture.Overflow, candidateCount: 0,
+    reasonLines: freeze([]), redactions: freeze([]), formats: freeze([]) });
+}
+/** Independent private-reader normal-form validation; never trust a guest flag. */
+export function validateAdministrativeRpcDiagnostic(value: unknown, sourceSha: string, machineId: string): value is AdministrativeRpcDiagnostic {
+  if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || typeof sourceSha !== "string" || typeof machineId !== "string") return false;
+  const keys = ["schemaVersion", "purpose", "phase", "sourceSha", "machineId", "capture", "status", "signal", "spawnError",
+    "candidateCount", "reasonLines", "redactions", "formats"];
+  if (Object.getOwnPropertySymbols(value).length || Object.getOwnPropertyNames(value).sort().join(",") !== [...keys].sort().join(",")) return false;
+  const row: Record<string, unknown> = {};
+  for (const key of keys) { const own = descriptor(value, key); if (!own || !hasOwn(own, "value")) return false; row[key] = own.value; }
+  const canonicalArray = (input: unknown, allowed: readonly string[]): input is readonly string[] => {
+    if (isProxy(input) || !Array.isArray(input) || Object.getPrototypeOf(input) !== Array.prototype || Object.getOwnPropertySymbols(input).length || input.length > allowed.length) return false;
+    for (let i = 0; i < input.length; ++i) { const own = descriptor(input, String(i)); if (!own || !hasOwn(own, "value") ||
+      typeof own.value !== "string" || !allowed.includes(own.value) || (i > 0 && allowed.indexOf(input[i - 1]) >= allowed.indexOf(own.value))) return false; }
+    return Object.getOwnPropertyNames(input).sort().join(",") === [...Array.from({ length: input.length }, (_, i) => String(i)), "length"].sort().join(",");
+  };
+  if (row.schemaVersion !== 1 || row.purpose !== "TEST_first_fixed_auth_free_rpc_reason" || row.phase !== "forged_application_launch" ||
+      !/^[a-f0-9]{40}$/.test(sourceSha) || !/^[a-f0-9]{32}$/.test(machineId) || row.sourceSha !== sourceSha || row.machineId !== machineId ||
+      !Object.values(AdministrativeRpcCapture).includes(row.capture as AdministrativeRpcCapture) ||
+      !(row.status === null || typeof row.status === "number" && Number.isSafeInteger(row.status) && row.status >= 0 && row.status <= 255) ||
+      !Object.values(AdministrativeSignal).includes(row.signal as AdministrativeSignal) ||
+      !Object.values(AdministrativeSpawnError).includes(row.spawnError as AdministrativeSpawnError) ||
+      typeof row.candidateCount !== "number" || !Number.isSafeInteger(row.candidateCount) || row.candidateCount < 0 || row.candidateCount > 5 ||
+      !canonicalArray(row.redactions, Object.values(RpcRedaction)) || !canonicalArray(row.formats, Object.values(RpcFormat)) ||
+      isProxy(row.reasonLines) || !Array.isArray(row.reasonLines) || Object.getPrototypeOf(row.reasonLines) !== Array.prototype || Object.getOwnPropertySymbols(row.reasonLines).length || row.reasonLines.length > 4) return false;
+  const lines: string[] = [];
+  for (let i = 0; i < row.reasonLines.length; ++i) { const own = descriptor(row.reasonLines, String(i));
+    if (!own || !hasOwn(own, "value") || typeof own.value !== "string" || Buffer.byteLength(own.value) > 4096 ||
+        /[^\x20-\x7e]/.test(own.value) || own.value.includes("failed to start transient service unit") ||
+        sanitizeAdministrativeRpcReason(own.value) !== own.value) return false; lines.push(own.value); }
+  if (Object.getOwnPropertyNames(row.reasonLines).sort().join(",") !== [...lines.map((_, i) => String(i)), "length"].sort().join(",") ||
+      JSON.stringify(row.redactions) !== JSON.stringify(rpcRedactions(lines))) return false;
+  const count = row.candidateCount;
+  if (!lines.length && row.formats.length !== 0) return false;
+  if (row.capture === AdministrativeRpcCapture.Complete ? count !== 1 || lines.length !== 1 :
+      row.capture === AdministrativeRpcCapture.Ambiguous ? count < 2 || count > 4 || lines.length !== count :
+        lines.length !== 0 || (row.capture !== AdministrativeRpcCapture.Overflow && count !== 0)) return false;
+  if (row.capture === AdministrativeRpcCapture.Complete || row.capture === AdministrativeRpcCapture.Ambiguous || row.capture === AdministrativeRpcCapture.Absent)
+    if (!row.status || row.signal !== AdministrativeSignal.None || row.spawnError !== AdministrativeSpawnError.None) return false;
+  return Buffer.byteLength(JSON.stringify(row) + "\n") <= 4096;
+}

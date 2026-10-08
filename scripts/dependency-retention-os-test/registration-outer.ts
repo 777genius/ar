@@ -1,3 +1,4 @@
+import { AdministrativeRpcCapture, validateAdministrativeRpcDiagnostic } from "./registration-failure-observation.js";
 import { publishOriginalAdministrativeTestControl } from "./administrative-test-control.js";
 import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } from "./io-uring.ts";
 /** The runner only operates one newly registered service/root. Guest creation
@@ -6,10 +7,10 @@ import assert from "node:assert/strict";
 import { CurrentBackingGeometry, CurrentGeometryQualification, currentBackingStorage } from "./current-backing-geometry.js";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, existsSync, fchownSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assemble } from "./assemble.ts";
-import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, cleanEnv, command as runCommand, directory, directoryIdentity, fileDigest, json, node, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic, type OwnedOsFixtureScenario } from "./common.ts";
+import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, cleanEnv, digest, command as runCommand, directory, directoryIdentity, fileDigest, json, node, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic, type OwnedOsFixtureScenario } from "./common.ts";
 
 // This starts after workflow checkout/build/typecheck, not at workflow start.
 // The unchanged 40-minute job timeout is the independent platform backstop.
@@ -186,6 +187,11 @@ try {
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);
   assert.equal(guest.qualification, qualification);
   evidence.guest = guest; evidence.status = guest.status;
+  if (guest.status === "failed") {
+    evidence.privateRpcDiagnostic = { capture: AdministrativeRpcCapture.Unavailable };
+    try { evidence.privateRpcDiagnostic = copyPrivateRpcDiagnostic(root, registered!, machineId, deadline); }
+    catch { /* Private diagnostic cannot replace the original failure/owned stop. */ }
+  }
   const outputPath = root + runtime + "/guest-output-observation.json";
   const outputDeadline = earlier(deadline, process.hrtime.bigint() + milliseconds(2000));
   while (!existsSync(outputPath)) {
@@ -260,6 +266,62 @@ try {
   json(owned + "/owned-evidence.json", evidence, 0o644);
 }
 return evidence;
+}
+
+/** Original auth-free TEST only. No dynamic wording enters finite evidence. */
+function copyPrivateRpcDiagnostic(root: string, registered: ReturnType<typeof directoryIdentity>, machineId: string, deadline: bigint): Record<string, unknown> {
+  assert.equal(process.env.TEST_DIAGNOSTIC_REPOSITORY_PRIVATE, "true");
+  const output = process.env.TEST_DIAGNOSTIC_STEP_OUTPUT;
+  assert(output && /^\/home\/runner\/work\/_temp\/_runner_file_commands\/set_output_[a-f0-9-]{36}$/.test(output));
+  const privateDeadline = earlier(deadline, process.hrtime.bigint() + milliseconds(2000));
+  const held: number[] = []; const keep = (path: string, flags: number): number => { const fd = openSync(path, flags, 0o600); held.push(fd); return fd; };
+  const stable = (a: BigIntStats, b: BigIntStats): void => {
+    for (const key of ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"] as const) assert.equal(a[key], b[key]);
+  };
+  try {
+    remaining(privateDeadline, "private diagnostic budget exhausted");
+    assert.deepEqual(directoryIdentity(root), registered);
+    const rootFd = keep(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), rootStat = fstatSync(rootFd, { bigint: true });
+    assert(String(rootStat.dev) === registered.dev && String(rootStat.ino) === registered.ino && rootStat.uid === 0n && !(rootStat.mode & 0o022n));
+    const parent = root + runtime, parentFd = keep(`/proc/self/fd/${rootFd}${runtime}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const parentStat = fstatSync(parentFd, { bigint: true }); stable(parentStat, lstatSync(parent, { bigint: true }));
+    assert(parentStat.uid === 0n && parentStat.dev === rootStat.dev && !(parentStat.mode & 0o022n));
+    const leaf = `/proc/self/fd/${parentFd}/TEST-fixed-forged-rpc-diagnostic.json`;
+    const input = keep(leaf, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW), before = fstatSync(input, { bigint: true });
+    assert(before.isFile() && before.uid === 0n && before.gid === 0n && before.nlink === 1n && (before.mode & 0o7777n) === 0o600n &&
+      before.dev === parentStat.dev && before.size > 0n && before.size <= 4096n); stable(before, lstatSync(leaf, { bigint: true }));
+    const bytes = Buffer.alloc(4097); let size = 0, count = 0;
+    while ((count = readSync(input, bytes, size, bytes.length - size, null)) > 0) { remaining(privateDeadline); size += count; assert(size <= 4096); }
+    assert(BigInt(size) === before.size); stable(before, fstatSync(input, { bigint: true })); stable(before, lstatSync(leaf, { bigint: true }));
+    stable(parentStat, fstatSync(parentFd, { bigint: true })); stable(parentStat, lstatSync(parent, { bigint: true }));
+    assert.deepEqual(directoryIdentity(root), registered);
+    const packet: unknown = JSON.parse(bytes.subarray(0, size).toString("utf8"));
+    assert(validateAdministrativeRpcDiagnostic(packet, process.env.TEST_SOURCE_SHA!, machineId));
+    remaining(privateDeadline);
+    const canonical = Buffer.from(JSON.stringify(packet) + "\n"); assert(canonical.length <= 4096 && canonical.equals(bytes.subarray(0, size)));
+    if (packet.capture !== AdministrativeRpcCapture.Complete && packet.capture !== AdministrativeRpcCapture.Ambiguous) return { capture: packet.capture };
+    const workspace = keep(source, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), workspaceStat = fstatSync(workspace, { bigint: true });
+    stable(workspaceStat, lstatSync(source, { bigint: true }));
+    const target = `/proc/self/fd/${workspace}/dependency-retention-fixed-forged-rpc-diagnostic.json`;
+    const copy = keep(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW);
+    // Private Actions runner can read only its owned export, not the guest ROOT leaf.
+    fchownSync(copy, Number(workspaceStat.uid), Number(workspaceStat.gid));
+    writeFileSync(copy, canonical); fsyncSync(copy);
+    const copied = fstatSync(copy, { bigint: true }); stable(copied, lstatSync(target, { bigint: true }));
+    assert(copied.isFile() && copied.nlink === 1n && copied.uid === workspaceStat.uid && copied.gid === workspaceStat.gid &&
+      (copied.mode & 0o7777n) === 0o600n && copied.dev === workspaceStat.dev && copied.size === BigInt(canonical.length));
+    const currentWorkspace = fstatSync(workspace, { bigint: true }); stable(currentWorkspace, lstatSync(source, { bigint: true }));
+    for (const key of ["dev", "ino", "mode", "uid", "gid", "nlink"] as const) assert.equal(currentWorkspace[key], workspaceStat[key]);
+    assert.deepEqual(directoryIdentity(root), registered);
+    const result = { capture: packet.capture, bytes: canonical.length, sha256: digest(canonical) };
+    // Complete input/copy custody before emitting upload authority.
+    while (held.length) closeSync(held.pop()!);
+    remaining(privateDeadline);
+    const ready = keep(output, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW), outputStat = fstatSync(ready, { bigint: true });
+    assert(outputStat.isFile() && outputStat.nlink === 1n && outputStat.uid === workspaceStat.uid && outputStat.size <= 4096n);
+    writeFileSync(ready, "fixed_rpc_diagnostic=READY\n");
+    return result;
+  } finally { for (const fd of held.reverse()) closeSync(fd); }
 }
 
 type DiagnosticSink = Readonly<{ fd: number; birth: BigIntStats }>;

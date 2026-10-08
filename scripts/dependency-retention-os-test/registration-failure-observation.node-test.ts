@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { lookupNpmPublicSourcePart0 } from "./registration-npm-public-catalog-0.js";
 import { lookupNpmPublicSourcePart1 } from "./registration-npm-public-catalog-1.js";
 import { observePinnedTestNpmFrame, observePublicTestNpmFrame } from "./registration-npm-frame-observation.js";
-import { observeRegistrationFailure, observeTestAdministrativeCommandResult, observeTestNpmLockResult } from "./registration-failure-observation.js";
+import { AdministrativeRpcCapture, observeAdministrativeRpcReason, sanitizeAdministrativeRpcReason, sealAdministrativeRpcDiagnostic, validateAdministrativeRpcDiagnostic, observeRegistrationFailure, observeTestAdministrativeCommandResult, observeTestNpmLockResult } from "./registration-failure-observation.js";
 
 test("closed observations drop arbitrary text and non-native counterfeits", () => {
   const secret = "TEST-secret-path-token-not-for-evidence";
@@ -87,6 +87,60 @@ test("transient RPC suffixes distinguish closed literals without releasing priva
     prefix + policy + " trailing", prefix + policy.replace(secret, "x".repeat(1025)),
     prefix + "x".repeat(4097), "\u001b[31m" + prefix + "Access denied\u001b[0m"])
     assert.equal(observeTestAdministrativeCommandResult({ ...result, stderr }).transientStartSuffix, "unknown");
+});
+
+// Closest private artifact contract: raw text never passes the reader, and an
+// envelope/duplicate/unsafe-shape regression must not release a partial reason.
+test("first fixed auth-free RPC packet has an independently checked canonical private form", () => {
+  const source = "1".repeat(40), machine = "2".repeat(32), prefix = "Failed to start transient service unit: ";
+  const secret = "TEST_PRIVATE_PATH_TOKEN", native = { status: 1, signal: null, stdout: "", stderr: "" };
+  const packet = (stderr: string) => sealAdministrativeRpcDiagnostic(observeAdministrativeRpcReason({ ...native, stderr }), source, machine);
+  const actual = packet("\u001b[31m" + prefix + 'Unable to enqueue "' + secret + '": transaction dependency failed (uid=0 pid=9 comm="' + secret +
+    '"). Invalid descriptor 29 at /TEST/' + secret + '; request=' + secret + '. org.freedesktop.systemd1.Manager NoNewPrivileges\u001b[0m\n');
+  assert.equal(actual.capture, AdministrativeRpcCapture.Complete);
+  assert(actual.reasonLines[0]?.includes("transaction dependency failed"));
+  assert(actual.reasonLines[0]?.includes("org.freedesktop.systemd1.Manager NoNewPrivileges"));
+  assert(actual.reasonLines[0]?.includes("[quoted]")); assert(actual.reasonLines[0]?.includes("[loginfo]"));
+  assert(actual.reasonLines[0]?.includes("[path]")); assert(actual.reasonLines[0]?.includes("[number]"));
+  assert(!JSON.stringify(actual).includes(secret)); assert(!JSON.stringify(actual).includes("uid="));
+  assert(validateAdministrativeRpcDiagnostic(actual, source, machine));
+  const parsed: unknown = JSON.parse(JSON.stringify(actual)); assert(validateAdministrativeRpcDiagnostic(parsed, source, machine));
+  for (const line of actual.reasonLines) assert.equal(sanitizeAdministrativeRpcReason(line), line);
+  assert.equal(packet("private non-RPC error").capture, AdministrativeRpcCapture.Absent);
+  // A quoted/loginfo prefix is private field DATA, never an RPC candidate.
+  for (const stderr of ['sender="' + prefix + 'secretword"', 'sender="private\n' + prefix + 'secretword"', 'error (comm="' + prefix + 'secretword")', 'error (private\n' + prefix + 'secretword)', '/TEST/' + prefix + 'secretword', 'request=' + prefix + 'secretword'])
+    assert.equal(packet(stderr).capture, AdministrativeRpcCapture.Absent);
+  const spoofedInside = packet(prefix + 'Access denied (comm="' + prefix + 'secretword")');
+  assert.equal(spoofedInside.capture, AdministrativeRpcCapture.Complete);
+  assert(!JSON.stringify(spoofedInside).includes("secretword"));
+  const duplicate = packet(prefix + "Access denied\n" + prefix + "Invalid argument\n");
+  assert.equal(duplicate.capture, AdministrativeRpcCapture.Ambiguous); assert.equal(duplicate.candidateCount, 2);
+  assert(validateAdministrativeRpcDiagnostic(duplicate, source, machine));
+  for (const stderr of [(prefix + "Access denied\n").repeat(5), prefix + "x".repeat(16385), prefix + "é".repeat(9000)]) {
+    const overflow = packet(stderr); assert.equal(overflow.capture, AdministrativeRpcCapture.Overflow); assert.deepEqual(overflow.reasonLines, []);
+    assert(validateAdministrativeRpcDiagnostic(overflow, source, machine));
+  }
+  const boundedReason = observeAdministrativeRpcReason({ ...native, stderr: prefix + "dependency ".repeat(350) });
+  assert.equal(boundedReason.capture, AdministrativeRpcCapture.Complete); assert(boundedReason.reasonLines[0]!.length < 4096);
+  const overflow = sealAdministrativeRpcDiagnostic(boundedReason, source, machine);
+  assert.equal(overflow.capture, AdministrativeRpcCapture.Overflow); assert.deepEqual(overflow.reasonLines, []);
+  assert(Buffer.byteLength(JSON.stringify(overflow) + "\n") <= 4096);
+  const oversizeEnvelope = { ...actual, ...boundedReason };
+  assert.equal(validateAdministrativeRpcDiagnostic(oversizeEnvelope, source, machine), false);
+  for (const reason of ['/TEST/' + secret, '(comm="' + secret + '")', '"' + secret + '"', secret, "é", "\u001b[31maccess denied", "failed to start transient service unit : access denied"])
+    assert.equal(validateAdministrativeRpcDiagnostic({ ...actual, reasonLines: [reason] }, source, machine), false);
+  assert.equal(validateAdministrativeRpcDiagnostic(actual, "3".repeat(40), machine), false);
+  assert.equal(validateAdministrativeRpcDiagnostic({ ...actual, capture: "private" }, source, machine), false);
+  let calls = 0; const trap = (): never => { ++calls; throw new Error("TEST-caller-trap"); };
+  const proxy = new Proxy(native, { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap, getPrototypeOf: trap });
+  const revoked = Proxy.revocable([], {}); revoked.revoke();
+  assert.equal(observeAdministrativeRpcReason(proxy).capture, AdministrativeRpcCapture.Unavailable);
+  assert.equal(validateAdministrativeRpcDiagnostic(new Proxy(actual, { ownKeys: trap, getOwnPropertyDescriptor: trap }), source, machine), false);
+  assert.equal(validateAdministrativeRpcDiagnostic({ ...actual, redactions: revoked.proxy }, source, machine), false);
+  const accessor = { ...actual }; Object.defineProperty(accessor, "reasonLines", { get: trap });
+  assert.equal(validateAdministrativeRpcDiagnostic(accessor, source, machine), false);
+  const active = [...actual.reasonLines]; Object.defineProperty(active, "toJSON", { get: trap });
+  assert.equal(validateAdministrativeRpcDiagnostic({ ...actual, reasonLines: active }, source, machine), false); assert.equal(calls, 0);
 });
 
 test("administrative result rejects accessor Proxy and counterfeit errno without caller calls", () => {
