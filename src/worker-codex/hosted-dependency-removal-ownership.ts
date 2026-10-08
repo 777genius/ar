@@ -8,6 +8,7 @@ import { readOriginalHostedDependencyRemovalRetirement } from "./hosted-dependen
 import { readOriginalHostedDependencyOperatorNativeCensus } from "./hosted-dependency-generation-native-census";
 import { readdirSync } from "node:fs";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
+import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { retireOriginalHostedDependencyRemovalForRecovery, readOriginalHostedDependencyRemovalFirstClaim } from "./hosted-dependency-removal-recovery";
 import { readOriginalHostedDependencyRemovalClaim, hostedDependencyRemovalRecordPath } from "./hosted-dependency-removal-context";
 import { parseHostedDependencyRemovalLock } from "./hosted-dependency-removal-records";
@@ -156,8 +157,13 @@ export function tryReleaseOriginalHostedDependencyCompletedRemoval(fence:HostedA
   try {
     if(!readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
     if(encode(current).equals(encode(claimed))) {publishOriginalHostedDependencyRemovalOwner(fence,current,fenced,access);current=fenced;recovery.owner=fenced;}
-    writeReferenceOnce(`${hostedDependencyRemovalOperations}/${next.workspace.dev}-${next.workspace.ino}-${next.revision}.removal-idle.json`,
-      {version:1,kind:HostedDependencyRemovalRecordKind.Idle,claim:proof.selected.reference,retirement:proof.retirement,completion:completion.reference,fenced,released:next});
+    const idlePath=`${hostedDependencyRemovalOperations}/${next.workspace.dev}-${next.workspace.ino}-${next.revision}.removal-idle.json`,
+      idle={version:1,kind:HostedDependencyRemovalRecordKind.Idle,claim:proof.selected.reference,retirement:proof.retirement,completion:completion.reference,fenced,released:next};
+    if(readHostedPrivateBytes(idlePath,65536)) {
+      const pinned=pinReferenceFile(idlePath,65536);if(!pinned.bytes.equals(encode(idle)))held();
+      createReadonlyPrivateRecord(idlePath,encode(idle));
+      if(!encode(pinReferenceFile(idlePath,65536).reference).equals(encode(pinned.reference)))held();
+    } else writeReferenceOnce(idlePath,idle);
     recoveryGuard(fence,access);
     if(recovery.lockAbsent)confirmOriginalHostedDependencyRemovalLockReleased(fence,proof.lock,access);
     else {unlinkOriginalHostedDependencyRemovalLock(fence,proof.lock,access);recovery.lockAbsent=true;}

@@ -38,6 +38,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
@@ -50,6 +51,22 @@ jobs:
       - run: npm run build
       - name: Typecheck the retained handwritten OS fixture closure
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json
+      - name: Prove completed-removal idle replay on root Linux, exact old red and new green
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            "$TEST_NODE" --experimental-strip-types \
+            "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/completed-removal-retry-ci.ts" \
+            "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$TEST_SOURCE_SHA"
+      - name: Retain completed-removal focused Linux regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-completed-removal-retry-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-completed-removal-retry-evidence.json
+          if-no-files-found: error
       - name: Emit finite TEST catalog before composition, copy and digest
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.catalog-emit.json
       - name: Emit finite registration closure before owned root copy and digest
