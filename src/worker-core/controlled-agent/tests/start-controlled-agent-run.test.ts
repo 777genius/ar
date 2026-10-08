@@ -163,6 +163,7 @@ describe("startControlledAgentRun", () => {
       provider,
       capacity: {
         accountId: "account-d",
+        sessionId: "opaque-synthetic-session",
         demand: {
           provider: "codex",
           model: "gpt-5.5",
@@ -192,6 +193,7 @@ describe("startControlledAgentRun", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected start success");
     expect(result.run.capacityAccountId).toBe("account-d");
+    expect(result.run.capacitySessionId).toBe("opaque-synthetic-session");
     expect(result.run.capacityDemand).toEqual({
       provider: "codex",
       model: "gpt-5.5",
@@ -199,6 +201,7 @@ describe("startControlledAgentRun", () => {
       serviceTier: "fast",
     });
     expect(savedRuns[0]?.capacityAccountId).toBe("account-d");
+    expect(savedRuns[0]?.capacitySessionId).toBe("opaque-synthetic-session");
   });
 
   it("does not call the provider when enforcement is incomplete", async () => {

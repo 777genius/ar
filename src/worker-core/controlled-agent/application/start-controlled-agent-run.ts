@@ -35,6 +35,7 @@ export type StartControlledAgentRunDeps = {
   readonly recoverOwnerlessActiveRunAfterMs?: number;
   readonly capacity?: {
     readonly accountId: string;
+    readonly sessionId?: string;
     readonly demand?: WorkerRuntimeDemand;
   };
   readonly clock?: { now(): Date };
@@ -178,6 +179,8 @@ export class StartControlledAgentRunUseCase {
       ...(this.deps.owner === undefined ? {} : { owner: this.deps.owner }),
       ...(this.deps.capacity === undefined ? {} : {
         capacityAccountId: this.deps.capacity.accountId,
+        ...(this.deps.capacity.sessionId === undefined
+          ? {} : { capacitySessionId: this.deps.capacity.sessionId }),
         ...(this.deps.capacity.demand === undefined
           ? {}
           : { capacityDemand: this.deps.capacity.demand }),
