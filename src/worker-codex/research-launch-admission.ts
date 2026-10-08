@@ -12,6 +12,7 @@ import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSh
   researchDescription, researchExecutableDigest, researchProcessIdentity, researchServiceIdentity,
   researchUnitFromCurrentProcess } from "./research-launch-host";
 import { researchProviderUnits, signalResearchProvider } from "./research-launch-lifecycle";
+import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
@@ -44,11 +45,14 @@ function assertResearchStartAuthority(spec: ResearchStartSpec): void {
   if (researchHash(grantBytes) !== spec.grantSha256 || grant.jobId !== spec.request.jobId ||
       grant.jobRootDir !== spec.request.jobRootDir || grant.workspacePath !== spec.request.workspacePath ||
       JSON.stringify(grant.jobDirectory) !== JSON.stringify(spec.jobDirectory) ||
+      JSON.stringify(grant.registeredHandoff) !== JSON.stringify(spec.registeredHandoff) ||
       JSON.stringify(grant.workspaceDirectory) !== JSON.stringify(spec.workspaceDirectory)) researchInvalid();
   assertResearchDirectory(spec.jobDirectory); assertResearchDirectory(spec.workspaceDirectory);
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
+  assertRegisteredResearchHandoffPin(spec, join(pins, ".."));
+  if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
 }
 function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
   if (spec.runtimeDirectory !== installedResearchRuntimeDirectory()) researchInvalid();
@@ -67,17 +71,33 @@ export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
 }
 /** Blocking Host observations can overlap a separate operator's revoke/cancel.
  * Recheck only mutable documents and pinned identities at the effect boundary. */
-function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer): void {
+function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   const fresh = researchCurrentStart(jobId);
-  if (existsSync(join(initial.directory, "closing.json")) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
-      (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes))) researchInvalid();
+  if ((!allowClosing && existsSync(join(initial.directory, "closing.json"))) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
+      (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
+      researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== initial.spec.grantSha256) researchInvalid();
+}
+function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
+  assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
   assertResearchStartAuthority(initial.spec);
+  // No blocking observations follow the final mutable authority read.
+  assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
 }
 /** Capture real MainPID/birth/boot/InvocationID only from the new individually
  * owned service. The explicit initial-root operator staged its closed spec. */
 export function bindResearchRuntime(jobId: string, startId: string): ResearchStartSpec {
+  return bindResearchRuntimeInternal(jobId, startId);
+}
+export async function bindRegisteredResearchRuntime(jobId: string, startId: string): Promise<ResearchStartSpec> {
+  const initial = researchCurrentStart(jobId);
+  if (initial.spec.startId !== startId || !initial.spec.registeredHandoff) researchInvalid();
+  await assertRegisteredResearchHandoffCurrent(initial.spec.registeredHandoff, initial.spec.request);
+  return bindResearchRuntimeInternal(jobId, startId, initial.bytes);
+}
+function bindResearchRuntimeInternal(jobId: string, startId: string, registeredBytes?: Buffer): ResearchStartSpec {
   assertResearchInitialRoot(); assertResearchSharedHost();
   const initial = researchCurrentStart(jobId), { directory, spec, bytes } = initial;
+  if (registeredBytes ? !registeredBytes.equals(bytes) : spec.registeredHandoff !== undefined) researchInvalid();
   if (spec.startId !== startId || existsSync(join(directory, "closing.json"))) researchInvalid();
   assertResearchStartMaterial(spec);
   const identity = researchProcessIdentity(), service = researchServiceIdentity(spec.unit);
@@ -87,6 +107,32 @@ export function bindResearchRuntime(jobId: string, startId: string): ResearchSta
     schemaVersion: 1, specSha256: researchHash(bytes), process: identity, service,
   } satisfies ResearchStartBinding, true);
   return spec;
+}
+/** Trusted terminal publication port. No serialized request can provide it. */
+export function researchTerminalHandoffGuard(jobId: string, startId: string): () => Promise<void> {
+  return registeredResearchHandoffGuard(jobId, startId, false);
+}
+export function researchHandoffPublicationLease(jobId: string, startId: string): <T>(effect: () => Promise<T>) => Promise<T> {
+  const initial = researchCurrentStart(jobId);
+  if (initial.spec.startId !== startId || !initial.spec.registeredHandoff) researchInvalid();
+  return async effect => await withRegisteredResearchHandoffPublication(initial.spec.registeredHandoff!, initial.spec.request, effect);
+}
+/** Cancellation is allowed to preserve only after its creator is stopped; the
+ * caller independently reconciles the exact runtime/provider units. */
+export function researchCancellationHandoffGuard(jobId: string, startId: string): () => Promise<void> {
+  return registeredResearchHandoffGuard(jobId, startId, true);
+}
+function registeredResearchHandoffGuard(jobId: string, startId: string, allowClosing: boolean): () => Promise<void> {
+  const initial = researchCurrentStart(jobId);
+  if (initial.spec.startId !== startId || !initial.spec.registeredHandoff) researchInvalid();
+  return async () => {
+    assertResearchCurrentAuthority(jobId, initial, undefined, allowClosing);
+    await assertRegisteredResearchHandoffCurrent(initial.spec.registeredHandoff!, initial.spec.request);
+    assertResearchCurrentAuthority(jobId, initial, undefined, allowClosing);
+    assertRegisteredResearchHandoffPin(initial.spec, initial.directory);
+    assertResearchDirectory(initial.spec.registeredHandoff!.durableDirectory, initial.spec.request.durableHandoffRootDir);
+    assertResearchCurrentAuthorityBytes(jobId, initial, undefined, allowClosing);
+  };
 }
 export function captureResearchRuntime(identity: HostedTestEgressIdentity, ownerPid = process.pid): {
   readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => void;
