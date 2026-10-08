@@ -1,14 +1,14 @@
 import { DependencyInstallProfile } from "./dependency-install-key";
-import { DependencyReceiptState, sameDependencyWorkspace, type DependencyTreeIdentity,
+import { DependencyReceiptState, sameDependencyWorkspace, sameDependencyTree, type DependencyTreeIdentity,
   type DependencyWorkspaceIdentity } from "./dependency-receipt";
 import { DependencyReceiptParseStatus, parseDependencyReceipt } from "./parse-dependency-receipt";
 import type { DependencyCommittedReceiptReference } from "../ports/dependency-receipt-store";
 import type { DependencyUnverifiedReceipt } from "../ports/dependency-legacy-comparison";
 
-export enum DependencyLegacyComparisonRecipe { NpmRegistryNoScriptsV1 = "npm_registry_no_scripts_v1" }
+export enum DependencyLegacyComparisonRecipe { NpmRegistryNoScriptsV1 = "npm_registry_no_scripts_v1", NpmLocalNoLifecycleV1 = "npm_local_no_lifecycle_v1" }
 /** Fixed registry-only observation. References name immutable protected facts,
  * not caller authority. A trusted reader must authenticate every chain leaf. */
-export type DependencyLegacyComparisonRecord = {
+export type DependencyLegacyRegistryComparisonRecord = {
   readonly version: 1;
   readonly recipe: DependencyLegacyComparisonRecipe.NpmRegistryNoScriptsV1;
   readonly profile: DependencyInstallProfile.TestNpmQualification;
@@ -33,6 +33,17 @@ export type DependencyLegacyComparisonRecord = {
   readonly referenceRelease: DependencyCommittedReceiptReference;
 };
 
+export type DependencyLegacyLocalComparisonRecord = Omit<DependencyLegacyRegistryComparisonRecord,
+  "version" | "recipe" | "profile" | "reference"> & {
+  readonly version: 2; readonly recipe: DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1;
+  readonly profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1; readonly closureDigest: string;
+  readonly candidateSourceBinding: DependencyCommittedReceiptReference;
+  readonly reference: Omit<DependencyLegacyRegistryComparisonRecord["reference"], "manifestVersion"> & {
+    readonly manifestVersion: 2; readonly sourceBinding: DependencyCommittedReceiptReference;
+  };
+};
+export type DependencyLegacyComparisonRecord = DependencyLegacyRegistryComparisonRecord | DependencyLegacyLocalComparisonRecord;
+
 type RecordValue = Record<string, unknown>;
 function object(value: unknown): value is RecordValue { return !!value && typeof value === "object" && !Array.isArray(value); }
 function exact(value: RecordValue, fields: readonly string[]): boolean {
@@ -51,10 +62,14 @@ function invalid(): never { throw new Error("dependency_legacy_comparison:invali
 
 /** Exact shape validation only; this function never grants Ready authority. */
 export function parseDependencyLegacyComparisonRecord(value: unknown): DependencyLegacyComparisonRecord {
-  if (!object(value) || !exact(value, ["version", "recipe", "profile", "operationId", "comparisonEvidenceId", "referenceInstallationId",
+  if (!object(value)) return invalid();
+  const local = value.version === 2;
+  if (!exact(value, ["version", "recipe", "profile", "operationId", "comparisonEvidenceId", "referenceInstallationId",
     "original", "reference", "installKey", "inputSha256", "profileSha256", "originalManifestDigest", "referenceManifestDigest",
-    "relation", "referenceStart", "referenceEntry", "referenceResult", "referenceRelease"]) || value.version !== 1 ||
-    value.recipe !== DependencyLegacyComparisonRecipe.NpmRegistryNoScriptsV1 || value.profile !== DependencyInstallProfile.TestNpmQualification ||
+    "relation", "referenceStart", "referenceEntry", "referenceResult", "referenceRelease", ...(local ? ["closureDigest", "candidateSourceBinding"] : [])]) ||
+    (local ? value.recipe !== DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1 || value.profile !== DependencyInstallProfile.TestNpmLocalNoLifecycleV1 ||
+      !digest(value.closureDigest) || value.inputSha256 !== value.closureDigest || !reference(value.candidateSourceBinding) :
+      value.version !== 1 || value.recipe !== DependencyLegacyComparisonRecipe.NpmRegistryNoScriptsV1 || value.profile !== DependencyInstallProfile.TestNpmQualification) ||
     typeof value.operationId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.operationId) ||
     !id(value.comparisonEvidenceId) || !id(value.referenceInstallationId) ||
     ![value.installKey, value.inputSha256, value.profileSha256, value.originalManifestDigest, value.referenceManifestDigest].every(digest) ||
@@ -65,10 +80,11 @@ export function parseDependencyLegacyComparisonRecord(value: unknown): Dependenc
   if (original.status !== DependencyReceiptParseStatus.Valid || original.receipt.state !== DependencyReceiptState.Unverified) return invalid();
   const ref = value.reference;
   if (!object(ref) || !exact(ref, ["workspace", "generation", "coverageRevision", "tree", "manifestVersion", "manifestDigest", "installationId",
-    "output", "mapping", "start", "creator", "completion", "terminal"]) || !workspace(ref.workspace) || !tree(ref.tree) ||
+    "output", "mapping", "start", "creator", "completion", "terminal", ...(local ? ["sourceBinding"] : [])]) || !workspace(ref.workspace) || !tree(ref.tree) ||
     sameDependencyWorkspace(original.receipt.workspace, ref.workspace) || original.receipt.workspace.canonicalPath === ref.workspace.canonicalPath ||
     !id(ref.generation) || !id(ref.coverageRevision) || !id(ref.installationId) || ref.installationId !== value.referenceInstallationId ||
-    ref.manifestVersion !== 1 || ref.manifestDigest !== value.referenceManifestDigest ||
-    ![ref.output, ref.mapping, ref.start, ref.creator, ref.completion, ref.terminal].every(reference)) return invalid();
+    ref.manifestVersion !== (local ? 2 : 1) || ref.manifestDigest !== value.referenceManifestDigest ||
+    ![ref.output, ref.mapping, ref.start, ref.creator, ref.completion, ref.terminal, ...(local ? [ref.sourceBinding] : [])].every(reference)) return invalid();
+  if (local && (original.receipt.generation === ref.generation || sameDependencyTree(original.receipt.tree, ref.tree as DependencyTreeIdentity))) return invalid();
   return value as unknown as DependencyLegacyComparisonRecord;
 }

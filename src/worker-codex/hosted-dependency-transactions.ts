@@ -19,13 +19,14 @@ import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependen
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
 import { DependencyInstallProofKind } from "../worker-core/dependency-environment/domain/dependency-receipt";
-import type { DependencyCompletedLocalReady } from "../worker-core/dependency-environment/ports/dependency-source-binding";
 import { closeDependencySourceLinkSession, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { hostedDependencyObservationLimits as limits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs } from "./hosted-dependency-materialization";
 import { ensureHostedDependencyDirectory, readHostedDependencyReceipt, publishHostedDependencyReceipt,
-  readHostedDependencyCommittedAbsent, openHostedDependencySourceLinks } from "./hosted-dependency-receipts";
+  readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
 import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "./hosted-dependency-reference-veto";
+
+import { openHostedDependencyReadySourceLinks, assertHostedDependencyReadySourceHistory } from "./hosted-dependency-ready-source-links";
 
 import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
 
@@ -162,9 +163,18 @@ async function baseline(ready: Pick<Ready, "manifestDigest">) {
 }
 function sourceLinks(header: Header, detached = false): DependencySourceLinkSession | undefined {
   authenticateHistoricalReady(header.ready);
-  if (header.ready.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1) return undefined;
-  const ready: DependencyCompletedLocalReady = { ...header.ready, provenance: header.ready.provenance };
-  return openHostedDependencySourceLinks(ready, detached ? { workspace: header.trash.destinationParent, name: header.trash.destinationName } : undefined);
+  if (header.ready.provenance.kind === DependencyInstallProofKind.CompletedInstall) return undefined;
+  if (header.ready.provenance.kind === DependencyInstallProofKind.LegacyCompared &&
+      assertHostedDependencyLegacyComparedReady({ ...header.ready, provenance: header.ready.provenance }).version === 1) return undefined;
+  if (!detached) return openHostedDependencyReadySourceLinks(header.ready);
+  // A target DTO cannot grant subset traversal. Bind the actual protected
+  // operation header before the source adapter authenticates detached custody.
+  const path = headerPath(header.attempt), before = lstatSync(path, { bigint: true }), bytes = readHostedPrivateBytes(path, 32768), after = lstatSync(path, { bigint: true });
+  if (!bytes || !bytes.equals(encode(header)) || !before.isFile() || before.uid !== 0n || before.nlink !== 1n ||
+      (before.mode & 0o7777n) !== 0o600n || before.dev !== after.dev || before.ino !== after.ino ||
+      before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs) fail();
+  return openHostedDependencyReadySourceLinks(header.ready, { workspace: header.trash.destinationParent, name: header.trash.destinationName,
+    reference: { path, identity: { dev: String(before.dev), ino: String(before.ino) }, sha256: hash(bytes) } });
 }
 function input(binding: HostedDependencyBinding, header: Header, bytes: Uint8Array, sourceLinkSession?: DependencySourceLinkSession): DependencyTreeEffectInput {
   return { workspace: binding.workspace, trash: header.trash, manifestCanonicalBytes: bytes, manifestDigest: header.ready.manifestDigest, limits,
@@ -175,8 +185,14 @@ function renamedEvidence(header: Header): Buffer {
     epoch: header.attempt.epoch, tree: header.ready.tree, trash: header.trash, manifestDigest: header.ready.manifestDigest };
   // Registry v1 bytes remain exact. A local commit also binds the original
   // protected Ready/header, independently of future Ready or Absent revisions.
-  return header.ready.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1
-    ? encode({ ...body, version: 2, headerSha256: hash(encode(header)), sourceBinding: header.ready.provenance.sourceBinding }) : encode(body);
+  if (header.ready.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1)
+    return encode({ ...body, version: 2, headerSha256: hash(encode(header)), sourceBinding: header.ready.provenance.sourceBinding });
+  if (header.ready.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+    const comparison = assertHostedDependencyLegacyComparedReady({ ...header.ready, provenance: header.ready.provenance });
+    if (comparison.version === 2) return encode({ ...body, version: 3, headerSha256: hash(encode(header)),
+      comparisonEvidenceId: header.ready.provenance.comparisonEvidenceId, sourceBinding: comparison.candidateSourceBinding });
+  }
+  return encode(body);
 }
 function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Absent }>): Header {
   const proof = receipt.evictionCommit, bytes = readHostedPrivateBytes(`${operations}/${proof.operationId}.json`, 32768);
@@ -199,9 +215,7 @@ function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Abs
 }
 /** Historical authentication never requires the old tree/stage/current inputs. */
 function authenticateHistoricalReady(ready: Ready): void {
-  if (ready.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
-    assertHostedDependencyLegacyComparedReady({ ...ready, provenance: ready.provenance });
-  }
+  assertHostedDependencyReadySourceHistory(ready);
 }
 function headerPath(attempt: DependencyMaintenanceAttempt): string { return `${operations}/${attempt.operationId}.json`; }
 function validateTrash(trash: DependencyTrashIntent, operationId: string): void {
@@ -217,8 +231,9 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   validateTrash(header.trash, header.attempt.operationId);
   let a = guard(jobId, header.attempt), receipt = readHostedDependencyReceipt(a.binding);
   const { bytes, placement } = await baseline(header.ready), destination = header.trash.destinationParent.canonicalPath + "/" + header.trash.destinationName;
-  const originalLinks = sourceLinks(header), detachedLinks = sourceLinks(header, true);
+  let originalLinks: DependencySourceLinkSession | undefined, detachedLinks: DependencySourceLinkSession | undefined;
   try {
+  originalLinks = sourceLinks(header); detachedLinks = sourceLinks(header, true);
   if (!receipt) fail();
   if (receipt.state === State.Absent && receipt.operationId === header.attempt.operationId) {
     const proof = receipt.evictionCommit, evidence = readHostedPrivateBytes(`${operations}/${header.attempt.operationId}.renamed.json`, 16384);
