@@ -19,6 +19,7 @@ export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReport
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
+import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import {
   CodexModelBackend,
   AppServerExecutionLifetime,
@@ -243,6 +244,7 @@ export async function runCodexGoal(
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
     ...hostedGoalAdmissionIdentity(config),
+    ...codexGoalNativeEgressConfig(config),
     ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
   const providerEgressPolicy = isMimo

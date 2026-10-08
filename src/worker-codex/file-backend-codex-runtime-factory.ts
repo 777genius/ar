@@ -300,7 +300,7 @@ function createCodexAgentDriver(input: {
     throw new Error("hosted_test_egress_engine_unsupported");
   }
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.FullInternetV1 &&
-      (process.platform !== "linux" || !hostedGlobalScanGuard ||
+      (process.platform !== "linux" || !projectReadBoundary ||
        (executionEngine !== "app-server" && executionEngine !== "app-server-goal"))) {
     throw new Error("hosted_permission_profiles_engine_unsupported");
   }
