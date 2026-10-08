@@ -319,15 +319,15 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
   });
   it("forged markers select no research authority; actual service membership cannot take the plain child path", async () => {
     expect(admitResearchRuntime(request())).toBeUndefined();
-    // No global policy ancestry exists in this private initial-root fixture.
-    // A forged marker cannot qualify that absence for the management channel.
+    // Default-OFF admission stays on the API baseline without actual containment.
+    // A forged egress label grants neither its selected profile nor research authority.
     await expect(admitHostedTestEgress({ ...request(), sourceEnv: {
       SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: policy.profileId,
-    } })).rejects.toThrow("hosted_readonly_policy_invalid");
+    } })).resolves.toMatchObject({ profileId: CodexProviderEgressProfileId.ProviderApi });
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
     admitted();
     // The default factory has no captured research ticket and remains closed.
-    expect(() => spawnCodexAppServerProcess({ ...invocation(), env: {} })).toThrow();
+    expect(() => spawnCodexAppServerProcess({ ...invocation(), env: {} })).toThrow("hosted_research_launch_denied");
     expect(host.spawn).not.toHaveBeenCalled();
     await expect(admitHostedTestEgress({ ...request(), executionEngine: "plain-exec" })).rejects.toThrow();
     await expect(admitHostedTestEgress({ ...request(), modelBackend: CodexModelBackend.XiaomiMimoTokenPlan })).rejects.toThrow();
