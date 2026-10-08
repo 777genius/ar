@@ -29,8 +29,11 @@ export { admittedResearchCodexProcessFactory } from "./app-server/adapters/node-
 
 export { AppServerAdmissionError, isAppServerAdmissionError } from "./app-server/application/app-server-admission";
 export { admittedReadonlyCodexProcessFactory } from "./app-server/adapters/node-app-server-process";
+export { admittedDependencyToolCodexProcessFactory } from "./app-server/adapters/node-app-server-process";
 export type { HostedReadonlyMounts } from "./app-server/adapters/hosted-readonly-mounts";
 export { assertHostedProcessDescriptors } from "./app-server/adapters/hosted-process-descriptors";
+export { verifySystemBusInfrastructure } from "./app-server/adapters/system-bus-infrastructure";
+export { verifyPinnedFdCollectorProfile } from "./app-server/adapters/hosted-fd-observation";
 export { withHostedActivationFence, assertHostedActivationFence, assertHostedActivationOperator,
   readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission,
   assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter, retainHostedScopedActorChain, observeHostedScopedActorChildren } from "./app-server/adapters/hosted-process-activation";

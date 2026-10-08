@@ -1,4 +1,5 @@
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
+import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,12 @@ import type {
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
 } from "../application/app-server-process-port";
-import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait } from "./hosted-process-activation";
+import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
+  type HostedActivationFence } from "./hosted-process-activation";
+import { readHostedFdProfile } from "./hosted-fd-observation";
+import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
+import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
+import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
@@ -152,7 +158,8 @@ export function spawnCodexAppServerProcess(input: {
     return submitHostedOrdinaryProcess(input, (unit, identity, fence) => spawnInvocation(input,
       hostedDependencyProviderInvocation(fence, unit, input) ??
       codexAppServerProcessInvocation({ ...input, env: { ...input.env,
-        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit })));
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit }),
+      (child, release) => releaseHostedOrdinaryProcess(child, release)));
   }
   const invocation = codexAppServerProcessInvocation({
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
@@ -164,8 +171,44 @@ export function spawnCodexAppServerProcess(input: {
   return spawnInvocation(input, invocation);
 }
 
+/** Trusted worker composition captures established Ready history. The worker
+ * executor separately brands this exact returned factory; accepting this port
+ * as a public caller option is never sufficient for v2 admission. */
+export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader): CodexAppServerProcessFactory {
+  return input => submitHostedOrdinaryProcess(input, (unit, _identity, fence) => {
+    const invocation = hostedDependencyProviderInvocation(fence, unit, input, readyReader);
+    if (!invocation) throw new Error("hosted_dependency_tool_binding_required");
+    return spawnInvocation(input, invocation, (child, release) => releaseHostedOrdinaryProcess(child, release));
+  });
+}
+
 function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  invocation: CodexAppServerProcessInvocation): CodexAppServerChildProcess {
+  invocation: CodexAppServerProcessInvocation,
+  finalRelease?: (child: CodexAppServerChildProcess, release: (fence: HostedActivationFence, revalidate: () => void) => void) => void): CodexAppServerChildProcess {
+  const fdProfile = invocation.systemdUnit ? readHostedFdProfile() : undefined;
+  if (fdProfile) {
+    if (!finalRelease || !invocation.systemdUnit || invocation.stdinBootstrap === undefined) {
+      throw new Error("hosted_fd_final_authority_required");
+    }
+    let args = invocation.args;
+    if (invocation.command === process.execPath && args[0] === managedLauncherPath) {
+      const request = JSON.parse(args[2]!) as { payload: string[] };
+      request.payload = [...request.payload, "--fd-ready-v1"];
+      args = [args[0]!, args[1]!, JSON.stringify(request)];
+    }
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
+        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+      bindHostedDependencyToolChild(invocation, child);
+    } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
+    hostedSystemdUnits.set(child, invocation.systemdUnit);
+    const guard = hostedFdLaunch(child);
+    void guard.observe().then(() => retryHostedFenceAcquisition(() =>
+      finalRelease(child, (fence, revalidate) => guard.release(fence, invocation.stdinBootstrap!, false, revalidate)), guard.remainingSetupMs()))
+      .catch(() => { guard.invalidate(); invalidateHostedOrdinaryWait(child); signalCodexAppServerChildGroup(child, "SIGTERM"); });
+    return child;
+  }
   const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     env: input.env,
@@ -185,6 +228,7 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
 export function admittedReadonlyCodexProcessFactory(
   policy: HostedReadonlyMounts,
   submitSystemdUnit?: (unit: string, submit: () => CodexAppServerChildProcess) => CodexAppServerChildProcess,
+  finalRelease?: (unit: string, child: CodexAppServerChildProcess, release: (fence: HostedActivationFence, revalidate: () => void) => void) => void,
 ): CodexAppServerProcessFactory {
   hostedReadonlyMountProperties(policy);
   const mounts = Object.freeze({
@@ -196,7 +240,12 @@ export function admittedReadonlyCodexProcessFactory(
     if (!submitSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
     const unit = `subscription-runtime-hosted-${randomUUID()}.service`;
     const ticket = {};
-    const submit = () => spawnCodexAppServerProcess(input, mounts, unit, ticket);
+    const submit = () => {
+      if (!readHostedFdProfile()) return spawnCodexAppServerProcess(input, mounts, unit, ticket);
+      if (!finalRelease || !hostedSubmissions.delete(ticket)) throw new Error("hosted_fd_final_authority_required");
+      const invocation = codexAppServerProcessInvocation({ ...input, systemdUnit: unit }, mounts);
+      return spawnInvocation(input, invocation, (child, release) => finalRelease(unit, child, release));
+    };
     hostedSubmissions.add(ticket);
     try { return submitSystemdUnit(unit, submit); }
     finally { hostedSubmissions.delete(ticket); }

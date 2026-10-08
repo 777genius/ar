@@ -1,6 +1,6 @@
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
-import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
+import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory } from "./hosted-readonly-admission";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { readAdmittedHostedDependencyToolConfig } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
@@ -84,6 +84,9 @@ export function createFileBackendCodexWorkerRuntime(input: {
   readonly clock: ClockPort;
 }): FileBackendCodexWorkerRuntimeParts {
   const { options } = input;
+  // A v2 caller cannot construct adapters through a substituted public process
+  // factory. Actual protected ordinary origin, not options, selects this gate.
+  assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   const runners = createWorkerRunners({
     options,
     workerId: input.workerId,
@@ -265,6 +268,7 @@ function createCodexAgentDriver(input: {
   const hostedGlobalScanGuard =
     sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
   const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
+  assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath);
   if (dependencyToolConfig && (!hostedGlobalScanGuard || executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_dependency_tool_engine_unsupported");

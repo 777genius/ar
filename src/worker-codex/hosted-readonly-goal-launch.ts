@@ -7,6 +7,7 @@ import { runHostedReadonlyForeground, runHostedRuntimeForeground } from "./hoste
 import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { requiresHostedProcessAdmission } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedInstallationActivationStore, isHostedOrdinaryRuntime, readHostedInstallationActivation } from "./hosted-installation-activation";
+import { hostedForegroundExitCode } from "./hosted-foreground-result";
 
 export function isHostedGoalLaunch(input: CodexGoalLaunchInput): boolean {
   return requiresHostedProcessAdmission(input.config.sourceEnv ?? process.env);
@@ -23,7 +24,7 @@ export async function routeHostedGoalLaunch(input: CodexGoalLaunchInput, lifecyc
     if (readHostedInstallationActivation().activation.phase === HostedActivationPhase.Ordinary) {
       const [command, ...args] = buildCodexGoalForegroundArgv(input, lifecycle);
       if (!command) throw new Error("hosted_custody_runtime_command_required");
-      return runHostedRuntimeForeground(command, args, input.cwd, input.config.sourceEnv ?? process.env);
+      return hostedForegroundExitCode(await runHostedRuntimeForeground(command, args, input.cwd, input.config.sourceEnv ?? process.env));
     }
     const host = new HostedReadonlySupervisorHost();
     if (host.runtimeRole() === HostedReadonlyRuntimeRole.Supervisor) {
@@ -32,7 +33,7 @@ export async function routeHostedGoalLaunch(input: CodexGoalLaunchInput, lifecyc
           identity.workspacePath !== config.workspacePath) throw new Error("hosted_custody_runtime_identity_mismatch");
       const [command, ...args] = buildCodexGoalForegroundArgv(input, lifecycle);
       if (!command) throw new Error("hosted_custody_runtime_command_required");
-      return await runHostedReadonlyForeground(command, args, input.cwd, input.config.sourceEnv ?? process.env);
+      return hostedForegroundExitCode(await runHostedReadonlyForeground(command, args, input.cwd, input.config.sourceEnv ?? process.env));
     }
   }
   await admitHostedControllerLaunch(input);

@@ -57,7 +57,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   const stream = proxy.stdout;
   if (!stream) researchInvalid();
   const expected = Buffer.from("subscription-runtime-research-provider-ready-v1\n");
-  let received = 0, failed = false, readyDeadline = deadline;
+  let received = 0, failed = false;
   let refusal: Error | undefined;
   let observation: ResearchDenialObservation | undefined;
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
@@ -74,20 +74,17 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   };
   const check = (): boolean => {
     if (failed) return false;
-    try { assertPermission(); if (performance.now() >= readyDeadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
+    try { assertPermission(); if (performance.now() >= deadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
     catch (error) { denied(error); return false; }
     return true;
   };
   const onData = (chunk: Buffer): void => {
-    const observedAt = performance.now();
     if (!check()) return;
     // Match a bounded prefix without accumulating stream data. Every byte
     // after the exact frame is forbidden while bootstrap is still held.
     if (received + chunk.length > expected.length || !expected.subarray(received, received + chunk.length).equals(chunk)) { denied(); return; }
     received += chunk.length;
     if (received === expected.length) {
-      // The fixed launcher allows ten seconds to receive bootstrap after ready.
-      readyDeadline = Math.min(deadline, observedAt + 10_000);
       resolveReady();
     }
   };

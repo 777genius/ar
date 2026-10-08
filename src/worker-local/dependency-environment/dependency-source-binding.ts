@@ -8,7 +8,10 @@ import { DependencyInstallProofKind, sameDependencyTree, sameDependencyWorkspace
   type DependencySourceBindingReference, type DependencyWorkspaceIdentity, type DependencyProofBinding } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import type { DependencyLogicalSourceLink } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import type { DependencyCompletedLocalReady, DependencyLocalInstallProofVerifier, DependencySourceBindingCompletionVerifier,
-  DependencySourceBindingOutputVerifier, DependencySourceBindingRecord, DependencySourceDirectoryPin } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
+  DependencySourceBindingOutputVerifier, DependencySourceBindingRecord, DependencySourceBindingRecordV1, DependencySourceBindingOutputBody,
+  DependencyLocalOutputEvidence, DependencySourceDirectoryPin } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
+import { assertDependencySourceBindingRecord, assertDependencyOutputReference, assertDependencyLocalOutputEvidence,
+  encodeDependencySourceBindingOutputBody } from "../../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import { NpmInputCaptureStatus } from "./capture-npm-install-inputs";
 import { NpmLocalPinKind, revalidateNpmLocalClosure, type QualifiedNpmLocalInputs } from "./capture-npm-local-closure";
 
@@ -190,53 +193,84 @@ export function openCapturedDependencySourceLinks(capture: QualifiedNpmLocalInpu
 }
 
 export function capturedDependencySourceBinding(capture: QualifiedNpmLocalInputs, binding: DependencyProofBinding,
-  installerCompletionSha256: string): DependencySourceBindingRecord {
+  installerCompletionSha256: string): DependencySourceBindingRecordV1 {
   if (!sameDependencyWorkspace(capture.workspace, binding.workspace) ||
       revalidateNpmLocalClosure({ capture, maxDurationMs: 10000 }).status !== NpmInputCaptureStatus.Qualified) fail(DependencySourceBindingFailure.Changed);
-  const record: DependencySourceBindingRecord = { ...structuredClone(binding), version: 1,
+  const record: DependencySourceBindingRecordV1 = { ...structuredClone(binding), version: 1,
     profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1, operationId: binding.generation,
     installerCompletionSha256, closureDigest: capture.closureDigest, sourceLinks: links(capture), directories: directoryPins(capture),
     ancestors: capture.ancestorPins.map(({ path, dev, ino, mode, mountId }) => ({ path, dev, ino, mode, mountId })) };
   validateRecord(record); return immutable(record);
 }
 
-function exact(value: unknown, fields: readonly string[]): boolean {
-  return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
-}
 function validateRecord(value: DependencySourceBindingRecord): void {
-  if (!value || !exact(value, ["version", "profile", "generation", "workspace", "coverageRevision", "installKey", "tree", "manifestDigest", "operationId",
-      "installerCompletionSha256", "closureDigest", "sourceLinks", "directories", "ancestors"]) || value.version !== 1 ||
-      value.profile !== DependencyInstallProfile.TestNpmLocalNoLifecycleV1 || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.generation) ||
-      value.operationId !== value.generation || !exact(value.workspace, ["canonicalPath", "dev", "ino"]) || !exact(value.tree, ["dev", "ino"]) ||
-      !canonical(value.workspace.canonicalPath) || value.workspace.canonicalPath === "/" || typeof value.coverageRevision !== "string" ||
-      !value.coverageRevision.length || value.coverageRevision.trim() !== value.coverageRevision || value.coverageRevision.length > 1024 || /[\x00-\x1f\x7f]|sk-[A-Za-z0-9_-]{12,}|Bearer\s/i.test(value.coverageRevision) ||
-      ![value.installKey, value.manifestDigest, value.installerCompletionSha256, value.closureDigest].every(digest) ||
-      ![value.workspace.dev, value.workspace.ino, value.tree.dev, value.tree.ino].every(decimal) ||
-      !Array.isArray(value.sourceLinks) || !Array.isArray(value.directories) || !Array.isArray(value.ancestors) ||
-      value.sourceLinks.length > 128 || value.directories.length > 512 || value.ancestors.length > 512) fail();
-  const pins = [...value.ancestors, ...value.directories];
-  for (const pin of pins) if (!exact(pin, ["path", "dev", "ino", "mode", "mountId"]) ||
-      ![pin.dev, pin.ino, pin.mode, pin.mountId].every(decimal)) fail();
-  if (!value.directories.some(pin => pin.path === "") || new Set(pins.map(pin => pin.path)).size !== pins.length) fail();
-  if (value.ancestors.some(pin => !canonical(pin.path)) || value.directories.some(pin => !coordinate(pin.path))) fail();
-  const ancestry = ["/"]; let ancestor = "";
-  for (const part of value.workspace.canonicalPath.split("/").filter(Boolean).slice(0, -1)) { ancestor += "/" + part; ancestry.push(ancestor); }
-  if (value.ancestors.length !== ancestry.length || ancestry.some(path => !value.ancestors.some(pin => pin.path === path)) ||
-      pins.some(pin => (BigInt(pin.mode) & 0o170000n) !== 0o40000n || BigInt(pin.ino) === 0n || BigInt(pin.mountId) === 0n)) fail();
-  for (const pin of value.directories) if (pin.path && !value.directories.some(parent => parent.path === (pin.path.includes("/") ? posix.dirname(pin.path) : ""))) fail();
-  for (const link of value.sourceLinks) if (!exact(link, ["path", "target", "sourcePath", "packageManifestSha256", "closureDigest"]) ||
-      !Array.isArray(link.path) || !coordinate(link.sourcePath) || !link.sourcePath || !digest(link.packageManifestSha256) || link.closureDigest !== value.closureDigest ||
-      typeof link.target !== "string" || Buffer.from(link.target, "base64").toString("base64") !== link.target ||
-      !value.directories.some(pin => pin.path === link.sourcePath)) fail();
-  for (const link of value.sourceLinks) {
-    const parts = link.path.map((part: unknown) => { if (typeof part !== "string" || part.length > 1024) fail(); const bytes = Buffer.from(part, "base64");
-      if (!bytes.length || bytes.toString("base64") !== part || bytes.includes(47) || bytes.includes(0)) fail();
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes); });
-    const installed = "node_modules/" + parts.join("/");
-    if (!/^node_modules\/(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(installed) ||
-        Buffer.from(posix.relative(posix.dirname(installed), link.sourcePath)).toString("base64") !== link.target) fail();
-  }
-  if (new Set(value.sourceLinks.map(link => JSON.stringify(link.path))).size !== value.sourceLinks.length) fail();
+  try { assertDependencySourceBindingRecord(value); } catch { fail(); }
+}
+
+/** Derived body only. Does not issue a protected reference or install proof. */
+export function capturedDependencySourceBindingOutputBody(capture: QualifiedNpmLocalInputs, binding: DependencyProofBinding,
+  installerCompletionSha256: string): DependencySourceBindingOutputBody {
+  const record = capturedDependencySourceBinding(capture, binding, installerCompletionSha256);
+  const body = { ...record, version: 2 as const }; encodeDependencySourceBindingOutputBody(body); return immutable(body);
+}
+
+/** Retained private-file facts for trusted composition. These bytes alone do
+ * not authenticate a producer/completion; production additionally fixes root,
+ * operator identity and all execution/manifest custody. No file is created. */
+export function readDependencyProtectedReference(reference: DependencySourceBindingReference,
+  custodyRoot: DependencyWorkspaceIdentity, expectedUid: bigint): Buffer {
+  assertDependencyOutputReference(reference);
+  if (!canonical(custodyRoot.canonicalPath) || custodyRoot.canonicalPath === "/" || expectedUid < 0n ||
+      !reference.path.startsWith(custodyRoot.canonicalPath + "/")) fail(DependencySourceBindingFailure.OutputProof);
+  const handles: Retained[] = []; let fd: number | undefined;
+  try {
+    let parent = retain("/", handles); let protectedParent = false, custodyMount = "";
+    for (const part of dirname(reference.path).split("/").filter(Boolean)) {
+      parent = retain(parent.path === "/" ? "/" + part : parent.path + "/" + part, handles, parent.fd, part);
+      if (parent.path === custodyRoot.canonicalPath) {
+        if (!sameDependencyTree(custodyRoot, { dev: String(parent.before.dev), ino: String(parent.before.ino) })) fail(DependencySourceBindingFailure.OutputProof);
+        protectedParent = true; custodyMount = parent.mountId;
+      }
+      if (protectedParent && (parent.before.uid !== expectedUid || (parent.before.mode & 0o7777n) !== 0o700n || parent.mountId !== custodyMount)) fail(DependencySourceBindingFailure.OutputProof);
+    }
+    if (!protectedParent) fail(DependencySourceBindingFailure.OutputProof);
+    checkRetained(handles);
+    fd = openSync(at(parent.fd, reference.path.slice(reference.path.lastIndexOf("/") + 1)), fileFlags);
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.uid !== expectedUid || (before.mode & 0o7777n) !== 0o600n ||
+        before.size < 1n || before.size > 65536n || mount(fd) !== parent.mountId ||
+        String(before.dev) !== reference.identity.dev || String(before.ino) !== reference.identity.ino) fail(DependencySourceBindingFailure.OutputProof);
+    const bytes = boundedBytes(fd, 65536), after = fstatSync(fd, { bigint: true }), named = lstatSync(at(parent.fd, reference.path.slice(reference.path.lastIndexOf("/") + 1)), { bigint: true });
+    if (BigInt(bytes.length) !== before.size || !same(before, after) || before.uid !== after.uid || before.size !== after.size || before.nlink !== after.nlink ||
+        before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || !same(before, named) || before.uid !== named.uid || named.nlink !== 1n || sha(bytes) !== reference.sha256) fail(DependencySourceBindingFailure.OutputProof);
+    const fresh = openSync(at(parent.fd, reference.path.slice(reference.path.lastIndexOf("/") + 1)), fileFlags);
+    try {
+      const namedStat = fstatSync(fresh, { bigint: true });
+      if (!same(before, namedStat) || before.uid !== namedStat.uid || namedStat.nlink !== 1n || mount(fresh) !== custodyMount || mount(fd) !== custodyMount) fail(DependencySourceBindingFailure.OutputProof);
+    } finally { closeSync(fresh); }
+    checkRetained(handles);
+    for (const item of handles) if (item.path === custodyRoot.canonicalPath || item.path.startsWith(custodyRoot.canonicalPath + "/")) {
+      if (fstatSync(item.fd, { bigint: true }).uid !== expectedUid) fail(DependencySourceBindingFailure.OutputProof);
+    }
+    return bytes;
+  } finally { try { if (fd !== undefined) closeSync(fd); } finally { close(handles); } }
+}
+
+/** Exact relation between an already authenticated evidence record and claim.
+ * This function neither authenticates the file nor proves who issued it. */
+export function assertDependencyLocalOutputBinding(record: DependencySourceBindingRecord, evidence: DependencyLocalOutputEvidence): void {
+  validateRecord(record); assertDependencyLocalOutputEvidence(evidence);
+  if (record.version !== 2) fail(DependencySourceBindingFailure.OutputProof);
+  const { outputReference, ...body } = record;
+  const directory = dirname(evidence.start.path);
+  if (outputReference.path !== `${directory}/verified-local-output.json` || evidence.start.path !== `${directory}/start.json` ||
+      evidence.creator.path !== `${directory}/creator.json` || evidence.completion.path !== `${directory}/creator-completion.json` ||
+      evidence.terminal.path !== `${directory}/terminal.json`) fail(DependencySourceBindingFailure.OutputProof);
+  if (evidence.profile !== record.profile || evidence.generation !== record.generation || evidence.operationId !== record.operationId ||
+      !sameDependencyWorkspace(evidence.workspace, record.workspace) || evidence.coverageRevision !== record.coverageRevision ||
+      evidence.installKey !== record.installKey || evidence.closureDigest !== record.closureDigest || !sameDependencyTree(evidence.tree, record.tree) ||
+      evidence.manifestDigest !== record.manifestDigest || evidence.completion.sha256 !== record.installerCompletionSha256 ||
+      sha(Buffer.from(encodeDependencySourceBindingOutputBody(body))) !== evidence.verifiedBindingSha256) fail(DependencySourceBindingFailure.OutputProof);
 }
 
 /** Trusted private-record adapter. Independent protected output evidence and
