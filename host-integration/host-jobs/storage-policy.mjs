@@ -1,8 +1,16 @@
 import { lstat, stat, statfs, realpath, open, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
+import { release } from 'node:os';
+import { requireTrustedExecutable } from '../managed-launcher/profiles.mjs';
 
 export const MANAGED_STORAGE_ROOT_CONFIG = '/etc/subscription-runtime/storage-root';
+export const MANAGED_STORAGE_LIFETIME_CONFIG = '/etc/subscription-runtime/storage-lifetime-pin-v1.json';
+export const MANAGED_STORAGE_LIFETIME_KIND = 'fd-openfile-bind-v1';
+const execute = promisify(execFile);
 export const MINIMUM_FREE_BYTES = 5368709120n;
 export const MINIMUM_FREE_INODES = 50000n;
 const LIMIT = 16384;
@@ -32,13 +40,18 @@ export async function requireFinalJobStorage({ cwd, jobId, env = process.env, pr
   return Object.freeze({ layout, device: job.dev });
 }
 
-export async function prepareManagedJobLayout(jobId, { configPath = MANAGED_STORAGE_ROOT_CONFIG, probe = storageProbe, create = mkdir,
-  openDirectory = path => open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), expectedUid = 0n } = {}) {
+export async function prepareManagedJobLayout(jobId, options = {}) {
+  const admission = await prepareAnchoredLayout(jobId, options, false);
+  return admission.layout;
+}
+async function prepareAnchoredLayout(jobId, { configPath = MANAGED_STORAGE_ROOT_CONFIG, probe = storageProbe, create = mkdir,
+  openDirectory = path => open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), expectedUid = 0n } = {}, retain = false) {
   const config = await loadManagedStorageRoot(configPath, probe, expectedUid);
   const layout = deriveManagedJobLayout(config.storageRoot, jobId);
   const root = await probe.stat(config.storageRoot);
   if (root.dev === (await probe.stat('/')).dev) throw denied('root filesystem forbidden');
   const handles = new Map();
+  let retained;
   const validate = metadata => {
     if (!metadata.isDirectory() || metadata.dev !== root.dev || metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n) throw denied('unsafe anchored directory');
   };
@@ -71,14 +84,147 @@ export async function prepareManagedJobLayout(jobId, { configPath = MANAGED_STOR
       validate(pinned);
       if (visible.isSymbolicLink() || visible.dev !== pinned.dev || visible.ino !== pinned.ino) throw denied('layout changed');
     }
-  } finally { await Promise.all([...handles.values()].map(handle => handle.close())); }
-  return layout;
+    if (retain) retained = { layout, handles };
+  } finally { if (!retained) await Promise.all([...handles.values()].map(handle => handle.close())); }
+  return retained ?? { layout };
 }
+
+/** Protected files and root-only configuration are host composition, never job data. */
+export async function readManagedPinFile(path, limit = 65536, privateLeaf = true) {
+  for (let current = path; ; current = dirname(current)) {
+    const info = await lstat(current);
+    if (info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) ||
+        (current === path ? !info.isFile() || info.nlink !== 1 || (privateLeaf && (info.mode & 0o077)) : !info.isDirectory())) throw denied('untrusted pin artifact');
+    if (current === '/') break;
+  }
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.uid !== 0n || before.nlink !== 1n || (before.mode & (privateLeaf ? 0o077n : 0o022n)) ||
+        before.size > BigInt(limit)) throw denied('pin artifact invalid');
+    const bytes = await handle.readFile(), after = await handle.stat({ bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.ctimeNs !== after.ctimeNs ||
+        bytes.length !== Number(before.size)) throw denied('pin artifact changed');
+    return bytes;
+  } finally { await handle.close(); }
+}
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+export async function managedPinRuntimeDigest() {
+  const files = ['../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs',
+    './storage-policy.mjs', './contract.mjs', './manager.mjs'];
+  const rows = [];
+  for (const file of files) rows.push([file, digest(await readManagedPinFile(new URL(file, import.meta.url).pathname, 1024 * 1024, false))]);
+  return digest(JSON.stringify(rows));
+}
+/** Absent by default. Installation never manufactures this native qualification. */
+export async function requireManagedPinCapability(machineId, { path = MANAGED_STORAGE_LIFETIME_CONFIG, run = execute } = {}) {
+  let bytes;
+  try { bytes = await readManagedPinFile(path); }
+  catch (error) { if (error.code === 'ENOENT') throw denied('storage lifetime unsupported: no native qualification'); throw error; }
+  const value = JSON.parse(bytes.toString('utf8'));
+  if (!value || Object.keys(value).sort().join(',') !== 'blockSource,filesystemRoot,filesystemUuid,kernelRelease,kind,machineId,mountVersion,nativeQualificationSha256,nodeVersion,runtimeSha256,schemaVersion,storageRoot,systemdVersion' ||
+      value.schemaVersion !== 1 || value.kind !== MANAGED_STORAGE_LIFETIME_KIND || value.machineId !== machineId ||
+      !/^[a-f0-9]{32}$/.test(value.machineId) || !/^[a-f0-9]{64}$/.test(value.nativeQualificationSha256) ||
+      value.runtimeSha256 !== await managedPinRuntimeDigest() || typeof value.systemdVersion !== 'string' ||
+      value.kernelRelease !== release() || value.nodeVersion !== process.version ||
+      typeof value.mountVersion !== 'string' || !value.mountVersion.startsWith('mount from util-linux 2.39.3') ||
+      !/^systemd 255 /.test(value.systemdVersion) || !/^\/dev\/[A-Za-z0-9]+$/.test(value.blockSource) ||
+      !/^[a-f0-9-]{36}$/.test(value.filesystemUuid) || value.filesystemRoot !== '/' ||
+      typeof value.storageRoot !== 'string' || resolve(value.storageRoot) !== value.storageRoot || value.storageRoot === '/') throw denied('storage lifetime capability mismatch');
+  const options = { timeout: 5000, maxBuffer: 65536, encoding: 'utf8' };
+  for (const executable of ['/usr/bin/systemctl', '/usr/bin/mount', '/usr/sbin/blkid']) await requireTrustedExecutable(executable);
+  if ((await run('/usr/bin/systemctl', ['--version'], options)).stdout.split('\n')[0] !== value.systemdVersion ||
+      (await run('/usr/bin/mount', ['--version'], options)).stdout.split('\n')[0] !== value.mountVersion ||
+      (await run('/usr/sbin/blkid', ['-p', '-s', 'UUID', '-o', 'value', value.blockSource], options)).stdout.trim() !== value.filesystemUuid) throw denied('storage lifetime host mismatch');
+  return Object.freeze({ ...value, capabilitySha256: digest(bytes) });
+}
+function pinMounts(text) {
+  if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MOUNT_LIMIT) throw denied('invalid pin mount table');
+  const lines = text.trimEnd().split('\n');
+  if (lines.length > 32768) throw denied('pin mount row budget');
+  const ids = new Set();
+  return lines.map(line => {
+    const f = line.split(' '), split = f.indexOf('-');
+    if (split < 6 || f.length !== split + 4 || !/^[1-9][0-9]*$/.test(f[0]) || ids.has(f[0]) || !/^\d+:\d+$/.test(f[2])) throw denied('invalid pin mount table');
+    ids.add(f[0]);
+    const decode = value => value.replace(/\\(040|011|012|134)/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+    const root = decode(f[3]), target = decode(f[4]);
+    if (!isAbsolute(root) || resolve(root) !== root || !isAbsolute(target) || resolve(target) !== target) throw denied('invalid pin mount table');
+    return { id: f[0], device: f[2], root, target, options: f[5].split(','), optional: f.slice(6, split),
+      type: f[split + 1], source: decode(f[split + 2]), superOptions: f[split + 3].split(',') };
+  });
+}
+const within = (value, root) => value === root || value.startsWith(root.endsWith('/') ? root : root + '/');
+const writableMount = record => record.options.includes('rw') && !record.options.includes('ro') &&
+  record.superOptions.includes('rw') && !record.superOptions.includes('ro');
+async function fdMountId(fd) {
+  const handle = await open(`/proc/self/fdinfo/${fd}`, constants.O_RDONLY);
+  try {
+    const bytes = await handle.readFile();
+    if (bytes.length > 65536) throw denied('invalid pin descriptor');
+    const matches = [...bytes.toString('utf8').matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gm)];
+    if (matches.length !== 1) throw denied('invalid pin descriptor');
+    return matches[0][1];
+  } finally { await handle.close(); }
+}
+/** Actual retained directory descriptor, kept by the independently owned issuer. */
+export async function captureManagedStoragePin(jobId, capability, options = {}) {
+  const admission = await prepareAnchoredLayout(jobId, options, true);
+  const close = async () => { await Promise.all([...admission.handles.values()].map(handle => handle.close())); };
+  try {
+    const handle = admission.handles.get(admission.layout.jobRoot), metadata = await handle.stat({ bigint: true });
+    const mounts = pinMounts(await (options.probe ?? storageProbe).readMountInfo());
+    // The selected mount is identified by the opened descriptor, never longest path.
+    const mountId = await (options.fdMountId ?? fdMountId)(handle.fd);
+    const backing = mounts.find(record => record.id === mountId);
+    if (!backing || admission.layout.storageRoot !== capability.storageRoot || !within(admission.layout.jobRoot, backing.target) ||
+        backing.source !== capability.blockSource || backing.root !== capability.filesystemRoot || backing.type !== 'ext4' || !writableMount(backing)) throw denied('pin backing mismatch');
+    const [major, minor] = backing.device.split(':').map(BigInt);
+    const mountDevice = ((major & 0xfffn) << 8n) | (minor & 0xffn) | ((minor & ~0xffn) << 12n) | ((major & ~0xfffn) << 32n);
+    if (mountDevice !== metadata.dev) throw denied('pin mount device mismatch');
+    const filesystemRoot = resolve(backing.root, relative(backing.target, admission.layout.jobRoot));
+    for (const record of mounts) {
+      if (record.id === backing.id) continue;
+      if (within(record.target, admission.layout.jobRoot) || (record.device === backing.device &&
+          (within(record.root, filesystemRoot) || within(filesystemRoot, record.root)))) throw denied('pin alias or nested mount unsupported');
+    }
+    const witness = Object.freeze({ device: metadata.dev.toString(), inode: metadata.ino.toString(), filesystemRoot,
+      blockSource: backing.source, filesystemUuid: capability.filesystemUuid, mountDevice: backing.device,
+      capabilitySha256: capability.capabilitySha256, jobRoot: admission.layout.jobRoot });
+    return Object.freeze({ layout: admission.layout, handle, witness, close });
+  } catch (error) { await close(); throw error; }
+}
+/** Runs before any logs or payload writes, in the acquired service namespace. */
+export async function requireAcquiredStoragePin(witness, probe = storageProbe,
+  { openDirectory = path => open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), readMountId = fdMountId } = {}) {
+  if (!witness || Object.keys(witness).sort().join(',') !== 'blockSource,capabilitySha256,device,filesystemRoot,filesystemUuid,inode,jobRoot,mountDevice' ||
+      !/^[1-9][0-9]*$/.test(witness.device) || !/^[1-9][0-9]*$/.test(witness.inode)) throw denied('invalid acquired pin witness');
+  const info = await probe.stat(witness.jobRoot);
+  if (info.dev.toString() !== witness.device || info.ino.toString() !== witness.inode || info.dev === (await probe.stat('/')).dev) throw denied('acquired pin identity mismatch');
+  const anchor = await openDirectory(witness.jobRoot);
+  let record, records;
+  try {
+    const opened = await anchor.stat({ bigint: true });
+    if (opened.dev !== info.dev || opened.ino !== info.ino) throw denied('acquired pin changed');
+    records = pinMounts(await probe.readMountInfo());
+    const mountId = await readMountId(anchor.fd);
+    record = records.find(value => value.id === mountId);
+  } finally { await anchor.close(); }
+  if (!record || record.target !== witness.jobRoot) throw denied('acquired pin mount ambiguous');
+  if (record.root !== witness.filesystemRoot || record.source !== witness.blockSource || record.device !== witness.mountDevice ||
+      record.type !== 'ext4' || !writableMount(record) || record.optional.some(value => /^(shared|master|propagate_from):/.test(value))) throw denied('acquired pin provenance mismatch');
+  if (records.some(value => value.target !== witness.jobRoot && within(value.target, witness.jobRoot))) throw denied('acquired pin nested mount unsupported');
+  return Object.freeze({ mountId: record.id, device: witness.device, inode: witness.inode });
+}
+/** Storage admission compares canonical string paths, not binary filenames.
+ * @param {string} path
+ */
+async function canonicalStoragePath(path) { return realpath(path); }
 export const storageProbe = {
   lstat: path => lstat(path, { bigint: true }),
   stat: path => stat(path, { bigint: true }),
   statfs: path => statfs(path, { bigint: true }),
-  realpath,
+  realpath: canonicalStoragePath,
   async readMountInfo() {
     const handle = await open('/proc/self/mountinfo', constants.O_RDONLY);
     try {
