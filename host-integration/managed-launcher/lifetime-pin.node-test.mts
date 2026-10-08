@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import type { BigIntStats } from 'node:fs';
+import type { BigIntStats, BigIntStatsFs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -223,7 +223,10 @@ async function physicalPinFixture() {
     stat: async (path: string) => Object.assign(await lstat(physical(path), { bigint: true }),
       path === '/' ? { dev: storage.dev ^ 1n } : {}),
     realpath: async (path: string) => await realpath(physical(path)) === physical(path) ? path : 'TEST-noncanonical',
-    statfs: async () => ({ bavail: 5368709120n, bsize: 1n, ffree: 50000n }),
+    statfs: async (): Promise<BigIntStatsFs> => ({
+      type: 0xef53n, bsize: 1n, blocks: 5368709120n, bfree: 5368709120n,
+      bavail: 5368709120n, files: 50000n, ffree: 50000n,
+    }),
     readStorageRoot: (path: string) => readFile(physical(path), 'utf8'), readMountInfo: async () => mounts,
   };
   return { handles, probe, base, device, setMounts: (text: string) => { mounts = text; },
