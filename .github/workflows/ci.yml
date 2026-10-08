@@ -138,7 +138,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-probe-source-checks
-          path: /native-probe-source-workspace/source/delivery/a0-native-probe/source-check-*.json
+          path: |
+            /native-probe-source-workspace/source/delivery/a0-native-probe/source-check-*.json
+            /native-probe-source-workspace/source/delivery/a0-native-probe/*.stdout
+            /native-probe-source-workspace/source/delivery/a0-native-probe/*.stderr
+            /native-probe-source-workspace/tmp/sr-native-probe-contract-*
           if-no-files-found: error
 
   crash-boundary-shards:
