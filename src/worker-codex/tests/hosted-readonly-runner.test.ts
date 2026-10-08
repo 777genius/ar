@@ -12,11 +12,15 @@ import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fa
 import { codexAuthJsonForAccount, StaticRunner } from "./file-backend-codex-worker-test-support";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedCustodyPhase, HostedCustodyRequirement, parseHostedCustodyEpoch, type HostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
-import { completionPath } from "../hosted-readonly-host-kernel";
+import { completionPath, HostedReadonlyHostKernel } from "../hosted-readonly-host-kernel";
 import { parseHostedReadonlyPolicy } from "../hosted-readonly-inputs";
 
 const runtimeDirectory = fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
-const inventoryBytes = () => Buffer.from(JSON.stringify({ schemaVersion: 2, hostId: facts.epoch!.hostId, ordinaryCreators: [] }));
+const session = { hostId: "a".repeat(32), bootId: "11111111-1111-4111-8111-111111111111", supervisorId: "123:456" };
+const inventoryBytes = () => Buffer.from(JSON.stringify({ schemaVersion: 2, hostId: session.hostId,
+  supervisorUnit: "trusted.service", units: [{ name: "trusted.service", controlGroup: "/system.slice/trusted.service",
+    fragmentSha256: "d".repeat(64) }], ordinaryCreators: [], disabledCreators: [],
+  runtimeLaunch: { command: "/runtime/node", args: ["/runtime/cli.js"], cwd: "/synthetic/W" } }));
 
 // Synthetic authority at filesystem/custody boundaries. Admission, runner,
 // safe executor, account factories, egress wrapper and node adapter are real.
@@ -70,30 +74,24 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
     publishEpoch(epoch: HostedCustodyEpoch) { facts.epoch = parseHostedCustodyEpoch(epoch); }
   },
 }));
-vi.mock("../hosted-readonly-host-kernel", async original => ({
-  ...await original<typeof import("../hosted-readonly-host-kernel")>(),
-  readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()),
-}));
+// Keep the real class identity throughout cyclic host composition. Substitute
+// only this fixture's existing synthetic OS boundaries after module loading;
+// the inventory parser and admission/activation decisions remain real.
+beforeEach(() => {
+  facts.session.mockReturnValue(session);
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "session").mockImplementation(facts.session);
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyRuntimeOwner").mockImplementation(() => {});
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyExclusiveInventory").mockImplementation(() => {});
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyDescriptorBoundary").mockImplementation(() => {});
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "fenceCreator").mockImplementation(reservation => {
+    if (!facts.records.has(completionPath(reservation))) throw new Error("creator_not_fenced");
+  });
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "drainQueuedStart").mockImplementation(() => {});
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "confirmTerminalDescendants").mockImplementation(() => {});
+});
 vi.mock("node:child_process", async original => ({
   ...await original<typeof import("node:child_process")>(), spawn: facts.spawn, spawnSync: facts.stop,
 }));
-beforeEach(async () => {
-  // Partial-module imports can capture this real class through the research /
-  // supervisor cycle. Keep that class and replace only this fixture's finite
-  // OS observations on its actual prototype, including already-created instances.
-  const { HostedReadonlyHostKernel } = await vi.importActual<typeof import("../hosted-readonly-host-kernel")>("../hosted-readonly-host-kernel");
-  const prototype = HostedReadonlyHostKernel.prototype;
-  facts.session.mockReturnValue({ hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor" });
-  vi.spyOn(prototype, "session").mockImplementation(facts.session);
-  vi.spyOn(prototype, "verifyRuntimeOwner").mockImplementation(() => {});
-  vi.spyOn(prototype, "verifyExclusiveInventory").mockImplementation(() => {});
-  vi.spyOn(prototype, "verifyDescriptorBoundary").mockImplementation(() => {});
-  vi.spyOn(prototype, "fenceCreator").mockImplementation(reservation => {
-    if (!facts.records.has(completionPath(reservation))) throw new Error("creator_not_fenced");
-  });
-  vi.spyOn(prototype, "drainQueuedStart").mockImplementation(() => {});
-  vi.spyOn(prototype, "confirmTerminalDescendants").mockImplementation(() => {});
-});
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
@@ -120,7 +118,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
     workspacePath: config.workspacePath, profileId: CodexProviderEgressProfileId.TestManagedQualification };
   facts.records.clear();
   facts.epoch = parseHostedCustodyEpoch({ schemaVersion: 1,
-    hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor",
+    ...session,
     outerRuntime: null, generation: 1, requirement: HostedCustodyRequirement.TestManagedQualification,
     phase: HostedCustodyPhase.Ready, revoked: false, reservations: [],
     identity: { jobId: policy.jobId, jobRootDir: policy.jobRootDir, workspacePath: policy.workspacePath,

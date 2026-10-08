@@ -1,7 +1,9 @@
-import { closeSync, constants, fchownSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fchownSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, renameSync, type BigIntStats } from "node:fs";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyManifestEntryKind as Kind,
   DependencyTreeObservationStatus, type DependencyCapturedTreeObservation, type DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/worker-core";
 import { hostedDependencyInstallerUid } from "./hosted-dependency-installer-identity";
+import { encodeDependencyTreeManifest } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
+import { readDependencySourceLinkSession, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 
 type Complete = Extract<DependencyCapturedTreeObservation, { status: DependencyTreeObservationStatus.Complete }>;
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -23,13 +25,18 @@ function openRoot(workspace: DependencyWorkspaceIdentity): number {
   if (!same(fstatSync(fd, { bigint: true }), workspace)) { closeSync(fd); fail(); }
   return fd;
 }
+function canonicalLinks(observation: Complete, session?: DependencySourceLinkSession): void {
+  const links = session ? readDependencySourceLinkSession(session, observation.workspace, "node_modules") : undefined;
+  if (!Buffer.from(encodeDependencyTreeManifest(observation.entries, links)).equals(Buffer.from(observation.canonicalBytes))) fail();
+}
 
 /** Filesystem effect only: caller must have retained actual installer drain and
  * exclusive physical-workspace ownership. This does not supply either proof.
  * Only the independently captured fresh staged tree is touched; raw names stay
  * raw, existing source, .git and unknown node_modules are never normalized. */
-export function normalizeCapturedDependencyOutput(observation: Complete, expectedUid: number): void {
+export function normalizeCapturedDependencyOutput(observation: Complete, expectedUid: number, sourceSession?: DependencySourceLinkSession): void {
   if (process.platform !== "linux" || !Number.isSafeInteger(expectedUid) || expectedUid < 0) fail();
+  canonicalLinks(observation, sourceSession);
   const identities = new Map(observation.identities.map(item => [JSON.stringify(item.path), item]));
   if (identities.size !== observation.entries.length) fail();
   // Reject the complete captured mode set before the first ownership effect.
@@ -43,20 +50,26 @@ export function normalizeCapturedDependencyOutput(observation: Complete, expecte
     for (const entry of observation.entries) {
       const identity = identities.get(JSON.stringify(entry.path));
       if (!identity || identity.mountId !== observation.mountId) fail();
-      if (entry.kind === Kind.Symlink) continue; // Safe internal links need no ownership change.
-      if ((entry.mode & ~0o777) !== 0 || (entry.mode & 0o022) !== 0 || (entry.mode & 0o400) === 0 ||
-          (entry.kind === Kind.Directory && (entry.mode & 0o700) !== 0o700)) fail();
+      if (entry.kind !== Kind.Symlink && ((entry.mode & ~0o777) !== 0 || (entry.mode & 0o022) !== 0 || (entry.mode & 0o400) === 0 ||
+          (entry.kind === Kind.Directory && (entry.mode & 0o700) !== 0o700))) fail();
       const retained: number[] = [];
       let fd = root;
       try {
         for (const [index, part] of entry.path.entries()) {
           const last = index === entry.path.length - 1;
-          const opened = openSync(leaf(fd, name(part)), last && entry.kind === Kind.File
+          const path = leaf(fd, name(part));
+          const opened = openSync(path, last && entry.kind === Kind.Symlink ? 0x200000 | constants.O_NOFOLLOW : last && entry.kind === Kind.File
             ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : directoryFlags);
           retained.push(opened); fd = opened;
           const ancestor = identities.get(JSON.stringify(entry.path.slice(0, index + 1)));
           if (!ancestor || !same(fstatSync(fd, { bigint: true }), ancestor.identity) || mount(fd) !== observation.mountId) fail();
+          if (last && entry.kind === Kind.Symlink) {
+            const stat = fstatSync(fd, { bigint: true }), target = readlinkSync(path, { encoding: "buffer" });
+            if (!stat.isSymbolicLink() || stat.nlink !== 1n || Number(stat.mode & 0o7777n) !== entry.mode || target.toString("base64") !== entry.target ||
+                !same(lstatSync(path, { bigint: true }), identity.identity)) fail();
+          }
         }
+        if (entry.kind === Kind.Symlink) continue; // Verified raw link, never followed or chowned.
         const before = fstatSync(fd, { bigint: true });
         if (!same(before, identity.identity) || Number(before.mode & 0o7777n) !== entry.mode ||
             (entry.kind === Kind.File ? !before.isFile() || before.nlink !== 1n || String(before.size) !== entry.size : !before.isDirectory()) ||
@@ -67,6 +80,7 @@ export function normalizeCapturedDependencyOutput(observation: Complete, expecte
         fsyncSync(fd);
       } finally { for (const opened of retained.reverse()) closeSync(opened); }
     }
+    canonicalLinks(observation, sourceSession);
     fsyncSync(root);
   } finally { closeSync(root); }
 }
@@ -75,7 +89,11 @@ export function normalizeCapturedDependencyOutput(observation: Complete, expecte
  * final staged inventory. The admitted namespace denies all untrusted writers
  * of these parents; host root remains trusted. Missing is checked through the
  * retained destination, never used as an unmanaged check-then-rename license. */
-export function publishCapturedDependencyOutput(observation: Complete, workspace: DependencyWorkspaceIdentity): void {
+export function publishCapturedDependencyOutput(observation: Complete, workspace: DependencyWorkspaceIdentity,
+  sourceSessions?: { readonly staged: DependencySourceLinkSession; readonly original: DependencySourceLinkSession }): void {
+  canonicalLinks(observation, sourceSessions?.staged);
+  if (sourceSessions && JSON.stringify(readDependencySourceLinkSession(sourceSessions.staged, observation.workspace, "node_modules")) !==
+      JSON.stringify(readDependencySourceLinkSession(sourceSessions.original, workspace, "node_modules"))) fail();
   const source = openRoot(observation.workspace);
   let target: number | undefined;
   try {

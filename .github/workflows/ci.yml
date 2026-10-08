@@ -104,6 +104,115 @@ jobs:
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run check:packed-consumer
 
+  native-probe-source:
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Keep JavaScript actions on the ARC runner. The TEST container receives
+      # only a Git archive via Docker's API, never runner/auth/socket mounts.
+      - name: Run disposable NativeProbe SOURCE container
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          owned=$(mktemp -d "$RUNNER_TEMP/native-probe-source-TEST-XXXXXX")
+          printf 'evidence=%s\n' "$owned" >> "$GITHUB_OUTPUT"
+          name="native-probe-source-TEST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf '%s\n' "$name" > "$owned/container-name.txt"
+          git rev-parse HEAD > "$owned/source-commit.txt"
+          git rev-parse HEAD^{tree} > "$owned/source-tree.txt"
+          git archive --format=tar HEAD > "$owned/source.tar"
+          sha256sum "$owned/source.tar" > "$owned/source-archive.sha256"
+          cat > "$owned/command.sh" <<'TEST_COMMAND'
+          set -euo pipefail
+          umask 077
+          mkdir -p /native-probe-source-workspace/{source,tmp,home,cache}
+          tar -xf /source.tar -C /native-probe-source-workspace/source
+          cd /native-probe-source-workspace/source
+          mkdir -p delivery/a0-native-probe
+          npm ci
+          npm run typecheck:native-probe
+          npm run typecheck:native-probe:root-source
+          npm run test:native-probe
+          TEST_COMMAND
+          timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
+            --user 0:0 --init node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+            /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
+            HOME=/native-probe-source-workspace/home \
+            TMPDIR=/native-probe-source-workspace/tmp \
+            npm_config_cache=/native-probe-source-workspace/cache \
+            SR_NATIVE_PROBE_TMP=/native-probe-source-workspace/tmp \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 15m \
+            /bin/bash /command.sh > "$owned/container-id.txt" 2> "$owned/create.stderr"
+          id=$(cat "$owned/container-id.txt")
+          [[ "$id" =~ ^[a-f0-9]{64}$ ]]
+          printf 'container=%s\n' "$id" >> "$GITHUB_OUTPUT"
+          timeout 30s docker cp "$owned/source.tar" "$id:/source.tar" \
+            > "$owned/input-copy.stdout" 2> "$owned/input-copy.stderr"
+          timeout 30s docker cp "$owned/command.sh" "$id:/command.sh" \
+            >> "$owned/input-copy.stdout" 2>> "$owned/input-copy.stderr"
+          set +e
+          timeout --signal=TERM --kill-after=10s 16m docker start --attach "$id" \
+            > "$owned/container.stdout" 2> "$owned/container.stderr"
+          attach_rc=$?
+          set -e
+          printf '%s\n' "$attach_rc" > "$owned/attach-exit.txt"
+          docker inspect "$id" > "$owned/container-inspect.json"
+          identity=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}' "$id")
+          [[ "$identity" == "$id|/$name|$owner" ]]
+          state=$(docker inspect --format '{{.State.Status}}' "$id")
+          if [[ "$state" != exited ]]; then
+            printf '::error::Owned container %s is %s; retained without cleanup. Evidence: %s\n' "$id" "$state" "$owned"
+            exit 1
+          fi
+          container_rc=$(docker inspect --format '{{.State.ExitCode}}' "$id")
+          printf '%s\n' "$container_rc" > "$owned/container-exit.txt"
+          # Stream tar archives without following container symlinks or exposing
+          # root-owned fixtures to runner-side extraction/upload traversal.
+          timeout 30s docker cp "$id:/native-probe-source-workspace/source/delivery/a0-native-probe" - \
+            > "$owned/source-evidence.tar" 2> "$owned/evidence-copy.stderr"
+          timeout 30s docker cp "$id:/native-probe-source-workspace/tmp" - \
+            > "$owned/remaining-test-tmp.tar" 2> "$owned/tmp-copy.stderr"
+          printf 'exported=true\n' >> "$GITHUB_OUTPUT"
+          # A test failure stays a failure even though its diagnostics exported.
+          if [[ "$container_rc" != 0 ]]; then exit "$container_rc"; fi
+          exit "$attach_rc"
+      - name: Export NativeProbe SOURCE evidence
+        id: native_artifact
+        if: ${{ always() && steps.native.outputs.evidence != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-probe-source-checks
+          path: ${{ steps.native.outputs.evidence }}
+          if-no-files-found: error
+      - name: Remove only exported stopped TEST container
+        if: ${{ always() && steps.native.outputs.container != '' }}
+        shell: bash
+        env:
+          OWNED_CONTAINER: ${{ steps.native.outputs.container }}
+          EVIDENCE_EXPORTED: ${{ steps.native.outputs.exported }}
+          ARTIFACT_RESULT: ${{ steps.native_artifact.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVIDENCE_EXPORTED" != true || "$ARTIFACT_RESULT" != success ]]; then
+            printf '::warning::Retaining owned container %s: evidence export incomplete.\n' "$OWNED_CONTAINER"
+            exit 1
+          fi
+          [[ "$OWNED_CONTAINER" =~ ^[a-f0-9]{64}$ ]]
+          expected="/native-probe-source-TEST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          actual=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}|{{.State.Status}}|{{.State.Running}}' "$OWNED_CONTAINER")
+          if [[ "$actual" != "$OWNED_CONTAINER|$expected|$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT|exited|false" ]]; then
+            printf '::error::Owned container %s custody/stop check failed; retained.\n' "$OWNED_CONTAINER"
+            exit 1
+          fi
+          docker rm "$OWNED_CONTAINER"
+          # Runner-owned files remain available through job end and in artifact.
+
   crash-boundary-shards:
     permissions:
       contents: read
@@ -155,7 +264,7 @@ jobs:
 
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, archive-root-tests, package, crash-boundary-shards-complete]
+    needs: [quality, unit-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify all CI gates passed
@@ -164,12 +273,14 @@ jobs:
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           ARCHIVE_ROOT_TESTS_RESULT: ${{ needs.archive-root-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
+          NATIVE_PROBE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
              [ "$ARCHIVE_ROOT_TESTS_RESULT" = "success" ] && \
              [ "$PACKAGE_RESULT" = "success" ] && \
+             [ "$NATIVE_PROBE_SOURCE_RESULT" = "success" ] && \
              [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
           fi
@@ -178,5 +289,6 @@ jobs:
           echo "unit-tests: $UNIT_TESTS_RESULT"
           echo "archive-root-tests: $ARCHIVE_ROOT_TESTS_RESULT"
           echo "package: $PACKAGE_RESULT"
+          echo "native-probe-source: $NATIVE_PROBE_SOURCE_RESULT"
           echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1

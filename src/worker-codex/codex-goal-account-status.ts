@@ -4,13 +4,18 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   AccountAvailability as ObservedAccountAvailability,
+  AccountRecommendedAction,
   AgentProvider,
+  AuthSessionStatus,
   CodexAccountObserver,
   CodexAppServerClientFactory,
   CodexAppServerQuotaReader,
   CodexAuthJsonReader,
   CodexExecProbe,
   NodeProcessRunner,
+  ObservationEvidenceKind,
+  ObservationEvidenceSource,
+  ObservationPolicy,
   type AccountObservation,
   type AvailabilityDecision,
 } from "@vioxen/agent-account-observability";
@@ -120,6 +125,8 @@ export type CodexGoalAccountStatusInput = {
   readonly accounts?: readonly string[];
   readonly stateRootDir?: string;
   readonly liveCheck?: boolean;
+  /** Read fresh main Codex quota without any exec probe, even during cooldown. */
+  readonly quotaOnlyLiveCheck?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
   readonly accountMetadata?: Readonly<
@@ -130,7 +137,7 @@ export type CodexGoalAccountStatusInput = {
   /**
    * Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps
    * today's `authRootDir` auth.json discovery byte-for-byte unchanged. When
-   * set to `XiaomiMimoTokenPlan`, `authRootDir`/`accounts`/`liveCheck`/
+   * set to `XiaomiMimoTokenPlan`, `authRootDir`/`accounts`/`liveCheck`/`quotaOnlyLiveCheck`/
    * `accountCapacityStore`/`recheckDueCapacity` are ignored entirely and
    * slots are built from `mimoAccounts` instead: MiMo is a static API-key
    * credential, never an OAuth session, so there is nothing to discover on
@@ -174,7 +181,7 @@ export async function listCodexGoalAccountStatuses(
     });
   }
   const accountCapacityStore = resolveAccountCapacityStore(input);
-  if (input.recheckDueCapacity && accountCapacityStore) {
+  if (input.recheckDueCapacity && !input.quotaOnlyLiveCheck && accountCapacityStore) {
     await Promise.all(
       accountNames
         .filter((name) => !accountMetadata[name]?.quarantined)
@@ -202,6 +209,7 @@ export async function listCodexGoalAccountStatuses(
           : {}),
         ...(accountCapacityStore ? { accountCapacityStore } : {}),
         ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
+        ...(input.quotaOnlyLiveCheck ? { quotaOnlyLiveCheck: true } : {}),
         ...(input.codexBinaryPath
           ? { codexBinaryPath: input.codexBinaryPath }
           : {}),
@@ -219,6 +227,7 @@ async function inspectCodexGoalAccount(input: {
   readonly displayMetadata?: CodexAccountDisplayMetadata;
   readonly accountCapacityStore?: WorkerAccountCapacityStore;
   readonly liveCheck?: boolean;
+  readonly quotaOnlyLiveCheck?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
 }): Promise<CodexGoalAccountSlotStatus> {
@@ -261,11 +270,12 @@ async function inspectCodexGoalAccount(input: {
         ? { store: input.accountCapacityStore }
         : {}),
     });
-    const live = input.liveCheck
+    const live = input.liveCheck || input.quotaOnlyLiveCheck
       ? await inspectCodexAccountLiveStatus({
           name: input.name,
           codexHome: dirname(authJsonPath),
           authJsonPath,
+          ...(input.quotaOnlyLiveCheck ? { quotaOnlyLiveCheck: true } : {}),
           ...(input.codexBinaryPath
             ? { codexBinaryPath: input.codexBinaryPath }
             : {}),
@@ -297,24 +307,30 @@ async function inspectCodexGoalAccount(input: {
       ...freshness.warnings,
       ...(capacityPersistenceWarning ? [capacityPersistenceWarning] : []),
     ];
-    const liveAvailability = live?.observation
-      ? liveDecisionToDiagnosticAvailability(live.observation.decision)
-      : undefined;
+    const liveAvailability = input.quotaOnlyLiveCheck && capacityPersistenceWarning &&
+      live?.observation?.decision.availability !== ObservedAccountAvailability.ReloginRequired
+      ? "unknown"
+      : live?.observation
+        ? liveDecisionToDiagnosticAvailability(live.observation.decision)
+        : undefined;
     const liveLimitResetAt = live?.observation?.decision.limitResetAt;
     const liveStatus =
-      live && !liveAvailability
-        ? "auth_invalid"
-        : liveAvailability === "reconnect_required"
+      input.quotaOnlyLiveCheck && (!liveAvailability || liveAvailability === "unknown")
+        ? "quota_unknown"
+        : live && !liveAvailability
           ? "auth_invalid"
-          : liveAvailability === "auth_unknown" ||
-              liveAvailability === "unhealthy" ||
-              liveAvailability === "unknown"
+          : liveAvailability === "reconnect_required"
             ? "auth_invalid"
-            : "ready";
+            : liveAvailability === "auth_unknown" ||
+                liveAvailability === "unhealthy" ||
+                liveAvailability === "unknown"
+              ? "auth_invalid"
+              : "ready";
     if (live && !live.ok) {
       const availability = codexGoalAccountAvailability({
         status: liveStatus,
         capacity,
+        ...(input.quotaOnlyLiveCheck ? { respectRetainedCapacity: true } : {}),
         ...(liveAvailability ? { observedAvailability: liveAvailability } : {}),
         ...(liveLimitResetAt ? { observedLimitResetAt: liveLimitResetAt } : {}),
       });
@@ -357,6 +373,7 @@ async function inspectCodexGoalAccount(input: {
     const availability = codexGoalAccountAvailability({
       status: "ready",
       capacity,
+      ...(input.quotaOnlyLiveCheck ? { respectRetainedCapacity: true } : {}),
       ...(liveAvailability ? { observedAvailability: liveAvailability } : {}),
       ...(liveLimitResetAt ? { observedLimitResetAt: liveLimitResetAt } : {}),
     });
@@ -486,6 +503,7 @@ function codexGoalAccountAvailability(input: {
   readonly capacity: WorkerCapacitySnapshot | null;
   readonly observedAvailability?: ProviderAccountAvailability;
   readonly observedLimitResetAt?: Date;
+  readonly respectRetainedCapacity?: boolean;
 }): {
   readonly availability: ProviderAccountAvailability;
   readonly schedulerEligible: boolean;
@@ -512,19 +530,21 @@ function codexGoalAccountAvailability(input: {
   const capacitySignal = input.capacity
     ? workerCapacityToDiagnosticSignal(input.capacity)
     : null;
-  const availability =
-    capacitySignal?.reason === "provider_session_invalid"
-      ? capacitySignal.availability
-      : input.observedAvailability ?? capacitySignal?.availability ?? "available";
+  const selectedCapacity = capacitySignal &&
+    (capacitySignal.reason === "provider_session_invalid" ||
+      (input.respectRetainedCapacity && capacitySignal.availability !== "available"))
+    ? capacitySignal
+    : undefined;
+  const availability = selectedCapacity?.availability ??
+    input.observedAvailability ?? capacitySignal?.availability ?? "available";
+  const limitResetAt = input.respectRetainedCapacity && selectedCapacity
+    ? selectedCapacity.limitResetAt
+    : input.observedLimitResetAt ?? capacitySignal?.limitResetAt;
   return {
     availability,
     schedulerEligible: isSchedulerEligible(availability),
     recommendedAction: recommendedActionForAvailability(availability),
-    ...(input.observedLimitResetAt
-      ? { limitResetAt: input.observedLimitResetAt.toISOString() }
-      : capacitySignal?.limitResetAt
-        ? { limitResetAt: capacitySignal.limitResetAt.toISOString() }
-        : {}),
+    ...(limitResetAt ? { limitResetAt: limitResetAt.toISOString() } : {}),
   };
 }
 
@@ -579,6 +599,7 @@ async function inspectCodexAccountLiveStatus(input: {
   readonly authJsonPath: string;
   readonly codexBinaryPath?: string;
   readonly timeoutMs?: number;
+  readonly quotaOnlyLiveCheck?: boolean;
 }): Promise<{
   readonly ok: boolean;
   readonly safeMessage: string;
@@ -599,14 +620,16 @@ async function inspectCodexAccountLiveStatus(input: {
         }),
       }),
       authReader: new CodexAuthJsonReader(),
-      execProbe: new CodexExecProbe({
-        runner: new NodeProcessRunner(),
-        ...(input.codexBinaryPath
-          ? { codexBinaryPath: input.codexBinaryPath }
-          : {}),
+      ...(input.quotaOnlyLiveCheck ? {} : {
+        execProbe: new CodexExecProbe({
+          runner: new NodeProcessRunner(),
+          ...(input.codexBinaryPath
+            ? { codexBinaryPath: input.codexBinaryPath }
+            : {}),
+        }),
       }),
     });
-    const observation = await observer.observe({
+    const observed = await observer.observe({
       account: {
         provider: AgentProvider.Codex,
         slotId: input.name,
@@ -619,6 +642,9 @@ async function inspectCodexAccountLiveStatus(input: {
       now: new Date(),
       ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
     });
+    const observation = input.quotaOnlyLiveCheck
+      ? quotaOnlyObservation(observed)
+      : observed;
     healthy = liveDecisionOk(observation.decision);
     await effective.finish(healthy);
     effective = undefined;
@@ -631,6 +657,51 @@ async function inspectCodexAccountLiveStatus(input: {
     if (effective && !healthy) await effective.finish(false);
     return { ok: false, safeMessage: "codex account live observation failed" };
   }
+}
+
+function quotaOnlyObservation(observation: AccountObservation): AccountObservation {
+  // An explicit provider auth denial is stronger than absent quota data.
+  if (observation.auth.status === AuthSessionStatus.ReloginRequired) {
+    return {
+      ...observation,
+      decision: new ObservationPolicy().decide({ auth: observation.auth, quota: null }),
+    };
+  }
+  const quota = observation.quota;
+  // The library's main-window helper falls back to all buckets. This mode
+  // requires actual main Codex usage, never auth-only or unrelated quota.
+  const windows = quota?.windows.filter((window) =>
+    window.limitId === "codex" || window.limitId === "weekly" ||
+    (!window.limitId && !window.limitName)
+  ) ?? [];
+  const fresh = quota?.provider === AgentProvider.Codex &&
+    quota.checkedAt.getTime() === observation.checkedAt.getTime() &&
+    observation.evidence.some((item) =>
+      item.source === ObservationEvidenceSource.CodexAppServer &&
+      item.kind === ObservationEvidenceKind.Quota &&
+      item.message === "account_rate_limits_read" &&
+      item.observedAt.getTime() === observation.checkedAt.getTime()
+    );
+  if (!fresh || windows.length === 0 || windows.some((window) =>
+    window.usedPercent === undefined || !Number.isFinite(window.usedPercent) ||
+    window.usedPercent < 0
+  )) {
+    return {
+      ...observation,
+      decision: {
+        availability: ObservedAccountAvailability.Unknown,
+        recommendedAction: AccountRecommendedAction.Inspect,
+        schedulerEligible: false,
+        reason: "main_codex_quota_not_observed",
+      },
+    };
+  }
+  const mainQuota = { ...quota!, windows };
+  return {
+    ...observation,
+    quota: mainQuota,
+    decision: new ObservationPolicy().decide({ auth: observation.auth, quota: mainQuota }),
+  };
 }
 
 function sanitizedCodexIdentity(idToken: string | undefined): {
