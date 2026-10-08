@@ -10,6 +10,9 @@ import type {
   WorkerAccountCapacityStore,
   WorkerAccountLimitSignal,
 } from "@vioxen/subscription-runtime/worker-core";
+import { mergeWorkerAndAccountCapacity, WorkerAccountCapacityClaimStatus,
+  WorkerAccountCapacitySignalScope } from "@vioxen/subscription-runtime/worker-core";
+import { codexSessionCapacityAccountId, isCodexSessionCapacityAccountId } from "../codex-session-capacity-identity";
 
 export type CodexAccountCapacityAliasStoreOptions = {
   readonly assertProviderAdmission?: () => void;
@@ -54,13 +57,22 @@ export class CodexAccountCapacityAliasStore
   }
 
   read(input: Parameters<WorkerAccountCapacityStore["read"]>[0]) {
-    return this.options.store.read({
+    const account = this.options.store.read({
       ...input,
       accountId: this.aliases.resolve(input.accountId),
     });
+    const session = this.options.store.read({
+      accountId: this.aliases.resolveSession(input.accountId),
+      ...(input.now ? { now: input.now } : {}),
+    });
+    return session && account ? mergeWorkerAndAccountCapacity(account, session) : session ?? account;
   }
 
   readState(input: Parameters<WorkerAccountCapacityStore["readState"]>[0]) {
+    const session = this.options.store.readState({
+      accountId: this.aliases.resolveSession(input.accountId), now: input.now,
+    });
+    if (session?.capacity.reason === "provider_session_invalid") return session;
     return this.options.store.readState({
       ...input,
       accountId: this.aliases.resolve(input.accountId),
@@ -68,6 +80,21 @@ export class CodexAccountCapacityAliasStore
   }
 
   observe(input: WorkerAccountLimitSignal) {
+    if (input.capacity.reason === "provider_session_invalid") {
+      // The worker binds a failure to the session actually used, even if an
+      // operator replaces the source seed while the failed turn is in flight.
+      const boundSession = input.capacity.details?.capacitySessionId;
+      const accountId = isCodexSessionCapacityAccountId(boundSession)
+        ? boundSession : this.aliases.resolveSession(input.accountId);
+      const { cooldownUntil: _cooldown, ...capacity } = input.capacity;
+      const { capacitySessionId: _sessionId, ...details } = capacity.details ?? {};
+      return this.options.store.observe({
+        ...input, accountId, scope: WorkerAccountCapacitySignalScope.AccountWide,
+        capacity: { ...capacity, availability: "disabled", details: {
+          ...details, ...(isCodexSessionCapacityAccountId(accountId) ? { capacitySessionId: accountId } : {}),
+        } },
+      });
+    }
     return this.options.store.observe({
       ...input,
       accountId: this.aliases.resolve(input.accountId),
@@ -77,6 +104,10 @@ export class CodexAccountCapacityAliasStore
   tryClaimRecheck(
     input: Parameters<WorkerAccountCapacityStore["tryClaimRecheck"]>[0],
   ) {
+    // Quota availability is not successful validation of a revoked session.
+    if (input.state.capacity.reason === "provider_session_invalid") {
+      return { status: WorkerAccountCapacityClaimStatus.NotDue, state: input.state } as const;
+    }
     return this.options.store.tryClaimRecheck(input);
   }
 
@@ -102,6 +133,7 @@ export class CodexAccountCapacityAliasStore
 type CachedAlias = {
   readonly signature: string;
   readonly capacityAccountId: string;
+  readonly sessionAccountId: string;
 };
 
 class CodexAccountCapacityAliasResolver {
@@ -110,8 +142,18 @@ class CodexAccountCapacityAliasResolver {
   constructor(private readonly options: CodexAccountCapacityAliasStoreOptions) {}
 
   resolve(slotAlias: string): string {
+    return this.resolveAlias(slotAlias).capacityAccountId;
+  }
+
+  resolveSession(slotAlias: string): string {
+    return this.resolveAlias(slotAlias).sessionAccountId;
+  }
+
+  private resolveAlias(slotAlias: string): CachedAlias {
     this.options.assertProviderAdmission?.();
-    if (slotAlias.startsWith("codex-provider:")) return slotAlias;
+    const fallback: CachedAlias = { signature: "", capacityAccountId: slotAlias,
+      sessionAccountId: slotAlias };
+    if (slotAlias.startsWith("codex-provider:") || slotAlias.startsWith("codex-session:")) return fallback;
     const inlineAuthJson = this.options.authJsonByAlias?.[slotAlias];
     if (inlineAuthJson !== undefined) {
       return this.resolveAuthJson({
@@ -134,7 +176,7 @@ class CodexAccountCapacityAliasResolver {
       });
     } catch {
       this.cache.delete(slotAlias);
-      return slotAlias;
+      return fallback;
     }
   }
 
@@ -143,9 +185,9 @@ class CodexAccountCapacityAliasResolver {
     readonly authJsonPath: string;
     readonly authJsonText: string;
     readonly signature: string;
-  }): string {
+  }): CachedAlias {
     const cached = this.cache.get(input.slotAlias);
-    if (cached?.signature === input.signature) return cached.capacityAccountId;
+    if (cached?.signature === input.signature) return cached;
     try {
       const authJson: unknown = JSON.parse(input.authJsonText);
       const capacityAccountId = codexCapacityAccountIdFromAuthJson({
@@ -153,14 +195,16 @@ class CodexAccountCapacityAliasResolver {
         slotAlias: input.slotAlias,
         authJsonPath: input.authJsonPath,
       });
-      this.cache.set(input.slotAlias, {
+      const resolved = {
         signature: input.signature,
         capacityAccountId,
-      });
-      return capacityAccountId;
+        sessionAccountId: codexSessionCapacityAccountId(authJson) ?? capacityAccountId,
+      };
+      this.cache.set(input.slotAlias, resolved);
+      return resolved;
     } catch {
       this.cache.delete(input.slotAlias);
-      return input.slotAlias;
+      return { signature: "", capacityAccountId: input.slotAlias, sessionAccountId: input.slotAlias };
     }
   }
 }
