@@ -1,4 +1,5 @@
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
+import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
@@ -188,7 +189,7 @@ export type CodexGoalProgressSnapshot = {
   readonly currentAccount?: string;
 };
 
-export type CodexGoalRunDeps = {
+export type CodexGoalRunDeps = import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationDependencies & {
   /** Trusted adapter port, never supplied by serialized job configuration. */
   readonly admitProviderEgress?: typeof admitHostedTestEgress;
   readonly createExecutor?: (
@@ -409,6 +410,8 @@ async function runCodexGoalAdmitted(
     });
     await resultRecorder.record(await codexRuntimeResultInput({
       config,
+      ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
+        ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       result,
       executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
@@ -424,6 +427,8 @@ async function runCodexGoalAdmitted(
     const failure = codexRunnerExceptionFailure(error);
     await resultRecorder.record(await codexExceptionRuntimeResultInput({
       config,
+      ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
+        ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       error,
       executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
@@ -805,56 +810,4 @@ function createCodexGoalProgressHeartbeat(input: {
       await writes;
     },
   };
-}
-
-function progressFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): Omit<CodexGoalProgressSnapshot, "schemaVersion" | "taskId" | "updatedAt" | "pid"> {
-  const attempts = attemptsFromResult(result);
-  const lastAttempt = attempts.at(-1);
-  return {
-    status: progressStatusFromResult(result.status),
-    resultStatus: result.status,
-    ...("reason" in result && typeof result.reason === "string"
-      ? { reason: result.reason }
-      : {}),
-    attemptCount: attempts.length,
-    ...(lastAttempt && "accountId" in lastAttempt && typeof lastAttempt.accountId === "string"
-      ? { currentAccount: lastAttempt.accountId }
-      : {}),
-  };
-}
-
-function attemptsFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-) {
-  const attempts = "attempts" in result && Array.isArray(result.attempts)
-    ? result.attempts
-    : [];
-  return attempts;
-}
-
-function attemptCountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): number {
-  return attemptsFromResult(result).length;
-}
-
-function currentAccountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): string | undefined {
-  const lastAttempt = attemptsFromResult(result).at(-1);
-  return lastAttempt && "accountId" in lastAttempt &&
-    typeof lastAttempt.accountId === "string"
-    ? lastAttempt.accountId
-    : undefined;
-}
-
-function progressStatusFromResult(status: string): CodexGoalProgressStatus {
-  if (status === "completed") return "completed";
-  if (status === "waiting_capacity") return "blocked";
-  if (status === "partial") return "partial";
-  if (status === "failed") return "failed";
-  if (status === "aborted") return "aborted";
-  return "failed";
 }

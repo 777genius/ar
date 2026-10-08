@@ -1,6 +1,7 @@
 import type { WorkerRuntimeDemand } from "@vioxen/subscription-runtime/worker-core";
 import { WorkerAccountCapacitySignalScope } from "@vioxen/subscription-runtime/worker-core";
 import { codexAccountCapacityStore } from "./application/codex-account-capacity-store";
+import { isCodexSessionCapacityAccountId } from "./codex-session-capacity-identity";
 
 export function isProjectControllerProviderSessionInvalid(
   safeMessage: string | undefined,
@@ -22,6 +23,7 @@ export type ProjectControllerCapacityRun = {
   readonly status?: string;
   readonly safeMessage?: string;
   readonly capacityAccountId?: string;
+  readonly capacitySessionId?: string;
   readonly capacityDemand?: WorkerRuntimeDemand;
 };
 
@@ -63,17 +65,12 @@ export function recordProjectControllerCapacitySignal(
 
   codexAccountCapacityStore(input.authRootDir).observe({
     accountId: input.run.capacityAccountId,
-    ...(signal.capacity.reason === "quota_limited"
-      ? { scope: WorkerAccountCapacitySignalScope.AccountWide }
-      : {}),
-    ...(signal.capacity.reason === "quota_limited"
-      ? {}
-      : {
-          demand:
-            input.run.capacityDemand ??
-            projectControllerCapacityDemand(input.config),
-        }),
-    capacity: signal.capacity,
+    scope: WorkerAccountCapacitySignalScope.AccountWide,
+    capacity: {
+      ...signal.capacity,
+      ...(isCodexSessionCapacityAccountId(input.run.capacitySessionId)
+        ? { details: { capacitySessionId: input.run.capacitySessionId } } : {}),
+    },
     observedAt: signal.observedAt,
     sourceWorkerId: input.controllerJobId,
   });
@@ -103,14 +100,8 @@ function projectControllerCapacityFailureSignal(input: {
     return {
       observedAt: input.observedAt,
       capacity: {
-        availability: "cooldown" as const,
+        availability: "disabled" as const,
         reason: "provider_session_invalid",
-        cooldownUntil: new Date(
-          input.observedAt.getTime() +
-            (input.config.reconnectCooldownMs ??
-              input.config.quotaCooldownMs ??
-              15 * 60 * 1000),
-        ),
       },
     };
   }

@@ -74,9 +74,15 @@ function mountTable(id: string): { readonly sha256: string; readonly rowSha256: 
   const text = bounded("/proc/self/mountinfo", mountInfoLimit), ids = new Set<string>(); let selected: string | undefined;
   for (const row of text.trimEnd().split("\n")) {
     const fields = row.split(" "), separator = fields.indexOf("-"), current = fields[0];
+    // Kernel nsfs show_path emits a namespace handle, never pathname backing.
+    // Preserve the entire row in the snapshot while accepting only that finite shape.
+    const handle = /^(?:cgroup|ipc|mnt|net|pid|time|user|uts):\[([1-9]\d{0,9})\]$/.exec(fields[3] ?? "");
+    const nsDevice = /^0:([1-9]\d{0,6})$/.exec(fields[2] ?? "");
+    const namespaceRoot = fields[separator + 1] === "nsfs" && fields[separator + 2] === "nsfs" &&
+      handle !== null && Number(handle[1]) <= 0xffffffff && nsDevice !== null && Number(nsDevice[1]) <= 0xfffff;
     if (!current || !/^[1-9][0-9]{0,19}$/.test(current) || ids.has(current) || separator < 6 || fields.length !== separator + 4 ||
         !/^(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/.test(fields[2] ?? "") ||
-        !fields[3]?.startsWith("/") || !fields[4]?.startsWith("/") || fields.some(field => !field)) fail(DependencyVolumeFailure.MountChanged);
+        (!fields[3]?.startsWith("/") && !namespaceRoot) || !fields[4]?.startsWith("/") || fields.some(field => !field)) fail(DependencyVolumeFailure.MountChanged);
     ids.add(current); if (current === id) selected = row;
   }
   if (!selected) fail(DependencyVolumeFailure.MountChanged);
