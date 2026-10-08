@@ -107,7 +107,27 @@ const group: Parser<string> = v => {
 };
 const component: Parser<string> = v => { const s = text(/^[A-Za-z0-9_.@+-]{1,240}$/)(v); return s === "." || s === ".." ? retainedResourceInvalid("component") : s; };
 const kernelIdentity = object({ device: integer(0), inode: integer() });
-const publication = object({ producerId: id, generation: integer(), admittedAtEpochMs: integer(), durableAtEpochMs: integer(), finalValidatedAtEpochMs: integer() });
+const eventStamp = object({ sequence: integer(), atEpochMs: integer() });
+const publication = object({ producerId: id, generation: integer(), admitted: eventStamp });
+/** Observed BODY lifecycle DATA only. The event file does not attest its own
+ * durability or the private native release tail. No serialized native authority. */
+const publicationEvents = object({ recordDigest: digest, producerId: id, generation: integer(), admitted: eventStamp,
+  durable: eventStamp, readback: eventStamp, heldReread: nullable(eventStamp), finalValidated: eventStamp,
+});
+export type ScopedRetainedEventStamp = Parsed<typeof eventStamp>;
+export type ScopedRetainedPublicationEvents = Parsed<typeof publicationEvents>;
+
+export function parseScopedRetainedPublicationEvents(value: unknown): ScopedRetainedPublicationEvents {
+  return publicationEvents(JSON.parse(retainedResourceCanonicalJson(value)) as unknown);
+}
+export function parseScopedRetainedPublicationEventsBytes(bytes: string): ScopedRetainedPublicationEvents {
+  if (typeof bytes !== "string" || Buffer.byteLength(bytes, "utf8") > RETAINED_RESOURCE_LIMITS.bytes) return retainedResourceInvalid("bytes_bound");
+  let value: unknown;
+  try { value = JSON.parse(bytes); } catch { return retainedResourceInvalid("json_syntax"); }
+  const parsed = parseScopedRetainedPublicationEvents(value);
+  if (retainedResourceBytes(parsed) !== bytes) return retainedResourceInvalid("noncanonical_bytes");
+  return parsed;
+}
 // Original, pre-effect limits contain no forecast of an actual cleanup start.
 const originalCleanupAuthority = object({ attemptId: uuid, deadlineEpochMs: integer(), totalAllowanceMs: integer(), N: integer(), joinDigest: digest });
 const cleanupAttempt = object({ originalAuthorityDigest: digest, attemptId: uuid, startedAtEpochMs: integer(), endEpochMs: integer(), joinDigest: digest });
@@ -148,7 +168,7 @@ const correlation = object({ reservationDigest: digest, bindingDigest: digest, s
 const actorAdmission = object({ correlationDigest: digest, originalGateDigest: digest, submitter: object({ pidBirth: birth, controlGroup: group }),
   chain: parseScopedActorChain, custodyProducerId: id, hold: literal(RetainedTaskHold.AllTasks),
   pidfdSemantics: literal(RetainedPidfdSemantics.WholeThreadGroupExit), holdDigest: digest, pidfdCustodyDigest: digest,
-  tasks: list(object({ actorPidBirth: birth, taskBirths: list(birth, 64, 1) }), 64, 2), finalHeldRereadAtEpochMs: integer(),
+  tasks: list(object({ actorPidBirth: birth, taskBirths: list(birth, 64, 1) }), 64, 2),
 });
 // Original created native gate/custody observation, including preparation that
 // stops before actor/service admission. References are DATA, never native authority.
