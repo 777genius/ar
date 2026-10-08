@@ -17,7 +17,7 @@ import {
   FullBackingExposure, readOriginalAdministrativeTaskReferences, retainFullProcProcess, sampleFullProcDescriptors
 }
 from "./current-full-backing-collector.js";
-import { observeAdministrativeRpcReason, observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
+import { observeAdministrativeRpcReason, observeRegistrationFailure, observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
 const control="/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1/control";
 const actorUnit="subscription-runtime-installer-10000000-0000-4000-8000-9ca302fabd07.service";
 const forgedUnit="TEST-administrative-forgery.service";
@@ -48,7 +48,20 @@ export function observeAdministrativeForgedRpcReason():typeof forgedRpcReason { 
 export function observeAdministrativeForgedCommandResult():TestAdministrativeCommandObservation|undefined { return forgedCommandObservation; }
 const deadline=process.hrtime.bigint()+120n*1000000000n;
 function budget():void{
-  assert(process.hrtime.bigint()<deadline);
+  assert(process.hrtime.bigint()<deadline,
+    currentPhase===AdministrativeInstallationTestPhase.ImageFd ? "TEST_image_fd_deadline" : undefined);
+}
+enum ImageFdCheck {
+  Marker="TEST_image_fd_marker_publish", Actor="TEST_image_fd_actor_validation",
+  Sample="TEST_image_fd_descriptor_sample", Revalidate="TEST_image_fd_sample_revalidation",
+  Material="TEST_image_fd_material_veto",
+}
+/** Exact failed TEST operation only. No private exception data or cause claim. */
+function imageFdCheck<T>(stage:ImageFdCheck,check:()=>T):T{
+  try { return check(); } catch(error) {
+    if(observeRegistrationFailure(error).fixedLiteral==="image_fd_deadline")throw error;
+    throw new Error(stage);
+  }
 }
 function command(path:string,args:string[],notFound=false):string{
   budget();
@@ -206,19 +219,19 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
     // Actual fixed administrative inspection deliberately retains readonly
     // image FD. Every observed task must veto; readonly cannot waive exposure.
     currentPhase=AdministrativeInstallationTestPhase.ImageFd;
-    writeFileSync(control+"/TEST-inspection-open","INSPECT_FIXED_IMAGE_READONLY\n",{
+    imageFdCheck(ImageFdCheck.Marker,()=>writeFileSync(control+"/TEST-inspection-open","INSPECT_FIXED_IMAGE_READONLY\n",{
       flag:"wx",mode:0o400
     }
-    );
+    ));
     let material=false;
     while(!material){
       budget();
       for(const anchor of anchors){
-        assert(readOriginalPublicAdministrativeActor(anchor,sourceSha));
-        const sample=sampleFullProcDescriptors(anchor,target,budget);
+        imageFdCheck(ImageFdCheck.Actor,()=>assert(readOriginalPublicAdministrativeActor(anchor,sourceSha)));
+        const sample=imageFdCheck(ImageFdCheck.Sample,()=>sampleFullProcDescriptors(anchor,target,budget));
         material||=sample.exposures.has(FullBackingExposure.ImageDescriptor);
-        sample.revalidate();
-        if(material)assert.equal(readOriginalAdministrativeTaskReferences(anchor,sourceSha,before.originSha256,target,budget)?.material,true);
+        imageFdCheck(ImageFdCheck.Revalidate,()=>sample.revalidate());
+        if(material)imageFdCheck(ImageFdCheck.Material,()=>assert.equal(readOriginalAdministrativeTaskReferences(anchor,sourceSha,before.originSha256,target,budget)?.material,true));
       }
       if(!material)await new Promise<void>(resolve=>setTimeout(resolve,50));
     }

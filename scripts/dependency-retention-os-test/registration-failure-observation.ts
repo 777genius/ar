@@ -15,6 +15,9 @@ enum FailureLiteral {
   Unknown = "unknown", Assertion = "assertion_code_literal",
   NpmVersion = "fixed_npm_version_failure_literal", Pack = "fixed_pack_failure_literal",
   Lock = "fixed_lock_selection_failure_literal", Model = "fixed_model_expectation_failure_literal",
+  ImageFdDeadline = "image_fd_deadline", ImageFdMarker = "image_fd_marker_publish",
+  ImageFdActor = "image_fd_actor_validation", ImageFdSample = "image_fd_descriptor_sample",
+  ImageFdRevalidate = "image_fd_sample_revalidation", ImageFdMaterial = "image_fd_material_veto",
 }
 export type RegistrationFailureObservation = Readonly<{
   errorClass: FailureClass; fixedLiteral: FailureLiteral;
@@ -35,6 +38,12 @@ export function observeRegistrationFailure(error: unknown): RegistrationFailureO
     case "TEST_current_input_pack_failed": fixedLiteral = FailureLiteral.Pack; break;
     case "TEST_current_input_lock_selection_failed": fixedLiteral = FailureLiteral.Lock; break;
     case "TEST_default_model_expectation_missing_or_invalid": fixedLiteral = FailureLiteral.Model; break;
+    case "TEST_image_fd_deadline": fixedLiteral = FailureLiteral.ImageFdDeadline; break;
+    case "TEST_image_fd_marker_publish": fixedLiteral = FailureLiteral.ImageFdMarker; break;
+    case "TEST_image_fd_actor_validation": fixedLiteral = FailureLiteral.ImageFdActor; break;
+    case "TEST_image_fd_descriptor_sample": fixedLiteral = FailureLiteral.ImageFdSample; break;
+    case "TEST_image_fd_sample_revalidation": fixedLiteral = FailureLiteral.ImageFdRevalidate; break;
+    case "TEST_image_fd_material_veto": fixedLiteral = FailureLiteral.ImageFdMaterial; break;
   }
   if (fixedLiteral === FailureLiteral.Unknown && ownString(error, "code") === "ERR_ASSERTION")
     fixedLiteral = FailureLiteral.Assertion;

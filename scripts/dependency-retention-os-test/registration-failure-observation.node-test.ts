@@ -25,9 +25,22 @@ test("own data literals and assertion-code observations remain distinct", () => 
     ["TEST_current_input_pack_failed", "fixed_pack_failure_literal"],
     ["TEST_current_input_lock_selection_failed", "fixed_lock_selection_failure_literal"],
     ["TEST_default_model_expectation_missing_or_invalid", "fixed_model_expectation_failure_literal"],
+    ["TEST_image_fd_deadline", "image_fd_deadline"],
+    ["TEST_image_fd_marker_publish", "image_fd_marker_publish"],
+    ["TEST_image_fd_actor_validation", "image_fd_actor_validation"],
+    ["TEST_image_fd_descriptor_sample", "image_fd_descriptor_sample"],
+    ["TEST_image_fd_sample_revalidation", "image_fd_sample_revalidation"],
+    ["TEST_image_fd_material_veto", "image_fd_material_veto"],
   ] as const;
   for (const [message, fixedLiteral] of cases)
     assert.deepEqual(observeRegistrationFailure(new Error(message)), { errorClass: "native_error", fixedLiteral });
+  // Prefix/trailing/oversize private data cannot become an allowed stage or escape.
+  for(const [message] of cases.filter(([value])=>value.startsWith("TEST_image_fd_"))){
+    for(const unsafe of ["TEST-private "+message,message+" TEST-private",message+"x".repeat(97)]){
+      const observed=observeRegistrationFailure(new Error(unsafe));
+      assert.equal(observed.fixedLiteral,"unknown"); assert(!JSON.stringify(observed).includes("TEST-private"));
+    }
+  }
   const failure = new assert.AssertionError({ actual: "TEST-secret", expected: "different", operator: "strictEqual" });
   assert.deepEqual(observeRegistrationFailure(failure), { errorClass: "native_error", fixedLiteral: "assertion_code_literal" });
 });
