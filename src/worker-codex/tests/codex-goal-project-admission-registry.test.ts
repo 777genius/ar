@@ -11,11 +11,11 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(layout: "combined" | "split" = "combined") {
   const registryRootDir = await mkdtemp(join(tmpdir(), "admission-registry-"));
   roots.push(registryRootDir);
-  const container = join(registryRootDir, "consumed-output");
-  const ledger = join(container, "ledger");
+  const container = join(registryRootDir, layout === "split" ? "consumed-output-evidence" : "consumed-output");
+  const ledger = layout === "split" ? join(registryRootDir, "terminal-ledger") : join(container, "ledger");
   const archives = join(container, "archives");
   await mkdir(join(ledger, "items"), { recursive: true });
   await mkdir(archives, { recursive: true });
@@ -47,6 +47,48 @@ async function nativeJobRecord(f: Awaited<ReturnType<typeof fixture>>, archiveRo
 }
 
 describe("admission native consumed-output registry", () => {
+  it("recognizes a scoped evidence container separate from its ledger", async () => {
+    const f = await fixture("split");
+    await nativeJobRecord(f);
+    await expect(assertAdmissionRegistryComplete(f.input)).resolves.toBeUndefined();
+    const ledger = await readCodexGoalConsumedOutputLedgers({ roots: [f.ledger], evidenceRoots: [f.archives] });
+    expect(ledger.byJobId.get("job")?.valid).toBe(true);
+  });
+
+  it("recognizes an exact scoped evidence root directly in the registry", async () => {
+    const f = await fixture("split");
+    await rm(f.container, { recursive: true });
+    const archives = join(f.registryRootDir, "retained-evidence");
+    await mkdir(archives);
+    await nativeJobRecord(f, archives);
+    await expect(assertAdmissionRegistryComplete({ ...f.input, scope: {
+      ...f.input.scope, consumedOutputEvidenceRoots: [archives],
+    } })).resolves.toBeUndefined();
+  });
+
+  it("requires declared custody for a separate evidence container", async () => {
+    const f = await fixture("split");
+    await expect(assertAdmissionRegistryComplete({ ...f.input, scope: {
+      ...f.input.scope, consumedOutputEvidenceRoots: [join(f.registryRootDir, "other-evidence", "archives")],
+    } })).rejects.toThrow("unregistered registry directory: consumed-output-evidence");
+  });
+
+  it("rejects an unknown branch inside a scoped evidence container", async () => {
+    const f = await fixture("split");
+    await mkdir(join(f.container, "unregistered-job"));
+    await expect(assertAdmissionRegistryComplete(f.input))
+      .rejects.toThrow("unregistered consumed-output entry: unregistered-job");
+  });
+
+  it("rejects a hidden job inside a separate scoped evidence root", async () => {
+    const f = await fixture("split");
+    const nested = join(f.archives, "nested", "unregistered-job");
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, "job.json"), "{}");
+    await expect(assertAdmissionRegistryComplete(f.input))
+      .rejects.toThrow("unregistered job inside consumed-output");
+  });
+
   it("recognizes scoped native ledger, archive and mutation-lock layouts", async () => {
     const f = await fixture();
     const archive = join(f.archives, "test-attempt");
