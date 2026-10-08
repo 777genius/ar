@@ -122,6 +122,20 @@ export function observeSystemdServiceEmptyArrays(tool: SystemBusQueryTool, unit:
   if (!match) invalid();
   const facts = decodeSystemdEmptyArrays(kind, command(tool, ["get-property", "org.freedesktop.systemd1", match[1]!,
     "org.freedesktop.systemd1.Service", ...properties(kind)], remaining));
+  if (kind === SystemdServiceArrayKind.FdManaged) {
+    assertSystemdIoUringPolicy(command(tool, ["get-property", "org.freedesktop.systemd1", match[1]!,
+      "org.freedesktop.systemd1.Service", "SystemCallFilter", "SystemCallArchitectures", "NoNewPrivileges"], remaining));
+  }
   assertPinnedSystemBusQueryTool(tool, remaining);
   return facts;
+}
+
+/** Literal v255 busctl format_cmdline: struct fields flatten, arrays carry
+ * counts, booleans use true/false, strings are quoted; execute.c sorts names.
+ * Decoding is data validation only, never an admission or retroactive permit. */
+export function assertSystemdIoUringPolicy(text: string): void {
+  if (Buffer.byteLength(text) > 4096) invalid();
+  const rows = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+  if (rows.length !== 3 || rows[0] !== '(bas) false 3 "io_uring_enter:ENOSYS" "io_uring_register:ENOSYS" "io_uring_setup:ENOSYS"' ||
+      rows[1] !== 'as 1 "native"' || rows[2] !== "b true") invalid();
 }
