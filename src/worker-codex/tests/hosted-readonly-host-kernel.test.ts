@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HostedReadonlyHostKernel, completionBytes, completionPath } from "../hosted-readonly-host-kernel";
+import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, completionBytes, completionPath } from "../hosted-readonly-host-kernel";
 import type { HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
 
 // OS observations are synthetic. The production kernel parser and decision code
@@ -32,6 +32,9 @@ vi.mock("../hosted-readonly-inputs", async original => ({
   readHostedPrivateBytes: (path: string) => os.records.get(path) ?? null,
 }));
 vi.mock("@vioxen/subscription-runtime/provider-codex", () => ({ assertHostedProcessDescriptors: os.descriptors }));
+// These synthetic legacy inventories have no authenticated FD profile. Keep
+// their real kernel-to-recipe delegation without entering installed host IO.
+vi.mock("../../provider-codex/app-server/adapters/hosted-fd-observation", () => ({ readHostedFdProfile: () => undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const hostId = "a".repeat(32), bootId = "11111111-1111-4111-8111-111111111111";
 const startId = "22222222-2222-4222-8222-222222222222";
@@ -291,6 +294,38 @@ describe("creator role uses real kernel/store parsers with synthetic OS observat
     if (fault === "missing-pid") os.show.set(unit, show(unit, group, "0"));
     os.records.set(root + "/readonly-epoch.json", Buffer.from(JSON.stringify(epoch)));
     expect(() => new HostedReadonlyHostKernel().runtimeRole()).toThrow();
+  });
+});
+
+describe("version 3 actual finite inventory reader", () => {
+  function v3() {
+    const value = inventory();
+    const service = { name: "dbus.service", controlGroup: "/system.slice/dbus.service",
+      fragmentSha256: "a".repeat(64) };
+    return { ...value, schemaVersion: 3, ordinaryCreators: [], disabledCreators: [], units: [...value.units, service],
+      systemBusInfrastructure: { version: 1, role: "system-bus",
+        service: { ...service, fragmentPath: "/etc/systemd/test-units/dbus.service" },
+        socket: { name: "dbus.socket", endpoint: "/run/dbus/system_bus_socket",
+          fragmentPath: "/etc/systemd/test-units/dbus.socket", fragmentSha256: "b".repeat(64) },
+        config: { path: "/etc/subscription-runtime/system-bus/bus.conf", sha256: "c".repeat(64) },
+        executable: { path: "/usr/bin/dbus-daemon", sha256: "d".repeat(64) },
+        elfClosure: [{ path: "/usr/bin/dbus-daemon", sha256: "d".repeat(64) },
+          { path: "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", sha256: "e".repeat(64) }] } };
+  }
+  // This fails when expected keys are not sorted, even though the neutral
+  // descriptor alone parses correctly. Reading still grants no OS admission.
+  it("accepts schema3 through the actual private inventory reader", () => {
+    publish(v3());
+    const parsed = readHostedReadonlyHostInventory();
+    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.systemBusInfrastructure?.socket.name).toBe("dbus.socket");
+    expect(parsed.units.map(row => row.name)).toEqual(["trusted.service", "dbus.service"]);
+  });
+  it("rejects an extra top-level field and an infrastructure field in a legacy revision", () => {
+    publish({ ...v3(), approved: true });
+    expect(() => readHostedReadonlyHostInventory()).toThrow("evidence_invalid");
+    publish({ ...v3(), schemaVersion: 2 });
+    expect(() => readHostedReadonlyHostInventory()).toThrow("evidence_invalid");
   });
 });
 

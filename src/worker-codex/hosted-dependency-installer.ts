@@ -18,7 +18,10 @@ import { collectJobs, collectProcessBirth, collectProcessCgroup, fenceScopedSubm
 import { parseScopedManagerJobs } from "./hosted-readonly-observations";
 import { observeInstallerCgroupEmpty } from "./hosted-dependency-installer-cgroup";
 import { assertInstallerTerminalUnit } from "./hosted-dependency-installer-unit";
-import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
+import { TrustedCustodyLaunchRole, hostedFdCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
+import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
+import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind, hostedInstallerReleaseMarker } from "../provider-codex/app-server/adapters/hosted-fd-launch";
+import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { qualifyHostedDependencyInstallerInputs, HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
 import { createHostedDependencyInstallerPlan, assertHostedDependencyInstallerPlan, hostedDependencyInstallerRoot, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 
@@ -153,12 +156,14 @@ export class HostedDependencyInstaller {
       // O_EXCL supplies future-start exclusion. Unlike idempotent record
       // publication, this marker must never permit a second manager submission.
       retainOnce(join(plan.directory, "consumed.json"), encode({ schemaVersion: 1, startId, startSha256: digest(start) }));
-      const launch = trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
+      const fdProfile = readHostedFdProfile();
+      const launch = hostedFdCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
       // Actual submitter birth occurs in the final admission fence, never from a
       // precomputed command returned to a later caller. Its child identity is
       // retained so scoped host termination can fence this exact future creator.
       assertOwner(fence, request);
-      const child = spawn(launch.command, launch.args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: "ignore" });
+      const child = fdProfile ? spawnHostedFdChild(launch.command, launch.args, { cwd: "/" }, unit, HostedFdLaunchKind.Installer) :
+        spawn(launch.command, launch.args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: "ignore" });
       const waited = new Promise<boolean>(resolve => {
         let errored = false;
         const timer = setTimeout(() => resolve(false), 21 * 60 * 1000); timer.unref();
@@ -170,8 +175,27 @@ export class HostedDependencyInstaller {
       if (group !== `0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${request.attempt.launch.unit}`) fail();
       const creator = encode({ schemaVersion: 1, startId, startSha256: digest(start), pidBirth, controlGroup: group.slice(3) });
       createReadonlyPrivateRecord(join(plan.directory, "creator.json"), creator);
-      return { plan, start, creator, profileSha256, waited };
+      return { plan, start, creator, profileSha256, waited, child, guard: fdProfile ? hostedFdLaunch(child) : undefined };
     });
+    if (prepared.guard) {
+      const guard = prepared.guard;
+      try {
+        await guard.observe();
+        await retryHostedFenceAcquisition(() => withHostedActivationFence(fence => {
+          const revalidate = () => {
+            assertOwner(fence, request); assertHostedDependencyInstallerPlan(prepared.plan);
+            const record = (name: string) => readHostedPrivateBytes(join(prepared.plan.directory, name), 64 * 1024);
+            if (!record("start.json")?.equals(prepared.start) || !record("creator.json")?.equals(prepared.creator) ||
+                !record("consumed.json")?.equals(encode({ schemaVersion: 1, startId, startSha256: digest(prepared.start) })) ||
+                record("revoked.json") || record("creator-completion.json") || !prepared.child.pid) fail();
+            const creator = decodePrivateJson(prepared.creator) as { pidBirth: string; controlGroup: string };
+            if (collectProcessBirth(String(prepared.child.pid)) !== creator.pidBirth ||
+                collectProcessCgroup(String(prepared.child.pid)) !== `0::${creator.controlGroup}`) fail();
+          };
+          revalidate(); guard.release(fence, hostedInstallerReleaseMarker, true, revalidate);
+        }), guard.remainingSetupMs());
+      } catch { guard.invalidate(); prepared.child.kill("SIGTERM"); fail(); }
+    }
     if (!await prepared.waited) fail();
     return withHostedActivationFence(fence => {
       assertOwner(fence, request); assertHostedDependencyInstallerPlan(prepared.plan);

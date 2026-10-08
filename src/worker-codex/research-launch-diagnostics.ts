@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 /** Closed startup observations; error payloads never become output. */
 export enum ResearchLaunchDiagnostic {
   Unknown = "unknown", ResearchAdmission = "research-admission", CheckpointAdmission = "checkpoint-admission",
@@ -22,6 +24,17 @@ export enum ResearchLaunchCause {
 export enum ResearchLaunchStage {
   Unknown = "unknown", PinPreparation = "pin-preparation", InputPreparation = "input-preparation",
   LaunchPlan = "launch-plan", HostSubmission = "host-submission", StartReadback = "start-readback",
+}
+/** Private material scope only; never a member path, cache state or authority. */
+export enum ResearchMaterialRole {
+  Unknown = "unknown", RuntimeArtifact = "runtime-artifact", NodeExecutable = "node-executable", CodexExecutable = "codex-executable",
+}
+type KnownMaterialRole = Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>;
+const materialRoles = new WeakMap<object, KnownMaterialRole>();
+export function annotateResearchMaterialFailure(error: unknown, role: KnownMaterialRole): unknown {
+  try { if (error && typeof error === "object" && !materialRoles.has(error)) materialRoles.set(error, role); }
+  catch { /* Observation only; retain the original thrown identity. */ }
+  return error;
 }
 const operatorStartStages = new WeakMap<object, ResearchLaunchStage>();
 /** Observe the same failed attempt without changing its error or recovery ownership. */
@@ -107,4 +120,18 @@ export function normalizeResearchLaunchFailure(error: unknown): ReturnType<typeo
     current = ownData(current, "cause");
   }
   return { ...outer, cause, diagnostic };
+}
+
+/** Keep the deployed failure contract unchanged; add only an identity-bound private role. */
+export function normalizeResearchMaterialFailure(error: unknown) {
+  let materialRole = ResearchMaterialRole.Unknown, current = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth++) {
+    seen.add(current);
+    const role = materialRoles.get(current);
+    if (role) { materialRole = role; break; }
+    if (types.isProxy(current)) break;
+    current = ownData(current, "cause");
+  }
+  return { ...normalizeResearchLaunchFailure(error), materialRole };
 }
