@@ -1,4 +1,5 @@
 import { hostedManagedDependencyProviderInvocation, bindHostedDependencyToolChild, abandonHostedDependencyToolInvocation } from "./hosted-managed-dependency-tool-plan";
+import { sameHostedDependencyStatFacts as sameStat } from "./hosted-dependency-stat-facts";
 import { spawnHostedFdChild, hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { createHash } from "node:crypto";
 import { spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -50,10 +51,6 @@ export enum CurrentHostedDependencyOriginKind { Ordinary = "ordinary", ManagedRe
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_dependency_current_origin_unresolved"); }
 const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState }>();
-function sameStat(a: BigIntStats, b: BigIntStats): boolean {
-  return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid &&
-    a.nlink === b.nlink && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
-}
 /** PRIVATE selected-path reader. Only names derived below from independently
  * pinned start/installation are used; no exported arbitrary-path read port. */
 function selectedFile(path: string, maximum: number, privateFile = true) {
