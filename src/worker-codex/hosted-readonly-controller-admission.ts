@@ -6,6 +6,7 @@ import {
 } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { admitHostedTestEgress } from "./hosted-test-egress-admission";
+import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
 
@@ -22,6 +23,7 @@ export async function admitHostedControllerLaunch(launch: CodexGoalLaunchInput) 
     sourceEnv: config.sourceEnv ?? process.env,
   };
   const admitted = await admitHostedTestEgress({ ...identity,
+    ...codexGoalNativeEgressConfig(config),
     ...(config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
       ? { modelBackend: CodexModelBackend.XiaomiMimoTokenPlan } : {}) });
   const policy = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan

@@ -17,6 +17,10 @@ import { hostedDependencyBindingName, hostedDependencyJobRoot, hostedDependencyO
 import * as dependencyWorkspace from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { HostedDependencyReferenceKind } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { tryRunHostedLegacyReference } from "../hosted-dependency-legacy-reference";
+import * as referenceRecords from "../hosted-dependency-legacy-reference-records";
+import { CodexSessionHomeProfileKind } from "../codex-session-home-profile";
+import type { CodexGoalRunConfig } from "../codex-goal-runner";
+import { JobStorageHomeStateRequirement, JobStorageIntentKind } from "@vioxen/subscription-runtime/worker-core";
 import { submitHostedOrdinaryProcess } from "../../provider-codex/app-server/adapters/hosted-process-activation";
 import { admitHostedDependencyConsumer, assertHostedDependencyExecutionWorkspace } from "../hosted-dependency-admission";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -164,6 +168,29 @@ export function registerDependencyConsumerAdmissionTests(input: {
       expect(input.fixture.spawn).not.toHaveBeenCalled();
       expect(fs.existsSync(input.local(workspacePath+"/node_modules"))).toBe(false);
       expect(readFileSync(input.local(workspacePath+"/dirty-source"),"utf8")).toBe("original dirty TEST bytes\n");
+    });
+    const unsupportedReferencePolicies: readonly Partial<Pick<CodexGoalRunConfig, "storage" | "sessionHomeProfile">>[] = [
+      { storage: { generationId: randomUUID(), intent: { kind: JobStorageIntentKind.NoResume,
+        homeStateRequirement: JobStorageHomeStateRequirement.NoneRequired } } },
+      { sessionHomeProfile: { kind: CodexSessionHomeProfileKind.OneShot } },
+      { sessionHomeProfile: { kind: CodexSessionHomeProfileKind.Continuation, sessionId: "TEST-reference-session" } },
+    ];
+    it.each(unsupportedReferencePolicies)("reference purpose refuses explicit NEW policy %j before relation or owner effects", async policy => {
+      // Old entry ignores the policy and reaches this real relation reader;
+      // missing evidence then produces ENOENT. No fixture grants a relation.
+      const p=prepared(),binding=parseHostedDependencyBinding({...p.binding,version:3,
+        reference:{kind:HostedDependencyReferenceKind.LegacyRegistryV1,operationId:randomUUID()}});
+      input.put(hostedDependencyBindingName(jobId),binding);
+      const relation=vi.spyOn(referenceRecords,"readReferenceRelation");
+      const before=readFileSync(input.local(workspacePath+"/dirty-source"));
+      await expect(tryRunHostedLegacyReference({taskId:jobId,jobId,jobRootDir,workspacePath,
+        authRootDir:jobRootDir+"/auth",promptPath:jobRootDir+"/prompt.md",accounts:[],...policy}))
+        .rejects.toThrow(/^dependency_legacy_reference_unresolved$/);
+      expect(relation).not.toHaveBeenCalled();
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+      expect(fs.existsSync(input.local(workspacePath+"/node_modules"))).toBe(false);
+      expect(readFileSync(input.local(workspacePath+"/dirty-source"))).toEqual(before);
     });
     it("active legacy v1 cannot admit a provider but its exact release fence remains available", () => {
       // A new parser must not reinterpret an old Running owner as new authority.
