@@ -1,3 +1,4 @@
+import { type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { isAppServerAdmissionError } from "./app-server-admission";
 import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
@@ -46,6 +47,7 @@ export class AppServerTurnRunner {
   }): Promise<{
     readonly status?: "completed";
     readonly outputText: string;
+    readonly nativeWeb?: NativeWebEvidence;
     readonly usage?: AgentUsage;
     readonly warnings: readonly AppServerWarning[];
   }> {
@@ -93,12 +95,13 @@ export class AppServerTurnRunner {
           });
         },
       );
-      if (turn.error) throw new AppServerUsageError(turn.error, turn.usage);
+      if (turn.error) throw new AppServerUsageError(turn.error, turn.usage, true, turn.nativeWeb);
       if (!turn.outputText.trim()) {
         throw new AppServerUsageError(
           new Error("codex_app_server_final_message_missing"),
           turn.usage,
           true,
+          turn.nativeWeb,
         );
       }
       if (input.prepareNext ?? true) {
@@ -107,6 +110,7 @@ export class AppServerTurnRunner {
       warnings.push(...this.options.client.drainWarnings());
       return {
         outputText: turn.outputText,
+        ...(turn.nativeWeb === undefined ? {} : { nativeWeb: turn.nativeWeb }),
         ...(turn.usage === undefined ? {} : { usage: turn.usage }),
         warnings,
       };

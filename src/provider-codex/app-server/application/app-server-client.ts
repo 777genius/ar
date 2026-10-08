@@ -1,3 +1,5 @@
+import { nativeWebId } from "@vioxen/subscription-runtime/core";
+import { AppServerNativeWebCapture } from "./app-server-native-web";
 import { appServerThreadToolPolicy } from "./app-server-thread-tool-policy";
 import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
 import { codexProviderHasPublicSources } from "../../codex-provider-egress-policy";
@@ -121,6 +123,7 @@ export class CodexAppServerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly serverRequestIds = new Set<string>();
   private readonly tokenUsage = new AppServerTokenUsageTracker((warning) => this.warnings.push(warning));
+  private readonly nativeWebCaptures = new Map<string, AppServerNativeWebCapture>();
   private readonly turns = new Map<string, TurnState>();
   private readonly startingTurnThreads = new Set<string>();
   private readonly pendingTurnIdsByThread = new Map<string, string>();
@@ -481,10 +484,13 @@ export class CodexAppServerClient {
     readonly turnNumber?: number;
     readonly onTextDelta?: (text: string) => void;
   }): Promise<AppServerAcknowledgedTurnResult> {
+    if (!nativeWebId(input.threadId)) throw new Error("codex_app_server_thread_id_invalid");
     const targetedThreadId = input.threadId;
     const release = this.turnAdmission.acquire(input.threadId);
     const usage = this.tokenUsage.activate(input.threadId);
+    const nativeWeb = new AppServerNativeWebCapture(input.threadId);
     try {
+      this.nativeWebCaptures.set(input.threadId, nativeWeb);
       this.startingTurnThreads.add(input.threadId);
       this.publicResearchTools.beginTurn(input.threadId, input.abortSignal);
       const startedAt = Date.now();
@@ -516,7 +522,10 @@ export class CodexAppServerClient {
           }),
           { ...input, observeResponse: response => {
             const id = nestedString(response.result, ["turn", "id"]);
-            if (!response.error && id) this.publicResearchTools.bindTurn(input.threadId, id);
+            if (!response.error && id) {
+              nativeWeb.bind(id);
+              this.publicResearchTools.bindTurn(input.threadId, id);
+            }
           } },
         );
       } catch (error) {
@@ -541,7 +550,7 @@ export class CodexAppServerClient {
         );
       }
       const turnId = nestedString(response.result, ["turn", "id"]);
-      if (!turnId) {
+      if (!nativeWebId(turnId)) {
         this.clearStartingTurn(input.threadId);
         throw turnFailureError(new AppServerRequestMayHaveReachedProviderError(
           new Error("codex_app_server_turn_id_missing"),
@@ -566,10 +575,13 @@ export class CodexAppServerClient {
       }
       this.startingTurnThreads.delete(input.threadId);
       this.clearIdleTurnState();
-      if (!turn.error) return { ...turn, ...identity };
+      const evidence = nativeWeb.result();
+      const receipt = evidence === undefined ? {} : { nativeWeb: evidence };
+      if (!turn.error) return { ...turn, ...identity, ...receipt };
       return {
         ...turn,
         ...identity,
+        ...receipt,
         usage: turn.usage ?? usage.usage,
         error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
           phase: turn.outputText.length > 0 ? "turn_error_after_output" : "turn_error_before_output",
@@ -579,9 +591,11 @@ export class CodexAppServerClient {
         }),
       };
     } catch (error) {
-      if (usage.usage) throw new AppServerUsageError(error, usage.usage, true);
+      const evidence = nativeWeb.result();
+      if (usage.usage || evidence) throw new AppServerUsageError(error, usage.usage, true, evidence);
       throw error;
     } finally {
+      this.nativeWebCaptures.delete(input.threadId);
       this.publicResearchTools.endTurn(input.threadId);
       this.tokenUsage.deactivate(input.threadId);
       release();
@@ -736,6 +750,8 @@ export class CodexAppServerClient {
       return;
     }
     if (record.method === "item/completed") {
+      const threadId = stringField(params, "threadId");
+      if (threadId) this.nativeWebCaptures.get(threadId)?.observe(params, false);
       const turnId = stringField(params, "turnId");
       const item = readRecord(params?.item);
       if (item?.type === "agentMessage") {
@@ -752,11 +768,16 @@ export class CodexAppServerClient {
       return;
     }
     if (record.method === "turn/completed") {
+      const threadId = stringField(params, "threadId");
+      if (threadId) this.nativeWebCaptures.get(threadId)?.observe(params, true);
       const turn = readRecord(params?.turn);
       const turnId = stringField(turn, "id");
       if (turnId) this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
       if (turnId) this.dynamicTools.cancelTurn(turnId);
       const state = this.ensureTurn(turnId);
+      for (const [thread, pendingId] of this.pendingTurnIdsByThread) {
+        if (pendingId === (this.turnIdAliases.get(turnId ?? "") ?? turnId)) this.nativeWebCaptures.get(thread)?.finish();
+      }
       state.completed = true;
       const status = readRecord(turn?.status);
       const statusType = stringField(turn, "status") ??
