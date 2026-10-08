@@ -60,6 +60,7 @@ struct np_managed_original {
   enum {
     REF_UNSENT, REF_SENT_UNKNOWN, REF_ACK_HELD, REF_RELEASE_UNKNOWN, REF_RELEASE_ACKED }
   reference;
+  const char *loss_reason;
   bool initialized,collision_unknown,connect_sent,shared_unknown,lost,subscribed,matched,start_sent,associated,stop_sent,closed;
 }
 ;
@@ -80,13 +81,17 @@ static int same(int a,int b){
   struct stat x,y;
   return fstat(a,&x)||fstat(b,&y)||x.st_dev!=y.st_dev||x.st_ino!=y.st_ino?-1:0;
 }
+static void lose(struct np_managed_original *m,const char *reason) {
+  m->lost=true;
+  if(!m->loss_reason){m->loss_reason=reason;(void)np_origin_journal_v1(m->origin,"manager-loss",reason);}
+}
 static int boundary(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
   if((m->lost&&!cleanup)||np_birth_live_v1(&m->manager)||np_origin_boundary_v1(o,cleanup)){
     return -1;
   }
   if(m->connect_sent&&(np_birth_live_v1(&m->daemon)||live(m->listener_pidfd))){
     m->shared_unknown=true;
-    m->lost=true;
+    lose(m,"daemon-listener-death");
     return cleanup?0:-1;
   }
   return 0;
@@ -109,41 +114,41 @@ static int response(sd_bus_message *message,void *data,sd_bus_error *error) {
 static int event(sd_bus_message *message,void *data,sd_bus_error *error) {
   (void)error;
   struct np_managed_original *m=data;
-  if(sd_bus_message_is_signal(message,DAEMON,"NameOwnerChanged")>0){
+  if(sd_bus_message_get_bus(message)==m->api&&sd_bus_message_is_signal(message,DAEMON,"NameOwnerChanged")>0){
     const char *name,*before,*after;
     const char *sender=sd_bus_message_get_sender(message);
-    if(!sender||strcmp(sender,DAEMON)||sd_bus_message_has_signature(message,"sss")<=0||sd_bus_message_read(message,"sss",&name,&before,&after)<=0){
-      m->lost=true;
+    if(!sender||strcmp(sender,DAEMON)||!sd_bus_message_get_path(message)||strcmp(sd_bus_message_get_path(message),DAEMON_PATH)||sd_bus_message_has_signature(message,"sss")<=0||sd_bus_message_read(message,"sss",&name,&before,&after)<=0){
+      lose(m,"daemon-owner-signal-malformed");
       return 0;
     }
     (void)before;
     if(!strcmp(name,MANAGER)&&m->unique[0]&&strcmp(after,m->unique)){
-      m->lost=true;
+      lose(m,"manager-owner-replaced");
       m->shared_unknown=true;
     }
     return 0;
   }
-  if(sd_bus_message_is_signal(message,MANAGER_IFACE,"JobRemoved")>0){
+  if(sd_bus_message_get_bus(message)==m->direct&&sd_bus_message_get_path(message)&&!strcmp(sd_bus_message_get_path(message),MANAGER_PATH)&&sd_bus_message_is_signal(message,MANAGER_IFACE,"JobRemoved")>0){
     uint32_t id;
     const char *path,*unit,*outcome;
     if(sd_bus_message_has_signature(message,"uoss")<=0||sd_bus_message_read(message,"uoss",&id,&path,&unit,&outcome)<=0){
-      m->lost=true;
+      lose(m,"direct-job-signal-malformed");
       return 0;
     }
     if(strcmp(unit,m->unit)){
       return 0;
     }
     if(m->job_count>=JOBS){
-      m->lost=true;
+      lose(m,"direct-job-capacity-exhausted");
       return 0;
     }
     struct original_job *j=&m->jobs[m->job_count++];
     j->id=id;
     j->message=sd_bus_message_ref(message);
-    if(copy(j->path,sizeof j->path,path)||copy(j->unit,sizeof j->unit,unit)||copy(j->outcome,sizeof j->outcome,outcome))m->lost=true;
+    if(copy(j->path,sizeof j->path,path)||copy(j->unit,sizeof j->unit,unit)||copy(j->outcome,sizeof j->outcome,outcome))lose(m,"direct-job-field-capacity");
     char prefix[512];
     snprintf(prefix,sizeof prefix,"id=%u path=%s unit=%s outcome=%s",id,path,unit,outcome);
-    if(np_origin_journal_v1(m->origin,"job-removed",prefix))m->lost=true;
+    if(np_origin_journal_v1(m->origin,"job-removed",prefix))lose(m,"direct-job-journal-loss");
   }
   return 0;
 }
@@ -517,6 +522,10 @@ int np_managed_api_ref_open_v1(struct np_root_origin *o,struct np_managed_origin
   char original[768];
   snprintf(original,sizeof original,"managerPid=%ld daemonPid=%ld daemonUid=%u daemonGid=%u invocation=%s exe=%llu:%llu time=%llu:%llu children=%llu:%llu",(long)m->manager.pid,(long)m->daemon.pid,(unsigned)m->daemon.uid,(unsigned)m->daemon.gid,invocation,(unsigned long long)exe.st_dev,(unsigned long long)exe.st_ino,(unsigned long long)time_ns.st_dev,(unsigned long long)time_ns.st_ino,(unsigned long long)children_ns.st_dev,(unsigned long long)children_ns.st_ino);
   if(np_origin_journal_v1(o,"daemon-preconnect-pin",original))return -1;
+  uint64_t connect_now;
+  if(np_origin_now_v1(o,&connect_now))return -1;
+  uint64_t connect_end=connect_now+2*NP_ORIGIN_SECOND;
+  if(connect_end>np_origin_ends_v1(o)->work)connect_end=np_origin_ends_v1(o)->work;
   if(np_origin_effect_begin_v1(o,NP_ORIGIN_CONNECT)){
     return -1;
   }
@@ -524,6 +533,7 @@ int np_managed_api_ref_open_v1(struct np_root_origin *o,struct np_managed_origin
   if(np_origin_journal_v1(o,"api-connect-armed",original)){np_origin_effect_end_v1(o);
   return -1;
   }
+  if(np_origin_effect_check_v1(o,false,connect_end)){np_origin_effect_end_v1(o);return -1;}
   struct ucred peer;
   int fd=connect_fixed("/run/dbus/system_bus_socket",&m->socket_path,&m->listener_pidfd,&peer);
   np_origin_effect_end_v1(o);
@@ -782,7 +792,7 @@ int np_managed_connections_settle_v1(struct np_root_origin *o,struct np_managed_
     return 0;
   }
   if(m->closed){
-    return 0;
+    return m->lost||m->shared_unknown?-1:0;
   }
   if(!m->initialized||m->collision_unknown||m->collision||(m->start_sent&&!m->associated)){
     return -1;
@@ -815,7 +825,7 @@ int np_managed_connections_settle_v1(struct np_root_origin *o,struct np_managed_
   sd_bus_close_unref(m->direct);
   m->api=m->direct=NULL;
   m->closed=true;
-  return m->shared_unknown?-1:0;
+  return m->lost||m->shared_unknown?-1:0;
 }
 bool np_managed_shared_unknown_v1(struct np_managed_original *m){
   return m&&m->shared_unknown;

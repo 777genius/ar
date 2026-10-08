@@ -85,6 +85,41 @@ int main(void) {
   close(boot);
   np_clock_release_v1(&clock);
   assert(!munmap(mutex,sizeof *mutex));
+  /* Red if emergency close can be overwritten by a pending associated commit.
+   * Real fork/IPC exercises the production transition and independently checks
+   * no effect file, original child wait and EOF. No Origin is constructed. */
+  struct { pthread_mutex_t mutex; _Atomic unsigned admission; } *gate=mmap(NULL,sizeof *gate,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
+  assert(gate!=MAP_FAILED);
+  assert(!np_origin_mutex_init_v1(&gate->mutex));
+  atomic_init(&gate->admission,0);
+  int release[2];
+  assert(!pipe(pipefd)&&!pipe(release));
+  child=fork();
+  assert(child>=0);
+  if(!child){
+    close(pipefd[0]);close(release[1]);
+    assert(!np_origin_mutex_take_v1(&gate->mutex,now()+NP_ORIGIN_SECOND));
+    assert(write(pipefd[1],"P",1)==1);
+    assert(read(release[0],&byte,1)==1&&byte=='C');
+    int claimed=np_origin_admission_claim_v1(&gate->admission);
+    if(!claimed){int effect=open("late-commit-effect",O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);assert(effect>=0);close(effect);}
+    assert(!pthread_mutex_unlock(&gate->mutex));
+    _exit(claimed?77:0);
+  }
+  close(pipefd[1]);close(release[0]);
+  held.fd=pipefd[0];held.revents=0;
+  assert(poll(&held,1,2000)==1&&read(pipefd[0],&byte,1)==1&&byte=='P');
+  assert(np_origin_mutex_take_v1(&gate->mutex,now()+UINT64_C(50000000))==ETIMEDOUT);
+  np_origin_admission_close_v1(&gate->admission);
+  assert(write(release[1],"C",1)==1);
+  close(release[1]);
+  assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==77);
+  assert(read(pipefd[0],&byte,1)==0);
+  errno=0;assert(access("late-commit-effect",F_OK)==-1&&errno==ENOENT);
+  assert(np_origin_admission_claim_v1(&gate->admission)==-1);
+  close(pipefd[0]);
+  assert(!pthread_mutex_destroy(&gate->mutex));
+  assert(!munmap(gate,sizeof *gate));
   /* Actual bounded private DATA artifact boundary. No Origin is constructed. */
   int directory=open(".",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
   assert(directory>=0);

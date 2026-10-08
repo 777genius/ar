@@ -48,6 +48,7 @@ struct shared_origin {
   struct np_origin_ends ends;
   _Atomic uint64_t high_water, attempt_end;
   _Atomic bool closed, broken;
+  _Atomic unsigned admission;
    bool slots[NP_ORIGIN_EFFECTS];
 }
 ;
@@ -74,7 +75,7 @@ struct np_root_origin {
   bool snapshot_sent, frozen, intent, child_wait, eof[2], helper_wait, child_ready, stopped, namespace_changed;
   struct np_origin_ends cleanup_ends;
   uint64_t cleanup_high_water, cleanup_attempt_end;
-  bool cleanup_started, cleanup_uncertain, cleanup_effect, cleanup_slots[NP_ORIGIN_EFFECTS];
+  bool effect_locked, cleanup_started, cleanup_uncertain, cleanup_effect, cleanup_slots[NP_ORIGIN_EFFECTS];
   uint64_t sequence[2];
   unsigned child_state, journal_count;
   bool journal_failed;
@@ -328,6 +329,7 @@ int np_root_origin_begin_v1(struct np_admin_operation *a, struct np_root_origin 
     o->shared=NULL;
     return -1;
   }
+  atomic_init(&o->shared->admission,0);
   if(np_origin_mutex_init_v1(&o->shared->lock)){
     return -1;
   }
@@ -400,12 +402,20 @@ int np_origin_mutex_take_v1(pthread_mutex_t *mutex,uint64_t end) {
     (void)nanosleep(&nap,NULL);
   }
 }
+int np_origin_admission_claim_v1(_Atomic unsigned *admission) {
+  unsigned open=0;
+  return atomic_compare_exchange_strong(admission,&open,1)?0:-1;
+}
+void np_origin_admission_close_v1(_Atomic unsigned *admission) {
+  atomic_store(admission,2);
+}
 static void record_close(struct np_root_origin *o) {
   uint64_t now,observed=atomic_load(&o->shared->high_water);
   if(monotonic(&now)||now<observed)now=observed;
   uint64_t end=now<=INT64_MAX-60*NP_ORIGIN_SECOND?minimum(now+60*NP_ORIGIN_SECOND,o->cleanup_ends.cleanup):o->cleanup_ends.cleanup;
   uint64_t absent=0;
   (void)atomic_compare_exchange_strong(&o->shared->attempt_end,&absent,end);
+  np_origin_admission_close_v1(&o->shared->admission);
   atomic_store(&o->shared->closed,true);
 }
 static int lock_origin(struct np_root_origin *o, uint64_t end) {
@@ -471,7 +481,7 @@ int np_origin_now_v1(struct np_root_origin *o,uint64_t *out) {
 }
 int np_origin_boundary_v1(struct np_root_origin *o,bool cleanup) {
   uint64_t now;
-  return np_origin_now_v1(o,&now)||now>=(cleanup?o->shared->ends.cleanup:o->shared->ends.work)||(!cleanup&&(o->shared->closed||o->cleanup_started))?-1:0;
+  return np_origin_now_v1(o,&now)||now>=(cleanup?o->shared->ends.cleanup:o->shared->ends.work)||(!cleanup&&(o->shared->closed||atomic_load(&o->shared->admission)==2||o->cleanup_started))?-1:0;
 }
 int np_origin_effect_begin_v1(struct np_root_origin *o,enum np_origin_effect effect) {
   bool cleanup=effect==NP_ORIGIN_STOP||effect==NP_ORIGIN_UNREF;
@@ -486,24 +496,25 @@ int np_origin_effect_begin_v1(struct np_root_origin *o,enum np_origin_effect eff
     return -1;
   }
   uint64_t now;
-  if(sample_locked(o,&o->clock,&now)||now>=(cleanup?o->shared->ends.cleanup:o->shared->ends.work)||(!cleanup&&o->shared->closed)||o->shared->slots[effect]){
+  if(sample_locked(o,&o->clock,&now)||now>=(cleanup?o->shared->ends.cleanup:o->shared->ends.work)||(!cleanup&&(o->shared->closed||atomic_load(&o->shared->admission)==2))||o->shared->slots[effect]){
     pthread_mutex_unlock(&o->shared->lock);
     return -1;
   }
   o->shared->slots[effect]=true;
-  if(getpid()==o->principal)o->cleanup_slots[effect]=true;
+  if(getpid()==o->principal){o->cleanup_slots[effect]=true;o->effect_locked=true;}
   return 0;
 }
 int np_origin_effect_check_v1(struct np_root_origin *o,bool cleanup,uint64_t end) {
   if(!o||o!=sole||getpid()!=o->principal)return -1;
   uint64_t now;
   if(o->cleanup_started)return !cleanup||cleanup_now(o,&now)||now>=end?-1:0;
-  return sample_locked(o,&o->clock,&now)||o->shared->closed||now>=end||now>=o->cleanup_ends.work?-1:0;
+  return sample_locked(o,&o->clock,&now)||(o->shared->closed||atomic_load(&o->shared->admission)==2)||now>=end||now>=o->cleanup_ends.work?-1:0;
 }
 void np_origin_effect_end_v1(struct np_root_origin *o){
   if(o&&o==sole&&o->cleanup_effect){o->cleanup_effect=false;
   return;
   }
+  o->effect_locked=false;
   (void)pthread_mutex_unlock(&o->shared->lock);
 }
 const struct np_origin_ends *np_origin_ends_v1(struct np_root_origin *o){
@@ -562,7 +573,9 @@ int np_origin_journal_v1(struct np_root_origin *o,const char *event,const char *
   return 0;
 failed:
   o->journal_failed=true;
-  record_close(o);
+  if(o->effect_locked||o->cleanup_started)record_close(o);
+  else if(!lock_origin(o,o->cleanup_ends.cleanup)){record_close(o);pthread_mutex_unlock(&o->shared->lock);}
+  else record_close(o);
   return -1;
 }
 static int phase_io(struct np_root_origin *o,unsigned char *p,size_t n,bool writing) {
@@ -757,13 +770,17 @@ int np_origin_sample_v1(struct np_origin_child *c,uint64_t *out) {
 int np_origin_child_work_v1(struct np_origin_child *c) {
   if(child_member(c)||lock_origin(c->origin,c->origin->shared->ends.work))return -1;
   uint64_t now;
-  int result=sample_locked(c->origin,&c->clock,&now)||c->origin->shared->closed||now>=c->origin->shared->ends.work?-1:0;
+  int result=sample_locked(c->origin,&c->clock,&now)||(c->origin->shared->closed||atomic_load(&c->origin->shared->admission)==2)||now>=c->origin->shared->ends.work?-1:0;
   pthread_mutex_unlock(&c->origin->shared->lock);
   return result;
 }
 int np_origin_child_commit_check_v1(struct np_origin_child *c) {
   uint64_t now;
-  return child_member(c)||sample_locked(c->origin,&c->clock,&now)||c->origin->shared->closed||now>=c->origin->shared->ends.cold?-1:0;
+  return child_member(c)||sample_locked(c->origin,&c->clock,&now)||(c->origin->shared->closed||atomic_load(&c->origin->shared->admission)==2)||now>=c->origin->shared->ends.cold?-1:0;
+}
+int np_origin_child_commit_claim_v1(struct np_origin_child *c) {
+  if(np_origin_child_commit_check_v1(c))return -1;
+  return np_origin_admission_claim_v1(&c->origin->shared->admission);
 }
 int np_origin_child_commit_begin_v1(struct np_origin_child *c) {
   if(child_member(c)||lock_origin(c->origin,c->origin->shared->ends.cold))return -1;
@@ -778,7 +795,7 @@ int np_origin_child_begin_v1(struct np_origin_child *c,enum np_origin_effect eff
   }
   uint64_t now;
   struct shared_origin *s=c->origin->shared;
-  if(sample_locked(c->origin,&c->clock,&now)||s->closed||now>=s->ends.cold||s->slots[effect]){
+  if(sample_locked(c->origin,&c->clock,&now)||(s->closed||atomic_load(&s->admission)==2)||now>=s->ends.cold||s->slots[effect]){
     pthread_mutex_unlock(&s->lock);
     return -1;
   }
@@ -827,7 +844,7 @@ static int child_namespace(struct np_root_origin *o) {
   if(lock_origin(o,o->shared->ends.cold)){
     return -1;
   }
-  int failed=sample_locked(o,&o->clock,&now)||o->shared->closed||now>=o->shared->ends.cold||unshare(CLONE_NEWNS)||mount(NULL,"/",NULL,MS_REC|MS_PRIVATE,NULL)||mount(NP_ORIGIN_IMAGE,NP_ORIGIN_IMAGE,NULL,MS_BIND|MS_REC,NULL)||mount(NULL,NP_ORIGIN_IMAGE,NULL,MS_BIND|MS_REMOUNT|MS_RDONLY|MS_NOSUID|MS_NODEV,NULL)||chdir(NP_ORIGIN_IMAGE)||chroot(".")||chdir("/")||mount("tmpfs","/tmp","tmpfs",MS_NOSUID|MS_NODEV,"mode=1777,size=16777216")||mount("proc","/proc","proc",MS_NOSUID|MS_NODEV|MS_NOEXEC,NULL)||unshare(CLONE_NEWCGROUP);
+  int failed=sample_locked(o,&o->clock,&now)||(o->shared->closed||atomic_load(&o->shared->admission)==2)||now>=o->shared->ends.cold||unshare(CLONE_NEWNS)||mount(NULL,"/",NULL,MS_REC|MS_PRIVATE,NULL)||mount(NP_ORIGIN_IMAGE,NP_ORIGIN_IMAGE,NULL,MS_BIND|MS_REC,NULL)||mount(NULL,NP_ORIGIN_IMAGE,NULL,MS_BIND|MS_REMOUNT|MS_RDONLY|MS_NOSUID|MS_NODEV,NULL)||chdir(NP_ORIGIN_IMAGE)||chroot(".")||chdir("/")||mount("tmpfs","/tmp","tmpfs",MS_NOSUID|MS_NODEV,"mode=1777,size=16777216")||mount("proc","/proc","proc",MS_NOSUID|MS_NODEV|MS_NOEXEC,NULL)||unshare(CLONE_NEWCGROUP);
   pthread_mutex_unlock(&o->shared->lock);
   if(failed){
     return -1;
@@ -1280,11 +1297,15 @@ int np_root_origin_join_v1(struct np_root_origin *o,struct np_l0_native_data *da
       if((!o->child_wait||!o->eof[0]||!o->eof[1]||!o->helper_wait)&&now>=signal_at){
         if(!signalled){
           if(o->managed&&np_managed_stop_v1(o,o->managed))manager_ok=false;
+          if(np_origin_now_v1(o,&now)||now>=o->cleanup_attempt_end)break;
           if(!o->child_wait)(void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGTERM,NULL,0);
           signalled=true;
           signal_at=minimum(now+2*NP_ORIGIN_SECOND,o->cleanup_attempt_end);
         }
-        else if(!o->child_wait)(void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGKILL,NULL,0);
+        else if(!o->child_wait){
+          if(np_origin_now_v1(o,&now)||now>=o->cleanup_attempt_end)break;
+          (void)syscall(SYS_pidfd_send_signal,o->child_pidfd,SIGKILL,NULL,0);
+        }
       }
       struct timespec nap={
         .tv_nsec=10000000}

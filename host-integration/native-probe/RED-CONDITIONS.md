@@ -111,3 +111,18 @@ Existing foundation 28, owner 5, raw ingress/digest/DATA IPC cases remain.
 No mocked privileged positive or source-text test is added. Remote strict C17
 warnings-as-errors, native and root TypeScript input checks, transport/installer
 contracts and the independent physical negative matrix are separate gates.
+
+R3 repairs add one actual fork/IPC regression: a close while the child is
+pending under the original mutex must make the production admission claim
+refuse. The original wait/EOF and absence of the effect file are independent
+observations. This primitive constructs no NativeRoot. The measured-leaf
+fixture uses reviewed 0600 bytes so a restrictive CI umask preserves its valid
+precondition; changed bytes and symlink refusal remain checked.
+
+The admitted NEWTEST negative matrix must also observe: a journal delay cannot
+move API connect past the original work end; packet/StopUnit delay cannot move
+pidfd signals past the first cleanup attempt end; parser/capacity loss stays
+HELD while owned cleanup continues. A real foreign API peer's directed matching
+JobRemoved must enter neither the job journal nor job completion; the original
+held direct-manager event at its exact object path must still complete. These
+physical cases remain pending, not supplied by the source gate fixture.

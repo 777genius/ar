@@ -45,7 +45,8 @@ test("actual entry rejects public argv/JSON with independently unchanged disposa
   const directory=await mkdtemp(join(tmpdir(),"producer-refusal-"));
   try {const before=await readdir(directory);for(const args of [[],["genuine=true"]]){const result=await command(path,args,Buffer.from('{"uid":0,"origin":true}'),directory);assert.equal(result.code,77);assert.equal(result.signal,null);assert.deepEqual(JSON.parse(result.stdout.toString()),{status:"UNKNOWN_HELD"});assert.deepEqual(await readdir(directory),before);} }finally{await rm(directory,{recursive:true});}
 });
-// Red if supported libc fork/robust list loses death detection or renews wait.
+// Red if supported fork loses owner-death state or renews wait, or a close
+// before pending commit produces an effect. Actual fork/wait/EOF is independent.
 test("actual shared native gate retains original wait/EOF and irreversible owner death",async()=>{
   const executable=process.env.NP_ROOT_ORIGIN_GATE;assert.ok(executable);
   const directory=await mkdtemp(join(tmpdir(),"producer-prefix-"));
@@ -60,7 +61,7 @@ test("actual shared native gate retains original wait/EOF and irreversible owner
 test("measured filesystem leaf rejects changed content and symlink",async t=>{
   if(process.getuid?.()!==0){t.skip("protected ROOT filesystem primitive requires disposable UID0 fixture");return;}
   const directory=await mkdtemp("/run/native-producer-source-");const original=await lstat(directory,{bigint:true});
-  try {const path=join(directory,"leaf"),bytes=Buffer.from("reviewed fixed input\n");await writeFile(path,bytes,{mode:0o644});const file={path,bytes:bytes.length,mode:0o644,sha256:createHash("sha256").update(bytes).digest("hex")};assert.deepEqual(readMeasuredLeaf(path,file),bytes);await writeFile(path,Buffer.from("changed fixed input!\n"));assert.throws(()=>readMeasuredLeaf(path,file));await symlink(path,join(directory,"alias"));assert.throws(()=>readMeasuredLeaf(join(directory,"alias"),file));}
+  try {const path=join(directory,"leaf"),bytes=Buffer.from("reviewed fixed input\n");await writeFile(path,bytes,{mode:0o600});const file={path,bytes:bytes.length,mode:0o600,sha256:createHash("sha256").update(bytes).digest("hex")};assert.deepEqual(readMeasuredLeaf(path,file),bytes);await writeFile(path,Buffer.from("changed fixed input!\n"));assert.throws(()=>readMeasuredLeaf(path,file));await symlink(path,join(directory,"alias"));assert.throws(()=>readMeasuredLeaf(join(directory,"alias"),file));}
   finally{const current=await lstat(directory,{bigint:true});assert.equal(current.dev,original.dev);assert.equal(current.ino,original.ino);await rm(directory,{recursive:true});}
 });
 // Separate physical gate: flag selects an explicitly prepared NEWTEST fixture,

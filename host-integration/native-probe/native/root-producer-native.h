@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #define NP_ORIGIN_SECOND UINT64_C(1000000000)
 #define NP_ORIGIN_FILES 128
 #define NP_ORIGIN_PHASE_MAX 16384
@@ -15,6 +16,9 @@
 /* Shared-state primitives grant no Origin membership. */
 /* Cleanup clock observation grants no Origin membership or work effects. */
 int np_cleanup_clock_sample_v1(const struct np_clock *, int boot, const char *boot_id, uint64_t end, uint64_t *high_water, uint64_t *out);
+/* One irreversible admission transition, DATA primitive only. */
+int np_origin_admission_claim_v1(_Atomic unsigned *);
+void np_origin_admission_close_v1(_Atomic unsigned *);
 int np_origin_mutex_init_v1(pthread_mutex_t *);
 int np_origin_mutex_take_v1(pthread_mutex_t *, uint64_t absolute_end);
 struct np_admin_operation;
@@ -49,6 +53,7 @@ const char *np_origin_job_v1(struct np_root_origin *);
 int np_origin_daemon_fd_v1(struct np_root_origin *);
 int np_origin_daemon_identity_v1(struct np_root_origin *, uid_t *, gid_t *);
 int np_origin_sample_v1(struct np_origin_child *, uint64_t *);
+int np_origin_child_commit_claim_v1(struct np_origin_child *);
 int np_origin_child_commit_begin_v1(struct np_origin_child *);
 int np_origin_child_commit_check_v1(struct np_origin_child *);
 int np_origin_child_begin_v1(struct np_origin_child *, enum np_origin_effect);

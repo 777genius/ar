@@ -238,7 +238,7 @@ static int receive(struct np_original_owner *o) {
 #ifdef NP_ASSOCIATED_ORIGIN_V2
     if (o->origin) {
       if (np_origin_child_commit_begin_v1(o->origin)) return fail(o, NP_LOSS_ORIGINAL, ESTALE);
-      if (np_birth_live_v1(&o->channel.birth) || retained_ns(o->clock.time, o->channel.birth.time) || retained_ns(o->clock.children, o->channel.birth.children) || np_origin_child_commit_check_v1(o->origin)) {
+      if (np_birth_live_v1(&o->channel.birth) || retained_ns(o->clock.time, o->channel.birth.time) || retained_ns(o->clock.children, o->channel.birth.children) || np_origin_child_commit_claim_v1(o->origin)) {
         np_origin_child_end_v1(o->origin); return fail(o, NP_LOSS_ORIGINAL, ESTALE);
       }
       o->data.committed = true; o->data.state = NP_OWNER_COMMITTED;
