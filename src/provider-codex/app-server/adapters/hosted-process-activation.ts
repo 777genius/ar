@@ -1,7 +1,7 @@
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
-import { parseImmutableChildSlot, readSystemBusInfrastructureField } from "@vioxen/subscription-runtime/core";
+import { parseImmutableChildSlot, readSystemBusInfrastructureField, readFdCollectorProfileField } from "@vioxen/subscription-runtime/core";
 import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, readSync, opendirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
@@ -18,6 +18,10 @@ import type { CodexAppServerChildProcess } from "../application/app-server-proce
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const activeFences = new WeakSet<object>();
+const acquisitionBusy = new WeakSet<object>();
+export function isHostedActivationFenceBusy(error: unknown): boolean {
+  return !!error && typeof error === "object" && acquisitionBusy.has(error);
+}
 // Not a configurable policy root or a public arbitrary filesystem reader.
 const recordName = /^(?:dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
@@ -85,7 +89,11 @@ export function withHostedActivationFence<T>(action: (fence: HostedActivationFen
     throw new Error("hosted_custody_boot_identity_invalid");
   }
   const lock = join(root, `readonly-epoch.${boot}.lock`);
-  mkdirSync(lock, { mode: 0o700 });
+  try { mkdirSync(lock, { mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const busy = new Error("hosted_activation_fence_busy"); acquisitionBusy.add(busy); throw busy;
+  }
   const fence = Object.freeze({ held: true as const });
   activeFences.add(fence);
   try {
@@ -306,9 +314,11 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const decoded = decodeHostedActivationBytes(inventoryBytes);
   const revision = decoded && typeof decoded === "object" && "schemaVersion" in decoded ? decoded.schemaVersion : undefined;
   const inventory = { bytes: inventoryBytes, value: wire(decoded,
-    "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators" + (revision === 3 ? ",systemBusInfrastructure" : "")) };
-  if ((revision !== 2 && revision !== 3) || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
+    "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators" +
+    (revision === 3 || revision === 4 ? ",systemBusInfrastructure" : "") + (revision === 4 ? ",collectorProfile" : "")) };
+  if ((revision !== 2 && revision !== 3 && revision !== 4) || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
   const systemBusInfrastructure = readSystemBusInfrastructureField(inventory.value);
+  readFdCollectorProfileField(inventory.value);
   const units = rows(inventory.value.units).map(value => {
     const row = wire(value, "name,controlGroup,fragmentSha256"); str(row.name, /^[A-Za-z0-9_@.-]+\.(service|scope)$/);
     if (str(row.name).startsWith("subscription-runtime-hosted-")) invalid();
@@ -388,7 +398,23 @@ function pidBirth(pid: string): string {
 }
 
 const failedOrdinaryWaits = new WeakSet<object>();
+const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void }>();
 export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess): void { failedOrdinaryWaits.add(child); }
+
+/** A retained real submission is rechecked under the same mutex immediately
+ * before its one frame. No caller context or stored receipt can reconstruct it. */
+export function releaseHostedOrdinaryProcess(child: CodexAppServerChildProcess, release: (fence: HostedActivationFence, revalidate: () => void) => void): void {
+  withHostedActivationFence(fence => {
+    const retained = ordinaryReleases.get(child);
+    if (!retained || retained.released || failedOrdinaryWaits.has(child)) invalid();
+    retained.revalidate(fence);
+    release(fence, () => {
+      if (retained.released || failedOrdinaryWaits.has(child) || ordinaryReleases.get(child) !== retained) invalid();
+      retained.revalidate(fence);
+    });
+    retained.released = true;
+  });
+}
 
 /** Production default primitive calls this with its private synchronous spawn.
  * It never receives worker factory injection, mount options or a managed ticket. */
@@ -460,10 +486,25 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
       }
       assertHostedScopedAdmission(fence, parentId);
       const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
+      ordinaryReleases.set(child, { released: false, revalidate: held => {
+        const fresh = readHostedOrdinaryProcessOrigin(held);
+        if (JSON.stringify(fresh.start) !== JSON.stringify(start) ||
+            JSON.stringify(fresh.reservation) !== JSON.stringify(parentReservation) ||
+            fresh.activation.installationId !== activation.installationId || fresh.activation.bootId !== activation.bootId ||
+            fresh.activation.supervisorId !== activation.supervisorId) invalid();
+        assertHostedScopedAdmission(held, parentId);
+        const retained = readHostedActivationBytes(`ordinary-starts/${startId}.json`);
+        const current = requiredWire("host-activation.json", activationKeys).value;
+        const row = rows(current.ordinaryStarts).find(row => !!row && typeof row === "object" && "startId" in row && row.startId === startId);
+        if (!retained?.equals(bytes) || JSON.stringify(row) !== JSON.stringify(reservation)) invalid();
+        if (dependency) readHostedDependencyAttempt(dependency, fresh.start, parentId);
+        if (companion && companion.identity.deadlineEpochMs <= Date.now()) invalid();
+      } });
       if (companion) retainHostedScopedSubmitter(fence, companion, child);
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));
       child.on("exit", (code, signal) => {
+        ordinaryReleases.delete(child);
         if (code !== 0 || signal !== null || failedOrdinaryWaits.has(child)) return;
         try {
           withHostedActivationFence(() => {

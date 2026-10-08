@@ -19,7 +19,7 @@ beforeAll(() => {
   // Only the module invocation is observed; no admission/service/provider runs.
   writeFileSync(join(helper, "dist/worker-codex/research-provider-service.js"),
     'export async function runResearchProviderService(...args) { process.stdout.write(JSON.stringify(args)); }');
-  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors"]) {
+  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors", "hosted-fd-prelude"]) {
     const source = readFileSync(join(process.cwd(), "src/provider-codex/app-server/adapters", name + ".ts"), "utf8");
     const translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText
       .replace(/from "\.\/(hosted-[a-z-]+)"/g, 'from "./$1.mjs"');

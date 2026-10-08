@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase,
-  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, readSystemBusInfrastructureField,
+  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, readSystemBusInfrastructureField, readFdCollectorProfileField,
   type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
+import { readHostedFdProfile } from "./hosted-fd-observation";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 
 export const hostedDependencyPolicyRoot = "/var/lib/subscription-runtime-host-policy";
@@ -95,13 +96,15 @@ export function assertHostedDependencyQualifiedInventory(): void {
   if (!installationBytes || !inventoryBytes || !activationBytes) invalid();
   const installation = object(decodeHostedActivationBytes(installationBytes)),
     inventory = object(decodeHostedActivationBytes(inventoryBytes)), activation = object(decodeHostedActivationBytes(activationBytes));
-  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3) ||
+  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) ||
       !Array.isArray(inventory.ordinaryCreators) || !inventory.ordinaryCreators.length || !Array.isArray(activation.ordinaryStarts)) invalid();
   // Revision 3 cannot be downgraded or smuggle an ignored infrastructure role
   // into the qualified installed-artifact hash. Revision 2 keeps its contract.
   const systemBusInfrastructure = readSystemBusInfrastructureField(inventory);
+  const collectorProfile = readFdCollectorProfileField(inventory);
+  if (collectorProfile && !readHostedFdProfile()) invalid();
   if (systemBusInfrastructure) {
-    if (Object.keys(inventory).sort().join(",") !== "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units" ||
+    if (Object.keys(inventory).sort().join(",") !== (collectorProfile ? "collectorProfile," : "") + "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units" ||
         inventory.supervisorUnit === "dbus.service" || !Array.isArray(inventory.units) || !inventory.units.length || inventory.units.length > 128 ||
         typeof inventory.hostId !== "string" || !/^[a-f0-9]{32}$/.test(inventory.hostId)) invalid();
     const units = inventory.units.map(value => {
