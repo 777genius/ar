@@ -1,8 +1,8 @@
+import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-interval";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HostedInstallation, HostedActivation } from "@vioxen/subscription-runtime/worker-core";
-import { decodeHostedActivationBytes } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
@@ -20,14 +20,8 @@ export function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion
     if (launch.cwd !== creator.workspacePath || !(launch.command === cliPath ||
         (launch.command === process.execPath && launch.args[0] === cliPath))) invalid();
   }
-  const stagePath = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + digest(Buffer.from(runtimeDirectory)) + ".json";
-  const stageBytes = readHostedPrivateBytes(stagePath, 4096);
-  if (!stageBytes) throw new Error("hosted_readonly_verified_stage_required");
-  const stage = decodeHostedActivationBytes(stageBytes);
-  if (!stage || typeof stage !== "object" || Array.isArray(stage) ||
-      Object.keys(stage).sort().join(",") !== "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion" ||
-      !("schemaVersion" in stage) || stage.schemaVersion !== 1 || !("runtimeDirectory" in stage) || stage.runtimeDirectory !== runtimeDirectory ||
-      !("runtimeSha" in stage) || typeof stage.runtimeSha !== "string" || !("runtimeManifestSha256" in stage) || typeof stage.runtimeManifestSha256 !== "string") invalid();
+  const stage = readOriginalHostedDependencyBackingStage();
+  if (stage.runtimeDirectory !== runtimeDirectory) invalid();
   const inventoryBytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), 64 * 1024);
   if (!inventoryBytes) invalid();
   return { hostId: inventory.hostId, runtimeDirectory, runtimeSha: stage.runtimeSha,

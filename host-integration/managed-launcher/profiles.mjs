@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 const deny = () => { throw new Error('managed launcher: profile denied'); };
 // Read-only mounts do not prevent socket writes. Hide every journal endpoint
 // (including /dev/log aliases); inherited provider pipes remain usable.
-export const socketFence = '-/run/systemd/private -/run/systemd/journal -/dev/log -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy -/run/docker.sock -/run/containerd/containerd.sock -/run/podman/podman.sock';
+export const socketFence = '-/run/systemd/private -/run/systemd/journal -/dev/log -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy -/var/lib/subscription-runtime-full-parent-live -/run/TEST-full-flow-outbox -/run/docker.sock -/run/containerd/containerd.sock -/run/podman/podman.sock';
 export const bootstrapCaps = 'CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP';
 export async function requireTrustedExecutable(path) {
   for (let current = path; ; current = dirname(current)) {

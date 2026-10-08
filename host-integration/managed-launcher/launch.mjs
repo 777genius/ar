@@ -10,6 +10,7 @@ import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
 
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 export const managedSystemdRunExecutable = '/usr/bin/systemd-run';
+const nativeInvocations = new WeakMap();
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
 function governedFdProfile() {
@@ -83,6 +84,14 @@ export function managedLauncherInvocation(request) {
 
 export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath, executable = path => access(path, constants.X_OK) } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
+  if (request.jobId === 'TEST-dependency-full-native-20261007-r1') {
+    // Fixed protected FULL branch. The original manager's exclusive ledger is
+    // already present; the helper retains the reviewed complete source closure.
+    const { fullNativeArguments } = await import('./dependency-full-native-TEST.mjs');
+    const native = fullNativeArguments(request);
+    const invocation = Object.freeze({ command: managedSystemdRunExecutable, args: native.args });
+    nativeInvocations.set(invocation, native.custody); return invocation;
+  }
   const confinementExecutables = [MANAGED_LAUNCHER_PATH, PAYLOAD_GUARD_PATH, UNSHARE_PATH, SETPRIV_PATH, TINI_PATH];
   for (const path of [nodePath, ...trusted, ...confinementExecutables]) await trust(path);
   await executable(TINI_PATH);
@@ -128,12 +137,20 @@ async function main() {
   const request = JSON.parse(process.argv[3]);
   if (request.operation !== process.argv[2]) denied();
   const invocation = await buildSystemdInvocation(request);
-  const child = spawn(invocation.command, invocation.args, { stdio: 'inherit' });
+  const nativeCustody = nativeInvocations.get(invocation); nativeInvocations.delete(invocation);
+  let child;
+  try { nativeCustody?.beforeSubmit(); child = spawn(invocation.command, invocation.args, { stdio: 'inherit' }); }
+  catch (error) { nativeCustody?.close(); throw error; }
   const handlers = new Map(['SIGINT', 'SIGTERM', 'SIGHUP'].map(signal => [signal, () => child.kill(signal)]));
   for (const [signal, handler] of handlers) process.on(signal, handler);
-  child.on('error', () => { process.exitCode = 70; });
+  child.on('error', () => { nativeCustody?.close(); process.exitCode = 70; });
   child.on('exit', (code, signal) => {
     for (const [name, handler] of handlers) process.removeListener(name, handler);
+    if (nativeCustody) {
+      try { if (code !== 0 || signal) denied(); nativeCustody.afterSubmit(); }
+      catch { code = 70; }
+      finally { nativeCustody.close(); }
+    }
     if (signal) process.kill(process.pid, signal);
     else process.exitCode = code ?? 70;
   });

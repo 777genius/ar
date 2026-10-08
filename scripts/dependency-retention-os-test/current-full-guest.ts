@@ -1,17 +1,22 @@
+import { assertOriginalFullBackingPreparation } from "../../dist/worker-codex/hosted-full-backing-interval.js";
+import { HostedReadonlyEpochStore } from "../../dist/worker-codex/hosted-readonly-epoch-store.js";
+import { readHostedDependencyBinding, hostedDependencyOwnerRoot } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
+import { currentIdleClosureMatches } from "./current-closed-entry.js";
 /** Separate real-provider cohort. Never dispatched by historical CLOSED route. */
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { isDependencyCustodyObject } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
-import { prepareCurrentColdHotRoots, assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { prepareCurrentFullColdHotRoots, assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { assertConfiguredAccountName } from "./current-configured-auth-mount.js";
 import { CurrentBackingGeometry, readCurrentBackingGeometry } from "./current-backing-geometry.js";
 import { runCurrentFullEvictRestoreFlow, EvictRestorePhase } from "./current-full-evict-restore-flow.js";
 import { runCurrentFullReadonlyContinuation } from "./current-full-r-continuation.js";
 import { FullFlowPhase } from "./current-full-flow.js";
 import { assertDistinctCurrentEntries } from "./current-full-entry.js";
-import { HostedActivationPhase } from "../../dist/worker-core/index.js";
+import { HostedActivationPhase, HostedCustodyPhase, HostedCustodyReservationState } from "../../dist/worker-core/index.js";
 import { readHostedInstallationActivation } from "../../dist/worker-codex/hosted-installation-activation.js";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
 import { createReadonlyPrivateRecord } from "../../dist/worker-codex/hosted-readonly-custody.js";
@@ -68,9 +73,19 @@ try {
   assert(!readFileSync("/etc/passwd","utf8").split("\n").some(line=>line.split(":")[2]==="65532"));
   assert(!readFileSync("/etc/group","utf8").split("\n").some(line=>line.split(":")[2]==="65532"));
   evidence.machineId=readFileSync("/etc/machine-id","utf8").trim();evidence.phase=FullGuestSetup.Root;
-  const roots=await prepareCurrentColdHotRoots(evidence,input.accountName);
+  const roots=await prepareCurrentFullColdHotRoots(evidence,input.accountName);
   evidence.freshCohort={candidateJobId:roots.candidateJobId,readonlyJobId:roots.readonlyJobId,workspace:roots.workspaceIdentity,
     sourceSha:roots.sourceSha,runtimeManifestSha256:roots.runtimeManifestSha256,independentInputReview:input.reviewReference};
+  // Factual setup request. Only the ORIGINAL parent can publish its once-only
+  // backing qualification; this child cannot turn request bytes into authority.
+  json("/run/TEST-full-flow-outbox/current-full-interval-request.json",{schemaVersion:1,sourceSha:roots.sourceSha,runtimeManifestSha256:roots.runtimeManifestSha256});
+  const qualifiedPath="/var/lib/subscription-runtime-full-parent-live/seals/current-full-backing.json";
+  // No-overwrite publication links the already-fsynced pending file, then
+  // drops that temporary name. Wait for its single-link protected read boundary.
+  while(true){
+    if(existsSync(qualifiedPath)){const stat=lstatSync(qualifiedPath);assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && (stat.mode&0o7777)===0o600 && [1,2].includes(stat.nlink));if(stat.nlink===1){assert(readHostedPrivateBytes(qualifiedPath,16384));break;}}
+    assertOriginalFullBackingPreparation();assert(performance.now()<fullDeadline);await new Promise(resolve=>setTimeout(resolve,100));
+  }
   evidence.phase=FullGuestSetup.Policy;evidence.testEvictionPolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);
   const evictRestore=await runCurrentFullEvictRestoreFlow(roots,(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};});
   // Preserve observed C slice if later independent review/R continuation fails.
@@ -81,6 +96,30 @@ try {
   const entries=[...evictRestore.entries,...readonlyContinuation.entries];
   assertDistinctCurrentEntries(entries.map(observation=>({observation})));
   evidence.flow=Object.freeze({evictRestore,readonlyContinuation,entries,cumulativeInstalls:2});
+  // Original store/flow already performed drain and recovery. Reobserve the
+  // actual protected terminal sources under its original serialized fence.
+  withHostedActivationFence(()=>{
+    assertOriginalFullBackingPreparation();assertRootScope(roots);
+    const actual=readHostedInstallationActivation();assert.equal(actual.activation.phase,HostedActivationPhase.Closed);
+    assert(actual.activation.ordinaryStarts.every(row=>row.state===HostedCustodyReservationState.Terminal));
+    const epoch=new HostedReadonlyEpochStore().readEpoch();assert.equal(epoch.phase,HostedCustodyPhase.Closed);assert.equal(epoch.revoked,true);
+    assert(epoch.reservations.every(row=>row.state===HostedCustodyReservationState.Terminal));assert(epoch.outerRuntime===null || epoch.outerRuntime.state===HostedCustodyReservationState.Terminal);
+    const binding=readHostedDependencyBinding(roots.candidateJobId);assert(binding && binding.version===2);
+    const owners=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+    const owner=(()=>{try{const value=owners.read(binding.workspace);assert(value && value.owner===null);return value;}finally{owners.close();}})();
+    const base="/var/lib/subscription-runtime-host-policy",idle=pinReferenceFile(base+"/dependency-generation-idle-closures/"+binding.workspace.dev+"-"+binding.workspace.ino+"/"+owner.revision+".json",16384),value:unknown=JSON.parse(idle.bytes.toString("utf8"));
+    assert(isDependencyCustodyObject(value,"attempt,binding,previousOwnerSha256,releasedOwner,releasedOwnerSha256,sourceClosed,version") && value.version===1);
+    assert(isDependencyCustodyObject(value.attempt,"attemptId,epoch,launch") && value.attempt.launch && typeof value.attempt.launch==="object" && "startId" in value.attempt.launch && typeof value.attempt.launch.startId==="string");
+    assert(value.sourceClosed && typeof value.sourceClosed==="object" && "path" in value.sourceClosed && typeof value.sourceClosed.path==="string" && /^\/var\/lib\/subscription-runtime-host-policy\/dependency-generation-source-closures\/[0-9a-f-]{36}\.json$/.test(value.sourceClosed.path));
+    const source=pinReferenceFile(value.sourceClosed.path,65536);assert(currentIdleClosureMatches(owner,binding,value,source.reference,value.attempt.launch.startId));
+    for(const directory of [base+"/dependency-transactions",hostedDependencyOwnerRoot]){const stat=lstatSync(directory);assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && (stat.mode&0o7777)===0o700);assert(!readdirSync(directory).some(name=>/\.remove\.lock$|\.close-unresolved\.json$|\.lock$|^\.pending-/.test(name)));}
+    new HostedReadonlyHostKernel().verifyExclusiveInventory();new HostedReadonlyHostKernel().verifyDescriptorBoundary();
+    const pair=pinReferenceFile("/var/lib/subscription-runtime-full-parent-live/seals/current-full-pair.json",16384),invocation=pinReferenceFile("/var/lib/subscription-runtime-full-parent-live/seals/current-full-pair-invocation.json",4096);
+    assert.deepEqual(pinReferenceFile(source.reference.path,65536).reference,source.reference);assert.deepEqual(pinReferenceFile(idle.reference.path,16384).reference,idle.reference);
+    // Factual terminal observer, not a release grant. Parent additionally proves
+    // recursive whole-guest drain and queued-job absence before dropping holds.
+    createReadonlyPrivateRecord(base+"/current-full-terminal.json",Buffer.from(JSON.stringify({schemaVersion:1,sourceSha:roots.sourceSha,pairSha256:pair.reference.sha256,invocationSealSha256:invocation.reference.sha256,activationGeneration:actual.activation.generation,epochGeneration:epoch.generation,workspace:binding.workspace,sourceClosed:source.reference,idleClosed:idle.reference})+"\n"));
+  });
   evidence.status=FullGuestStatus.PartialPass;
 } catch(error:unknown) {
   evidence.failure="TEST_actual_full_retention_slice_failed";evidence.failureObservation=observeRegistrationFailure(error);process.exitCode=1;

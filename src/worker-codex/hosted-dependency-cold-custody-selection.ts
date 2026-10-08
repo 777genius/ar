@@ -1,3 +1,4 @@
+import { assertOriginalHostedDependencyFullBackingInterval } from "./hosted-full-backing-interval";
 import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { createHash } from "node:crypto";
@@ -25,6 +26,7 @@ function held():never {throw new Error("hosted_dependency_cold_custody_held");}
 type Candidate=DependencyReadonlyColdBaselineAdoptionEvidence["candidate"];
 function boundary(fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);assertHostedActivationOperator();assertHostedProcessDescriptors();
+  assertOriginalHostedDependencyFullBackingInterval(fence,access);assertHostedProcessDescriptors();
 }
 /** Protected original cold evidence only. Historical content is not reobserved
  * or promoted: the actual final observation's published baseline remains fixed. */

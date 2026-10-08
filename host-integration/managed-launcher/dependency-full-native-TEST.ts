@@ -3,23 +3,29 @@ import { managedSystemdRunExecutable } from "./launch.mjs";
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
+import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
+import { pathToFileURL } from "node:url";
 export const fullNativeJob="TEST-dependency-full-native-20261007-r1";
 export const fullNativeInputBase="/srv/workers/jobs/"+fullNativeJob+"/input";
 export const fullNativeTmpDir="/srv/workers/jobs/"+fullNativeJob+"/tmp";
 export const fullNativePublicDownloadBase="/srv/workers/jobs/"+fullNativeJob+"/public-codex-download";
 export const fullNativePublicCapsule="/srv/workers/jobs/"+fullNativeJob+"/public-codex-input/@openai";
+export const fullNativeBirthRoot="/srv/workers/jobs/"+fullNativeJob+"/full-launch-birth";
+export const fullNativeLiveRoot="/srv/workers/jobs/"+fullNativeJob+"/full-parent-live";
+export const fullNativeGuestLiveRoot="/var/lib/subscription-runtime-full-parent-live";
 export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST";
 /** DATA path contract only; physical root custody is checked separately. */
 export function fullNativeGuestRoot(id:unknown,root:unknown):boolean {
   return typeof id==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) && root===fullNativeOsBase+"/"+id+"/root";
 }
+const bootstrapNode="/opt/nodejs/node-v24.21.0-linux-x64/bin/node";
 const integration="/opt/subscription-runtime", reviewRoot="/srv/worker-state/protected-storage-test/dependency-full-native-activation";
 const reviewPath=reviewRoot+"/review.json", sourceBase="28511fec3a4796db3b86ac57f376d64c4b9b8d29";
 const hash=(value: string|Buffer)=>createHash("sha256").update(value).digest("hex");
 export const fullNativeUnit="subscription-job-"+hash(fullNativeJob)+".service";
+const fullNativeControlGroup="/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/"+fullNativeUnit;
 const ledger="/root/.local/state/subscription-runtime/host-jobs/"+fullNativeUnit+".json";
 export const fullNativeLimits=Object.freeze({runtimeSeconds:1800,stopSeconds:180,memoryMiB:2048,tasksMax:128,cpuPercent:100});
 export enum FullParentPhase {Starting="starting",Started="started"}
@@ -49,6 +55,9 @@ export function fullNativeIntended(value:unknown):boolean {
 }
 enum RootContext {Launcher="Launcher",Parent="Parent"}
 function initialRoot(context:RootContext){
+  const limits=readFileSync("/proc/self/limits","utf8");check(Buffer.byteLength(limits)<=16384);
+  const rows=[...limits.matchAll(/^Max open files\s+([0-9]+)\s+([0-9]+)\s+files$/gm)];
+  check(rows.length===1 && BigInt(rows[0]![1]!)>=65536n && BigInt(rows[0]![2]!)>=65536n);
   check(process.platform==="linux" && process.arch==="x64" && process.getuid?.()===0 && process.geteuid?.()===0);
   check(readFileSync("/proc/self/uid_map","utf8").trim().split(/\s+/).join(" ")==="0 0 4294967295");
   for(const ns of ["user","pid","mnt","cgroup","net","uts","ipc"]){if(ns==="mnt" && context===RootContext.Parent)continue;check(readlinkSync(`/proc/self/ns/${ns}`)===readlinkSync(`/proc/1/ns/${ns}`));}
@@ -71,6 +80,15 @@ function assertSharedAncestor(fd:number,parent:number) {
   try{check(identity(fstatSync(fresh))===identity(held) && ancestorMountId(fresh)===ancestorMountId(fd)
     && ancestorMountId(fd)===ancestorMountId(parent));}finally{closeSync(fresh);}
 }
+// Standalone installed launcher cannot import the public runtime's src tree.
+// Query only a retained FD's Linux magiclink, with native object brackets.
+function retainedFilesystemType(fd:number):bigint {
+  check(Number.isSafeInteger(fd) && fd>=0);const before=fstatSync(fd,{bigint:true}),path=`/proc/self/fd/${fd}`;
+  const matches=(stat:typeof before)=>stat.dev===before.dev && stat.ino===before.ino && stat.mode===before.mode
+    && stat.uid===before.uid && stat.gid===before.gid && stat.rdev===before.rdev;
+  check(matches(statSync(path,{bigint:true})));const type=statfsSync(path,{bigint:true}).type;
+  check(matches(fstatSync(fd,{bigint:true})) && matches(statSync(path,{bigint:true})));return type;
+}
 class Pins {
   private readonly held=new Map<string,{fd:number;identity:string;sha256:string|null}>();private closed=false;private readonly namespaces:number[]=[];
   mountNamespace(){const fd=openSync("/proc/self/ns/mnt",constants.O_RDONLY);this.namespaces.push(fd);return fd;}
@@ -92,7 +110,11 @@ class Pins {
   json(path:string,maximum:number){const fd=this.hold(path,false,0o600);check(fstatSync(fd).size<=maximum);const bytes=readFd(fd),v:unknown=JSON.parse(bytes.toString("utf8"));check(bytes.equals(Buffer.from(JSON.stringify(v)+"\n")));return v;}
   validate(){check(!this.closed);for(const [path,e] of this.held){const named=lstatSync(path),held=fstatSync(e.fd);check(!named.isSymbolicLink() && identity(named)===e.identity && identity(held)===e.identity);
     if(path===sharedAncestor){const parent=this.held.get("/srv");check(parent);assertSharedAncestor(e.fd,parent.fd);}
+    const fresh=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(held.isDirectory()?constants.O_DIRECTORY:0));
+    try{check(identity(fstatSync(fresh))===e.identity && ancestorMountId(fresh)===ancestorMountId(e.fd));}finally{closeSync(fresh);}
     if(e.sha256)check(hash(readFd(e.fd))===e.sha256);}}
+  descriptors(){check(!this.closed);return [...this.held.values()].map(entry=>entry.fd).concat(this.namespaces);}
+  sourceSnapshot(){this.validate();return hash(JSON.stringify([...this.held.entries()].filter(([,entry])=>entry.sha256!==null).map(([path,entry])=>({path,identity:entry.identity,sha256:entry.sha256})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)));}
   close(){if(this.closed)return;this.closed=true;for(const e of [...this.held.values()].reverse())closeSync(e.fd);this.held.clear();for(const fd of this.namespaces)closeSync(fd);this.namespaces.length=0;}
 }
 /** A catalog is independently reviewed PUBLIC installation data, not path input.
@@ -119,8 +141,9 @@ function acquire(context:RootContext=RootContext.Launcher){
     pins.hold(root,true,0o700);
     const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard"]);
     for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
-    const tools=fullData(r.hostTools,["git","systemctl","systemdRun"]);
-    for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"]] as const)pins.publicFile(path,requireDigest(tools[key]));
+    const tools=fullData(r.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode"]);
+    for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"],["/usr/bin/lsns","lsns"],["/usr/lib/systemd/systemd","systemdPid1"],[bootstrapNode,"bootstrapNode"]] as const)pins.publicFile(path,requireDigest(tools[key]));
+    check(tools.bootstrapNode==="7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c" && tools.lsns==="c9fe8adcfe480c47a052adcde50002c78e8fadd4d124bc337893a0f9a9e8cf3b" && tools.systemdPid1==="b472aadf808bef87c0eb203056a77cb64bd268b71b756306013a53de68a94173");
     const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!systemdVersion.error && systemdVersion.status===0 && systemdVersion.signal===null && systemdVersion.stdout.split("\n")[0]===r.systemdVersion);
     pins.publicFile(node,requireDigest(r.nodeSha256));pins.hold(node,false,0o755);pins.publicFile(integration+"/managed-launcher/launch.mjs",requireDigest(r.launcherSha256));
@@ -183,10 +206,66 @@ export function captureFullNativeRequest(value:unknown){
   return Object.freeze({fingerprint:r.fingerprint,payload});
 }
 export function retainFullNativeLaunch(request:unknown){
-  const data=captureFullNativeRequest(request),c=acquire();let closed=false;
-  try{check(data.fingerprint===fingerprint(c.tuple.machineId,argvFor(c)) && data.payload[0]===c.tuple.node && data.payload[1]===c.tuple.parent);
+  const data=captureFullNativeRequest(request),c=acquire();let closed=false,prepared=false,published=false,beforeBytes:Buffer|undefined;
+  try{
+    check(process.argv.length===4 && process.argv[0]===bootstrapNode && process.argv[1]===integration+"/managed-launcher/launch.mjs" && process.argv[2]==="job");
+    check(readlinkSync("/proc/self/exe")===bootstrapNode && readFileSync("/proc/self/cmdline").equals(Buffer.from([...process.argv,""].join("\u0000"))));
+    check(JSON.stringify(JSON.parse(process.argv[3]!))===JSON.stringify(request));
+    check(data.fingerprint===fingerprint(c.tuple.machineId,argvFor(c)) && data.payload[0]===c.tuple.node && data.payload[1]===c.tuple.parent);
     const revalidate=()=>{try{check(!closed);c.validate();record(c,false);preflightCapacity(c.pins.hold(fullNativeOsBase,true,0o700));c.validate();}catch{refuse();}};revalidate();
-    return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,fingerprint:data.fingerprint,revalidate,close(){if(closed)return;closed=true;c.pins.close();}});
+    function writeBirth(name:"before.json"|"after.json",value:unknown){
+      const directory=c.pins.hold(fullNativeBirthRoot,true,0o700),bytes=Buffer.from(JSON.stringify(value)+"\n");
+      const fd=openSync(`/proc/self/fd/${directory}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+      try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(directory);return bytes;
+    }
+    return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,fingerprint:data.fingerprint,revalidate,
+      beforeSubmit(){
+        revalidate();check(!prepared);const shown=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
+        check(!shown.error && (shown.status===0 || shown.status===4) && shown.signal===null && shown.stdout.trim()==="not-found");
+        const job=c.pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
+        mkdirSync(`/proc/self/fd/${job}/full-launch-birth`,{mode:0o700});fsyncSync(job);
+        const raw=readFileSync("/proc/self/stat","utf8"),end=raw.lastIndexOf(") "),ticks=raw.slice(end+2).trim().split(/\s+/)[19];check(end>0 && /^[1-9][0-9]*$/.test(ticks??""));
+        beforeBytes=writeBirth("before.json",{schemaVersion:1,sourceSha:c.tuple.sourceSha,fingerprint:data.fingerprint,producerPid:process.pid,producerStartTicks:ticks,machineId:c.tuple.machineId,bootId:c.tuple.bootId,sourceSnapshotSha256:c.pins.sourceSnapshot()});
+        prepared=true;revalidate();
+      },
+      afterSubmit(){
+        revalidate();check(prepared && !published && beforeBytes);
+        const fields="InvocationID,MainPID,ControlGroup,Description,LoadState,ActiveState";
+        function unit(){
+          const result=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property="+fields],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
+          check(!result.error && result.status===0 && result.signal===null);const values:Record<string,string>={};
+          for(const line of result.stdout.trimEnd().split("\n")){const at=line.indexOf("=");check(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}
+          check(Object.keys(values).sort().join(",")==="ActiveState,ControlGroup,Description,InvocationID,LoadState,MainPID");
+          check(values.LoadState==="loaded" && ["active","activating"].includes(values.ActiveState??"") && /^[a-f0-9]{32}$/.test(values.InvocationID??"") && /^[1-9][0-9]*$/.test(values.MainPID??""));
+          check(values.Description==="subscription-job:"+data.fingerprint && values.ControlGroup===fullNativeControlGroup);return values;
+        }
+        const values=unit(),prefix="/proc/"+values.MainPID,anchor=openSync(prefix,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW),anchorIdentity=identity(fstatSync(anchor));
+        try{
+          check(retainedFilesystemType(anchor)===0x9fa0n);
+          const held=`/proc/self/fd/${anchor}`;
+          const raw=readFileSync(held+"/stat","utf8"),end=raw.lastIndexOf(") "),parts=raw.slice(end+2).trim().split(/\s+/),ticks=parts[19];
+          check(end>0 && raw.startsWith(values.MainPID+" (") && !["Z","X","x"].includes(parts[0]??"") && /^[1-9][0-9]*$/.test(ticks??""));
+          check(readlinkSync(held+"/exe")===c.tuple.node && readFileSync(held+"/cmdline").equals(Buffer.from([c.tuple.node,c.tuple.parent,""].join("\u0000"))));
+          check(readFileSync(held+"/cgroup","utf8").trim()==="0::"+fullNativeControlGroup);
+          check(readlinkSync(held+"/ns/user")==="user:[4026531837]" && readlinkSync(held+"/ns/pid")==="pid:[4026531836]");
+          const mount=readlinkSync(held+"/ns/mnt");check(/^mnt:\[[1-9][0-9]*\]$/.test(mount) && mount!==readlinkSync("/proc/1/ns/mnt"));
+          const executable=fstatSync(c.pins.hold(c.tuple.node)),exeFd=openSync(held+"/exe",constants.O_RDONLY);
+          try{const actual=fstatSync(exeFd);check(actual.dev===executable.dev && actual.ino===executable.ino);}finally{closeSync(exeFd);}
+          const fresh=openSync(prefix,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+          try{
+            check(identity(fstatSync(fresh))===anchorIdentity && identity(fstatSync(anchor))===anchorIdentity && ancestorMountId(fresh)===ancestorMountId(anchor));
+            const now=readFileSync(`/proc/self/fd/${fresh}/stat`,"utf8"),at=now.lastIndexOf(") "),fields=now.slice(at+2).trim().split(/\s+/);
+            check(now.startsWith(values.MainPID+" (") && fields[19]===ticks && !["Z","X","x"].includes(fields[0]??""));
+            check(readlinkSync(`/proc/self/fd/${fresh}/ns/mnt`)===mount);
+          }finally{closeSync(fresh);}
+          revalidate();check(hash(readFileSync(fullNativeBirthRoot+"/before.json"))===hash(beforeBytes));
+          check(JSON.stringify(unit())===JSON.stringify(values));
+          const after=readFileSync(held+"/stat","utf8"),at=after.lastIndexOf(") "),finalFields=after.slice(at+2).trim().split(/\s+/);check(finalFields[19]===ticks && !["Z","X","x"].includes(finalFields[0]??""));
+          // Publication is last, after every source/kernel/unit join passed.
+          writeBirth("after.json",{schemaVersion:1,beforeSha256:hash(beforeBytes),unit:fullNativeUnit,invocationId:values.InvocationID,pid:Number(values.MainPID),startTicks:ticks,sourceSnapshotSha256:c.pins.sourceSnapshot()});
+          published=true;
+        }finally{closeSync(anchor);}
+      },close(){if(closed)return;closed=true;c.pins.close();}});
   }catch{c.pins.close();refuse();}
 }
 /** Two primitive command cells, copied from own descriptors with no getters. */
@@ -201,7 +280,7 @@ const parentCapabilities="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_K
 export function fullNativeArguments(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
     const toolchain=fullNativeInputBase+"/"+custody.sourceSha+"/toolchain";
-    const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
+    const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","LimitNOFILE=65536","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
       "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind",
@@ -210,10 +289,65 @@ export function fullNativeArguments(request:unknown){
     custody.revalidate();return {args,custody};
   }catch{custody.close();refuse();}
 }
+const fullParents=new WeakMap<object,()=>void>();
+const fullParentDescriptors=new WeakMap<object,()=>readonly number[]>();
+/** Exact retained SOURCE/proc custody fact of the genuine original session.
+ * No caller can enroll a descriptor or fabricate this private session join. */
+export function retainedCurrentFullParentDescriptors(value:object):readonly number[] {
+  assertRetainedCurrentFullParent(value);const read=fullParentDescriptors.get(value);check(read);return Object.freeze([...read()]);
+}
+export function assertRetainedCurrentFullParent(value:unknown):void {check(value!==null && typeof value==="object");const rejoin=fullParents.get(value);check(rejoin);rejoin();}
+export interface FullParentSession {
+  readonly unit:string;revalidate():void;liveBindings():readonly string[];
+  registerGuest(id:string,root:string,fragmentSha256:string):void;
+  observeGuestInvocation(id:string,guestInvocationId:string):void;
+  close(terminal:unknown):Promise<void>;
+}
+let retainedFullParent:FullParentSession|undefined;
 /** SAME original protected manager + actual service reader, no admission DTO. */
-export function retainCurrentFullParent(){
+export function retainCurrentFullParent():FullParentSession {
+  if(retainedFullParent){assertRetainedCurrentFullParent(retainedFullParent);return retainedFullParent;}
   const c=acquire(RootContext.Parent);let closed=false,invocation:string|undefined,guestId:string|undefined,guestHash:string|undefined;
-  const revalidate=()=>{check(!closed);c.validate();record(c,true);
+  const procRoot="/proc/"+process.pid,procFds:number[]=[];
+  const procIdentity=(fd:number)=>{const s=fstatSync(fd,{bigint:true});check(s.isFile() && retainedFilesystemType(fd)===0x9fa0n);return {dev:String(s.dev),ino:String(s.ino)};};
+  function birth(raw:string){const end=raw.lastIndexOf(") "),fields=raw.slice(end+2).trim().split(/\s+/);check(end>0 && raw.startsWith(process.pid+" (") && fields[0] && !["Z","X","x"].includes(fields[0]) && /^[1-9][0-9]*$/.test(fields[19]??""));return fields[19]!;}
+  const sourceSnapshot=c.pins.sourceSnapshot();
+  let liveRootCreated=false;
+  let birthWitness:Readonly<{before:Buffer;after:Buffer}>|undefined;
+  function sourceBirth(){
+    if(!birthWitness){
+      c.pins.hold(fullNativeBirthRoot,true,0o700);
+      const deadline=process.hrtime.bigint()+5000000000n;
+      while(true){try{lstatSync(fullNativeBirthRoot+"/after.json");break;}catch(error){check((error as NodeJS.ErrnoException).code==="ENOENT" && process.hrtime.bigint()<deadline);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}}
+      const before=c.pins.json(fullNativeBirthRoot+"/before.json",4096),after=c.pins.json(fullNativeBirthRoot+"/after.json",4096);
+      const b=fullData(before,["schemaVersion","sourceSha","fingerprint","producerPid","producerStartTicks","machineId","bootId","sourceSnapshotSha256"]),a=fullData(after,["schemaVersion","beforeSha256","unit","invocationId","pid","startTicks","sourceSnapshotSha256"]);
+      const beforeBytes=Buffer.from(JSON.stringify(before)+"\n"),afterBytes=Buffer.from(JSON.stringify(after)+"\n");
+      check(b.schemaVersion===1 && b.sourceSha===c.tuple.sourceSha && b.fingerprint===fingerprint(c.tuple.machineId,argvFor(c)) && b.machineId===c.tuple.machineId && b.bootId===c.tuple.bootId && b.sourceSnapshotSha256===sourceSnapshot);
+      check(a.schemaVersion===1 && a.beforeSha256===hash(beforeBytes) && a.unit===fullNativeUnit && a.pid===process.pid && a.startTicks===parentStartTicks && a.invocationId===invocation && a.sourceSnapshotSha256===sourceSnapshot);
+      check(Number.isSafeInteger(b.producerPid) && Number(b.producerPid)>0 && /^[1-9][0-9]*$/.test(String(b.producerStartTicks)));
+      birthWitness=Object.freeze({before:beforeBytes,after:afterBytes});
+    }
+    check(readFileSync(fullNativeBirthRoot+"/before.json").equals(birthWitness.before) && readFileSync(fullNativeBirthRoot+"/after.json").equals(birthWitness.after));
+  }
+  const procAnchor=openSync(procRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  procFds.push(procAnchor);
+  const procFiles=["stat","status"].map(name=>{const fd=openSync(`/proc/self/fd/${procAnchor}/${name}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);procFds.push(fd);return {name,fd,identity:procIdentity(fd)};});
+  const parentStartTicks=birth(readFileSync(procRoot+"/stat","utf8"));
+  const caps=(raw:string)=>["Inh","Prm","Eff","Bnd","Amb"].map(set=>{const row=new RegExp("^Cap"+set+":\\s+([0-9a-f]{16})$","m").exec(raw)?.[1];check(row);return row;});
+  const parentCapabilities=caps(readFileSync(procRoot+"/status","utf8"));
+  function liveProc(){
+    const anchor=fstatSync(procAnchor),named=lstatSync(procRoot);check(anchor.dev===named.dev && anchor.ino===named.ino && !named.isSymbolicLink());
+    for(const entry of procFiles){const fresh=openSync(procRoot+"/"+entry.name,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      try{check(JSON.stringify(procIdentity(fresh))===JSON.stringify(entry.identity) && JSON.stringify(procIdentity(entry.fd))===JSON.stringify(entry.identity));
+        check(ancestorMountId(fresh)===ancestorMountId(entry.fd));
+        const raw=readFileSync(fresh,"utf8");check(Buffer.byteLength(raw)<=(entry.name==="stat"?4096:16384));
+        if(entry.name==="stat")check(birth(raw)===parentStartTicks);else check(JSON.stringify(caps(raw))===JSON.stringify(parentCapabilities) && /^Uid:\s+0\s+0\s+0\s+0$/m.test(raw) && /^NoNewPrivs:\s+1$/m.test(raw));
+      }finally{closeSync(fresh);}}
+    check(birth(readFileSync(procRoot+"/stat","utf8"))===parentStartTicks);
+  }
+  const revalidate=()=>{check(!closed);liveProc();c.validate();
+    const ackDeadline=process.hrtime.bigint()+5000000000n;
+    while(record(c,true).phase!==FullParentPhase.Started){check(process.hrtime.bigint()<ackDeadline);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}
     const envKeys=Object.keys(process.env);check(envKeys.length<=32 && envKeys.every(key=>["PATH","LANG","LC_ALL","HOME","TMPDIR","USER","LOGNAME","SHELL","INVOCATION_ID","SYSTEMD_EXEC_PID","JOURNAL_STREAM","SUBSCRIPTION_RUNTIME_HOST_JOB_ID","TEST_SOURCE_SHA"].includes(key)));
     check(process.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID===fullNativeJob && process.env.TEST_SOURCE_SHA===c.tuple.sourceSha && process.argv.length===2);
     check(readlinkSync("/proc/self/exe")===c.tuple.node);check(readFileSync("/proc/self/cmdline").equals(Buffer.from([c.tuple.node,c.tuple.parent,""].join("\u0000"))));
@@ -224,21 +358,48 @@ export function retainCurrentFullParent(){
     check(values.ProtectSystem==="strict");assertReadonlyMounts(c.pins,[c.tuple.source,c.tuple.root+"/toolchain",reviewRoot,"/run/TEST-full-outer-review","/run/TEST-real-codex-public-review","/srv/worker-state/account-pools/live-codex-auth/account-u"]);
     check(values.LoadState===FullKernelState.Loaded && (values.ActiveState===FullKernelState.Active || values.ActiveState===FullKernelState.Activating) && values.SubState===FullKernelState.Running && values.MainPID===String(process.pid));
     check(typeof values.ControlGroup==="string");
-    check(values.Description==="subscription-job:"+fingerprint(c.tuple.machineId,argvFor(c)) && /^[-a-zA-Z0-9_/.]+$/.test(values.ControlGroup??"") && values.ControlGroup?.endsWith("/"+fullNativeUnit));
+    check(values.Description==="subscription-job:"+fingerprint(c.tuple.machineId,argvFor(c)) && values.ControlGroup===fullNativeControlGroup);
     check(typeof values.InvocationID==="string" && /^[a-f0-9]{32}$/.test(values.InvocationID));check(process.env.INVOCATION_ID===values.InvocationID && process.env.PATH==="/usr/bin:/bin" && process.env.LANG==="C.UTF-8" && process.env.HOME==="/srv/workers/jobs/"+fullNativeJob && process.env.TMPDIR==="/srv/workers/jobs/"+fullNativeJob+"/tmp");if(invocation)check(invocation===values.InvocationID);else invocation=values.InvocationID;
-    check(readFileSync("/proc/self/cgroup","utf8").trim()==="0::"+values.ControlGroup);assertParentKernelPolicy(values.ControlGroup);c.validate();record(c,true);
+    check(readFileSync("/proc/self/cgroup","utf8").trim()==="0::"+values.ControlGroup);assertParentKernelPolicy(values.ControlGroup);sourceBirth();liveProc();c.validate();record(c,true);
   };
   function seal(name:"current-full-pair.json"|"current-full-pair-invocation.json",data:unknown){
-    revalidate();const parent=c.pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
+    revalidate();check(liveRootCreated);const parent=c.pins.hold(fullNativeLiveRoot,true,0o700);
     const fd=openSync(`/proc/self/fd/${parent}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
     try{writeFileSync(fd,JSON.stringify(data)+"\n");fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(parent);revalidate();
   }
-  try{revalidate();return Object.freeze({unit:fullNativeUnit,revalidate,
+  try{revalidate();const session=Object.freeze({unit:fullNativeUnit,revalidate,
+    liveBindings(){
+      revalidate();check(!liveRootCreated);const job=c.pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
+      mkdirSync(`/proc/self/fd/${job}/full-parent-live`,{mode:0o700});fsyncSync(job);
+      c.pins.hold(fullNativeLiveRoot,true,0o700);liveRootCreated=true;revalidate();
+      return Object.freeze([`--bind-ro=${fullNativeLiveRoot}:${fullNativeGuestLiveRoot}/seals`,
+        `--bind-ro=${procRoot}/stat:${fullNativeGuestLiveRoot}/stat`,`--bind-ro=${procRoot}/status:${fullNativeGuestLiveRoot}/status`]);
+    },
     registerGuest(id:string,root:string,fragmentSha256:string){
       revalidate();check(!guestId && fullNativeGuestRoot(id,root) && digest(fragmentSha256));
       c.pins.hold(dirname(root),true,0o700);const rootFd=c.pins.hold(root,true,0o755),rootStat=fstatSync(rootFd),unit="TEST-retention-os-"+id+".service";
       c.pins.publicFile("/run/systemd/system/"+unit,fragmentSha256);
-      const data={schemaVersion:1,jobId:fullNativeJob,parentUnit:fullNativeUnit,parentInvocationId:invocation,unit,fragmentSha256,root,rootDev:String(rootStat.dev),rootIno:String(rootStat.ino),machineId:c.tuple.machineId,bootId:c.tuple.bootId,sourceSha:c.tuple.sourceSha};
+      // Original source is retained BEFORE this exclusive guest submission.
+      // Current hashes after birth are never substituted for this causal hold.
+      const guestRuntime=root+"/opt/subscription-runtime-dependency-os-TEST";
+      const publicCatalog=fullData(c.pins.json(reviewRoot+"/public-installation.json",2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
+      check(Array.isArray(publicCatalog.files));
+      for(const entry of publicCatalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256));
+        if(!row.path.startsWith("host-integration/"))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
+        else if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
+      }
+      c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullData(c.pins.json(reviewPath,4096),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]).nodeSha256));
+      const elfFd=c.pins.hold(guestRuntime+"/os-signed-elf-pins.json"),elfBytes=readFd(elfFd);check(elfBytes.length<=256*1024);
+      const os=fullData(JSON.parse(elfBytes.toString("utf8")),["schemaVersion","pins"]);check(os.schemaVersion===1 && Array.isArray(os.pins));
+      const guestSources:{path:string;sha256:string}[]=[{path:"/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",sha256:hash(readFd(c.pins.hold(guestRuntime+"/toolchain/bin/node")))}];
+      for(const entry of os.pins){const row=fullData(entry,["path","sha256"]);check(typeof row.path==="string" && /^\/usr\/(?:lib|bin)\/[A-Za-z0-9_.+/-]+$/.test(row.path) && !row.path.split("/").includes("..") && digest(row.sha256));c.pins.publicFile(root+row.path,row.sha256);
+        if(["/usr/lib/systemd/systemd","/usr/bin/dbus-daemon"].includes(row.path))guestSources.push({path:row.path,sha256:row.sha256});}
+      for(const entry of publicCatalog.files){const row=fullData(entry,["path","sha256"]);if(typeof row.path==="string" && /^(?:scripts\/dependency-retention-os-test\/current-full-(?:supervisor|guest)\.js|dist\/worker-codex\/hosted-readonly-(?:host-launch-cli|runtime-bootstrap)\.js)$/.test(row.path)){check(digest(row.sha256));guestSources.push({path:"/opt/subscription-runtime-dependency-os-TEST/"+row.path,sha256:row.sha256});}}
+      const supervisor="/etc/systemd/test-units/TEST-retention-supervisor.service",supervisorFd=c.pins.hold(root+supervisor,false,0o644);
+      guestSources.push({path:supervisor,sha256:hash(readFd(supervisorFd))});
+      const guestMachineFd=c.pins.hold(root+"/etc/machine-id",false,0o444),guestMachineId=readFd(guestMachineFd).toString("utf8").trim();check(/^[a-f0-9]{32}$/.test(guestMachineId));
+      check(guestSources.length===8);c.validate();
+      const data={schemaVersion:2,jobId:fullNativeJob,parentUnit:fullNativeUnit,parentInvocationId:invocation,guestMachineId,parentProc:{pid:process.pid,startTicks:parentStartTicks,stat:procFiles[0]!.identity,status:procFiles[1]!.identity,capabilities:parentCapabilities},guestSources,unit,fragmentSha256,root,rootDev:String(rootStat.dev),rootIno:String(rootStat.ino),machineId:c.tuple.machineId,bootId:c.tuple.bootId,sourceSha:c.tuple.sourceSha};
       guestHash=hash(JSON.stringify(data)+"\n");seal("current-full-pair.json",data);guestId=id;
     },
     observeGuestInvocation(id:string,guestInvocationId:string){
@@ -246,7 +407,12 @@ export function retainCurrentFullParent(){
       const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=InvocationID","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
       check(!result.error && result.status===0 && result.signal===null && result.stdout.trim()===guestInvocationId);revalidate();
       seal("current-full-pair-invocation.json",{schemaVersion:1,pairSha256:guestHash,parentInvocationId:invocation,unit,guestInvocationId});
-    },close(){if(closed)return;closed=true;c.pins.close();}});}catch{c.pins.close();refuse();}
+    },async close(terminal:unknown){
+      check(!closed);revalidate();
+      const module=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-full-backing-collector.js").href);
+      module.assertFullBackingTerminal(session,terminal);revalidate();
+      closed=true;for(const fd of procFds.reverse())closeSync(fd);c.pins.close();
+    }});fullParents.set(session,revalidate);fullParentDescriptors.set(session,()=>{check(!closed);return c.pins.descriptors().concat(procFds);});retainedFullParent=session;return session;}catch{for(const fd of procFds.reverse())closeSync(fd);c.pins.close();refuse();}
 }
 
 /** DATA predicate only; it grants no physical protection or launch permission. */

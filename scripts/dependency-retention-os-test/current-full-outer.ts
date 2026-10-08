@@ -14,7 +14,9 @@ import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
 import { isDependencyCustodyObject } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
-import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, cleanEnv, command as runCommand, directory, directoryIdentity, fileDigest, json, node, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic, type OwnedOsFixtureScenario } from "./common.ts";
+import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, cleanEnv, command as runCommand, directory, directoryIdentity, digest, fileDigest, json, node, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic, type OwnedOsFixtureScenario } from "./common.ts";
+
+export let fullParentTerminal:unknown;
 
 // This starts after workflow checkout/build/typecheck, not at workflow start.
 // The unchanged 40-minute job timeout is the independent platform backstop.
@@ -65,7 +67,7 @@ if(!existsSync(outputRoot))directory(outputRoot);
 const outputRootStat=lstatSync(outputRoot);assert(outputRootStat.isDirectory() && !outputRootStat.isSymbolicLink() && outputRootStat.uid===0 && outputRootStat.gid===0 && (outputRootStat.mode&0o7777)===0o700);
 assert.equal(realpathSync(outputRoot),outputRoot);
 json(outputRoot + "/dependency-retention-os-evidence.json", defaultEvidence, 0o600);
-managedParent.revalidate();managedParent.close();
+managedParent.revalidate(); // Only the actual parent finally may consume its terminal brand.
 
 async function runOwnedOs(scenario: OwnedOsFixtureScenario): Promise<Record<string, unknown>> {
 const diagnostic = scenario === OwnedOsMode.BusDiagnostic;
@@ -87,7 +89,7 @@ let deadline = earlier(workDeadline, scenarioStarted + milliseconds(22 * 60 * 10
 const command = (file: string, args: readonly string[], timeout = 30000): string => boundedCommand(file, args, deadline, timeout);
 try {
   remaining(deadline);
-  directory(outbox);directory(reviewed);
+  directory(outbox);directory(outbox+"/current-full-pulses");directory(reviewed);
   assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry);
   remaining(deadline);
   // Boot replaces guest /run with tmpfs. Keep protected inputs outside it and
@@ -167,7 +169,8 @@ try {
   const runtimeSeconds = Math.ceil(remaining(deadline) / 1000) + 90;
   const target = diagnostic ? "TEST-retention-bus-diagnostic.target" : "TEST-retention.target";
   managedParent.revalidate();
-  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
+  const parentLiveBindings=managedParent.liveBindings().join(" ");
+  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} ${parentLiveBindings} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
   const unitPath = "/run/systemd/system/" + unit;
   assert(!existsSync(unitPath)); writeFileSync(unitPath, fragment, { flag: "wx", mode: 0o644 });
   fragmentSha256 = fileDigest(unitPath);
@@ -210,6 +213,23 @@ try {
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     remaining(deadline);
+    const intervalRequest=outbox+"/current-full-interval-request.json";
+    if(existsSync(intervalRequest) && !evidence.backingIntervalQualified) {
+      const stat=lstatSync(intervalRequest);assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && stat.nlink===1 && (stat.mode&0o7777)===0o600 && stat.size<=4096);
+      const bytes=readFileSync(intervalRequest),request:unknown=JSON.parse(bytes.toString("utf8"));
+      assert(isDependencyCustodyObject(request,"schemaVersion,sourceSha,runtimeManifestSha256") && request.schemaVersion===1 && request.sourceSha===fullInput.sourceSha && typeof request.runtimeManifestSha256==="string" && /^[a-f0-9]{64}$/.test(request.runtimeManifestSha256));
+      assert(Buffer.from(JSON.stringify(request)+"\n").equals(bytes));assert(backing && registered && invocationId);
+      observeGuestBoot(root,registered,unit,invocationId,deadline,undefined,(selection,handles)=>backing!.select(selection,handles));
+      managedParent.revalidate();const facts=backing.qualify();
+      evidence.backingIntervalQualified={purpose:"actual_original_parent_backing_interval",factsSha256:digest(JSON.stringify(facts)+"\n")};
+    }
+    if(evidence.backingIntervalQualified){
+      assert(backing);const names=readdirSync(outbox+"/current-full-pulses");assert(names.length<=256);
+      for(const name of names){if(/^\.pending-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(name))continue;assert(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(name));
+        const s=lstatSync(outbox+"/current-full-pulses/"+name);if(s.isFile() && s.nlink===2)continue;
+        backing.pulse(outbox+"/current-full-pulses/"+name);
+      }
+    }
     const requestPath=outbox+"/cold-policy-request.json";
     if(existsSync(requestPath) && !evidence.independentPolicyRequest) {
       const stat=lstatSync(requestPath);assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && stat.nlink===1 && (stat.mode&0o7777)===0o600 && stat.size<=16384);
@@ -218,8 +238,8 @@ try {
       assert(Buffer.from(JSON.stringify(request)+"\n").equals(bytes));assert.equal(request.runtimeSha,fullInput.sourceSha);
       assert(backing && registered && invocationId);
       managedParent.revalidate();
-      observeGuestBoot(root, registered, unit, invocationId, deadline, undefined,
-        (selection, handles) => backing!.select(selection, handles));
+      assert(evidence.backingIntervalQualified);
+      observeGuestBoot(root, registered, unit, invocationId, deadline);
       assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
       const facts = backing.observe();
       assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
@@ -325,7 +345,10 @@ try {
       evidence.ownedOsStopped = true;
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }
   }
-  if (backing && evidence.ownedOsStopped === true) backing.close();
+  if (backing && evidence.ownedOsStopped === true) {
+    try { fullParentTerminal=backing.closeAfterTerminal();evidence.backingTerminal=fullParentTerminal; }
+    catch { evidence.backingRetentionTerminalUnproven=true;evidence.status="failed";process.exitCode=1; }
+  }
   else if (backing) evidence.backingRetentionTerminalUnproven = true;
   if (sink) { try { closeSync(sink.fd); } catch { evidence.status = "failed"; evidence.sinkCloseFailed = true; process.exitCode = 1; } }
   if (!diagnostic && existsSync(root + runtime + "/TEST-io-uring-probe.json")) {

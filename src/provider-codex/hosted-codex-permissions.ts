@@ -94,7 +94,7 @@ export function hostedCodexPermissionProfilesToml(
     throw new Error("hosted_permission_private_key_path_invalid");
   }
   const privateFile = privateKeyFilePath ? resolve(privateKeyFilePath) : undefined;
-  const privateRules = [privateRoot, ...(privateFile &&
+  const privateRules = ["/var/lib/subscription-runtime-full-parent-live", "/run/TEST-full-flow-outbox", privateRoot, ...(privateFile &&
     privateFile !== privateRoot && !privateFile.startsWith(`${privateRoot}/`)
     ? [privateFile] : [])]
     .map(path => `${JSON.stringify(path)} = "deny"`);

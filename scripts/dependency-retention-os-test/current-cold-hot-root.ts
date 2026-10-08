@@ -1,3 +1,4 @@
+import { assertOriginalFullBackingPreparation, FullBackingInstallationContract } from "../../dist/worker-codex/hosted-full-backing-interval.js";
 /** Owned TEST preparation. Inventory is configuration; ORIGINAL install grants custody. */
 import assert from "node:assert/strict";
 import { assertConfiguredAccountName } from "./current-configured-auth-mount.js";
@@ -20,7 +21,16 @@ export enum ColdHotPrerequisite { ConfiguredAuth = "configured_auth", Independen
 export type CurrentColdHotRoots = Readonly<{ candidateJobId: string; readonlyJobId: string; jobRoot: string; workspace: string;
   accountName: string; workspaceIdentity: ReturnType<typeof directoryIdentity>; sourceSha: string; runtimeManifestSha256: string }>;
 /** New OS only. No installed creator row is removed; legacy cohort remains separate. */
-export async function prepareCurrentColdHotRoots(evidence: Record<string, unknown>, accountName: string): Promise<CurrentColdHotRoots> {
+export function prepareCurrentColdHotRoots(evidence: Record<string, unknown>, accountName: string): Promise<CurrentColdHotRoots> {
+  return prepareRoots(evidence, accountName);
+}
+/** Distinct actual FULL producer. Requiredness is fixed by this inspected
+ * entrypoint and physical original parent, never by a JSON/env boolean. */
+export function prepareCurrentFullColdHotRoots(evidence: Record<string, unknown>, accountName: string): Promise<CurrentColdHotRoots> {
+  assertOriginalFullBackingPreparation();
+  return prepareRoots(evidence, accountName, FullBackingInstallationContract.OriginalParentProcV1);
+}
+async function prepareRoots(evidence: Record<string, unknown>, accountName: string, full?: FullBackingInstallationContract): Promise<CurrentColdHotRoots> {
   assertReadonlyHostOperator(); assertConfiguredAccountName(accountName); assert.equal(readCurrentBackingGeometry(), CurrentBackingGeometry.Adoptable);
   const sourceSha = process.env.TEST_SOURCE_SHA; assert(sourceSha && /^[a-f0-9]{40}$/.test(sourceSha));
   const bus = await issueActualSystemBusInfrastructure(evidence);
@@ -71,7 +81,10 @@ export async function prepareCurrentColdHotRoots(evidence: Record<string, unknow
     ordinaryCreators: [{ creatorId: candidateJobId, jobId: candidateJobId, jobRootDir: jobRoot, workspacePath: workspace, launch }],
     disabledCreators: [], runtimeLaunch: launch });
   const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages"; directory(stages);
-  json(stages + "/" + digest(runtime) + ".json", { schemaVersion: 1, runtimeDirectory: runtime, runtimeSha: sourceSha, runtimeManifestSha256 });
+  if (full) assertOriginalFullBackingPreparation();
+  json(stages + "/" + digest(runtime) + ".json", full
+    ? { schemaVersion: 2, runtimeDirectory: runtime, runtimeSha: sourceSha, runtimeManifestSha256, backingInterval: full }
+    : { schemaVersion: 1, runtimeDirectory: runtime, runtimeSha: sourceSha, runtimeManifestSha256 });
   json(policy + "/dependency-installer-profile.json", actualToolchainProfile(rootGit));
   const kernel = new HostedReadonlyHostKernel(); kernel.verifyExclusiveInventory();
   new HostedInstallationActivationStore().install();

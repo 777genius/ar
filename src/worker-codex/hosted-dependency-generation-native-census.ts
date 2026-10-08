@@ -1,3 +1,4 @@
+import { assertOriginalHostedDependencyFullBackingInterval } from "./hosted-full-backing-interval";
 import { readOriginalHostedDependencyPriorRSourceClosure, readOriginalHostedDependencyConsumerPriorRSourceClosure } from "./hosted-dependency-generation-r-source-closure";
 import { readHostedDependencyActiveReferenceUnits } from "./hosted-dependency-active-actor-facts";
 import { readOriginalHostedDependencyPriorCSourceClosure, readOriginalHostedDependencyOperatorPriorCSourceClosure } from "./hosted-dependency-generation-prior-closure";
@@ -33,6 +34,7 @@ function scope(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActiv
   return {units,operator:new HostedReadonlyHostKernel().operatorSession()};
 }
 function census(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):boolean {
+  assertOriginalHostedDependencyFullBackingInterval(fence,access);
   const before=scope(context,fence,access),inventory=readHostedReadonlyHostInventory();
   if(!inventory.collectorProfile || !inventory.systemBusInfrastructure || inventory.schemaVersion!==4)invalid();
   verifyPinnedFdCollectorProfile(inventory.collectorProfile);verifySystemBusInfrastructure(inventory.systemBusInfrastructure);
@@ -88,7 +90,7 @@ function census(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActi
   }
   // No unit/FD allowance survives a changed original context or physical FDA
   // association. All fragment/collector descriptors have closed before this.
-  const after=scope(context,fence,access);assertHostedActivationFence(fence);
+  const after=scope(context,fence,access);assertOriginalHostedDependencyFullBackingInterval(fence,access);assertHostedActivationFence(fence);
   if(JSON.stringify(before)!==JSON.stringify(after))invalid();return eligible;
 }
 function systemctl(args:readonly string[]):string {

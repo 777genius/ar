@@ -17,6 +17,8 @@ on:
       - 'src/worker-codex/hosted-installation-*.ts'
       - 'src/worker-codex/hosted-readonly-*.ts'
       - 'src/worker-codex/hosted-test-egress-*.ts'
+      - 'src/worker-codex/hosted-full-backing-*.ts'
+      - 'host-integration/managed-launcher/**'
       - 'src/provider-codex/app-server/adapters/hosted-*.ts'
       - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
       - 'src/core/host-infrastructure/**'
@@ -64,6 +66,10 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: node --test scripts/dependency-retention-os-test/current-full-backing-collector.node-test.js
+      - name: Execute real foreign process and FD census completion TEST
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node --test scripts/dependency-retention-os-test/current-full-backing-interval.node-test.js
       - name: Strict emit reviewed eviction and restore TEST closure without effects
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
       - name: Compile finite uninstalled ROOT profile and check refusal DATA only
@@ -79,7 +85,13 @@ jobs:
             host-integration/managed-launcher/dependency-full-native-parent-TEST.js
             scripts/dependency-retention-os-test/current-full-outer.js
             scripts/dependency-retention-os-test/current-full-backing-collector.js
+            scripts/dependency-retention-os-test/current-full-backing-interval.node-test.js
+            src/worker-codex/hosted-full-backing-proc.js
             host-integration/managed-launcher/launch.mjs
+            host-integration/managed-launcher/profiles.mjs
+            host-integration/managed-launcher/payload-guard.mjs
+            host-integration/host-jobs/storage-policy.mjs
+            package.json
             scripts/dependency-retention-os-test/assemble-current-full.js
             scripts/dependency-retention-os-test/common.js
             scripts/dependency-retention-os-test/compose-current-real-codex.js
@@ -132,6 +144,8 @@ jobs:
             scripts/dependency-retention-os-test/current-full-outer-input.ts
             scripts/dependency-retention-os-test/current-full-outer.ts
             scripts/dependency-retention-os-test/current-full-backing-collector.ts
+            scripts/dependency-retention-os-test/current-full-backing-interval.node-test.ts
+            src/worker-codex/hosted-full-backing-proc.ts
             scripts/dependency-retention-os-test/current-full-r-entry.ts
             scripts/dependency-retention-os-test/current-full-r-continuation.ts
             scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
