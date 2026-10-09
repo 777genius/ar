@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
 import { closeSync, constants, openSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import * as fs from "node:fs";
 import * as child from "node:child_process";
@@ -10,7 +12,7 @@ import { inspectVisibleScratchMount, readKernelMountTable, selectVisibleScratchM
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>() }));
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 const target = "/jobs/NEWTEST/tmp", uuid = "d0f2cac1-2009-4e9d-a710-e156f417938f";
 const hidden = { id: 10, target, uuid, fsroot: "/runtime-tmp/test" };
@@ -32,15 +34,16 @@ test("FD containing ancestor excludes the covered singleton and segment-prefix i
 // RED: socket transport denies a supported root; unsupported anonymous files
 // must raise the kernel error instead of returning a tuple or an absent mount.
 test.runIf(process.platform === "linux")("real adapter preserves the root or rejects unsupported anonymous files", () => {
+  const temporaryDirectory = process.env.TMPDIR ?? "/tmp";
   let probe: number;
   try {
     // Independent kernel capability probe, not a filesystem-name assumption.
     // Linux O_TMPFILE|O_RDWR creates an unnamed inode, reclaimed on close.
-    probe = openSync("/tmp", 0x410000 | constants.O_RDWR, 0o600);
+    probe = openSync(temporaryDirectory, 0x410000 | constants.O_RDWR, 0o600);
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOTSUP" ||
-        !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== "/tmp") throw error;
-    assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: "/tmp" });
+        !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== temporaryDirectory) throw error;
+    assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: temporaryDirectory });
     return;
   }
   try {
@@ -53,6 +56,64 @@ test.runIf(process.platform === "linux")("real adapter preserves the root or rej
     assert.deepEqual(result, { target: "/", fsroot: visible.fsroot, mountId: Number(visible.id), isPrivate: record.split(" - ")[0]!.split(" ").length === 6, ...(typeof visible.uuid === "string" ? { uuid: visible.uuid } : {}) });
   } finally { closeSync(probe); }
 });
+
+test.runIf(process.platform === "linux")("unavailable system /tmp uses explicit private TMPDIR for anonymous observation only", () => {
+  const temporaryDirectory = fs.mkdtempSync(join(tmpdir(), "scratch-mount-observation-"));
+  const realOpen = fs.openSync;
+  let snapshot = -1;
+  vi.stubEnv("TMPDIR", temporaryDirectory);
+  const opens = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: number | string, mode?: fs.Mode) => {
+    if (path === "/tmp") throw Object.assign(new Error("System /tmp unavailable"), { code: "ENOENT" });
+    const fd = realOpen(path, flags, mode);
+    if (path === temporaryDirectory) {
+      assert.equal(flags, 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL);
+      assert.equal(mode, 0o600);
+      assert.equal(fs.fstatSync(fd).nlink, 0);
+      assert.equal(fs.fstatSync(fd).mode & 0o777, 0o600);
+      snapshot = fd;
+    }
+    return fd;
+  }) as typeof fs.openSync);
+  try {
+    assert.equal(fs.lstatSync(temporaryDirectory).mode & 0o777, 0o700);
+    // Independent real FD witness; no synthetic topology or findmnt response.
+    const root = realOpen("/", 0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    let mountId: number;
+    try { mountId = Number(fs.readFileSync(`/proc/self/fdinfo/${root}`, "utf8").match(/^mnt_id:\s+(\d+)$/m)![1]); }
+    finally { closeSync(root); }
+    const result = inspectVisibleScratchMount("/");
+    assert.ok(result); assert.equal(result.target, "/"); assert.equal(result.mountId, mountId);
+    assert.ok(snapshot >= 0); assert.throws(() => fs.fstatSync(snapshot), { code: "EBADF" });
+    assert.deepEqual(fs.readdirSync(temporaryDirectory), []);
+    assert.ok(opens.mock.calls.every(([path]) => path !== "/tmp"));
+  } finally { fs.rmSync(temporaryDirectory, { recursive: true, force: true }); }
+});
+
+test.runIf(process.platform === "linux").each(["missing", "file", "symlink", "unsupported", "relative", "empty"])(
+  "invalid explicit observation TMPDIR refuses without fallback (%s)", fault => {
+    const directory = fs.mkdtempSync(join(tmpdir(), "scratch-mount-refusal-"));
+    const configured = fault === "relative" ? "relative-temp" : fault === "empty" ? "" : join(directory, "configured");
+    if (fault === "file") fs.writeFileSync(configured, "");
+    if (fault === "symlink") fs.symlinkSync(directory, configured);
+    const realOpen = fs.openSync, error = Object.assign(new Error("Unsupported anonymous file"), { code: "ENOTSUP" });
+    vi.stubEnv("TMPDIR", configured);
+    const opens = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: number | string, mode?: fs.Mode) => {
+      if (path === "/tmp") throw Object.assign(new Error("System /tmp unavailable"), { code: "ENOENT" });
+      if (fault === "unsupported" && path === configured) throw error;
+      return realOpen(path, flags, mode);
+    }) as typeof fs.openSync);
+    const execute = vi.spyOn(child, "execFileSync");
+    try {
+      if (fault === "unsupported") assert.throws(() => inspectVisibleScratchMount("/"), value => value === error);
+      else if (fault === "relative" || fault === "empty") assert.throws(() => inspectVisibleScratchMount("/"), /Ambiguous/);
+      else assert.throws(() => inspectVisibleScratchMount("/"), { code: fault === "missing" ? "ENOENT" : "ENOTDIR" });
+      assert.equal(execute.mock.calls.length, 0);
+      assert.ok(opens.mock.calls.every(([path]) => path !== "/tmp"));
+      // Invalid observation storage does not turn intentional mount absence into ambiguity.
+      assert.equal(inspectVisibleScratchMount(join(directory, "absent-mount")), undefined);
+      assert.equal(inspectVisibleScratchMount(directory), undefined);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
 
 // RED: rejecting every multirow query prevents use of the real rebound directory.
 test("only the unique visible FD-associated row supplies tuple authority", () => {
@@ -107,13 +168,14 @@ test("kernel reader accepts exact-cap EOF, rejects cap+1 and closes on failure",
 // Synthetic kernel bytes run through the real FD ownership/anonymous-input adapter.
 // A reconstructed row, dropped duplicate, stale record or lost held FD must reject.
 test.runIf(process.platform === "linux")("adapter queries the untouched original row and retains full-table refusals", () => {
+  const temporaryDirectory = process.env.TMPDIR ?? "/tmp";
   // Test the actual anonymous-file capability before installing synthetic kernel/query observations.
   let snapshot: number;
-  try { snapshot = openSync("/tmp", 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600); }
+  try { snapshot = openSync(temporaryDirectory, 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600); }
   catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOTSUP" ||
-        !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== "/tmp") throw error;
-    assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: "/tmp" });
+        !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== temporaryDirectory) throw error;
+    assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: temporaryDirectory });
     return;
   }
   closeSync(snapshot);
