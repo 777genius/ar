@@ -1,3 +1,5 @@
+import { emitSignedPythonEnvelopeCatalog } from "./current-full-python-envelope-catalog.ts";
+import type { EnvelopeLimits, SignedPackage } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 import { composeCurrentRealCodex } from "./compose-current-real-codex.js";
 import { readDefaultTestRequestedModel } from "./default-codex-config.ts";
 import { compileIoUringFixture } from "./io-uring.ts";
@@ -17,7 +19,7 @@ import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTE
 import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, currentBackingRuntimeModules, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
 
 export function assembleCurrentFull(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
-  scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing, removalCase:FullRemovalCase=FullRemovalCase.Positive): void {
+  scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing, removalCase:FullRemovalCase=FullRemovalCase.Positive, pythonEnvelopeLimits?: EnvelopeLimits): void {
   fullNativeRemovalCase(removalCase);
   const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
   assert(removalCase!==FullRemovalCase.ParentCrashH1 || restoreConsumer===FullRestoreConsumer.Ordinary);
@@ -69,10 +71,11 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   // --download-only never configures the extracted guest or starts runner services.
   command("/usr/bin/apt-get", [...options, "--yes", "--download-only", "--no-install-recommends", "install",
     "systemd", "systemd-container", "dbus-daemon", "dbus-bin", "iproute2=6.1.0-1ubuntu6.4", "util-linux", "bash", "coreutils", "libc-bin", "git", "ca-certificates", "tini", "python3-minimal",
+    ...(pythonEnvelopeLimits !== undefined ? ["libpython3.12-stdlib"] : []),
     ...requiredPackages], 300000);
   for (const name of ["usr/bin", "usr/sbin", "usr/lib", "usr/lib64"]) directory(root + "/" + name, 0o755);
   for (const name of ["bin", "sbin", "lib", "lib64"]) symlinkSync("usr/" + name, root + "/" + name);
-  const packages: unknown[] = [];
+  const packages: SignedPackage[] = [];
   const debs = readdirSync(state + "/archives").filter(name => name.endsWith(".deb")).sort();
   assert(debs.length > 10 && debs.length < 200);
   for (const name of debs) {
@@ -125,6 +128,12 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   directory(root + runtime, 0o755);
   assert(Buffer.byteLength(JSON.stringify(signedElfPins)) <= 128 * 1024);
   json(root + runtime + "/os-signed-elf-pins.json", { schemaVersion: 1, pins: signedElfPins });
+  // Optional SOURCE proposal: no H1 enrollment/guard change. Omitted or failed
+  // input never qualifies Python. Limits require actual signed-image measurement.
+  if (pythonEnvelopeLimits !== undefined) {
+    const candidate = emitSignedPythonEnvelopeCatalog(root, packages, pythonEnvelopeLimits, checkBudget);
+    json(root + runtime + "/os-signed-python-envelope-candidate.json", candidate);
+  }
   for (const name of scenario === OwnedOsMode.BusDiagnostic ? [] : ["dist", "packages", "node_modules", "scripts", "package.json"]) {
     checkBudget();
     cpSync(source + "/" + name, root + runtime + "/" + name, { recursive: true, dereference: false, verbatimSymlinks: true });

@@ -51,6 +51,57 @@ jobs:
       - run: npm run build
       - name: Typecheck the retained handwritten OS fixture closure
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json
+      - name: Strict emit complete Python envelope TEST and retain exact source metadata
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          mkdir -p dependency-python-envelope-root-evidence
+          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"four-root-Linux-census-TEST-not-native-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-python-envelope-root-evidence/source.json
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node --version > dependency-python-envelope-root-evidence/node-version.txt
+          node node_modules/typescript/bin/tsc --version > dependency-python-envelope-root-evidence/typescript-version.txt
+          grep -Fxq 'Version 6.0.3' dependency-python-envelope-root-evidence/typescript-version.txt
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.ts \
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.ts \
+            scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json \
+            scripts/dependency-retention-os-test/assemble-current-full.ts \
+            .github/workflows/dependency-retention-os-registration-test.yml \
+            > dependency-python-envelope-root-evidence/source.sha256
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json 2>&1 | tee dependency-python-envelope-root-evidence/strict-emit.log
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js \
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js \
+            > dependency-python-envelope-root-evidence/emitted.sha256
+      - name: Execute four real root Linux Python envelope census scenarios
+        run: |
+          set -o pipefail
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TMPDIR="$RUNNER_TEMP" TEST_PYTHON_ENVELOPE_ROOT_CI=1 \
+            "$TEST_NODE" --test --test-reporter=tap \
+            "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js" \
+            2>&1 | tee dependency-python-envelope-root-evidence/root-tests.tap
+          TAP=dependency-python-envelope-root-evidence/root-tests.tap
+          grep -Eq '^ok [0-9]+ - complete native census reconciles all candidates and refuses late unknown source/bytecode$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native candidate metadata refuses hardlinks and writable source even with matching content$' "$TAP"
+          grep -Eq '^ok [0-9]+ - alias literal size participates in file bound and largest-file measurement$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native census refuses caller-owned fixture before reading candidate content # SKIP root-owned positive census requires separate Linux integration$' "$TAP"
+          grep -Fxq '# tests 17' "$TAP"
+          grep -Fxq '# pass 16' "$TAP"
+          grep -Fxq '# fail 0' "$TAP"
+          grep -Fxq '# skipped 1' "$TAP"
+          test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
+      - name: Retain exact-source Python envelope root TEST evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-python-envelope-root-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-python-envelope-root-evidence/
+          if-no-files-found: error
       - name: Prove completed-removal idle replay on root Linux, exact old red and new green
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -102,6 +153,13 @@ jobs:
           path: |
             host-integration/managed-launcher/dependency-full-native-TEST.js
             host-integration/managed-launcher/dependency-full-native-parent-TEST.js
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.ts
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.ts
+            scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json
             scripts/dependency-retention-os-test/current-full-outer.js
             scripts/dependency-retention-os-test/current-full-monitor-native-TEST.js
             scripts/dependency-retention-os-test/current-full-backing-collector.js
