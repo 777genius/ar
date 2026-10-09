@@ -4,21 +4,52 @@ import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
-import { isResearchDenialObservation, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
+import { copyResearchHostCommandFailure, researchHostCommandFailure, isResearchDenialObservation, researchHash, researchInvalid,
+  researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
-import { assertResearchProviderRoot, prepareResearchProviderRoot } from "./research-provider-root";
+import { assertResearchProviderRoot, captureResearchProviderRootTiming, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck, type ResearchProviderRootTiming } from "./research-provider-root";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
   "assertResearchServiceOwner", "assertResearchStartAuthority", "assertAuthorityCurrent", "captureResearchRuntime",
-  "assertTransportPermission"] as const;
-type DenialCheck = typeof denialChecks[number];
+  "assertResearchProviderNotCancelled", "assertTransportPermission"] as const;
+type TransportDenialCheck = "research-provider-transport:setup-deadline" | "research-provider-transport:proxy-exited" |
+  "research-provider-transport:transport-failed" | "research-provider-transport:stdin-destroyed" |
+  "research-provider-transport:stdout-destroyed" | "research-provider-transport:stdout-ended";
+type DenialCheck = typeof denialChecks[number] | ResearchProviderRootCheck | TransportDenialCheck;
 const observedChecks = new WeakMap<Error, DenialCheck>();
-function denialCheck(error: unknown): DenialCheck | undefined {
-  if (!(error instanceof Error)) return undefined;
-  return observedChecks.get(error) ?? error.stack?.split("\n").flatMap(line =>
-    denialChecks.filter(name => [`at ${name} (`, `at Object.${name} (`].some(prefix => line.trimStart().startsWith(prefix))))[0];
+function transportDenial(check: TransportDenialCheck): Error {
+  const error = new Error("hosted_research_launch_denied");
+  observedChecks.set(error, check);
+  return error;
+}
+function ownErrorData(error: unknown, key: string): unknown {
+  try {
+    if (!(error instanceof Error)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch { return undefined; }
+}
+function denialObservation(error: unknown): ResearchDenialObservation | undefined {
+  const cause = ownErrorData(error, "cause");
+  return isResearchDenialObservation(cause) ? cause : undefined;
+}
+function denialCheck(error: unknown, legacyFrames = true): DenialCheck | undefined {
+  const root = researchProviderRootFailureCheck(error);
+  if (root) return root;
+  // Root planning observations are identity-bound, never inferred from a stack
+  // supplied by an adapter. Preserve legacy native frames in the other phases.
+  if (!legacyFrames) return undefined;
+  try {
+    if (!(error instanceof Error)) return undefined;
+    const observed = observedChecks.get(error);
+    if (observed) return observed;
+    const stack = error.stack;
+    if (typeof stack !== "string" || stack.length > 65536) return undefined;
+    return stack.split("\n").slice(1, 65).flatMap(line => denialChecks.filter(name =>
+      [`at ${name} (`, `at Object.${name} (`].some(prefix => line.trimStart().startsWith(prefix))))[0];
+  } catch { return undefined; }
 }
 
 /** The first bytes belong solely to the fixed confined launcher, before it has
@@ -27,7 +58,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   const stream = proxy.stdout;
   if (!stream) researchInvalid();
   const expected = Buffer.from("subscription-runtime-research-provider-ready-v1\n");
-  let received = 0, failed = false, readyDeadline = deadline;
+  let received = 0, failed = false;
   let refusal: Error | undefined;
   let observation: ResearchDenialObservation | undefined;
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
@@ -35,43 +66,47 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   // Rejection alone has no effect once ready has resolved. Keep the failure
   // latched until the synchronous transition to native protocol forwarding.
   const denied = (error?: unknown): void => {
-    if (error instanceof Error && isResearchDenialObservation(error.cause)) observation = error.cause;
+    observation = denialObservation(error) ?? observation;
     failed = true;
-    refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
+    if (!refusal) {
+      refusal = new Error("hosted_research_launch_denied", { cause: observation });
+      copyResearchHostCommandFailure(error, refusal);
+    }
     const check = denialCheck(error);
-    if (check) observedChecks.set(refusal, check);
+    if (check && !observedChecks.has(refusal)) observedChecks.set(refusal, check);
     rejectReady(refusal);
   };
   const check = (): boolean => {
     if (failed) return false;
-    try { assertPermission(); if (performance.now() >= readyDeadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
+    try { assertPermission(); if (performance.now() >= deadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
     catch (error) { denied(error); return false; }
     return true;
   };
   const onData = (chunk: Buffer): void => {
-    const observedAt = performance.now();
     if (!check()) return;
     // Match a bounded prefix without accumulating stream data. Every byte
     // after the exact frame is forbidden while bootstrap is still held.
     if (received + chunk.length > expected.length || !expected.subarray(received, received + chunk.length).equals(chunk)) { denied(); return; }
     received += chunk.length;
     if (received === expected.length) {
-      // The fixed launcher allows ten seconds to receive bootstrap after ready.
-      readyDeadline = Math.min(deadline, observedAt + 10_000);
       resolveReady();
     }
   };
   const timer = setInterval(check, 25); // Fence/timeout polling, never proof of readiness.
-  stream.on("data", onData); stream.once("end", denied); stream.once("close", denied); stream.once("error", denied);
-  proxy.once("exit", denied); proxy.once("error", denied);
+  const onEnd = (): void => denied(transportDenial("research-provider-transport:stdout-ended"));
+  const onClose = (): void => denied(stream.destroyed ? transportDenial("research-provider-transport:stdout-destroyed") : undefined);
+  const onError = (): void => denied(transportDenial("research-provider-transport:transport-failed"));
+  const onExit = (): void => denied(transportDenial("research-provider-transport:proxy-exited"));
+  stream.on("data", onData); stream.once("end", onEnd); stream.once("close", onClose); stream.once("error", onError);
+  proxy.once("exit", onExit); proxy.once("error", onError);
   check();
   return {
     ready,
     assertCurrent: (): void => { if (!check()) { if (refusal) throw refusal; researchInvalid(observation); } },
     stop: (): void => {
       clearInterval(timer);
-      stream.off("data", onData); stream.off("end", denied); stream.off("close", denied); stream.off("error", denied);
-      proxy.off("exit", denied); proxy.off("error", denied);
+      stream.off("data", onData); stream.off("end", onEnd); stream.off("close", onClose); stream.off("error", onError);
+      proxy.off("exit", onExit); proxy.off("error", onError);
     },
   };
 }
@@ -80,35 +115,60 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
  * provider gets separate PID/user/mount namespaces and no host authority. */
 export async function runResearchProviderService(jobId: string, unit: string, selectedCodexHome: string): Promise<void> {
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
-  const { directory } = researchCurrentStart(jobId);
-  let phase: ResearchProviderLaunchPhase = "runtime-capture";
-  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { phase = next; }); }
+  const { directory, spec, bytes } = researchCurrentStart(jobId);
+  const state: { phase: ResearchProviderLaunchPhase } = { phase: "runtime-capture" };
+  const scopes: { scope: RootTimingScope; outcome: RootTimingOutcome; elapsedMs: number; checks: readonly ResearchProviderRootTiming[] }[] = [];
+  const capture = <T>(scope: RootTimingScope, operation: () => T): T => {
+    let returned = false, started = 0;
+    try { started = performance.now(); } catch { /* Observation only. */ }
+    return captureResearchProviderRootTiming(() => { const result = operation(); returned = true; return result; }, checks => {
+      const elapsed = performance.now() - started;
+      if (scopes.length < 3) scopes.push({ scope, outcome: returned ? RootTimingOutcome.Completed : RootTimingOutcome.Failed,
+        elapsedMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0, checks });
+    });
+  };
+  let timingAttempted = false;
+  const publishTiming = (): void => {
+    if (timingAttempted) return; timingAttempted = true;
+    try { researchPublish(join(directory, "provider-root-timing.json"), { schemaVersion: 1, unit,
+      specSha256: researchHash(bytes), artifactSha256: spec.artifactSha256, phase: state.phase, scopes }); }
+    catch { /* Private observation failure never changes admission or causes a retry. */ }
+  };
+  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { state.phase = next; }, capture, publishTiming); }
   catch (error) {
+    publishTiming();
+    const phase = state.phase;
     // Root-private observation only, never authority. Retain a finite phase;
     // raw stderr/errors can contain credentials and must remain private.
     // Fixed internal frame labels only, never arbitrary stack/error text.
-    const check = denialCheck(error);
+    const check = denialCheck(error, phase !== "service-plan");
+    const observation = denialObservation(error);
+    const hostCommand = researchHostCommandFailure(error);
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
       ...(check ? { check } : {}),
-      ...(error instanceof Error && isResearchDenialObservation(error.cause) ? { observation: error.cause } : {}),
+      ...(observation ? { observation } : {}),
+      ...(hostCommand ? { hostCommand } : {}),
     }); }
     catch { /* Original denial remains authoritative when observation fails. */ }
     throw error;
   }
 }
 
+enum RootTimingScope { Prepare = "prepare", InitialLaunch = "initial-launch", SubmissionAssert = "submission-assert" }
+enum RootTimingOutcome { Completed = "completed", Failed = "failed" }
+type RootTimingCapture = <T>(scope: RootTimingScope, operation: () => T) => T;
 type ResearchProviderLaunchPhase = "runtime-capture" | "reservation" | "service-plan" | "executable-custody" |
   "submission-custody" | "systemd-submission" | "ready-and-owner" | "native-forwarding";
 async function runAdmittedResearchProvider(jobId: string, unit: string, selectedCodexHome: string,
-  phase: (next: ResearchProviderLaunchPhase) => void): Promise<void> {
+  phase: (next: ResearchProviderLaunchPhase) => void, capture: RootTimingCapture, publishTiming: () => void): Promise<void> {
   const { spec, directory } = researchCurrentStart(jobId), request = spec.request;
   const captured = captureResearchRuntime(request, process.ppid);
   phase("reservation");
   const reservation = readResearchProviderReservation(directory, unit);
   assertResearchProviderNotCancelled(directory, unit);
   phase("service-plan");
-  const rootPlan = prepareResearchProviderRoot(spec, unit, selectedCodexHome);
-  const launch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
+  const rootPlan = capture(RootTimingScope.Prepare, () => prepareResearchProviderRoot(spec, unit, selectedCodexHome));
+  const launch = capture(RootTimingScope.InitialLaunch, () => trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan));
   phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
@@ -127,8 +187,10 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     // polling. Cancellation can race both the pending publication and the walk.
     captured.assertCurrent();
     assertForwardPermission();
-    assertResearchProviderRoot(rootPlan, spec, unit, selectedCodexHome);
+    capture(RootTimingScope.SubmissionAssert, () => assertResearchProviderRoot(rootPlan, spec, unit, selectedCodexHome));
     phase("systemd-submission");
+    publishTiming();
+    assertForwardPermission();
     const proxy = spawn(launch.command, launch.args, { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     child = proxy;
     // Hold the provider bootstrap frame until the actual service PID/birth/boot is
@@ -139,7 +201,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       proxy.once("error", failed);
       proxy.once("exit", (code, signal) => { proxyExited = true; clearTimeout(terminalTimer); process.exitCode = signal ? 70 : code ?? 70; resolve(); });
       // systemd has its own maximum; bound this direct stream transport as well.
-      terminalTimer = setTimeout(failed, request.taskTimeoutMs + 30_000);
+      terminalTimer = setTimeout(failed, researchProviderSetupTimeoutMs + request.taskTimeoutMs + 30_000);
       proxy.stdout.once("error", failed); proxy.stderr.once("error", failed);
       proxy.stdin.on("error", error => {
         if (!inputReleased || (error as NodeJS.ErrnoException).code !== "EPIPE") failed();
@@ -155,7 +217,12 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     const deadline = performance.now() + researchProviderSetupTimeoutMs;
     const assertTransportPermission = (): void => {
       assertForwardPermission();
-      if (performance.now() >= deadline || proxyExited || transportFailed || proxy.stdin.destroyed || proxy.stdout.destroyed || proxy.stdout.readableEnded) researchInvalid();
+      if (performance.now() >= deadline) throw transportDenial("research-provider-transport:setup-deadline");
+      if (proxyExited) throw transportDenial("research-provider-transport:proxy-exited");
+      if (transportFailed) throw transportDenial("research-provider-transport:transport-failed");
+      if (proxy.stdin.destroyed) throw transportDenial("research-provider-transport:stdin-destroyed");
+      if (proxy.stdout.destroyed) throw transportDenial("research-provider-transport:stdout-destroyed");
+      if (proxy.stdout.readableEnded) throw transportDenial("research-provider-transport:stdout-ended");
     };
     phase("ready-and-owner");
     const readiness = monitorResearchReady(proxy, assertTransportPermission, deadline);

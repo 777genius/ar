@@ -12,7 +12,7 @@ import { readHostedReadonlyDependencyStart } from "../provider-codex/app-server/
 import { assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { hostedDependencyOwnerRoot, hostedDependencyBindingName, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
+import { createReadonlyPrivateRecord, createReadonlyPrivateRecordOnce } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { readHostedReadonlyDependencyMaterial } from "./hosted-readonly-dependency-records";
@@ -119,7 +119,7 @@ export function consumeHostedReadonlyDependencyPreclaim(context: CurrentHostedDe
     const held = assertDependencyPreclaimedConsumer(store,actual.binding.workspace,actual.preclaim);
     if (!isDependencyConsumerOwner(held.owner)) invalid(); attempt = held.owner.attempt;
     ensureHostedDependencyDirectory(entries);
-    createReadonlyPrivateRecord(`${entries}/${attempt.launch.startId}.json`,encode({version:1,producer:actual.producer,attempt}));
+    createReadonlyPrivateRecordOnce(`${entries}/${attempt.launch.startId}.json`,encode({version:1,producer:actual.producer,attempt}));
   } finally { store.close(); }
   // The durable claim/once-entry stay held; no directory descriptor is inherited
   // by the final genuine process collector.

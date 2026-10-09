@@ -18,7 +18,7 @@ import { HostedDependencyInstaller, assertHostedDependencyInstallerAttemptDraine
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { qualifyHostedDependencyInstallerInputs } from "./hosted-dependency-installer-inputs";
 import { normalizeCapturedDependencyOutput, publishCapturedDependencyOutput } from "./hosted-dependency-staged-output";
-import { closeDependencySourceLinkSession, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
+import { closeDependencySourceLinkSession, readDependencySourceRegistrySelection, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { dependencyCoverageRevision, publishHostedDependencyReceipt, readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
 export { dependencyCoverageRevision, readHostedDependencyReceipt } from "./hosted-dependency-receipts";
 import { assertHostedDependencyMaterializationOwner as assertOwner, assertHostedDependencyMaterializationOwnerUnderFence as assertOwnerUnderFence,
@@ -99,7 +99,17 @@ async function produceFreshDependencyTree(context: CurrentHostedDependencyOrigin
         return undefined;
       } finally { closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); }
     }
-    try { return retainPhysicalCold(binding, attempt, prepared.inputs, ready, observed, source, exposure,context,access); }
+    try {
+      const physicalSelection = withHostedActivationFence(fence => {
+        assertFreshProducer(context, fence, access);
+        return readDependencySourceRegistrySelection(source, binding.workspace);
+      });
+      // Logical V1 has no installed-byte witness; preserve fresh qualification.
+      if (!physicalSelection) {
+        closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); return undefined;
+      }
+      return retainPhysicalCold(binding, attempt, prepared.inputs, ready, observed, source, exposure,context,access);
+    }
     catch (error) { closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); throw error; }
   }
   const { inputs, installing } = prepared, generation = installing.generation;

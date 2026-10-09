@@ -39,6 +39,8 @@ const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
 function local(path: string): string {
+  if (path === "/etc/subscription-runtime/host-activation-mode") return join(fixture.root, "host-activation-mode");
+  if (path === "/etc/subscription-runtime") return fixture.root;
   if (path === manifestScratch || path.startsWith(manifestScratch + "/")) return join(fixture.root, "manifest-scratch", path.slice(manifestScratch.length));
   if (path === "/mnt") return fixture.root;
   if (path === "/etc/subscription-runtime/scratch-temp.json") return join(fixture.root, "absent-scratch-policy");
@@ -141,6 +143,7 @@ function creator() { return { creatorId: "ordinary-creator", jobId: "ordinary-jo
 beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
+  writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
   fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.spawn.mockReset(); fixture.captureAncestry = false; fixture.captureDirectories.clear();

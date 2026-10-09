@@ -105,6 +105,7 @@ export class LocalEncryptedFileStore implements SessionStorePort {
     readonly nextArtifact: SessionArtifact;
     readonly idempotencyKey: string;
     readonly leaseId: string;
+    readonly metadata?: Readonly<Record<string, string>>;
   }): Promise<SessionWriteResult> {
     assertArtifactFits(input.nextArtifact);
     if (input.nextArtifact.providerId !== this.options.providerId) {
@@ -154,7 +155,9 @@ export class LocalEncryptedFileStore implements SessionStorePort {
       generation,
       generationHash: nextGenerationHash,
       metadata: {
+        ...(existing?.metadata ?? {}),
         ...(this.options.metadata ?? {}),
+        ...(input.metadata ?? {}),
         leaseId: input.leaseId,
       },
       idempotency: {
