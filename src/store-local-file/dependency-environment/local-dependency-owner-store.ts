@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   DependencyAdmissionError, DependencyAdmissionFailure as AdmissionFailure,
   parseDependencyOwner, sameDependencyOwnerIdentity, sameDependencyWorkspace,
-  DependencyOwnerPhase, isDependencyConsumerOwner,
+  DependencyOwnerPhase, isDependencyConsumerOwner, sameDependencyProtectedReference,
   type DependencyOwnerRecord, type DependencyOwnerStore, type DependencyWorkspaceIdentity,
 } from "@vioxen/subscription-runtime/worker-core";
 
@@ -88,7 +88,20 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       this.assertPrivateLeaf(mutexIdentity);
       const current = this.readRecordUnderOwnMutex(workspace, key, mutexIdentity);
       if ((current?.revision ?? null) !== expectedRevision) admissionFailure(AdmissionFailure.StaleAttempt);
-      if (current?.version === 2 && record.version !== 2) admissionFailure(AdmissionFailure.InvalidRecord);
+      if (record.version === 3 && (!current || current.version === 1)) admissionFailure(AdmissionFailure.InvalidRecord);
+      if (current?.version === 3 && record.version !== 3) admissionFailure(AdmissionFailure.InvalidRecord);
+      const custodyUpgrade = current?.version === 2 && record.version === 3;
+      if (current?.version === 2 && record.version !== 2 && !custodyUpgrade) admissionFailure(AdmissionFailure.InvalidRecord);
+      if (custodyUpgrade) {
+        if (current.owner || record.owner) admissionFailure(AdmissionFailure.Busy);
+        if (record.epoch !== current.epoch || JSON.stringify(record.activity) !== JSON.stringify(current.activity)) {
+          admissionFailure(AdmissionFailure.InvalidRecord);
+        }
+      }
+      // Slice A is storage/data only. Later fixed B-D handoff must authenticate
+      // completed transfer+receipt before enabling an actual binding replacement.
+      if (current?.version === 3 && record.version === 3 &&
+          !sameDependencyProtectedReference(current.custodyBinding, record.custodyBinding)) admissionFailure(AdmissionFailure.InvalidRecord);
       if (current?.version === 1 && record.version === 2 && current.owner) admissionFailure(AdmissionFailure.Busy);
       if (record.revision !== (current?.revision ?? 0) + 1 || record.epoch < (current?.epoch ?? 1)
         || record.epoch > (current?.epoch ?? 0) + 1) admissionFailure(AdmissionFailure.InvalidRecord);
@@ -100,8 +113,8 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       }
       assertActivitySuccessor(current, record);
 
-      if (current?.version === 1 && record.version === 2) {
-        // Idle-only upgrade retains the exact original bytes before replacement.
+      if (current && ((current.version === 1 && record.version === 2) || custodyUpgrade)) {
+        // Idle-only upgrades retain exact original bytes before replacement.
         const original = openSync(this.path(`${key}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
         let bytes: Buffer;
         try {
@@ -116,7 +129,7 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
         // Preservation itself is a durable publication phase. Any uncertainty
         // keeps the same mutex rather than admitting a second upgrade.
         publicationStarted = true;
-        const preserved = openSync(this.path(`${key}.v1-${createHash("sha256").update(bytes).digest("hex")}.json`),
+        const preserved = openSync(this.path(`${key}.v${current.version}-${createHash("sha256").update(bytes).digest("hex")}.json`),
           constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
         try { writeFileSync(preserved, bytes); fsyncSync(preserved); } finally { closeSync(preserved); }
         fsyncSync(this.fd);
