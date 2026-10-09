@@ -1,6 +1,6 @@
 # MiMo project client transport
 
-The local MCP and CLI delegate configured MiMo project operations through the existing restricted Host Jobs transport. The host owner derives registry, controller, source, job, workspace, admission, account and credential paths from its private project/workstream binding. The client sends only the typed `MimoProject` identity and operation DTO. The shared MiMo key stays on the host.
+The local MCP delegates configured MiMo project operations through the existing restricted Host Jobs transport. The host owner derives registry, controller, source, job, workspace, admission, account and credential paths from its private project/workstream binding. The client sends only the typed `MimoProject` identity and operation DTO. The shared MiMo key stays on the host.
 
 Configure `~/.config/subscription-runtime/mimo-project-routes.json` as an operator-owned regular file with mode `0600`, inside protected directories. Project and workstream names are lowercase identifiers. A route selects transport; it does not authorize a host project:
 
