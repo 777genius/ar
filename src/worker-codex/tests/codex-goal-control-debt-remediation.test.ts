@@ -134,7 +134,8 @@ describe("consumed output evidence scope", () => {
       join(tmpdir(), "evidence-preflight-"),
     ));
     remediationRoots.add(root);
-    const ledgerRoot = join(root, "ledger");
+    // The maintenance lock lives two levels above the ledger root.
+    const ledgerRoot = join(root, "controller", "ledger");
     const evidenceRoot = join(root, "archives");
     const outside = join(root, "outside.txt");
     await Promise.all([ledgerRoot, evidenceRoot].map((path) =>

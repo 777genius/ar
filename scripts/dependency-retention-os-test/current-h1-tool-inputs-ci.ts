@@ -57,6 +57,20 @@ export function readCiFailureErrorType(error:unknown):CiFailureErrorType {
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes:32*1024*1024,depth:2047,elapsedMs:30000,catalogBytes:128*1024});
+/** Fixed ROOT protocol inventory, including the five selected-plan regressions.
+ * Count changes require source review; every required ROOT case must really run. */
+export function assertCiRootProtocolTap(tap:string):void {
+ assert(/^# tests 41$/m.test(tap)&&/^# pass 40$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
+ for(const name of [
+  "real acquired file hashes retained bytes and refuses post-read deadline/identity mutation",
+  "retained original archive rejects equal-byte replacement between verification and extraction",
+  "selected entry rejects inherited hooks without invocation",
+  "selected ROOT requires exact recursively frozen original member row bindings before anchor",
+  "selected ROOT preserves every object yield and live joins with one detached plan canonicalization",
+  "selected ROOT detects nested caller mutations at real yields including frozen parents and complete fallback",
+  "selected ROOT refuses inherited function and getter hooks at optimized fallback and publication windows"
+ ])assert(tap.split("\n").some(line=>/^ok [0-9]+ - /.test(line)&&line.replace(/^ok [0-9]+ - /,"")===name),"original ROOT filesystem case cannot skip");
+}
 export enum CiEnvelopePublication { CompleteUnadmitted="envelope-complete-UNADMITTED.json", Retention="envelope-complete-UNADMITTED-retention.json", Held="envelope-candidate-HOLD.json", Candidate="envelope-candidate.json" }
 export interface CiEnvelopeProvenance { readonly signedPackagesSha256:string;readonly completeIndicesSha256:string;readonly sourceAndToolsSha256:string }
 /** DATA persistence only. The original candidate parser/cap and native guards stay unchanged. */
@@ -135,8 +149,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   const physicalTestArgv=["--test","--test-reporter=tap",join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-publication.node-test.js"),join(sibling,"current-h1-archive-format-census.node-test.js"),join(sibling,"current-h1-archive-members.node-test.js"),join(sibling,"current-h1-archive-path-graph.node-test.js"),join(sibling,"current-h1-selected-toolroot.node-test.js")];
   const physicalTests=spawnSync(process.execPath,physicalTestArgv,{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"root-tests.tap"),physicalTests.stdout??"");file(join(evidence,"root-tests.stderr"),physicalTests.stderr??"");assert(!physicalTests.error&&physicalTests.status===0&&physicalTests.signal===null,"fixed root CI protocol/custody tests");
-  const tap=physicalTests.stdout;assert(/^# tests 36$/m.test(tap)&&/^# pass 35$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap));
-  for(const name of ["real acquired file hashes retained bytes and refuses post-read deadline/identity mutation","retained original archive rejects equal-byte replacement between verification and extraction"])assert(tap.split("\n").some(line=>/^ok [0-9]+ - /.test(line)&&line.endsWith(name)),"original ROOT filesystem case cannot skip");
+  assertCiRootProtocolTap(physicalTests.stdout);
   assert.equal(command(CiTool.Git,["-c","safe.directory="+workspace,"rev-parse","HEAD"]).toString().trim(),sourceSha);
   file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),rootTestArgv:physicalTestArgv,tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
   dir(state);for(const name of ["etc","etc/parts","etc/auth-parts","etc/preferences-parts","etc/trusted-parts","lists","lists/partial","archives","archives/partial","log"])dir(join(state,name));
