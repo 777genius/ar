@@ -84,17 +84,17 @@ export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; reado
   const specBytes = bytes(join(directory, "spec.json")), spec = json(specBytes), request = record(spec.request);
   const grantBytes = bytes(join(job, "grant.json")), grant = json(grantBytes), bindingBytes = bytes(join(directory, "binding.json")), binding = json(bindingBytes);
   keys(active, "schemaVersion,startId,specSha256");
-  keys(grant, "schemaVersion,profileId,hostedProfile,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory");
-  keys(spec, "schemaVersion,startId,runtimeDirectory,artifactSha256,grantSha256,request,requestSha256,nodeSha256,codexSha256,unit,jobDirectory,workspaceDirectory");
+  const registered = Object.hasOwn(spec, "registeredHandoff");
+  keys(grant, "schemaVersion,profileId,hostedProfile,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory" + (registered ? ",registeredHandoff" : ""));
+  keys(spec, "schemaVersion,startId,runtimeDirectory,artifactSha256,grantSha256,request,requestSha256,nodeSha256,codexSha256,unit,jobDirectory,workspaceDirectory" + (registered ? ",registeredHandoff" : ""));
   keys(binding, "schemaVersion,specSha256,process,service");
   const requestKeys = "schemaVersion,jobId,taskId,jobRootDir,workspacePath,promptPath,authRootDir,accounts,codexBinaryPath,model,reasoningEffort,serviceTier,taskTimeoutMs,modelBackend,maxAccountCycles,prewarmOnStart";
-  keys(request, requestKeys + ["projectId", "appServerStartupTimeoutMs"].filter(key => Object.hasOwn(request, key)).map(key => "," + key).join(""));
+  keys(request, requestKeys + ["projectId", "appServerStartupTimeoutMs", ...(registered ? ["durableHandoffRootDir"] : [])].filter(key => Object.hasOwn(request, key)).map(key => "," + key).join(""));
   if (active.schemaVersion !== 1 || active.startId !== match[2] || active.specSha256 !== owner[2] || hash(specBytes) !== owner[2] ||
       spec.schemaVersion !== 1 || spec.startId !== match[2] || spec.unit !== unit ||
       spec.runtimeDirectory !== fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "") ||
       typeof request.jobId !== "string" || hash(request.jobId) !== owner[1] || spec.grantSha256 !== hash(grantBytes) ||
       grant.schemaVersion !== 1 || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan || grant.hostedProfile !== HostedMimoProfile.Worker ||
-      grant.registeredHandoff !== undefined || spec.registeredHandoff !== undefined ||
       request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || request.model !== codexMimoDefaultModel ||
       request.maxAccountCycles !== 1 || request.prewarmOnStart !== false || JSON.stringify(request.accounts) !== '["account-q"]' ||
       !Number.isSafeInteger(request.taskTimeoutMs) || (request.taskTimeoutMs as number) < 1000 || (request.taskTimeoutMs as number) > 86400000 ||
@@ -110,11 +110,76 @@ export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; reado
     machineId: readFileSync("/etc/machine-id", "utf8").trim(), controlGroup: group[0]!.slice(3), namespaces });
   equal(binding.service, { unit, mainPid: process.pid, controlGroup: service.ControlGroup, invocationId: service.InvocationID,
     description: service.Description, fragmentSha256: hash(bytes(service.FragmentPath!, false)) });
+  assertRegisteredOrigin(spec, grant, request, directory);
   assertHostedMimoWorkerMaterial(spec, directory);
   try { lstatSync(join(directory, "closing.json")); invalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (!bytes(join(job, "active.json")).equals(activeBytes) || !bytes(join(job, "grant.json")).equals(grantBytes) ||
       !bytes(join(directory, "binding.json")).equals(bindingBytes) || !bytes(join(directory, "spec.json")).equals(specBytes)) invalid();
   return { homeRoot, digest: owner[2]!, directory };
+}
+
+
+function absolutePath(value: unknown): string {
+  if (typeof value !== "string" || value.length > 4096 || !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(value) ||
+      value.split("/").some(part => part === "." || part === "..")) invalid();
+  return value;
+}
+/** Registered authority is sealed by the owned spec and the matching grant;
+ * neither a request-selected durable sink nor a caller callback grants access. */
+function assertRegisteredOrigin(spec: Wire, grant: Wire, request: Wire, directory: string): void {
+  if (!Object.hasOwn(spec, "registeredHandoff")) {
+    if (Object.hasOwn(grant, "registeredHandoff") || Object.hasOwn(request, "durableHandoffRootDir")) invalid();
+    return;
+  }
+  const handoff = record(spec.registeredHandoff);
+  equal(grant.registeredHandoff, handoff);
+  keys(handoff, "registryRootDir,controllerJobId,manifestSha256,scopeSha256,receiptSha256,requestSha256,durableDirectory,registeredExecution");
+  const registry = absolutePath(handoff.registryRootDir);
+  if (typeof handoff.controllerJobId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(handoff.controllerJobId)) invalid();
+  for (const field of ["manifestSha256", "scopeSha256", "receiptSha256", "requestSha256"]) {
+    if (typeof handoff[field] !== "string" || !/^[a-f0-9]{64}$/.test(handoff[field] as string)) invalid();
+  }
+  const execution = record(handoff.registeredExecution);
+  keys(execution, "sourceConfigSha256,reservedConfigSha256,selectedAccountSha256,accountId,projectId,maxAccountCycles,prewarmOnStart,appServerStartupTimeoutMs");
+  for (const field of ["sourceConfigSha256", "reservedConfigSha256", "selectedAccountSha256"]) {
+    if (typeof execution[field] !== "string" || !/^[a-f0-9]{64}$/.test(execution[field] as string)) invalid();
+  }
+  if (execution.accountId !== "account-q" || typeof execution.projectId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(execution.projectId) ||
+      execution.maxAccountCycles !== 1 || execution.prewarmOnStart !== false ||
+      !Number.isSafeInteger(execution.appServerStartupTimeoutMs) ||
+      (execution.appServerStartupTimeoutMs as number) < 1 || (execution.appServerStartupTimeoutMs as number) > 86400000) invalid();
+  for (const field of ["projectId", "maxAccountCycles", "prewarmOnStart", "appServerStartupTimeoutMs"]) equal(request[field], execution[field]);
+  equal(request.accounts, [execution.accountId]);
+  // Reconstruct the contract parser's stable field order before hashing. The
+  // normalization itself is independent of worker-layer imports.
+  const normalized: Wire = {};
+  for (const field of ["schemaVersion", "jobId", "taskId", "jobRootDir", "workspacePath", "promptPath", "authRootDir",
+    "durableHandoffRootDir", "modelBackend", "accounts", "codexBinaryPath", "model", "reasoningEffort", "serviceTier", "taskTimeoutMs"]) {
+    if (Object.hasOwn(request, field)) normalized[field] = request[field];
+  }
+  Object.assign(normalized, { projectId: request.projectId ?? request.jobId, maxAccountCycles: request.maxAccountCycles ?? 5,
+    prewarmOnStart: request.prewarmOnStart ?? true, appServerStartupTimeoutMs: request.appServerStartupTimeoutMs });
+  if (hash(JSON.stringify(normalized)) !== handoff.requestSha256) invalid();
+  const identity = record(handoff.durableDirectory);
+  keys(identity, "path,device,inode,mountId,mountDevice,mountRoot,mountPoint,filesystemUuid");
+  if (identity.path !== join(registry, "durable-handoffs") || request.durableHandoffRootDir !== identity.path ||
+      !Number.isSafeInteger(identity.device) || (identity.device as number) < 0 ||
+      !Number.isSafeInteger(identity.inode) || (identity.inode as number) < 1 ||
+      !Number.isSafeInteger(identity.mountId) || (identity.mountId as number) < 1 ||
+      typeof identity.mountDevice !== "string" || !/^\d+:\d+$/.test(identity.mountDevice) ||
+      typeof identity.filesystemUuid !== "string" || !/^[a-fA-F0-9-]{8,128}$/.test(identity.filesystemUuid)) invalid();
+  for (const field of ["mountRoot", "mountPoint"]) if (identity[field] !== "/") absolutePath(identity[field]);
+  const point = String(identity.mountPoint);
+  if (point !== "/" && identity.path !== point && !(identity.path as string).startsWith(point + "/")) invalid();
+  for (const path of [String(identity.path), join(directory, "pins", "durable-handoff")]) {
+    for (let current = path;; current = dirname(current)) {
+      const stat = lstatSync(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0 || (stat.mode & 0o022) ||
+          (current === path && ((stat.mode & 0o777) !== 0o700 || stat.dev !== identity.device || stat.ino !== identity.inode))) invalid();
+      if (current === "/") break;
+    }
+  }
 }
 
 /** Storage transfer requires independently authenticated owner receipt. */

@@ -558,6 +558,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     ...(config.sessionHomeProfile === undefined ? {} : { sessionHomeProfile: config.sessionHomeProfile }),
     accountCapacityStore: isMimo
       ? codexAccountCapacityStore(config.authRootDir, {
+          modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
           ...(input.observability ? { observability: input.observability } : {}),
         })
       : migrateLegacyCodexAccountCapacity({

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { AccessBoundary, NetworkAccessMode } from "@vioxen/subscription-runtime/worker-core";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { defaultStartupTimeoutMs } from "../provider-codex/app-server/domain/app-server-types";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
@@ -23,6 +23,13 @@ export function assertRegisteredResearchExecutionSupported(input: {
   const { config: c } = input.launch, r = input.request;
   if (!input.execution || r.projectId === undefined || r.maxAccountCycles === undefined || r.prewarmOnStart === undefined || r.appServerStartupTimeoutMs === undefined) return unsupported();
   const e = input.execution;
+  const backend = c.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const mimo = backend === CodexModelBackend.XiaomiMimoTokenPlan;
+  if ((r.modelBackend ?? CodexModelBackend.OpenAiChatGpt) !== backend ||
+      (backend !== CodexModelBackend.OpenAiChatGpt && !mimo) ||
+      (mimo && (c.model !== codexMimoDefaultModel || r.model !== codexMimoDefaultModel ||
+        e.accountId !== "account-q" || c.accounts.length !== 1 || c.accounts[0]?.name !== "account-q" ||
+        c.maxAccountCycles !== 1 || c.prewarmOnStart !== false))) unsupported();
   let checkpoint: CodexGoalLaunchInput;
   try { checkpoint = bindProjectChildCheckpointPublisher({ launch: input.launch,
     controllerCheckpointRequired: input.controller.checkpointRequired === true,
@@ -30,7 +37,7 @@ export function assertRegisteredResearchExecutionSupported(input: {
   catch { return unsupported(); }
   if (checkpoint.config.checkpointRequired || checkpoint.config.checkpointPublisherSocketPath || c.checkpointPublisherSocketPath) unsupported();
   if (c.accessBoundary !== AccessBoundary.IsolatedWorkspaceWrite || c.networkAccess !== NetworkAccessMode.Unrestricted ||
-      c.executionEngine !== "app-server-goal" || (c.modelBackend ?? CodexModelBackend.OpenAiChatGpt) !== CodexModelBackend.OpenAiChatGpt ||
+      c.executionEngine !== (mimo ? "app-server" : "app-server-goal") ||
       c.allowDangerFullAccess === true || c.allowDuplicateAccountIdentities === true || c.requireGitWorkspace !== true ||
       c.outputPath !== join(c.jobRootDir, `${c.taskId}.latest-result.json`) ||
       c.progressPath !== join(c.jobRootDir, `${c.taskId}.progress.json`) || c.progressHeartbeatMs !== 60_000 ||

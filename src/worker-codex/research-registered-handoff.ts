@@ -16,6 +16,7 @@ import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
 import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
 
 /** Root adapters must already hold the registered action's activity/workspace
@@ -40,6 +41,8 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
   const controller = await loadProjectControlController({ registryRootDir, controllerJobId });
   const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
   const { manifest, launch } = loaded;
+  if ((request.modelBackend ?? CodexModelBackend.OpenAiChatGpt) !==
+      (launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt)) researchInvalid();
   researchCustody(registryRootDir);
   if (controller.registryRootDir !== registryRootDir || loaded.registryRootDir !== registryRootDir ||
       !manifest.projectPreStartAdmission || manifest.jobId !== request.jobId) researchInvalid();

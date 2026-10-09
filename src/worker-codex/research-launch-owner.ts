@@ -37,7 +37,8 @@ async function grantRegisteredResearchLaunchUnlocked(authorization: RegisteredRe
     assertResearchDurableDirectory(registry);
     await assertRegisteredResearchHandoffCurrent(binding, authorization.request);
     const { request } = authorization;
-    publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding);
+    publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding,
+      request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan);
   } });
 }
 function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff, mimoWorker = false): void {

@@ -1,5 +1,7 @@
 # Standalone hosted MiMo worker qualification
 
+For the registered project broker route, see [Registered project MiMo workers](hosted-mimo-project-workers.md). The instructions below qualify the separate standalone path.
+
 This narrow path uses the existing research owner and its runtime/provider services on a shared host with no installed global/managed activation. Controller, Child, ordinary MiMo and unowned contained launches remain closed. It is not a controller activation.
 
 Run only in a newly allocated TEST job/workspace, with an isolated registry and root-owned private operator request. Never use a real user project. Install the built exact revision through the existing deployment/bootstrap procedure. The fixed root-only shared credential must already exist; do not copy, print or read it from a shell.

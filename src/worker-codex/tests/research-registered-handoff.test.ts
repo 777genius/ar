@@ -1,25 +1,28 @@
-import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import * as workspaceChanges from "../codex-goal-workspace-changes";
+import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
+import { host, local, request, setupResearchFixture, cleanupResearchFixture, enterResearchOperatorScope } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync } from "node:fs";
 import { join } from "node:path";
-import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope, buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard } from "../research-launch-admission";
-import { cancelResearchLaunch, cancelRegisteredResearchLaunch } from "../research-launch-lifecycle";
-import { researchHash, researchRead } from "../research-launch-files";
+import { cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
+import { researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
 
-const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false }));
+const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false, mimo: false, registry: "/TEST-project/registry" }));
 // This suite exercises the native registered boundary with real TEST manifests,
 // receipt bytes and directory replacements. The upstream clean Git admission
 // and controller loader have their own tests; neither Host services nor models run.
 vi.mock("../codex-goal-mcp-project-control-deps", async original => {
   const real = await original<typeof import("../codex-goal-mcp-project-control-deps")>();
-  return { ...real, loadProjectControlController: async () => ({ registryRootDir: "/TEST-project/registry",
+  return { ...real, loadProjectControlController: async () => ({ registryRootDir: state.registry,
     controller: { jobId: "TEST-controller", jobRootDir: "/TEST-project/controller", checkpointRequired: state.checkpointRequired }, scope: state.scope! }) };
 });
 vi.mock("../application/project-control/codex-goal-project-pre-start-admission", async original => {
@@ -29,17 +32,20 @@ vi.mock("../application/project-control/codex-goal-project-pre-start-admission",
     return { launch: {}, receiptSha256: researchHash(researchRead(input.manifest.projectPreStartAdmission.receiptPath)) };
   } };
 });
-const registry = "/TEST-project/registry", sink = join(registry, "durable-handoffs");
-const selected = () => parseResearchOperatorRequest({ ...request(), accounts: ["TEST-a"], projectId: "TEST-original-project", maxAccountCycles: 1,
+let registry = "/TEST-project/registry", sink = join(registry, "durable-handoffs");
+const selected = () => parseResearchOperatorRequest({ ...request(), ...(state.mimo ? { accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: codexMimoDefaultModel } : { accounts: ["TEST-a"] }), projectId: "TEST-original-project", maxAccountCycles: 1,
   prewarmOnStart: false, appServerStartupTimeoutMs: 330_000 });
 const receiptPath = () => join(selected().jobRootDir, "pre-start-admission/receipt.json");
 beforeEach(async () => {
-  setupResearchFixture();
+  setupResearchFixture(); state.mimo = false; registry = state.registry = "/TEST-project/registry"; sink = join(registry, "durable-handoffs");
+  await initializeRegisteredFixture();
+});
+async function initializeRegisteredFixture() {
   state.checkpointRequired = false;
   vi.stubEnv("SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET", undefined);
   const r = selected(), descriptorRoot = join(r.jobRootDir, "pre-start-admission");
   state.scope = { projectId: "TEST-project", registryRoot: registry, workspaceRoots: [r.workspacePath],
-    authRoot: r.authRootDir, jobIdPrefixes: ["TEST-research"], allowedAccountIds: ["TEST-a"] };
+    authRoot: r.authRootDir, jobIdPrefixes: ["TEST-research"], allowedAccountIds: state.mimo ? ["account-q"] : ["TEST-a"] };
   for (const path of [sink, join(registry, r.jobId), join(registry, "TEST-controller"), descriptorRoot, "/TEST-project/controller"]) {
     mkdirSync(local(path), { recursive: true, mode: 0o700 });
   }
@@ -47,7 +53,7 @@ beforeEach(async () => {
   writeFileSync(local(join(descriptorRoot, "contract.json")), "{}", { mode: 0o600 });
   writeFileSync(local(join(descriptorRoot, "state.json")), "{}", { mode: 0o600 });
   writeFileSync(local(codexGoalJobManifestPath({ registryRootDir: registry, jobId: r.jobId })), JSON.stringify({ ...r,
-    durableHandoffRootDir: sink, maxAccountCycles: 5, accounts: request().accounts,
+    durableHandoffRootDir: sink, maxAccountCycles: state.mimo ? 1 : 5, accounts: state.mimo ? ["account-q"] : request().accounts,
     accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
     accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Unrestricted,
     projectAccessScope: { projectId: "TEST-original-project", projectSlug: "TEST/original-project",
@@ -62,7 +68,7 @@ beforeEach(async () => {
     jobId: r.jobId, manifestSha256: researchHash(JSON.stringify(manifest)), contractSha256: researchHash("{}"),
     stateSha256: researchHash("{}"), promptSha256: researchHash(researchRead(r.promptPath)),
   }), { mode: 0o600 });
-});
+}
 afterEach(() => { vi.unstubAllEnvs(); cleanupResearchFixture(); });
 async function reserved() {
   const loaded = await loadJobLaunch({ registryRootDir: registry, jobId: selected().jobId });
@@ -392,5 +398,50 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     await expect(cancelRegisteredResearchLaunch({ jobId: started.jobId, startId: started.startId,
       specSha256: started.specSha256, requestSha256: current.spec.requestSha256 })).rejects.toThrow();
     expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+  });
+});
+
+async function registeredMimoCandidate() {
+  state.mimo = true; host.physicalPaths = true;
+  registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
+  mkdirSync(registry, { recursive: true, mode: 0o700 });
+  await initializeRegisteredFixture(); await grantAndRequest();
+  const started = await start(), current = researchCurrentStart(started.jobId);
+  host.group = `/system.slice/${started.unit}`; await bindRegisteredResearchRuntime(started.jobId, started.startId);
+  researchPublish(join(current.directory, "mimo-candidate.json"), { schemaVersion: 1, jobId: started.jobId,
+    taskId: current.spec.request.taskId, startId: started.startId, specSha256: started.specSha256,
+    bindingSha256: researchHash(researchRead(join(current.directory, "binding.json"))),
+    result: buildRuntimeResultEnvelope({ provider: "codex", runId: started.jobId, taskId: current.spec.request.taskId,
+      status: "partial", evidence: ["TEST report retained"], nextAction: "continue" }) });
+  enterResearchOperatorScope(started.unit);
+  return { ...started, ...current };
+}
+
+describe.skipIf(process.platform !== "linux")("registered MiMo terminal publication", () => {
+  it("refuses revoked registered receipt and retains active ownership and candidate", async () => {
+    const current = await registeredMimoCandidate(); mutateReceipt();
+    await expect(finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256)).rejects.toThrow();
+    expect(researchCurrentStart(current.jobId).spec.startId).toBe(current.startId);
+    expect(existsSync(local(join(current.directory, "mimo-candidate.json")))).toBe(true);
+    expect(existsSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`))).toBe(false);
+  });
+  // Regression: clean capture bypassed the workspace lease and could race another writer.
+  it("holds the actual registered workspace lease for clean capture through terminal release", async () => {
+    const current = await registeredMimoCandidate(); let captureObserved = false;
+    vi.spyOn(workspaceChanges, "changedFilesFromWorkspace").mockImplementationOnce(async path => {
+      captureObserved = true;
+      await expect(projectControlWorkspaceLocks(registry).acquire({ workspacePath: path, owner: "TEST-competing-writer" })).rejects.toThrow();
+      expect(researchCurrentStart(current.jobId).spec.startId).toBe(current.startId);
+      return { changedFiles: [] };
+    });
+    const handoff = await import("../codex-goal-terminal-handoff-materialization");
+    vi.spyOn(handoff, "materializeReconciledTerminalCodexGoalHandoff").mockResolvedValueOnce({ handoff: null, artifacts: [], changedPaths: [], baseCommit: undefined });
+    expect(await finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256)).toMatchObject({ status: "partial" });
+    expect(captureObserved).toBe(true);
+    const locks = projectControlWorkspaceLocks(registry), lease = await locks.acquire({ workspacePath: selected().workspacePath, owner: "TEST-after-publication" });
+    await locks.release(lease);
+    const result = JSON.parse(readFileSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`), "utf8"));
+    expect(result).toMatchObject({ status: "partial", nextAction: "continue", evidence: ["TEST report retained"] });
+    expect(existsSync(local(join(current.directory, "../../active.json")))).toBe(false);
   });
 });

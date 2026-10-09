@@ -50,7 +50,7 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
   if (has("modelBackend") && r.modelBackend !== CodexModelBackend.OpenAiChatGpt && r.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) researchInvalid();
   if (r.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
       (r.model !== codexMimoDefaultModel || r.accounts.length !== 1 || r.accounts[0] !== "account-q" ||
-       r.maxAccountCycles !== 1 || r.prewarmOnStart !== false || has("durableHandoffRootDir"))) researchInvalid();
+       r.maxAccountCycles !== 1 || r.prewarmOnStart !== false)) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath), promptPath = researchPath(r.promptPath);
   const authRootDir = researchPath(r.authRootDir);
   const durableHandoffRootDir = has("durableHandoffRootDir") ? researchPath(r.durableHandoffRootDir) : undefined;
@@ -111,7 +111,7 @@ export function parseResearchGrant(value: unknown): ResearchGrant {
   const optional = value !== null && typeof value === "object" && Object.hasOwn(value, "registeredHandoff");
   const mimo = value !== null && typeof value === "object" && "profileId" in value && value.profileId === CodexProviderEgressProfileId.MimoTokenPlan;
   const r = researchRecord(value, "schemaVersion,profileId,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory" + (optional ? ",registeredHandoff" : "") + (mimo ? ",hostedProfile" : ""));
-  if (mimo && (optional || r.hostedProfile !== HostedMimoProfile.Worker)) researchInvalid();
+  if (mimo && r.hostedProfile !== HostedMimoProfile.Worker) researchInvalid();
   if (r.schemaVersion !== 1 || (r.profileId !== CodexProviderEgressProfileId.PublicResearchV1 && r.profileId !== CodexProviderEgressProfileId.FullInternetV1 && r.profileId !== CodexProviderEgressProfileId.MimoTokenPlan) ||
       typeof r.grantId !== "string" || !/^[a-f0-9-]{36}$/.test(r.grantId)) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath);
