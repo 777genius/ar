@@ -78,7 +78,7 @@ describe("sealed provider assembly reader over native TEST descriptors", () => {
       expect(() => assertResearchProviderAssemblyContext(root)).not.toThrow();
       if (fault === "boot") host.boot = "dddddddd-dddd-dddd-dddd-dddddddddddd";
       if (fault === "machine" || fault === "stat-unavailable" || fault === "cgroup-malformed") {
-        const read = vi.isMockFunction(fs.readFileSync) ? fs.readFileSync.getMockImplementation() : fs.readFileSync;
+        const read = vi.isMockFunction(fs.readFileSync) ? vi.mocked(fs.readFileSync).getMockImplementation() : fs.readFileSync;
         if (!read) throw new Error("Missing TEST assembly file reader");
         vi.spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, options?: Parameters<typeof fs.readFileSync>[1]) => {
           if (fault === "machine" && path === "/etc/machine-id") return "c".repeat(32);
