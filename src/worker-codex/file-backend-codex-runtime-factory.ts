@@ -3,6 +3,9 @@ import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory, readHostedDependencyToolFactoryEntry } from "./hosted-readonly-admission";
 import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
+import { researchMimoWorkerLifecycle } from "./research-mimo-worker-result";
+import { ownedMimoWorkerStart } from "./research-launch-admission";
+import { codexWorkerReportSchemaName, codexWorkerReportSchema } from "./codex-goal-report-schema";
 import { readAdmittedHostedDependencyToolConfig } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
@@ -11,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   createSubscriptionRuntime,
+  AgentRuntimeTool,
   DeterministicIdGenerator,
   type ClockPort,
   type ObservabilityPort,
@@ -243,7 +247,16 @@ function createCodexAgentDriver(input: {
   readonly managedRunStore: LocalFileManagedRunStore;
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
-  if (options.executionLifetime && (options.executionEngine !== "app-server-goal" ||
+  const ownedMimoTurn = options.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    options.executionEngine === "app-server" && !!ownedMimoWorkerStart(options.appServerProcessFactory);
+  if (ownedMimoTurn && (!options.executionLifetime || options.childBudget ||
+      options.cleanThreadPrewarm !== false || options.boundedWorkspaceTools?.denyProjectInstructions !== true ||
+      JSON.stringify(options.boundedWorkspaceTools.allowedTools) !== JSON.stringify([
+        AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles]) ||
+      JSON.stringify(options.outputSchemas) !== JSON.stringify({ [codexWorkerReportSchemaName]: codexWorkerReportSchema }))) {
+    throw new Error("codex_bounded_factory_profile_conflict");
+  }
+  if (options.executionLifetime && ((!ownedMimoTurn && options.executionEngine !== "app-server-goal") ||
       options.cleanThreadPrewarm !== false || options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) {
     throw new Error("codex_bounded_factory_profile_conflict");
   }
@@ -261,10 +274,7 @@ function createCodexAgentDriver(input: {
   const executionEngine = options.executionEngine ?? "app-server";
   const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const mimoApiKeyEnvVarName = options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
-  if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && executionEngine !== "app-server-goal") {
-    // SR-AP-2 fail-closed: MiMo only ever runs through the app-server goal
-    // path. `assertWorkerOptions` already rejects this combination before a
-    // worker is constructed; this is defense in depth for direct callers.
+  if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && executionEngine !== "app-server-goal" && !ownedMimoTurn) {
     throw new Error("codex_mimo_backend_requires_app_server_goal_engine");
   }
   const requestedSourceEnv = options.sourceEnv ?? process.env;
@@ -335,6 +345,8 @@ function createCodexAgentDriver(input: {
     (hostedGlobalScanGuard
       ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName, dependencyToolConfig, resolverReadPaths)
       : projectConfigToml);
+  const mimoWorkerLifecycle = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+    ? researchMimoWorkerLifecycle(options.appServerProcessFactory) : undefined;
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
@@ -469,6 +481,7 @@ function createCodexAgentDriver(input: {
     ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoConfigToml !== undefined
       ? { mimoConfigToml }
       : {}),
+    ...(mimoWorkerLifecycle ? { mimoHomeLifecycle: mimoWorkerLifecycle.home } : {}),
     sourceEnv,
     ...(options.serviceTier === undefined
       ? {}

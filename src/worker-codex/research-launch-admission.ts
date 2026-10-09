@@ -5,7 +5,7 @@ import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEg
   type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
-import { parseResearchGrant, parseResearchStartSpec, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
+import { parseResearchGrant, parseResearchStartSpec, researchRunConfig, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchHash,
   researchId, researchInvalid, researchJson, researchName, researchPublish, researchRead, researchRecord, researchCustody, researchPath } from "./research-launch-files";
 import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSharedHost,
@@ -16,6 +16,7 @@ import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoff
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
 
+const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 export const researchJobAuthority = (jobId: string): string => join(researchAuthorityRoot, researchName(researchId(jobId)));
@@ -48,6 +49,7 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
       JSON.stringify(grant.jobDirectory) !== JSON.stringify(spec.jobDirectory) ||
       JSON.stringify(grant.registeredHandoff) !== JSON.stringify(spec.registeredHandoff) ||
       JSON.stringify(grant.workspaceDirectory) !== JSON.stringify(spec.workspaceDirectory)) researchInvalid();
+  if ((spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
   assertResearchDirectory(spec.jobDirectory); assertResearchDirectory(spec.workspaceDirectory);
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
@@ -213,10 +215,32 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
     return spawn(launch);
   };
   factoryGuards.set(factory, captured.assertCurrent);
+  if (captured.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) mimoWorkerFactories.set(factory, captured.spec);
   return factory;
 }
 /** A marker cannot select this branch, but also cannot hide an actual service. */
-export function assertResearchRuntimeEngine(input: { executionEngine?: CodexWorkerExecutionEngine; modelBackend?: CodexModelBackend }): void {
-  if ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
-      (input.modelBackend !== undefined && input.modelBackend !== CodexModelBackend.OpenAiChatGpt)) researchInvalid();
+export function assertResearchRuntimeEngine(input: { executionEngine?: CodexWorkerExecutionEngine; modelBackend?: CodexModelBackend }, profileId?: CodexProviderEgressProfileId): void {
+  const mimo = input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
+  if (profileId !== undefined && mimo !== (profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
+  if ((input.executionEngine ?? "app-server-goal") !== (mimo ? "app-server" : "app-server-goal") ||
+      (!mimo && input.modelBackend !== undefined && input.modelBackend !== CodexModelBackend.OpenAiChatGpt)) researchInvalid();
+}
+
+export function assertOwnedMimoWorkerFactory(factory: CodexAppServerProcessFactory | undefined): ResearchStartSpec {
+  const guard = researchProviderAdmissionGuard(factory);
+  if (!factory || !guard || !mimoWorkerFactories.has(factory)) throw new Error("hosted_mimo_activation_closed");
+  guard();
+  return mimoWorkerFactories.get(factory)!;
+}
+/** Only factories minted above can select the external-owner storage/result lifecycle. */
+export function ownedMimoWorkerStart(factory: CodexAppServerProcessFactory | undefined): ResearchStartSpec | undefined {
+  return factory && mimoWorkerFactories.has(factory) ? assertOwnedMimoWorkerFactory(factory) : undefined;
+}
+
+export function assertOwnedMimoWorkerConfig(factory: CodexAppServerProcessFactory | undefined, config: import("./codex-goal-runner").CodexGoalRunConfig): void {
+  const spec = assertOwnedMimoWorkerFactory(factory), expected = researchRunConfig(spec.request);
+  for (const key of ["jobId", "taskId", "workspacePath", "jobRootDir", "accounts", "model", "modelBackend", "executionEngine", "maxAccountCycles",
+    "prewarmOnStart", "workerReportMode", "maxGoalTurns", "taskTimeoutMs", "safeExecutionPolicy", "maxReconnectRetriesPerAccount"] as const) {
+    if (JSON.stringify(config[key]) !== JSON.stringify(expected[key])) researchInvalid();
+  }
 }

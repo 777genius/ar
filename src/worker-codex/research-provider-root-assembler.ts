@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFi
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertResearchProviderCurrentAuthority, assertResearchProviderStartMaterial, readResearchStartBinding, researchCurrentStart } from "./research-launch-admission";
-import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
+import { researchProviderSetupAllowanceMs } from "./research-launch-contract";
 import { assertResearchProviderRootIdentity, assertResearchServiceOwner, researchDescription, researchExecutableDigest, researchProcessIdentity, researchProcessLifetime, researchServiceIdentity } from "./research-launch-host";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation } from "./research-launch-lifecycle";
 import { researchHash, researchInvalid, researchPath, researchRead } from "./research-launch-files";
@@ -38,8 +38,10 @@ export function researchProviderRootTransition(root: string): Readonly<{ command
  * The creator's skeleton stays unmounted in its independent namespace. */
 export async function assembleResearchProviderRoot(jobId: string, unit: string, home: string, seal: string, deadline: number): Promise<number> {
   assertResearchProviderRootIdentity();
-  if (!Number.isSafeInteger(deadline) || deadline <= now() || deadline - now() > researchProviderSetupTimeoutMs) researchInvalid();
-  const current = researchCurrentStart(jobId), reservation = readResearchProviderReservation(current.directory, unit);
+  if (!Number.isSafeInteger(deadline) || deadline <= now()) researchInvalid();
+  const current = researchCurrentStart(jobId), remaining = deadline - now();
+  if (remaining <= 0 || remaining > researchProviderSetupAllowanceMs(current.spec.request)) researchInvalid();
+  const reservation = readResearchProviderReservation(current.directory, unit);
   if (reservation.specSha256 !== researchHash(current.bytes)) researchInvalid();
   const service = researchServiceIdentity(unit), own = researchProcessIdentity();
   assertResearchServiceOwner(own, service, reservation.description);

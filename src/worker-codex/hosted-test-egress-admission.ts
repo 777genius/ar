@@ -34,7 +34,7 @@ export async function admitHostedTestEgress(
   const mimo = input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const research = admitResearchRuntime(input);
   if (research) {
-    assertResearchRuntimeEngine(input);
+    assertResearchRuntimeEngine(input, research);
     return codexProviderEgressPolicy(research);
   }
   const contained = isHostedContainment(input.sourceEnv ?? process.env);

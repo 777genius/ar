@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { X509Certificate } from "node:crypto";
 import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 import { resolvePreparedHostScratchBinds, resolvePreparedHostScratchCacheBinds, type ScratchTempHost } from "./host-scratch-temp";
-import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
+import { parseResearchStartSpec, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchAuthorityRoot, researchHash, researchId, researchInvalid, researchJson, researchName, researchPath, researchPublish, researchRead, researchRecord } from "./research-launch-files";
 import { assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
@@ -571,7 +571,7 @@ export function researchProviderRootSeal(plan: ResearchProviderRootPlan, spec: R
   assertResearchProviderRoot(plan, spec, unit, home);
   const state = retained.get(plan);
   if (!state) researchInvalid();
-  state.assemblyDeadline ??= Number(process.hrtime.bigint() / 1_000_000n) + researchProviderSetupTimeoutMs;
+  state.assemblyDeadline ??= Number(process.hrtime.bigint() / 1_000_000n) + researchProviderSetupAllowanceMs(state.spec.request);
   if (Number(process.hrtime.bigint() / 1_000_000n) >= state.assemblyDeadline) researchInvalid();
   return Object.freeze({ sha256: researchHash(state.record), deadline: state.assemblyDeadline });
 }

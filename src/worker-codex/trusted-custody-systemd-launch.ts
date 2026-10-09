@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
+import { parseResearchStartSpec, researchProviderSetupTimeoutMs, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { researchInvalid, researchName, researchPath } from "./research-launch-files";
 import { researchProviderRootSeal, type ResearchProviderRootPlan } from "./research-provider-root";
@@ -86,7 +86,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   // early-private adapter before copying or protecting the captured root.
   const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
-    `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
+    `TimeoutStartSec=${researchProviderSetupAllowanceMs(request) / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",
     "SystemCallFilter=~@raw-io @module", "RestrictSUIDSGID=yes", "AmbientCapabilities=",

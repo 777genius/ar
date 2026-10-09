@@ -17,6 +17,8 @@ import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../
 import { prepareResearchProviderRoot, ResearchRootMountAccess, type ResearchProviderRootPlan } from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
 import { streams, readyFrame, settledNamespaces, providerProxy, record } from "./research-provider-service-protocol-fixture";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { parseResearchOperatorRequest } from "../research-launch-contract";
 
 let previousExitCode: typeof process.exitCode;
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
@@ -301,7 +303,6 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce(); expect(f.mutations).toEqual([]);
   });
 });
-
 describe("owned research provider cancellation (real files and streams; systemd/proc substituted)", () => {
   it("consumes fixed readiness and forwards the held frame only after retaining settled ownership", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
@@ -502,14 +503,14 @@ describe("owned research provider cancellation (real files and streams; systemd/
     expect(cancelResearchLaunch(current.jobId)).toMatchObject({ terminal: true });
   });
 });
-
 /** Model a three-second artifact traversal on slow Host I/O, still inside its
  * finite thirty-second bound. All retained bytes/digests remain real; only the
  * Host clock and directory-observation latency are substituted. */
 function slowBoundedMaterial() {
   vi.useFakeTimers();
-  const origin = Date.now(); let materialTime = 0;
+  const origin = Date.now(), monotonicOrigin = process.hrtime.bigint(); let materialTime = 0;
   vi.spyOn(performance, "now").mockImplementation(() => Date.now() - origin + materialTime);
+  vi.spyOn(process.hrtime, "bigint").mockImplementation(() => monotonicOrigin + BigInt(Date.now() - origin + materialTime) * 1_000_000n);
   const readDirectory = fs.readdirSync;
   vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
     if (path === "/TEST-artifact/dist") materialTime += 3_000;
@@ -517,8 +518,33 @@ function slowBoundedMaterial() {
   }) as typeof fs.readdirSync);
   return Object.assign(() => performance.now(), { advance: (elapsed: number) => { materialTime += elapsed; } });
 }
-
 describe("slow bounded material at research effect boundaries", () => {
+  // RED: the original root seal expires at 300s despite the owned MiMo allocation.
+  it.each([[600_000, 1_200_000, 600], [600_000, 400_000, 400]])("shares owned MiMo startup %s / task %s allowance with the actual provider transport", async (startup, task, seconds) => {
+    const current = prepareHelper("TEST-mimo", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      model: codexMimoDefaultModel, maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: startup, taskTimeoutMs: task }));
+    const { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
+    expect(trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args).toContain("--property=TimeoutStartSec=300s");
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
+    expect(host.spawn.mock.calls[0]?.[1]).toContain(`--property=TimeoutStartSec=${seconds}s`);
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    now.advance(310_000); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true);
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(record(current, ".submission").state).toBe("settled");
+  });
+  it.each([400_000, 600_000])("retains the original %i ms MiMo seal deadline across repeated launch checks", allowance => {
+    const current = prepareHelper("TEST-mimo", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      model: codexMimoDefaultModel, maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: allowance, taskTimeoutMs: 1_200_000 }));
+    const now = slowBoundedMaterial(), launch = providerLaunch(current), deadline = Number(launch.args.at(-1));
+    expect(deadline - Number(process.hrtime.bigint() / 1_000_000n)).toBe(allowance);
+    now.advance(310_000); expect(providerLaunch(current).args).toEqual(launch.args);
+    now.advance(deadline - Number(process.hrtime.bigint() / 1_000_000n));
+    expect(() => providerLaunch(current)).toThrow("hosted_research_launch_denied");
+    now.advance(1); expect(() => providerLaunch(current)).toThrow("hosted_research_launch_denied");
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   it.each(["timeout", "nonzero"])("retains a closed Host command %s observation before bootstrap", async fault => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const original = processes.spawnSync;

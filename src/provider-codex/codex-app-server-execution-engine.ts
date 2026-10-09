@@ -3,7 +3,6 @@ export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServer
 import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
 import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
-import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type {
   ManagedRunResumeHandle,
   ManagedRunStorePort,
@@ -82,7 +81,7 @@ import {
   isCodexAppServerRateLimitsRejectedError,
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
-import { resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
+import { appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
 import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
 export type {
@@ -227,6 +226,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       return parsed;
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
+      this.executionLifetime?.close(error);
       await this.disposeFailedSession(input.session, error, "codex_app_server_run_cleanup_failed");
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
@@ -387,7 +387,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     this.options.childBudget?.remainingMs();
     const slot = await this.slotPool.ensureSlot(input);
     this.executionLifetime?.assertActive(input.abortSignal);
-    const outputSchema = schemaPlan?.codexSchema;
+    const outputSchema = appServerWireOutputSchema(this.options, schemaPlan?.codexSchema);
     const schemaWarnings = input.outputSchema && outputSchema === undefined
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];

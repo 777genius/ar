@@ -17,6 +17,16 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
   scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
   scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
 export const host = fixture;
+/** The fixture reuses the test PID for binding. Moving the caller to the outside
+ * operator must retain the numeric MainPID's already-bound runtime identity. */
+export function enterResearchOperatorScope(unit: string): void {
+  const service = fixture.units.get(unit), group = "/system.slice/" + unit;
+  if (!service || service.pid !== process.pid || !service.active || fixture.group !== group ||
+      (fixture.processGroups.has(service.pid) && fixture.processGroups.get(service.pid) !== group))
+    throw new Error("Expected a live bound TEST runtime before entering operator scope");
+  fixture.processGroups.set(service.pid, group);
+  fixture.group = "/user.slice/TEST-operator.scope";
+}
 const nativeFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 let ownedRoot: { path: string; device: number; inode: number } | undefined;
 /** Optional physical backing exists only after this module allocates a TEST root.
@@ -116,6 +126,7 @@ vi.mock("node:fs", async original => {
     writeFileSync: (path: string | number, bytes: Parameters<typeof real.writeFileSync>[1], options: Parameters<typeof real.writeFileSync>[2]) => real.writeFileSync(typeof path === "string" ? local(path) : path, bytes, options),
     renameSync: (from: string, to: string) => real.renameSync(local(from), local(to)),
     unlinkSync: (path: string) => real.unlinkSync(local(path)),
+    rmdirSync: (path: string) => real.rmdirSync(local(path)),
   };
 });
 vi.mock("node:fs/promises", async original => {
