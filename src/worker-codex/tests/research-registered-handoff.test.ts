@@ -20,11 +20,12 @@ const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undef
 // This suite exercises the native registered boundary with real TEST manifests,
 // receipt bytes and directory replacements. The upstream clean Git admission
 // and controller loader have their own tests; neither Host services nor models run.
-vi.mock("../codex-goal-mcp-project-control-deps", async () => {
-  // Import the leaf loader directly: importing this composition root while its
-  // mock is being initialized recursively captures the real controller loader.
-  const { loadJobLaunch } = await import("../application/codex-goal-job-launch-loader");
-  return { loadJobLaunch, loadProjectControlController: async () => ({ registryRootDir: "/TEST-project/registry",
+vi.mock("../codex-goal-mcp-project-control-deps", () => {
+  // Finish mock initialization before importing any real loader dependency.
+  // The composition root participates in the native broker import cycle.
+  return { loadJobLaunch: async (input: Parameters<typeof import("../application/codex-goal-job-launch-loader").loadJobLaunch>[0]) =>
+    (await import("../application/codex-goal-job-launch-loader")).loadJobLaunch(input),
+    loadProjectControlController: async () => ({ registryRootDir: "/TEST-project/registry",
     controller: { jobId: "TEST-controller", jobRootDir: "/TEST-project/controller", checkpointRequired: state.checkpointRequired }, scope: state.scope! }) };
 });
 vi.mock("../application/project-control/codex-goal-project-pre-start-admission", async original => {

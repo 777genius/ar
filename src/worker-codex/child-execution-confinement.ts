@@ -58,7 +58,7 @@ export function sameTools(tools: readonly string[] | undefined, bound: ChildLife
 }
 function invalid(): never { throw new Error("child_effective_confinement_conflict"); }
 
-/** Manifest/launch adapter validation; no default fills a missing child setting. */
+/** Validate explicit contained-child settings and the fixed native Worker defaults. */
 export function childConfigFromRecord(value: Readonly<Record<string, unknown>>): Pick<CodexGoalRunConfig, "childLifetime" | "maxGoalTurns" | "safeExecutionPolicy"> {
   if (value.childLifetime === undefined) {
     // Registered native MiMo uses the existing fixed worker attempt contract.
