@@ -23,7 +23,7 @@ export interface RawArchiveSurvey {
  readonly rawHardlinkOffsets:readonly number[];
 }
 type MutableHeader={-readonly [Key in keyof RawHeaderObservation]:RawHeaderObservation[Key]};
-function octal(b:Buffer):number|null {const s=b.toString("latin1");if(!/^ *[0-7]+[ \0]*$/.test(s))return null;const n=Number.parseInt(s.trim().replace(/\0.*$/,""),8);return Number.isSafeInteger(n)&&n>=0?n:null;}
+export function readCheckedTarOctal(b:Buffer):number|null {const s=b.toString("latin1");if(!/^ *[0-7]+[ \0]*$/.test(s))return null;const n=Number.parseInt(s.trim().replace(/\0.*$/,""),8);return Number.isSafeInteger(n)&&n>=0?n:null;}
 /** Checked boundaries only. Extension semantics are never guessed. Full original
  * stream is retained separately even when this survey stops at a counterexample. */
 export function surveyRawArchiveHeaders(bytes:Buffer):RawArchiveSurvey {
@@ -36,7 +36,7 @@ export function surveyRawArchiveHeaders(bytes:Buffer):RawArchiveSurvey {
   const h=bytes.subarray(at,at+512);
   if(h.every(b=>b===0)){zeroEndOffset=at;if(at+1024>bytes.length||!bytes.subarray(at+512,at+1024).every(b=>b===0))return finish(ArchiveSurveyStatus.Held,"missing second zero end record");trailingBytes=bytes.length-at-1024;return bytes.length%512===0&&bytes.subarray(at+1024).every(b=>b===0)?finish(ArchiveSurveyStatus.CompleteRawHeaders,"raw header boundaries and complete zero-padded EOF"):finish(ArchiveSurveyStatus.Held,"nonzero or unaligned trailing data");}
   if(headers.length>=headerCap)return finish(ArchiveSurveyStatus.Held,"fixed raw header ceiling");
-  const size=octal(h.subarray(124,136)),checksum=octal(h.subarray(148,156)),magic=h.subarray(257,263),version=h.subarray(263,265),type=h[156];assert(type!==undefined);
+  const size=readCheckedTarOctal(h.subarray(124,136)),checksum=readCheckedTarOctal(h.subarray(148,156)),magic=h.subarray(257,263),version=h.subarray(263,265),type=h[156];assert(type!==undefined);
   const format=magic.equals(Buffer.from("ustar\0"))&&version.equals(Buffer.from("00"))?ArchiveHeaderFormat.Ustar:magic.equals(Buffer.from("ustar "))&&version.equals(Buffer.from(" \0"))?ArchiveHeaderFormat.Gnu:magic.every(b=>b===0)&&version.every(b=>b===0)?ArchiveHeaderFormat.V7:ArchiveHeaderFormat.Unknown;
   const observation:MutableHeader={offset:at,headerSha256:hash(h),headerBase64:h.toString("base64"),magicBase64:magic.toString("base64"),versionBase64:version.toString("base64"),type,format,nameBase64:h.subarray(0,100).toString("base64"),prefixBase64:h.subarray(345,500).toString("base64"),linkBase64:h.subarray(157,257).toString("base64"),sizeEncodingBase64:h.subarray(124,136).toString("base64"),checksumEncodingBase64:h.subarray(148,156).toString("base64"),modeEncodingBase64:h.subarray(100,108).toString("base64"),uidEncodingBase64:h.subarray(108,116).toString("base64"),gidEncodingBase64:h.subarray(116,124).toString("base64"),payloadBytes:size,payloadSha256:null,extensionPayloadBase64:null};
   headers.push(observation);
