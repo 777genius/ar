@@ -1,9 +1,36 @@
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemdInvocation, managedLauncherInvocation } from './launch.mjs';
+import fs from 'node:fs';
+import { managedLauncherInvocation } from './launch.mjs';
+import * as hostPolicy from './hosted-host-policy.mjs';
 import { runGuardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+
+// Pure construction uses synthetic baseline activation and no FD inventory,
+// alongside the explicit trust/admission/executable seams below. Never inspect
+// installed Host policy here. Import a separate builder while mocks are active;
+// restore immediately so real policy and payload/trust tests retain their imports.
+const buildSystemdInvocation = await (async () => {
+  const policyMock = mock.module(new URL('./hosted-host-policy.mjs', import.meta.url), {
+    namedExports: { ...hostPolicy, readHostedActivationMode: () => hostPolicy.HostedActivationMode.Disabled,
+      hasHostedActivationOrigin: () => false },
+  });
+  let filesystemMock;
+  try {
+    filesystemMock = mock.module('node:fs', { namedExports: { ...fs, lstatSync: path => {
+      // readonlyPaths also probes inventory, even in the baseline scenario.
+      // Model absence explicitly; never translate a real Host read failure.
+      assert.equal(path, '/var/lib/subscription-runtime-host-policy/readonly-inventory.json');
+      throw Object.assign(new Error('TEST construction: no FD inventory'), { code: 'ENOENT' });
+    } } });
+    return (await import('./launch.mjs?construction-test')).buildSystemdInvocation;
+  } finally {
+    filesystemMock?.restore();
+    policyMock.restore();
+  }
+})();
+
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
