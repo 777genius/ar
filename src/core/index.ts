@@ -22,8 +22,10 @@ export {
   RetainedKernelRemoval, RetainedTaskHold, RetainedPidfdSemantics, RetainedJobResult, RetainedRecordKind,
   RETAINED_RESOURCE_LIMITS, RETAINED_RESOURCE_NAMESPACES,
   retainedResourceCanonicalJson, retainedResourceDigest, retainedResourceBytes,
-  parseScopedRetainedRecord, parseScopedRetainedRecordBytes, retainedResourceLocator, retainedResourceNames,
+  parseScopedRetainedRecord, parseScopedRetainedRecordBytes, parseScopedRetainedPublicationEvents, parseScopedRetainedPublicationEventsBytes,
+  retainedResourceLocator, retainedResourceNames,
   type RetainedRecordData, type ScopedRetainedRecord, type ScopedRetainedTarget,
+  type ScopedRetainedEventStamp, type ScopedRetainedPublicationEvents,
   type ScopedRetainedAllocation, type ScopedRetainedOriginalCleanupAuthority, type ScopedRetainedCleanupAttempt,
   type ScopedRetainedPayloadGate, type ScopedRetainedPayloadGateClosure,
 } from "./scoped-retained-resource-contract";
