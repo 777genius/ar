@@ -165,6 +165,74 @@ jobs:
           path: dependency-python-envelope-package-root-evidence/
           if-no-files-found: error
 
+      - name: Strict emit fixed H1 signed DATA acquisition TEST and bind exact source
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          mkdir -p dependency-h1-tool-inputs-ci-source-evidence
+          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"disposable-signed-CI-data-not-native-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-h1-tool-inputs-ci-source-evidence/source.json
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node --version > dependency-h1-tool-inputs-ci-source-evidence/node-version.txt
+          node node_modules/typescript/bin/tsc --version > dependency-h1-tool-inputs-ci-source-evidence/typescript-version.txt
+          grep -Fxq 'Version 6.0.3' dependency-h1-tool-inputs-ci-source-evidence/typescript-version.txt
+          sha256sum \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.ts \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.ts \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.ts \
+            scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
+            .github/workflows/ci.yml \
+            package-lock.json \
+            node_modules/typescript/package.json \
+            node_modules/typescript/bin/tsc \
+            node_modules/typescript/lib/_tsc.js \
+            > dependency-h1-tool-inputs-ci-source-evidence/source-and-compiler.sha256
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json 2>&1 | tee dependency-h1-tool-inputs-ci-source-evidence/strict-emit.log
+          sha256sum \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.js \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.js \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.js \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.js \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
+            > dependency-h1-tool-inputs-ci-source-evidence/emitted.sha256
+      - name: Collect independently signed exact tool DATA on disposable root ARC job
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          if [ "$(id -u)" -eq 0 ]; then
+            env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI=true GITHUB_ACTIONS=true \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
+              "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js"
+          else
+            sudo -n env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI=true GITHUB_ACTIONS=true \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
+              "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js"
+          fi 2>&1 | tee dependency-h1-tool-inputs-ci-source-evidence/entry.log
+          TAP=dependency-h1-tool-inputs-ci-evidence/root-tests.tap
+          grep -Eq '^ok [0-9]+ - real acquired file hashes retained bytes and refuses post-read deadline/identity mutation$' "$TAP"
+          grep -Eq '^ok [0-9]+ - retained original archive rejects equal-byte replacement between verification and extraction$' "$TAP"
+          grep -Fxq '# tests 11' "$TAP"
+          grep -Fxq '# pass 10' "$TAP"
+          grep -Fxq '# fail 0' "$TAP"
+          grep -Fxq '# skipped 1' "$TAP"
+          grep -Eq '^ok [0-9]+ - ordinary caller-owned file cannot become original root-owned archive authority # SKIP nonroot negative is exercised by separate caller-owned environment$' "$TAP"
+          test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
+      - name: Retain curated signed DATA and exact workflow evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-h1-tool-inputs-ci-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            dependency-h1-tool-inputs-ci-source-evidence/
+            dependency-h1-tool-inputs-ci-evidence/
+          if-no-files-found: error
+
   crash-boundary-shards:
     permissions:
       contents: read
