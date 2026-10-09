@@ -223,6 +223,22 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     for (const path of researchProviderProtectedPaths(current.spec.request.authRootDir)) {
       try { lstatSync(join(root.root, path)); researchInvalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
+    // util-linux writes uid/gid_map before mounting the final private PID proc.
+    // Only trusted transition code sees this bootstrap proc; --mount-proc
+    // overlays it before setpriv drops every capability and executes the payload.
+    const proc = targetFd("/proc", false);
+    try {
+      const coveredMountId = mountId(proc);
+      command(["-t", "proc", "-o", "nosuid,nodev,noexec", "proc", "/proc/self/fd/3"], [proc]);
+      const mountedProc = targetFd("/proc", false);
+      try {
+        const mountedId = mountId(mountedProc), mountedFlags = flags(mountedProc);
+        const row = readKernelMountTable().trimEnd().split("\n").find(line => line.split(" ")[0] === mountedId)?.split(" ");
+        if (!row || row.indexOf("-") < 6 || mountedId === coveredMountId || row[3] !== "/" || row[4] !== join(root.root, "proc") ||
+            row[row.indexOf("-") + 1] !== "proc" || row.slice(6, row.indexOf("-")).some(field => /^(?:shared|master|propagate_from):/.test(field)) ||
+            mountedFlags.includes("ro") || ["nosuid", "nodev", "noexec"].some(flag => !mountedFlags.includes(flag))) researchInvalid();
+      } finally { closeTarget(mountedProc); }
+    } finally { closeTarget(proc); }
     const liveRoot = openSync(root.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     descriptors.set(liveRoot, { path: root.root, identity: descriptorIdentity(liveRoot) });
     try { protectMount(liveRoot, "/", true, false, [...new Set([...flags(liveRoot), "nosuid", "nodev"])]); } finally { closeTarget(liveRoot); }

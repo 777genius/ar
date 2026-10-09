@@ -63,7 +63,7 @@ export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha25
   const directory = join("/run/user/subscription-runtime-research-v1", researchName(request.jobId), "starts", spec.startId);
   // Captured roots consume explicit sources, never later Host mount propagation.
   // Recursive private propagation belongs to this service and ends with it.
-  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no", "MountFlags=private",
+  const properties = [...hostedFdSystemdProperties, "Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no", "MountFlags=private",
     `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "MemoryMax=6G", "TasksMax=1024", "CPUQuota=300%", "MemorySwapMax=0", "LimitCORE=0",
     `BindPaths=${join(directory, "pins", "job")}:${request.jobRootDir}:norbind`,
@@ -84,7 +84,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   const seal = researchProviderRootSeal(rootPlan, spec, unit, home);
   // No filesystem-namespace property belongs here: PID1 must exec the finite
   // early-private adapter before copying or protecting the captured root.
-  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
+  const properties = [...hostedFdSystemdProperties, "Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
     `TimeoutStartSec=${researchProviderSetupAllowanceMs(request) / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",

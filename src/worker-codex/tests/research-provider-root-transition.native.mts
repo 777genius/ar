@@ -13,7 +13,7 @@ type DescriptorGuard = Pick<typeof import("../../provider-codex/app-server/adapt
 type Mode = "clean" | "unmounted" | "file" | "directory";
 type Expected = Readonly<{ schemaVersion: 1; hostUser: string; hostPid: string; initialHostContext: import("../research-launch-host").ResearchInitialHostContext; outside: string; sentinelSha256: string; inside: string }>;
 const phases = ["arguments", "custody", "initial-caps", "no-new-privileges", "provider-context", "import", "bind", "remount", "transition", "child-oracle", "oracle-inputs", "oracle-isolation", "oracle-nested-userns", "oracle-descriptors", "receipt", "userns-capset", "userns-root", "private-proc"] as const;
-type Target = "none" | "operator" | "root" | "runtime" | "expected" | "usr" | "node" | "probe" | "guard" | "bin" | "sbin" | "lib" | "lib64" | "outside-file" | "outside-directory";
+type Target = "none" | "operator" | "root" | "runtime" | "expected" | "proc" | "usr" | "node" | "probe" | "guard" | "bin" | "sbin" | "lib" | "lib64" | "outside-file" | "outside-directory";
 let phase: typeof phases[number] = "arguments", target: Target = "none", role: "operator" | "assembler" | "oracle" = "operator", activeMode: Mode | null = null;
 let failedCommand: ReturnType<typeof spawnSync> | undefined;
 const mark = (next: typeof phases[number], selected: Target = "none"): true => { phase = next; target = selected; failedCommand = undefined; return true; };
@@ -126,6 +126,13 @@ async function assemble(root: string, runtime: string, expectedPath: string, mod
     try { lstatSync(source); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     if (!lstatSync(source).isSymbolicLink()) bind(source, source, true, alias);
   }
+  // Match the trusted bootstrap proc needed for mapping after pivot. The final
+  // --mount-proc must still replace it before the existing child oracle runs.
+  mark("private-proc", "proc");
+  const procPath = join(root, "proc"); trusted(procPath);
+  const proc = openSync(procPath, 0x200000 | constants.O_NOFOLLOW);
+  try { mount(["-t", "proc", "-o", "nosuid,nodev,noexec", "proc", "/proc/self/fd/3"], deadline, [proc]); }
+  finally { closeSync(proc); }
   mark("transition", "root");
   const transition = module.researchProviderRootTransition(root);
   mark("child-oracle", mode === "file" ? "outside-file" : mode === "directory" ? "outside-directory" : "root");
