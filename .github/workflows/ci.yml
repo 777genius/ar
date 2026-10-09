@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 # Portable gates use disposable runners to avoid the shared ARC queue.
 # RUNNER remains an explicit repository/environment override.
@@ -28,6 +28,8 @@ jobs:
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run typecheck
+      - run: npm run typecheck:ci-tools
+      - run: npm run test:ci-tools
       - run: npm run build
       - run: npm run check:dist
       - run: npm run check:boundaries
@@ -402,13 +404,7 @@ jobs:
           CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY: "1"
           SHARD_LANE: ${{ matrix.lane }}
         run: |
-          shard="$SHARD_LANE"
-          while [ "$shard" -le 53 ]; do
-            file="src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-${shard}.test.ts"
-            timeout --signal=TERM --kill-after=10s 240s \
-              npm run test:crash-shard -- "$file"
-            shard=$((shard + 8))
-          done
+          npm run test:crash-lane -- "$SHARD_LANE"
 
   crash-boundary-shards-complete:
     permissions:
