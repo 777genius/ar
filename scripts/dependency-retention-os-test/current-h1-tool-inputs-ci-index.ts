@@ -31,7 +31,7 @@ export function parseUbuntuRelease(release:string,pocket:CiUbuntuPocket,nowMs:nu
  requireFact(Buffer.byteLength(release)<=1024*1024&&!release.includes("\0"),"release bound");
  const fields=new Map<string,string>(),hashes=new Map<string,CiSignedIndexRow>();let shaSection=false;
  for(const line of release.trimEnd().split("\n")) {
-  if(line.startsWith(" ")){if(!shaSection)continue;const match=/^ ([a-f0-9]{64}) +([0-9]+) ([A-Za-z0-9_+./-]+)$/.exec(line);requireFact(match,"release SHA256 row");
+  if(line.startsWith(" ")){if(!shaSection)continue;const match=/^ ([a-f0-9]{64}) +([0-9]+) ([A-Za-z0-9_+@./-]+)$/.exec(line);requireFact(match,"release SHA256 row");
    const path=match![3]!,size=Number(match![2]);requireFact(Number.isSafeInteger(size)&&size>=0&&!path.startsWith("/")&&!path.split("/").some(part=>part==="."||part==="..")&&!hashes.has(path),"canonical unique release row");hashes.set(path,Object.freeze({path,sha256:match![1]!,size}));continue;}
   const split=line.indexOf(":");requireFact(split>0,"release field");const key=line.slice(0,split),value=line.slice(split+1).trim();requireFact(!fields.has(key),"duplicate release field");fields.set(key,value);shaSection=key==="SHA256";
  }

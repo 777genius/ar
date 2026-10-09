@@ -13,6 +13,12 @@ test("only genuine-success status with fixed independent primary fingerprint is 
 const bytes=Buffer.from("Package: TEST\n\n"),sha=createHash("sha256").update(bytes).digest("hex"),row={path:"main/binary-amd64/Packages",sha256:sha,size:bytes.length};
 const release=`Origin: Ubuntu\nLabel: Ubuntu\nSuite: noble-security\nCodename: noble\nDate: Fri, 09 Oct 2026 00:00:00 UTC\nValid-Until: Sat, 10 Oct 2026 00:00:00 UTC\nSHA256:\n ${sha} ${bytes.length} main/binary-amd64/Packages\n ${sha} ${bytes.length} universe/binary-amd64/Packages\n`;
 test("complete uncompressed index must join the exact authenticated pocket row, EOF and hash",()=>{
+ // Exact retained signed noble.Release row from failed ARC artifact11614866649.
+ const icon=" 650ebdd9cef3bfb3af47d512d1a96a788d2cf636b94c19c6b2870d203931de4d            59904 main/dep11/icons-128x128@2.tar\n";
+ const withIcon=release+icon;
+ assert.doesNotThrow(()=>parseUbuntuRelease(withIcon,CiUbuntuPocket.Security,Date.parse("2026-10-09T01:00:00Z")));
+ assert.deepEqual(parseUbuntuRelease(withIcon,CiUbuntuPocket.Security,Date.parse("2026-10-09T01:00:00Z")).get("main/binary-amd64/Packages"),row);
+ for(const value of [withIcon+icon,release+icon.replace("main/dep11/","main/../"),release+icon.replace("main/dep11/","/main/dep11/"),release+icon.replace("@2","@2\\outside")])assert.throws(()=>parseUbuntuRelease(value,CiUbuntuPocket.Security,Date.parse("2026-10-09T01:00:00Z")),/refused/);
  const rows=parseUbuntuRelease(release,CiUbuntuPocket.Security,Date.parse("2026-10-09T01:00:00Z"));assert.deepEqual(rows.get(row.path),row);assert.doesNotThrow(()=>assertCompleteUbuntuIndex(bytes,row));
  for(const b of [bytes.subarray(1),Buffer.concat([bytes,Buffer.from("x")]),Buffer.from(bytes.toString().replace("TEST","FAKE"))])assert.throws(()=>assertCompleteUbuntuIndex(b,row),/refused/);
  for(const text of [release.replace("noble-security","noble-updates"),release.replace("Origin: Ubuntu","Origin: Mirror"),release.replace("10 Oct","08 Oct"),release+` ${sha} ${bytes.length} main/binary-amd64/Packages\n`,release.replace("main/binary-amd64/Packages","../Packages")])assert.throws(()=>parseUbuntuRelease(text,CiUbuntuPocket.Security,Date.parse("2026-10-09T01:00:00Z")),/refused/);
