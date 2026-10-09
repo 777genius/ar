@@ -13,7 +13,7 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
   processGroups: new Map<number, string>(), killFailures: new Set<string>(), stopFailures: new Set<string>(),
   processNamespaces: new Map<number, Record<"user" | "mnt" | "pid" | "net", string>>(), showFailures: new Set<string>(),
-  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0, findmntHook: undefined as (() => void) | undefined,
+  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0, taskTimeoutMs: 3600000, findmntHook: undefined as (() => void) | undefined,
   scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
   scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
 export const host = fixture;
@@ -57,6 +57,12 @@ export function local(path: string): string {
   if (["/", "/run", "/run/systemd", "/run/user", "/run/user/0", "/var", "/var/lib", "/usr", "/usr/bin", "/opt"].includes(path) || process.execPath.startsWith(path + "/")) return fixture.root;
   return path;
 }
+function syntheticMountInfo(): string {
+  const lines = ["1 0 8:1 / / rw - ext4 /dev/TEST rw"];
+  for (const [pin, target] of fixture.pins) lines.push(`${lines.length + 1} 1 8:1 ${target} ${pin} rw - ext4 /dev/TEST rw`);
+  for (const [target, mount] of fixture.scratchMounts) if (mount) lines.push(`${lines.length + 1} 1 0:11 ${mount.fsroot} ${target} rw - ext4 /dev/TEST-scratch rw`);
+  return lines.join("\n") + "\n";
+}
 vi.mock("node:url", async original => {
   const real = await original<typeof import("node:url")>();
   return { ...real, fileURLToPath: (url: URL | string) => {
@@ -70,16 +76,15 @@ vi.mock("node:fs", async original => {
     lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
     statSync: (path: string) => Object.assign(real.statSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
     fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
-    openSync: (path: string, flags: number | string, mode: number) => { const fd = real.openSync(local(path), flags, mode); fixture.fdPaths.set(fd, path); return fd; },
+    openSync: (path: string, flags: number | string, mode: number) => {
+      const selected = path === "/proc/self/mountinfo" ? join(fixture.root, "mountinfo") : local(path);
+      if (path === "/proc/self/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
+      const fd = real.openSync(selected, flags, mode); fixture.fdPaths.set(fd, path); return fd;
+    },
     existsSync: (path: string) => real.existsSync(local(path)),
     readFileSync: (path: string | number, opts: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "string" && path.startsWith("/proc/")) {
-        if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") {
-          const lines = ["1 0 8:1 / / rw - ext4 /dev/TEST rw"];
-          for (const [pin, target] of fixture.pins) lines.push(`${lines.length + 1} 1 8:1 ${target} ${pin} rw - ext4 /dev/TEST rw`);
-          for (const [target, mount] of fixture.scratchMounts) if (mount) lines.push(`${lines.length + 1} 1 0:11 ${mount.fsroot} ${target} rw - ext4 /dev/TEST-scratch rw`);
-          return lines.join("\n") + "\n";
-        }
+        if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") return syntheticMountInfo();
         if (path.startsWith("/proc/self/fdinfo/")) {
           const selected = (fixture.fdPaths.get(Number(path.split("/").at(-1))) ?? "").replace(/^\/proc\/1\/root/, "");
           const index = [...fixture.pins.keys()].findIndex(pin => selected === pin || selected.startsWith(pin + "/"));
@@ -175,7 +180,12 @@ export const request = () => ({ schemaVersion: 1, jobId: "TEST-research-r7", tas
   workspacePath: fixture.physicalPaths ? join(fixture.root, "project/jobs/TEST-research-r7/workspace") : "/TEST-project/jobs/TEST-research-r7/workspace",
   promptPath: fixture.physicalPaths ? join(fixture.root, "project/jobs/TEST-research-r7/prompt.md") : "/TEST-project/jobs/TEST-research-r7/prompt.md",
   authRootDir: fixture.physicalPaths ? join(fixture.root, "auth") : "/TEST-auth", accounts: ["TEST-a", "TEST-b"],
-  codexBinaryPath: "/usr/bin/TEST-codex", model: "gpt-6.1-sol", reasoningEffort: "xhigh", serviceTier: "default", taskTimeoutMs: 3600000 });
+  codexBinaryPath: "/usr/bin/TEST-codex", model: "gpt-6.1-sol", reasoningEffort: "xhigh", serviceTier: "default", taskTimeoutMs: fixture.taskTimeoutMs });
+/** Configure retained TEST operator input before any grant or start is issued. */
+export function configureResearchFixtureTaskTimeout(taskTimeoutMs: number): void {
+  fixture.taskTimeoutMs = taskTimeoutMs;
+  writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n", { mode: 0o600 });
+}
 export function setupResearchFixture(): void {
   fixture.root = nativeFs.mkdtempSync(join(tmpdir(), "TEST-research-launch-r7-"));
   const allocated = nativeFs.lstatSync(fixture.root);
@@ -183,6 +193,7 @@ export function setupResearchFixture(): void {
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
+  fixture.taskTimeoutMs = 3600000;
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units", "system/etc/ssl/certs", "system/opt", "system/usr/bin", "system/usr/sbin", "system/usr/lib", "system/usr/lib64"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
   mkdirSync(local(dirname(process.execPath)), { recursive: true, mode: 0o700 });

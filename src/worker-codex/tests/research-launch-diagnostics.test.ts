@@ -3,6 +3,7 @@ import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { annotateScratchMountInspectionFailure, normalizeResearchLaunchFailure, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
 import { prepareHostScratchCaches, prepareHostScratchTemp, resolvePreparedHostScratchCacheBinds } from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
@@ -215,6 +216,15 @@ describe("finite startup diagnostics", () => {
     expect(f.nodes.has(`${source}.lock`)).toBe(false);
   });
 
+  it("transports a known role through the unchanged built bootstrap before Host imports", () => {
+    const preload = fileURLToPath(new URL("./fixtures/research-material-role-preload.ts", import.meta.url));
+    const child = spawnSync(process.execPath, ["--import", preload, "host-integration/research-runtime-launch.mjs"], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 5000,
+    });
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(70); expect(child.stdout).toBe("");
+    expect(child.stderr).toBe("hosted_research_runtime_launch_denied:imports:0:file-deadline:research-admission:runtime-artifact\n");
+    expect(child.stderr).not.toContain("TEST-private-bootstrap");
+  });
   it("runs the built entrypoint's real catch and exits 70 with one bounded observation", () => {
     // Invalid arity fails before any Host import, admission, launch or provider work.
     const child = spawnSync(process.execPath, ["host-integration/research-runtime-launch.mjs"], {
@@ -223,6 +233,6 @@ describe("finite startup diagnostics", () => {
     expect(child.error).toBeUndefined();
     expect(child.status).toBe(70);
     expect(child.stdout).toBe("");
-    expect(child.stderr).toBe("hosted_research_runtime_launch_denied:imports:unclassified:none:unknown\n");
+    expect(child.stderr).toBe("hosted_research_runtime_launch_denied:imports:unclassified:none:unknown:unknown\n");
   });
 });

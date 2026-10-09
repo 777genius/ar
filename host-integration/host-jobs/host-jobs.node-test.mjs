@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat, rm, realpath, readlink, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { HostJobs, systemCommand } from './manager.mjs';
 import { hostTransport, sshOutput } from '../../scripts/ops/host-job-transport.mjs';
 import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
@@ -557,10 +557,14 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
     for (const name of ['launch.mjs', 'payload-guard.mjs', 'profiles.mjs']) {
       await writeFile(join(dir, 'managed-launcher', name), 'synthetic fixture\n');
     }
+    await mkdir(join(dir, 'native-probe')); await writeFile(join(dir, 'native-probe/installed-data-package.json'), '{"type":"module"}\n');
+    for (const probe of ['hosted-native-probe/ingress.js', 'hosted-native-probe/protocol.js', 'hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js', 'worker-core/hosted-custody/domain/native-probe.js', 'core/scoped-retained-resource-contract.js', 'core/scoped-termination-contract.js']) {
+      const path = join(dir, 'dist', probe); await mkdir(dirname(path), { recursive: true }); await writeFile(path, '// disposable emitted fixture\n');
+    }
     for (const name of ['contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell']) {
       await writeFile(join(scripts, name), 'synthetic fixture\n');
     }
-    let source = await readFile(new URL('./install', import.meta.url), 'utf8');
+    let source = (await readFile(new URL('./install', import.meta.url), 'utf8')).replaceAll('$source_dir/../../dist', '$source_dir/../dist');
     for (const path of ['/opt/subscription-runtime', '/var/lib/sr-transport', '/etc/sudoers.d']) source = source.replaceAll(path, join(dir, path));
     for (const tool of ['ssh-keygen', 'sudo', 'flock', 'timeout']) source = source.replaceAll(`/usr/bin/${tool}`, join(bin, tool));
     for (const tool of ['visudo', 'useradd']) source = source.replaceAll(`/usr/sbin/${tool}`, join(bin, tool));
@@ -569,6 +573,9 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
     await writeFile(key, 'ssh-ed25519 AAAA synthetic-key\n');
     const invoke = () => promisify(execFile)('/bin/sh', [join(scripts, 'install'), '--ssh-public-key', key], { env: { PATH: `${bin}:/usr/bin:/bin` } });
     await invoke();
+    for (const probe of ['hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js']) {
+      assert.deepEqual(await readFile(join(target, 'native-probe', probe)), await readFile(join(dir, 'dist', probe)));
+    }
     const expectedAccount = await readFile(account, 'utf8');
     const expectedKey = await readFile(join(home, '.ssh/authorized_keys'), 'utf8');
     const expectedPolicy = await readFile(policy, 'utf8');
@@ -595,7 +602,7 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
 
 test('Node installer accepts both layouts and rejects untrusted paths before writes', async () => {
   const source = await readFile(new URL('./install', import.meta.url), 'utf8');
-  const stagedFiles = ['contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell', '../managed-launcher/install', '../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs'];
+  const stagedFiles = ['../dist/hosted-native-probe/ingress.js', '../dist/hosted-native-probe/protocol.js', '../dist/hosted-native-probe/original-owner-client.js', '../dist/hosted-native-probe/original-owner-adapter.js', '../dist/worker-core/hosted-custody/ports/native-probe.js', '../dist/worker-core/hosted-custody/application/native-probe.js', '../dist/worker-core/hosted-custody/domain/native-probe.js', '../dist/core/scoped-retained-resource-contract.js', '../dist/core/scoped-termination-contract.js', 'contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell', '../native-probe/installed-data-package.json', '../managed-launcher/install', '../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs'];
   const scenarios = ['system', 'fixed', 'untrusted-source', 'untrusted-fixed', 'writable-ancestor',
     ...stagedFiles.flatMap(file => [`writable-staged:${file}`, `symlink-staged:${file}`]),
     ...stagedFiles.filter(file => !file.startsWith('../')).flatMap(file => [`writable-destination:${file}`, `symlink-destination:${file}`])];
@@ -620,6 +627,7 @@ test('Node installer accepts both layouts and rejects untrusted paths before wri
       await writeFile(key, 'ssh-ed25519 AAAA synthetic-key\n');
       await executable(join(root, 'managed-launcher/install'), 'echo managed >> "$TRACE"');
       for (const file of stagedFiles.filter(file => file !== '../managed-launcher/install')) {
+        await mkdir(dirname(join(scripts, file)), { recursive: true });
         await writeFile(join(scripts, file), 'synthetic fixture\n');
       }
       const stagedFile = scenario.split(':')[1];
@@ -636,7 +644,7 @@ test('Node installer accepts both layouts and rejects untrusted paths before wri
       await executable(join(bin, 'node'), 'exit 99');
       const fixed = join(runtime, 'node');
       if (scenario === 'fixed' || scenario === 'untrusted-fixed') await executable(fixed, 'exit 98');
-      let fixtureSource = source;
+      let fixtureSource = source.replaceAll('$source_dir/../../dist', '$source_dir/../dist');
       for (const path of ['/opt/subscription-runtime', '/var/lib/sr-transport', '/etc/sudoers.d']) fixtureSource = fixtureSource.replaceAll(path, join(root, path));
       for (const tool of ['ssh-keygen', 'sudo', 'flock', 'timeout']) fixtureSource = fixtureSource.replaceAll(`/usr/bin/${tool}`, join(bin, tool));
       for (const tool of ['visudo', 'useradd']) fixtureSource = fixtureSource.replaceAll(`/usr/sbin/${tool}`, join(bin, tool));

@@ -149,7 +149,14 @@ function pinMounts(text) {
     ids.add(f[0]);
     const decode = value => value.replace(/\\(040|011|012|134)/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
     const root = decode(f[3]), target = decode(f[4]);
-    if (!isAbsolute(root) || resolve(root) !== root || !isAbsolute(target) || resolve(target) !== target) throw denied('invalid pin mount table');
+    // nsfs show_path uses a kernel namespace handle on an anonymous device.
+    // Retain the row for every topology veto; it is never ext4 pin backing.
+    const namespace = /^(?:cgroup|ipc|mnt|net|pid|time|user|uts):\[([1-9]\d{0,9})\]$/.exec(root);
+    const namespaceDevice = /^0:([1-9]\d{0,6})$/.exec(f[2]);
+    const namespaceRoot = f[split + 1] === 'nsfs' && f[split + 2] === 'nsfs' && namespace &&
+      Number(namespace[1]) <= 0xffffffff && namespaceDevice && Number(namespaceDevice[1]) <= 0xfffff;
+    if (((!isAbsolute(root) || resolve(root) !== root) && !namespaceRoot) ||
+        !isAbsolute(target) || resolve(target) !== target) throw denied('invalid pin mount table');
     return { id: f[0], device: f[2], root, target, options: f[5].split(','), optional: f.slice(6, split),
       type: f[split + 1], source: decode(f[split + 2]), superOptions: f[split + 3].split(',') };
   });
