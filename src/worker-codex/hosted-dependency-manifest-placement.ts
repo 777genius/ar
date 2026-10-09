@@ -9,6 +9,7 @@ import { LocalDependencyManifestBlobStore } from "../store-local-file/dependency
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot as policyRoot } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
+import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-stage";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 
 export enum HostedManifestLimitsRevision { TestUnqualifiedV1 = "registry_test_manifest_bounds_v1_unqualified" }
@@ -126,9 +127,12 @@ function installationFacts(installation: HostedInstallation): void {
   const stage = readHostedPrivateBytes("/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json", 4096);
   const inventoryBytes = readHostedPrivateBytes(join(policyRoot, "readonly-inventory.json"), 64 * 1024);
   if (!stage || !inventoryBytes) fail();
-  const value = decode(stage); fields(value, "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion");
+  let value: ReturnType<typeof readOriginalHostedDependencyBackingStage>;
+  try { value = readOriginalHostedDependencyBackingStage(); } catch { fail(); }
+  // The decoder rereads the fixed stage. Bind that result to these held bytes.
+  if (!stage.equals(encode(value))) fail();
   const inventory = readHostedReadonlyHostInventory();
-  if (value.schemaVersion !== 1 || value.runtimeDirectory !== runtimeDirectory || installation.runtimeDirectory !== runtimeDirectory ||
+  if (value.runtimeDirectory !== runtimeDirectory || installation.runtimeDirectory !== runtimeDirectory ||
     value.runtimeSha !== installation.runtimeSha || value.runtimeManifestSha256 !== installation.runtimeManifestSha256 ||
     inventory.hostId !== installation.hostId || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) || hash(inventoryBytes) !== installation.inventorySha256) fail();
   const jobPrefix = join(policyRoot, "dependency-test-jobs/jobs");
