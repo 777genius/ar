@@ -264,3 +264,86 @@ explicit skip into acceptance. Initial strict C/TS gates, genuine positive and
 privileged negatives, supported fork/death, preconnect inactive/replacement,
 lost Ref/Unref/response and partial custody, both-manager collisions, exact
 helper loss/wait, principal wait/EOF and scope-kernfs retirement remain required.
+
+### Fixed NEWTEST physical bootstrap candidate
+
+The separate `newtest-bootstrap.mts` zero-argument Root administrator is a TEST
+installation/boot adapter. It never runs through ordinary HostJobs argv. Install
+its reviewed emitted admin import layout at
+`/opt/subscription-runtime/native-newtest/admin/`, and regular measured Node at
+`/opt/subscription-runtime/runtime/node`, on an explicitly admitted TEST host.
+The guest has its own fixed /opt paths; no host installation, projects, policy,
+credentials, control sockets or jobs are bound into it. Production work stays CLOSED.
+
+Prepare protected `/etc/subscription-runtime/native-newtest.json` with EXACT keys:
+version=1, kind=NativeOriginalNewtest, runId=16 lowercase hex,
+machineId=actual host32hex, sourceCommit=reviewed40hex, storageRoot=owned external
+scratch path, artifactDirectory=retained reviewed SOURCE candidate,
+artifactDigest=canonical digest of assembler `tree()` rows, baseArchive=protected
+Ubuntu Base24.04.5 amd64 archive, node=protected Linux Node, nodeSha256=actual hash,
+preparationEndNs and cleanupEndNs=original host-monotonic positive decimal ends.
+Preparation is at most900s, whole cleanup at most1200s, cleanup at least60s after
+preparation. Issue these only immediately before the fixed service start. No
+config or deadline replacement/retry after the permanent ownership claim.
+
+Official base archive and SHA256:
+`https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-amd64.tar.gz`
+`e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86`.
+Verify distribution-signed SHA256SUMS before trusted staging. Separate owned
+provisioning uses the base's signed apt metadata, records exact resolved package
+versions, requires systemd255, and measures actual Node/ELF/image/JS inputs before
+native installation. Package preparation is outside the native finite operation;
+there is no latest-image alias or shared host package upgrade.
+
+Install one root-owned reviewed service named
+`subscription-runtime-native-newtest-RUNID.service` with this fixed profile:
+
+```ini
+[Service]
+Type=exec
+Restart=no
+KillMode=control-group
+RuntimeMaxSec=1200
+TimeoutStopSec=60
+MemoryMax=2G
+TasksMax=512
+CPUQuota=200%
+ExecStart=/opt/subscription-runtime/runtime/node /opt/subscription-runtime/native-newtest/admin/host-integration/native-probe/newtest-bootstrap.mjs
+```
+
+Root's explicitly authorized bounded administrative bootstrap installs this unit,
+config and files, then starts exactly that unit with `systemctl start --no-block`.
+This is the new fixed Root TEST route, not a HostJobs privilege exception or raw
+long-running SSH command. The adapter checks actual original unit MainPID,
+InvocationID, cgroup and finite profile, exclusively creates its durable claim
+before guest effects, and refuses a second operation. Root subsequently reads
+that same unit/retained operation; no new unit or guest after uncertainty.
+
+The single foreground nspawn guest provisions only its new rootfs, has private
+network while executing tests, original time namespace, stock dbus-daemon and
+root user manager, private guest job storage and fresh machine-id. Actual
+capability/seccomp/cgroup support must pass the unchanged native primitives.
+The assembler reads ELF metadata without ldd execution, resolves bounded stock
+libraries, copies regular private loader aliases and reads actual observer maps.
+It admits the full ordered protected installation manifest before writing
+candidate inputs. ELF RPATH/RUNPATH variants are currently explicitly unsupported.
+
+The new Source candidate retains fixed-path physical v1 binaries and emitted
+behavior tests plus exact ordinary installers; Source CI never executes those
+privileged binaries. Inside the guest, unchanged installed `HostJobs.start/status`
+launches only the ordinary UID65532 refusal driver. This verifies managed API,
+not remote SSH qualification. The genuine held v1 seal/environment-disposal test
+runs in the guest Root service with its original independent wait and streams.
+Only then a fresh guest-monotonic A0 permit funds the existing Root observer/C
+constructor before principal birth. The actual existing zero-argument operator
+runs once and retains raw principal/manager/reference/namespace/closure prefixes.
+
+The outer adapter retains its exact scratch guest, ownership, commands and result
+on success and failure. Guest writes `/var/lib/native-newtest` raw evidence and
+copies original volatile /run evidence before successful poweroff. Timeout,
+forced EOF, failed original join, missing manager/cgroup proof or changed
+installation produce UNKNOWN_HELD. Root must independently verify exact original
+unit/guest shutdown, wait/EOF and cgroup/mount absence before removing only the
+owned tree. Native L0 raw gates do not qualify V2, model, Source or WORK. This is
+Source implementation only until independent review, exact compiled/emitted
+checks and the real disposable guest execution pass.

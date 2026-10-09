@@ -199,14 +199,13 @@ Current Codex adapter status:
   App-server turns also receive a strict `workspaceWrite` sandbox policy with
   the active workspace as the only writable root, network disabled and `/tmp` /
   `TMPDIR` excluded from writable roots;
-- `isolated_workspace_write` workers are edit, test and handoff workers by
-  default. If the workspace is a linked git worktree, Git may need to write
-  common metadata outside the visible worktree, such as `.git/worktrees`,
-  `.git/objects`, refs and logs. Do not widen the sandbox to the shared `.git`
-  directory just to make `git add` or `git commit` work. The controller should
-  integrate the worker output through Project Integration lifecycle tools. If a
-  worker-local commit is required, use a commit-capable isolated clone where the
-  `.git` directory is inside the writable workspace;
+- `isolated_workspace_write` workers normally edit, test and hand off. Open mode
+  lets refill children commit into a separate repository at `<workspace>.tool/git`,
+  with tool-only `GIT_DIR` and `GIT_WORK_TREE`. The workspace remains a linked
+  worktree with its trusted `.git` read-only. A writable git directory inside
+  the workspace is unsafe on the root baseline: app-server runs root `git status`
+  outside the sandbox, where repository clean filters can execute. Root handoff
+  uses the trusted base and includes committed and uncommitted workspace changes;
 - terminal dirty isolated workers publish bounded patch, summary and manifest
   handoff artifacts in their exact worker job root. Handoff/review requests can
   safely backfill legacy completed jobs. Existing mismatched artifacts are never
@@ -216,9 +215,9 @@ Current Codex adapter status:
   controller job root. Attempts apply only that immutable snapshot after
   repeated SHA-256 checks; later worker-path mutation cannot change integrated
   output. Snapshot cleanup follows controller attempt/audit retention;
-- Codex access-boundary jobs must set `networkAccess: "restricted"`.
-  The adapter fails closed for implicit or explicit `disabled` network mode until
-  a real OS/container egress sandbox exists;
+- Codex access-boundary jobs keep the manifest's `networkAccess`, with full
+  Internet by default. Set `networkAccess: "restricted"` for a child that must
+  not have Internet. Strict and open modes never alter that setting;
 - provider-side permission expansion and file-change approval requests are
   denied fail-closed. Project integration writes must use brokered integration
   tools instead;
@@ -403,3 +402,52 @@ The broker rejects child manifests that try to override the controller-owned
 scope, request `danger_full_access`, request `project_scoped_control`, use
 unapproved accounts, write job roots outside the registry base, or use
 workspace paths outside the controller scope.
+
+### Project-control child worker modes
+
+Strict keeps today's filesystem profile and manifest network setting. The
+staged `defaultWorkerModeWhenScopeUnset` is `WorkerMode.Strict`; a later one-line
+flip to `Open` follows a green canary on a new TEST controller. Until then only
+new controllers created with scope `workerMode: "open"` opt in. Scope repair can
+only retain the value or tighten it to `"strict"`; absent-to-open is denied.
+Only refill children (including verifier children) can receive open manifests.
+`create_job` children remain strict. Child scopes do not inherit the field.
+
+Open adds reads of `/opt/nodejs` and `/srv/workers/jobs` to the exact strict
+profile, retaining credential-directory denies and root denial. Tools write
+only their workspace and sibling tool home's `home`, `tmp`, and optional `git`.
+Use `$TMPDIR` for temporary files and fallback artifacts. Read-only children have
+no writable git repository or `GIT_*` environment overrides. App-server's own
+environment remains unchanged.
+
+Open falls back to strict with a recorded first reason: `not_linux`,
+`not_root_baseline`, `contained`, `model_backend`, `execution_engine`,
+`bounded_workspace_tools`, `dependency_tools`, `no_project_read_boundary`,
+`tool_root_absent`, or `tool_root_foreign`. Gitlinks or preparation failure leave
+no tool root, so those jobs stay strict. An owned tool root must pass layout,
+secret-root overlap and PATH checks; invalid layouts fail closed. Removing a
+stopped job's tool root is the per-job emergency lever. Preparation and effective
+mode evidence are recorded separately.
+
+Denied roots are project-level roots, normally present before launch. Missing
+paths beneath admitted read roots stay in the profile: Codex applies directory
+masks at each command start, including paths created after profile rendering.
+Existing denied-root aliases fail closed. Denied roots outside the explicit
+open read roots are not added as masks; paths under strict's `:minimal` reads,
+such as `/etc` and `/usr`, remain readable unless separately denied by strict.
+
+Accepted v1 limitations: processes started before a denied directory exists
+see that directory through the live read mount until they restart. This includes
+long-lived exec sessions and background servers; masks apply at sandbox start.
+Other projects' code under the admitted job roots is not treated as secret.
+Strict's minimal system reads still expose root-only
+files such as `/etc/shadow` and `/etc/gshadow`. Open workers can read other jobs'
+workspaces and tool homes under `/srv/workers/jobs`, including caches and git
+repositories; mirror `repos/` (2770) and workstream `tmp/` (1770) remain protected
+by DAC. Never place credentials in worker environment or tool HOME. Full
+Internet retains today's access to loopback services and abstract sockets.
+Gitlink repositories remain strict with today's submodule metadata exposure.
+The prompt forbids moving the worker branch onto newer upstream commits;
+violations can produce noisy or failed integration because the handoff compares
+against the original base, and Project Integration validates exact changed paths.
+This last outcome has not been verified.

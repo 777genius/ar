@@ -1,3 +1,4 @@
+import { optionalWorkerMode } from "./project-control-worker-mode";
 import { parseChildLifetime, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
@@ -244,6 +245,7 @@ export function parseCodexGoalProjectAccessScope(
       "consumedOutputEvidenceRoots",
       fieldName,
     ),
+    ...(value.workerMode === undefined ? {} : { workerMode: optionalWorkerMode(value.workerMode, `${fieldName}.workerMode`)! }),
     ...(value.commitIdentity === undefined
       ? {}
       : { commitIdentity: parseCommitIdentity(value.commitIdentity, `${fieldName}.commitIdentity`) }),

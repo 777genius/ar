@@ -7,6 +7,9 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { assertLocalControllerMaintenanceFenceOpen, withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
 import { withCurrentControllerLaunchPolicy } from "./codex-goal-mcp-project-controller-launch-policy";
+import { hostedStoredProjectStartPlan } from "./hosted-foreground-result";
+import { resolveStoredProjectStartPlan, type StoredProjectStartPlan } from "./stored-start-planning";
+export { readStoredProjectStartPlan, resolveStoredProjectStartPlan } from "./stored-start-planning";
 import { readCodexGoalJob, type CodexGoalJobManifest } from "./codex-goal-jobs";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -135,6 +138,8 @@ export type CodexGoalMcpProjectControlActionsDeps = {
   readonly listAccountStatuses?: typeof listCodexGoalAccountStatuses;
 };
 export async function projectControlStartStoredJobView(args: ProjectControlMcpArgs, deps: CodexGoalMcpProjectControlActionsDeps): Promise<JsonObject> {
+  const storedPlan = hostedStoredProjectStartPlan(args) ?? (args.storedStartBinding
+    ? resolveStoredProjectStartPlan(JSON.stringify(args), process.cwd()) : undefined);
   const controller = await deps.loadProjectControlController(args);
   await assertLocalControllerMaintenanceFenceOpen(controller.controller.jobRootDir);
   const jobId = requiredRawString(args.jobId, "jobId");
@@ -155,6 +160,8 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
     controller.registryRootDir,
   );
   const { status, decision: continuationDecision } = loaded;
+  if (storedPlan) assertStoredStartObservation(storedPlan, controller.controller, loaded.manifest, loaded.launch,
+    continuationDecision, status.resultExists);
   if (
     loaded.workerAlive &&
     !isProjectPreStartTerminalSupervisorDecision(continuationDecision)
@@ -303,6 +310,17 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           jobId: loaded.manifest.jobId,
           status: lockedStatus,
         });
+      }
+      if (storedPlan) {
+        // Still inside the original controller/workspace locks, before any
+        // dependency, validator, account or broker start effects.
+        const current = hostedStoredProjectStartPlan(args) ??
+          resolveStoredProjectStartPlan(JSON.stringify(args), process.cwd());
+        if (JSON.stringify(current.binding) !== JSON.stringify(storedPlan.binding)) {
+          throw new Error("hosted_stored_project_start_changed_before_effect");
+        }
+        assertStoredStartObservation(current, currentController, loaded.manifest, loaded.launch,
+          lockedContinuationDecision, lockedStatus.resultExists);
       }
       const reviewedOutputDeps = localReviewedWorkerOutputDeps({
         rootDir: reviewedWorkerOutputRoot(controller.registryRootDir),
@@ -710,6 +728,14 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
     },
     }),
   });
+}
+function assertStoredStartObservation(plan: StoredProjectStartPlan, controller: CodexGoalJobManifest,
+  manifest: CodexGoalJobManifest, launch: CodexGoalLaunchInput, decision: unknown, resultExists: boolean | undefined): void {
+  if (JSON.stringify(plan.controller) !== JSON.stringify(controller) ||
+      JSON.stringify(plan.manifest) !== JSON.stringify(manifest) ||
+      JSON.stringify(plan.launch) !== JSON.stringify(launch) || decision !== undefined || resultExists !== false) {
+    throw new Error("hosted_stored_project_start_changed_before_effect");
+  }
 }
 export async function projectControlCreateWorktreeView(args: ProjectControlMcpArgs, deps: CodexGoalMcpProjectControlActionsDeps): Promise<JsonObject> {
   const controller = await deps.loadProjectControlController(args);
