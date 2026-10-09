@@ -25,6 +25,7 @@ on:
       - 'src/worker-codex/codex-goal-*.ts'
       - 'src/provider-codex/app-server/adapters/hosted-*.ts'
       - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
+      - 'src/provider-codex/app-server/adapters/systemd-service-arrays.ts'
       - 'src/core/host-infrastructure/**'
 
 permissions:
