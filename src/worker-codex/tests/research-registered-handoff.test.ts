@@ -451,6 +451,8 @@ describe("native project launch authorization", () => {
     await expect(start!()).rejects.toThrow("project_control_native_launch_already_submitted");
     host.group = "/user.slice/TEST-operator.scope";
     await revokeProjectResearchLaunch(started.jobId, current.spec.grantSha256);
+    expect(researchHash(researchRead(join("/run/user/subscription-runtime-research-v1", researchHash(started.jobId), "grant.json"))))
+      .toBe(current.spec.grantSha256);
     host.group = `/system.slice/${started.unit}`;
     expect(() => captured.assertAuthorityCurrent()).toThrow();
     host.group = "/user.slice/TEST-operator.scope";
