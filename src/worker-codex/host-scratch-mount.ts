@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync, writeFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readlinkSync, realpathSync, readSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 export type ScratchMount = { target?: string; uuid?: string; fsroot?: string; mountId?: number; isPrivate?: boolean };
 type Record = { id: number; root: string; target: string; propagation: string[] };
@@ -130,4 +130,61 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
         JSON.stringify(record) !== JSON.stringify(mountRecord(original.mountId, after))) return fail();
     return result;
   } finally { if (fresh !== undefined) closeSync(fresh); closeSync(fd); }
+}
+
+/** Read-only FD-selected backing for admission. This grants no writer authority.
+ * The mount id, rather than lexical longest-prefix selection, resolves aliases.
+ */
+export type KernelPathBacking = Readonly<{ device: string; backingPath: string }>;
+export function inspectKernelPathBacking(path: string): KernelPathBacking {
+  if (process.platform !== "linux" || !isAbsolute(path) || resolve(path) !== path) return fail();
+  if (realpathSync(path) !== path) return fail();
+  const namespace = readlinkSync("/proc/self/ns/mnt");
+  const flags = 0x200000 | constants.O_NOFOLLOW;
+  const inspect = (fd: number) => {
+    const info = fstatSync(fd), ids = [...boundedRead(`/proc/self/fdinfo/${fd}`, 4096).matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
+    if ((!info.isDirectory() && !info.isFile()) || info.isFile() && info.nlink !== 1 || ids.length !== 1) return fail();
+    return { dev: info.dev, ino: info.ino, mountId: integer(ids[0]![1]) };
+  };
+  const fd = openSync(path, flags); let fresh: number | undefined;
+  try {
+    const identity = inspect(fd), table = readKernelMountTable();
+    const result = selectKernelPathBacking(path, identity.mountId, identity.dev, table);
+    fresh = openSync(path, flags);
+    if (!same(identity, inspect(fd)) || !same(identity, inspect(fresh)) ||
+        realpathSync(path) !== path || readlinkSync("/proc/self/ns/mnt") !== namespace || readKernelMountTable() !== table) return fail();
+    return result;
+  } finally { if (fresh !== undefined) closeSync(fresh); closeSync(fd); }
+}
+
+/** Finite kernel data transformation; only an actual open FD selects mountId. */
+export function selectKernelPathBacking(path: string, mountId: number, dev: number, table: string): KernelPathBacking {
+  if (!isAbsolute(path) || resolve(path) !== path || !Number.isSafeInteger(dev) || dev < 0) return fail();
+  const line = mountLine(integer(mountId), table), record = parseMountRecord(mountId, line);
+  if ((record.target !== path && record.target !== "/" && !path.startsWith(record.target + "/")) ||
+      resolve(record.root) !== record.root || /[\x00-\x1f\x7f]/.test(record.root)) return fail();
+  const device = line.split(" ")[2], native = BigInt(dev);
+  const major = (native >> 8n & 0xfffn) | (native >> 32n & 0xfffff000n), minor = (native & 0xffn) | (native >> 12n & 0xffffff00n);
+  if (typeof device !== "string" || device !== `${major}:${minor}`) return fail();
+  return Object.freeze({ device, backingPath: join(record.root, relative(record.target, path)) });
+}
+
+/** Include visible descendant binds: target writes may reach another backing.
+ * Hidden stacked records never supply authority; each path is reopened by FD.
+ */
+export function inspectKernelPathBackings(path: string): readonly KernelPathBacking[] {
+  const namespace = readlinkSync("/proc/self/ns/mnt");
+  const table = readKernelMountTable(), lines = table.trimEnd().split("\n");
+  if (lines.length > 32768) return fail();
+  const paths = new Set([path]);
+  for (const line of lines) {
+    const fields = line.split(" "), point = fields[4];
+    if (point === undefined) return fail();
+    const decoded = decode(point);
+    if (decoded.startsWith(path === "/" ? "/" : path + "/")) paths.add(decoded);
+  }
+  if (paths.size > 512) return fail();
+  const roots = [...paths].map(inspectKernelPathBacking);
+  if (readKernelMountTable() !== table || readlinkSync("/proc/self/ns/mnt") !== namespace) return fail();
+  return roots;
 }

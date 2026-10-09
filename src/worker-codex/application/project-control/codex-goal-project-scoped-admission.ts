@@ -6,10 +6,11 @@ import {
   type ProjectAdmissionRequest,
   type ProjectAdmissionScopedContext,
   type ProjectAdmissionSnapshot,
+  type ProjectAdmissionPhysicalRoot,
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from "../../codex-goal-jobs";
-import { optionalRealPathForAdmission, prospectiveAdmissionResourcePath } from "./codex-goal-project-admission-paths";
+import { optionalRealPathForAdmission, prospectiveAdmissionResourcePath, prospectiveAdmissionResourceBacking } from "./codex-goal-project-admission-paths";
 import {
   admissionCreationTargetIdentity,
   admissionCreateJobTargetIdentity,
@@ -20,13 +21,13 @@ import {
 import { pathInsideOrEqual } from "./codex-goal-project-utils";
 import type { CodexProjectAdmissionDeps } from "./codex-goal-project-admission";
 
-type WriterAuthority = "proved" | "unknown";
+type WriterAuthority = "allocated" | "released" | "unknown";
 
 type WriterCensusEntry = {
   readonly jobId: string;
   readonly workspacePath: string;
   readonly canonicalWorkspacePath?: string;
-  readonly writableRoots?: readonly string[];
+  readonly writableRoots?: readonly ProjectAdmissionPhysicalRoot[];
   readonly authority: WriterAuthority;
 };
 
@@ -179,11 +180,15 @@ async function targetIdentity(
   const physicalResources = await Promise.all(resources.map(prospectiveAdmissionResourcePath));
   if (physicalResources.some((root) => root === undefined)) return {};
   const writableRoots = [...new Set(physicalResources as string[])];
+  const backings = await Promise.all(writableRoots.map(prospectiveAdmissionResourceBacking));
+  if (backings.some(root => root === undefined)) return {};
+  const physicalWritableRoots = (backings as readonly ProjectAdmissionPhysicalRoot[][]).flat();
   const ownedPaths = binding?.createWorktree?.ownedPaths ??
     (input.request.ownedPaths?.length ? input.request.ownedPaths : undefined);
   return {
     canonicalPath,
     writableRoots,
+    physicalWritableRoots,
     ...(ownedPaths ? { ownedPaths: [...ownedPaths] } : {}),
   };
 }
@@ -216,12 +221,16 @@ async function collectWriterCensus(
     const canonicalWorkspacePath = await optionalRealPathForAdmission(
       summary.workspacePath,
     );
-    let writableRoots: readonly string[] | undefined;
+    let writableRoots: readonly ProjectAdmissionPhysicalRoot[] | undefined;
+    let authority: WriterAuthority = "unknown";
     if (manifest && input.deps.readWriterWritableRoots) {
       try {
         const observed = await input.deps.readWriterWritableRoots(manifest);
-        if (observed?.every((root) => isAbsolute(root) && !root.includes("\u0000"))) {
-          writableRoots = [...observed];
+        if (observed.status === "released") authority = "released";
+        else if (observed.status === "allocated" && observed.roots.length > 0 &&
+          observed.roots.every(root => /^\d+:\d+$/.test(root.device) && isAbsolute(root.backingPath) &&
+            resolve(root.backingPath) === root.backingPath && !/[\x00-\x1f\x7f]/.test(root.backingPath))) {
+          writableRoots = [...observed.roots]; authority = "allocated";
         }
       } catch {
         // EACCES, missing grants, corrupt owner state and unavailable observation
@@ -233,7 +242,7 @@ async function collectWriterCensus(
       workspacePath: summary.workspacePath,
       ...(canonicalWorkspacePath ? { canonicalWorkspacePath } : {}),
       ...(writableRoots === undefined ? {} : { writableRoots }),
-      authority: writableRoots === undefined ? "unknown" : "proved",
+      authority,
     });
   }
   return entries;
@@ -254,11 +263,11 @@ function writerPotentiallyOverlapsTarget(
   entry: WriterCensusEntry,
   target: ProjectAdmissionScopedContext["target"],
 ): boolean {
-  if (!target.canonicalPath || entry.authority === "unknown") return true;
-  const targetRoots = target.writableRoots ?? [target.canonicalPath];
-  return entry.writableRoots!.some((root) =>
-    targetRoots.some((targetRoot) => pathsOverlap(root, targetRoot))
-  );
+  if (entry.authority === "released") return false;
+  if (!target.physicalWritableRoots?.length || entry.authority === "unknown") return true;
+  return entry.writableRoots!.some(root => target.physicalWritableRoots!.some(targetRoot =>
+    root.device === targetRoot.device && pathsOverlap(root.backingPath, targetRoot.backingPath)
+  ));
 }
 
 function pathsOverlap(left: string, right: string): boolean {
@@ -309,7 +318,7 @@ function writerDebt(
     severity: "blocking",
     ...(target.ownedPaths ? { affectedPaths: [...target.ownedPaths] } : {}),
     evidence: [
-      entry.authority === "proved"
+      entry.authority === "allocated"
         ? `allocated writer overlaps target: ${entry.jobId}`
         : `unknown writer authority for ${entry.jobId}`,
       `workspace=${entry.workspacePath}`,

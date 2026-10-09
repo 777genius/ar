@@ -121,9 +121,17 @@ export type ProjectAdmissionDebtScope =
   | "unrelated_history"
   | "unknown";
 
+export type ProjectAdmissionPhysicalRoot = Readonly<{ device: string; backingPath: string }>;
+
+export type ProjectAdmissionWriterObservation =
+  | { readonly status: "allocated"; readonly roots: readonly ProjectAdmissionPhysicalRoot[] }
+  | { readonly status: "released" }
+  | { readonly status: "unknown" };
+
 export type ProjectAdmissionScopedTarget = {
   readonly canonicalPath?: string;
   readonly writableRoots?: readonly string[];
+  readonly physicalWritableRoots?: readonly ProjectAdmissionPhysicalRoot[];
   readonly ownedPaths?: readonly string[];
 };
 

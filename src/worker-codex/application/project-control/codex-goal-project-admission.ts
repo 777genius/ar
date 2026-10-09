@@ -14,6 +14,7 @@ import {
   type ProjectAdmissionGate,
   type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
+  type ProjectAdmissionWriterObservation,
   type ProjectDebtItem,
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -101,14 +102,14 @@ export type CodexProjectAdmissionDeps = {
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
   /** Trusted, fresh executor/owner observation of every physical writable root.
-   * Undefined means unresolved authority. An empty list requires proven release;
+   * Unknown means unresolved authority. Released requires positive lifecycle proof;
    * neither missing files nor a stopped-looking overview establish release.
    * Native owner adapters verify grant/spec hashes and pinned backing identities.
    * This is an internal observation port, never caller-supplied MCP permission.
    */
   readonly readWriterWritableRoots?: (
     manifest: CodexGoalJobManifest,
-  ) => Promise<readonly string[] | undefined>;
+  ) => Promise<ProjectAdmissionWriterObservation>;
   readonly observeManifestRuntime?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<{
