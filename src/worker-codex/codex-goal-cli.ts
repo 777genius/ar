@@ -5,7 +5,8 @@ import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-referenc
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
-import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { assertInProcessRunComposition, hasTrustedRunDeps, assertStorageCommandSerializationSupported, assertStorageRegistrySupported } from "./codex-goal-cli-run-composition";
 import { isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
@@ -343,7 +344,7 @@ export async function runCodexGoalCli(
     if (!command.dryRun && !command.printCommand) {
       command = { ...command, ...mapManagedGoalLayout(command) };
     }
-    assertInProcessRunComposition(command, runDeps);
+    assertInProcessRunComposition(command, runDeps, () => cliLaunchInput(command));
     if (command.lifecycle) {
       return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
     }
@@ -387,31 +388,6 @@ export async function runCodexGoalCli(
     }
     return 2;
   }
-}
-
-function assertInProcessRunComposition(command: RunCommand, deps: CodexGoalRunDeps | undefined): void {
-  const hasStorageData = command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined;
-  if (!hasTrustedRunDeps(deps) && !hasStorageData) return;
-  // Refuse before builders/lifecycle can lose NEW data or trusted ports.
-  if (command.lifecycle || (command.tmuxSession && !(command.dryRun || command.printCommand))) {
-    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
-  }
-  if (command.dryRun || command.printCommand) {
-    assertStorageCommandSerializationSupported(command);
-    return;
-  }
-  assertStorageRegistrySupported(command);
-  if (isHostedGoalLaunch(cliLaunchInput(command)) && !isHostedOrdinaryRuntime()) {
-    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
-  }
-  // Actual routing still verifies private ordinary origin; this adds no authority.
-}
-
-function hasTrustedRunDeps(deps: CodexGoalRunDeps | undefined): boolean {
-  if (deps === undefined) return false;
-  // Empty plain composition is legacy; a prototype may carry inherited authority.
-  return Reflect.ownKeys(deps).length > 0 ||
-    (Object.getPrototypeOf(deps) !== Object.prototype && Object.getPrototypeOf(deps) !== null);
 }
 
 /** Only suppresses diagnostics; it grants no process or file authority. Actual
@@ -522,12 +498,6 @@ export function buildNoTmuxShellCommand(command: RunCommand): string {
   return buildCodexGoalNoTmuxCommand(cliLaunchInput(command));
 }
 
-function assertStorageCommandSerializationSupported(command: RunCommand): void {
-  if (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined) {
-    throw new Error("codex_goal_cli_storage_preview_unsupported");
-  }
-}
-
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
   assertStorageRegistrySupported(command);
@@ -536,13 +506,6 @@ export async function upsertRunCommandManifest(command: RunCommand) {
     launch: cliLaunchInput(command),
     ...(command.registryMetadata ? { metadata: command.registryMetadata } : {}),
   });
-}
-
-function assertStorageRegistrySupported(command: RunCommand): void {
-  if (command.registryRootDir !== undefined &&
-      (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined)) {
-    throw new Error("codex_goal_cli_storage_registry_unsupported");
-  }
 }
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {
