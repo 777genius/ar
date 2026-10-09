@@ -53,9 +53,14 @@ interface PhysicalRow { path:string;kind:Kind;identity:Readonly<Record<string,st
 const rootName="h1-selected-toolroot-TEST",sitePath="usr/lib/python3.12/sitecustomize.py";
 const recordNames=["selected-toolroot-source-output-UNADMITTED.json","selected-toolroot-physical-UNADMITTED.json","selected-toolroot-materialization-UNADMITTED.json"] as const;
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
+const objectPrototype=Object.prototype,arrayPrototype=Array.prototype,primitiveJson=JSON.stringify;
+function intrinsicPrototypes():void {
+ need(!types.isProxy(objectPrototype)&&!types.isProxy(arrayPrototype)&&Object.getPrototypeOf(objectPrototype)===null&&Object.getPrototypeOf(arrayPrototype)===objectPrototype&&
+  !Object.getOwnPropertyDescriptor(objectPrototype,"toJSON")&&!Object.getOwnPropertyDescriptor(arrayPrototype,"toJSON"),SelectedPhysicalHold.Plan);
+}
 const order=(a:string,b:string)=>a<b?-1:a>b?1:0;
 const identity=(s:fs.BigIntStats)=>Object.freeze(Object.fromEntries(["dev","ino","mode","uid","gid","nlink","size","mtimeNs","ctimeNs"].map(k=>[k,String(s[k as keyof fs.BigIntStats])])));
-const stamp=(s:fs.BigIntStats)=>JSON.stringify(identity(s));
+const stamp=(s:fs.BigIntStats)=>canonicalData(identity(s));
 const sameObject=(a:fs.BigIntStats,b:fs.BigIntStats)=>a.dev===b.dev&&a.ino===b.ino&&a.uid===b.uid&&a.gid===b.gid&&a.mode===b.mode;
 const anchored=(fd:number,name:string)=>`/proc/self/fd/${fd}/${name}`;
 const component=/^[A-Za-z0-9._+%:@=~-]+$/;
@@ -67,11 +72,61 @@ function literal(base64:string):string {
  const b=Buffer.from(base64,"base64");need(b.length<=4096&&b.toString("base64")===base64&&b.every(x=>x>=32&&x<127),SelectedPhysicalHold.Plan);return b.toString("ascii");
 }
 function plain(value:object):void {
- need(value!==null&&!types.isProxy(value)&&Object.getPrototypeOf(value)===Object.prototype&&Reflect.ownKeys(value).every(k=>typeof k==="string"&&k!=="toJSON")&&Object.values(Object.getOwnPropertyDescriptors(value)).every(d=>"value" in d&&d.enumerable),SelectedPhysicalHold.Plan);
+ intrinsicPrototypes();need(value!==null&&!types.isProxy(value)&&Object.getPrototypeOf(value)===objectPrototype&&Reflect.ownKeys(value).every(k=>typeof k==="string"&&k!=="toJSON")&&Object.values(Object.getOwnPropertyDescriptors(value)).every(d=>"value" in d&&d.enumerable),SelectedPhysicalHold.Plan);
+}
+/** Descriptor-only canonical ordinary JSON. Never passes a container to JSON or
+ * reads an inherited property; generated elapsed times may be finite fractions. */
+function canonicalData(value:unknown):string {
+ intrinsicPrototypes();let work=0,bytes=0;const visiting=new Set<object>(),chunks:string[]=[];
+ const emit=(text:string)=>{bytes+=Buffer.byteLength(text);need(bytes<=ciIndexOperationalBytes,SelectedPhysicalHold.Budget);chunks.push(text);};
+ const visit=(v:unknown,depth:number):void=>{
+  need(++work<=2000000&&depth<=128,SelectedPhysicalHold.Budget);
+  if(v===null||typeof v==="boolean"){emit(v===null?"null":v?"true":"false");return;}
+  if(typeof v==="string"){need(v.length<=5464,SelectedPhysicalHold.Plan);emit(primitiveJson(v));return;}
+  if(typeof v==="number"){need(Number.isFinite(v),SelectedPhysicalHold.Plan);emit(primitiveJson(v));return;}
+  need(typeof v==="object"&&!types.isProxy(v)&&!visiting.has(v),SelectedPhysicalHold.Plan);visiting.add(v);
+  const array=Array.isArray(v),descriptors=dataDescriptors(v);emit(array?"[":"{");
+  const keys=array?Array.from({length:descriptors.length!.value as number},(_,i)=>String(i)):Object.keys(descriptors);
+  keys.forEach((key,i)=>{if(i)emit(",");if(!array){need(key.length<=64,SelectedPhysicalHold.Plan);emit(primitiveJson(key));emit(":");}visit(descriptors[key]!.value,depth+1);});
+  emit(array?"]":"}");visiting.delete(v);
+ };visit(value,0);intrinsicPrototypes();return chunks.join("");
+}
+function dataDescriptors(value:object):PropertyDescriptorMap {
+ need(!types.isProxy(value),SelectedPhysicalHold.Plan);
+ const array=Array.isArray(value);need(Object.getPrototypeOf(value)===(array?arrayPrototype:objectPrototype),SelectedPhysicalHold.Plan);
+ const descriptors=Object.getOwnPropertyDescriptors(value),keys=Reflect.ownKeys(value);
+ need(keys.every(k=>typeof k==="string"&&k!=="toJSON")&&Object.entries(descriptors).every(([key,d])=>"value" in d&&(d.enumerable||array&&key==="length")),SelectedPhysicalHold.Plan);
+ if(array){const length=descriptors.length?.value as unknown;need(typeof length==="number"&&integer(length,20000)&&keys.length===length+1,SelectedPhysicalHold.Plan);for(let i=0;i<length;i++)need(descriptors[String(i)]?.enumerable,SelectedPhysicalHold.Plan);}
+ return descriptors;
+}
+interface MutationWatch { readonly value:object;readonly prototype:object;readonly descriptors:PropertyDescriptorMap }
+/** Copy once, but preserve caller mutation detection at each original window.
+ * A frozen ancestor never licenses a mutable child. At129 fall back completely. */
+function detachPlan<T>(value:T):{snapshot:T;rejoin:()=>boolean} {
+ const watch:MutationWatch[]=[],copied=new Map<object,object>(),visiting=new Set<object>();let work=0,fallback=false;
+ const copy=(v:unknown,depth:number):unknown=>{
+  need(++work<=2000000&&depth<=128,SelectedPhysicalHold.Budget);
+  if(v===null||typeof v!=="object")return v;
+  need(!types.isProxy(v)&&!visiting.has(v),SelectedPhysicalHold.Plan);if(copied.has(v))return copied.get(v);
+  const descriptors=dataDescriptors(v),array=Array.isArray(v),result:object=array?[]:{};
+  copied.set(v,result);visiting.add(v);
+  if(!Object.isFrozen(v)){if(watch.length<128)watch.push({value:v,prototype:array?arrayPrototype:objectPrototype,descriptors});else fallback=true;}
+  for(const key of Object.keys(descriptors)){if(array&&key==="length")continue;Object.defineProperty(result,key,{value:copy(descriptors[key]!.value,depth+1),enumerable:true,writable:true,configurable:true});}
+  visiting.delete(v);return Object.freeze(result);
+ };
+ const snapshot=copy(value,0) as T;
+ return {snapshot,rejoin:()=>{
+  intrinsicPrototypes();if(fallback)return false;
+  for(const row of watch){need(Object.getPrototypeOf(row.value)===row.prototype,SelectedPhysicalHold.Plan);const now=Object.getOwnPropertyDescriptors(row.value),keys=Reflect.ownKeys(row.value),before=Reflect.ownKeys(row.descriptors);
+   need(keys.length===before.length&&keys.every((key,i)=>key===before[i]),SelectedPhysicalHold.Plan);
+   for(const key of before){need(typeof key==="string",SelectedPhysicalHold.Plan);const a=row.descriptors[key]!,b=now[key];need(b&&"value" in b&&b.value===a.value&&b.enumerable===a.enumerable&&b.configurable===a.configurable&&b.writable===a.writable,SelectedPhysicalHold.Plan);}
+  }return true;
+ }};
 }
 /** Validate before every serialization, including after yielding; never invokes
  * custom JSON hooks/getters/Proxy traps. Conservative bytes bound allocation. */
 function jsonData(value:unknown):void {
+ intrinsicPrototypes();
  let work=0,bytes=0;const visiting=new Set<object>();
  const visit=(v:unknown,depth:number):void=>{
   need(++work<=2000000&&depth<=128,SelectedPhysicalHold.Budget);
@@ -81,7 +136,7 @@ function jsonData(value:unknown):void {
   else {
    need(typeof v==="object"&&!types.isProxy(v)&&!visiting.has(v),SelectedPhysicalHold.Plan);visiting.add(v);
    if(Array.isArray(v)){
-    need(Object.getPrototypeOf(v)===Array.prototype&&v.length<=20000,SelectedPhysicalHold.Plan);const descriptors=Object.getOwnPropertyDescriptors(v);
+    need(Object.getPrototypeOf(v)===arrayPrototype&&v.length<=20000,SelectedPhysicalHold.Plan);const descriptors=Object.getOwnPropertyDescriptors(v);
     const lengthDescriptor=Object.getOwnPropertyDescriptor(v,"length");need(Reflect.ownKeys(descriptors).length===v.length+1&&lengthDescriptor&&"value" in lengthDescriptor,SelectedPhysicalHold.Plan);
     for(let i=0;i<v.length;i++){const d=descriptors[String(i)];need(d&&"value" in d&&d.enumerable,SelectedPhysicalHold.Plan);visit(d.value,depth+1);bytes+=1;}
    }else{plain(v);for(const [key,d] of Object.entries(Object.getOwnPropertyDescriptors(v))){need(key.length<=64&&/^[A-Za-z][A-Za-z0-9]*$/.test(key),SelectedPhysicalHold.Plan);bytes+=key.length*6+4;visit(d.value,depth+1);}}
@@ -155,10 +210,23 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
  try {
  plain(input);
  const started=performance.now(),deadline=Math.min(input.deadline,started+30000),byPath=validatePlan(input);
- const sourceSha=input.sourceSha,scratchPath=input.scratch,evidencePath=input.evidence,provenance=input.provenance;
+ const sourceSha=input.sourceSha,scratchPath=input.scratch,evidencePath=input.evidence;
+ dataDescriptors(input.originals);
  const originals=Object.freeze(input.originals.map(o=>{plain(o);plain(o.archive);jsonData(o.members);need(Object.keys(o).sort().join(",")==="archive,bytes,members"&&Object.isFrozen(o.archive)&&Object.isFrozen(o.members)&&Object.isFrozen(o.members.package)&&Object.isFrozen(o.members.stream)&&Object.isFrozen(o.members.rows)&&o.members.rows.every(r=>Object.isFrozen(r)),SelectedPhysicalHold.Origin);return Object.freeze({archive:o.archive,bytes:o.bytes,members:o.members});}));
+ for(const original of originals){need(Object.keys(original.members).sort().join(",")==="nativeQualified,package,profile,rows,schemaVersion,stream",SelectedPhysicalHold.Origin);
+  for(const value of [original.members.package,original.members.stream,...original.members.rows])need(Object.isFrozen(value)&&Object.values(dataDescriptors(value)).every(d=>d.value===null||["string","number","boolean"].includes(typeof d.value)),SelectedPhysicalHold.Origin);
+ }
+ const sourceRows=Object.freeze([...byPath.values()].sort((a,b)=>order(a.path,b.path))),originalPlan=Object.freeze({rows:sourceRows,provenance:input.provenance});
+ const detached=detachPlan(originalPlan),rows=detached.snapshot.rows,provenance=detached.snapshot.provenance;
+ const sourceBindings=new Map<FixedH1Origin,Readonly<{original:SelectedRetainedStreamData;row:FixedH1Origin["row"]}>>();
+ for(let i=0;i<rows.length;i++)for(let j=0;j<rows[i]!.origins.length;j++){
+  const origin=sourceRows[i]!.origins[j]!,row=origin.row,original=originals.find(o=>o.members.package.sha256===origin.archiveSha256);
+  need(original&&original.members.stream.sha256===origin.streamSha256&&original.members.rows[row.ordinal-1]===row&&Object.isFrozen(row)&&Object.values(dataDescriptors(row)).every(d=>d.value===null||["string","number","boolean"].includes(typeof d.value)),SelectedPhysicalHold.Origin);
+  sourceBindings.set(rows[i]!.origins[j]!,Object.freeze({original,row}));
+ }
+ const planBytes=Buffer.from(canonicalData(detached.snapshot)),planHash=hash(planBytes);
+ need(performance.now()<deadline,SelectedPhysicalHold.Deadline);
  need(process.platform==="linux"&&process.getuid?.()===0&&process.geteuid?.()===0&&process.getgid?.()===0&&process.getegid?.()===0,SelectedPhysicalHold.Ownership);
- const rows=[...byPath.values()].sort((a,b)=>order(a.path,b.path)),planHash=hash(JSON.stringify({rows,provenance:provenance}));
  const owned=new Set<number>(),finalized=new Set<number>(),ancestry:Directory[]=[],directories=new Map<string,Directory>(),streams=new Map<string,SelectedRetainedStreamData>();
  let rootCreated=false,cancelled=false,highWater=0,regularBytes=0,completed=false,completionPhysicalHash="";
  const published=new Map<string,{initial:fs.BigIntStats;bytes:number;sha256:string}>();
@@ -170,10 +238,13 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   tick();const s=fs.fstatSync(d.fd,{bigint:true}),named=fs.lstatSync(anchored(d.parent,d.name),{bigint:true});
   need(s.isDirectory()&&sameObject(s,d.initial)&&stamp(s)===stamp(named)&&(!finalized.has(d.fd)||stamp(s)===stamp(d.initial)),SelectedPhysicalHold.Identity);
  };
+ const checkPlan=()=>{intrinsicPrototypes();if(!detached.rejoin()){jsonData(originalPlan);need(hash(canonicalData(originalPlan))===planHash,SelectedPhysicalHold.Plan);}tick();};
  const joinAll=()=>{
+  tick();checkPlan();
   tick();for(const d of ancestry)checkDirectory(d);for(const d of directories.values())checkDirectory(d);
   for(const original of originals){original.archive.rejoin();tick();}
-  jsonData({rows,provenance:provenance});need(hash(JSON.stringify({rows,provenance:provenance}))===planHash,SelectedPhysicalHold.Plan);rejoinPublished();tick();
+  for(const binding of sourceBindings.values())need(binding.original.members.rows[binding.row.ordinal-1]===binding.row&&Object.isFrozen(binding.row),SelectedPhysicalHold.Origin);
+  checkPlan();rejoinPublished();intrinsicPrototypes();tick();
  };
  const checkpoint=async()=>{await nextTurn();joinAll();};
  const anchor=(path:string)=>{
@@ -191,7 +262,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   tick();original.archive.rejoin();need(original.archive.sha256===original.members.package.sha256&&original.archive.size===original.members.package.size&&original.bytes.length===original.members.stream.bytes&&hash(original.bytes)===original.members.stream.sha256,SelectedPhysicalHold.Origin);tick();original.archive.rejoin();
  };
  const slice=(origin:FixedH1Origin)=>{
-  const original=streams.get(origin.archiveSha256),row=origin.row;need(original&&original.members.stream.sha256===origin.streamSha256,SelectedPhysicalHold.Origin);
+  const binding=sourceBindings.get(origin),original=streams.get(origin.archiveSha256),row=binding?.row;need(binding&&row&&original===binding.original&&original.members.stream.sha256===origin.streamSha256,SelectedPhysicalHold.Origin);
   need(original.members.rows[row.ordinal-1]===row&&integer(row.headerOffset)&&integer(row.payloadOffset)&&row.payloadOffset===row.headerOffset+512&&row.payloadBytes===row.size&&integer(row.size,32*1024*1024)&&row.payloadOffset+row.size<=original.bytes.length,SelectedPhysicalHold.Origin);
   const header=original.bytes.subarray(row.headerOffset,row.payloadOffset),payload=original.bytes.subarray(row.payloadOffset,row.payloadOffset+row.size);
   need(header.length===512&&hash(header)===row.headerSha256&&hash(payload)===row.payloadSha256,SelectedPhysicalHold.Content);tick();return payload;
@@ -232,7 +303,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   for(const [path,d] of directories){checkDirectory(d);for(const bytes of fs.readdirSync(`/proc/self/fd/${d.fd}`,{encoding:"buffer"})){
    need(bytes.every(b=>b>=32&&b<127),SelectedPhysicalHold.Namespace);const name=bytes.toString("ascii");need(component.test(name)&&name!=="."&&name!=="..",SelectedPhysicalHold.Namespace);actual.push(path?path+"/"+name:name);need(actual.length<=1055,SelectedPhysicalHold.Budget);
   }}
-  need(JSON.stringify(actual.sort(order))===JSON.stringify(rows.map(r=>r.path)),SelectedPhysicalHold.Content);
+  need(canonicalData(actual.sort(order))===canonicalData(rows.map(r=>r.path)),SelectedPhysicalHold.Content);
   const result:PhysicalRow[]=[];
   for(const row of rows){
    tick();const parent=parentFor(row.path),p=anchored(parent.fd,posix.basename(row.path)),before=fs.lstatSync(p,{bigint:true});
@@ -245,7 +316,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   }
   joinAll();return result;
  };
- const serialize=(v:unknown)=>{tick();const text=JSON.stringify(v)+"\n";tick();need(Buffer.byteLength(text)<=ciIndexOperationalBytes,SelectedPhysicalHold.Budget);const b=Buffer.from(text);tick();return b;};
+ const serialize=(v:unknown)=>{tick();const text=canonicalData(v)+"\n";tick();need(Buffer.byteLength(text)<=ciIndexOperationalBytes,SelectedPhysicalHold.Budget);const b=Buffer.from(text);tick();return b;};
  const records:{name:string;bytes:number;sha256:string}[]=[];
  const publish=async(name:typeof recordNames[number],bytes:Buffer)=>{
   await checkpoint();need(evidence,SelectedPhysicalHold.Parent);checkDirectory(evidence);const p=anchored(evidence.fd,name),fd=keep(fs.openSync(p,fs.constants.O_RDWR|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600));
@@ -274,23 +345,23 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
    const s=fs.lstatSync(p,{bigint:true});need(s.isSymbolicLink()&&s.uid===0n&&s.gid===0n&&(s.mode&0o7777n)===0o777n&&s.nlink===1n&&s.mtimeNs===BigInt(row.mtime)*1000000000n&&fs.readlinkSync(p,{encoding:"buffer"}).equals(Buffer.from(row.outputLiteral))&&stamp(fs.lstatSync(p,{bigint:true}))===stamp(s),SelectedPhysicalHold.Content);for(const origin of row.origins)slice(origin);fs.fsyncSync(parent.fd);refreshOwnedAncestor(parent);processedObjects++;await checkpoint();
   }
   phase=SelectedPhysicalPhase.Finalize;for(const [path,d] of [...directories].sort(([a],[b])=>b.split("/").length-a.split("/").length||order(a,b))){d.initial=finalize(d.fd,0o755,0);finalized.add(d.fd);checkDirectory(d);await checkpoint();}
-  phase=SelectedPhysicalPhase.Census;fs.fsyncSync(scratch.fd);joinAll();const physical=census(),root=directories.get("");need(root,SelectedPhysicalHold.Parent);const rootIdentity=identity(root.initial),frozenPhysical=hash(JSON.stringify(physical));completionPhysicalHash=frozenPhysical;
+  phase=SelectedPhysicalPhase.Census;fs.fsyncSync(scratch.fd);joinAll();const physical=census(),root=directories.get("");need(root,SelectedPhysicalHold.Parent);const rootIdentity=identity(root.initial),frozenPhysical=hash(canonicalData(physical));completionPhysicalHash=frozenPhysical;
   for(const original of originals)streamCheck(original);
   const sourceOutput=serialize({schemaVersion:1,purpose:"UNADMITTED_FILESYSTEM_DATA",sourceSha:sourceSha,recipeSha256:selectedRecipeSha256,provenance:provenance,root:{path:"",origin:SelectedOutputOrigin.Recipe,origins:[],mode:0o755,mtime:0},rows:rows.map(row=>({...row,originalLiterals:row.origins.map(o=>({base64:o.row.linkBytesBase64,bytes:Buffer.from(o.row.linkBytesBase64,"base64").length,sha256:hash(Buffer.from(o.row.linkBytesBase64,"base64"))})),outputLiteralBytesBase64:Buffer.from(row.outputLiteral).toString("base64"),outputLiteralBytes:Buffer.byteLength(row.outputLiteral),outputLiteralSha256:hash(row.outputLiteral)})),nativeQualified:false,fixedImageQualified:false});
-  phase=SelectedPhysicalPhase.Publication;await publish(recordNames[0],sourceOutput);need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
-  await publish(recordNames[1],serialize({schemaVersion:1,sourceOutput:records[0],rootIdentity,entries:physical,nativeQualified:false,fixedImageQualified:false}));need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
+  phase=SelectedPhysicalPhase.Publication;await publish(recordNames[0],sourceOutput);need(hash(canonicalData(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
+  await publish(recordNames[1],serialize({schemaVersion:1,sourceOutput:records[0],rootIdentity,entries:physical,nativeQualified:false,fixedImageQualified:false}));need(hash(canonicalData(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
   const measurement={objects:rows.length+1,regularBytes,elapsedMs:performance.now()-started,ownedDescriptorHighWater:highWater};
   await publish(recordNames[2],serialize({schemaVersion:1,disposition:SelectedPhysicalDisposition.Complete,sourceSha:sourceSha,recipeSha256:selectedRecipeSha256,records:[...records],rootIdentity,counts:{archiveSelected:rows.filter(r=>r.origin===SelectedOutputOrigin.Archive).length,generated:rows.filter(r=>r.origin===SelectedOutputOrigin.Recipe).length,root:1},measurement,nativeQualified:false,fixedImageQualified:false,rootReadonly:false,executableQualified:false,originalIssuerQualified:false,FULL8:"UNPROVEN"}));
-  phase=SelectedPhysicalPhase.Completion;need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);joinAll();
+  phase=SelectedPhysicalPhase.Completion;need(hash(canonicalData(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);joinAll();
   completed=true;return Object.freeze({disposition:SelectedPhysicalDisposition.Complete,rootIdentity,records:Object.freeze(records.map(r=>Object.freeze(r))),measurement:Object.freeze(measurement),nativeQualified:false,fixedImageQualified:false,originalIssuerQualified:false});
  }catch(error){
   throw new SelectedPhysicalHeld(readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem,rootCreated,phase,processedObjects);
  }finally{
   phase=SelectedPhysicalPhase.Cleanup;let failed:SelectedPhysicalHold|undefined;
   for(const d of [...directories.values()].reverse())try{fs.fsyncSync(d.fd);if(completed&&!failed){tick();await checkpoint();}}catch(error){failed??=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
-  if(completed&&!failed)try{joinAll();need(hash(JSON.stringify(census()))===completionPhysicalHash,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);rejoinPublished();tick();}catch(error){failed=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
+  if(completed&&!failed)try{joinAll();need(hash(canonicalData(census()))===completionPhysicalHash,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);rejoinPublished();tick();}catch(error){failed=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
   for(const fd of [...owned].reverse())try{close(fd);if(completed&&!failed)tick();}catch(error){failed??=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
-  if(completed&&!failed)try{tick();}catch(error){failed=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
+  if(completed&&!failed)try{intrinsicPrototypes();tick();}catch(error){failed=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
   process.removeListener("SIGTERM",signal);process.removeListener("SIGINT",signal);
   if(failed)throw new SelectedPhysicalHeld(failed,rootCreated,phase,processedObjects);
  }
