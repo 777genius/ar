@@ -9,7 +9,7 @@ import { LocalDependencyManifestBlobStore } from "../store-local-file/dependency
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot as policyRoot } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
-import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-interval";
+import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-stage";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 
 export enum HostedManifestLimitsRevision { TestUnqualifiedV1 = "registry_test_manifest_bounds_v1_unqualified" }

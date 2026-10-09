@@ -6,7 +6,7 @@ import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provi
 import { assertHostedTestEgressIdentity, parseHostedTestEgressGrant,
   type HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
-import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-interval";
+import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-stage";
 import { assertHostedReadonlyPolicyBinding, hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy,
   readHostedPrivateBytes, type HostedReadonlyPolicy } from "./hosted-readonly-inputs";
 
