@@ -26,7 +26,7 @@ its own environment. Source runner label is the effective `vars.RUNNER`.
 
 Run on a separate control pool with the same runtime image and the trusted
 expected producer profile. Control does not mount producer Docker/cache volumes.
-Grant only `contents: read` and `actions: read`. Checkout the current main push
+Grant only job-scoped `contents: read`, `actions: read` and `pull-requests: read`. Checkout the current main push
 SHA, with persisted credentials disabled. Setup Node 22. Install restic with the
 same existing unit prerequisite, then execute:
 
@@ -99,3 +99,23 @@ lane, GitHub merge tree/parent/workflow/lock validation, identical pre-source
 receipt and immutable artifact, and exact current runtime fingerprint. Any
 unknown value, bounded incomplete scan, missing artifact, API failure or mismatch
 runs all twelve gates. Read-only verification never executes downloaded PR code.
+
+## Rollout and concurrent main updates
+
+The main detector reads `/commits/{sha}/pulls` and `/pulls/{number}` to establish
+PR associations. Its token needs `pull-requests: read` alongside the existing
+content/action reads. Permission errors safely execute all lanes; expanding
+workflow-wide or write permissions is unnecessary.
+
+If another PR advances main between certification and merge, the final main tree
+can differ from the tested PR merge tree. All twelve successful old lane proofs
+then remain valid for their original tree, and main executes full fallback.
+Rerunning a merged PR retains its original event/checkout context; it does not
+qualify a new main tree. Qualify a fresh PR from the current base to establish
+new receipts, with the current producer image/configuration revision.
+
+For rollout evidence, record the source run, explicit attempt, twelve job IDs and
+observed checkout tree. After merge, require the real main detector decision to
+identify those exact proofs before claiming reuse. A head guard alone does not
+prevent a concurrent base update. Skipped lanes must retain validated-proof
+aggregate checks, and every other CI gate still reports its own actual outcome.

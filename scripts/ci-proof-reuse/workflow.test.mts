@@ -53,3 +53,19 @@ test('real matrix guards run every lane when detector is skipped, fails or retur
     }
   }
 });
+
+// Missing PR read prevents authoritative PR/commit association reads; a wider
+// token would unnecessarily grant the trusted metadata job write capabilities.
+test('detector token grants exactly the three required read-only API scopes', () => {
+  const detector = workflow.split('  ci-proof-reuse:\n')[1]?.split(/^  [a-z][a-z-]*:\n/m)[0];
+  assert.ok(detector, 'Detector job exists');
+  assert.ok(detector.includes("    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}\n"), 'PR-read permission remains tied to trusted main pushes');
+  assert.equal(workflow.match(/^permissions:\n((?:  [a-z-]+: [a-z]+\n)+)/m)?.[1], '  contents: read\n', 'Default and producer permissions stay read-only contents');
+  const permissions = detector.match(/^    permissions:\n((?:      [a-z-]+: [a-z]+\n)+)/m)?.[1];
+  assert.ok(permissions, 'Detector has explicit job-scoped permissions');
+  const grants = Object.fromEntries(permissions.trim().split('\n').map(line => {
+    const [scope, grant] = line.trim().split(': ');
+    return [scope, grant];
+  }));
+  assert.deepEqual(grants, { contents: 'read', actions: 'read', 'pull-requests': 'read' });
+});
