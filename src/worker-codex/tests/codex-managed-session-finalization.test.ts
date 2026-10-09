@@ -10,7 +10,9 @@ import { CodexEphemeralSessionMaterializer } from "../../provider-codex/codex-se
 import type { CodexExecutionEngine, CodexMaterializedSession } from "../../provider-codex/codex-json-execution-engine";
 import { FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
 import { FileBackendCodexSessionSeeder } from "../file-backend-codex-session-seeding";
+import { FileBackendCodexSeedWriteback } from "../file-backend-codex-seed-writeback";
 import { LocalFileManagedRunStore } from "../file-backend-codex-managed-run-store";
+import { LocalEncryptedFileStore } from "../../store-local-file";
 
 const auth = (token:string) => JSON.stringify({auth_mode:"chatgpt",tokens:{refresh_token:token,access_token:"SYNTHETIC_ACCESS",expiry:"2026-05-31T23:00:00Z"},last_refresh:"2026-05-31T00:00:00Z"});
 const first = sessionArtifactFromCodexAuthJson(auth("SYNTHETIC_FIRST"));
@@ -114,15 +116,21 @@ describe("post-drain TEST credential finalization", () => {
   // Actual private waiting cache, actual auth file, actual idempotent store. This does not prove native root authority.
   it.each(["write","write-unknown","export","completion"] as const)("retains exact cancellation state across %s failure and retries safely", async failure => {
     const f = await fixture("waiting"), writes:string[] = [], ready = barrier(), proceed = barrier(); let failed = false, failedWrites = 0;
-    const store:SessionStorePort = {storeId:f.memory.storeId,custody:f.memory.custody,capabilities:f.memory.capabilities,read:input => f.memory.read(input),
+    const custody = new LocalEncryptedFileStore({providerId:"codex",rootDir:join(f.root,"TEST-custody"),encryptionKey:new Uint8Array(32).fill(17)});
+    await custody.write({providerInstanceId:"codex:TEST",expectedGeneration:0,nextArtifact:first,idempotencyKey:"TEST-initial",leaseId:"TEST-seed"});
+    const store:SessionStorePort = {storeId:custody.storeId,custody:custody.custody,capabilities:custody.capabilities,read:input => custody.read(input),
       write:async input => { writes.push(input.idempotencyKey); ready.release(); await proceed.pending;
         if (failure === "write" && failedWrites++ < 2) { throw new Error("TEST-CAS-refusal"); }
-        const result = await f.memory.write(input); f.events.push(result.status);
+        const result = await custody.write(input); f.events.push(result.status);
         if (failure === "write-unknown" && failedWrites++ < 2) { throw new Error("TEST-ack-lost"); } return result; }};
     const exportPath = join(f.root,"TEST-export-auth.json"), deps = makeFakeRuntimeDeps();
-    const seeder = new FileBackendCodexSessionSeeder({providerInstanceId:"codex:TEST",sessionStore:f.memory,observability:deps.observability,clock:deps.clock,
-      agentId:"TEST-driver",onFailure:() => {},rememberQuotaGroup:() => {},onAuthImported:() => {}});
+    const seeder = new FileBackendCodexSessionSeeder({providerInstanceId:"codex:TEST",sessionStore:custody,observability:deps.observability,clock:deps.clock,
+      agentId:"TEST-driver",onFailure:() => { throw new Error("TEST-seed-failed"); },rememberQuotaGroup:() => {},onAuthImported:() => {}});
     await writeFile(exportPath,auth("SYNTHETIC_FIRST")); await seeder.seedAuthJsonFile(exportPath);
+    const baseline = await custody.read({providerInstanceId:"codex:TEST",expectedProviderId:"codex",purpose:"run"});
+    expect(baseline?.artifact.bytes).toEqual(first.bytes);
+    expect(baseline?.metadata).toMatchObject({codexSourceAuthorizationIdentity:expect.any(String),codexSourcePathSha256:expect.stringMatching(/^[a-f0-9]{64}$/)});
+    if (!baseline) throw new Error("TEST-seed-missing");
     const coordinator = new FileBackendCodexManagedRunCoordinator({providerInstanceId:"codex:TEST",workerId:"TEST-worker",agentDriver:f.driver,sessionStore:store,
       managedRunStore:new LocalFileManagedRunStore(join(f.root,"runs"),new DefaultRedactor()),runner:f.input.runner,redactor:f.input.redactor,
       clock:{now:() => new Date("2026-10-08T00:00:00Z"),monotonicMs:() => 1},recordFailure:() => {},recordSuccessfulRun:() => {},
@@ -138,12 +146,14 @@ describe("post-drain TEST credential finalization", () => {
       await expect(f.driver.resumeManagedRun({...f.input,task:{},runId:"TEST-run",requestId:"TEST-request",answer:"do not execute",resumeHandle:{providerId:"codex",runId:"TEST-run",workspacePath:f.root}})).rejects.toThrow("codex_managed_run_finalization_pending");
       proceed.release(); await expect(cancelling).rejects.toThrow(); expect(f.completions).toBe(0);
       expect(f.driver.retainedManagedRunIds()).toEqual(["TEST-run"]);
-      if (failure === "export") await rm(exportPath,{recursive:true});
+      if (failure === "export") { await rm(exportPath,{recursive:true}); await writeFile(exportPath,auth("SYNTHETIC_FIRST"),{mode:0o600}); }
       await coordinator.cancelRetainedSessions();
       expect(f.driver.retainedManagedRunIds()).toEqual([]); expect(f.completions).toBe(1); expect(f.engineCalls).toBe(1);
       expect(writes).toHaveLength(failure === "write" || failure === "write-unknown" ? 3 : 2); expect(new Set(writes).size).toBe(1); expect(f.events.filter(event => event === "snapshot")).toHaveLength(1);
       if (failure !== "write") expect(f.events).toContain("idempotent_replay");
-      const saved = await f.memory.read({providerInstanceId:"codex:TEST",expectedProviderId:"codex",purpose:"run"}); expect(saved?.artifact.bytes).toEqual(next.bytes); expect(saved?.generation).toBe(2); expect(await readFile(exportPath,"utf8")).toBe(auth("SYNTHETIC_NEXT"));
+      const saved = await custody.read({providerInstanceId:"codex:TEST",expectedProviderId:"codex",purpose:"run"}); expect(saved?.artifact.bytes).toEqual(next.bytes); expect(saved?.generation).toBe(baseline.generation+1);
+      expect(await new FileBackendCodexSeedWriteback(exportPath).read(auth("SYNTHETIC_FIRST"))).toBe(auth("SYNTHETIC_NEXT"));
+      expect(await readFile(exportPath,"utf8")).toBe(auth("SYNTHETIC_FIRST"));
       await expect(f.driver.cancelManagedRun({runId:"TEST-foreign",session:first,redactor:f.input.redactor})).rejects.toThrow("codex_managed_run_session_missing");
       await expect(f.driver.dispose()).resolves.toBeUndefined();
     } finally { proceed.release(); await f.cleanup(); }
