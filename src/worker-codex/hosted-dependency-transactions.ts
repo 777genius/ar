@@ -27,6 +27,8 @@ import { ensureHostedDependencyDirectory, readHostedDependencyReceipt, publishHo
   readHostedDependencyCommittedAbsent, openHostedDependencySourceLinks } from "./hosted-dependency-receipts";
 import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "./hosted-dependency-reference-veto";
 
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
+
 export type HostedDependencyEvictionCandidate = { readonly jobId: string; readonly revision: number;
   readonly generation: string; readonly installKey: string };
 export enum HostedDependencyTransactionOutcome { Evicted = "evicted", Skipped = "skipped", TrashRemoved = "trash_removed" }
@@ -38,6 +40,23 @@ const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 const hash = (v: Uint8Array): string => createHash("sha256").update(v).digest("hex");
 const owns = () => LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
 type Authority = ReturnType<HostedInstallationActivationStore["dependencyMaintenanceAuthority"]>;
+/** Concrete N5 reuse of the existing actual operator/controller exclusion.
+ * These methods reread protected authority; no supplied owner predicate grants
+ * mutation rights. Caller owns this exact durable Maintenance across awaits. */
+export function claimHostedDependencyComparisonMaintenance(jobId: string, operationId: string): DependencyMaintenanceAttempt {
+  if (!uuid.test(operationId)) fail();
+  return withHostedActivationFence(fence => {
+    const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId), store = owns();
+    try { return claimDependencyMaintenance(store, a.binding.workspace, host(a), operationId); } finally { store.close(); }
+  });
+}
+export function assertHostedDependencyComparisonMaintenanceUnderFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
+  jobId: string, attempt: DependencyMaintenanceAttempt): Authority { return maintenanceUnderFence(fence, jobId, attempt); }
+export function assertHostedDependencyComparisonQuiescent(jobId: string, attempt: DependencyMaintenanceAttempt): Authority {
+  const a = guard(jobId, attempt), groups = covered(a);
+  assertHostedDependencyReferenceVeto(a.binding.workspace, `${operations}/${attempt.operationId}.reference.json`, groups, DependencyReferenceEffect.Eviction);
+  return guard(jobId, attempt);
+}
 function authority(jobId: string): Authority {
   return withHostedActivationFence(fence => new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId));
 }
@@ -54,14 +73,16 @@ function host(a: Authority): DependencyMaintenanceAttempt["host"] {
     runtimeSha: a.installation.runtimeSha, inventoryDigest: a.installation.inventorySha256, grantDigest: a.binding.grantDigest };
 }
 function guard(jobId: string, attempt: DependencyMaintenanceAttempt, requireEnabled = false): Authority {
-  return withHostedActivationFence(fence => {
+  return withHostedActivationFence(fence => maintenanceUnderFence(fence, jobId, attempt, requireEnabled));
+}
+function maintenanceUnderFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
+  jobId: string, attempt: DependencyMaintenanceAttempt, requireEnabled = false): Authority {
     const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId);
     if (!sameDependencyMaintenanceAttempt(attempt, { ...attempt, host: host(a) }) || (requireEnabled && !enabled()) ||
         readHostedPrivateBytes(`${operations}/${attempt.operationId}.close-unresolved.json`, 4096)) fail();
     const store = owns();
     try { assertDependencyMaintenance(store, a.binding.workspace, attempt); } finally { store.close(); }
     return a;
-  });
 }
 function release(jobId: string, attempt: DependencyMaintenanceAttempt): void {
   withHostedActivationFence(fence => {
@@ -140,6 +161,7 @@ async function baseline(ready: Pick<Ready, "manifestDigest">) {
   try { return { bytes: await placement.get(ready.manifestDigest), placement }; } finally { await placement.close(); }
 }
 function sourceLinks(header: Header, detached = false): DependencySourceLinkSession | undefined {
+  authenticateHistoricalReady(header.ready);
   if (header.ready.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1) return undefined;
   const ready: DependencyCompletedLocalReady = { ...header.ready, provenance: header.ready.provenance };
   return openHostedDependencySourceLinks(ready, detached ? { workspace: header.trash.destinationParent, name: header.trash.destinationName } : undefined);
@@ -172,7 +194,14 @@ function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Abs
   validateTrash(header.trash, proof.operationId);
   const evidence = readHostedPrivateBytes(`${operations}/${proof.operationId}.renamed.json`, 16384);
   if (!evidence || !evidence.equals(renamedEvidence(header)) || hash(evidence) !== proof.commitEvidenceId) fail();
+  authenticateHistoricalReady(header.ready);
   return header;
+}
+/** Historical authentication never requires the old tree/stage/current inputs. */
+function authenticateHistoricalReady(ready: Ready): void {
+  if (ready.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+    assertHostedDependencyLegacyComparedReady({ ...ready, provenance: ready.provenance });
+  }
 }
 function headerPath(attempt: DependencyMaintenanceAttempt): string { return `${operations}/${attempt.operationId}.json`; }
 function validateTrash(trash: DependencyTrashIntent, operationId: string): void {
@@ -339,6 +368,7 @@ export async function recoverHostedDependencyEviction(jobId: string) {
     operationId: attempt.operationId, installKey: parsed.receipt.installKey, tree: parsed.receipt.tree,
     manifestDigest: parsed.receipt.manifestDigest, trash: header.trash });
   if (intent.status !== DependencyReceiptParseStatus.Valid) fail();
+  authenticateHistoricalReady(header.ready);
   return finish(jobId, header);
 }
 export async function removeHostedDependencyCommittedTrash(jobId: string, revision: number) {

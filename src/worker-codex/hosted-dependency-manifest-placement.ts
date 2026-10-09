@@ -204,7 +204,7 @@ export function issueFreshHostedManifestPlacement(fence: HostedActivationFence, 
  */
 export async function openHostedDependencyManifestPlacement(): Promise<DependencyManifestBlobStore & {
   readonly placementRevision: string; readonly limitsRevision: HostedManifestLimitsRevision;
-  assertCurrent(fence: HostedActivationFence): void; close(): Promise<void>;
+  assertCurrent(fence: HostedActivationFence): void; assertClosedCurrent(): void; close(): Promise<void>;
 }> {
   assertHostedActivationOperator(); const selected = policy(), bytes = readHostedPrivateBytes(placementPath, 16384);
   if (!selected || !bytes) fail(HostedManifestPlacementFailure.Unsupported);
@@ -240,6 +240,10 @@ export async function openHostedDependencyManifestPlacement(): Promise<Dependenc
       assertCurrent(fence) {
         assertHostedActivationFence(fence);
         if (!closeSucceeded) fail(HostedManifestPlacementFailure.Closed);
+        assertPlacement();
+      },
+      assertClosedCurrent() {
+        if (!closed || !closeSucceeded) fail(HostedManifestPlacementFailure.Closed);
         assertPlacement();
       },
       async put(manifest) { assertOpen(); const digest = await opened.put(manifest); assertOpen(); return digest; },

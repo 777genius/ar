@@ -15,6 +15,7 @@ import { CodexModelBackend } from "../../codex-model-backend";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import { basename, dirname, join } from "node:path";
 import type { CodexAppServerChildProcess } from "../application/app-server-process-port";
+import { hasHostedActivationOrigin, HostedActivationMode, isHostedContainment, readHostedActivationMode } from "./hosted-host-policy";
 
 
 const root = "/var/lib/subscription-runtime-host-policy";
@@ -254,7 +255,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
   // PR1 prepares the independent reader; later lifecycle PRs must supply
   // bounded controller/child authority before activation can open.
   if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
-  return { activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
+  return { installation, activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
 }
 
 /** Same fixed private-file reader as production, with a path seam for synthetic
@@ -654,11 +655,8 @@ function syncActivationDirectory(path: string): void {
 }
 
 export function requiresHostedProcessAdmission(env: Readonly<Record<string, string | undefined>>): boolean {
-  if (process.platform !== "linux") return false;
-  if (env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" ||
-      /\/subscription-runtime-(?:ordinary|outer|hosted|research)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
-  try { lstatSync(root); return true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  if (process.platform !== "linux" || (process.getuid?.() !== 0 && !isHostedContainment(env))) return false;
+  return readHostedActivationMode() === HostedActivationMode.Required || hasHostedActivationOrigin();
 }
 
 /** Guest-owned launcher calls this after observing its full enqueue graph, before
