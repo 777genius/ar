@@ -3,7 +3,13 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
-const h=vi.hoisted(()=>({role:'supervisor',events:[] as string[], argv:[] as string[], doctorOk:false, status:{} as any, runStatus:'completed', outcome:0, fail:'', clientOk:true,inner:undefined as any}));
+const h=vi.hoisted(()=>({role:'supervisor',events:[] as string[], argv:[] as string[], doctorOk:false, status:{} as any, runStatus:'completed', outcome:0, fail:'', clientOk:true,inner:undefined as any,activationEnabled:true}));
+// Managed lifecycle transport explicitly opts in. Local controls below model a
+// different unenrolled Host; environment clearing cannot disable a Required Host.
+vi.mock('../../provider-codex/app-server/adapters/hosted-host-policy',async original=>{
+ const policy=await original<typeof import('../../provider-codex/app-server/adapters/hosted-host-policy')>();
+ return {...policy,readHostedActivationMode:()=>h.activationEnabled?policy.HostedActivationMode.Required:policy.HostedActivationMode.Disabled};
+});
 vi.mock('../hosted-readonly-supervisor-host',()=>({HostedReadonlySupervisorHost:class{
  runtimeRole(){if(h.fail==='role')throw Error('TEST foreign cgroup');return h.role}
  readEpoch(){return {identity:{jobId:'TEST',jobRootDir:'/TEST/job',workspacePath:'/TEST/W'}}}
@@ -35,7 +41,7 @@ const launch:any={config:{jobId:'TEST',taskId:'TEST',jobRootDir:'/TEST/job',work
 const io={cwd:()=>'/TEST/W',env:()=>launch.config.sourceEnv,writeStdout:()=>{},writeStderr:(s:string)=>{h.events.push("stderr:"+s)}};
 const start=()=>startCodexGoalLaunch({launch,registryRootDir:'/TEST/registry',jobId:'TEST',confirmStart:true,skipDoctor:false,forceStart:true});
 const resume=(skipDoctor=false)=>continueStoredJobLifecycle({confirmContinue:true,forceStart:true,skipDoctor},{mode:'continue',confirmKey:'confirmContinue'},{loadJobLaunch:async()=>({launch,registryRootDir:'/TEST/registry',manifest:{jobId:'TEST'} as any})});
-beforeEach(()=>{h.role='supervisor';h.events=[];h.argv=[];h.doctorOk=false;h.runStatus='completed';h.fail='';h.status={tmuxAlive:false,recommendedAction:'start_worker',resultExists:true,workspaceDirty:true};h.inner=undefined;h.clientOk=true;vi.spyOn(ops,'collectCodexGoalStatus').mockImplementation(async()=>h.status);vi.spyOn(ops,'reconcileCodexGoalRuntimeResult').mockImplementation(async(input)=>{expect(input.preservePatch).toBe(true);h.events.push('reconcile-preserve-patch');if(h.fail==='reconcile')throw Error('TEST patch preservation failed');return {} as any});});
+beforeEach(()=>{h.activationEnabled=true;vi.spyOn(process,'platform','get').mockReturnValue('linux');vi.spyOn(process,'getuid').mockReturnValue(0);h.role='supervisor';h.events=[];h.argv=[];h.doctorOk=false;h.runStatus='completed';h.fail='';h.status={tmuxAlive:false,recommendedAction:'start_worker',resultExists:true,workspaceDirty:true};h.inner=undefined;h.clientOk=true;vi.spyOn(ops,'collectCodexGoalStatus').mockImplementation(async()=>h.status);vi.spyOn(ops,'reconcileCodexGoalRuntimeResult').mockImplementation(async(input)=>{expect(input.preservePatch).toBe(true);h.events.push('reconcile-preserve-patch');if(h.fail==='reconcile')throw Error('TEST patch preservation failed');return {} as any});});
 afterEach(()=>vi.unstubAllEnvs());
 for (const role of ['supervisor', 'runtime']) {
   for (const operation of ['start', 'continue', 'recover'] as const) {
@@ -93,7 +99,7 @@ for(const command of ['controller-supervise','mcp-tool'])for(const ok of [true,f
  const result=await runCodexGoalCli(argv,io);expect(h.events[0]).toBe('reserve');expect(h.events).toContain(command==='controller-supervise'?'supervise-dispatch':'broker-dispatch');
  if(command==='controller-supervise'){expect(result).toBe(ok?0:1);expect(h.events.includes('receipt')).toBe(ok)}else {expect(result).toBe(0);expect(h.events).toContain('receipt')}
 });
-it('ordinary nonmanaged controller command keeps direct dispatch',async()=>{vi.stubEnv('SUBSCRIPTION_RUNTIME_SANDBOX_KIND','');expect(await runCodexGoalCli(['controller-supervise','--controller-job-id','TEST'],io)).toBe(0);expect(h.events).toEqual(['supervise-dispatch'])});
+it('ordinary nonmanaged controller command keeps direct dispatch',async()=>{h.activationEnabled=false;vi.stubEnv('SUBSCRIPTION_RUNTIME_SANDBOX_KIND','');expect(await runCodexGoalCli(['controller-supervise','--controller-job-id','TEST'],io)).toBe(0);expect(h.events).toEqual(['supervise-dispatch'])});
 
 for (const role of ['supervisor', 'runtime']) for (const operation of ['start', 'continue', 'recover'] as const) {
   const invoke = (confirmed = true, forceStart = false) => operation === 'start'
@@ -138,6 +144,7 @@ for (const operation of ['start', 'continue', 'recover'] as const) it(`${operati
 it('rejects unsupported lifecycle commands and a nonhosted lifecycle handoff', async () => {
   const base=['run','--job-root','/TEST/job','--job-id','TEST','--task-id','TEST','--workspace','/TEST/W','--auth-root','/TEST/auth','--prompt','/TEST/job/prompt','--accounts','synthetic','--registry-root','/TEST/registry','--lifecycle-job-id','TEST'];
   expect(await runCodexGoalCli([...base,'--hosted-lifecycle','stop'],io)).toBe(2);
+  h.activationEnabled=false;
   expect(await runCodexGoalCli([...base,'--hosted-lifecycle','start'],{...io,env:()=>({})})).toBe(2);
   expect(h.events).not.toContain('reserve');expect(h.events).not.toContain('goal-effect');
 });

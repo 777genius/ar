@@ -125,16 +125,39 @@ async function packCleanPackage(buildRoot, sourceGitSha) {
       timeout: 120_000,
     },
   );
+  return resolveNpmPackTarball(packRoot, result.stdout);
+}
+
+/**
+ * Resolve one npm pack report without trusting its filename or destination.
+ * @param {string} packRoot
+ * @param {string} stdout
+ * @returns {Promise<string>}
+ */
+export async function resolveNpmPackTarball(packRoot, stdout) {
   let report;
   try {
-    report = JSON.parse(result.stdout);
+    report = JSON.parse(stdout);
   } catch {
     throw new Error("npm pack returned non-JSON output");
   }
-  const filename = Array.isArray(report) && report.length === 1
-    ? report[0]?.filename
+  // npm 12.2.0 pack.js keys output by tar.name; tar.js emits the tar
+  // report object directly as the value (not an array or nested wrapper).
+  const reports = Array.isArray(report)
+    ? report
+    : report !== null && typeof report === "object" &&
+        Object.keys(report).every((name) => name.trim().length > 0)
+      ? Object.values(report)
+      : [];
+  const entry = reports.length === 1 ? reports[0] : undefined;
+  const filename = entry !== null && typeof entry === "object" && !Array.isArray(entry)
+    ? entry.filename
     : undefined;
-  if (typeof filename !== "string" || basename(filename) !== filename) {
+  if (
+    typeof filename !== "string" || filename.trim().length === 0 ||
+    filename === "." || filename === ".." || /[/\\\0]/u.test(filename) ||
+    basename(filename) !== filename
+  ) {
     throw new Error("npm pack returned an unsafe artifact filename");
   }
   const tarballPath = join(packRoot, filename);

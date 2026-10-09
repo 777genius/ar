@@ -42,7 +42,7 @@ export async function preparedResearchScratch(job: string, home: string, partial
   persistPolicy();
   const mounts = new Map<string, ReturnType<ScratchTempHost["inspectMount"]>>([[root, { target: root, uuid, fsroot: "/" }]]);
   const mutations: string[] = [], prepared: { source: string; target: string }[] = [];
-  const cacheFailure = new Error("TEST second cache preparation failed"); let observedCacheFailure: Error | undefined;
+  const cacheFailure = new Error("TEST second cache preparation failed"); let observedCacheFailure: Error | undefined, mountId = 100;
   const host: ScratchTempHost = {
     uid: 0, realpath: path => path,
     lstat: path => { const node = nodes.get(path); if (!node) throw Object.assign(new Error("Missing TEST node"), { code: "ENOENT" }); return node; },
@@ -51,10 +51,12 @@ export async function preparedResearchScratch(job: string, home: string, partial
     chmod: (path, mode) => { mutations.push(path); nodes.set(path, { ...nodes.get(path)!, mode }); },
     entries: () => [], removeLock: path => { mutations.push(path); nodes.delete(path); },
     bind: (source, target) => { const physical = backing(target); if (physical) fs.mkdirSync(physical, { recursive: true, mode: 0o701 }); mutations.push(target); prepared.push({ source, target }); nodes.set(target, { ...nodes.get(source)! });
-      mounts.set(target, { target, uuid, fsroot: source.slice(root.length) });
+      mounts.set(target, { target, uuid, fsroot: source.slice(root.length), mountId: mountId++, isPrivate: false });
       for (const [path, info] of nodes) if (path === root || path.startsWith(root + "/") || prepared.some(bind => bind.target === path || dirname(bind.target) === path && path !== job)) researchHost.scratchNodes.set(path, info);
       for (const [path, mount] of mounts) researchHost.scratchMounts.set(path, mount);
     },
+    makePrivate: target => { mutations.push(target); mounts.set(target, { ...mounts.get(target), isPrivate: true }); },
+    unmount: target => { mutations.push(target); mounts.delete(target); },
   };
   await prepareHostScratchTemp(job, {}, host);
   try { await prepareHostScratchCaches(home, {}, host); }

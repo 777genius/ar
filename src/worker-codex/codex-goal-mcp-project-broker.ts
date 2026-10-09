@@ -1,5 +1,5 @@
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
-import { isHostedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { CodexGoalLaunchState, buildCodexGoalNoTmuxCommand } from "./codex-goal-ops";
 import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -27,10 +27,16 @@ import {
 import { writeCodexGoalReviewMarker } from "./codex-goal-mcp-lifecycle-markers";
 import { buildCodexGoalBrief } from "./codex-goal-mcp-brief";
 import { codexGoalStatusInputFromLaunch as statusInput } from "./codex-goal-mcp-status-input";
+import type { CodexProjectAdmissionDeps } from "./application/project-control/codex-goal-project-admission";
 import {
-  codexProjectAdmissionGate,
-  type CodexProjectAdmissionDeps,
-} from "./application/project-control/codex-goal-project-admission";
+  createProjectBrokerAdmission,
+  type ProjectCreationAdmissionProof,
+} from "./application/project-control/codex-goal-project-broker-admission";
+import {
+  assertAdmissionStoredLaunchIdentity,
+  boundCreationTargetIdentity,
+  revalidateAdmissionCreatedWorktree,
+} from "./application/project-control/codex-goal-project-admission-target";
 import { withProjectPreStartAdmissionLaunchAuthorization } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/project-control/codex-goal-project-pre-start-admission";
 import {
@@ -209,47 +215,17 @@ export function createCodexProjectControlBroker(
     rootDir: join(input.registryRootDir, ".project-authority"),
     projectId: input.scope.projectId,
   });
+  const admission = createProjectBrokerAdmission(
+    input, admittedInputPatchTarget, codexProjectControlPathExists,
+  );
   return new ProjectControlBroker(
     {
       boundary: AccessBoundary.ProjectScopedControl,
       scope: input.scope,
     },
     {
-      ...codexProjectControlPorts(input, authorityStore),
-      admission: codexProjectAdmissionGate({
-        registryRootDir: input.registryRootDir,
-        scope: input.scope,
-        controllerJobId: input.controller.jobId,
-        deps: input.admissionDeps,
-        ...((input.startAdmissionWorkspaceMode ===
-          "admitted_input_patch_continuation" ||
-          input.startAdmissionWorkspaceMode ===
-            "admitted_input_patch_runtime_continuation" ||
-          input.startAdmissionWorkspaceMode ===
-            "clean_capacity_continuation") &&
-        input.startManifest &&
-        input.startWorkspaceLease
-          ? {
-              capacityContinuationTarget: {
-                jobId: input.startManifest.jobId,
-                workspacePath: input.startWorkspaceLease.canonicalWorkspacePath,
-              },
-            }
-          : {}),
-        ...(input.controlledRuntimeInPlaceContinuation &&
-        input.startManifest &&
-        input.startWorkspaceLease
-          ? {
-              inPlaceContinuationTarget: {
-                jobId: input.startManifest.jobId,
-                workspacePath: input.startWorkspaceLease.canonicalWorkspacePath,
-                ownedPaths:
-                  input.controlledRuntimeInPlaceContinuation.ownedPaths,
-              },
-            }
-          : {}),
-        ...(admittedInputPatchTarget ? { admittedInputPatchTarget } : {}),
-      }),
+      ...codexProjectControlPorts(input, authorityStore, admission.creationProof),
+      admission: admission.gate,
     },
   );
 }
@@ -257,6 +233,7 @@ export function createCodexProjectControlBroker(
 function codexProjectControlPorts(
   input: CodexProjectControlBrokerInput,
   authorityStore: LocalProjectAuthorityTupleStore,
+  creationProof: () => ProjectCreationAdmissionProof | undefined,
 ): ProjectControlBrokerPorts {
   return {
     authority: authorityStore,
@@ -357,6 +334,9 @@ function codexProjectControlPorts(
         if (!input.startLaunch) {
           throw new Error("project_control_start_launch_required");
         }
+        if (input.startManifest) await assertAdmissionStoredLaunchIdentity({
+          registryRootDir: input.registryRootDir, manifest: input.startManifest, launch: input.startLaunch,
+        });
         // Child env is filtered, so carry the Host socket through argv.
         const startLaunch = bindProjectChildCheckpointPublisher({
           launch: input.startLaunch,
@@ -514,18 +494,19 @@ function codexProjectControlPorts(
         if (!stopPolicy.allowed) {
           throw new Error(stopPolicy.reason);
         }
-        if (isHostedGoalLaunch(input.stopLaunch)) {
+        if (isHostedActivatedGoalLaunch(input.stopLaunch)) {
           stopHostedGoalLaunch(input.stopLaunch);
           return operationResult("hosted stop requested; terminal custody remains unproven");
         }
+        const { tmuxSession: _tmuxSession, ...foregroundLaunch } = input.stopLaunch;
         const preserved = await preserveTerminalCodexGoalHandoffBeforeStop({
-          launch: input.stopLaunch,
+          launch: isHostedGoalLaunch(input.stopLaunch) ? foregroundLaunch : input.stopLaunch,
           status,
           forceAfterMaterializationFailure: Boolean(
             input.forceStopAfterMaterializationFailure,
           ),
         });
-        if (input.stopLaunch.tmuxSession) {
+        if (input.stopLaunch.tmuxSession && !isHostedGoalLaunch(input.stopLaunch)) {
           const evidence = durableHandoffStopEvidence(preserved);
           return status.tmuxAlive === false &&
             !("status" in preserved.stopResult &&
@@ -588,6 +569,11 @@ function codexProjectControlPorts(
         if (!input.createWorktreeInput) {
           throw new Error("project_control_worktree_input_required");
         }
+        const proof = creationProof();
+        if (!proof) throw new Error("project_control_creation_admission_missing");
+        if (proof.missing && (!proof.identity || await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) !== proof.identity)) {
+          throw new Error("project_control_creation_admission_changed");
+        }
         if (
           await codexProjectControlPathExists(input.createWorktreeInput.path)
         ) {
@@ -611,6 +597,8 @@ function codexProjectControlPorts(
             input.createWorktreeInput.expectedSourceRealPath,
           scope: input.scope,
         });
+        const admissionIdentity = proof.identity;
+        if (!proof.missing || !admissionIdentity) throw new Error("project_control_creation_admission_changed");
         await mkdir(dirname(input.createWorktreeInput.path), {
           recursive: true,
           mode: 0o700,
@@ -659,6 +647,9 @@ function codexProjectControlPorts(
                       input.createWorktreeInput.expectedRevision,
                   ]),
         ];
+        if (await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) !== admissionIdentity) {
+          throw new Error("project_control_creation_admission_changed");
+        }
         try {
           await execGit(args);
         } catch (error) {
@@ -690,6 +681,9 @@ function codexProjectControlPorts(
               changedPaths: input.createWorktreeInput.inputPatch.changedPaths,
             });
           }
+          await revalidateAdmissionCreatedWorktree({
+            expectedIdentity: admissionIdentity, target: input.createWorktreeInput, scope: input.scope,
+          });
         } catch (error) {
           await execGit([
             "-C",
@@ -697,7 +691,7 @@ function codexProjectControlPorts(
             "worktree",
             "remove",
             "--force",
-            input.createWorktreeInput.path,
+            admissionIdentity,
           ]);
           throw error;
         }

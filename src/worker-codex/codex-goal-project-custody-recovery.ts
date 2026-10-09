@@ -11,6 +11,7 @@ import {
   type ProjectControlRecoveryRecord,
   type ProjectControlRecoveryStore,
   type ProjectControlRecoveryDirectories,
+  type ProjectControlRecoveryDirectoryIdentity,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   resolveInitialProjectControlCustodyPlan, parseCodexGoalJobManifest,
@@ -30,16 +31,23 @@ export function recoveryHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+export function configuredProjectControlCustodyDirectories(scope: ProjectAccessScope): readonly string[] {
+  return [
+    ...(scope.consumedOutputLedgerRoots ?? []).flatMap(root => [root, join(root, "items")]),
+    ...(scope.consumedOutputEvidenceRoots ?? []),
+  ];
+}
+
 /** Existing configured custody is state, never an implicit bootstrap request. */
 export async function assertConfiguredProjectControlCustodyItemsPresent(
   scope: ProjectAccessScope,
   custody: ProjectControlEvidenceCustodyPort,
 ): Promise<void> {
-  for (const root of [...(scope.consumedOutputLedgerRoots ?? []), ...(scope.consumedOutputEvidenceRoots ?? [])]) {
-    if (await custody.pathKind(join(root, "items")) !== "directory") {
+  for (const path of configuredProjectControlCustodyDirectories(scope)) {
+    if (await custody.pathKind(path) !== "directory" ||
+        await custody.canonicalDirectory(path) !== path) {
       throw new Error("project_control_custody_missing_or_unsafe_state");
     }
-    await custody.canonicalDirectory(join(root, "items"));
   }
 }
 
@@ -51,6 +59,8 @@ export async function applyConfirmedControllerScopeRecovery(input: {
   readonly custody: ProjectControlEvidenceCustodyPort;
   readonly store: ProjectControlRecoveryStore;
   readonly directories: ProjectControlRecoveryDirectories;
+  /** Configured custody pinned before the native locked reload and store opening. */
+  readonly configuredIdentities?: readonly ProjectControlRecoveryDirectoryIdentity[];
   readonly publish: (at: Date, revalidate: () => Promise<void>) => Promise<CodexGoalJobManifest>;
   /** Syncs the expected manifest inode and its registry parent before commit. */
   readonly confirmManifestDurability: () => Promise<void>;
@@ -63,6 +73,7 @@ export async function applyConfirmedControllerScopeRecovery(input: {
   if (!input.confirmed) throw new Error("confirm_update_required");
   const scope = input.controller.projectAccessScope;
   if (!scope) throw new Error("project_control_controller_scope_required");
+  const configuredPaths = configuredProjectControlCustodyDirectories(scope);
   let plan = await resolveInitialProjectControlCustodyPlan(
     { ...input.controller, projectAccessScope: input.proposed }, input.custody);
   let proposedPaths = plan ? input.directories.paths({ ...plan, anchor: plan.approvedAnchor }) : [];
@@ -86,11 +97,15 @@ export async function applyConfirmedControllerScopeRecovery(input: {
       proposedPaths = input.directories.paths({ ...plan, anchor: plan.approvedAnchor });
     }
   } else {
-    // A missing child in a persisted controller is loss/unknown history, not an empty ledger.
+    // Pin at the first safe observation, before later checks can lose custody.
+    const configuredIdentities = input.configuredIdentities ?? await input.directories.identities(configuredPaths);
+    if (configuredPaths.some(path => !configuredIdentities.some(identity => identity.path === path))) {
+      throw new Error("project_control_recovery_journal_incomplete_identities");
+    }
+    // A missing ledger/items or evidence root is loss/unknown history.
     await assertConfiguredProjectControlCustodyItemsPresent(scope, input.custody);
-    const existingRoots = [...(scope.consumedOutputLedgerRoots ?? []), ...(scope.consumedOutputEvidenceRoots ?? [])];
-    for (const root of [...(input.proposed.consumedOutputLedgerRoots ?? []), ...(input.proposed.consumedOutputEvidenceRoots ?? [])]) {
-      if (!existingRoots.includes(root) && await input.custody.pathKind(join(root, "items")) === "absent" &&
+    for (const root of input.proposed.consumedOutputLedgerRoots ?? []) {
+      if (!(scope.consumedOutputLedgerRoots ?? []).includes(root) && await input.custody.pathKind(join(root, "items")) === "absent" &&
           await input.custody.pathKind(root) === "directory" && (await input.custody.listDirectory(root)).length > 0) {
         throw new Error("project_control_custody_missing_or_unsafe_state");
       }
@@ -121,8 +136,10 @@ export async function applyConfirmedControllerScopeRecovery(input: {
       beforeManifestSha256: beforeHash, afterManifestSha256: recoveryHash(target),
       proposedScopeSha256: proposedHash, at,
       ...(plan ? { approvedAnchor: plan.approvedAnchor } : {}),
-      identities: await input.directories.identities(knownPaths),
+      identities: [...configuredIdentities, ...await input.directories.identities(
+        knownPaths.filter(path => !configuredPaths.includes(path)))],
     };
+    await input.directories.revalidate(record.identities);
     try { await input.store.save(record); }
     catch {
       return { outcome: ProjectControlRecoveryOutcome.PartialSuccess, operationId: record.operationId };
@@ -131,15 +148,17 @@ export async function applyConfirmedControllerScopeRecovery(input: {
   let certification: ProjectControlCustodyBootstrapCertification | undefined;
   try {
     const revalidate = async () => {
+      if (configuredPaths.some(path => !record.identities.some(identity => identity.path === path)) ||
+          (record.phase !== ProjectControlRecoveryPhase.Prepared &&
+           proposedPaths.some(path => !record.identities.some(identity => identity.path === path)))) {
+        throw new Error("project_control_recovery_journal_incomplete_identities");
+      }
       await input.store.revalidate();
+      if (input.configuredIdentities) await input.directories.revalidate(input.configuredIdentities);
       await input.directories.revalidate(record.identities);
       await certification?.revalidate();
       await input.store.revalidate();
     };
-    if (record.phase !== ProjectControlRecoveryPhase.Prepared &&
-        proposedPaths.some(path => !record.identities.some(identity => identity.path === path))) {
-      throw new Error("project_control_recovery_journal_incomplete_identities");
-    }
     await revalidate();
     // Only known inodes or a write-ahead directory publication may be resumed.
     // An unrecorded final path is always an external/ambiguous substitution.
@@ -193,8 +212,9 @@ export async function applyConfirmedControllerScopeRecovery(input: {
       // Persist the complete post-materialization identity set before the
       // crash boundary. A retry can then distinguish our durable creations
       // from an unrecorded substitution and safely converge.
-      record = { ...record, phase: ProjectControlRecoveryPhase.Materialized,
-        identities: await input.directories.identities(proposedPaths) };
+      // Keep the original pins and write-ahead creations; never adopt new inodes.
+      record = { ...record, phase: ProjectControlRecoveryPhase.Materialized };
+      await revalidate();
       await input.store.save(record);
       await input.fault?.(ScopeRecoveryFaultPoint.AfterMaterialization);
       await revalidate();

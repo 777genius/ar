@@ -29,6 +29,9 @@ const observationTimeoutMs = numberArg(args.timeoutMs, 60_000);
 const outputJson = Boolean(args.json);
 
 const observability = await importObservabilityPackage();
+const { observeCodexEffectiveQuota } = await import(
+  "../../dist/worker-codex/codex-effective-quota-probe.js"
+);
 const labels = codexHome ? {} : await readLabels(authRoot);
 const accountSlots = codexHome
   ? ["current"]
@@ -110,10 +113,11 @@ async function readSlot(input) {
 
   try {
     const now = new Date();
-    const observation = await input.observer.observe({
-      account,
-      now,
-      timeoutMs: input.observationTimeoutMs,
+    const observation = await observeCodexEffectiveQuota({
+      observer: input.observer,
+      observation: { account, now, timeoutMs: input.observationTimeoutMs },
+      authRootDir: input.codexHome ? dirname(input.codexHome) : input.authRoot,
+      sourcePath: account.authJsonPath,
     });
     const main = input.observability.codexMainQuotaSummary(observation.quota);
     const decision = observation.decision;
@@ -146,6 +150,7 @@ async function readSlot(input) {
     };
   } catch (error) {
     const relogin = isReloginError(error);
+    const quotaHeld = errorText(error) === "codex_account_quota_held";
     const probeFailure = isQuotaProbeFailure(error);
     return {
       email: fallbackEmail,
@@ -155,11 +160,12 @@ async function readSlot(input) {
       authStatus: relogin ? "relogin_required" : "unknown",
       status: relogin
         ? "❌ relogin required"
+        : quotaHeld ? "⏳ quota held"
         : probeFailure
           ? "⚠️ quota probe failed"
           : "⚠️ inspect required",
-      rawStatus: relogin ? "relogin_required" : "unknown",
-      reason: relogin ? "refresh_token_revoked" : safeErrorReason(error),
+      rawStatus: relogin ? "relogin_required" : quotaHeld ? "quota_exhausted" : "unknown",
+      reason: relogin ? "refresh_token_revoked" : quotaHeld ? "quota_limited" : safeErrorReason(error),
       available: false,
       fiveHourFree: "-",
       fiveHourFreeNumber: null,
@@ -275,7 +281,7 @@ async function importObservabilityPackage() {
     return await import(pathToFileURL(distPath).href);
   } catch (error) {
     throw new Error(
-      `failed to import built observability package. Run npm run build:packages first. ${errorText(error)}`,
+      `failed to import built observability package. Run npm run build first. ${errorText(error)}`,
     );
   }
 }
@@ -475,7 +481,7 @@ function dateParts(value, timezone) {
 }
 
 function isReloginError(error) {
-  return /token_invalidated|authentication token has been invalidated|refresh token was revoked|refresh_token_invalidated|token_revoked/i.test(
+  return /provider_session_invalid|token_invalidated|authentication token has been invalidated|refresh token was revoked|refresh_token_invalidated|token_revoked/i.test(
     errorText(error),
   );
 }
