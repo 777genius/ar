@@ -1,4 +1,4 @@
-export async function readRequest(input, { timeoutMs = 10000 } = {}) {
+export async function readRequestBytes(input, { timeoutMs = 10000 } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('invalid request deadline');
   let timer;
   const deadline = new Promise((_, reject) => {
@@ -20,5 +20,10 @@ async function consume(input) {
     if (bytes > 65536) throw new Error('request too large');
     chunks.push(buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return Buffer.concat(chunks);
+}
+
+// Legacy callers keep their JSON semantics and share the same one read allowance.
+export async function readRequest(input, options) {
+  return JSON.parse((await readRequestBytes(input, options)).toString('utf8'));
 }

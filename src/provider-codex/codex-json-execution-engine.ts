@@ -1,3 +1,4 @@
+import type { NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import type {
   AgentRuntimeTaskExecutionCapability,
   AgentRuntimeTurnLimitEnforcementCode,
@@ -70,6 +71,7 @@ export type CodexExecutionWarning = {
 export type CodexExecutionCompletedResult = {
   readonly status?: "completed";
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
   readonly warnings: readonly CodexExecutionWarning[];
@@ -79,6 +81,7 @@ export type CodexExecutionWaitingForInputResult = {
   readonly status: "waiting_for_input";
   readonly runId: string;
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly structuredOutput?: unknown;
   readonly request: ManagedRunInputRequest;
   readonly resumeHandle: ManagedRunResumeHandle;

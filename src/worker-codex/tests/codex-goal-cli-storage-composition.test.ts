@@ -84,9 +84,8 @@ function newStorageArgs() {
 }
 
 describe("actual CLI trusted storage composition", () => {
-  it.each([false, true])("reaches the actual runner admission with immutable parsed data (ordinary observation=%s)", async ordinary => {
+  it("reaches the actual local runner admission with immutable parsed data", async () => {
     const { root, io, args } = await testInput();
-    harness.hosted = ordinary; harness.ordinary = ordinary;
     let requestSeen: Parameters<JobStorageAdmissionPort["withAdmittedLifetime"]>[0] | undefined;
     const port: JobStorageAdmissionPort = { async withAdmittedLifetime(request) {
       requestSeen = request;
@@ -112,6 +111,27 @@ describe("actual CLI trusted storage composition", () => {
     expect(io.stdout).toBe("");
     await expect(access(join(root, "job"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  // Actual ordinary-positive forwarding requires an owned host origin and is
+  // still unqualified here. A discovery projection cannot replace that proof.
+  // Linux UID0 must obtain separate nonoperator Source coverage for this case.
+  it.runIf(process.platform !== "linux" || process.getuid?.() !== 0)(
+    "refuses an unqualified ordinary observation at the actual host operator guard", async () => {
+      expect(process.platform !== "linux" || process.getuid?.() !== 0).toBe(true);
+      const { root, io, args } = await testInput();
+      harness.hosted = true; harness.ordinary = true;
+      const admission = vi.fn(async () => { throw new Error("TEST_unexpected_admission"); });
+      const egress = vi.fn(async () => { throw new Error("TEST_unexpected_egress"); });
+      expect(await runCodexGoalCli([...args, ...newStorageArgs()], io, { runDeps: {
+        storageAdmission: { withAdmittedLifetime: admission }, admitProviderEgress: egress,
+      } })).toBe(2);
+      expect(io.stderr).toBe("hosted_readonly_host_operator_required\n");
+      expect(io.stdout).toBe("");
+      expect(harness.route).toHaveBeenCalledOnce();
+      expect(admission).not.toHaveBeenCalled(); expect(egress).not.toHaveBeenCalled();
+      await expect(access(join(root, "job"))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 
   it("keeps NEW admission unavailable when the trusted port is absent", async () => {
     const { root, io, args } = await testInput();

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyInstallProofKind, DependencyReceiptParseStatus, DependencyReceiptState,
   DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner, isDependencyConsumerOwner, sameDependencyAttempt,
   parseDependencyReceipt, sameDependencyWorkspace, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
-import type { DependencyCommittedAbsentReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyCommittedReadyReceipt, DependencyCommittedUnverifiedReceipt, DependencyCommittedAbsentReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { assertReadonlyHostOperator } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -15,8 +15,12 @@ import type { DependencyCompletedLocalReady, DependencySourceBindingRecord } fro
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
+import { assertHostedDependencyLocalOutputProof } from "./hosted-dependency-output-proof";
 
-export const hostedDependencyReceiptHistoryRoot = "/var/lib/subscription-runtime-host-policy/dependency-receipt-history";
+import { assertHostedDependencyLegacyComparedReady, assertHostedDependencyLegacyComparisonTransition } from "./hosted-dependency-legacy-comparison-record";
+
+import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
+export { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 const legacyRoot = "/var/lib/subscription-runtime-host-policy/dependency-receipts";
 export const hostedDependencySourceBindingRoot = "/var/lib/subscription-runtime-host-policy/dependency-source-bindings";
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
@@ -33,17 +37,13 @@ export function ensureHostedDependencyDirectory(path: string): void {
 function openStore(): LocalDependencyReceiptStore {
   ensureHostedDependencyDirectory(hostedDependencyReceiptHistoryRoot);
   return LocalDependencyReceiptStore.open({ rootPath: hostedDependencyReceiptHistoryRoot, maxRecordBytes: 16384, maxHistorySteps: 2048,
-    localInstallVerifier: { assertCompletedLocalInstall(receipt) { sourceStore().assertCompletedLocalInstall(receipt); } } });
+    localInstallVerifier: { assertCompletedLocalInstall(receipt) { sourceStore().assertCompletedLocalInstall(receipt); } },
+    legacyComparisonVerifier: { assertLegacyComparison: assertHostedDependencyLegacyComparisonTransition } });
 }
 function sourceStore(): LocalDependencySourceBindingStore {
   assertReadonlyHostOperator();
   return new LocalDependencySourceBindingStore(hostedDependencySourceBindingRoot, { assertInstallerCompletion: assertLocalInstallerCompletion },
-    { assertVerifiedOutput() {
-      // No protected local output-verification producer/reader exists yet.
-      // Completion/drain authenticates execution, not the caller's tree/manifest
-      // or source-link DTO. Keep publication and every local Ready read closed.
-      throw new Error("dependency_local_output_proof_unavailable");
-    } });
+    { assertVerifiedOutput: assertHostedDependencyLocalOutputProof });
 }
 function assertLocalInstallerCompletion(record: DependencySourceBindingRecord): void {
   const mapping = readHostedPrivateBytes(`${hostedDependencyInstallerRoot}/attempt-${record.generation}.json`, 4096);
@@ -138,6 +138,24 @@ export function readHostedDependencyReceipt(binding: HostedDependencyBinding): D
     return latest;
   } finally { store.close(); }
 }
+/** Current worker-only established read. It cannot initialize/migrate history
+ * and independently authenticates local output/completion through validateBinding.
+ * Every temporary store/source/proof descriptor is closed before return. */
+export function readHostedDependencyEstablishedReceipt(binding: HostedDependencyBinding): DependencyReceipt | null {
+  assertReadonlyHostOperator();
+  for (let path = hostedDependencyReceiptHistoryRoot;; path = dirname(path)) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) || realpathSync(path) !== path ||
+        (path === hostedDependencyReceiptHistoryRoot && (stat.mode & 0o777) !== 0o700)) fail();
+    if (path === "/") break;
+  }
+  const store = LocalDependencyReceiptStore.open({ rootPath: hostedDependencyReceiptHistoryRoot,
+    maxRecordBytes: 16384, maxHistorySteps: 2048 });
+  let receipt: DependencyReceipt | null;
+  try { receipt = store.read(binding.workspace); } finally { store.close(); }
+  validateBinding(receipt, binding);
+  return receipt;
+}
 export function publishHostedDependencyReceipt(binding: HostedDependencyBinding, expectedRevision: number | null,
   next: DependencyReceipt): DependencyReceipt {
   validateBinding(next, binding);
@@ -152,9 +170,30 @@ export function readHostedDependencyCommittedAbsent(binding: HostedDependencyBin
     return result;
   } finally { store.close(); }
 }
+/** Reference producer seals the actual store-captured committed output. */
+export function readHostedDependencyCommittedReady(binding: HostedDependencyBinding, revision: number): DependencyCommittedReadyReceipt {
+  const store = openStore();
+  try {
+    const result = store.getCommittedReady(binding.workspace, revision);
+    validateBinding(result.receipt, binding);
+    return result;
+  } finally { store.close(); }
+}
+/** Issuer receives immutable facts only; CAS captures its own predecessor again. */
+export function readHostedDependencyCommittedUnverified(binding: HostedDependencyBinding, revision: number): DependencyCommittedUnverifiedReceipt {
+  const store = openStore();
+  try {
+    const result = store.getCommittedUnverified(binding.workspace, revision);
+    validateBinding(result.receipt, binding);
+    return result;
+  } finally { store.close(); }
+}
 function validateBinding(receipt: DependencyReceipt | null, binding: HostedDependencyBinding): void {
   if (receipt && (!sameDependencyWorkspace(receipt.workspace, binding.workspace) ||
       receipt.coverageRevision !== dependencyCoverageRevision(binding))) fail();
+  if (receipt?.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+    assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+  }
   if (receipt?.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) {
     sourceStore().assertCompletedLocalInstall({ ...receipt, provenance: receipt.provenance });
   }

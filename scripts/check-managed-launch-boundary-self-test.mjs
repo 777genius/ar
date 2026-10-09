@@ -35,6 +35,27 @@ try {
   const adapters = join(root, 'src/provider-codex/app-server/adapters');
   await writeFile(join(adapters, 'hosted-dependency-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
   assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  const leaf = join(adapters, 'hosted-dependency-systemd-command.ts');
+  const declaration = 'export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";\n';
+  await writeFile(leaf, declaration);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'),
+    'import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";\n' +
+    'if (invocation.command !== hostedDependencySystemdRunExecutable) fail();\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  for (const source of [declaration + 'spawn("/usr/bin/systemd-run", args);\n', declaration + declaration,
+    declaration + 'import "./foreign-launcher";\n', declaration.replace('/usr/bin/systemd-run', '/usr/bin/other')]) {
+    await writeFile(leaf, source);
+    assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+      ['src/provider-codex/app-server/adapters/hosted-dependency-systemd-command.ts:1']);
+  }
+  await writeFile(leaf, declaration);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'), 'spawn("/usr/bin/systemd-run", args);\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['src/provider-codex/app-server/adapters/hosted-retained-tool-files.ts:1']);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'), 'const command = "/usr/bin/systemd-run";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['src/provider-codex/app-server/adapters/hosted-retained-tool-files.ts:1']);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'), 'const command = trustedCommand;\n');
   await writeFile(join(adapters, 'unapproved-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
   assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
     ['src/provider-codex/app-server/adapters/unapproved-provider-launch.ts:1']);

@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 /** Closed startup observations; error payloads never become output. */
 export enum ResearchLaunchDiagnostic {
   Unknown = "unknown", ResearchAdmission = "research-admission", CheckpointAdmission = "checkpoint-admission",
@@ -22,6 +24,33 @@ export enum ResearchLaunchCause {
 export enum ResearchLaunchStage {
   Unknown = "unknown", PinPreparation = "pin-preparation", InputPreparation = "input-preparation",
   LaunchPlan = "launch-plan", HostSubmission = "host-submission", StartReadback = "start-readback",
+}
+/** Private material scope only; never a member path, cache state or authority. */
+export enum ResearchMaterialRole {
+  Unknown = "unknown", RuntimeArtifact = "runtime-artifact", NodeExecutable = "node-executable", CodexExecutable = "codex-executable",
+}
+type KnownMaterialRole = Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>;
+const materialRoles = new WeakMap<object, KnownMaterialRole>();
+export enum ScratchCapacityVolumeRole { RootControl = "RootControl", ScratchPayload = "ScratchPayload" }
+type ScratchCapacityObservation = Readonly<{
+  volumeRole: ScratchCapacityVolumeRole; availableBytes: number; requiredBytes: number;
+}>;
+const scratchCapacityObservations = new WeakMap<object, ScratchCapacityObservation>();
+/** Actual failed admission only; caller error properties never supply these facts. */
+export function annotateScratchCapacityFailure(error: unknown, volumeRole: ScratchCapacityVolumeRole,
+  availableBytes: number, requiredBytes: number): unknown {
+  if (error && typeof error === "object" && !scratchCapacityObservations.has(error)
+    && Object.values(ScratchCapacityVolumeRole).includes(volumeRole)
+    && Number.isSafeInteger(availableBytes) && availableBytes >= 0
+    && Number.isSafeInteger(requiredBytes) && requiredBytes > availableBytes) {
+    scratchCapacityObservations.set(error, Object.freeze({ volumeRole, availableBytes, requiredBytes }));
+  }
+  return error;
+}
+export function annotateResearchMaterialFailure(error: unknown, role: KnownMaterialRole): unknown {
+  try { if (error && typeof error === "object" && !materialRoles.has(error)) materialRoles.set(error, role); }
+  catch { /* Observation only; retain the original thrown identity. */ }
+  return error;
 }
 const operatorStartStages = new WeakMap<object, ResearchLaunchStage>();
 /** Observe the same failed attempt without changing its error or recovery ownership. */
@@ -107,4 +136,21 @@ export function normalizeResearchLaunchFailure(error: unknown): ReturnType<typeo
     current = ownData(current, "cause");
   }
   return { ...outer, cause, diagnostic };
+}
+
+/** Keep the deployed failure contract unchanged; add only an identity-bound private role. */
+export function normalizeResearchMaterialFailure(error: unknown) {
+  let materialRole = ResearchMaterialRole.Unknown, current = error;
+  let scratchCapacity: ScratchCapacityObservation | undefined;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth++) {
+    seen.add(current);
+    const role = materialRoles.get(current);
+    if (role && materialRole === ResearchMaterialRole.Unknown) materialRole = role;
+    scratchCapacity ??= scratchCapacityObservations.get(current);
+    if (materialRole !== ResearchMaterialRole.Unknown && scratchCapacity) break;
+    if (types.isProxy(current)) break;
+    current = ownData(current, "cause");
+  }
+  return { ...normalizeResearchLaunchFailure(error), materialRole, ...(scratchCapacity ? { scratchCapacity } : {}) };
 }

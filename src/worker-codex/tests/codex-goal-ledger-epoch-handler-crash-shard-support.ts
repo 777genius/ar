@@ -1,5 +1,6 @@
 import { cp, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { createConnection } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { projectControlLedgerEpochMigrationView } from
   "../codex-goal-mcp-project-control-ledger-epoch";
@@ -48,43 +49,45 @@ export function certifyLedgerEpochCrashBoundaryShard(input: {
     }
   };
 
-  beforeAll(async () => {
-    process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY = "1";
-    try {
-      const module = await import("./codex-goal-ledger-epoch-handler.test");
-      // The public handler must admit the authentic 495 consumed registrations
-      // plus 205 source orphans before it can enter the 213-boundary upgrade.
-      // Keep that production-shaped admission contract here; range mode below
-      // removes the accidental duplicate execution that exhausted the budget.
-      fixture = await module.handlerFixture(495, true);
-      planSha256 = (await fixture.seedPreparedV1()).planSha256;
-      await fixture.freezePreparedV1Baseline();
-      const resume = process.env.CODEX_LEDGER_EPOCH_CRASH_RESUME_SNAPSHOT;
-      if (resume) {
-        await rm(fixture.newRoot, { recursive: true, force: true });
-        await cp(resolve(resume), fixture.newRoot, { recursive: true });
+  describe.sequential(`exact-213 public-handler interruption boundary shard ${input.shard}`, () => {
+    beforeAll(async () => {
+      await reportLaneProgress(input.shard, false);
+      process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY = "1";
+      try {
+        const module = await import("./codex-goal-ledger-epoch-handler.test");
+        // The public handler must admit the authentic 495 consumed registrations
+        // plus 205 source orphans before it can enter the 213-boundary upgrade.
+        // Keep that production-shaped admission contract here; range mode below
+        // removes the accidental duplicate execution that exhausted the budget.
+        fixture = await module.handlerFixture(495, true);
+        planSha256 = (await fixture.seedPreparedV1()).planSha256;
+        await fixture.freezePreparedV1Baseline();
+        const resume = process.env.CODEX_LEDGER_EPOCH_CRASH_RESUME_SNAPSHOT;
+        if (resume) {
+          await rm(fixture.newRoot, { recursive: true, force: true });
+          await cp(resolve(resume), fixture.newRoot, { recursive: true });
+        }
+      } finally {
+        delete process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY;
       }
-    } finally {
+    }, 90_000);
+
+    afterAll(async () => {
       delete process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY;
-    }
-  }, 90_000);
-
-  afterAll(async () => {
-    delete process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY;
-    if (fixture) {
-      const save = process.env.CODEX_LEDGER_EPOCH_CRASH_SAVE_SNAPSHOT;
-      if (save) {
-        await rm(resolve(save), { recursive: true, force: true });
-        await mkdir(dirname(resolve(save)), { recursive: true });
-        await cp(fixture.newRoot, resolve(save), { recursive: true });
+      if (fixture) {
+        const save = process.env.CODEX_LEDGER_EPOCH_CRASH_SAVE_SNAPSHOT;
+        if (save) {
+          await rm(resolve(save), { recursive: true, force: true });
+          await mkdir(dirname(resolve(save)), { recursive: true });
+          await cp(fixture.newRoot, resolve(save), { recursive: true });
+        }
+        await fixture.cleanup();
       }
-      await fixture.cleanup();
-    }
-    delete process.env.CODEX_LEDGER_EPOCH_CRASH_RESUME_SNAPSHOT;
-    delete process.env.CODEX_LEDGER_EPOCH_CRASH_SAVE_SNAPSHOT;
-  });
+      delete process.env.CODEX_LEDGER_EPOCH_CRASH_RESUME_SNAPSHOT;
+      delete process.env.CODEX_LEDGER_EPOCH_CRASH_SAVE_SNAPSHOT;
+      await reportLaneProgress(input.shard, true);
+    });
 
-  describe(`exact-213 public-handler interruption boundary shard ${input.shard}`, () => {
     for (let groupStart = input.start; groupStart < input.end; groupStart += 4) {
       const groupEnd = Math.min(groupStart + 4, input.end);
       it.runIf(process.env.CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY === "1")(
@@ -143,5 +146,31 @@ export function certifyLedgerEpochCrashBoundaryShard(input: {
         120_000,
       );
     }
+  });
+}
+
+// Await the supervisor acknowledgement before entering or leaving a shard.
+// Its timer runs outside Vitest, including when fixture code blocks the worker.
+async function reportLaneProgress(shard: number, complete: boolean): Promise<void> {
+  const socketPath = process.env.CODEX_LEDGER_EPOCH_CRASH_LANE_SOCKET;
+  if (!socketPath) return;
+  await new Promise<void>((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    socket.setTimeout(10_000, () => socket.destroy(new Error("crash lane supervisor acknowledgement timed out")));
+    socket.once("error", reject);
+    let acknowledgement = "";
+    socket.on("data", (data) => {
+      acknowledgement += data.toString();
+      if (!"ok\n".startsWith(acknowledgement)) {
+        socket.destroy(new Error("crash lane supervisor rejected progress"));
+        return;
+      }
+      if (acknowledgement === "ok\n") {
+        socket.end();
+        resolve();
+      }
+    });
+    socket.once("connect", () => socket.write(`${JSON.stringify({ shard, complete })}\n`));
+    socket.once("end", () => reject(new Error("crash lane supervisor disconnected")));
   });
 }

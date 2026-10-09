@@ -1,6 +1,6 @@
-import "./absent-host-scratch-fixture";
 import "./unmanaged-goal-host-fixture";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,10 +26,28 @@ const inventoryBytes = () => Buffer.from(JSON.stringify({ schemaVersion: 2, host
 // safe executor, account factories, egress wrapper and node adapter are real.
 // No systemd/provider process, enrolled authority or credential read occurs.
 const facts = vi.hoisted(() => ({
+  root: "",
   policy: vi.fn(), bytes: vi.fn(), grant: vi.fn(), grantFile: vi.fn(), review: vi.fn(),
   epoch: null as HostedCustodyEpoch | null, activationPhase: "EXCLUSIVE", records: new Map<string, Buffer>(),
-  snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(),
+  snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(), session: vi.fn(),
 }));
+// Real protected mode bytes select strict enrollment. Only their fixed Host
+// paths and root principal are projected; admission still parses the file.
+vi.mock("node:fs", async original => {
+  const real = await original<typeof import("node:fs")>();
+  const local = (path: string) => ["/", "/etc", "/etc/subscription-runtime"].includes(path) ? facts.root :
+    path === "/etc/subscription-runtime/host-activation-mode" ? join(facts.root, "host-activation-mode") : path;
+  return { ...real,
+    lstatSync: (path: string) => {
+      if (path === "/etc/subscription-runtime/scratch-temp.json") {
+        throw Object.assign(new Error("TEST scratch policy absent"), { code: "ENOENT" });
+      }
+      return Object.assign(real.lstatSync(local(path)), { uid: 0 });
+    },
+    openSync: (path: string, flags: number, permissions?: number) => real.openSync(local(path), flags, permissions),
+    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { uid: 0 }),
+  };
+});
 vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
   ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(),
   readHostedActivationBytes: (name: string) => {
@@ -78,7 +96,11 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
 // only this fixture's existing synthetic OS boundaries after module loading;
 // the inventory parser and admission/activation decisions remain real.
 beforeEach(() => {
-  vi.spyOn(HostedReadonlyHostKernel.prototype, "session").mockReturnValue(session);
+  vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+  facts.root = mkdtempSync(join(tmpdir(), "readonly-mode-TEST-"));
+  writeFileSync(join(facts.root, "host-activation-mode"), "required\n", { mode: 0o600 });
+  facts.session.mockReturnValue(session);
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "session").mockImplementation(facts.session);
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyRuntimeOwner").mockImplementation(() => {});
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyExclusiveInventory").mockImplementation(() => {});
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyDescriptorBoundary").mockImplementation(() => {});
@@ -91,7 +113,7 @@ beforeEach(() => {
 vi.mock("node:child_process", async original => ({
   ...await original<typeof import("node:child_process")>(), spawn: facts.spawn, spawnSync: facts.stop,
 }));
-afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
+afterEach(() => { rmSync(facts.root, { recursive: true, force: true }); vi.restoreAllMocks(); vi.resetAllMocks(); });
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real admission and activation on account rotation: %s", async fault => {
@@ -193,6 +215,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
         })),
       });
     } });
+    expect(facts.session).toHaveBeenCalled();
     expect(result.attempts[0]?.failureReason).toBe("quota_limited");
     expect(facts.spawn).toHaveBeenCalledTimes(revoke ? 1 : 2);
     expect(serviceRecords()).toHaveLength(revoke ? 1 : 2);
