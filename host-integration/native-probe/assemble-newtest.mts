@@ -1,3 +1,4 @@
+import { RetainedV2ProfileKind } from "./retained-v2-profile.mjs";
 import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -272,7 +273,7 @@ function assembleRetainedNative(candidate: string, artifact: string, artifactDig
     const bytes = measured(row.source); files.push({ path: row.path, bytes: bytes.length, mode: row.mode, sha256: digest(bytes) }); admitted.push({ row, bytes });
   }
   if (![daemonUid, daemonGid].every(v => Number.isInteger(v) && v >= 0 && v <= 0xffffffff)) throw new Error("invalid original daemon identity");
-  const manifest = { version: 1, profile: actors?"NativeRetainedV2B1a":"NativeRetainedV2A1", daemonUid, daemonGid, files };
+  const manifest = { version: 1, profile: actors?RetainedV2ProfileKind.B1a:RetainedV2ProfileKind.A1, daemonUid, daemonGid, files };
   if (Buffer.byteLength(retainedResourceCanonicalJson(manifest)) > 65536) throw new Error("installation manifest capacity");
   for (const { row, bytes } of admitted) {
     if (!row.path.startsWith(nativeInstallation + "/")) continue;

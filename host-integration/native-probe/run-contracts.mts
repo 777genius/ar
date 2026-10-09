@@ -133,7 +133,7 @@ try {
   await run(process.execPath,["--test",join(build,"host-integration/native-probe/retained-v2-refusal-contracts.test.mjs")],{NP_RETAINED_V2_ENTRY:retainedEntry});
   const retainedAdmin=join(retainedCandidate,"admin");
   await mkdir(join(retainedAdmin,"host-integration/native-probe"),{recursive:true});await mkdir(join(retainedAdmin,"src/core"),{recursive:true});
-  for(const name of ["retained-v2-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(retainedAdmin,"host-integration/native-probe",name));
+  for(const name of ["retained-v2-operator.mjs","install-root-producer.mjs","retained-v2-profile.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(retainedAdmin,"host-integration/native-probe",name));
   for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(retainedAdmin,"src/core",name));
   await copyFile(join(build,"package.json"),join(retainedAdmin,"package.json"));
   await writeFile(join(retainedCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2A1",closed:true,source:false,work:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
@@ -149,7 +149,7 @@ try {
   for(const [from,name] of [[actorEntry,"retained-v2-actor-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(actorCandidate,name!));
   await copyFile(join(retainedCandidate,"expected-helper-policy.json"),join(actorCandidate,"expected-helper-policy.json"));
   const actorAdmin=join(actorCandidate,"admin");await mkdir(join(actorAdmin,"host-integration/native-probe"),{recursive:true});await mkdir(join(actorAdmin,"src/core"),{recursive:true});
-  for(const name of ["retained-v2-actor-operator.mjs","retained-v2-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(actorAdmin,"host-integration/native-probe",name));
+  for(const name of ["retained-v2-actor-operator.mjs","retained-v2-operator.mjs","install-root-producer.mjs","retained-v2-profile.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(actorAdmin,"host-integration/native-probe",name));
   for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(actorAdmin,"src/core",name));
   await copyFile(join(build,"package.json"),join(actorAdmin,"package.json"));
   await writeFile(join(actorCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2B1a",closed:true,source:false,work:false,actorAdmission:false,enqueue:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
@@ -160,7 +160,7 @@ try {
   async function copyTree(from:string,to:string):Promise<void>{await mkdir(to,{recursive:true});for(const name of await readdir(from)){const path=join(from,name),s=await lstat(path);if(s.isDirectory())await copyTree(path,join(to,name));else if(s.isFile())await copyFile(path,join(to,name));else throw new Error("nonregular emitted admin input");}}
   await copyTree(join(build,"src"),join(admin,"src"));
   await mkdir(join(admin,"host-integration/native-probe"),{recursive:true});
-  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs","newtest-bootstrap.mjs","newtest-guest.mjs","newtest-cgroup.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
+  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs","retained-v2-profile.mjs","assemble-newtest.mjs","newtest-bootstrap.mjs","newtest-guest.mjs","newtest-cgroup.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
   await copyFile(join(build,"package.json"),join(admin,"package.json"));
   // Retain an independently executable fixed NEWTEST v1 closure. These
   // binaries are never run by Source CI and cannot select production paths.
@@ -175,7 +175,7 @@ try {
   await chmod(join(physical,"original-owner"),0o755);await chmod(join(physical,"original-owner.node"),0o644);await chmod(join(physical,"original-owner-refusal-fixture"),0o755);
   await copyTree(join(build,"src"),join(physical,"src"));
   await mkdir(join(physical,"host-integration/native-probe"),{recursive:true,mode:0o755});
-  for(const name of ["original-owner-helper.mjs","original-owner-contracts.test.mjs","root-producer-contracts.test.mjs","install-root-producer.mjs","root-origin-operator.mjs","retained-v2-operator.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(physical,"host-integration/native-probe",name));
+  for(const name of ["original-owner-helper.mjs","original-owner-contracts.test.mjs","root-producer-contracts.test.mjs","install-root-producer.mjs","retained-v2-profile.mjs","root-origin-operator.mjs","retained-v2-operator.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(physical,"host-integration/native-probe",name));
   await copyFile(join(build,"package.json"),join(physical,"package.json"));
   // Fixed installer inputs and emitted ingress closure retain normal layout.
   const source = join(candidate,"runtime-source");await mkdir(source,{mode:0o755});

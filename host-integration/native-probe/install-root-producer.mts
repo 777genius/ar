@@ -1,3 +1,4 @@
+import { RetainedV2ProfileKind } from "./retained-v2-profile.mjs";
 import { constants, closeSync, copyFileSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -57,12 +58,12 @@ export function installRetainedV2ActorCandidate(): void {
 }
 function installRetainedCandidate(actors: boolean): void {
   const target=actors?"/opt/subscription-runtime/native-retained-v2-b1a":"/opt/subscription-runtime/native-retained-v2",candidate=join(target,"source-candidate");
-  const profile=actors?"NativeRetainedV2B1a":"NativeRetainedV2A1";
+  const profile=actors?RetainedV2ProfileKind.B1a:RetainedV2ProfileKind.A1;
   if(process.argv.length!==3||process.argv[2]!==(actors?"--retained-v2-b1a":"--retained-v2-a1")||process.getuid?.()!==0||process.getgid?.()!==0)throw new Error("fixed Root-only candidate installation required");
   protectedAncestors(join(candidate,"manifest.json"));
   const raw=readFileSync(join(candidate,"manifest.json"));
   if(raw.length>65536)throw new Error("candidate manifest capacity");
-  const m=JSON.parse(raw.toString("utf8")) as Omit<CandidateManifest,"profile"> & {readonly profile:"NativeRetainedV2A1"|"NativeRetainedV2B1a"};
+  const m=JSON.parse(raw.toString("utf8")) as Omit<CandidateManifest,"profile"> & {readonly profile:RetainedV2ProfileKind};
   if(Object.keys(m).sort().join(",")!=="daemonGid,daemonUid,files,profile,version"||![m.daemonUid,m.daemonGid].every(value=>Number.isSafeInteger(value)&&value>=0&&value<=0xffffffff)||m.version!==1||m.profile!==profile||!Array.isArray(m.files)||m.files.length<7||m.files.length>128)throw new Error("invalid candidate manifest");
   const required=[join(target,actors?"retained-v2-actor-entry":"retained-v2-entry"),join(target,"test-root/opt/native/node"),join(target,"test-root/opt/native/original-owner-helper.mjs"),join(target,"test-root/opt/native/original-owner-associated.node"),"/usr/bin/dbus-daemon",join(target,"admin/host-integration/native-probe",actors?"retained-v2-actor-operator.mjs":"retained-v2-operator.mjs"),join(target,"expected-helper-policy.json")];
   if(required.some((path,index)=>m.files[index]?.path!==path))throw new Error("missing fixed retained V2 cohort");
