@@ -28,7 +28,10 @@ describe("sealed provider assembly reader over native TEST descriptors", () => {
   it("uses the genuine sealed Host witness and refuses a copied reader", () => {
     const f = preparePrivateRootAssemblyFixture(), root = readResearchProviderAssemblyRoot(f.jobId, assemblyUnit, f.home, f.seal.sha256);
     const initial = { user: "user:[4026531837]", mnt: "mnt:[4026531841]", pid: "pid:[4026531836]", net: "net:[4026531840]" };
-    const readlink = fs.readlinkSync;
+    // The descriptor fixture already spies on this export. Save its underlying
+    // implementation before replacing the spy, rather than calling it recursively.
+    const readlink = vi.mocked(fs.readlinkSync).getMockImplementation();
+    if (!readlink) throw new Error("Missing TEST assembly descriptor reader");
     try {
       expect(root.initialHostContext).toEqual({ bootId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", machineId: "b".repeat(32), namespaces: initial });
       host.processNamespaces.set(process.pid, { ...initial, mnt: "mnt:[4026532841]" });
@@ -75,7 +78,8 @@ describe("sealed provider assembly reader over native TEST descriptors", () => {
       expect(() => assertResearchProviderAssemblyContext(root)).not.toThrow();
       if (fault === "boot") host.boot = "dddddddd-dddd-dddd-dddd-dddddddddddd";
       if (fault === "machine" || fault === "stat-unavailable" || fault === "cgroup-malformed") {
-        const read = fs.readFileSync;
+        const read = vi.isMockFunction(fs.readFileSync) ? fs.readFileSync.getMockImplementation() : fs.readFileSync;
+        if (!read) throw new Error("Missing TEST assembly file reader");
         vi.spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, options?: Parameters<typeof fs.readFileSync>[1]) => {
           if (fault === "machine" && path === "/etc/machine-id") return "c".repeat(32);
           if (fault === "stat-unavailable" && path === `/proc/${process.pid}/stat`) throw Object.assign(new Error("TEST process disappeared"), { code: "ESRCH" });
