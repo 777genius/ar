@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { readHostedForegroundResultRecord } from "./hosted-foreground-result";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
+import { captureManagedDependencyGitContext, runManagedDependencyGitBuffer } from "./managed-dependency-git";
 
 const execFileAsync = promisify(execFile);
 const gitStatusTimeoutMs = 5_000;
@@ -163,6 +164,14 @@ export type CodexGoalWorkspaceStatus = {
 export async function gitWorkspaceStatus(
   path: string,
 ): Promise<CodexGoalWorkspaceStatus> {
+  // Protected origin/path selection precedes the legacy catch. Missing purpose
+  // or governed read failure must never become a clean workspace observation.
+  const context = captureManagedDependencyGitContext(path);
+  if (context !== undefined) {
+    const { stdout } = await runManagedDependencyGitBuffer(context,
+      ["status", "--porcelain", "--untracked-files=all"], { timeoutMs: gitStatusTimeoutMs });
+    return workspaceStatusFromOutput(stdout.toString("utf8"));
+  }
   try {
     const { stdout } = await execFileAsync("git", [
       "-C",
@@ -171,17 +180,7 @@ export async function gitWorkspaceStatus(
       "--porcelain",
       "--untracked-files=all",
     ], { timeout: gitStatusTimeoutMs });
-    const changedFiles = stdout
-      .split(/\r?\n/)
-      .filter((line) => line.trim().length > 0)
-      .map((line) => statusPorcelainPath(line))
-      .filter((path) => path.length > 0)
-      .sort((left, right) => left.localeCompare(right));
-    return {
-      exists: true,
-      dirty: changedFiles.length > 0,
-      changedFiles,
-    };
+    return workspaceStatusFromOutput(stdout);
   } catch {
     let exists = false;
     try {
@@ -199,6 +198,14 @@ export async function gitWorkspaceStatus(
         : path + " workspace_missing",
     };
   }
+}
+
+function workspaceStatusFromOutput(stdout: string): CodexGoalWorkspaceStatus {
+  const changedFiles = stdout.split(/\r?\n/)
+    .filter(line => line.trim().length > 0)
+    .map(line => statusPorcelainPath(line)).filter(path => path.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+  return { exists: true, dirty: changedFiles.length > 0, changedFiles };
 }
 
 export async function logFileStatus(path: string): Promise<{
