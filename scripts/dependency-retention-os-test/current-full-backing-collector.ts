@@ -97,7 +97,7 @@ function boundedRead(path:string,bound:number,budget:()=>void):Buffer {
       assert(size<=bound);
       budget();
     }
-    return bytes.subarray(0,size);
+    budget();return bytes.subarray(0,size);
   }finally{closeSync(fd);
   }
 }
@@ -111,7 +111,7 @@ function fdBytes(fd:number,bound:number,budget:()=>void):Buffer {
     assert(size<=bound);
     budget();
   }
-  return bytes.subarray(0,size);
+  budget();return bytes.subarray(0,size);
 }
 function mountId(fd:number,budget:()=>void):string {
   const matches=[...text(`/proc/self/fdinfo/${fd}`,4096,budget).matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gm)];
@@ -301,6 +301,39 @@ export function retainFullProcProcess(pid:number,budget:()=>void) {
     close(){if(closed)return;for(const task of [...tasks])task.close();closed=true;for(const fd of descriptors)closeObserverDescriptor(fd);}
     });
   }catch(error){for(const fd of descriptors)closeObserverDescriptor(fd);throw error;}
+}
+
+/** Capacity clocks only: no process, descriptor or admission authority. */
+export enum FullProcObservation { Observe="observe", Qualify="qualify", Pulse="pulse" }
+export enum FullProcRejoinPhase { PostCensus="post_census", QualificationPublication="qualification_publication", PulsePublication="pulse_publication", PulseLink="pulse_link" }
+export class FullProcPhaseBudget {
+  private readonly phases:readonly FullProcRejoinPhase[];
+  private next=0;
+  private active=true;
+  private capture=true;
+  private closed=false;
+  private deadline:bigint;
+  constructor(operation:FullProcObservation,private readonly remaining:()=>number){
+    assert(operation===FullProcObservation.Observe || operation===FullProcObservation.Qualify || operation===FullProcObservation.Pulse);
+    this.phases=Object.freeze([FullProcRejoinPhase.PostCensus,...(operation===FullProcObservation.Qualify?[FullProcRejoinPhase.QualificationPublication]:operation===FullProcObservation.Pulse?[FullProcRejoinPhase.PulsePublication,FullProcRejoinPhase.PulseLink]:[])]);
+    this.deadline=this.boundedDeadline();
+  }
+  private boundedDeadline():bigint {
+    const remaining=this.remaining();assert(Number.isFinite(remaining));
+    return process.hrtime.bigint()+BigInt(Math.floor(Math.max(0,Math.min(15000,remaining-10000))))*1000000n;
+  }
+  check():void {
+    try{assert(!this.closed && this.active);this.remaining();assert(process.hrtime.bigint()<this.deadline);}
+    catch(error){this.closed=true;throw error;}
+  }
+  finishCapture():void {try{assert(this.capture);this.check();this.capture=false;this.active=false;}catch(error){this.closed=true;throw error;}}
+  startRejoin(phase:FullProcRejoinPhase):void {
+    try{assert(!this.closed && !this.active && !this.capture && this.phases[this.next]===phase);
+      this.next++;this.deadline=this.boundedDeadline();this.active=true;this.check();}
+    catch(error){this.closed=true;throw error;}
+  }
+  finishRejoin():void {try{assert(!this.capture);this.check();this.active=false;}catch(error){this.closed=true;throw error;}}
+  close():void {this.closed=true;this.active=false;}
 }
 
 /** Finite observer completion, not admission or future absence authority. */
@@ -812,12 +845,14 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     throw error;
   }
   const target=():Target=>({image:imageIdentity,ancestors:held.filter(e=>e.stat.isDirectory()).map(e=>identity(e.stat)),loopRdev:loopStat?String(loopStat.rdev):null,storageDevice:storageMount?.device??null});
-  let completion:Readonly<{revalidate():void;close():void}>|undefined;
-  function observe(retainForPublication=false):Record<string,unknown> {
+  let completion:Readonly<{revalidate(phase:FullProcRejoinPhase):void;close():void}>|undefined;
+  function observe(operation=FullProcObservation.Observe):Record<string,unknown> {
+      const retainForPublication=operation!==FullProcObservation.Observe;
       assert(!completion);
-      const roster=retainFullProcRoster(budget),processes:ReturnType<typeof retainFullProcProcess>[]=[],anchors:FullProcTaskAnchor[]=[],views:ReturnType<typeof retainFullProcTaskView>[]=[],memberships:(()=>void)[]=[];
+      const phaseBudget=new FullProcPhaseBudget(operation,budget),scanBudget=()=>phaseBudget.check();
+      const roster=retainFullProcRoster(scanBudget),processes:ReturnType<typeof retainFullProcProcess>[]=[],anchors:FullProcTaskAnchor[]=[],views:ReturnType<typeof retainFullProcTaskView>[]=[],memberships:(()=>void)[]=[];
       let retainedDescriptors=0;
-      completion=Object.freeze({revalidate(){roster.revalidate();for(const check of memberships)check();for(const view of views)view.revalidate();for(const anchor of anchors)anchor.revalidate();for(const process of processes)process.revalidate();roster.revalidate();},close(){for(const view of views)view.close();for(const anchor of anchors)anchor.close();for(const process of processes)process.close();completion=undefined;}});
+      completion=Object.freeze({revalidate(phase:FullProcRejoinPhase){phaseBudget.startRejoin(phase);try{roster.revalidate();for(const check of memberships)check();for(const view of views)view.revalidate();for(const anchor of anchors)anchor.revalidate();for(const process of processes)process.revalidate();roster.revalidate();phaseBudget.finishRejoin();}catch(error){phaseBudget.close();throw error;}},close(){phaseBudget.close();for(const view of views)view.close();for(const anchor of anchors)anchor.close();for(const process of processes)process.close();completion=undefined;}});
       revalidateImage(6n*1024n*1024n*1024n);
       revalidateSelection();
       // Capture only the genuine private session's retained slots after its
@@ -826,10 +861,6 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       const refusals=new Set<FullBackingRefusal>();
       const loop=loopFacts(refusals),owners:Record<string,unknown>[]=[],unablePeers:{user:string;mnt:string}[]=[],capablePeers=new Set<string>();
       let tasks=0,descriptors=0,kernelTasks=0;
-      const scanDeadline=process.hrtime.bigint()+BigInt(Math.max(0,Math.min(15000,budget()-10000)))*1000000n;
-      const scanBudget=()=>{budget();
-        assert(process.hrtime.bigint()<scanDeadline);
-      };
       try {for(const name of numericNames("/proc",4096)){const pid=Number(name);
           let processAnchor:ReturnType<typeof retainFullProcProcess>|undefined;
           try {
@@ -921,7 +952,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
           finally{/* Process membership anchors close only with the completed sample. */}
       }}catch{refusals.add(FullBackingRefusal.Bound);
       }
-      try{completion.revalidate();}catch{refusals.add(FullBackingRefusal.ProcUncertain);}
+      try{phaseBudget.finishCapture();completion.revalidate(FullProcRejoinPhase.PostCensus);}catch{phaseBudget.close();refusals.add(FullBackingRefusal.ProcUncertain);}
       if(unablePeers.some(peer=>capablePeers.has(peer.user)))refusals.add(FullBackingRefusal.OwnerUnclassified);
       revalidateImage(6n*1024n*1024n*1024n);
       revalidateSelection();
@@ -940,7 +971,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     },
     observe(){try{return observe();}finally{completion?.close();}},
     qualify(){
-      assert(!qualificationStarted);qualificationStarted=true;const facts=observe(true);
+      assert(!qualificationStarted);qualificationStarted=true;const facts=observe(FullProcObservation.Qualify);
       assert(Array.isArray(facts.refusals) && facts.refusals.length===0 && selection && storageMount && loopStat);
       const rootFd=hold(fullNativeLiveRoot,true,0o700n);
       const data={schemaVersion:1,pairSha256:hash(sealBytes[0]!),invocationSealSha256:hash(sealBytes[1]!),guest:selection,image:imageIdentity,storageMount,storageIdentity:identity(statSync(selectedTask!.path+"/root"+currentBackingStorage,{bigint:true})),loopRdev:String(loopStat.rdev),factsSha256:hash(Buffer.from(JSON.stringify(facts)+"\n"))};
@@ -949,7 +980,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}
       // Complete all causal joins before the once-only, no-overwrite link.
       revalidateImage(6n*1024n*1024n*1024n);revalidateSelection();
-      assert(completion);completion.revalidate();
+      assert(completion);completion.revalidate(FullProcRejoinPhase.QualificationPublication);
       linkSync(pending,final);unlinkSync(pending);fsyncSync(rootFd);qualifiedSeal=bytes;completion.close();return facts;
     },
     pulse(requestPath:string){
@@ -959,13 +990,13 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       if(answeredPulses.has(requestPath))return;assert(answeredPulses.size<256);
       const bytes=fdBytes(hold(requestPath,false,0o600n),4096,budget),request=fullData(JSON.parse(bytes.toString("utf8")),["schemaVersion","nonce","parentInvocationId","pairSha256","invocationSealSha256","backingSha256"]);
       assert(Buffer.from(JSON.stringify(request)+"\n").equals(bytes) && request.schemaVersion===1 && request.nonce===requestPath.slice(prefix.length,-5) && request.parentInvocationId===process.env.INVOCATION_ID && request.pairSha256===hash(sealBytes[0]!) && request.invocationSealSha256===hash(sealBytes[1]!) && request.backingSha256===hash(qualifiedSeal));
-      try{const facts=observe(true);assert(Array.isArray(facts.refusals) && facts.refusals.length===0 && completion);
+      try{const facts=observe(FullProcObservation.Pulse);assert(Array.isArray(facts.refusals) && facts.refusals.length===0 && completion);
         const parentFd=hold(fullNativeLiveRoot,true,0o700n),path=`/proc/self/fd/${parentFd}/current-full-pulse-${request.nonce}.json`;
         const response=Buffer.from(JSON.stringify({schemaVersion:1,nonce:request.nonce,requestSha256:hash(bytes),pairSha256:request.pairSha256,invocationSealSha256:request.invocationSealSha256,backingSha256:request.backingSha256,factsSha256:hash(Buffer.from(JSON.stringify(facts)+"\n"))})+"\n");
-        revalidateImage(6n*1024n*1024n*1024n);revalidateSelection();completion.revalidate();
+        revalidateImage(6n*1024n*1024n*1024n);revalidateSelection();completion.revalidate(FullProcRejoinPhase.PulsePublication);
         const pending=path+".pending",fd=openSync(pending,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
         try{writeFileSync(fd,response);fsyncSync(fd);}finally{closeSync(fd);}
-        completion.revalidate();linkSync(pending,path);unlinkSync(pending);fsyncSync(parentFd);answeredPulses.add(requestPath);
+        completion.revalidate(FullProcRejoinPhase.PulseLink);linkSync(pending,path);unlinkSync(pending);fsyncSync(parentFd);answeredPulses.add(requestPath);
       }finally{completion?.close();}
     },
     prepareH1Terminal(){assert(!h1Terminal && !closed);h1Terminal=retainH1Terminal();},

@@ -5,8 +5,8 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import { FullBackingExposure, fullBackingDescriptor, fullBackingMounts, retainFullProcProcess } from "./current-full-backing-collector.js";
+import test, { mock } from "node:test";
+import { FullBackingExposure, FullProcObservation, FullProcRejoinPhase, FullProcPhaseBudget, fullBackingDescriptor, fullBackingMounts, retainFullProcProcess } from "./current-full-backing-collector.js";
 
 import { MountRootKind, fullReadonlyMountData, readFullMountTable } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 
@@ -18,6 +18,37 @@ if(process.argv[2]==="--TEST-full-proc-anchor-child") {
   process.once("disconnect",()=>process.exit(0));
   process.send("TEST-proc-anchor-ready");
 } else {
+  test("retained checks use one fresh finite phase after completed capture, never per-task renewal",()=>{
+    let now=0n;const clock=mock.method(process.hrtime,"bigint",()=>now);
+    try{const phase=new FullProcPhaseBudget(FullProcObservation.Pulse,()=>120000),retainedCheck=()=>phase.check();
+      now=14000000000n;retainedCheck();phase.finishCapture();now=16000000000n;
+      phase.startRejoin(FullProcRejoinPhase.PostCensus);retainedCheck();phase.finishRejoin();
+      const duplicate=new FullProcPhaseBudget(FullProcObservation.Pulse,()=>120000);duplicate.finishCapture();duplicate.startRejoin(FullProcRejoinPhase.PostCensus);duplicate.finishRejoin();
+      assert.throws(()=>duplicate.startRejoin(FullProcRejoinPhase.PostCensus));assert.throws(()=>duplicate.startRejoin(FullProcRejoinPhase.PulsePublication));
+      phase.startRejoin(FullProcRejoinPhase.PulsePublication);now=30000000000n;retainedCheck();
+      now=31000000000n;assert.throws(retainedCheck);assert.throws(()=>phase.startRejoin(FullProcRejoinPhase.PulseLink));
+    }finally{clock.mock.restore();}
+  });
+  test("phase order, closure, reserve and post-I/O deadline cannot be reopened",()=>{
+    let now=0n;const clock=mock.method(process.hrtime,"bigint",()=>now),directory=mkdtempSync(join(tmpdir(),"TEST-phase-"));
+    try{const phase=new FullProcPhaseBudget(FullProcObservation.Qualify,()=>60000);phase.finishCapture();
+      const wrong=new FullProcPhaseBudget(FullProcObservation.Qualify,()=>60000);wrong.finishCapture();assert.throws(()=>wrong.startRejoin(FullProcRejoinPhase.PulsePublication));assert.throws(()=>wrong.startRejoin(FullProcRejoinPhase.PostCensus));
+      phase.startRejoin(FullProcRejoinPhase.PostCensus);
+      const file=join(directory,"owned"),bytes=Buffer.from("same original owned baseline");writeFileSync(file,bytes);
+      assert(readFileSync(file).equals(bytes));now=15000000000n;
+      assert.throws(()=>phase.finishRejoin());assert.throws(()=>phase.startRejoin(FullProcRejoinPhase.QualificationPublication));
+      assert.throws(()=>new FullProcPhaseBudget(FullProcObservation.Observe,()=>10000).check());
+      const closed=new FullProcPhaseBudget(FullProcObservation.Observe,()=>60000);closed.close();assert.throws(()=>closed.check());
+    }finally{clock.mock.restore();rmSync(directory,{recursive:true,force:true});}
+  });
+  test("invalid capture or rejoin finish permanently refuses later legal transitions",()=>{
+    const clock=mock.method(process.hrtime,"bigint",()=>0n);
+    try{const duplicate=new FullProcPhaseBudget(FullProcObservation.Qualify,()=>60000);duplicate.finishCapture();
+      assert.throws(()=>duplicate.finishCapture());assert.throws(()=>duplicate.startRejoin(FullProcRejoinPhase.PostCensus));
+      const premature=new FullProcPhaseBudget(FullProcObservation.Qualify,()=>60000);
+      assert.throws(()=>premature.finishRejoin());assert.throws(()=>premature.finishCapture());assert.throws(()=>premature.startRejoin(FullProcRejoinPhase.PostCensus));
+    }finally{clock.mock.restore();}
+  });
   // A host containing persistent namespace mounts must not fail before the
   // selected path's descriptor join. Magic roots must never become path roots.
   const rootRow="1 1 8:1 / / ro - ext4 /dev/root ro\n";
