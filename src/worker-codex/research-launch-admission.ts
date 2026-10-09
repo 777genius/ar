@@ -15,9 +15,11 @@ import { researchProviderReservationLimit, researchProviderUnits, signalResearch
 import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
+import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
+const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: () => void }>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 export const researchJobAuthority = (jobId: string): string => join(researchAuthorityRoot, researchName(researchId(jobId)));
 export function researchCurrentStart(jobId: string): { directory: string; spec: ResearchStartSpec; bytes: Buffer } {
@@ -28,6 +30,41 @@ export function researchCurrentStart(jobId: string): { directory: string; spec: 
   const spec = parseResearchStartSpec(researchJson(bytes));
   if (spec.request.jobId !== jobId || spec.startId !== active.startId || researchHash(bytes) !== active.specSha256) researchInvalid();
   return { directory, spec, bytes };
+}
+/** A revoked project grant remains protected origin evidence. A successor's
+ * different grant hash cannot be revoked by an earlier exact-grant request. */
+export function assertResearchProjectGrantNotRevoked(jobId: string, grantSha256: string): void {
+  const path = join(researchJobAuthority(jobId), "revoked-project-grant.json");
+  if (!existsSync(path)) return;
+  const revoked = researchRecord(researchJson(researchRead(path)), "schemaVersion,grantSha256");
+  if (revoked.schemaVersion !== 1 || typeof revoked.grantSha256 !== "string" || !/^[a-f0-9]{64}$/.test(revoked.grantSha256) ||
+      revoked.grantSha256 === grantSha256) researchInvalid();
+}
+/** Each trusted process prepares its own current-byte reader. This is neither
+ * a portable permit nor a cached authority decision: every effect rereads the
+ * exact protected project documents through the retained synchronous reader. */
+export async function prepareResearchProjectLaunchAuthority(jobId: string, startId: string,
+  assertRoot: () => void = assertResearchInitialRoot): Promise<void> {
+  assertRoot(); assertResearchSharedHost();
+  const initial = researchCurrentStart(jobId), binding = initial.spec.projectLaunchBinding;
+  if (initial.spec.startId !== startId) researchInvalid();
+  if (!binding) return;
+  const assertAuthorityBytes = await assertResearchProjectLaunchBindingCurrent(binding, initial.spec.request, assertRoot);
+  assertRoot(); assertResearchSharedHost();
+  const fresh = researchCurrentStart(jobId), grantBytes = researchRead(join(researchJobAuthority(jobId), "grant.json"));
+  if (!fresh.bytes.equals(initial.bytes) || fresh.directory !== initial.directory || existsSync(join(initial.directory, "closing.json")) ||
+      researchHash(grantBytes) !== initial.spec.grantSha256 ||
+      JSON.stringify(parseResearchGrant(researchJson(grantBytes)).projectLaunchBinding) !== JSON.stringify(binding)) researchInvalid();
+  assertResearchProjectGrantNotRevoked(jobId, initial.spec.grantSha256);
+  assertAuthorityBytes();
+  projectAuthorityWitnesses.set(initial.directory, { bytes: Buffer.from(initial.bytes), spec: JSON.stringify(initial.spec), assertAuthorityBytes });
+}
+function assertResearchProjectLaunchAuthorityBytes(spec: ResearchStartSpec): void {
+  if (!spec.projectLaunchBinding) return;
+  const current = researchCurrentStart(spec.request.jobId), witness = projectAuthorityWitnesses.get(current.directory);
+  if (!witness || !current.bytes.equals(witness.bytes) || witness.spec !== JSON.stringify(spec)) researchInvalid();
+  assertResearchProjectGrantNotRevoked(spec.request.jobId, spec.grantSha256);
+  witness.assertAuthorityBytes();
 }
 /** The exclusive home record bounds later MiMo provider preparations to the
  * original allocation. A same-job path or a parsed caller plan is insufficient. */
@@ -61,6 +98,7 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
       grant.jobRootDir !== spec.request.jobRootDir || grant.workspacePath !== spec.request.workspacePath ||
       JSON.stringify(grant.jobDirectory) !== JSON.stringify(spec.jobDirectory) ||
       JSON.stringify(grant.registeredHandoff) !== JSON.stringify(spec.registeredHandoff) ||
+      JSON.stringify(grant.projectLaunchBinding) !== JSON.stringify(spec.projectLaunchBinding) ||
       JSON.stringify(grant.workspaceDirectory) !== JSON.stringify(spec.workspaceDirectory)) researchInvalid();
   if ((spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
   assertResearchDirectory(spec.jobDirectory); assertResearchDirectory(spec.workspaceDirectory);
@@ -69,6 +107,7 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
   assertRegisteredResearchHandoffPin(spec, join(pins, ".."));
   if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
+  assertResearchProjectLaunchAuthorityBytes(spec);
 }
 function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
   if (spec.runtimeDirectory !== installedResearchRuntimeDirectory()) researchInvalid();
@@ -98,6 +137,7 @@ function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<
   if ((!allowClosing && existsSync(join(initial.directory, "closing.json"))) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
       (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
       researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== initial.spec.grantSha256) researchInvalid();
+  assertResearchProjectLaunchAuthorityBytes(initial.spec);
 }
 export function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   assertResearchCurrentAuthorityInternal(jobId, initial, bindingBytes, allowClosing, assertResearchInitialRoot);
@@ -125,10 +165,16 @@ export async function bindRegisteredResearchRuntime(jobId: string, startId: stri
   await assertRegisteredResearchHandoffCurrent(initial.spec.registeredHandoff, initial.spec.request);
   return bindResearchRuntimeInternal(jobId, startId, initial.bytes);
 }
+export async function bindProjectResearchRuntime(jobId: string, startId: string): Promise<ResearchStartSpec> {
+  const initial = researchCurrentStart(jobId);
+  if (initial.spec.startId !== startId || !initial.spec.projectLaunchBinding) researchInvalid();
+  await prepareResearchProjectLaunchAuthority(jobId, startId);
+  return bindResearchRuntimeInternal(jobId, startId, initial.bytes);
+}
 function bindResearchRuntimeInternal(jobId: string, startId: string, registeredBytes?: Buffer): ResearchStartSpec {
   assertResearchInitialRoot(); assertResearchSharedHost();
   const initial = researchCurrentStart(jobId), { directory, spec, bytes } = initial;
-  if (registeredBytes ? !registeredBytes.equals(bytes) : spec.registeredHandoff !== undefined) researchInvalid();
+  if (registeredBytes ? !registeredBytes.equals(bytes) : spec.registeredHandoff !== undefined || spec.projectLaunchBinding !== undefined) researchInvalid();
   if (spec.startId !== startId || existsSync(join(directory, "closing.json"))) researchInvalid();
   assertResearchStartMaterial(spec);
   const identity = researchProcessIdentity(), service = researchServiceIdentity(spec.unit);

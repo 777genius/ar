@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
+import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
@@ -43,6 +44,8 @@ export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobMa
       if (researchHash(grantBytes) !== spec.grantSha256 || grant.jobId !== manifest.jobId ||
           grant.jobRootDir !== manifest.jobRootDir || grant.workspacePath !== manifest.workspacePath) return { status: "unknown" };
     }
+    const assertProjectBytes = spec.projectLaunchBinding
+      ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request) : undefined;
     const assertCurrent = (): boolean => sameOptionalBytes(active, optionalPrivateRecord(activePath)) &&
       sameOptionalBytes(grantBytes, optionalPrivateRecord(grantPath));
     // The installed path must match the protected first-plan profile provenance;
@@ -60,6 +63,7 @@ export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobMa
       .map(({ device, backingPath }) => ({ device, backingPath }));
     if (!researchCurrentStart(manifest.jobId).bytes.equals(current.bytes) || !assertCurrent() ||
         JSON.stringify(researchProviderUnits(current.directory)) !== JSON.stringify(units)) return { status: "unknown" };
+    assertProjectBytes?.();
     return { status: "allocated", roots };
   } catch {
     return { status: "unknown" };

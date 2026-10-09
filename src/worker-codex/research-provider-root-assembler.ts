@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertResearchProviderCurrentAuthority, assertResearchProviderStartMaterial, readResearchStartBinding, researchCurrentStart } from "./research-launch-admission";
+import { assertResearchProviderCurrentAuthority, assertResearchProviderStartMaterial, readResearchStartBinding, researchCurrentStart, prepareResearchProjectLaunchAuthority } from "./research-launch-admission";
 import { researchProviderSetupAllowanceMs } from "./research-launch-contract";
 import { assertResearchProviderRootIdentity, assertResearchServiceOwner, researchDescription, researchExecutableDigest, researchProcessIdentity, researchProcessLifetime, researchServiceIdentity } from "./research-launch-host";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation } from "./research-launch-lifecycle";
@@ -63,7 +63,9 @@ export function researchProviderRootTransition(root: string): Readonly<{ command
 export async function assembleResearchProviderRoot(jobId: string, unit: string, home: string, seal: string, deadline: number): Promise<number> {
   assertResearchProviderRootIdentity();
   if (!Number.isSafeInteger(deadline) || deadline <= now()) researchInvalid();
-  const current = researchCurrentStart(jobId), remaining = deadline - now();
+  const current = researchCurrentStart(jobId);
+  if (current.spec.projectLaunchBinding) await prepareResearchProjectLaunchAuthority(jobId, current.spec.startId, assertResearchProviderRootIdentity);
+  const remaining = deadline - now();
   if (remaining <= 0 || remaining > researchProviderSetupAllowanceMs(current.spec.request)) researchInvalid();
   const reservation = readResearchProviderReservation(current.directory, unit);
   if (reservation.specSha256 !== researchHash(current.bytes)) researchInvalid();
@@ -95,9 +97,9 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
   const finalAuthority = (): void => {
     // Reuse the established grant/closing/shared-policy/root/pin checks after
     // blocking material walks, at each synchronous mount/spawn boundary.
-    assertResearchProviderCurrentAuthority(jobId, current, root, bindingBytes);
     assertResearchProviderNotCancelled(current.directory, unit);
     if (now() >= deadline) researchInvalid();
+    assertResearchProviderCurrentAuthority(jobId, current, root, bindingBytes);
   };
   assertAuthority(); assertResearchProviderStartMaterial(root); assertAuthority(); finalAuthority();
   for (const path of ["/usr/bin/mount", "/usr/bin/bash", "/usr/sbin/pivot_root", "/usr/bin/umount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);

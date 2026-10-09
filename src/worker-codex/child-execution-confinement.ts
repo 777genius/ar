@@ -60,7 +60,21 @@ function invalid(): never { throw new Error("child_effective_confinement_conflic
 
 /** Manifest/launch adapter validation; no default fills a missing child setting. */
 export function childConfigFromRecord(value: Readonly<Record<string, unknown>>): Pick<CodexGoalRunConfig, "childLifetime" | "maxGoalTurns" | "safeExecutionPolicy"> {
-  if (value.childLifetime === undefined) return {};
+  if (value.childLifetime === undefined) {
+    // Registered native MiMo uses the existing fixed worker attempt contract.
+    // Retain explicitly declared semantics instead of silently losing them in
+    // stored-manifest/launch projection. Unspecified legacy jobs stay unchanged.
+    if (value.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+        (value.maxGoalTurns === undefined && value.safeExecutionPolicy === undefined)) return {};
+    const policy = value.safeExecutionPolicy;
+    if (value.maxGoalTurns !== 8 || !policy || typeof policy !== "object" || Array.isArray(policy)) invalid();
+    const expected = { maxAttempts: 1, continuationMode: "disabled" as const,
+      retryOnCapacity: false, retryOnAccountUnavailable: false, retryOnReconnectRequired: false };
+    const record = policy as Record<string, unknown>;
+    if (Object.keys(record).length !== Object.keys(expected).length ||
+        Object.entries(expected).some(([key, item]) => record[key] !== item)) invalid();
+    return { maxGoalTurns: 8, safeExecutionPolicy: expected };
+  }
   const childLifetime = parseChildLifetime(value.childLifetime);
   if (value.maxGoalTurns !== childLifetime.maxGoalTurns || !value.safeExecutionPolicy ||
       typeof value.safeExecutionPolicy !== "object" || Array.isArray(value.safeExecutionPolicy)) invalid();

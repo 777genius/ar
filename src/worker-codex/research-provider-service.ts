@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
-import { assertResearchMimoProviderHome, captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
+import { assertResearchMimoProviderHome, captureResearchRuntime, researchCurrentStart, prepareResearchProjectLaunchAuthority } from "./research-launch-admission";
 import { copyResearchHostCommandFailure, researchHostCommandFailure, isResearchDenialObservation, researchHash, researchInvalid,
   researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
@@ -116,6 +116,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
 export async function runResearchProviderService(jobId: string, unit: string, selectedCodexHome: string): Promise<void> {
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const { directory, spec, bytes } = researchCurrentStart(jobId);
+  if (spec.projectLaunchBinding) await prepareResearchProjectLaunchAuthority(jobId, spec.startId);
   const state: { phase: ResearchProviderLaunchPhase } = { phase: "runtime-capture" };
   const scopes: { scope: RootTimingScope; outcome: RootTimingOutcome; elapsedMs: number; checks: readonly ResearchProviderRootTiming[] }[] = [];
   const capture = <T>(scope: RootTimingScope, operation: () => T): T => {
@@ -220,9 +221,9 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     // startup budget; retain all fences and hold bootstrap throughout.
     const deadline = performance.now() + researchProviderSetupAllowanceMs(request);
     const assertTransportPermission = (): void => {
-      captured.assertInertAuthorityCurrent();
       assertResearchProviderNotCancelled(directory, unit);
       assertResearchMimoProviderHome(spec, selectedCodexHome);
+      captured.assertInertAuthorityCurrent();
       if (performance.now() >= deadline) throw transportDenial("research-provider-transport:setup-deadline");
       if (proxyExited) throw transportDenial("research-provider-transport:proxy-exited");
       if (transportFailed) throw transportDenial("research-provider-transport:transport-failed");

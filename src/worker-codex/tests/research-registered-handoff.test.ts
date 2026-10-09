@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { prepareProjectResearchLaunch } from "../research-project-launch-adapter";
+import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorization } from "../research-project-launch-authorization";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
-import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
-import { bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
+import { bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard } from "../research-launch-admission";
 import { cancelResearchLaunch, cancelRegisteredResearchLaunch } from "../research-launch-lifecycle";
 import { researchHash, researchRead } from "../research-launch-files";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
@@ -392,5 +395,75 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     await expect(cancelRegisteredResearchLaunch({ jobId: started.jobId, startId: started.startId,
       specSha256: started.specSha256, requestSha256: current.spec.requestSha256 })).rejects.toThrow();
     expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+  });
+});
+
+/** Same protected manifest/receipt boundary; no additional service mock suite. */
+async function nativeProjectSelection() {
+  const request = parseResearchOperatorRequest({ ...selected(), accounts: ["account-q"],
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: codexMimoDefaultModel });
+  state.scope = { ...state.scope!, allowedAccountIds: ["account-q"] };
+  const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: request.jobId });
+  const old = JSON.parse(readFileSync(local(path), "utf8"));
+  delete old.durableHandoffRootDir;
+  writeFileSync(local(path), JSON.stringify({ ...old, ...request, executionEngine: "app-server",
+    workerReportMode: "structured-output", maxGoalTurns: 8,
+    safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
+      retryOnAccountUnavailable: false, retryOnReconnectRequired: false } }), { mode: 0o600 });
+  const loaded = await loadJobLaunch({ registryRootDir: registry, jobId: request.jobId });
+  const receipt = JSON.parse(readFileSync(local(receiptPath()), "utf8"));
+  writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt,
+    manifestSha256: researchHash(JSON.stringify(loaded.manifest)) }), { mode: 0o600 });
+  const reservation = await reserveCodexProjectAccount({ manifest: loaded.manifest, launch: loaded.launch,
+    deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+  return { request, ...loaded, reservedLaunch: reservation.launch };
+}
+describe("native project launch authorization", () => {
+  // RED: a clone/serialized reservation must never mint native effect authority.
+  it("requires the original reservation and consumes its native authorization once without preparing a sink", async () => {
+    const selected = await nativeProjectSelection(); rmdirSync(local(sink));
+    const input = { registryRootDir: registry, controllerJobId: "TEST-controller", request: selected.request,
+      reservedLaunch: selected.reservedLaunch };
+    await expect(authorizeResearchProjectLaunch({ ...input, reservedLaunch: { ...selected.reservedLaunch } }))
+      .rejects.toThrow("project_control_reserved_launch_authority_invalid");
+    const authorization = await authorizeResearchProjectLaunch(input);
+    const binding = await consumeResearchProjectLaunchAuthorization(authorization);
+    expect(binding).toMatchObject({ registryRootDir: registry, controllerJobId: "TEST-controller",
+      registeredExecution: { accountId: "account-q", maxAccountCycles: 1 } });
+    expect(authorization.request.durableHandoffRootDir).toBeUndefined();
+    expect(existsSync(local(sink))).toBe(false); expect(host.pins.size).toBe(0);
+    await expect(consumeResearchProjectLaunchAuthorization(authorization)).rejects.toThrow();
+  });
+  // A project launch must traverse its owner port, and revoke cannot downgrade it.
+  it("submits the reserved native adapter once and retains its project origin on revoke", async () => {
+    const selected = await nativeProjectSelection();
+    const start = await prepareProjectResearchLaunch({ registryRootDir: registry,
+      controllerJobId: "TEST-controller", reservedLaunch: selected.reservedLaunch });
+    expect(start).toBeTypeOf("function");
+    const started = await start!();
+    const current = researchCurrentStart(started.jobId);
+    expect(current.spec.projectLaunchBinding?.registeredExecution?.accountId).toBe("account-q");
+    expect(current.spec.registeredHandoff).toBeUndefined();
+    expect(host.pins.has(join(current.directory, "pins/durable-handoff"))).toBe(false);
+    host.group = `/system.slice/${started.unit}`;
+    await bindProjectResearchRuntime(started.jobId, started.startId);
+    const captured = captureResearchRuntime(selected.request);
+    await expect(start!()).rejects.toThrow("project_control_native_launch_already_submitted");
+    host.group = "/user.slice/TEST-operator.scope";
+    await revokeProjectResearchLaunch(started.jobId, current.spec.grantSha256);
+    host.group = `/system.slice/${started.unit}`;
+    expect(() => captured.assertAuthorityCurrent()).toThrow();
+    host.group = "/user.slice/TEST-operator.scope";
+    expect(() => grantOwnedMimoWorkerLaunch(started.jobId, selected.request.jobRootDir, selected.request.workspacePath)).toThrow();
+    expect(host.authReads).toBe(0);
+  });
+  // RED: revocation between broker authorization and native grant consumption.
+  it("rejects an authorization after its exact receipt is revoked", async () => {
+    const selected = await nativeProjectSelection();
+    const authorization = await authorizeResearchProjectLaunch({ registryRootDir: registry,
+      controllerJobId: "TEST-controller", request: selected.request, reservedLaunch: selected.reservedLaunch });
+    mutateReceipt();
+    await expect(consumeResearchProjectLaunchAuthorization(authorization)).rejects.toThrow();
+    expect(host.pins.size).toBe(0);
   });
 });
