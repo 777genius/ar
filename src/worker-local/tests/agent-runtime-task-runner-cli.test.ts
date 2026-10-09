@@ -493,53 +493,72 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     const stdout: string[] = [];
     let aborted = false;
     let disposed = false;
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          timeoutMs: 5,
-          task: {
-            kind: "structured-prompt",
-            prompt: "never finishes",
+    let markRunEntered!: () => void;
+    const runEntered = new Promise<void>((resolve) => {
+      markRunEntered = resolve;
+    });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const execution = runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "claude",
+          "--state-root",
+          "/tmp/runtime-state",
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            timeoutMs: 5,
+            task: {
+              kind: "structured-prompt",
+              prompt: "never finishes",
+            },
+          }),
+          env: {
+            SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
           },
         }),
-        env: {
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async run(job) {
-          job.abortSignal?.addEventListener("abort", () => {
-            aborted = true;
-          });
-          return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
-        },
-        async dispose() {
-          disposed = true;
-        },
-      }),
-    );
+        () => ({
+          async start() {},
+          async run(job) {
+            job.abortSignal?.addEventListener("abort", () => {
+              aborted = true;
+            });
+            markRunEntered();
+            return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
+          },
+          async dispose() {
+            disposed = true;
+          },
+        }),
+      );
 
-    expect(exitCode).toBe(1);
-    expect(aborted).toBe(true);
-    expect(disposed).toBe(true);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "failed",
-      failure: {
-        code: "task_timeout",
-      },
-    });
+      await Promise.race([
+        runEntered,
+        execution.then(() => {
+          throw new Error("task finished before worker.run entered");
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(5);
+      const exitCode = await execution;
+
+      expect(exitCode).toBe(1);
+      expect(aborted).toBe(true);
+      expect(disposed).toBe(true);
+      expect(JSON.parse(stdout.join(""))).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "task_timeout",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a timeout result when the worker start never resolves", async () => {
