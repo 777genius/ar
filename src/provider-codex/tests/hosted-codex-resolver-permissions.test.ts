@@ -34,6 +34,28 @@ beforeEach(() => {
 afterEach(() => { actual.rmSync(root, { recursive: true, force: true }); });
 
 describe("hosted resolver leaf admission", () => {
+  it("admits a trusted native resolver leaf in both root-deny profiles", () => {
+    resolverFixture();
+    const resolveStat = (path: Parameters<typeof lstatSync>[0]) => actual.lstatSync(
+      path === target ? join(root, "resolver") : join(root, "resolv.conf"),
+    );
+    vi.mocked(lstatSync).mockImplementation(path => {
+      const stat = path === target || path === "/etc/resolv.conf"
+        ? resolveStat(path) : actual.lstatSync(root);
+      return Object.assign(stat, { uid: 0 });
+    });
+    const paths = hostedCodexResolverReadPaths({}, true);
+    expect(paths).toEqual([target]);
+    const config = hostedCodexPermissionProfilesToml(codexProviderApiEgressPolicy(), undefined, undefined, undefined, paths);
+    expect(config.match(/"\/run\/systemd\/resolve\/stub-resolv.conf" = "read"/g)).toHaveLength(2);
+    expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
+    expect(config).not.toContain('"/run" = "read"');
+    vi.mocked(lstatSync).mockImplementation(path => Object.assign(
+      path === target || path === "/etc/resolv.conf" ? resolveStat(path) : actual.lstatSync(root),
+      { uid: path === "/run/systemd/resolve" ? 1000 : 0 },
+    ));
+    expect(() => hostedCodexResolverReadPaths({}, true)).toThrow("hosted_permission_resolver_custody_invalid");
+  });
   it.each([0o444, 0o644])("admits only the selected public resolver in both profiles (mode %s)", mode => {
     resolverFixture(mode);
     const paths = hostedCodexResolverReadPaths(hosted);
@@ -44,7 +66,7 @@ describe("hosted resolver leaf admission", () => {
     expect(config).not.toContain('"/run/systemd/resolve" = "read"');
     expect(config).not.toContain('"/run/systemd/resolve/resolv.conf" = "read"');
     expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
-    expect(config.match(/"\/etc\/subscription-runtime\/secrets" = "deny"/g)).toHaveLength(2);
+    expect(config.match(/"\/etc\/subscription-runtime" = "deny"/g)).toHaveLength(2);
   });
   it("rejects a private symlink before observing its target", () => {
     resolverFixture();

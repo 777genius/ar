@@ -8,8 +8,8 @@ import {
   type DependencyInstallKey, type DependencyTestNpmInstallKeyInput, type DependencyTestNpmToolchain,
 } from "../../worker-core/dependency-environment/domain/dependency-install-key";
 import {
-  dependencyLocalNpmArgv, qualifyDependencyNpmLocalClosure,
-  type DependencyLocalInstallKey, type DependencyTestNpmLocalInstallKeyInput, type DependencyNpmLocalClosure, type DependencyLocalCopiedFile,
+  dependencyLocalNpmArgv, dependencyLocalRegistrySelectionVerificationArgv, qualifyDependencyNpmLocalClosure,
+  type DependencyLocalRegistrySelection, type DependencyLocalInstallKey, type DependencyTestNpmLocalInstallKeyInput, type DependencyNpmLocalClosure, type DependencyLocalCopiedFile,
 } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
 
 export { DependencyInstallKeyError, validateDependencyTestNpmInputs };
@@ -106,9 +106,8 @@ export function buildTestNpmLocalDependencyInstallKey(input: DependencyTestNpmLo
       !(input.packageBytes instanceof Uint8Array) || !(input.lockBytes instanceof Uint8Array) ||
       input.maxInputBytes > 64 * 1024 * 1024 || input.packageBytes.length + input.lockBytes.length > input.maxInputBytes ||
       !Object.values(DependencyNpmLockName).includes(input.lockName)) fail(Failure.InvalidInputs);
-  const supplied = object(input.closure);
-  allowed(supplied, ["version", "profile", "layout", "packages", "edges"]);
-  if (input.closure.version !== 1 || input.closure.profile !== DependencyInstallProfile.TestNpmLocalNoLifecycleV1 ||
+  validateLocalClosureFields(input.closure);
+  if (![1, 2].includes(input.closure.version) || input.closure.profile !== DependencyInstallProfile.TestNpmLocalNoLifecycleV1 ||
       !Array.isArray(input.closure.packages) || input.closure.packages.length > 128 || !Array.isArray(input.closure.edges) ||
       input.closure.edges.length > 8192) fail(Failure.UnsupportedClosure);
   let total = input.packageBytes.length + input.lockBytes.length;
@@ -127,17 +126,19 @@ export function buildTestNpmLocalDependencyInstallKey(input: DependencyTestNpmLo
     }) };
   });
   if (total > input.maxInputBytes) fail(Failure.InvalidInputs);
-  const closure = qualifyDependencyNpmLocalClosure({ packageBytes, lockBytes, packages });
+  const toolchain = validateDependencyTestNpmToolchain(input.toolchain);
+  if (toolchain.npmVersion !== "10.9.9") fail(Failure.UnsupportedProfile);
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes, lockBytes, packages, selectionToolchain: toolchain });
   const normalizeEdges = (value: DependencyNpmLocalClosure["edges"]) => value.map((edge) => {
     allowed(object(edge), ["declaringPath", "field", "name", "spec", "resolutionBase", "targetPath", "kind", "installedPaths"]);
     if (!Array.isArray(edge.installedPaths)) fail(Failure.InvalidInputs);
     return { declaringPath: edge.declaringPath, field: edge.field, name: edge.name, spec: edge.spec,
       resolutionBase: edge.resolutionBase, targetPath: edge.targetPath, kind: edge.kind, installedPaths: [...edge.installedPaths].sort() };
   }).sort((a, b) => Buffer.compare(Buffer.from(JSON.stringify(a)), Buffer.from(JSON.stringify(b))));
-  if (input.closure.layout !== closure.layout || JSON.stringify(normalizeEdges(input.closure.edges)) !== JSON.stringify(normalizeEdges(closure.edges))) fail(Failure.UnsupportedClosure);
-  const toolchain = validateDependencyTestNpmToolchain(input.toolchain);
-  if (toolchain.npmVersion !== "10.9.9") fail(Failure.UnsupportedProfile);
-  const canonicalBytes = Buffer.from(JSON.stringify({ version: 2, profile: closure.profile,
+  if (input.closure.version !== closure.version ||
+      JSON.stringify(input.closure.version === 2 ? input.closure.registrySelection : undefined) !==
+      JSON.stringify(closure.version === 2 ? closure.registrySelection : undefined) || input.closure.layout !== closure.layout || JSON.stringify(normalizeEdges(input.closure.edges)) !== JSON.stringify(normalizeEdges(closure.edges))) fail(Failure.UnsupportedClosure);
+  const canonicalBytes = Buffer.from(JSON.stringify({ version: closure.version === 2 ? 3 : 2, profile: closure.profile,
     package: { bytes: packageBytes.length, sha256: digest(packageBytes) },
     lock: { name: input.lockName, bytes: lockBytes.length, sha256: digest(lockBytes) },
     local: { version: closure.version, layout: closure.layout, packages: closure.packages.map((local) => ({
@@ -145,10 +146,50 @@ export function buildTestNpmLocalDependencyInstallKey(input: DependencyTestNpmLo
       directories: [...local.directories].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))),
       files: local.files.map((file) => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: digest(file.bytes) }))
         .sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path))),
-    })), edges: normalizeEdges(closure.edges) }, toolchain,
-    argv: dependencyLocalNpmArgv(closure.layout), runtimeConfig: dependencyTestNpmConfig,
+    })), edges: normalizeEdges(closure.edges), ...(closure.version === 2 ? { registrySelection: closure.registrySelection } : {}) }, toolchain,
+    argv: dependencyLocalNpmArgv(closure.layout),
+    ...(closure.version === 2 ? { verificationArgv: dependencyLocalRegistrySelectionVerificationArgv(closure.layout) } : {}), runtimeConfig: dependencyTestNpmConfig,
     umask: dependencyTestNpmUmask, environment: dependencyTestNpmEnvironment,
   }) + "\n");
   if (canonicalBytes.length > input.maxCanonicalBytes) fail(Failure.InvalidInputs);
   return { profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1, canonicalBytes, installKey: digest(canonicalBytes) };
+}
+
+function validateLocalClosureFields(closure: DependencyNpmLocalClosure): void {
+  allowed(object(closure), ["version", "profile", "layout", "packages", "edges", ...(closure.version === 2 ? ["registrySelection"] : [])]);
+  if (!Array.isArray(closure.edges) || closure.edges.length > 8192) fail(Failure.InvalidInputs);
+  for (const edge of closure.edges) allowed(object(edge), ["declaringPath", "field", "name", "spec", "resolutionBase", "targetPath", "kind", "installedPaths"]);
+  if (closure.version === 2) {
+    const selection = object(closure.registrySelection);
+    allowed(selection, ["revision", "platform", "arch", "libc", "excludedScriptPackages", "absentOptionalPeers"]);
+    if (!Array.isArray(selection.excludedScriptPackages) || !Array.isArray(selection.absentOptionalPeers) ||
+        selection.excludedScriptPackages.length > 8192 || selection.absentOptionalPeers.length > 8192) fail(Failure.InvalidInputs);
+    for (const peer of selection.absentOptionalPeers) allowed(object(peer), ["declaringPath", "name", "spec", "resolutionSearchPaths"]);
+  }
+}
+/** Exact local input commitment; no physical custody or install authority. */
+export type DependencyLocalInputCommitment = {
+  readonly version: 1 | 2; readonly lockName: DependencyNpmLockName; readonly root: string; readonly lock: string;
+  readonly layout: DependencyNpmLocalClosure["layout"];
+  readonly packages: readonly { readonly path: string; readonly kind: DependencyNpmLocalClosure["packages"][number]["kind"];
+    readonly package: string; readonly directories: readonly string[];
+    readonly files: readonly { readonly path: string; readonly mode: number; readonly bytes: number; readonly sha256: string }[] }[];
+  readonly edges: DependencyNpmLocalClosure["edges"]; readonly registrySelection?: DependencyLocalRegistrySelection;
+};
+export function encodeDependencyLocalInputCommitment(input: {
+  readonly packageBytes: Uint8Array; readonly lockBytes: Uint8Array; readonly lockName: DependencyNpmLockName;
+  readonly closure: DependencyNpmLocalClosure; readonly selectionToolchain?: DependencyTestNpmToolchain;
+}): { readonly commitment: DependencyLocalInputCommitment; readonly canonicalBytes: Uint8Array; readonly sha256: string } {
+  if (!Object.values(DependencyNpmLockName).includes(input.lockName)) fail(Failure.InvalidInputs);
+  validateLocalClosureFields(input.closure);
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: input.packageBytes, lockBytes: input.lockBytes,
+    packages: input.closure.packages, ...(input.selectionToolchain ? { selectionToolchain: validateDependencyTestNpmToolchain(input.selectionToolchain) } : {}) });
+  if (JSON.stringify(closure) !== JSON.stringify(input.closure)) fail(Failure.UnsupportedClosure);
+  const commitment: DependencyLocalInputCommitment = { version: closure.version === 2 ? 2 : 1, lockName: input.lockName,
+    root: digest(input.packageBytes), lock: digest(input.lockBytes), layout: closure.layout,
+    packages: closure.packages.map(local => ({ path: local.path, kind: local.kind, package: digest(local.packageBytes),
+      directories: local.directories, files: local.files.map(file => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: digest(file.bytes) })) })),
+    edges: closure.edges, ...(closure.version === 2 ? { registrySelection: closure.registrySelection } : {}) };
+  const canonicalBytes = Buffer.from(JSON.stringify(commitment) + "\n");
+  return { commitment, canonicalBytes, sha256: digest(canonicalBytes) };
 }

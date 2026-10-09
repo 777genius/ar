@@ -4,7 +4,9 @@ export const hostedFdReadyMarker = "subscription-runtime-fd-ready-v1\n";
 export const hostedInstallerReleaseMarker = "subscription-runtime-installer-fd-release-v1\n";
 export const hostedFdPreludeMaximumMs = 60_000;
 export const hostedFdUnsetEnvironment = "NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES";
-export const hostedFdSystemdProperties = Object.freeze(["FileDescriptorStoreMax=0", "PassEnvironment=", `UnsetEnvironment=${hostedFdUnsetEnvironment}`]);
+export const hostedFdSystemdProperties = Object.freeze(["FileDescriptorStoreMax=0", "PassEnvironment=", `UnsetEnvironment=${hostedFdUnsetEnvironment}`,
+  "SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS",
+  "SystemCallArchitectures=native", "NoNewPrivileges=yes"]);
 
 /** Request environment cannot inject code into a root bootstrap or redirect
  * its protected registry reads. This is data validation, never admission. */

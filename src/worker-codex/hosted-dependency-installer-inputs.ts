@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { DependencyNpmLockName, dependencyTestNpmArgv, validateDependencyTestNpmInputs, type DependencyTestNpmToolchain } from "../worker-core/dependency-environment/domain/dependency-install-key";
 import { dependencyLocalNpmArgv, qualifyDependencyNpmLocalClosure } from "../worker-core/dependency-environment/domain/dependency-local-closure";
-import { buildTestNpmLocalDependencyInstallKey } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";
+import { buildTestNpmLocalDependencyInstallKey, encodeDependencyLocalInputCommitment, validateDependencyTestNpmToolchain } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";
 import { revalidateNpmLocalClosure, type QualifiedNpmLocalInputs } from "../worker-local/dependency-environment/capture-npm-local-closure";
 import { NpmInputCaptureStatus } from "../worker-local/dependency-environment/capture-npm-install-inputs";
-import { describeHostedDependencyLocalStage, type HostedDependencyLocalInputCommitment, type HostedDependencyLocalStage, type HostedDependencyLocalStageFile } from "./hosted-dependency-installer-local-stage";
+import { describeHostedDependencyLocalStage, type HostedDependencyLocalStage, type HostedDependencyLocalStageFile } from "./hosted-dependency-installer-local-stage";
 
 export enum HostedDependencyInstallerRecipe { NpmRegistryNoScriptsV1 = "npm_registry_no_scripts_v1", NpmLocalNoLifecycleV1 = "npm_local_no_lifecycle_v1" }
 export const hostedDependencyInstallerArgv = dependencyTestNpmArgv;
@@ -45,19 +45,13 @@ export function qualifyHostedDependencyLocalInstallerInputs(captured: QualifiedN
   const capture = structuredClone(captured);
   if (capture.status !== NpmInputCaptureStatus.Qualified ||
       revalidateNpmLocalClosure({ capture, maxDurationMs: 10000 }).status !== NpmInputCaptureStatus.Qualified) fail();
-  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes, packages: capture.closure.packages });
-  if (JSON.stringify(closure) !== JSON.stringify(capture.closure)) fail();
-  const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-  const commitment: HostedDependencyLocalInputCommitment = { version: 1, lockName: capture.lockName, root: hash(capture.packageBytes), lock: hash(capture.lockBytes),
-    layout: closure.layout, packages: closure.packages.map(local => ({ path: local.path, kind: local.kind, package: hash(local.packageBytes),
-      directories: local.directories, files: local.files.map(file => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: hash(file.bytes) })) })), edges: closure.edges };
-  const sha256 = hash(Buffer.from(JSON.stringify(commitment) + "\n"));
-  if (capture.closureDigest !== sha256) fail();
-  // Project only exact tool facts. Protected profile contains additional launch
-  // fields; the pure key's closed schema must not silently admit those fields.
-  const toolchain: DependencyTestNpmToolchain = { nodePath: profile.nodePath, nodeSha256: profile.nodeSha256, nodeVersion: profile.nodeVersion,
-    nodeAbi: profile.nodeAbi, platform: profile.platform, arch: profile.arch, npmCliPath: profile.npmCliPath, npmSha256: profile.npmSha256,
-    npmVersion: profile.npmVersion, npmRootPath: profile.npmRootPath, npmRootSha256: profile.npmRootSha256, libc: profile.libc, toolRoots: profile.toolRoots };
+  const toolchain = projectHostedDependencySelectionToolchain(profile);
+  if (capture.selectionToolchain && JSON.stringify(validateDependencyTestNpmToolchain(capture.selectionToolchain)) !== JSON.stringify(toolchain)) fail();
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+    packages: capture.closure.packages, ...(capture.selectionToolchain ? { selectionToolchain: toolchain } : {}) });
+  const { commitment, sha256 } = encodeDependencyLocalInputCommitment({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+    lockName: capture.lockName, closure, ...(capture.selectionToolchain ? { selectionToolchain: toolchain } : {}) });
+  if (JSON.stringify(closure) !== JSON.stringify(capture.closure) || capture.closureDigest !== sha256) fail();
   const key = buildTestNpmLocalDependencyInstallKey({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
     lockName: capture.lockName, closure, toolchain, maxInputBytes: 64 * 1024 * 1024, maxCanonicalBytes: 8 * 1024 * 1024 });
   const files: HostedDependencyLocalStageFile[] = [{ path: "package.json", mode: 0o644, bytes: capture.packageBytes },
@@ -69,4 +63,11 @@ export function qualifyHostedDependencyLocalInstallerInputs(captured: QualifiedN
   return { recipe: HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1, lockName: capture.lockName,
     packageBytes: Buffer.from(capture.packageBytes), lockBytes: Buffer.from(capture.lockBytes), sha256, capture,
     installKey: key.installKey, installArgv: dependencyLocalNpmArgv(closure.layout), files, stage: describeHostedDependencyLocalStage(commitment, files) };
+}
+
+/** Finite logical projection; caller independently authenticates the protected profile. */
+export function projectHostedDependencySelectionToolchain(profile: DependencyTestNpmToolchain): DependencyTestNpmToolchain {
+  return validateDependencyTestNpmToolchain({ nodePath: profile.nodePath, nodeSha256: profile.nodeSha256, nodeVersion: profile.nodeVersion,
+    nodeAbi: profile.nodeAbi, platform: profile.platform, arch: profile.arch, npmCliPath: profile.npmCliPath, npmSha256: profile.npmSha256,
+    npmVersion: profile.npmVersion, npmRootPath: profile.npmRootPath, npmRootSha256: profile.npmRootSha256, libc: profile.libc, toolRoots: profile.toolRoots });
 }

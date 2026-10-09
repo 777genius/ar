@@ -63,8 +63,12 @@ function trustedCodexInstallationPath(path: string): boolean {
 }
 
 /** Only immutable public DNS leaves already admitted by the outer fixed root. */
-export function hostedCodexResolverReadPaths(sourceEnv: Readonly<Record<string, string | undefined>>): readonly string[] {
-  if (sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") return [];
+export function hostedCodexResolverReadPaths(
+  sourceEnv: Readonly<Record<string, string | undefined>>,
+  nativeProjectBoundary = false,
+): readonly string[] {
+  const hosted = sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  if (!hosted && !nativeProjectBoundary) return [];
   let info;
   try { info = lstatSync("/etc/resolv.conf"); }
   catch { throw new Error("hosted_permission_resolver_unavailable"); }
@@ -84,8 +88,38 @@ export function hostedCodexResolverReadPaths(sourceEnv: Readonly<Record<string, 
   if (!leaf.isFile() || canonical !== target || (leaf.mode & 0o022) !== 0) {
     throw new Error("hosted_permission_resolver_custody_invalid");
   }
+  if (!hosted) {
+    let resolverUid = 0;
+    if (leaf.uid !== 0) {
+      const passwd = lstatSync("/etc/passwd");
+      if (!passwd.isFile() || passwd.uid !== 0 || (passwd.mode & 0o022) !== 0 || passwd.size > 1024 * 1024) {
+        throw new Error("hosted_permission_resolver_custody_invalid");
+      }
+      const records = readFileSync("/etc/passwd", "utf8").split("\n")
+        .filter(line => line.startsWith("systemd-resolve:"));
+      const uid = records.length === 1 ? records[0]!.split(":")[2] : undefined;
+      if (!uid || !/^\d+$/.test(uid) || !Number.isSafeInteger(Number(uid)) || Number(uid) !== leaf.uid) {
+        throw new Error("hosted_permission_resolver_custody_invalid");
+      }
+      resolverUid = Number(uid);
+    }
+    for (let current = target; current !== "/"; current = dirname(current)) {
+      const entry = lstatSync(current);
+      const expectedUid = current === target || current === "/run/systemd/resolve" ? resolverUid : 0;
+      if (entry.uid !== expectedUid || (entry.mode & 0o022) !== 0 ||
+          (current === target ? !entry.isFile() : !entry.isDirectory())) {
+        throw new Error("hosted_permission_resolver_custody_invalid");
+      }
+    }
+  }
   return [target];
 }
+
+/** Host credential directories hidden from hosted tools. Directories only: Codex 0.159.2 cannot start a
+ * sandbox that masks more than one file, and nested masks are not used. */
+export const hostedCredentialDenyDirectories: readonly string[] = Object.freeze([
+  "/etc/subscription-runtime", "/etc/ssh", "/etc/ssl/private",
+]);
 
 export function hostedCodexPermissionProfilesToml(
   policy: CodexProviderEgressPolicy,
@@ -119,13 +153,12 @@ export function hostedCodexPermissionProfilesToml(
   const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
     .filter((path): path is string => path !== undefined))]
     .map(path => `${JSON.stringify(path)} = "read"`);
-  const privateRoot = "/etc/subscription-runtime/secrets";
   if (privateKeyFilePath && !isAbsolute(privateKeyFilePath)) {
     throw new Error("hosted_permission_private_key_path_invalid");
   }
   const privateFile = privateKeyFilePath ? resolve(privateKeyFilePath) : undefined;
-  const privateRules = [privateRoot, ...(privateFile &&
-    privateFile !== privateRoot && !privateFile.startsWith(`${privateRoot}/`)
+  const privateRules = [...hostedCredentialDenyDirectories, ...(privateFile &&
+    !hostedCredentialDenyDirectories.some(dir => privateFile === dir || privateFile.startsWith(`${dir}/`))
     ? [privateFile] : [])]
     .map(path => `${JSON.stringify(path)} = "deny"`);
   return [

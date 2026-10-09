@@ -1,16 +1,19 @@
+import { encodeDependencyLocalInputCommitment } from "./build-test-npm-dependency-install-key";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
 import { DependencyInstallProfile } from "../../worker-core/dependency-environment/domain/dependency-install-key";
-import { DependencyLocalClosureKind, qualifyDependencyNpmLocalClosure } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
+import { DependencyLocalClosureKind, qualifyDependencyNpmLocalClosure, type DependencyLocalRegistrySelection } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
 import { DependencyInstallProofKind, sameDependencyTree, sameDependencyWorkspace,
   type DependencySourceBindingReference, type DependencyWorkspaceIdentity, type DependencyProofBinding } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import type { DependencyLogicalSourceLink } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import type { DependencyCompletedLocalReady, DependencyLocalInstallProofVerifier, DependencySourceBindingCompletionVerifier,
   DependencySourceBindingOutputVerifier, DependencySourceBindingRecord, DependencySourceBindingRecordV1, DependencySourceBindingOutputBody,
-  DependencyLocalOutputEvidence, DependencySourceDirectoryPin } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
-import { assertDependencySourceBindingRecord, assertDependencyOutputReference, assertDependencyLocalOutputEvidence,
+  DependencyLocalOutputEvidence, DependencySourceDirectoryPin, DependencyLegacyLocalSourceBindingRecord,
+  DependencyLegacyLocalSourceVerifier, DependencyLegacyComparedReady, DependencyLegacyLocalDetachedTarget } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
+import { DependencyLegacyLocalSourceBindingKind } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
+import { assertDependencyLegacyLocalSourceBindingRecord, assertDependencySourceBindingRecord, assertDependencyOutputReference, assertDependencyLocalOutputEvidence,
   encodeDependencySourceBindingOutputBody } from "../../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import { NpmInputCaptureStatus } from "./capture-npm-install-inputs";
 import { NpmLocalPinKind, revalidateNpmLocalClosure, type QualifiedNpmLocalInputs } from "./capture-npm-local-closure";
@@ -82,14 +85,10 @@ function directoryPins(capture: QualifiedNpmLocalInputs): DependencySourceDirect
     .map(({ path, dev, ino, mode, mountId }) => ({ path, dev, ino, mode, mountId })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
 function links(capture: QualifiedNpmLocalInputs): DependencyLogicalSourceLink[] {
-  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes, packages: capture.closure.packages });
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes, packages: capture.closure.packages, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) });
   if (JSON.stringify(closure) !== JSON.stringify(capture.closure)) fail();
-  // Independently recompute the existing frozen capture v1 digest contract.
-  // This checks actual reconstructed inputs, not the caller's digest label.
-  const closureDigest = sha(encode({ version: 1, lockName: capture.lockName, root: sha(capture.packageBytes), lock: sha(capture.lockBytes),
-    layout: closure.layout, packages: closure.packages.map(pkg => ({ path: pkg.path, kind: pkg.kind, package: sha(pkg.packageBytes),
-      directories: pkg.directories, files: pkg.files.map(file => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: sha(file.bytes) })) })),
-    edges: closure.edges }));
+  const closureDigest = encodeDependencyLocalInputCommitment({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+    lockName: capture.lockName, closure, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) }).sha256;
   if (capture.closureDigest !== closureDigest) fail();
   const result = new Map<string, DependencyLogicalSourceLink>();
   for (const edge of closure.edges) if (edge.kind === DependencyLocalClosureKind.PureWorkspaceLink) {
@@ -134,6 +133,10 @@ function sourceDirectories(workspace: DependencyWorkspaceIdentity, pins: readonl
       if (!observe) pinMatches(parent, pin); if (parent.mountId !== root.mountId) fail(DependencySourceBindingFailure.Changed);
       observed.push({ path: pin.path, dev: String(parent.before.dev), ino: String(parent.before.ino), mode: String(parent.before.mode), mountId: parent.mountId });
     }
+    for (const [path, target] of held) if (path) {
+      try { lstatSync(at(target.fd, "node_modules")); fail(DependencySourceBindingFailure.Changed); }
+      catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error; }
+    }
     for (const entry of manifests ?? []) {
       const target = held.get(entry.sourcePath); if (!target) fail();
       const fd = openSync(at(target.fd, "package.json"), fileFlags);
@@ -151,7 +154,7 @@ function sourceDirectories(workspace: DependencyWorkspaceIdentity, pins: readonl
   } finally { close(handles); }
 }
 type SessionState = { workspace: DependencyWorkspaceIdentity; name: string; links: readonly DependencyLogicalSourceLink[];
-  current(): void; record?: DependencySourceBindingRecord; reference?: DependencySourceBindingReference; closed: boolean };
+  current(): void; record?: DependencySourceBindingRecord; reference?: DependencySourceBindingReference; compared?: DependencyLegacyLocalSourceBindingRecord; capture?: QualifiedNpmLocalInputs; closed: boolean };
 export type DependencySourceLinkSession = Readonly<{ profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1 }>;
 const sessions = new WeakMap<object, SessionState>();
 function session(state: Omit<SessionState, "closed">): DependencySourceLinkSession {
@@ -168,8 +171,39 @@ export function dependencySourceLinkProof(value: DependencySourceLinkSession): {
   if (!state || state.closed || !state.record || !state.reference) fail(); state.current();
   return { record: state.record, reference: state.reference };
 }
+export enum DependencySourceLinkEffectProofKind { InstalledLocal = "installed_local", LegacyLocalCompared = "legacy_local_compared" }
+/** Closed effect selector over authentic private sessions. A capture session or
+ * caller record cannot supply either branch. Both revalidate current authority. */
+export function dependencySourceLinkEffectProof(value: DependencySourceLinkSession):
+  | { kind: DependencySourceLinkEffectProofKind.InstalledLocal; record: DependencySourceBindingRecord; reference: DependencySourceBindingReference }
+  | { kind: DependencySourceLinkEffectProofKind.LegacyLocalCompared; record: DependencyLegacyLocalSourceBindingRecord; reference: DependencySourceBindingReference } {
+  const state = sessions.get(value);
+  if (!state || state.closed || !state.reference) fail(); state.current();
+  if (state.record && !state.compared) return { kind: DependencySourceLinkEffectProofKind.InstalledLocal, record: state.record, reference: state.reference };
+  if (state.compared && !state.record) return { kind: DependencySourceLinkEffectProofKind.LegacyLocalCompared, record: state.compared, reference: state.reference };
+  return fail();
+}
+/** Separate protected comparison accessor; installed accessor stays exact. */
+export function dependencyComparedSourceLinkProof(value: DependencySourceLinkSession): {
+  record: DependencyLegacyLocalSourceBindingRecord; reference: DependencySourceBindingReference;
+} {
+  const state = sessions.get(value);
+  if (!state || state.closed || !state.compared || !state.reference) fail(); state.current();
+  return { record: state.compared, reference: state.reference };
+}
+/** Logical facts reconstructed from an authentic retained capture session only. */
+export function readDependencySourceRegistrySelection(value: DependencySourceLinkSession, workspace: DependencyWorkspaceIdentity): DependencyLocalRegistrySelection | undefined {
+  const state = sessions.get(value);
+  if (!state || state.closed || !state.capture || !sameDependencyWorkspace(state.workspace, workspace) || state.name !== "node_modules") fail();
+  state.current();
+  const capture = state.capture;
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+    packages: capture.closure.packages, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) });
+  if (JSON.stringify(closure) !== JSON.stringify(capture.closure)) fail();
+  return closure.version === 2 ? structuredClone(closure.registrySelection) : undefined;
+}
 export function dependencySourceLinkAllowsSubset(value: DependencySourceLinkSession): boolean {
-  const state = sessions.get(value); if (!state || state.closed) fail(); return !!state.record && state.name !== "node_modules";
+  const state = sessions.get(value); if (!state || state.closed) fail(); return !!(state.record || state.compared) && state.name !== "node_modules";
 }
 export function closeDependencySourceLinkSession(value: DependencySourceLinkSession): void { const state = sessions.get(value); if (state) state.closed = true; }
 
@@ -189,7 +223,16 @@ export function openCapturedDependencySourceLinks(capture: QualifiedNpmLocalInpu
     sourceDirectories(capture.workspace, originalPins, ancestorPins);
     sourceDirectories(observedWorkspace, stage.directories, stage.ancestors, sourceLinks);
   };
-  current(); return session({ workspace: { ...observedWorkspace }, name: "node_modules", links: sourceLinks, current });
+  current(); return session({ workspace: { ...observedWorkspace }, name: "node_modules", links: sourceLinks, current, capture });
+}
+
+/** Current capture facts only. No installer placeholder or protected grant. */
+export function capturedDependencyLegacyLocalSourceFields(capture: QualifiedNpmLocalInputs):
+  Pick<DependencyLegacyLocalSourceBindingRecord, "closureDigest" | "sourceLinks" | "directories" | "ancestors"> {
+  capture = structuredClone(capture);
+  if (revalidateNpmLocalClosure({ capture, maxDurationMs: 10000 }).status !== NpmInputCaptureStatus.Qualified) fail(DependencySourceBindingFailure.Changed);
+  return immutable({ closureDigest: capture.closureDigest, sourceLinks: links(capture), directories: directoryPins(capture),
+    ancestors: capture.ancestorPins.map(({ path, dev, ino, mode, mountId }) => ({ path, dev, ino, mode, mountId })) });
 }
 
 export function capturedDependencySourceBinding(capture: QualifiedNpmLocalInputs, binding: DependencyProofBinding,
@@ -277,7 +320,7 @@ export function assertDependencyLocalOutputBinding(record: DependencySourceBindi
  * actual completion are both mandatory; absence never falls back to caller facts. */
 export class LocalDependencySourceBindingStore implements DependencyLocalInstallProofVerifier {
   constructor(readonly rootPath: string, private readonly completion: DependencySourceBindingCompletionVerifier,
-    private readonly output?: DependencySourceBindingOutputVerifier) {
+    private readonly output?: DependencySourceBindingOutputVerifier, private readonly legacyLocal?: DependencyLegacyLocalSourceVerifier) {
     if (process.platform !== "linux" || statfsSync("/proc/self/fd", { bigint: true }).type !== 0x9fa0n || !canonical(rootPath) ||
         !rootPath.endsWith("/dependency-source-bindings")) fail();
   }
@@ -331,7 +374,9 @@ export class LocalDependencySourceBindingStore implements DependencyLocalInstall
       checkRetained(handles); return { handles, item };
     } catch (error) { close(handles); throw error; }
   }
-  private read(path: string): { bytes: Buffer; reference: DependencySourceBindingReference; record: DependencySourceBindingRecord } {
+  private read(path: string): { bytes: Buffer; reference: DependencySourceBindingReference; record: DependencySourceBindingRecord };
+  private read(path: string, compared: true): { bytes: Buffer; reference: DependencySourceBindingReference; record: DependencyLegacyLocalSourceBindingRecord };
+  private read(path: string, compared = false): { bytes: Buffer; reference: DependencySourceBindingReference; record: DependencySourceBindingRecord | DependencyLegacyLocalSourceBindingRecord } {
     const parent = this.parent(path);
     let fd: number;
     try { fd = openSync(at(parent.item.fd, path.slice(path.lastIndexOf("/") + 1)), fileFlags); }
@@ -341,14 +386,121 @@ export class LocalDependencySourceBindingStore implements DependencyLocalInstall
       if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(process.geteuid!()) || (before.mode & 0o7777n) !== 0o600n || before.size < 1n || before.size > 262144n || mount(fd) !== parent.item.mountId) fail();
       const bytes = boundedBytes(fd, 262144), after = fstatSync(fd, { bigint: true });
       if (BigInt(bytes.length) !== before.size || !same(before, after) || before.size !== after.size || before.nlink !== after.nlink || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs) fail(DependencySourceBindingFailure.Changed);
-      let record: DependencySourceBindingRecord;
-      try { record = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as DependencySourceBindingRecord;
-        validateRecord(record); if (this.path(record) !== path || !encode(record).equals(bytes)) fail(); }
+      let record: DependencySourceBindingRecord | DependencyLegacyLocalSourceBindingRecord;
+      try { record = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        if (compared) { assertDependencyLegacyLocalSourceBindingRecord(record); if (this.comparedPath(record) !== path) fail(); }
+        else { assertDependencySourceBindingRecord(record); if (this.path(record) !== path) fail(); }
+        if (!encode(record).equals(bytes)) fail(); }
       catch { fail(); }
       const named = lstatSync(at(parent.item.fd, path.slice(path.lastIndexOf("/") + 1)), { bigint: true });
-      if (!same(before, named) || named.nlink !== 1n) fail(DependencySourceBindingFailure.Changed); checkRetained(parent.handles);
+      if (!same(before, named) || named.nlink !== 1n) fail(DependencySourceBindingFailure.Changed);
+      if (compared) {
+        if (before.uid !== after.uid || before.gid !== after.gid || before.uid !== named.uid || before.gid !== named.gid) fail(DependencySourceBindingFailure.Changed);
+        for (const item of parent.handles) if (item.path === this.rootPath || item.path.startsWith(this.rootPath + "/")) {
+          if (fstatSync(item.fd, { bigint: true }).uid !== BigInt(process.geteuid!()) || item.mountId !== parent.item.mountId) fail();
+        }
+      }
+      checkRetained(parent.handles);
       return { bytes, record: immutable(record), reference: immutable({ path, identity: { dev: String(before.dev), ino: String(before.ino) }, sha256: sha(bytes) }) };
     } finally { try { closeSync(fd); } finally { close(parent.handles); } }
+  }
+  private comparedPath(record: DependencyLegacyLocalSourceBindingRecord): string {
+    assertDependencyLegacyLocalSourceBindingRecord(record);
+    return `${this.rootPath}/${record.candidate.workspace.dev}-${record.candidate.workspace.ino}/${record.candidate.generation}.${record.operationId}.compared-local.json`;
+  }
+  private synchronous(action: () => unknown): void {
+    try { if (action() !== undefined) fail(DependencySourceBindingFailure.OutputProof); }
+    catch { fail(DependencySourceBindingFailure.OutputProof); }
+  }
+  readInstalledHistory(reference: DependencySourceBindingReference): DependencySourceBindingRecord {
+    assertDependencyOutputReference(reference);
+    const observed = this.read(reference.path);
+    if (!sameDependencyTree(reference.identity, observed.reference.identity) || reference.sha256 !== observed.reference.sha256) fail(DependencySourceBindingFailure.OutputProof);
+    return observed.record;
+  }
+  /** Protected history only: deliberately opens neither sources nor stage. */
+  readLegacyLocalCompared(reference: DependencySourceBindingReference): DependencyLegacyLocalSourceBindingRecord {
+    assertDependencyOutputReference(reference);
+    const observed = this.read(reference.path, true);
+    if (!sameDependencyTree(reference.identity, observed.reference.identity) || reference.sha256 !== observed.reference.sha256) fail(DependencySourceBindingFailure.OutputProof);
+    return observed.record;
+  }
+  /** Finite retained-capture publisher. No caller mapping DTO or permission
+   * callback is accepted. Trusted composition must hold the actual owner fence. */
+  publishLegacyLocalCompared(input: {
+    readonly capture: QualifiedNpmLocalInputs; readonly sourceSession: DependencySourceLinkSession;
+    readonly candidate: DependencyProofBinding; readonly operationId: string;
+    readonly original: DependencyLegacyLocalSourceBindingRecord["original"];
+    readonly referenceOutput: DependencySourceBindingReference;
+  }): DependencySourceBindingReference {
+    if (!this.legacyLocal) fail(DependencySourceBindingFailure.OutputProof);
+    const capture = structuredClone(input.capture), candidate = structuredClone(input.candidate);
+    const sourceLinks = readDependencySourceLinkSession(input.sourceSession, candidate.workspace, "node_modules");
+    const retained = sessions.get(input.sourceSession);
+    if (!retained?.capture || JSON.stringify(retained.capture) !== JSON.stringify(capture)) fail();
+    if (!sameDependencyWorkspace(capture.workspace, candidate.workspace) ||
+        revalidateNpmLocalClosure({ capture, maxDurationMs: 10000 }).status !== NpmInputCaptureStatus.Qualified ||
+        JSON.stringify(sourceLinks) !== JSON.stringify(links(capture))) fail(DependencySourceBindingFailure.Changed);
+    const record: DependencyLegacyLocalSourceBindingRecord = immutable({ version: 1,
+      kind: DependencyLegacyLocalSourceBindingKind.LegacyLocalComparedSourceV1,
+      profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1, operationId: input.operationId, candidate,
+      original: structuredClone(input.original), referenceOutput: structuredClone(input.referenceOutput), closureDigest: capture.closureDigest,
+      sourceLinks: links(capture), directories: directoryPins(capture),
+      ancestors: capture.ancestorPins.map(({ path, dev, ino, mode, mountId }) => ({ path, dev, ino, mode, mountId })) });
+    assertDependencyLegacyLocalSourceBindingRecord(record);
+    const current = () => {
+      this.synchronous(() => this.legacyLocal!.assertReferenceOutput(record));
+      readDependencySourceLinkSession(input.sourceSession, candidate.workspace, "node_modules");
+      if (revalidateNpmLocalClosure({ capture, maxDurationMs: 10000 }).status !== NpmInputCaptureStatus.Qualified) fail(DependencySourceBindingFailure.Changed);
+      sourceDirectories(candidate.workspace, record.directories, record.ancestors, record.sourceLinks);
+    };
+    current(); const path = this.comparedPath(record), bytes = encode(record); if (bytes.length > 262144) fail();
+    const custody = this.parent(this.rootPath + "/publication");
+    try {
+      const directoryName = `${candidate.workspace.dev}-${candidate.workspace.ino}`;
+      try { mkdirSync(at(custody.item.fd, directoryName), { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      custody.item = retain(dirname(path), custody.handles, custody.item.fd, directoryName);
+      if (custody.item.before.uid !== BigInt(process.geteuid!()) || (custody.item.before.mode & 0o7777n) !== 0o700n) fail();
+      checkRetained(custody.handles);
+      // Every collision fails; no preexisting leaf can be rewritten or adopted.
+      const fd = openSync(at(custody.item.fd, path.slice(path.lastIndexOf("/") + 1)), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        const stat = fstatSync(fd, { bigint: true });
+        if (!stat.isFile() || stat.nlink !== 1n || stat.uid !== BigInt(process.geteuid!()) || (stat.mode & 0o7777n) !== 0o600n || mount(fd) !== custody.item.mountId) fail();
+        writeFileSync(fd, bytes); fsyncSync(fd);
+      } finally { closeSync(fd); }
+      for (const item of [...custody.handles].reverse()) fsyncSync(item.fd);
+      const observed = this.read(path, true); if (!observed.bytes.equals(bytes)) fail(DependencySourceBindingFailure.Changed);
+      current(); checkRetained(custody.handles); return observed.reference;
+    } finally { close(custody.handles); }
+  }
+  openLegacyLocalCompared(receipt: DependencyLegacyComparedReady, reference: DependencySourceBindingReference,
+    target?: DependencyLegacyLocalDetachedTarget): DependencySourceLinkSession {
+    if (!this.legacyLocal || receipt.provenance.kind !== DependencyInstallProofKind.LegacyCompared) fail(DependencySourceBindingFailure.OutputProof);
+    receipt = immutable(structuredClone(receipt)); reference = immutable(structuredClone(reference));
+    const detached = target ? immutable(structuredClone(target)) : undefined;
+    if (detached && (!canonical(detached.workspace.canonicalPath) || detached.workspace.canonicalPath === "/" ||
+        ![detached.workspace.dev, detached.workspace.ino].every(decimal) || !/^dependency-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(detached.name) ||
+        detached.workspace.dev !== receipt.tree.dev || detached.workspace.canonicalPath === receipt.workspace.canonicalPath ||
+        detached.workspace.canonicalPath.startsWith(receipt.workspace.canonicalPath + "/"))) fail();
+    const current = () => {
+      const record = this.readLegacyLocalCompared(reference), binding = record.candidate;
+      if (!sameDependencyWorkspace(binding.workspace, receipt.workspace) || !sameDependencyTree(binding.tree, receipt.tree) ||
+          binding.generation !== receipt.generation || binding.coverageRevision !== receipt.coverageRevision ||
+          binding.installKey !== receipt.installKey || binding.manifestDigest !== receipt.manifestDigest) fail();
+      this.synchronous(() => this.legacyLocal!.assertComparedSource(receipt, record, reference));
+      if (detached) {
+        if (!this.legacyLocal!.assertDetachedTarget) fail(DependencySourceBindingFailure.OutputProof);
+        assertDependencyOutputReference(detached.reference);
+        this.synchronous(() => this.legacyLocal!.assertDetachedTarget!(receipt, record, detached));
+      }
+      sourceDirectories(binding.workspace, record.directories, record.ancestors, detached ? undefined : record.sourceLinks);
+      return record;
+    };
+    const record = current();
+    return session({ workspace: { ...(detached?.workspace ?? receipt.workspace) }, name: detached?.name ?? "node_modules",
+      links: record.sourceLinks, compared: record, reference, current: () => { current(); } });
   }
   assertCompletedLocalInstall(receipt: DependencyCompletedLocalReady): void { const opened = this.open(receipt); closeDependencySourceLinkSession(opened); }
   open(receipt: DependencyCompletedLocalReady, target = { workspace: receipt.workspace, name: "node_modules" }): DependencySourceLinkSession {
