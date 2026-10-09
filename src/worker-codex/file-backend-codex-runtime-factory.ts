@@ -1,4 +1,4 @@
-import { openWorkerProfileApplies } from "./project-control-worker-mode";
+import { openWorkerProfileApplies, openWorkerToolCacheEnvironmentSet } from "./project-control-worker-mode";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory, readHostedDependencyToolFactoryEntry } from "./hosted-readonly-admission";
@@ -489,6 +489,7 @@ function createCodexAgentDriver(input: {
         ? { configToml: codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true, modelBackend, mimoApiKeyEnvVarName,
             shellEnvironmentSet: { HOME: join(options.openWorker.toolRoot, "home"), TMPDIR: join(options.openWorker.toolRoot, "tmp"),
               TMP: join(options.openWorker.toolRoot, "tmp"), TEMP: join(options.openWorker.toolRoot, "tmp"),
+              ...openWorkerToolCacheEnvironmentSet(options.openWorker.toolRoot),
               ...(options.openWorker.commitAllowed
                 ? { GIT_DIR: join(options.openWorker.toolRoot, "git"), GIT_WORK_TREE: options.workspacePath! }
                 : {}) } }) + "\n" +

@@ -500,7 +500,7 @@ export function codexJsonHomeConfigToml(input?: {
   ];
   const shellEnvironmentSet = Object.entries(input?.shellEnvironmentSet ?? {});
   for (const [key] of shellEnvironmentSet) {
-    if (key === "PATH" || !/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("codex_shell_environment_set_key_invalid");
+    if (key.toUpperCase() === "PATH" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error("codex_shell_environment_set_key_invalid");
     if (!shellEnvKeys.includes(key)) shellEnvKeys.push(key);
   }
   const providerEgressPolicy =

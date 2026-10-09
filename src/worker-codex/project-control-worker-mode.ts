@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { AccessBoundary, WorkerMode, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { CodexModelBackend, requiresHostedProcessAdmission } from "@vioxen/subscription-runtime/provider-codex";
 import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
@@ -7,6 +7,23 @@ import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import type { CodexGoalJobManifestInput } from "./codex-goal-jobs";
 import { codexGoalHostedExecutionBoundary } from "./codex-goal-access-plan";
 import { inspectWorkerToolRoot, workerToolRootPath, WorkerToolRootBinding } from "./worker-tool-root";
+
+/** Open-mode tool cache and temp keys, as paths relative to the tool root. The factory sets each of them, so
+ * every key is also admitted through include_only and cannot arrive from the host environment. */
+export const openWorkerToolCacheEnvironment = {
+  XDG_CACHE_HOME: "home/.cache",
+  npm_config_cache: "home/.npm",
+  COREPACK_HOME: "home/.cache/node/corepack",
+  YARN_CACHE_FOLDER: "home/.cache/yarn",
+  PIP_CACHE_DIR: "home/.cache/pip",
+  UV_CACHE_DIR: "home/.cache/uv",
+  GOCACHE: "home/.cache/go-build",
+  GOMODCACHE: "home/go/pkg/mod",
+  GOTMPDIR: "tmp",
+} as const satisfies Readonly<Record<string, string>>;
+export function openWorkerToolCacheEnvironmentSet(toolRoot: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(openWorkerToolCacheEnvironment).map(([key, relative]) => [key, join(toolRoot, relative)]));
+}
 
 /** Mode for new refill children when the controller scope has no workerMode.
  * Staged: Strict until a green canary, then Open (owner decision P1-3). */
