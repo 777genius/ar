@@ -1,4 +1,5 @@
 import { managedSystemdRunExecutable } from "./launch.mjs";
+import {h1StagedSubjectData,retainH1StagedCatalogData} from "./dependency-full-h1-staged-tools-TEST.ts";
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
@@ -6,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
+import {performance} from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 export const fullNativeJob="TEST-dependency-full-native-20261007-r1";
 export const fullNativeInputBase="/srv/workers/jobs/"+fullNativeJob+"/input";
@@ -80,9 +82,10 @@ export function fullNativeRestoreConsumer(value:unknown):FullRestoreConsumer {
 const fullReviewKeys=["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"];
 function fullReviewData(value:unknown) {
   check(value!==null && typeof value==="object" && !types.isProxy(value) && Object.getPrototypeOf(value)===Object.prototype);
-  const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase");
-  const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[])]);
+  const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedSelected=Object.hasOwn(value,"h1StagedSubject");
+  const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedSelected?["h1StagedSubject"]:[])]);
   if(removalSelected)fullNativeRemovalCase(review.removalCase);
+  if(stagedSelected)check(review.removalCase===FullRemovalCase.ParentCrashH1 && (review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary));
   if(selected)check(review.restoreConsumer===FullRestoreConsumer.Ordinary || review.restoreConsumer===FullRestoreConsumer.Readonly);
   return review;
 }
@@ -200,7 +203,21 @@ function acquire(context:RootContext=RootContext.Launcher){
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
     const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase);
     check(removalCase!==FullRemovalCase.ParentCrashH1 || restoreConsumer===FullRestoreConsumer.Ordinary);
-    if(removalCase===FullRemovalCase.ParentCrashH1)requireSupportedH1SourceClosure();
+    if(removalCase===FullRemovalCase.ParentCrashH1){
+      // Optional new SAME-issuer subject is DATA only. No private parent or child
+      // exists yet; physical success never opens the unconditional H1 guard.
+      if(Object.hasOwn(r,"h1StagedSubject")){
+        const staged=h1StagedSubjectData(r.h1StagedSubject);
+        check(staged.sourceSha===r.sourceSha && staged.machineId===r.machineId && staged.bootId===r.bootId);
+        // One physical .js delivery, shared by installed .mjs and source .js;
+        // no unverified alias or second private-authority module instance.
+        pins.publicFile(integration+"/managed-launcher/dependency-full-h1-staged-tools-TEST.js",staged.validatorSha256);
+        pins.publicFile(fullNativeInputBase+"/"+staged.sourceSha+"/source/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js",staged.validatorSha256);
+        const retained=retainH1StagedCatalogData(fullNativeInputBase+"/"+staged.sourceSha+"/h1-tool-root-r1",staged,performance.now()+30000);
+        try{pins.validate();retained.revalidate();}finally{retained.close();}
+      }
+      requireSupportedH1SourceClosure();
+    }
     const sourceSha=r.sourceSha,root=fullNativeInputBase+"/"+sourceSha,source=root+"/source",node=root+"/toolchain/bin/node";
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
     pins.hold(fullNativeTmpDir,true,0o700);

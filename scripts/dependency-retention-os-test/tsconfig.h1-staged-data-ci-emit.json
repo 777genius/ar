@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "rewriteRelativeImportExtensions": true,
+    "allowJs": true,
+    "types": [
+      "node"
+    ],
+    "rootDir": "../..",
+    "outDir": "../../outputs/TEST-h1-staged-data-ci-emit"
+  },
+  "files": [
+    "../../host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts",
+    "../../host-integration/managed-launcher/dependency-full-native-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts"
+  ]
+}

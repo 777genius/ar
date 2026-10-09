@@ -233,6 +233,73 @@ jobs:
             dependency-h1-tool-inputs-ci-evidence/
           if-no-files-found: error
 
+      - name: Strict emit fixed staged H1 DATA tests and bind exact source closure
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          mkdir -p dependency-h1-staged-data-ci-evidence
+          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"root-filesystem-staged-H1-DATA-not-constructor-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-h1-staged-data-ci-evidence/source.json
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node --version > dependency-h1-staged-data-ci-evidence/node-version.txt
+          node node_modules/typescript/bin/tsc --version > dependency-h1-staged-data-ci-evidence/typescript-version.txt
+          grep -Fxq 'Version 6.0.3' dependency-h1-staged-data-ci-evidence/typescript-version.txt
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts \
+            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts \
+            host-integration/managed-launcher/dependency-full-native-TEST.ts \
+            host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts \
+            host-integration/managed-launcher/launch.mjs \
+            host-integration/managed-launcher/payload-guard.mjs \
+            host-integration/managed-launcher/profiles.mjs \
+            host-integration/host-jobs/storage-policy.mjs \
+            scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json \
+            .github/workflows/ci.yml package.json package-lock.json \
+            node_modules/typescript/package.json node_modules/typescript/bin/tsc node_modules/typescript/lib/_tsc.js \
+            > dependency-h1-staged-data-ci-evidence/source-and-compiler.sha256
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json 2>&1 | tee dependency-h1-staged-data-ci-evidence/strict-emit.log
+          sha256sum \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/launch.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/payload-guard.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/profiles.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/host-jobs/storage-policy.mjs \
+            > dependency-h1-staged-data-ci-evidence/emitted.sha256
+      - name: Require three actual Linux ROOT staged DATA physical tests with unchanged H1 refusal
+        run: |
+          set -o pipefail
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          TEST_EMIT="$GITHUB_WORKSPACE/outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher"
+          if [ "$(id -u)" -eq 0 ] && [ "$(id -ru)" -eq 0 ] && [ "$(id -g)" -eq 0 ] && [ "$(id -rg)" -eq 0 ]; then
+            env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+              /bin/sh -c 'test "$(id -u)" -eq 0 && test "$(id -ru)" -eq 0 && test "$(id -g)" -eq 0 && test "$(id -rg)" -eq 0 && test "$(uname -s)" = Linux || exit 1; id; exec "$@"' TEST-H1-staged-root \
+              "$TEST_NODE" --test --test-reporter=tap "$TEST_EMIT/dependency-full-h1-staged-tools-TEST.node-test.js" "$TEST_EMIT/dependency-full-native-TEST.node-test.js"
+          else
+            sudo -n -u root -g root env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+              /bin/sh -c 'test "$(id -u)" -eq 0 && test "$(id -ru)" -eq 0 && test "$(id -g)" -eq 0 && test "$(id -rg)" -eq 0 && test "$(uname -s)" = Linux || exit 1; id; exec "$@"' TEST-H1-staged-root \
+              "$TEST_NODE" --test --test-reporter=tap "$TEST_EMIT/dependency-full-h1-staged-tools-TEST.node-test.js" "$TEST_EMIT/dependency-full-native-TEST.node-test.js"
+          fi 2>&1 | tee dependency-h1-staged-data-ci-evidence/root-tests.tap
+          TAP=dependency-h1-staged-data-ci-evidence/root-tests.tap
+          grep -Eq '^ok [0-9]+ - actual retained physical inode replacement, extra entry, nlink and deadline refuse$' "$TAP"
+          grep -Eq '^ok [0-9]+ - actual owned read expires at post-I/O monotonic check and closes permanently$' "$TAP"
+          grep -Eq '^ok [0-9]+ - actual invalid literal alias bytes refuse including equal encoded-size case$' "$TAP"
+          grep -Eq '^ok [0-9]+ - unsupported H1 stdlib closure cannot reach private tool callbacks$' "$TAP"
+          grep -Fxq '# tests 24' "$TAP"
+          grep -Fxq '# pass 24' "$TAP"
+          grep -Fxq '# fail 0' "$TAP"
+          grep -Fxq '# skipped 0' "$TAP"
+          if grep -q ' # SKIP ' "$TAP"; then exit 1; fi
+      - name: Retain staged H1 DATA exact-source physical TEST evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-h1-staged-data-ci-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-h1-staged-data-ci-evidence/
+          if-no-files-found: error
+
   crash-boundary-shards:
     permissions:
       contents: read
