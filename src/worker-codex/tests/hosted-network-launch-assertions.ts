@@ -4,6 +4,7 @@ import { expect } from "vitest";
 import { codexProviderEgressCliConfigArgs, codexProviderEgressPolicy, codexProviderHasPublicSources,
   CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import type { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
+import { hostedCredentialDenyDirectories } from "../../provider-codex/hosted-codex-permissions";
 import { admitHostedTestEgress } from "../hosted-test-egress-admission";
 import { admitHostedReadonlyInputs } from "../hosted-readonly-admission";
 import { spawnCodexAppServerProcess } from "../../provider-codex/app-server/adapters/node-app-server-process";
@@ -33,7 +34,8 @@ export function assertHostedNetworkLaunch(frames: readonly { env: Record<string,
       expect(config).toContain('[features.network_proxy]\nenabled = false');
       expect(config).toContain('":root" = "deny"');
       expect(config).toContain('".git" = "read"');
-      expect(config).toContain('"/etc/subscription-runtime/secrets" = "deny"');
+      for (const dir of hostedCredentialDenyDirectories) expect(config).toContain(`"${dir}" = "deny"`);
+      expect(config).not.toContain('"/etc/subscription-runtime/secrets"');
     }
   }
   if (codexProviderHasPublicSources(policy)) for (const provider of providers.filter(p => p.spawnCount)) {
