@@ -109,9 +109,24 @@ static void confinement(void) {
     assert(!np_actor_seal(parent));
     /* These effects were possible before the actual seal. No production test
     * hook is required to exercise its denied syscall boundary. */
+    _Static_assert(sizeof(struct clone_args)==88,"TEST clone3 must match the outer size88 allowance");
+    int forked_fd=-1;
+    struct clone_args args={.flags=CLONE_PIDFD,.pidfd=(uint64_t)(uintptr_t)&forked_fd,.exit_signal=SIGCHLD};
     errno=0;
-    long forked=syscall(SYS_clone3,NULL,0);
+    long forked=syscall(SYS_clone3,&args,sizeof args);
     int clone_error=errno;
+    /* An accidentally allowed birth must fail without doing foreign work.
+     * The original parent reaps only this returned child's original pidfd. */
+    if(!forked)_exit(79);
+    if(forked>0){
+      siginfo_t result={0};
+      int reaped;
+      do reaped=waitid(P_PIDFD,(id_t)forked_fd,&result,WEXITED);
+      while(reaped<0 && errno==EINTR);
+      int closed=close(forked_fd);
+      if(reaped || result.si_pid!=forked || result.si_code!=CLD_EXITED || result.si_status!=79 || closed)_exit(80);
+      _exit(79);
+    }
     errno=0;
     long opened=syscall(SYS_openat,AT_FDCWD,"/proc/self/status",O_RDONLY,0);
     int open_error=errno;
