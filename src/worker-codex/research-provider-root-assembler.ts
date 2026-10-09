@@ -10,6 +10,8 @@ import { researchHash, researchInvalid, researchPath, researchRead } from "./res
 import { readKernelMountTable } from "./host-scratch-mount";
 import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
 
+import { normalizeResearchAssemblyFailure } from "./research-launch-diagnostics";
+
 const now = (): number => Number(process.hrtime.bigint() / 1_000_000n);
 const environment = Object.freeze({ PATH: "/usr/bin:/usr/sbin", LANG: "C", LC_ALL: "C" });
 const identity = (path: string): string => { const stat = lstatSync(path); return [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.rdev].join(":"); };
@@ -24,6 +26,8 @@ const apiDevices = [["null", 1, 3], ["zero", 1, 5], ["full", 1, 7], ["random", 1
 // No new mount namespace is cloned here: an inherited FD would still reference
 // the original mount. The trusted supervisor only awaits/signals after pivot.
 const pivotRoot = [
+  'phase=descriptor-validation',
+  `trap 'code=$?; [ "$code" = 0 ] || printf "research_root_transition_failed phase=%s code=%s\\n" "$phase" "$code" >&2' EXIT`,
   '[ "$#" -ge 2 ] && [ -d /proc/self/fd/3 ] && [ /proc/self/fd/3 -ef "$1" ] || exit 70',
   'for handle in /proc/self/fd/*; do',
   '  case "$handle" in',
@@ -36,10 +40,13 @@ const pivotRoot = [
   'cd -P /proc/self/fd/3 2>&4 || exit 70',
   '[ "$PWD" = "$1" ] || exit 70',
   'shift',
+  'phase=pivot',
   '/usr/sbin/pivot_root . . 2>&4 || exit 70',
+  'phase=detach-old-root',
   '/usr/bin/umount --no-canonicalize --internal-only --no-mtab --lazy -- . 2>&4 || exit 70',
   'cd / 2>&4 || exit 70',
   'exec 3<&- 4>&- || exit 70',
+  'phase=namespace-transition',
   'exec "$@"',
 ].join("\n");
 const deviceNumber = (value: number): readonly [number, number] => {
@@ -276,5 +283,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const args = process.argv.slice(2);
     if (args.length !== 5 || !/^[1-9]\d{0,14}$/.test(args[4]!)) researchInvalid();
     process.exitCode = await assembleResearchProviderRoot(args[0]!, args[1]!, args[2]!, args[3]!, Number(args[4]));
-  } catch { process.exitCode = 70; }
+  } catch (error) {
+    process.stderr.write(JSON.stringify({ diagnostic: "research_provider_root_assembly_failed", ...normalizeResearchAssemblyFailure(error) }) + "\n");
+    process.exitCode = 70;
+  }
 }

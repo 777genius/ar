@@ -236,3 +236,18 @@ describe("finite startup diagnostics", () => {
     expect(child.stderr).toBe("hosted_research_runtime_launch_denied:imports:unclassified:none:unknown:unknown\n");
   });
 });
+
+it("assembly failure exposes numeric location without message or host path", async () => {
+  const { normalizeResearchAssemblyFailure } = await import("../research-launch-diagnostics");
+  const error = new Error("TEST_SECRET_NEVER_PUBLISH");
+  error.stack = "TEST_SECRET_NEVER_PUBLISH\n at check (/opt/private/dist/worker-codex/research-provider-root-assembler.js:123:9)";
+  const result = normalizeResearchAssemblyFailure(error);
+  expect(result).toMatchObject({ assemblyLine: 123, assemblyColumn: 9 });
+  expect(JSON.stringify(result)).not.toContain("TEST_SECRET");
+  expect(JSON.stringify(result)).not.toContain("/opt/private");
+  let reads = 0;
+  const foreign = new Error("TEST foreign");
+  Object.defineProperty(foreign, "stack", { get() { reads++; throw new Error("TEST getter"); } });
+  expect(normalizeResearchAssemblyFailure(foreign)).not.toHaveProperty("assemblyLine");
+  expect(reads).toBe(0);
+});
