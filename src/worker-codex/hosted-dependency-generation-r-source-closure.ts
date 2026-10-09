@@ -1,4 +1,5 @@
 import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
+import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { readOriginalHostedDependencyRetiredInterval } from "./hosted-dependency-retired-interval-facts";
 import { readOriginalHostedDependencyOperatorNativeCensus } from "./hosted-dependency-generation-native-census";
 import { readHostedDependencyActiveActorFacts } from "./hosted-dependency-active-actor-facts";
@@ -175,11 +176,37 @@ function authenticateOriginalColdTransferBeforeFirstR(fence:HostedActivationFenc
       !sameDependencyProtectedReference(pinReferenceFile(transfer.reference.path,65536).reference,transfer.reference))held();
   boundary(fence,access);return true;
 }
+/** Maintenance owns a later epoch than its original R predecessor. Authenticate
+ * its current private idle chain before selecting that historical R attempt;
+ * neither null ownership nor Terminal reservations supply this proof. */
+function authenticateOriginalMaintenanceIdleBeforeR(fence:HostedActivationFence,access:symbol):boolean {
+  const {session}=boundary(fence,access),epoch=new HostedReadonlyEpochStore().readEpoch(),material=readHostedReadonlyDependencyMaterial(fence,epoch.identity),
+    binding=readHostedDependencyBinding(material.evidence.candidate.jobId);if(!binding || binding.version!==2)held();
+  const idle=readOriginalHostedDependencyMaintenanceIdle(fence,material.evidence.workspace,access);if(!idle)return false;
+  if((epoch.phase!==HostedCustodyPhase.Closed && epoch.phase!==HostedCustodyPhase.Ready) || epoch.revoked ||
+      epoch.hostId!==session.hostId || epoch.bootId!==session.bootId || epoch.supervisorId!==session.supervisorId ||
+      epoch.outerRuntime && epoch.outerRuntime.state!==HostedCustodyReservationState.Terminal ||
+      epoch.reservations.some(row=>row.state!==HostedCustodyReservationState.Terminal) ||
+      idle.previous.version!==3 || idle.previous.owner || idle.previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ||
+      !encode(idle.binding).equals(encode(binding)) || !encode(idle.previous.workspace).equals(encode(binding.workspace)) ||
+      !encode(binding.workspace).equals(encode(material.evidence.workspace)) ||
+      !sameDependencyProtectedReference(idle.previous.custodyBinding,material.reference) || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
+  const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  try{if(!encode(store.read(binding.workspace)).equals(encode(idle.previous)))held();}finally{store.close();}
+  if(!encode(new HostedReadonlyEpochStore().readEpoch()).equals(encode(epoch)) ||
+      !encode(readHostedReadonlyDependencyMaterial(fence,epoch.identity)).equals(encode(material)) ||
+      !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) ||
+      !sameDependencyProtectedReference(pinReferenceFile(idle.idle.path,16384).reference,idle.idle) ||
+      !sameDependencyProtectedReference(pinReferenceFile(idle.sourceClosed.path,65536).reference,idle.sourceClosed))held();
+  boundary(fence,access);return true;
+}
 /** Capture this real R release chain while its exact Fenced Consumer still
  * exists. Historical discharge is never reconstructed from Terminal/absence. */
 export function releaseOriginalHostedDependencyRSourceOwner(fence:HostedActivationFence,access:symbol):void {
   if(authenticateOriginalColdTransferBeforeFirstR(fence,access))return;
-  if(!hasActiveOwner(fence,access))return;const before=selected(fence,access),previous=before.previous;
+  if(!hasActiveOwner(fence,access))return;
+  if(authenticateOriginalMaintenanceIdleBeforeR(fence,access))return;
+  const before=selected(fence,access),previous=before.previous;
   if(!previous.owner){readOriginalHostedDependencyRIdleGeneration(fence,access);if(!readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();return;}
   if(before.epoch.phase!==HostedCustodyPhase.Closed || before.epoch.generation<=before.outer.generation ||
       before.epoch.reservations.some(row=>row.state!==HostedCustodyReservationState.Terminal) ||
