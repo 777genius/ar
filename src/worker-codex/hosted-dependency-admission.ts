@@ -13,7 +13,7 @@ import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { qualifyHostedDependencyToolClosure, assertHostedDependencyQualifiedToolEntry, markHostedDependencyQualifiedToolEntryRunning,
   invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
-import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsence, matchesHostedDependencyReady,
+import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsenceForToolEntry, closeHostedDependencyColdHandoff, type HostedDependencyColdHandoff, matchesHostedDependencyReady,
   readHostedDependencyReceipt, hostedDependencyObservationLimits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization";
 
@@ -78,7 +78,8 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
   // consumers/materializers. Incomplete capture stays held, never legacy reuse.
   const readyInputs = admission.binding.version === 1 && !admission.absent && admission.receipt?.state === DependencyReceiptState.Ready
     ? await readHostedDependencyKeyInputs(admission.binding) : undefined;
-  if (admission.absent) await materializeHostedDependencyAbsence(admission.binding, admission.attempt);
+  let coldHandoff: HostedDependencyColdHandoff | undefined;
+  if (admission.absent) coldHandoff = await materializeHostedDependencyAbsenceForToolEntry(admission.binding, admission.attempt);
   else if (admission.binding.version === 1 && (!readyInputs || admission.receipt?.state !== DependencyReceiptState.Ready ||
       !matchesHostedDependencyReady(admission.binding, admission.receipt, readyInputs))) {
     const observation = await observeDependencyTree({ workspacePath: admission.binding.workspace.canonicalPath,
@@ -87,7 +88,9 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
   }
   // Explicit N3 profile only: authenticate its installed executable graph while
   // still exclusive. Generic Ready reuse keeps its existing hash-free path.
-  const toolEntry = await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt);
+  let toolEntry: HostedDependencyQualifiedToolEntry | undefined;
+  try { toolEntry = await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt, coldHandoff); }
+  finally { closeHostedDependencyColdHandoff(coldHandoff); }
   if (admission.binding.version === 2 && !toolEntry) fail(Failure.Unsupported);
   try {
   withHostedActivationFence(fence => {
