@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), fds: new Map<number, string>(), fd: 1,
-  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn() }));
+  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn(), executableDigest: vi.fn() }));
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   const bytes = (p: string) => { const b = state.files.get(p); if (!b) throw Object.assign(new Error("TEST missing"), { code: "ENOENT" }); return b; };
@@ -12,7 +12,7 @@ vi.mock("node:fs", async original => {
     mkdirSync: (p: string) => state.files.set(p, Buffer.from("TEST dir")),
     writeFileSync: (p: string, b: string, o: { flag: string }) => { if (o.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, Buffer.from(b)); } };
 });
-vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
+vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command, researchExecutableDigest: state.executableDigest }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
 // Admission schema has its own real contracts. Here the independent boundary
 // is ownership/routing/dispatch, never the contents of the operator template.
@@ -83,6 +83,11 @@ describe("root-only existing project enrollment", () => {
     expect(JSON.parse(state.files.get(config)!.toString())).toEqual(binding);
     expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.allowed).toEqual(["account-q"]);
     await expect(onboardHostedMimoProject("/etc/subscription-runtime/TEST-reviewed.json")).rejects.toThrow("TEST retained");
+  });
+  it("refuses an executable rejected by the launch digest before installing", async () => {
+    prepare(); state.executableDigest.mockImplementationOnce(() => { throw new Error("TEST symlink denied"); });
+    await expect(onboardHostedMimoProject("/etc/subscription-runtime/TEST-reviewed.json")).rejects.toThrow("TEST symlink denied");
+    expect(state.files.has(config)).toBe(false);
   });
   it.each(["job", "tmux", "incompatible"])("rejects %s worker prefixes before installing", async fault => {
     prepare();

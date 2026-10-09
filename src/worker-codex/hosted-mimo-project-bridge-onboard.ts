@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
+import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand, researchExecutableDigest } from "./research-launch-host";
 import { researchCustody } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
 import { assertHostedMimoProjectRouteOpen, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding } from "./hosted-mimo-project-bridge";
@@ -35,6 +35,7 @@ export async function onboardHostedMimoProject(inputPath: string): Promise<unkno
     const path = realpathSync(selected); researchCustody(dirname(path)); const file = lstatSync(path);
     if (!file.isFile() || file.uid !== 0 || (file.mode & 0o022) !== 0) throw new Error("mimo_project_bridge_runtime_invalid");
   }
+  researchExecutableDigest(binding.codexBinaryPath);
   const root = "/etc/subscription-runtime/mimo-projects", project = root + "/" + binding.projectId;
   researchCustody("/etc/subscription-runtime");
   for (const path of [root, project]) { if (!existsSync(path)) mkdirSync(path, { mode: 0o700 }); researchCustody(path); }
