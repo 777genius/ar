@@ -45,7 +45,7 @@ check_trusted_path() {
 for target_dir in "$destination" "$destination/managed-launcher" "$destination/host-jobs"; do
   check_trusted_path "$target_dir" directory
 done
-for source_file in managed-launcher/launch.mjs managed-launcher/payload-guard.mjs managed-launcher/profiles.mjs managed-launcher/hosted-host-policy.mjs host-jobs/storage-policy.mjs; do
+for source_file in managed-launcher/launch.mjs managed-launcher/payload-guard.mjs managed-launcher/storage-pressure-guard.mjs managed-launcher/profiles.mjs managed-launcher/hosted-host-policy.mjs host-jobs/storage-policy.mjs; do
   check_trusted_path "$integration_dir/$source_file" file
   if [ -e "$destination/$source_file" ] || [ -L "$destination/$source_file" ]; then
     check_trusted_path "$destination/$source_file" file
@@ -55,5 +55,6 @@ install -d -o root -g root -m 0755 "$destination" "$destination/managed-launcher
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/launch.mjs" "$destination/managed-launcher/launch.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/hosted-host-policy.mjs" "$destination/managed-launcher/hosted-host-policy.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/payload-guard.mjs" "$destination/managed-launcher/payload-guard.mjs"
+install -o root -g root -m 0644 "$integration_dir/managed-launcher/storage-pressure-guard.mjs" "$destination/managed-launcher/storage-pressure-guard.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/profiles.mjs" "$destination/managed-launcher/profiles.mjs"
 install -o root -g root -m 0644 "$integration_dir/host-jobs/storage-policy.mjs" "$destination/host-jobs/storage-policy.mjs"

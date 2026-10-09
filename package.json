@@ -156,7 +156,8 @@
   ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "build": "npm run clean:dist && npm run build:packages && npm run build:managed-pressure-guard && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "build:managed-pressure-guard": "node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.pressure-guard.json",
     "build:agent-runtime-task-artifact": "node scripts/build-agent-runtime-task-artifact.mjs",
     "build:packages": "npm run --prefix packages/agent-account-observability build",
     "prepack": "npm run build",
@@ -174,7 +175,7 @@
     "test:agent-runtime-task-artifact-pack": "node --test scripts/build-agent-runtime-task-artifact-pack.test.mts",
     "test:host-transport": "node --experimental-test-module-mocks scripts/ops/tests/host-job-transport-regression.mts && node scripts/ops/tests/host-job-operator-exit-regression.mts && node scripts/ops/tests/host-job-replay-regression.mts",
     "test:global-scan-guard": "node --test host-integration/global-scan-guard/global-scan-guard.node-test.mjs",
-    "test:host-storage": "node --test host-integration/custody-canary/run.node-test.mjs host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs host-integration/managed-launcher/install.node-test.mjs host-integration/managed-launcher/install-policy.node-test.mjs host-integration/managed-launcher/launch.node-test.mjs host-integration/managed-launcher/layout.node-test.mjs",
+    "test:host-storage": "node --test host-integration/custody-canary/run.node-test.mjs host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs host-integration/managed-launcher/install.node-test.mjs host-integration/managed-launcher/install-policy.node-test.mjs host-integration/managed-launcher/launch.node-test.mjs host-integration/managed-launcher/layout.node-test.mjs host-integration/managed-launcher/storage-pressure-guard.node-test.mjs",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",

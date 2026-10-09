@@ -1,13 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { buildSystemdInvocation, managedLauncherInvocation } from './launch.mjs';
-import { runGuardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
+import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
 const finalAdmission = async () => ({ layout: deriveManagedJobLayout('/TEST', job.jobId), device: 2n });
+// Existing launch-contract tests simulate a terminal child; physical pressure
+// behavior has its own typed synthetic lifecycle tests.
+const runGuardedPayload = (args, input) => guardedPayload(args, { ...input,
+  pressure: async () => ({ attach() {}, close() {}, reason: null }),
+  launch: (...params) => { input.launch?.(...params); const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', 0, null)); return child; },
+});
 const build = (request, options = {}, admission = admit) => buildSystemdInvocation(request, admission, {
   memoryInfo: () => 'MemAvailable: 67108864 kB\n', nodePath: '/TRUSTED/node', trust: async () => {}, executable: async () => {},
   logs: async (root, unit) => [`${root}/logs/${unit}.stdout.log`, `${root}/logs/${unit}.stderr.log`], ...options,
@@ -228,4 +236,32 @@ test('memory snapshot is taken after awaited admission, not before stale work', 
   await assert.rejects(build(provider, { memoryInfo: () => {
     assert.equal(admitted, true); return 'MemAvailable: 1 kB\n';
   } }, async () => { admitted = true; return admit(); }), /memory admission unavailable/);
+});
+
+// A pending asynchronous observation must not delay pressure service teardown.
+test('pressure CLI exits finitely after its child exits despite a pending observation', async t => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'payload-pressure-exit-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const policy = `export const MINIMUM_FREE_BYTES=5368709120n,MINIMUM_FREE_INODES=50000n;
+    export async function requireFinalJobStorage(){return {layout:{jobRoot:'/TEST/jobs/owned'},device:2n};}`;
+  const pressure = `export class ScratchPressureError extends Error{}
+    export async function prepareScratchPressureGuard(){return {reason:'scratch_bytes',
+      attach(){setTimeout(()=>{},10000);},close(){}};}`;
+  const loader = join(root, 'loader.mjs');
+  writeFileSync(loader, `export async function resolve(specifier,context,next){
+    const source=specifier.endsWith('/storage-policy.mjs')?${JSON.stringify(policy)}:
+      specifier.endsWith('/storage-pressure-guard.mjs')?${JSON.stringify(pressure)}:null;
+    return source===null?next(specifier,context):{url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true};
+  }`, { flag: 'wx', mode: 0o600 });
+  const entry = fileURLToPath(new URL('./payload-guard.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, ['--experimental-loader', loader, entry, '--', '/usr/bin/true'],
+    { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 3000, maxBuffer: 65536 });
+  assert.equal(result.error, undefined, result.stderr);
+  assert.equal(result.signal, null, result.stderr);
+  assert.equal(result.status, 70, result.stderr);
 });
