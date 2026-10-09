@@ -12,14 +12,46 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Portable gates use disposable runners to avoid the shared ARC queue.
-# RUNNER remains an explicit repository/environment override.
+# Source/test gates use the configured RUNNER pool. Metadata-only proof checks
+# and result aggregation use the independent CI_CONTROL_RUNNER pool.
 jobs:
+  ci-proof-reuse:
+    # Only trusted main-push code reads prior PR artifacts/logs. PRs run every lane.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
+    timeout-minutes: 10
+    outputs:
+      reuse_unit: ${{ steps.proof.outputs.reuse_unit }}
+      reuse_crash: ${{ steps.proof.outputs.reuse_crash }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install encrypted checkpoint restore test dependency
+        run: |
+          if ! command -v restic >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends restic
+          fi
+          restic version
+      - name: Verify reusable PR lane proofs
+        id: proof
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts detect
+
   quality:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
@@ -35,6 +67,8 @@ jobs:
       - run: npm run check:boundaries
 
   unit-test-shards:
+    if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_unit == 'true') }}
+    needs: [ci-proof-reuse]
     name: Unit tests (${{ matrix.shard }}/4)
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     strategy:
@@ -44,19 +78,17 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - &unit_test_checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Fetch pinned legacy ledger fixture
         run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
       - &unit_test_node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
-      - &unit_test_install
-        run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - name: Install encrypted checkpoint restore test dependency
         run: |
           if ! command -v restic >/dev/null 2>&1; then
@@ -64,6 +96,17 @@ jobs:
             sudo apt-get install -y --no-install-recommends restic
           fi
           restic version
+      - name: Capture CI proof identity before source execution
+        id: capture
+        continue-on-error: true
+        env:
+          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+          CI_PROOF_FAMILY: unit
+          CI_PROOF_LANE: ${{ matrix.shard }}
+          CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
+        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
+      - &unit_test_install
+        run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - name: Run unit shard in a private TEST home
         shell: bash
         run: &private_test_home |
@@ -126,6 +169,15 @@ jobs:
         env:
           CI_TEST_TARGET: ${{ matrix.shard }}/4
           SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+      - name: Publish successful CI lane proof
+        continue-on-error: true
+        if: ${{ success() && steps.capture.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-proof-v1-${{ github.run_attempt }}-unit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
+          if-no-files-found: error
+          retention-days: 2
 
   unit-test-ancillary:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
@@ -142,26 +194,37 @@ jobs:
 
   unit-tests:
     if: ${{ always() }}
-    needs: [unit-test-shards, unit-test-ancillary]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    needs: [ci-proof-reuse, unit-test-shards, unit-test-ancillary]
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     steps:
       - name: Require all four unit shards and ancillary phases
         env:
           UNIT_TEST_SHARDS_RESULT: ${{ needs.unit-test-shards.result }}
           UNIT_TEST_ANCILLARY_RESULT: ${{ needs.unit-test-ancillary.result }}
+          CI_PROOF_RESULT: ${{ needs.ci-proof-reuse.result }}
+          REUSE_UNIT: ${{ needs.ci-proof-reuse.outputs.reuse_unit }}
         run: |
-          test "$UNIT_TEST_SHARDS_RESULT" = success &&
+          set -euo pipefail
           test "$UNIT_TEST_ANCILLARY_RESULT" = success
+          if [ "$UNIT_TEST_SHARDS_RESULT" = success ]; then
+            echo "All four unit shards executed successfully; ancillary phases passed."
+          elif [ "$UNIT_TEST_SHARDS_RESULT" = skipped ] &&
+               [ "$CI_PROOF_RESULT" = success ] && [ "$REUSE_UNIT" = true ]; then
+            echo "All four unit shards verified from exact-tree PR proofs; ancillary phases passed."
+          else
+            echo "::error::Unit shard execution or verified proof is missing"
+            exit 1
+          fi
 
   archive-root-tests:
     # Only the fixed disposable TEST command is elevated, on an ephemeral host.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
@@ -194,10 +257,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
@@ -229,7 +292,7 @@ jobs:
             /usr/bin/unshare --mount --propagation private \
             "$(command -v node)" --experimental-strip-types scripts/test-scratch-mount-propagation.mts \
             | tee scratch-mount-evidence/result.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
           name: scratch-mount-propagation-evidence
@@ -244,7 +307,7 @@ jobs:
         run: |
           sudo -n --preserve-env=CI,GITHUB_ACTIONS,GITHUB_WORKSPACE,RUNNER_TEMP,TEST_SOURCE_SHA \
             "$(command -v node)" --experimental-strip-types scripts/test-dependency-observer-mount-namespace.ts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
           name: observer-mount-evidence
@@ -255,8 +318,8 @@ jobs:
   package:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
@@ -270,7 +333,7 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       # Keep JavaScript actions on the host runner. The TEST container receives
@@ -347,7 +410,7 @@ jobs:
       - name: Export NativeProbe SOURCE evidence
         id: native_artifact
         if: ${{ always() && steps.native.outputs.evidence != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-probe-source-checks
           path: ${{ steps.native.outputs.evidence }}
@@ -376,6 +439,8 @@ jobs:
           # Runner-owned files remain available through job end and in artifact.
 
   crash-boundary-shards:
+    if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_crash == 'true') }}
+    needs: [ci-proof-reuse]
     permissions:
       contents: read
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
@@ -386,14 +451,23 @@ jobs:
       matrix:
         lane: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
+      - name: Capture CI proof identity before source execution
+        id: capture
+        continue-on-error: true
+        env:
+          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+          CI_PROOF_FAMILY: crash
+          CI_PROOF_LANE: ${{ matrix.lane }}
+          CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-crash-${{ matrix.lane }}/receipt.json
+        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
@@ -405,23 +479,44 @@ jobs:
           SHARD_LANE: ${{ matrix.lane }}
         run: |
           npm run test:crash-lane -- "$SHARD_LANE"
+      - name: Publish successful CI lane proof
+        continue-on-error: true
+        if: ${{ success() && steps.capture.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-proof-v1-${{ github.run_attempt }}-crash-${{ matrix.lane }}
+          path: ${{ runner.temp }}/ci-proof-crash-${{ matrix.lane }}/receipt.json
+          if-no-files-found: error
+          retention-days: 2
 
   crash-boundary-shards-complete:
     permissions:
       contents: read
     if: ${{ always() }}
-    needs: [crash-boundary-shards]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    needs: [ci-proof-reuse, crash-boundary-shards]
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards.result }}
-        run: test "$CRASH_BOUNDARY_SHARDS_RESULT" = "success"
+          CI_PROOF_RESULT: ${{ needs.ci-proof-reuse.result }}
+          REUSE_CRASH: ${{ needs.ci-proof-reuse.outputs.reuse_crash }}
+        run: |
+          set -euo pipefail
+          if [ "$CRASH_BOUNDARY_SHARDS_RESULT" = success ]; then
+            echo "All eight crash lanes executed successfully."
+          elif [ "$CRASH_BOUNDARY_SHARDS_RESULT" = skipped ] &&
+               [ "$CI_PROOF_RESULT" = success ] && [ "$REUSE_CRASH" = true ]; then
+            echo "All eight crash lanes verified from exact-tree PR proofs."
+          else
+            echo "::error::Crash lane execution or verified proof is missing"
+            exit 1
+          fi
 
   test:
     if: ${{ always() }}
     needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     steps:
       - name: Verify all CI gates passed
         env:
