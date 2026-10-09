@@ -327,7 +327,7 @@ async function observeNamedRoot(input: {
       try {
         const current = await handle.stat({ bigint: true });
         if (target) sameAllocation(before, current);
-        if (!same(before, current)) fail(Failure.IdentityChanged);
+        if (!(target ? same : sameDirectoryIdentity)(before, current)) fail(Failure.IdentityChanged);
         const mountId = await mount(handle);
         const item: Anchor = { handle, before: current, mountId,
           ...(parent ? { parent } : {}), ...(name ? { name } : {}) };
