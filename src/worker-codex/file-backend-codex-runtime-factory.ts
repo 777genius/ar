@@ -41,7 +41,7 @@ import {
   codexHostedDefaultEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
-  hostedCodexExecutableReadPath,
+  hostedCodexExecutableReadClosure,
   hostedCodexResolverReadPaths,
   hostedCodexPermissionProfilesToml,
   assertHostedOpenWorkerLayout, renderHostedOpenWorkerProfilesToml, requiresHostedProcessAdmission,
@@ -310,7 +310,7 @@ function createCodexAgentDriver(input: {
     }
   }
   const executableReadPath = projectReadBoundary
-    ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
+    ? hostedCodexExecutableReadClosure({ codexBinaryPath: options.codexBinaryPath, sourceEnv })?.paths
     : undefined;
   // MiMo's egress domain is fixed by modelBackend, not by the host-trusted
   // `providerEgressPolicy` input (`assertWorkerOptions` rejects the two
@@ -530,7 +530,7 @@ function createCodexAgentDriver(input: {
 
 function projectReadBoundaryConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: readonly string[],
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   privateKeyFilePath?: string,
@@ -544,7 +544,7 @@ function projectReadBoundaryConfigToml(
 
 function hostedGlobalScanConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: readonly string[],
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   dependencyTools?: DependencyToolGuestConfig,
