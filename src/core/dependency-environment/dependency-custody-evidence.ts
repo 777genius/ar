@@ -76,7 +76,7 @@ function identity(value: unknown): value is DependencyTreeIdentity {
   return isDependencyCustodyObject(value, "dev,ino") && typeof value.dev === "string" && decimal.test(value.dev) &&
     typeof value.ino === "string" && /^[1-9][0-9]{0,19}$/.test(value.ino);
 }
-function workspace(value: unknown): value is DependencyWorkspaceIdentity {
+export function isDependencyCustodyWorkspace(value: unknown): value is DependencyWorkspaceIdentity {
   return isDependencyCustodyObject(value, "canonicalPath,dev,ino") && canonical(value.canonicalPath) &&
     typeof value.dev === "string" && decimal.test(value.dev) && typeof value.ino === "string" && /^[1-9][0-9]{0,19}$/.test(value.ino);
 }
@@ -116,7 +116,7 @@ export function parseDependencyCustodyEvidence(input: unknown): DependencyCustod
   if (!keys) fail();
   const value = requireCustodyObject(input, keys.split(",").sort().join(","));
   if (value.version !== 1 ||
-      typeof value.operationId !== "string" || !uuid.test(value.operationId) || !workspace(value.workspace) || !installation(value.installation)) fail();
+      typeof value.operationId !== "string" || !uuid.test(value.operationId) || !isDependencyCustodyWorkspace(value.workspace) || !installation(value.installation)) fail();
   if (kind === DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1) {
     const candidate = value.candidate, custody = value.readonlyCustody;
     if (!isDependencyCustodyObject(candidate, "binding,comparison,jobId,sourceMapping") || !job(candidate.jobId) ||

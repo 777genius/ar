@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { registerHooks } from 'node:module';
+import * as nodeModule from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +50,14 @@ async function run(command, args) {
   }
 }
 
+function requireLifecycleHooks() {
+  assert.equal(typeof nodeModule.registerHooks, 'function',
+    'Live synthetic lifecycle poison requires node:module.registerHooks');
+  return nodeModule.registerHooks;
+}
+
 async function poisonedLifecycle() {
+  const registerHooks = requireLifecycleHooks();
   // Poison every public storage-policy operation before loading the real
   // HostJobs class. This leaves the actual lifecycle code intact and makes
   // policy reads, capacity admission, and layout creation unconditionally fail.
@@ -84,6 +91,9 @@ async function main() {
   assert.ok(args.length === 3 && args[0] === '--allow-live-synthetic' &&
     args[1] === '--expected-machine-id',
   'Usage (disposable Linux test host only): node legacy-lifecycle-e2e.mjs --allow-live-synthetic --expected-machine-id ID');
+  // Node20 can import the pure scoped helpers, but cannot run an unpoisoned live
+  // canary. Reject before machine reads, policy admission or ANY host command.
+  requireLifecycleHooks();
   assert.equal(process.platform, 'linux', 'Requires disposable Linux test host');
   const machineId = (await readFile('/etc/machine-id', 'utf8')).trim();
   assert.match(machineId, /^[a-f0-9]{32}$/);

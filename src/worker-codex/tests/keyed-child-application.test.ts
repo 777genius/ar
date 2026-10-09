@@ -30,7 +30,6 @@ import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fa
 import { CodexAppServerClient } from "../../provider-codex/app-server/application/app-server-client";
 import { resolveCodexExecutionProfile } from "../../provider-codex/codex-execution-profile";
 import { AppServerDynamicToolHandler } from "../../provider-codex/app-server/application/app-server-dynamic-tool-handler";
-
 const facts = vi.hoisted(() => ({ root: "", fail: "", effect: null as (() => void) | null,
   syncFault: "", mutateOnSync: null as (() => void) | null,
   gate: null as Promise<void> | null, checkoutGate: null as Promise<void> | null,
@@ -38,8 +37,7 @@ const facts = vi.hoisted(() => ({ root: "", fail: "", effect: null as (() => voi
 const policy = "/var/lib/subscription-runtime-host-policy";
 const local = (path: string) => ["/var", "/var/lib", policy].includes(path) ? facts.root :
   path.startsWith(policy + "/") ? join(facts.root, path.slice(policy.length + 1)) : path;
-// Host metadata is synthetic; byte writes, nofollow, inodes, modes, fsync and
-// renameat2 remain real on fresh TEST files. No production filesystem hook.
+// Host metadata is synthetic; byte writes, nofollow, inodes, modes, fsync and renameat2 remain real on fresh TEST files. No production filesystem hook.
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs,
@@ -80,8 +78,7 @@ vi.mock("node:fs/promises", async original => {
   return { ...fs, mkdir: (path: string, options: Parameters<typeof fs.mkdir>[1]) => fs.mkdir(local(path), options),
     rmdir: (path: string) => fs.rmdir(local(path)) };
 });
-// Controlled checkout process, separate from controlled host submission. Its
-// output is checked against real private workspace HEAD bytes by the adapter.
+// Controlled checkout process, separate from controlled host submission. Its output is checked against real private workspace HEAD bytes by the adapter.
 vi.mock("node:child_process", async original => {
   const cp = await original<typeof import("node:child_process")>();
   const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -111,6 +108,11 @@ vi.mock("../hosted-test-egress-files", async original => ({ ...await original<ty
   hostedTestEgressGrantRoot: "/var/lib/subscription-runtime-host-policy/grants" }));
 const digest = (value: unknown) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 function deferred() { let resolve!: () => void; let reject!: (error: Error) => void; const promise = new Promise<void>((r, e) => { resolve = r; reject = e; }); return { promise, resolve, reject }; }
+async function bounded<T>(work: Promise<T>, timeoutMs = 1000): Promise<T> { const timeout = new AbortController();
+  try { return await Promise.race([work, delay(timeoutMs, undefined, { signal: timeout.signal }).then(() => {
+    throw new Error("TEST controlled work did not settle while preparation remained gated");
+  })]); } finally { timeout.abort(); }
+}
 const request = { key: "TEST-key", profile: Profile.ReadOnly, task: "Exact TEST task\n😀" };
 let stop!: () => void;
 let joinWork: (() => Promise<void>) | undefined;
@@ -120,8 +122,7 @@ beforeEach(() => {
 });
 afterEach(async () => { stop?.(); await joinWork?.(); vi.useRealTimers(); vi.restoreAllMocks(); rmSync(facts.root, { recursive: true, force: true }); });
 function testPreparationNative(): OwnedPreparationNativePort {
-  // Policy/wiring fixture only. It explicitly supplies NO native quiescence
-  // authority and can never authorize a persisted pre-intent terminal.
+  // Policy/wiring fixture only. It explicitly supplies NO native quiescence authority and can never authorize a persisted pre-intent terminal.
   return { retain: owner => ({ owner, assertAdmission: () => {}, requestStop: () => {},
     join: async () => null, authenticateQuiescence: () => { throw new Error("TEST has no native authority"); },
     startGit: (_effect, args, remainingMs) => ({ completion: promisify(execFile)("/usr/bin/git", [...args], { env: {}, timeout: remainingMs }) }),
@@ -173,7 +174,7 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
     exclusiveEnrollmentSha256: null, ordinaryStarts: [] }) + "\n", { mode: 0o600 });
   const retained = new RetainedKeyedAuthority(origin, authority, allocations), store = new KeyedLaunchLedgerStore(authority, allocations);
   withHostedActivationFence(f => store.initialize(f));
-  const wait = deferred(), calls: FreshKeyedSubmission[] = [], stops: string[] = [];
+  const wait = deferred(), submittedSignal = deferred(), calls: FreshKeyedSubmission[] = [], stops: string[] = [];
   const host = production ? new OrdinaryKeyedChildHost() : { submitFresh(fence: HostedActivationFence, permission: FreshKeyedSubmission) {
     consumeFreshKeyedSubmission(fence, permission);
     const durable = store.readHeld(fence, authority, retained.seed.authorityDigest).observe(authority, permission.binding.childHandle);
@@ -181,6 +182,7 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
     calls.push(permission);
     if (facts.fail === "before-os") { calls.pop(); throw new Error("TEST before OS call"); }
     if (facts.fail === "accepted-then-throw") throw new Error("TEST accepted then lost response");
+    submittedSignal.resolve();
     return { completion: wait.promise };
   } };
   const materialization = new SlotMaterialization(retained, join(facts.root, "source"));
@@ -196,15 +198,16 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
   }, typeof nativeAvailable === "boolean" ? nativeAvailable ? testPreparationNative() : undefined : nativeAvailable);
   const app = new KeyedChildLaunchApplication(adapter), tools = new HostedControllerKeyedToolAdapter(retained, app);
   stop = wait.resolve; joinWork = () => app.drain();
-  return { slots, authority, allocations, store, retained, adapter, app, tools, wait, calls, stops, stopRequests, materialization,
+  return { slots, authority, allocations, store, retained, adapter, app, tools, wait, submittedSignal, calls, stops, stopRequests, materialization,
     ledger: () => withHostedActivationFence(f => store.readHeld(f, authority, retained.seed.authorityDigest)),
     bindProof: (port: KeyedScopedStopPort) => { concreteProof = port; },
     originChanged: () => { changedOrigin = true; }, grantChanged: () => { changedGrant = true; } };
 }
 async function submitted(f: ReturnType<typeof fixture>) {
-  await vi.waitFor(() => expect(f.calls.length).toBe(1), { timeout: 5000 });
+  await bounded(f.submittedSignal.promise, 5000);
+  await bounded(f.adapter.coordinate(async () => {}, Mode.Cleanup), 5000);
+  expect(f.calls).toHaveLength(1);
 }
-
 describe("PR4 keyed application with private TEST persistence and controlled host", () => {
   it.each(["missing-custody", "rejected-admission"] as const)("failed original retention (%s) durably closes admission before launch rejects", async mode => {
     const requested = vi.fn(), joined = vi.fn(async () => null), base = testPreparationNative();
@@ -299,8 +302,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
       generation: binding.generation + 1, effect: PreparationEffect.SourceClone };
     writeFileSync(prefixPath, JSON.stringify(prefix) + "\n", { mode: 0o600 });
     expect(() => withHostedActivationFence(fence => records.closedInventory(fence, binding))).toThrow("preparation_ownership_conflict");
-    // A valid durable prefix is still only an obligation record, not proof that
-    // clone started or quiesced. The persisted ledger remains occupied.
+    // A valid durable prefix is still only an obligation record, not proof that clone started or quiesced. The persisted ledger remains occupied.
     writeFileSync(prefixPath, JSON.stringify({ ...prefix, generation: binding.generation - 1 }) + "\n");
     const inventory = withHostedActivationFence(fence => records.closedInventory(fence, binding));
     expect(inventory.prefixDigests[PreparationEffect.SourceClone]).toBe(createHash("sha256").update(readFileSync(prefixPath)).digest("hex"));
@@ -320,10 +322,9 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
       const control = mode === "explicit" ? f.app.stop(view.childHandle).then(() => { stopSettled = true; }) : undefined;
       if (mode === "deadline") await vi.advanceTimersByTimeAsync(f.authority.absoluteDeadline - Date.now());
       const observation = f.app.observe(view.childHandle).then(() => { observeSettled = true; });
-      // Keep checkout gated for the review's 150 ms snapshot interval, then
-      // allow bounded private TEST filesystem coordination on slower hosts.
-      await delay(150);
-      await Promise.race([Promise.all([control, observation]), delay(1000)]);
+      // Join actual control/observation while checkout still cannot complete.
+      await bounded(Promise.all([control, observation]));
+      await bounded(f.adapter.coordinate(async () => {}, Mode.Cleanup));
       const snapshot = { stopSettled: mode === "explicit" ? stopSettled : f.stops.length === 1,
         observeSettled, stopRequests: f.stops.length };
       checkout.resolve(); await control; await observation; await f.app.drain();
@@ -348,7 +349,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
       const competing = f.adapter.materialize(binding, request.task);
       const stopped = f.app.stop(view.childHandle);
       // The competitor must reject while the first owner still holds checkout.
-      const result = await Promise.race([competing.then(() => "accepted", () => "excluded"), delay(150).then(() => "blocked")]);
+      const result = await bounded(competing.then(() => "accepted", () => "excluded"), 150);
       checkout.resolve(); await competing.catch(() => {}); await stopped; await f.app.drain();
       expect(result).toBe("excluded"); expect(f.calls).toHaveLength(0);
       expect((await f.app.observe(view.childHandle)).state).toBe(State.StopRequested);
@@ -364,9 +365,13 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     const stopped = await f.app.stop(view.operationHandle);
     expect(stopped.state).toBe(State.StopRequested); expect(stopped.occupied).toBe(true);
     await f.app.launch(request, new AbortController().signal); // Replay must not renew the timer.
-    await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1); await delay(150);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+    await bounded(f.adapter.coordinate(async () => {}, Mode.Cleanup));
     expect(stopCalls.mock.calls.filter(([, reason]) => reason === ScopedStopReason.Deadline)).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1); await delay(500);
+    await vi.advanceTimersByTimeAsync(1);
+    const deadlineIndex = stopCalls.mock.calls.findIndex(([, reason]) => reason === ScopedStopReason.Deadline);
+    expect(deadlineIndex).toBeGreaterThanOrEqual(0);
+    await bounded(stopCalls.mock.results[deadlineIndex]!.value);
     const deadlineCalls = stopCalls.mock.calls.filter(([, reason]) => reason === ScopedStopReason.Deadline);
     const requests = [...f.stopRequests], pendingAtDeadline = !foregroundSettled;
     const atDeadline = await f.app.observe(view.childHandle);
@@ -401,9 +406,8 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     const acceptedAt = Date.now(), deadline = acceptedAt + 1000, f = fixture(false, deadline);
     let foregroundSettled = false; void f.wait.promise.then(() => { foregroundSettled = true; });
     const view = await f.app.launch(request, new AbortController().signal);
-    // Wait for real private TEST persistence without advancing either fake clock.
-    for (let n = 0; n < 100 && f.calls.length === 0; n++) await delay(10);
-    expect(f.calls).toHaveLength(1);
+    // Join real private TEST submission without advancing either fake clock.
+    await submitted(f);
     expect((await f.app.observe(view.childHandle)).state).toBe(State.Submitted);
     vi.setSystemTime(acceptedAt + shift);
     await vi.advanceTimersByTimeAsync(999);
@@ -649,9 +653,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     handler.close(); client.close(); server.close(); f.wait.resolve(); await f.app.drain(); expect(f.calls).toHaveLength(1);
   });
 });
-
-/** Real application/retained authority/private stores and producer. The manager
- * graph belongs to the fixture: effects NEVER imply queue/creator/group death. */
+/** Real application/retained authority/private stores and producer. The manager graph belongs to the fixture: effects NEVER imply queue/creator/group death. */
 async function scopedFixture() {
   const f = fixture(false, Date.now() + 60000, "proof");
   const view = await f.app.launch(request, new AbortController().signal); await submitted(f);
@@ -739,7 +741,6 @@ async function scopedFixture() {
     collectHook: (hook: (() => void) | undefined) => { collectHook = hook; },
     receipt: () => join(facts.root, "scoped-receipts", target.startId + ".json") };
 }
-
 describe("PR5 scoped proof at the real application and private publication boundaries", () => {
   it("releases only after all independent creator/queue/recursive scopes and ordered durable publications", async () => {
     const f = await scopedFixture(), provider = f.states.get(f.rows[1]!.startId)!;
@@ -895,8 +896,7 @@ describe("PR5 scoped proof at the real application and private publication bound
     const f = await scopedFixture(); facts.syncFault = "keyed";
     expect(await f.proof.request(f.target, ScopedStopReason.Completion)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
     facts.syncFault = "";
-    // Explicit fixture recovery resolves a known failed staging write by removing
-    // ONLY the exact retained .next from this owned TEST store. Production never does.
+    // Explicit fixture recovery resolves a known failed staging write by removing ONLY the exact retained .next from this owned TEST store. Production never does.
     for (const name of readdirSync(join(facts.root, "keyed-child-ledgers"))) if (name.endsWith(".next")) rmSync(join(facts.root, "keyed-child-ledgers", name));
     const priorActivation = f.read("host-activation.json"); f.put("host-activation.json", { ...priorActivation, generation: priorActivation.generation + 1 });
     await f.adapter.coordinate(async () => {
@@ -913,7 +913,6 @@ describe("PR5 scoped proof at the real application and private publication bound
     expect(f.read("host-activation.json").ordinaryStarts[2]).toEqual(f.unrelated); expect(f.calls).toHaveLength(1);
   });
 });
-
 // Independent review regressions, each starts from a fresh explicit TEST graph.
 describe("R1-R8 repair regressions", () => {
   it("R1 rejects callback factory forgery at the real durable keyed transaction", async () => {
