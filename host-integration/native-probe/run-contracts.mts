@@ -83,7 +83,7 @@ try {
     "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
     (await readFile(join(build, "src/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8"))
       .replace(/^\/\/# sourceMappingURL=.*$/m, ""));
-  for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
+  for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js", "core/dependency-environment/dependency-custody-evidence.js"]) {
     const destination = join(rawDirectory, "native-probe", name); await mkdir(resolve(destination, ".."), { recursive: true }); await copyFile(join(build, "src", name), destination);
   }
   // This separate emitted TEST closure binds the actual C client to our
