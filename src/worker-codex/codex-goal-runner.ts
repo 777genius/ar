@@ -1,3 +1,4 @@
+import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { nativeWebFromSafeExecutionResult, nativeWebFromManagedError } from "./codex-goal-run-result";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
@@ -239,10 +240,6 @@ export async function runCodexGoal(
 async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGoalRunDeps,
   storageLease?: JobStorageWriteLease): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   storageLease?.assertCurrent();
-  const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
-  try {
-  storageLease?.assertCurrent();
-  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath, toolEntry);
   assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
@@ -258,6 +255,12 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
   if (admittedEgress.profileId !== providerEgressPolicy.profileId) {
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
+  storageLease?.assertCurrent();
+  recordRawGoalStateOrigin(config.jobRootDir);
+  const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
+  try {
+  storageLease?.assertCurrent();
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath, toolEntry);
   const appServerProcessFactory = admitHostedReadonlyInputs({
     ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,

@@ -1,3 +1,4 @@
+import { recordInventoriedRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { assertHostedReadonlyDependencyReadyPublication } from "./hosted-readonly-dependency-publication";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { parseHostedReadonlyDependencyStart, readonlyDependencyStartName } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
@@ -112,6 +113,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) {
           assertHostedReadonlyDependencyReadyPublication(this.store.publicationFence(), epoch);
         }
+        recordInventoriedRawGoalStateOrigin({ command, args }, epoch.identity.jobRootDir);
         const startId = randomUUID();
         const record = { startId, creatorId: startId, unit: `subscription-runtime-outer-${startId}.service` };
         const launch = this.kernel.runtimeInvocation(record, command, args, cwd);

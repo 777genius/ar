@@ -1,3 +1,4 @@
+import { recordInventoriedRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { assertHostedOrdinaryDependencyNotAdopted } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { parseHostedCustodyEnrollment, managedReservations, assertActivationSession, ordinaryUnitGroup } from "./hosted-activation-validation";
 import type { HostedForegroundRequest } from "./hosted-foreground-request-custody";
@@ -35,7 +36,6 @@ import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host"
 import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
 import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
-
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
  * caller records and stop requests never substitute for those proofs. */
@@ -376,6 +376,7 @@ export class HostedInstallationActivationStore {
       return this.serialized(fence => {
         this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd, undefined, foregroundRequest);
         try {
+          recordInventoriedRawGoalStateOrigin(this.ordinaryLaunch.launch, this.ordinaryLaunch.start.jobRootDir);
           const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd);
           this.ordinaryLaunch.childBudget?.remainingMs();
           const inventory = readHostedReadonlyHostInventory();

@@ -1,8 +1,10 @@
+import { initializeControllerStateOrigin } from "../application/project-control/codex-goal-controller-state-location";
+import { routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import "./hosted-test-egress-default-fixture";
 import "./unmanaged-goal-host-fixture";
 import { execFile } from "node:child_process";
 import * as nodeFs from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -12,12 +14,43 @@ import * as hostedHostPolicy from "../../provider-codex/app-server/adapters/host
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { createCodexGoalJob, readCodexGoalJob, codexGoalJobToArgs } from "../codex-goal-jobs";
 import { prepareWorkerToolRoot, WorkerToolRootStatus } from "../worker-tool-root";
-import { codexGoalRuntimeEventsPath, runCodexGoal, type CodexGoalRunDeps,
+import { codexGoalAccountSlots, codexGoalProgressPath, codexGoalRuntimeEventsPath, runCodexGoal, type CodexGoalRunConfig, type CodexGoalRunDeps,
   type CodexGoalExecutor } from "../codex-goal-runner";
 import { createLinkedGitWorktree, readJsonLines } from "./codex-goal-runner-fixtures";
 
 const execFileAsync = promisify(execFile);
 describe("codex goal runner worker mode", () => {
+  // Regression: a forged raw boundary/env must not turn a controller's
+  // protected never-started origin into a writable raw job at either entry.
+  it.skipIf(process.platform !== "linux").each(["runner", "foreground"] as const)("denies raw %s over a controller origin before runtime writes", async entry => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "TEST-controller-raw-origin-")));
+    const config: CodexGoalRunConfig = {
+      jobId: "TEST-controller", taskId: "TEST-controller", jobRootDir: join(root, "job"),
+      workspacePath: join(root, "workspace"), authRootDir: join(root, "auth"),
+      promptPath: join(root, "prompt.md"), accounts: codexGoalAccountSlots(["account-a"]),
+      accessBoundary: AccessBoundary.ReadOnly,
+      sourceEnv: { SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1" },
+    };
+    try {
+      await initializeControllerStateOrigin({
+        schemaVersion: 1, jobId: config.jobId!, taskId: config.taskId,
+        jobRootDir: config.jobRootDir, workspacePath: config.workspacePath, promptPath: config.promptPath,
+        accounts: ["account-a"], createdAt: "2026-10-10T00:00:00.000Z", updatedAt: "2026-10-10T00:00:00.000Z",
+      });
+      const origin = join(config.jobRootDir, ".controller-state-origin.json");
+      const before = await readFile(origin);
+      let executorCalls = 0;
+      const attempt = entry === "runner"
+        ? runCodexGoal(config, { createExecutor: () => { executorCalls++; throw new Error("unexpected executor"); } })
+        : routeHostedGoalLaunch({ config, cliCommand: ["node", "unused-cli.js"], cwd: root, logPath: join(config.jobRootDir, "log") });
+      await expect(attempt).rejects.toThrow("controller_origin_raw_launch_denied");
+      expect(executorCalls).toBe(0);
+      expect(await readFile(origin)).toEqual(before);
+      await expect(readFile(codexGoalProgressPath(config))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(codexGoalRuntimeEventsPath(config))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   // Binding: real manifest/launch/tool-root/runner composition. Host admission
   // and OS discovery are synthetic; executor forwarding is not OS enforcement.
   it("binds open manifest evidence, executor launch and private roots without strict handoff warnings", async () => {
