@@ -483,6 +483,7 @@ export function codexJsonHomeConfigToml(input?: {
   readonly hooksEnabled?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
   readonly namedPermissions?: boolean;
+  readonly shellEnvironmentSet?: Readonly<Record<string, string>>;
   /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps today's output byte-identical. */
   readonly modelBackend?: CodexModelBackend;
   /** Env var holding the MiMo Token Plan key. Only used when `modelBackend` is `XiaomiMimoTokenPlan`. */
@@ -497,6 +498,11 @@ export function codexJsonHomeConfigToml(input?: {
     "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL",
     "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL",
   ];
+  const shellEnvironmentSet = Object.entries(input?.shellEnvironmentSet ?? {});
+  for (const [key] of shellEnvironmentSet) {
+    if (key === "PATH" || !/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("codex_shell_environment_set_key_invalid");
+    if (!shellEnvKeys.includes(key)) shellEnvKeys.push(key);
+  }
   const providerEgressPolicy =
     input?.providerEgressPolicy ??
     (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
@@ -533,6 +539,9 @@ export function codexJsonHomeConfigToml(input?: {
     "[shell_environment_policy]",
     'inherit = "all"',
     `include_only = [${shellEnvKeys.map((key) => JSON.stringify(key)).join(", ")}]`,
+    ...(input?.shellEnvironmentSet === undefined ? [] : [
+      `set = { ${shellEnvironmentSet.map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(", ")} }`,
+    ]),
     "",
     ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
       codexModelBackendModelProvidersConfigToml({

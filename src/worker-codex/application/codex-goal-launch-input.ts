@@ -1,3 +1,4 @@
+import { optionalWorkerMode } from "../project-control-worker-mode";
 import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
@@ -72,6 +73,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     merged.projectAccessScope,
   );
   const networkAccess = optionalCodexGoalNetworkAccess(merged.networkAccess);
+  const workerMode = optionalWorkerMode(merged.workerMode);
   const taskTimeoutMs = positiveIntegerValue(merged.taskTimeoutMs, "taskTimeoutMs") ??
     defaultTimeoutMs;
   const appServerStartupTimeoutMs = positiveIntegerValue(
@@ -133,6 +135,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     ...(projectAccessScope === undefined ? {} : { projectAccessScope }),
     allowDangerFullAccess: booleanValue(merged.allowDangerFullAccess) ?? false,
     ...(networkAccess === undefined ? {} : { networkAccess }),
+    ...(workerMode === undefined ? {} : { workerMode }),
     taskTimeoutMs,
     ...(appServerStartupTimeoutMs === undefined
       ? {}
