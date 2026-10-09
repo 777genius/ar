@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), fds: new Map<number, string>(), fd: 1,
-  allowed: ["account-q"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn() }));
+  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn() }));
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   const bytes = (p: string) => { const b = state.files.get(p); if (!b) throw Object.assign(new Error("TEST missing"), { code: "ENOENT" }); return b; };
@@ -18,7 +18,7 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
 // is ownership/routing/dispatch, never the contents of the operator template.
 vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 vi.mock("../codex-goal-mcp-project-control-tool-handlers", () => ({ projectControlRefillWorker: state.refill, projectControlStartStoredJob: state.start, projectControlStopStoredJob: state.stop }));
-vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: state.allowed } }), loadJobLaunch: state.load }));
+vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: state.allowed, jobIdPrefixes: state.jobPrefixes, tmuxSessionPrefixes: state.tmuxPrefixes } }), loadJobLaunch: state.load }));
 vi.mock("../project-mimo-worker-launch", () => ({ reconcileProjectMimoWorker: vi.fn() }));
 vi.mock("../codex-goal-ops", () => ({ collectCodexGoalStatus: async () => ({ state: "done" }) }));
 vi.mock("../codex-goal-mcp-status-input", () => ({ codexGoalStatusInputFromLaunch: () => ({}) }));
@@ -34,7 +34,7 @@ const binding = { schemaVersion: 1, projectId: request.projectId, workstreamId: 
   sourceCommit: request.sourceCommit, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/codex", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract: { executionPolicy: { mode: "sandbox-only", sandboxRoot: scratch + "/source/sandbox", forbiddenRealProjects: ["/TEST/real-project"] } } } };
 const control = (operation: MimoProjectBridgeOperation) => { const { prompt: _p, sourceCommit: _s, ...r } = request; return { ...r, operation }; };
 beforeEach(() => {
-  state.files.clear(); state.fds.clear(); vi.clearAllMocks(); state.allowed = ["account-q"];
+  state.files.clear(); state.fds.clear(); vi.clearAllMocks(); state.allowed = ["account-q"]; state.jobPrefixes = ["test-"]; state.tmuxPrefixes = ["test-"];
   state.files.set("/etc/machine-id", Buffer.from(request.machineId)); state.files.set(config, Buffer.from(JSON.stringify(binding)));
   state.files.set("/etc/subscription-runtime/projects/test-project.d/test-stream.yml", Buffer.from(`project_id: test-project\nworkstream_id: test-stream\nstate_root: /srv/worker-state/jobs/test-project/test-stream\nscratch_root: /srv/workers/jobs/test-project/test-stream\nrouting_enabled: true\n`));
   const response = { content: [{ type: "text", text: '{"ok":true}' }] }; state.refill.mockResolvedValue(response); state.start.mockResolvedValue(response); state.stop.mockResolvedValue(response);
@@ -83,6 +83,14 @@ describe("root-only existing project enrollment", () => {
     expect(JSON.parse(state.files.get(config)!.toString())).toEqual(binding);
     expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.allowed).toEqual(["account-q"]);
     await expect(onboardHostedMimoProject("/etc/subscription-runtime/TEST-reviewed.json")).rejects.toThrow("TEST retained");
+  });
+  it.each(["job", "tmux", "incompatible"])("rejects %s worker prefixes before installing", async fault => {
+    prepare();
+    if (fault === "job") state.jobPrefixes = [];
+    if (fault === "tmux") state.tmuxPrefixes = [];
+    if (fault === "incompatible") state.tmuxPrefixes = ["foreign-"];
+    await expect(onboardHostedMimoProject("/etc/subscription-runtime/TEST-reviewed.json")).rejects.toThrow("mimo_project_bridge_worker_prefix_scope_denied");
+    expect(state.files.has(config)).toBe(false);
   });
   it.each(["scope", "route", "source"])("rejects %s drift before writing the binding", async fault => {
     prepare();

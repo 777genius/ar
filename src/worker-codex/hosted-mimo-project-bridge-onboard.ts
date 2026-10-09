@@ -23,6 +23,10 @@ export async function onboardHostedMimoProject(inputPath: string): Promise<unkno
   const controller = await loadProjectControlController({ registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId });
   if (controller.scope.projectId !== binding.projectId || !controller.scope.allowedAccountIds?.includes("account-q"))
     throw new Error("mimo_project_bridge_scope_denied");
+  const jobPrefixes = controller.scope.jobIdPrefixes ?? [], tmuxPrefixes = controller.scope.tmuxSessionPrefixes ?? [];
+  if (!jobPrefixes.some(job => job.length > 0 && tmuxPrefixes.some(tmux => tmux.length > 0 &&
+      (job.startsWith(tmux) || tmux.startsWith(job)))))
+    throw new Error("mimo_project_bridge_worker_prefix_scope_denied");
   // Freeze the reviewed branch before enrollment; no clone, fetch or source
   // mutation belongs to this metadata installer.
   const commit = researchCommand("/usr/bin/git", ["-C", binding.sourceWorkspacePath, "rev-parse", "--verify", binding.sourceRef + "^{commit}"]).trim();
