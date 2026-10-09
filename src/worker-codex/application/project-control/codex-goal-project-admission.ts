@@ -1,6 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import {
   ProjectAdmissionWorkerRole,
   ProjectDebtReason,
@@ -11,7 +10,6 @@ import {
   projectAdmissionDebtCounts,
   type ConsumedOutputLedger,
   type ProjectAccessScope,
-  type ProjectAdmissionGate,
   type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
   type ProjectAdmissionWriterObservation,
@@ -48,8 +46,6 @@ import {
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
   withoutAdmittedInputPatchDebt,
-  withoutCapacityContinuationSiblingDebt,
-  withoutInPlaceContinuationSelfDebt,
   type ProjectAdmissionInPlaceContinuationBinding,
   type ProjectAdmissionJobWorkspaceBinding,
 } from "./codex-goal-project-admission-normalization";
@@ -57,7 +53,6 @@ import {
   admissionWorkspacePathsMatch,
   optionalRealPathForAdmission,
 } from "./codex-goal-project-admission-paths";
-import { prepareCodexProjectScopedAdmission } from "./codex-goal-project-scoped-admission";
 import {
   hasBlockingActiveWriterRisk,
   stoppedWorkspaceTerminalConsumption,
@@ -136,7 +131,7 @@ type CodexProjectAdmissionInput = {
   readonly inPlaceContinuationTarget?: ProjectAdmissionInPlaceContinuationBinding;
   readonly targetBinding?: ProjectAdmissionTargetBinding;
 };
-type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
+export type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
   readonly controllerJobId: string;
 };
 type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
@@ -186,82 +181,7 @@ export function projectAdmissionDetailView(input: {
   };
 }
 
-export function codexProjectAdmissionGate(
-  input: CodexProjectMutationAdmissionInput,
-): ProjectAdmissionGate {
-  const observe = async (request: ProjectAdmissionRequest): Promise<ProjectAdmissionSnapshot> => {
-      // Admission protects a mutation. A cached pre-launch snapshot can no
-      // longer prove that another writer did not start in the meantime.
-      const observedSnapshot = await buildCodexProjectAdmissionSnapshot({
-        ...input,
-        targetRequest: request,
-        ...(request.workspacePath
-          ? { requestedWorkspacePath: request.workspacePath }
-          : {}),
-        blockAnyLiveWriter: request.ownedPaths !== undefined ||
-          request.workspacePath === undefined,
-        ...(input.admittedInputPatchTarget
-          ? { admittedInputPatchRequest: request }
-          : {}),
-      });
-      const snapshot = await withoutCapacityContinuationSiblingDebt({
-        snapshot: observedSnapshot,
-        request,
-        ...(input.capacityContinuationTarget
-          ? { binding: input.capacityContinuationTarget }
-          : {}),
-      });
-      const continuationSnapshot = await withoutInPlaceContinuationSelfDebt({
-        snapshot,
-        request,
-        ...(input.inPlaceContinuationTarget
-          ? { binding: input.inPlaceContinuationTarget }
-          : {}),
-      });
-      return continuationSnapshot;
-  };
-  const evaluatePrepared = async (
-    request: ProjectAdmissionRequest,
-    continuationSnapshot: ProjectAdmissionSnapshot,
-  ) => {
-      const hasScopedBinding = Boolean(input.targetBinding?.createWorktree ||
-        input.targetBinding?.createManifest?.projectPreStartAdmission ||
-        input.targetBinding?.start?.manifest.projectPreStartAdmission);
-      const scoped = hasScopedBinding ? await prepareCodexProjectScopedAdmission({
-        registryRootDir: input.registryRootDir,
-        scope: input.scope,
-        ...(input.controllerJobId ? { controllerJobId: input.controllerJobId } : {}),
-        request,
-        snapshot: continuationSnapshot,
-        ...(input.targetBinding ? { targetBinding: input.targetBinding } : {}),
-        deps: input.deps,
-      }) : undefined;
-      return evaluateProjectAdmission({
-        ...(scoped ? { scoped } : {}),
-        request: {
-          ...request,
-          projectId: request.projectId ?? input.scope.projectId,
-        },
-        snapshot: continuationSnapshot,
-      });
-  };
-  return {
-    async prepare(request) {
-      const snapshot = await observe(request);
-      return {
-        async evaluate(currentRequest) {
-          if (!isDeepStrictEqual(currentRequest, request)) {
-            throw new Error("project_control_prepared_admission_request_changed");
-          }
-          return await evaluatePrepared(currentRequest, snapshot);
-        },
-      };
-    },
-    async evaluate(request) {
-      return await evaluatePrepared(request, await observe(request));
-    },
-  };
-}
+export { codexProjectAdmissionGate } from "./codex-goal-project-mutation-admission";
 
 export async function readCodexProjectAdmissionSnapshot(
   input: CodexProjectAdmissionInput,

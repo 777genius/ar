@@ -21,7 +21,6 @@ import { inspectDependencyBootstrap, runDependencyBootstrap } from "./dependency
 import {
   type CodexGoalProjectCreateWorktreeInput,
   type CodexGoalProjectIntegrateCommitInput,
-  type CodexGoalProjectPushBranchInput,
   type CodexProjectControlBrokerInput,
   projectControlAuditPath,
 } from "./codex-goal-mcp-project-broker";
@@ -50,9 +49,7 @@ import {
 import {
   assertSafeGitCommitSha,
   assertSafeGitRefName,
-  assertSafeGitRemoteName,
 } from "./codex-goal-mcp-project-git";
-import { resolveProjectExternalRewriteRecovery } from "./application/project-control/codex-goal-project-external-rewrite-recovery";
 import {
   resolveProjectSourceReference,
   resolveProjectSourceRevision,
@@ -985,87 +982,7 @@ export async function projectControlIntegrateCommitView(
   };
 }
 
-export async function projectControlPushBranchView(
-  args: ProjectControlMcpArgs,
-  deps: CodexGoalMcpProjectControlActionsDeps,
-): Promise<JsonObject> {
-  const controller = await deps.loadProjectControlController(args);
-  const workspacePath = projectControlPathArg(
-    args,
-    args.workspacePath,
-    "workspacePath",
-  );
-  const branch = requiredRawString(args.branch, "branch");
-  const remote = stringValue(args.remote) ?? "origin";
-  const force = booleanValue(args.force) ?? false;
-  const expectedRemoteCommit = stringValue(args.expectedRemoteCommit);
-  const expectedLocalCommit = stringValue(args.expectedLocalCommit);
-  const confirmExternalRewriteRecovery =
-    booleanValue(args.confirmExternalRewriteRecovery) ?? false;
-  assertSafeGitRefName(branch, "branch");
-  assertSafeGitRemoteName(remote, "remote");
-  const recovery = resolveProjectExternalRewriteRecovery({
-    force,
-    expectedRemoteCommit,
-    expectedLocalCommit,
-    confirmExternalRewriteRecovery,
-  });
-  const realWorkspacePath = await projectControlRealPathOutsideWorkspaceScope(
-    workspacePath,
-    controller.scope,
-  );
-  const pushBranchInput: CodexGoalProjectPushBranchInput = {
-    workspacePath,
-    ...(realWorkspacePath ? { realWorkspacePath } : {}),
-    branch,
-    remote,
-    force,
-    ...(expectedRemoteCommit ? { expectedRemoteCommit } : {}),
-    ...(expectedLocalCommit ? { expectedLocalCommit } : {}),
-    ...(confirmExternalRewriteRecovery
-      ? { confirmExternalRewriteRecovery: true }
-      : {}),
-  };
-  if (!args.confirmPush) {
-    return {
-      ok: false,
-      reason: "confirm_push_required",
-      controllerJobId: controller.controller.jobId,
-      auditPath: projectControlAuditPath(controller.controller),
-      commandPreview: [
-        "git",
-        "-C",
-        workspacePath,
-        "push",
-        ...(recovery
-          ? [
-              `--force-with-lease=refs/heads/${branch}:${recovery.expectedRemoteCommit}`,
-            ]
-          : force
-            ? ["--force-with-lease"]
-            : []),
-        remote,
-        `HEAD:refs/heads/${branch}`,
-      ],
-    };
-  }
-
-  const broker = deps.codexProjectControlBroker({
-    registryRootDir: controller.registryRootDir,
-    controller: controller.controller,
-    scope: controller.scope,
-    pushBranchInput,
-  });
-  const result = await broker.pushBranch(pushBranchInput);
-  return {
-    ok: true,
-    mode: "project_control_push_branch",
-    controllerJobId: controller.controller.jobId,
-    registryRootDir: controller.registryRootDir,
-    auditPath: projectControlAuditPath(controller.controller),
-    result: result as unknown as JsonObject,
-  };
-}
+export { projectControlPushBranchView } from "./codex-goal-mcp-project-control-push";
 
 export { projectControlStopStoredJobView } from
   "./codex-goal-mcp-project-control-stop";
