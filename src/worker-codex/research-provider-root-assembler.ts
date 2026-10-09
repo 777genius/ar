@@ -284,7 +284,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (args.length !== 5 || !/^[1-9]\d{0,14}$/.test(args[4]!)) researchInvalid();
     process.exitCode = await assembleResearchProviderRoot(args[0]!, args[1]!, args[2]!, args[3]!, Number(args[4]));
   } catch (error) {
-    process.stderr.write(JSON.stringify({ diagnostic: "research_provider_root_assembly_failed", ...normalizeResearchAssemblyFailure(error) }) + "\n");
+    process.stderr.write(JSON.stringify({ event: "research_provider_root_assembly_failed", ...normalizeResearchAssemblyFailure(error) }) + "\n");
     process.exitCode = 70;
   }
 }
