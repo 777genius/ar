@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { fstatSync, readdirSync, readlinkSync } from "node:fs";
+import { fstatSync, readdirSync, readlinkSync, promises as fsPromises } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
   DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis,
   type DependencyCapturedTreeObservation } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
@@ -204,6 +205,53 @@ describe.skipIf(process.platform !== "linux")("dependency full-tree inventory", 
       expect(await observeDependencyTree({ workspacePath: join(f.path, "alias"), treeName: "node_modules", limits }))
         .toEqual({ status: Status.Incomplete, reason: Failure.UnsafeNamespace });
     } finally { await f.cleanup(); }
+  });
+
+  // RED on the old initial comparator: real sibling creation after lstat
+  // changes ancestor nlink/mtime/ctime without changing the selected tree.
+  it.each(["unrelated-output", "replacement", "mode"] as const)("checks ancestor identity across genuine IO with %s", async change => {
+    const f = await fixture(), held = f.path + ".held";
+    try {
+      const before = complete(await f.observe()), ancestor = await lstat(f.path, { bigint: true });
+      const actualLstat = fsPromises.lstat;
+      let mutated = false;
+      // Spy on the mutable builtin exports object, not an ESM namespace.
+      // Only scheduling is controlled: every returned Stat and all IO are real.
+      const gate = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
+        const actual = await actualLstat(path, options);
+        if (!mutated && Buffer.isBuffer(path) && path.toString().startsWith("/proc/self/fd/") &&
+            path.toString().endsWith("/" + basename(f.path))) {
+          mutated = true;
+          if (change === "unrelated-output") await mkdir(join(f.path, "TEST-unrelated-output"));
+          if (change === "replacement") {
+            await rename(f.path, held); await mkdir(f.path, { mode: 0o700 });
+            await rename(join(held, "node_modules"), f.tree);
+          }
+          if (change === "mode") await chmod(f.path, 0o755);
+        }
+        return actual;
+      });
+      try {
+        syncBuiltinESMExports();
+        const observed = await f.observe();
+        expect(mutated).toBe(true);
+        const current = await actualLstat(f.path, { bigint: true });
+        if (change === "unrelated-output") {
+          expect([current.dev, current.ino, current.mode]).toEqual([ancestor.dev, ancestor.ino, ancestor.mode]);
+          expect(current.nlink).toBeGreaterThan(ancestor.nlink);
+          expect((await actualLstat(join(f.path, "TEST-unrelated-output"))).isDirectory()).toBe(true);
+          const completeAfter = complete(observed);
+          expect(completeAfter.tree).toEqual(before.tree);
+          expect(completeAfter.canonicalBytes).toEqual(before.canonicalBytes);
+          expect(completeAfter.digest).toBe(before.digest);
+        } else {
+          expect(observed).toEqual({ status: Status.Incomplete, reason: Failure.IdentityChanged });
+          if (change === "replacement") expect(current.ino).not.toBe(ancestor.ino);
+          else expect(current.mode).not.toBe(ancestor.mode);
+        }
+        expect(await readFile(f.file, "utf8")).toBe("abc");
+      } finally { gate.mockRestore(); syncBuiltinESMExports(); }
+    } finally { await f.cleanup(); await rm(held, { recursive: true, force: true }); }
   });
 
   it("pins exact file bytes and refuses an alias or exceeded file bound", async () => {
