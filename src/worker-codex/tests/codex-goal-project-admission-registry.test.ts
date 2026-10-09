@@ -1,10 +1,14 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ProjectDebtReason, ProjectDebtScope, ProjectOperation, projectAdmissionDebtFingerprint, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { assertAdmissionRegistryComplete } from "../application/project-control/codex-goal-project-admission-target";
 import { readCodexGoalConsumedOutputLedgers } from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import type { CodexGoalJobManifest } from "../codex-goal-jobs";
+import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
+import { historicalDebtIsPhysicallyUnrelated } from "../application/project-control/codex-goal-project-historical-debt-scope";
 import { prepareCodexProjectScopedAdmission } from "../application/project-control/codex-goal-project-scoped-admission";
 
 const roots: string[] = [];
@@ -12,8 +16,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(layout: "combined" | "split" = "combined") {
-  const registryRootDir = await mkdtemp(join(tmpdir(), "admission-registry-"));
+async function fixture(layout: "combined" | "split" = "combined", temporaryRoot = tmpdir()) {
+  const registryRootDir = await mkdtemp(join(temporaryRoot, "admission-registry-"));
   roots.push(registryRootDir);
   const container = join(registryRootDir, layout === "split" ? "consumed-output-evidence" : "consumed-output");
   const ledger = layout === "split" ? join(registryRootDir, "terminal-ledger") : join(container, "ledger");
@@ -140,7 +144,50 @@ describe("admission native consumed-output registry", () => {
     const ledger = await readCodexGoalConsumedOutputLedgers({ roots: [f.ledger], evidenceRoots: [f.archives] });
     expect(ledger.byJobId.get("job")?.valid).toBe(false);
     expect(ledger.debt).toContainEqual(expect.objectContaining({ severity: "blocking" }));
+    const debt = ledger.debt.find(item => item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord);
+    expect(debt).toMatchObject({ scope: ProjectDebtScope.RetainedOutput, retainedOutput: {
+      jobId: "job", workspacePath: f.registryRootDir, ledgerPath: join(f.ledger, "items", "job.json"),
+      ledgerSha256: createHash("sha256").update(await readFile(join(f.ledger, "items", "job.json"))).digest("hex"),
+    } });
   });
+
+  // Real tmpfs backing makes this independent of an unsupported CI overlay root.
+  // Regression: an evidence/target alias introduced while owner IO yields must
+  // prevent historical suppression even when the ledger itself never changes.
+  it.skipIf(process.platform !== "linux").each(["evidence", "target"] as const)(
+    "does not suppress retained debt after an async %s alias replacement", async (replacement) => {
+      const f = await fixture("combined", "/dev/shm");
+      const targetPath = await mkdtemp("/dev/shm/TEST-admission-target-");
+      roots.push(targetPath);
+      const { patchPath } = await nativeJobRecord(f);
+      await rm(patchPath);
+      const ledger = await readCodexGoalConsumedOutputLedgers({ roots: [f.ledger], evidenceRoots: [f.archives] });
+      const debt = ledger.debt.find(item => item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord);
+      if (!debt?.retainedOutput) throw new Error("expected attributed blocking retained record");
+      const manifest: CodexGoalJobManifest = {
+        schemaVersion: 1, jobId: "job", taskId: "task", workspacePath: f.registryRootDir,
+        jobRootDir: f.registryRootDir, promptPath: join(f.registryRootDir, "prompt.md"),
+        createdAt: "2026-10-07T00:00:00.000Z", updatedAt: "2026-10-07T00:00:00.000Z", accounts: [],
+      };
+      const physicalWritableRoots = await prospectiveAdmissionResourceBacking(targetPath);
+      if (!physicalWritableRoots?.length) throw new Error("expected supported tmpfs physical backing");
+      const target = { canonicalPath: targetPath, writableRoots: [targetPath], physicalWritableRoots };
+      const writer = { manifest, jobId: "job", workspacePath: f.registryRootDir,
+        canonicalWorkspacePath: await realpath(f.registryRootDir), authority: "released" as const };
+      expect(await historicalDebtIsPhysicallyUnrelated(debt, target, [writer], undefined, async () => true)).toBe(true);
+      expect(await historicalDebtIsPhysicallyUnrelated(debt, target,
+        [{ ...writer, authority: "unknown" }], undefined, async () => true)).toBe(false);
+      expect(await historicalDebtIsPhysicallyUnrelated(debt, target, [writer], undefined, async () => {
+        if (replacement === "evidence") await symlink(targetPath, patchPath);
+        else {
+          await rm(targetPath, { recursive: true });
+          await symlink(f.registryRootDir, targetPath);
+        }
+        return true;
+      })).toBe(false);
+      expect(debt.severity).toBe("blocking");
+    },
+  );
 
   it("preserves native pruned terminal records and their informational debt", async () => {
     const f = await fixture();

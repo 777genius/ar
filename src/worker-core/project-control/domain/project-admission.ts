@@ -49,10 +49,22 @@ export enum ProjectDebtReason {
 /** Trusted observation classification, never a caller-supplied permission. */
 export enum ProjectDebtScope {
   ControlState = "control_state",
+  RetainedOutput = "retained_output",
 }
+
+export type ProjectDebtRetainedOutput = {
+  readonly jobId: string;
+  readonly workspacePath: string;
+  readonly ledgerPath: string;
+  readonly ledgerSha256: string;
+  readonly resourcePaths: readonly string[];
+  readonly attemptId?: string;
+};
 
 export type ProjectDebtItem = {
   readonly scope?: ProjectDebtScope;
+  /** Attribution only: fresh owner and physical resource proof are still required. */
+  readonly retainedOutput?: ProjectDebtRetainedOutput;
   readonly reason: ProjectDebtReason;
   readonly subject: string;
   readonly evidence: readonly string[];
@@ -470,6 +482,7 @@ export function projectAdmissionDebtFingerprint(
     subject: item.subject,
     severity: item.severity ?? "blocking",
     ...(item.scope ? { scope: item.scope } : {}),
+    ...(item.retainedOutput ? { retainedOutput: item.retainedOutput } : {}),
     evidence: canonicalProjectAdmissionEvidence(item),
     ...(item.affectedPaths
       ? { affectedPaths: [...item.affectedPaths].sort() }

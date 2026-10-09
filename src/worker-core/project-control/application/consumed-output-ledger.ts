@@ -5,6 +5,7 @@ import {
   ProjectDebtScope,
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
+  type ProjectDebtRetainedOutput,
 } from "../domain/project-admission";
 import type { TerminalOutputBackup } from "../domain/terminal-output-decision";
 
@@ -22,6 +23,7 @@ const NO_OUTPUT_STATUS = "failed_no_output";
 const REVIEWED_NO_CHANGE_STATUS = "reviewed_no_change";
 
 export type ConsumedOutputRecord = {
+  readonly retainedOutput?: ProjectDebtRetainedOutput;
   readonly jobId: string;
   readonly attemptId?: string;
   readonly status: string;
@@ -50,6 +52,7 @@ export type ConsumedOutputLedger = {
 };
 
 export type ConsumedOutputLedgerEntry = {
+  readonly ledgerSha256?: string;
   readonly ledgerPath: string;
   readonly value: unknown;
 };
@@ -96,6 +99,7 @@ export async function readConsumedOutputLedgers(input: {
       record = await consumedOutputRecordFromJson({
         value: entry.value,
         ledgerPath: entry.ledgerPath,
+        ...(entry.ledgerSha256 ? { ledgerSha256: entry.ledgerSha256 } : {}),
         source: input.source,
       });
     } catch (error) {
@@ -149,6 +153,7 @@ export async function readConsumedOutputLedgers(input: {
       continue;
     }
     debt.push({
+      ...(record.retainedOutput ? { scope: ProjectDebtScope.RetainedOutput, retainedOutput: record.retainedOutput } : {}),
       reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
       subject: record.ledgerPath,
       severity: "blocking",
@@ -242,6 +247,7 @@ function compareConsumedRecords(
 export async function consumedOutputRecordFromJson(input: {
   readonly value: unknown;
   readonly ledgerPath: string;
+  readonly ledgerSha256?: string;
   readonly source: Pick<
     ConsumedOutputLedgerSourcePort,
     "pathExists" | "pathSize" | "pathSha256" | "resolveWorkspacePath"
@@ -377,7 +383,21 @@ export async function consumedOutputRecordFromJson(input: {
         ...(commit ? { commitSha: commit } : {}),
       })
     : [...structuralEvidence, ...availabilityEvidence];
+  const retainedOutput = !hasActiveClaim && input.value.schemaVersion === 1 &&
+    closedAt && Number.isFinite(Date.parse(closedAt)) && terminalBackup && workspace &&
+    backupPathStructuralEvidence.length === 0 && preexistingWorkspacePatch.structuralEvidence.length === 0 &&
+    input.value.publicationIncorporation === undefined && input.ledgerSha256 && /^[a-f0-9]{64}$/.test(input.ledgerSha256) &&
+    [workspace, input.ledgerPath, terminalBackup.statusPath].every(path => isAbsolute(path) && resolve(path) === path && !/[\x00-\x1f\x7f]/.test(path))
+    ? { jobId, workspacePath: workspace, ledgerPath: input.ledgerPath, ledgerSha256: input.ledgerSha256,
+        resourcePaths: [...new Set([workspace, input.ledgerPath, dirname(input.ledgerPath), dirname(terminalBackup.statusPath),
+          terminalBackup.statusPath, terminalBackup.patchPath, terminalBackup.numstatPath, terminalBackup.untrackedArchivePath,
+          stringValue(input.value.archivePath),
+          isRecord(input.value.preexistingWorkspacePatch) ? stringValue(input.value.preexistingWorkspacePatch.path) : undefined,
+        ].filter((path): path is string => path !== undefined))],
+        ...(attemptId ? { attemptId } : {}) }
+    : undefined;
   return {
+    ...(retainedOutput ? { retainedOutput } : {}),
     jobId,
     ...(attemptId ? { attemptId } : {}),
     status,
@@ -468,6 +488,7 @@ export function consumedDebt(record: ConsumedOutputRecord): readonly ProjectDebt
     }];
   }
   return [{
+    ...(record.retainedOutput ? { scope: ProjectDebtScope.RetainedOutput, retainedOutput: record.retainedOutput } : {}),
     reason: record.valid
       ? ProjectDebtReason.ConsumedDirtyWorkspace
       : ProjectDebtReason.IncompleteConsumedOutputRecord,

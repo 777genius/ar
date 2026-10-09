@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import {
   ProjectDebtReason,
@@ -10,6 +11,7 @@ import {
   type ProjectAdmissionPhysicalRoot,
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
+import { historicalDebtIsPhysicallyUnrelated } from "./codex-goal-project-historical-debt-scope";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from "../../codex-goal-jobs";
 import { optionalRealPathForAdmission, prospectiveAdmissionResourcePath, prospectiveAdmissionResourceBacking } from "./codex-goal-project-admission-paths";
 import {
@@ -24,7 +26,8 @@ import type { CodexProjectAdmissionDeps } from "./codex-goal-project-admission";
 
 type WriterAuthority = "allocated" | "released" | "unknown";
 
-type WriterCensusEntry = {
+export type WriterCensusEntry = {
+  readonly manifest?: CodexGoalJobManifest;
   readonly jobId: string;
   readonly workspacePath: string;
   readonly canonicalWorkspacePath?: string;
@@ -102,8 +105,21 @@ export async function prepareCodexProjectScopedAdmission(
   const overlaps = census.filter((entry) =>
     writerPotentiallyOverlapsTarget(entry, target)
   );
+  const historicalDisjoint = new Set<ProjectDebtItem>();
+  for (const item of input.snapshot.debt) {
+    if (await historicalDebtIsPhysicallyUnrelated(item, target, census, input.request.jobId, async entry => {
+      if (!input.deps.readJob || !input.deps.readWriterWritableRoots) return false;
+      try {
+        const current = await input.deps.readJob({ registryRootDir: input.registryRootDir, jobId: entry.jobId });
+        if (!isDeepStrictEqual(current, entry.manifest)) return false;
+        const observed = await input.deps.readWriterWritableRoots(current);
+        return observed.status === entry.authority && (observed.status === "released" ||
+          observed.status === "allocated" && isDeepStrictEqual(observed.roots, entry.writableRoots));
+      } catch { return false; }
+    })) historicalDisjoint.add(item);
+  }
   const safetyDebt: ProjectDebtItem[] = [
-    ...input.snapshot.debt.filter((item) =>
+    ...input.snapshot.debt.filter((item) => !historicalDisjoint.has(item) &&
       isTargetSafetyDebt(item, input.request, target, overlaps, input.registryRootDir)
     ),
     // Allocated claims block before a provider has published any heartbeat.
@@ -241,6 +257,7 @@ async function collectWriterCensus(
       }
     }
     entries.push({
+      ...(manifest ? { manifest } : {}),
       jobId: summary.jobId,
       workspacePath: summary.workspacePath,
       ...(canonicalWorkspacePath ? { canonicalWorkspacePath } : {}),
@@ -345,5 +362,6 @@ function debtKey(item: ProjectDebtItem): string {
     item.affectedPaths ? [...item.affectedPaths].sort() : null,
     item.pathDisjointProducerEligible ?? null,
     item.scope ?? null,
+    item.retainedOutput ?? null,
   ]);
 }
