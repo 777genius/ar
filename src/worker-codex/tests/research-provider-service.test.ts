@@ -745,6 +745,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     const original = processes.spawnSync;
     let managerBusy = false, earlyReads = 0;
     const verified: string[] = [];
+    let verifiedAtForward: string[] = [], namespacesAtForward: unknown;
     vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
       if (command === "/usr/bin/systemctl" && args[0] === "show") {
         if (managerBusy) {
@@ -757,8 +758,8 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     }) as typeof processes.spawnSync);
     host.spawn.mockImplementation(() => { const result = submit(); managerBusy = true; verified.length = 0; return result; });
     proxy.stdin.once("data", () => {
-      expect(verified).toContain(current.unit); expect(verified).toContain(current.provider);
-      expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+      verifiedAtForward = [...verified];
+      try { namespacesAtForward = record(current, ".owner").process.namespaces; } catch { /* Assert missing ownership after termination. */ }
       proxy.exitCode = 0; proxy.emit("exit", 0, null);
     });
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
@@ -769,6 +770,8 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     managerBusy = false; proxy.stdout.write(readyFrame);
     await vi.advanceTimersByTimeAsync(0);
     expect(await outcome).toBe(true); expect(earlyReads).toBe(0);
+    expect(verifiedAtForward).toContain(current.unit); expect(verifiedAtForward).toContain(current.provider);
+    expect(namespacesAtForward).toEqual(settledNamespaces);
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
     expect(record(current, ".submission").state).toBe("settled");
   });
