@@ -1,6 +1,6 @@
 #!/usr/bin/node
 import { spawn } from 'node:child_process';
-import { constants, lstatSync, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { constants, lstatSync, openSync, fstatSync, readFileSync, readSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,32 @@ const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
 const MANAGED_STARTUP_SECONDS = 300;
+// Admission snapshot, not a reservation of memory against concurrent launches.
+const OS_SSH_RESERVE_BYTES = 2n * 1024n ** 3n;
+function readMemoryInfo() {
+  const fd = openSync('/proc/meminfo', constants.O_RDONLY | constants.O_NOFOLLOW);
+  const bytes = Buffer.alloc(65536); let length = 0;
+  try {
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) return bytes.subarray(0, length).toString('utf8');
+      length += count;
+    }
+    throw Error('memory admission unknown');
+  } finally { closeSync(fd); }
+}
+function assertMemoryAdmission(request, memoryInfo) {
+  try {
+    const text = memoryInfo();
+    if (typeof text !== 'string' || Buffer.byteLength(text) >= 65536) throw Error();
+    const rows = text.split('\n').filter(line => line.startsWith('MemAvailable:'));
+    if (rows.length !== 1 || !/^MemAvailable:\s+\d+ kB$/.test(rows[0])) throw Error();
+    const available = BigInt(rows[0].match(/\d+/)[0]) * 1024n;
+    const requested = request.operation === 'job' ? BigInt(request.limits.memoryMiB) * 1024n ** 2n : 4n * 1024n ** 3n;
+    if (available < requested + OS_SSH_RESERVE_BYTES) throw Error();
+  } catch { throw Error('managed launcher: memory admission unavailable'); }
+}
+
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
 const bootstrap = [UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--'];
 
@@ -85,7 +111,7 @@ export function managedLauncherInvocation(request) {
   return { command: process.execPath, args: [MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
 }
 
-export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath, executable = path => access(path, constants.X_OK) } = {}) {
+export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath, executable = path => access(path, constants.X_OK), memoryInfo = readMemoryInfo } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
   const confinementExecutables = [MANAGED_LAUNCHER_PATH, PAYLOAD_GUARD_PATH, UNSHARE_PATH, SETPRIV_PATH, TINI_PATH];
   for (const path of [nodePath, ...trusted, ...confinementExecutables]) await trust(path);
@@ -125,6 +151,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
     ...readonlyPaths.map(path => `BindReadOnlyPaths=${path}:${path}:norbind`),
   ];
+  assertMemoryAdmission(request, memoryInfo);
   return { command: '/usr/bin/systemd-run', args: [
     ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}`] : ['--quiet', '--wait', '--pipe', '--collect']),
     `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',

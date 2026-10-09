@@ -9,7 +9,7 @@ const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.servic
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
 const finalAdmission = async () => ({ layout: deriveManagedJobLayout('/TEST', job.jobId), device: 2n });
 const build = (request, options = {}, admission = admit) => buildSystemdInvocation(request, admission, {
-  nodePath: '/TRUSTED/node', trust: async () => {}, executable: async () => {},
+  memoryInfo: () => 'MemAvailable: 67108864 kB\n', nodePath: '/TRUSTED/node', trust: async () => {}, executable: async () => {},
   logs: async (root, unit) => [`${root}/logs/${unit}.stdout.log`, `${root}/logs/${unit}.stderr.log`], ...options,
 });
 const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'a'.repeat(36)}.service`, jobId: job.jobId,
@@ -205,4 +205,27 @@ test("admission cannot supply a host HOME or tmp fallback", async () => {
   for (const field of ["home", "tmp"]) {
     await assert.rejects(build(job, {}, async () => ({ ...(await admit()), [field]: "/root/cache" })), /unsupported/);
   }
+});
+
+test('memory snapshot admits equality and refuses below requested max plus OS/SSH reserve', async () => {
+  for (const request of [job, provider]) {
+    const requiredKiB = (request.operation === 'job' ? request.limits.memoryMiB : 4096) * 1024 + 2 * 1024 ** 2;
+    const { args } = await build(request, { memoryInfo: () => `MemAvailable: ${requiredKiB} kB\n` });
+    assert.ok(args.includes(`--unit=${request.unit}`));
+    await assert.rejects(build(request, { memoryInfo: () => `MemAvailable: ${requiredKiB - 1} kB\n` }), /memory admission unavailable/);
+  }
+  await assert.rejects(build({ ...job, limits: { ...job.limits, memoryMiB: 1048576 } }), /memory admission unavailable/);
+});
+test('unknown memory observations never yield an invocation', async () => {
+  for (const memoryInfo of [() => '', () => 'MemAvailable: -1 kB\n',
+    () => 'MemAvailable: 99999999 kB\nMemAvailable: 99999999 kB\n',
+    () => 'x'.repeat(65536), () => { throw Error('private read error'); }]) {
+    await assert.rejects(build(provider, { memoryInfo }), /^Error: managed launcher: memory admission unavailable$/);
+  }
+});
+test('memory snapshot is taken after awaited admission, not before stale work', async () => {
+  let admitted = false;
+  await assert.rejects(build(provider, { memoryInfo: () => {
+    assert.equal(admitted, true); return 'MemAvailable: 1 kB\n';
+  } }, async () => { admitted = true; return admit(); }), /memory admission unavailable/);
 });
