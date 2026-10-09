@@ -130,7 +130,7 @@ function installationFacts(installation: HostedInstallation): void {
   const inventory = readHostedReadonlyHostInventory();
   if (value.schemaVersion !== 1 || value.runtimeDirectory !== runtimeDirectory || installation.runtimeDirectory !== runtimeDirectory ||
     value.runtimeSha !== installation.runtimeSha || value.runtimeManifestSha256 !== installation.runtimeManifestSha256 ||
-    inventory.hostId !== installation.hostId || inventory.schemaVersion !== 2 || hash(inventoryBytes) !== installation.inventorySha256) fail();
+    inventory.hostId !== installation.hostId || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) || hash(inventoryBytes) !== installation.inventorySha256) fail();
   const jobPrefix = join(policyRoot, "dependency-test-jobs/jobs");
   for (const c of inventory.ordinaryCreators) {
     if (!/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(c.jobId) || c.jobRootDir !== join(jobPrefix, c.jobId) || c.workspacePath !== c.jobRootDir + "/workspace" ||
@@ -204,7 +204,7 @@ export function issueFreshHostedManifestPlacement(fence: HostedActivationFence, 
  */
 export async function openHostedDependencyManifestPlacement(): Promise<DependencyManifestBlobStore & {
   readonly placementRevision: string; readonly limitsRevision: HostedManifestLimitsRevision;
-  assertCurrent(fence: HostedActivationFence): void; close(): Promise<void>;
+  assertCurrent(fence: HostedActivationFence): void; assertClosedCurrent(): void; close(): Promise<void>;
 }> {
   assertHostedActivationOperator(); const selected = policy(), bytes = readHostedPrivateBytes(placementPath, 16384);
   if (!selected || !bytes) fail(HostedManifestPlacementFailure.Unsupported);
@@ -240,6 +240,10 @@ export async function openHostedDependencyManifestPlacement(): Promise<Dependenc
       assertCurrent(fence) {
         assertHostedActivationFence(fence);
         if (!closeSucceeded) fail(HostedManifestPlacementFailure.Closed);
+        assertPlacement();
+      },
+      assertClosedCurrent() {
+        if (!closed || !closeSucceeded) fail(HostedManifestPlacementFailure.Closed);
         assertPlacement();
       },
       async put(manifest) { assertOpen(); const digest = await opened.put(manifest); assertOpen(); return digest; },

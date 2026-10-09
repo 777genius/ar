@@ -241,22 +241,27 @@ selected home and prepared scratch bindings against the submitted closed plan.
 The control monitor stays attached during that final material walk. An event-loop
 yield after verification observes queued duplicate frames and EOF; then retained
 provider ownership, current authority/cancellation and transport state are checked
-before the synchronous switch to stdout/stdin forwarding. The explicit 300-second setup
-budget matches the provider service TimeoutStartSec; the research-only outer
-app-server startup is 330 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
-10-second handoff bound matches the fixed launcher's bootstrap deadline. Each
-material walk still enforces its original byte/file/time limits; timeout is denial,
-including a retained finite file/artifact deadline observation, never admission.
+before the synchronous switch to stdout/stdin forwarding. The explicit 300-second
+readiness/ownership budget starts just after spawning the systemd submission
+command and has the same duration as the provider service TimeoutStartSec. The
+research-only outer app-server startup budget is
+330 seconds and starts before provider preparation, so it can expire before the
+inner deadline. Readiness does not reset that absolute inner deadline. Each
+artifact walk and each executable byte validation have a finite 30-second budget,
+including initial custody and fresh descriptor/path checks on cache hits. The
+original byte/file limits remain; timeout is denial, including a retained finite
+file/artifact deadline observation, never admission.
 These private helper changes introduce no composition or provider SPI. Genuine
 shared-Host/native-provider qualification remains a separate root-run gate.
 Pre-submission and transport denials retain a root-private `provider-failure.json`
 with only a closed phase identifier and reserved unit. This observation carries
 no authority and never records raw errors, stderr, paths or credential contents.
 
-The readiness/ownership deadline is 180 seconds; unexpected/oversized output,
+Unexpected/oversized output,
 stream errors, EOF, transport exit and cancellation fail closed. Polling detects
 fences and timeout; a sleep never establishes readiness. The launcher bounds
-bootstrap to ten seconds and the existing 4 MiB frame limit. The direct transport
+bootstrap to 300 seconds after emitting readiness and the existing 4 MiB frame
+limit; the helper's original absolute deadline still bounds the handoff. The direct transport
 also has the requested task timeout plus 30 seconds; uncertain service ownership
 is retained for operator reconciliation. Ordinary/MiMo pass no readiness argument
 and retain their existing protocol. No generic readiness RPC or public API is added.
@@ -524,6 +529,11 @@ TEST build root. Run `check-boundaries.mjs`, `check-boundaries-self-test.mjs`,
 `check-managed-launch-boundary-self-test.mjs` and
 `check-managed-launch-boundary.mjs` individually. The three operator/runtime/
 provider MJS entrypoints also pass `node --check`.
+
+For current reruns in these disposable TEST build roots, pass `--imports-only`
+to the rewriter. Full package builds run it without that flag and also generate
+the installed Host policy helper; that installation output does not belong to
+these partial source-verification trees.
 
 The writer's newly created TMPDIR/TEST_ROOT is
 `/srv/worker-state/jobs/subscription-runtime/research-network-v1/jobs/sr-research-network-writer-20261001-r7/tmp/agent/TEST-research-r7`.

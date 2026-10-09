@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
+import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-reference";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
 import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
+import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
+import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
+import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -354,10 +360,13 @@ export async function runCodexGoalCli(
     const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
     if (outerStatus !== undefined) return outerStatus;
     await upsertRunCommandManifest(command);
+    const reference = await tryRunHostedLegacyReference(command.config);
+    if (reference) { writeJsonOrText(command.format, reference, io); return 0; }
     const result = await runCodexGoal(command.config);
     writeJsonOrText(command.format, result, io);
     return result.status === "completed" ? 0 : 1;
   } catch (error) {
+    if (io === defaultIo && unverifiedHostedForegroundSink()) return 70;
     if (isBrokenPipeError(error)) return 0;
     try {
       io.writeStderr(`${error instanceof Error ? error.message : "codex goal failed"}\n`);
@@ -367,6 +376,19 @@ export async function runCodexGoalCli(
     }
     return 2;
   }
+}
+
+/** Only suppresses diagnostics; it grants no process or file authority. Actual
+ * admitted inner runtimes retain their already-proved pipe output contract. */
+function unverifiedHostedForegroundSink(): boolean {
+  try {
+    if (!readHostedFdProfile()) return false;
+    if (isHostedOrdinaryRuntime()) {
+      withHostedActivationFence(fence => readHostedOrdinaryRuntime(fence));
+      return false;
+    }
+    return new HostedReadonlySupervisorHost().runtimeRole() !== HostedReadonlyRuntimeRole.Runtime;
+  } catch { return true; }
 }
 
 function isBrokenPipeError(error: unknown): boolean {

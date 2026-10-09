@@ -5,6 +5,8 @@ import { researchDescription, researchProviderUnitPattern } from "./research-lau
 import { researchInvalid, researchName, researchPath } from "./research-launch-files";
 import { assertResearchProviderRoot, researchProviderProtectedPaths, ResearchRootMountAccess, type ResearchProviderRootPlan } from "./research-provider-root";
 import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
+import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
+import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
 
@@ -39,6 +41,19 @@ export function trustedCustodySystemdLaunch(role: TrustedCustodyLaunchRole, star
     "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
     "--property=SendSIGKILL=yes", "--property=Delegate=no", `--working-directory=${cwd}`,
     "--", process.execPath, ...bootstrap] };
+}
+
+/** Effect composition reads the real installed profile. The pure legacy recipe
+ * remains usable without host IO; no caller flag selects FD qualification. */
+export function hostedFdCustodySystemdLaunch(role: TrustedCustodyLaunchRole, startId: string, cwd: string, installer?: HostedDependencyInstallerPlan):
+  { command: string; args: readonly string[] } {
+  const launch = trustedCustodySystemdLaunch(role, startId, cwd, installer);
+  if (!readHostedFdProfile()) return launch;
+  const at = launch.args.indexOf("--");
+  if (at < 0) throw new Error("hosted_custody_kernel_evidence_invalid");
+  return { command: launch.command, args: [...launch.args.slice(0, at),
+    ...hostedFdSystemdProperties.map(p => "--property=" + p), ...launch.args.slice(at),
+    ...(role === TrustedCustodyLaunchRole.Installer ? ["--fd-ready-v1"] : [])] };
 }
 
 /** Closed research-specific service plans. Callers supply a validated private
