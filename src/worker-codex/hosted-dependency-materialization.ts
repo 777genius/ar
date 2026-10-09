@@ -2,16 +2,19 @@ import { lstatSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyInstallProofKind, DependencyReceiptState,
   DependencyTreeObservationStatus, sameDependencyTree,
-  type DependencyAttempt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
+  sameDependencyAttempt, type DependencyAttempt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
+import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
-import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
-import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { observeDependencyTree, observeDependencyTreeWithPhysicalExposure, assertDependencySourceExposureCurrent, assertDependencyLocalRegistrySelectionAbsent, closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
+import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedDependencyInstaller, assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
+import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { qualifyHostedDependencyInstallerInputs } from "./hosted-dependency-installer-inputs";
 import { normalizeCapturedDependencyOutput, publishCapturedDependencyOutput } from "./hosted-dependency-staged-output";
-import { dependencyCoverageRevision, publishHostedDependencyReceipt } from "./hosted-dependency-receipts";
+import { closeDependencySourceLinkSession, readDependencySourceRegistrySelection, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
+import { dependencyCoverageRevision, publishHostedDependencyReceipt, readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
 export { dependencyCoverageRevision, readHostedDependencyReceipt } from "./hosted-dependency-receipts";
 import { assertHostedDependencyMaterializationOwner as assertOwner, assertHostedDependencyMaterializationOwnerUnderFence as assertOwnerUnderFence,
   hostedDependencyObservationLimits, readHostedDependencyKeyInputs, assertHostedDependencyKeyInputsCurrent,
@@ -40,8 +43,25 @@ export function matchesHostedDependencyReady(binding: HostedDependencyBinding, r
     (tree.mode & 0o700n) === 0o700n && receipt.installKey === inputs.key.installKey;
 }
 
+/** Existing reference/generic callers never retain a cold qualification session. */
 export async function materializeHostedDependencyAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<void> {
-  const prepared = await materializeHostedDependencyLocalAbsence(binding, attempt); if (!prepared) return;
+  closeHostedDependencyColdHandoff(await materializeHostedDependencyAbsenceForToolEntry(binding, attempt));
+}
+/** Only this genuine closed install flow can mint the private same-attempt handoff. */
+export async function materializeHostedDependencyAbsenceForToolEntry(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<HostedDependencyColdHandoff | undefined> {
+  const prepared = await materializeHostedDependencyLocalAbsence(binding, attempt);
+  if (prepared.cold) {
+    const { ready, observed, source, exposure } = prepared.cold;
+    try {
+      // V1 retains logical source pins, without a current installed-byte witness.
+      // Qualify its published Ready through the existing fresh canonical walk.
+      if (!readDependencySourceRegistrySelection(source, binding.workspace)) {
+        closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); return undefined;
+      }
+      return retainCold(binding, attempt, prepared.inputs, ready, observed, source, exposure);
+    }
+    catch (error) { closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); throw error; }
+  }
   const { inputs, installing } = prepared, generation = installing.generation;
   const base = { version: installing.version, revision: installing.revision, generation, workspace: installing.workspace, coverageRevision: installing.coverageRevision };
   const expectedInstallerInputs = qualifyHostedDependencyInstallerInputs(Buffer.from(inputs.capture.packageBytes),
@@ -64,8 +84,10 @@ export async function materializeHostedDependencyAbsence(binding: HostedDependen
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     publishCapturedDependencyOutput(normalized, binding.workspace);
   });
-  const final = await observeDependencyTree({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
+  const final = await observeDependencyTreeWithPhysicalExposure({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: normalized.tree, limits: hostedDependencyObservationLimits });
+  let ownedFinalExposure = final.status === DependencyTreeObservationStatus.Complete ? final.exposure : undefined;
+  try {
   if (final.status !== DependencyTreeObservationStatus.Complete || final.digest !== normalized.digest ||
       !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
   const blobs = await openHostedDependencyManifestPlacement();
@@ -84,4 +106,87 @@ export async function materializeHostedDependencyAbsence(binding: HostedDependen
     blobs.assertCurrent(fence);
     publishHostedDependencyReceipt(binding, installing.revision, ready);
   });
+  if (!final.exposure) return undefined; // Optional retention bounds preserve the original fourth scan.
+  const handoff = retainCold(binding, attempt, inputs, ready, final, undefined, final.exposure);
+  ownedFinalExposure = undefined; return handoff;
+  } finally { if (ownedFinalExposure) closeDependencySourceExposure(ownedFinalExposure); }
+}
+
+
+type Ready = Extract<DependencyReceipt, { state: DependencyReceiptState.Ready }>;
+type FinalObservation = Extract<Awaited<ReturnType<typeof observeDependencyTree>>, { status: DependencyTreeObservationStatus.Complete }>;
+/** Label copies and serialized DTOs have no authority: only publisher WeakMap. */
+export type HostedDependencyColdHandoff = Readonly<{ startId: string }>;
+type ColdState = {
+  binding: HostedDependencyBinding; attempt: DependencyAttempt; inputs: HostedDependencyKeyInputs; ready: Ready;
+  reference: ReturnType<typeof readHostedDependencyCommittedReady>["reference"]; observed: FinalObservation;
+  installerMapping: Buffer; consumed: boolean;
+  source?: DependencySourceLinkSession; exposure?: DependencySourceExposure;
+};
+const cold = new WeakMap<HostedDependencyColdHandoff, ColdState>();
+function installerMapping(attempt: DependencyAttempt): Buffer {
+  const path = `${hostedDependencyInstallerRoot}/attempt-${attempt.attemptId}.json`, bytes = readHostedPrivateBytes(path, 4096);
+  if (!bytes) fail();
+  const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as { startId?: unknown };
+  if (typeof row.startId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(row.startId) ||
+      !bytes.equals(encode({ schemaVersion: 1, startId: row.startId, unit: `subscription-runtime-installer-${row.startId}.service`, attempt }))) fail();
+  // Positive mapping closes the general drainer's intentional missing-map case.
+  assertHostedDependencyInstallerAttemptDrained(attempt);
+  if (!readHostedPrivateBytes(path, 4096)?.equals(bytes)) fail();
+  return bytes;
+}
+function retainCold(binding: HostedDependencyBinding, attempt: DependencyAttempt, inputs: HostedDependencyKeyInputs,
+  ready: Ready, observed: FinalObservation, source?: DependencySourceLinkSession, exposure?: DependencySourceExposure): HostedDependencyColdHandoff {
+  const { committed, mapping } = withHostedActivationFence(fence => {
+    assertOwnerUnderFence(fence, binding, attempt); assertHostedDependencyKeyInputsCurrent(binding, inputs);
+    if (!encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding))) fail();
+    const committed = readHostedDependencyCommittedReady(binding, ready.revision);
+    if (ready.generation !== attempt.attemptId || !encode(ready.treeMeasurement).equals(encode(observed.measurement)) ||
+        !encode(committed.receipt).equals(encode(ready)) || !matchesHostedDependencyReady(binding, ready, inputs) ||
+        observed.digest !== ready.manifestDigest || !sameDependencyTree(observed.tree, ready.tree)) fail();
+    if (!exposure) fail(Failure.UnsafeTree);
+    if (source) assertDependencyLocalRegistrySelectionAbsent(exposure, source, binding.workspace, ready.tree);
+    else assertDependencySourceExposureCurrent(exposure);
+    return { committed, mapping: installerMapping(attempt) };
+  });
+  const handoff = Object.freeze({ startId: attempt.launch.startId });
+  cold.set(handoff, { binding, attempt, inputs, ready, reference: committed.reference, observed, installerMapping: mapping, consumed: false, ...(source ? { source } : {}), ...(exposure ? { exposure } : {}) });
+  return handoff;
+}
+/** One consumption; fresh protected reference and current exclusion must join.
+ * Refusal never downgrades to an unproven scan shortcut or releases owner. */
+export function consumeHostedDependencyColdHandoff(handoff: HostedDependencyColdHandoff, binding: HostedDependencyBinding,
+  attempt: DependencyAttempt, inputs: HostedDependencyKeyInputs, ready: Ready): Pick<ColdState, "observed" | "source" | "exposure" | "reference"> {
+  const state = cold.get(handoff); if (!state || state.consumed) fail(Failure.StaleAttempt);
+  try {
+    withHostedActivationFence(fence => {
+      assertOwnerUnderFence(fence, binding, attempt);
+      if (!installerMapping(attempt).equals(state.installerMapping)) fail(Failure.StaleAttempt);
+      if (!sameDependencyAttempt(state.attempt, attempt) || !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) || !encode(state.binding).equals(encode(binding)) ||
+          !encode(state.ready).equals(encode(ready)) || !sameHostedDependencyKeyInputs(state.inputs, inputs) ||
+          !encode(readHostedDependencyCommittedReady(binding, ready.revision).reference).equals(encode(state.reference))) fail(Failure.StaleAttempt);
+      assertHostedDependencyKeyInputsCurrent(binding, state.inputs);
+      if (!matchesHostedDependencyReady(binding, ready, inputs)) fail(Failure.UnsafeTree);
+      if (!state.exposure) fail(Failure.UnsafeTree);
+      if (state.source) assertDependencyLocalRegistrySelectionAbsent(state.exposure, state.source, binding.workspace, ready.tree);
+      else assertDependencySourceExposureCurrent(state.exposure);
+    });
+    state.consumed = true;
+    return { observed: state.observed, reference: state.reference, ...(state.source ? { source: state.source } : {}), ...(state.exposure ? { exposure: state.exposure } : {}) };
+  } catch (error) { closeHostedDependencyColdHandoff(handoff); throw error; }
+}
+/** Rejoin the same consumed relation after qualifier awaits, before publication. */
+export function assertHostedDependencyConsumedColdHandoff(handoff: HostedDependencyColdHandoff, fence: HostedActivationFence): void {
+  const state = cold.get(handoff); if (!state?.consumed) fail(Failure.StaleAttempt);
+  assertOwnerUnderFence(fence, state.binding, state.attempt);
+  if (!installerMapping(state.attempt).equals(state.installerMapping) ||
+      !encode(readHostedDependencyCommittedReady(state.binding, state.ready.revision).reference).equals(encode(state.reference))) fail(Failure.StaleAttempt);
+}
+export function closeHostedDependencyColdHandoff(handoff: HostedDependencyColdHandoff | undefined): void {
+  if (!handoff) return;
+  const state = cold.get(handoff); if (!state) return;
+  cold.delete(handoff);
+  if (state.consumed) return; // Qualifier owns and closes the transferred logical resources.
+  if (state.exposure) closeDependencySourceExposure(state.exposure);
+  if (state.source) closeDependencySourceLinkSession(state.source);
 }
