@@ -1,5 +1,7 @@
 import { configDefaults, defineConfig } from "vitest/config";
 
+import { DurationBalancedSequencer } from "./src/testing/tests/unit-test-sequencer.js";
+
 export const alias = {
   "@vioxen/subscription-runtime/core": "/src/core/index.ts",
   "@vioxen/subscription-runtime/agent-task": "/src/agent-task/index.ts",
@@ -38,7 +40,11 @@ export default defineConfig({
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
     ],
-    fileParallelism: false,
+    sequence: { sequencer: DurationBalancedSequencer },
+    pool: "forks",
+    isolate: true,
+    fileParallelism: true,
+    maxWorkers: 2,
     globals: true,
     testTimeout: 60_000,
   },

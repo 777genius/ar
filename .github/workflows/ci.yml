@@ -30,20 +30,27 @@ jobs:
       - run: npm run check:dist
       - run: npm run check:boundaries
 
-  unit-tests:
+  unit-test-shards:
+    name: Unit tests (${{ matrix.shard }}/4)
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - &unit_test_checkout
+        uses: actions/checkout@v4
       - name: Fetch pinned legacy ledger fixture
         run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
-      - uses: actions/setup-node@v4
+      - &unit_test_node
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
-      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - name: Install encrypted checkpoint restore test dependency
         run: |
           if ! command -v restic >/dev/null 2>&1; then
@@ -51,7 +58,98 @@ jobs:
             sudo apt-get install -y --no-install-recommends restic
           fi
           restic version
-      - run: npm test
+      - &unit_test_install
+        run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - name: Run unit shard in a private TEST home
+        shell: bash
+        run: &private_test_home |
+          set -euo pipefail
+          # ARC's /home/runner is shared-writable. Allocate new TEST inventory
+          # directly beneath /home; never chmod/adopt the existing runner HOME.
+          for subscription_test_parent in / /home; do
+            test -d "$subscription_test_parent" && test ! -L "$subscription_test_parent"
+            test "$(readlink -f -- "$subscription_test_parent")" = "$subscription_test_parent"
+            subscription_test_parent_mode=$(stat -c '%a' -- "$subscription_test_parent")
+            (( (8#$subscription_test_parent_mode & 022) == 0 ))
+          done
+          subscription_test_home=$(sudo -n mktemp -d /home/subscription-ci-TEST-XXXXXX)
+          subscription_test_home_identity=$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")
+          cleanup_subscription_test_home() {
+            local subscription_test_original_status=$?
+            local subscription_test_cleanup_status=0
+            if [[ "$subscription_test_home" =~ ^/home/subscription-ci-TEST-[[:alnum:]]{6}$ ]] &&
+              [[ "$subscription_test_home_identity" == *:700 ]] &&
+              test -d "$subscription_test_home" && test ! -L "$subscription_test_home" &&
+              test "$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")" = "$subscription_test_home_identity"; then
+              # Clear children without privilege. /home is root-owned, so only
+              # unlinking the empty acquired HOME requires elevated rmdir.
+              find "$subscription_test_home" -xdev -depth -mindepth 1 -delete || subscription_test_cleanup_status=$?
+              if test -d "$subscription_test_home" && test ! -L "$subscription_test_home" &&
+                test "$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")" = "$subscription_test_home_identity"; then
+                sudo -n rmdir -- "$subscription_test_home" || subscription_test_cleanup_status=$?
+              else
+                echo "::error::Private TEST home identity changed after clearing children; cleanup refused"
+                subscription_test_cleanup_status=1
+              fi
+            else
+              echo "::error::Private TEST home identity changed; cleanup refused"
+              subscription_test_cleanup_status=1
+            fi
+            if (( subscription_test_original_status != 0 )); then exit "$subscription_test_original_status"; fi
+            exit "$subscription_test_cleanup_status"
+          }
+          trap cleanup_subscription_test_home EXIT
+          sudo -n chown "$(id -u):$(id -g)" "$subscription_test_home"
+          subscription_test_home_identity=$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")
+          test "$(stat -c '%u:%g:%a' -- "$subscription_test_home")" = "$(id -u):$(id -g):700"
+          export HOME="$subscription_test_home"
+          case "$CI_TEST_TARGET" in
+            1/4|2/4|3/4|4/4)
+              # Every shard needs dist fixtures; retain the configured two
+              # isolated forks and the full default test selection.
+              npm run build
+              npm run test:unit -- --shard="$CI_TEST_TARGET"
+              ;;
+            ancillary)
+              npm run test:before-unit
+              npm run test:after-unit
+              ;;
+            *)
+              echo "::error::Unknown CI test target"
+              exit 1
+              ;;
+          esac
+        env:
+          CI_TEST_TARGET: ${{ matrix.shard }}/4
+          SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+
+  unit-test-ancillary:
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    steps:
+      - *unit_test_checkout
+      - *unit_test_node
+      - *unit_test_install
+      - name: Run non-Vitest test phases once in a private TEST home
+        shell: bash
+        run: *private_test_home
+        env:
+          CI_TEST_TARGET: ancillary
+          SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+
+  unit-tests:
+    if: ${{ always() }}
+    needs: [unit-test-shards, unit-test-ancillary]
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
+    steps:
+      - name: Require all four unit shards and ancillary phases
+        env:
+          UNIT_TEST_SHARDS_RESULT: ${{ needs.unit-test-shards.result }}
+          UNIT_TEST_ANCILLARY_RESULT: ${{ needs.unit-test-ancillary.result }}
+        run: |
+          set -euo pipefail
+          test "$UNIT_TEST_SHARDS_RESULT" = success
+          test "$UNIT_TEST_ANCILLARY_RESULT" = success
+          echo "All four unit shards executed successfully; ancillary phases passed."
 
   observer-mount-tests:
     # Fresh disposable VM: namespace capabilities on the shared ARC runner are
