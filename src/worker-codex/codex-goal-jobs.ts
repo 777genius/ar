@@ -1,3 +1,4 @@
+import { optionalWorkerMode } from "./project-control-worker-mode";
 import { childConfigFromRecord } from "./child-execution-confinement";
 import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
@@ -120,6 +121,7 @@ export type CodexGoalJobManifest = {
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
   readonly networkAccess?: NetworkAccessMode;
+  readonly workerMode?: CodexGoalRunConfig["workerMode"];
   readonly allowDuplicateAccountIdentities?: boolean;
   readonly requireGitWorkspace?: boolean;
   readonly prewarmOnStart?: boolean;
@@ -463,6 +465,7 @@ export function codexGoalJobToArgs(
     projectAccessScope: manifest.projectAccessScope,
     allowDangerFullAccess: manifest.allowDangerFullAccess,
     networkAccess: manifest.networkAccess,
+    workerMode: manifest.workerMode,
     allowDuplicateAccountIdentities: manifest.allowDuplicateAccountIdentities,
     requireGitWorkspace: manifest.requireGitWorkspace,
     prewarmOnStart: manifest.prewarmOnStart,
@@ -542,6 +545,7 @@ function parseCodexGoalJobManifestValue(
       : value.projectAccessScope,
   );
   const networkAccess = optionalCodexGoalNetworkAccess(value.networkAccess);
+  const workerMode = optionalWorkerMode(value.workerMode);
   assertCodexGoalProviderSandboxModeAllowed({
     editMode,
     providerSandboxMode,
@@ -632,6 +636,7 @@ function parseCodexGoalJobManifestValue(
     ...(projectAccessScope === undefined ? {} : { projectAccessScope }),
     ...optionalBooleanProperty(value.allowDangerFullAccess, "allowDangerFullAccess"),
     ...(networkAccess === undefined ? {} : { networkAccess }),
+    ...(workerMode === undefined ? {} : { workerMode }),
     ...optionalBooleanProperty(
       value.allowDuplicateAccountIdentities,
       "allowDuplicateAccountIdentities",

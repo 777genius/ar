@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "baseUrl": "../..", "noEmit": true },
+  "include": ["./**/*.ts", "../../src/worker-core/storage/**/*.ts", "../../src/store-local-file/storage/**/*.ts"]
+}

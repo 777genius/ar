@@ -1,3 +1,4 @@
+import type { NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { codexProviderEgressNetworkAccessFromEnv } from "../../codex-provider-egress-policy";
 import type {
@@ -20,6 +21,7 @@ export type AppServerWaitingForInputResult = {
   readonly status: "waiting_for_input";
   readonly runId: string;
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly request: ManagedRunInputRequest;
   readonly resumeHandle: ManagedRunResumeHandle;
   readonly usage?: AgentUsage;
@@ -29,6 +31,7 @@ export type AppServerWaitingForInputResult = {
 export type AppServerCompletedResult = {
   readonly status?: "completed";
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly usage?: AgentUsage;
   readonly warnings: readonly AppServerWarning[];
 };
