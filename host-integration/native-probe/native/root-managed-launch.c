@@ -77,6 +77,61 @@ static int copy(char *to,size_t capacity,const char *from){
   strcpy(to,from);
   return 0;
 }
+static bool cgroup_token_char(unsigned char c,bool named) {
+  return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-'||(named&&c=='.');
+}
+static int cgroup_controllers(const unsigned char *bytes,size_t length) {
+  if(!length)return -1;
+  size_t at=0;
+  while(at<length){
+    size_t end=at;
+    while(end<length&&bytes[end]!=',')end++;
+    bool named=end-at>=5&&!memcmp(bytes+at,"name=",5);
+    size_t start=at+(named?5:0);
+    if(start==end)return -1;
+    for(size_t i=start;i<end;i++)if(!cgroup_token_char(bytes[i],named))return -1;
+    if(end==length)return 0;
+    at=end+1;
+  }
+  return -1;
+}
+int np_managed_cgroup_bytes_v1(const void *data,size_t length,const char *expected) {
+  if(!data||!length||length>NP_MANAGED_CGROUP_BYTES||!expected||expected[0]!='/')return -1;
+  const unsigned char *bytes=data;
+  if(bytes[length-1]!='\n'||memchr(bytes,0,length)||memchr(bytes,'\r',length))return -1;
+  size_t expected_length=strnlen(expected,1024);
+  if(expected_length>=1024)return -1;
+  bool unified=false;
+  size_t at=0;
+  while(at<length){
+    size_t end=at;
+    while(end<length&&bytes[end]!='\n')end++;
+    size_t first=at;
+    while(first<end&&bytes[first]>='0'&&bytes[first]<='9')first++;
+    if(first==at||first==end||bytes[first]!=':'||(bytes[at]=='0'&&first!=at+1))return -1;
+    size_t second=first+1;
+    while(second<end&&bytes[second]!=':')second++;
+    if(second==end||second+1==end||bytes[second+1]!='/')return -1;
+    if(bytes[at]=='0'){
+      size_t path_length=end-second-1;
+      if(unified||second!=first+1||path_length!=expected_length||memcmp(bytes+second+1,expected,path_length))return -1;
+      unified=true;
+    }else if(cgroup_controllers(bytes+first+1,second-first-1))return -1;
+    at=end+1;
+  }
+  return unified?0:-1;
+}
+int np_managed_cgroup_read_v1(int fd,const char *expected) {
+  unsigned char bytes[NP_MANAGED_CGROUP_BYTES],extra;
+  size_t used=0;
+  for(;;){
+    ssize_t count=read(fd,used==sizeof bytes?&extra:bytes+used,used==sizeof bytes?1:sizeof bytes-used);
+    if(count<0)return -1;
+    if(!count)return np_managed_cgroup_bytes_v1(bytes,used,expected);
+    if(used==sizeof bytes)return -1;
+    used+=(size_t)count;
+  }
+}
 static int same(int a,int b){
   struct stat x,y;
   return fstat(a,&x)||fstat(b,&y)||x.st_dev!=y.st_dev||x.st_ino!=y.st_ino?-1:0;
@@ -728,13 +783,9 @@ int np_managed_launch_v1(struct np_root_origin *o,struct np_managed_original *m,
   m->events=openat(np_directory_fd_v1(&m->cgroup),"cgroup.events",O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
   snprintf(path,sizeof path,"/proc/%ld/cgroup",(long)child);
   int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
-  char content[1200]={
-    0}
-  ,expected[1200];
-  snprintf(expected,sizeof expected,"0::%s\n",f.group);
-  ssize_t length=fd<0?-1:read(fd,content,sizeof content-1);
+  int membership=fd<0?-1:np_managed_cgroup_read_v1(fd,f.group);
   if(fd>=0)close(fd);
-  return m->events<0||length<=0||strcmp(content,expected)||live(pidfd)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,m->scope_invocation,false)?-1:0;
+  return m->events<0||membership||live(pidfd)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,m->scope_invocation,false)?-1:0;
 }
 static int scope_same(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
   struct unit_facts f;
