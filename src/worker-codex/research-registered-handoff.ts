@@ -5,7 +5,7 @@ import { readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjec
 import { AccessBoundary, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
 import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord } from "./research-launch-files";
+import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord, researchRegisteredPromptBytes } from "./research-launch-files";
 import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
 import type { ResearchStartSpec } from "./research-launch-contract";
 import { codexGoalJobManifestPath } from "./codex-goal-jobs";
@@ -74,7 +74,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
   for (const [path, key] of [[manifest.promptPath, "promptSha256"],
     [manifest.projectPreStartAdmission.contractPath, "contractSha256"],
     [manifest.projectPreStartAdmission.statePath, "stateSha256"]] as const) {
-    if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
+    if (researchHash(key === "promptSha256" ? researchRegisteredPromptBytes(request.jobRootDir, path) : researchRead(path)) !== receipt[key]) researchInvalid();
   }
   const boundRequest = parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
   const binding = Object.freeze({ registryRootDir, controllerJobId,
@@ -91,7 +91,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
     for (const [path, key] of [[manifest.promptPath, "promptSha256"],
       [manifest.projectPreStartAdmission!.contractPath, "contractSha256"],
       [manifest.projectPreStartAdmission!.statePath, "stateSha256"]] as const) {
-      if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
+      if (researchHash(key === "promptSha256" ? researchRegisteredPromptBytes(request.jobRootDir, path) : researchRead(path)) !== receipt[key]) researchInvalid();
     }
   };
   assertAuthorityBytes();

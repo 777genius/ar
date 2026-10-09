@@ -5,7 +5,7 @@ import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-r
 import * as workspaceChanges from "../codex-goal-workspace-changes";
 import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope, buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
@@ -93,6 +93,28 @@ function mutateReceipt() {
 }
 
 describe("registered durable handoff authorization (NEW TEST source fixtures only)", () => {
+  it("retains registered prompt authority after sandbox preparation makes only the job root traversable", async () => {
+    const authorization = await authorize();
+    const before = readFileSync(local(selected().promptPath));
+    // This is the real permission transition performed by sandboxTraverse.
+    chmodSync(local(selected().jobRootDir), 0o701);
+    expect(() => researchRead(selected().promptPath)).toThrow();
+    const binding = await consumeRegisteredResearchHandoffAuthorization(authorization);
+    expect(binding.requestSha256).toBeDefined();
+    expect(readFileSync(local(selected().promptPath))).toEqual(before);
+    expect(statSync(local(selected().promptPath)).mode & 0o7777).toBe(0o600);
+    expect(statSync(local(selected().jobRootDir)).mode & 0o7777).toBe(0o701);
+    expect(statSync(local(join(selected().jobRootDir, "pre-start-admission"))).mode & 0o7777).toBe(0o700);
+    expect(host.authReads).toBe(0);
+  });
+  it.each(["public-prompt", "public-root", "traversable-admission"] as const)("keeps %s outside the registered prompt exception", async fault => {
+    const authorization = await authorize();
+    chmodSync(local(selected().jobRootDir), fault === "public-root" ? 0o755 : 0o701);
+    if (fault === "public-prompt") chmodSync(local(selected().promptPath), 0o644);
+    if (fault === "traversable-admission") chmodSync(local(join(selected().jobRootDir, "pre-start-admission")), 0o701);
+    await expect(consumeRegisteredResearchHandoffAuthorization(authorization)).rejects.toThrow();
+    expect(host.authReads).toBe(0);
+  });
   it("prepares only the missing canonical private leaf after current authorized admission", async () => {
     rmdirSync(local(sink));
     await authorize();
