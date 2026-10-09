@@ -606,7 +606,7 @@ it("legacy assertion rejects dangling custom metadata symlinks instead of treati
   await expect(relocate(f.attestedArgs, f.deps)).rejects.toThrow("state_location_unknown");
 });
 
-it("managed admission failure leaves state unbound and a corrected retry binds only after admission", async () => {
+it("retains admitted controller state through failed preparation and rejects a different retry location", async () => {
   const f = await fixture();
   const launchModule = await import("../codex-goal-mcp-launch-input");
   const providerModule = await import("../codex-goal-mcp-project-controller-provider");
@@ -629,16 +629,19 @@ it("managed admission failure leaves state unbound and a corrected retry binds o
     }) }) } as never,
   };
   try {
-    await expect(projectControllerStartView({ ...f.args, stateDir: join(f.root, "first") }, deps)).rejects.toThrow("missing managed policy");
-    expect(await controllerStateLocationForRelocation(f.controller)).toBeUndefined();
+    const first = join(f.root, "first");
+    await expect(projectControllerStartView({ ...f.args, stateDir: first }, deps)).rejects.toThrow("missing managed policy");
+    expect(await controllerStateLocationForRelocation(f.controller)).toBe(first);
     expect(provider).not.toHaveBeenCalled();
     admission.mockImplementation(async () => {
-      expect(await controllerStateLocationForRelocation(f.controller)).toBeUndefined();
+      expect(await controllerStateLocationForRelocation(f.controller)).toBe(first);
       return {} as never;
     });
-    const corrected = join(f.root, "corrected");
-    await expect(projectControllerStartView({ ...f.args, stateDir: corrected }, deps)).rejects.toThrow("provider boundary reached");
-    expect(await controllerStateLocationForRelocation(f.controller)).toBe(corrected);
+    await expect(projectControllerStartView({ ...f.args, stateDir: join(f.root, "corrected") }, deps)).rejects.toThrow("controller_state_location_conflict");
+    expect(admission).toHaveBeenCalledOnce();
+    expect(provider).not.toHaveBeenCalled();
+    await expect(projectControllerStartView({ ...f.args, stateDir: first }, deps)).rejects.toThrow("provider boundary reached");
+    expect(await controllerStateLocationForRelocation(f.controller)).toBe(first);
     expect(provider).toHaveBeenCalledOnce();
   } finally { launch.mockRestore(); admission.mockRestore(); provider.mockRestore(); }
 });

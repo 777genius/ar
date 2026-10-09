@@ -612,9 +612,9 @@ it("composes actual controller dispatch, binding, adapter, state and provider wi
   const factory = new MinimalAppServerFactory(), order: string[] = [];
   const egress = await import("../../hosted-test-egress-admission"), readonly = await import("../../hosted-readonly-admission");
   const ops = await import("../../codex-goal-ops"), selection = await import("../../application/project-control/codex-goal-project-controller-account-selection");
-  let admissions = 0;
   const grant = vi.spyOn(egress, "admitHostedTestEgress").mockImplementation(async () => {
-    expect(await stateLocation.controllerStateLocationForRelocation(controller)).toBe(admissions++ === 0 ? undefined : stateDir);
+    // The first possible allocation effect must already be visible to census.
+    expect(await stateLocation.controllerStateLocationForRelocation(controller)).toBe(stateDir);
     order.push("grant"); return codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
   });
   const admitted = vi.spyOn(readonly, "admitHostedReadonlyInputs").mockImplementation(() => {

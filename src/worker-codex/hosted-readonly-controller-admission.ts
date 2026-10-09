@@ -10,8 +10,9 @@ import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
 
-/** Host authority is read here, never supplied by MCP/profile arguments. Call
- * before immutable state binding, and again before account/session effects. */
+/** Host authority is read here, never supplied by MCP/profile arguments.
+ * Project controllers publish their admitted state location before this possible
+ * allocation boundary, then recheck admission before account/session effects. */
 export async function admitHostedControllerLaunch(launch: CodexGoalLaunchInput) {
   const config = launch.config;
   assertHostedMimoGoalConfinement(config);
