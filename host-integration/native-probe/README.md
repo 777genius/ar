@@ -65,6 +65,14 @@ Stable ABI declarations use [stock libsystemd](https://github.com/systemd/system
 the test-only Node consumer uses [opaque Node-API](https://github.com/nodejs/node/blob/v24.8.0/src/js_native_api.h).
 No dependency is installed, fetched or upgraded by the source harness.
 
+The A1 currentness SOURCE candidate retains private per-reply event watermarks
+and matching target Unit, slice Unit and slice Slice PropertiesChanged watermarks.
+It requires all three final successful nonlate fact replies and rejects any
+matching interface event consumed after its snapshot, before the unchanged
+association/cutoff/no-new-event tail. The fixed request inventory is unchanged;
+there is no refresh request or control replay. Compilation and real admitted
+NEWTEST stock-manager interleaving evidence for this correction remain required.
+
 These are private mechanism interfaces, not NativeProbe authentication. No public
 FD/PID/token adoption interface or Source factory is supplied. Core policy contains
 no Linux, systemd, filesystem, NAPI or provider mechanism. Core attempts retain

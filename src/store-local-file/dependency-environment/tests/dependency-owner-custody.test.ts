@@ -66,7 +66,7 @@ describe.skipIf(process.platform !== "linux")("idle-only protected owner custody
       f.store.close(); reopened = Store.open({ rootPath: f.rootPath, maxRecordBytes: 16384 });
       expect(reopened.read(f.workspace)).toEqual(next);
       const before = await snapshot(f.rootPath);
-      expect(reason(() => claimDependencyConsumer(reopened!, f.workspace, launch, randomUUID()))).toBe(Failure.InvalidRecord);
+      expect(reason(() => claimDependencyConsumer(reopened!, f.workspace, launch, randomUUID()))).toBe(Failure.Unsupported);
       expect(await snapshot(f.rootPath)).toEqual(before);
     } finally { reopened?.close(); await f.cleanup(); }
   });

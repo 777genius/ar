@@ -9,6 +9,7 @@ import { CodexJsonAgentDriver, codexJsonHomeConfigToml, codexMimoApiKeyEnvVarDef
 import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
 import { StaticRunner, validAuthJson } from "../../provider-codex/tests/codex-provider-test-support";
 import { NullWorkerObservability } from "../../worker-local/observability";
+import { openWorkerToolCacheEnvironment } from "../project-control-worker-mode";
 import { createFileBackendCodexWorkerRuntime, openWorkerFactorySecretRoots } from "../file-backend-codex-runtime-factory";
 import type { FileBackendCodexWorkerOptions } from "../file-backend-codex-worker";
 
@@ -64,6 +65,14 @@ it("materializes the open profile and tool-only environment, retaining exact str
         expect(config).toContain(`${JSON.stringify(`${openWorker!.toolRoot}/git`)} = "write"`);
         expect(config).toContain(`GIT_DIR = ${JSON.stringify(`${openWorker!.toolRoot}/git`)}`);
         expect(config).toContain(`HOME = ${JSON.stringify(`${openWorker!.toolRoot}/home`)}`);
+        const policy = config.split("[shell_environment_policy]\n")[1]!.split("\n\n")[0]!;
+        const include = policy.split("\n").find(line => line.startsWith("include_only"))!;
+        expect(Object.keys(openWorkerToolCacheEnvironment)).toHaveLength(9);
+        for (const [key, relative] of Object.entries(openWorkerToolCacheEnvironment)) {
+          expect(policy).toContain(`${key} = ${JSON.stringify(`${openWorker!.toolRoot}/${relative}`)}`);
+          expect(include).toContain(JSON.stringify(key));
+          expect(relative.startsWith("home/") || relative === "tmp").toBe(true);
+        }
         expect(launches[0]!.env).not.toHaveProperty("GIT_DIR");
         expect(launches[0]!.env).not.toHaveProperty("GIT_WORK_TREE");
       } else {

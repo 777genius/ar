@@ -226,5 +226,53 @@ export function assembleNewtest(candidate: string, artifact: string, artifactDig
   durable(join(candidate, "manifest.json"), manifest);
   return { installationDigest: retainedResourceDigest(manifest), files: files.length, authorityIssued: false };
 }
+export function assembleRetainedV2Newtest(candidate: string, artifact: string, artifactDigest: string, daemonUid: number, daemonGid: number): unknown {
+  const nativeInstallation="/opt/subscription-runtime/native-retained-v2";
+  // No installed writes until the whole artifact and dependency plan admits.
+  verifyTree(artifact, artifactDigest); admitJsImports(join(artifact, "admin"));
+  protectedPath(candidate, true);
+  if (readdirSync(candidate).length) throw new Error("nonempty candidate refused");
+  const node = "/opt/subscription-runtime/runtime/node";
+  const binaries = [node, join(artifact, "retained-v2-entry"), join(artifact, "original-owner-associated.node"), join(artifact, "native-root-client")];
+  const elf = elfClosure([...binaries,"/usr/bin/dbus-daemon"]);
+  const plan: Array<{ path: string; source: string; mode: number }> = [
+    { path: nativeInstallation + "/retained-v2-entry", source: binaries[1]!, mode: 0o700 },
+    { path: nativeInstallation + "/test-root/opt/native/node", source: node, mode: 0o755 },
+    { path: nativeInstallation + "/test-root/opt/native/original-owner-helper.mjs", source: join(artifact, "original-owner-helper.mjs"), mode: 0o644 },
+    { path: nativeInstallation + "/test-root/opt/native/original-owner-associated.node", source: binaries[2]!, mode: 0o644 },
+    { path: "/usr/bin/dbus-daemon", source: "/usr/bin/dbus-daemon", mode: lstatSync("/usr/bin/dbus-daemon").mode & 0o7777 },
+    { path: nativeInstallation + "/admin/host-integration/native-probe/retained-v2-operator.mjs", source: join(artifact, "admin/host-integration/native-probe/retained-v2-operator.mjs"), mode: 0o644 },
+    { path: nativeInstallation + "/expected-helper-policy.json", source: join(artifact,"expected-helper-policy.json"), mode: 0o644 },
+    { path: nativeInstallation + "/native-root-client", source: binaries[3]!, mode: 0o700 },
+  ];
+  for (const row of tree(join(artifact, "admin"))) {
+    const path = nativeInstallation + "/admin/" + row.path;
+    if (!plan.some(p => p.path === path)) plan.push({ path, source: join(artifact, "admin", row.path), mode: 0o644 });
+  }
+  for (const row of elf) plan.push({ path: nativeInstallation + "/test-root" + row.image, source: row.source, mode: 0o755 });
+  // Real original observer mappings, not an expected list derived from ELF.
+  const maps = processMaps();
+  const shared = new Set([node, ...elf.map(row => row.source), ...maps.split("\n").flatMap(line => { const m = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/.exec(line); return m ? [m[1]!] : []; })]);
+  for (const path of shared) {
+    if (path !== node && !path.startsWith("/usr/lib/")) throw new Error("foreign observer mapped input");
+    plan.push({ path, source: path, mode: lstatSync(path).mode & 0o7777 });
+  }
+  const paths = new Set<string>(), files: InstallationFile[] = [];
+  const admitted: Array<{ row: typeof plan[number]; bytes: Buffer }> = [];
+  for (const row of plan) {
+    if (paths.has(row.path)) continue; paths.add(row.path);
+    if (Buffer.byteLength(row.path) > 255 || files.length >= 128) throw new Error("installation census capacity");
+    const bytes = measured(row.source); files.push({ path: row.path, bytes: bytes.length, mode: row.mode, sha256: digest(bytes) }); admitted.push({ row, bytes });
+  }
+  if (![daemonUid, daemonGid].every(v => Number.isInteger(v) && v >= 0 && v <= 0xffffffff)) throw new Error("invalid original daemon identity");
+  const manifest = { version: 1, profile: "NativeRetainedV2A1", daemonUid, daemonGid, files };
+  if (Buffer.byteLength(retainedResourceCanonicalJson(manifest)) > 65536) throw new Error("installation manifest capacity");
+  for (const { row, bytes } of admitted) {
+    if (!row.path.startsWith(nativeInstallation + "/")) continue;
+    const target = join(candidate, row.path.slice(nativeInstallation.length + 1)); mkdirSync(dirname(target), { recursive: true, mode: 0o755 }); durable(target, bytes, row.mode);
+  }
+  durable(join(candidate, "manifest.json"), manifest);
+  return { installationDigest: retainedResourceDigest(manifest), files: files.length, authorityIssued: false };
+}
 // /proc maps is a kernel stream, not a stable regular installation leaf.
 export function processMaps(): string { const text=readFileSync("/proc/self/maps", "utf8"); if(Buffer.byteLength(text)>1048576)throw new Error("mapped closure capacity");return text; }

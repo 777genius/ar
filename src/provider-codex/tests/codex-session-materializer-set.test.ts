@@ -13,8 +13,13 @@ describe("Codex shell environment settings", () => {
     expect(include).toContain('"GIT_CONFIG_GLOBAL"');
   });
   it("rejects PATH replacement and invalid variable names", () => {
-    for (const key of ["PATH", "bad", "BAD-KEY", "9KEY", "KEY\n"]) expect(() =>
+    for (const key of ["PATH", "Path", "path", "bad-key", "BAD-KEY", "9KEY", "KEY\n"]) expect(() =>
       codexJsonHomeConfigToml({ shellEnvironmentSet: { [key]: "value" } })).toThrow("codex_shell_environment_set_key_invalid");
+  });
+  it("accepts lowercase variable names", () => {
+    const config = codexJsonHomeConfigToml({ namedPermissions: true, shellEnvironmentSet: { npm_config_cache: "/tool/home/.npm" } });
+    expect(config).toContain('set = { npm_config_cache = "/tool/home/.npm" }');
+    expect(config).toContain('"npm_config_cache"');
   });
   it("keeps the existing default shell policy byte-identical when settings are absent", () => {
     const policy = codexJsonHomeConfigToml().split("[shell_environment_policy]\n")[1]!.split("\n\n")[0];
