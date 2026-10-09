@@ -50,9 +50,10 @@ describe("codex goal job registry", () => {
         ...ordinaryJob, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, executionEngine: intent === "legacy" ? "app-server-goal" : "app-server",
         model: codexMimoDefaultModel, accounts: ["account-q"], maxAccountCycles: 1,
         serviceTier: "default", taskTimeoutMs: 30_000, networkAccess: NetworkAccessMode.Unrestricted,
-        workerReportMode: "structured-output", maxGoalTurns: 8,
-        safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
-          retryOnAccountUnavailable: false, retryOnReconnectRequired: false },
+        workerReportMode: "structured-output",
+        ...(intent === undefined ? {} : { maxGoalTurns: 8,
+          safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" as const, retryOnCapacity: false,
+            retryOnAccountUnavailable: false, retryOnReconnectRequired: false } }),
         ...(intent === "explicit" ? { durableHandoffRootDir: join(root, "explicit-sink") } : {}),
       } });
       const stored = await readCodexGoalJob({ registryRootDir: join(root, "registry"), jobId: manifest.jobId });

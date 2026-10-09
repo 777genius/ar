@@ -243,7 +243,7 @@ export async function createCodexGoalJob(input: {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
   const nativeWorker = input.manifest.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
-    input.manifest.executionEngine === "app-server" && input.manifest.workerReportMode === "structured-output" && input.manifest.maxGoalTurns === 8 &&
+    input.manifest.executionEngine === "app-server" && input.manifest.workerReportMode === "structured-output" &&
     input.manifest.childLifetime === undefined;
   const manifest = parseCodexGoalJobManifest({
     ...input.manifest,
