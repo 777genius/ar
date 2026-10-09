@@ -1,14 +1,11 @@
 import { dirname, join, relative } from "node:path";
 import { lstatSync, mkdirSync } from "node:fs";
 import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
-import { readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjectPreStartLaunchReceipt } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
-import { AccessBoundary, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
-import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
+import { parseResearchOperatorRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord } from "./research-launch-files";
 import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
 import type { ResearchStartSpec } from "./research-launch-contract";
-import { codexGoalJobManifestPath } from "./codex-goal-jobs";
 import { withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "./codex-goal-project-workspace-lock";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
@@ -16,6 +13,7 @@ import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
 import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { researchProjectLaunchInputs } from "./research-project-launch-inputs";
 import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
 
 /** Root adapters must already hold the registered action's activity/workspace
@@ -34,70 +32,24 @@ export class RegisteredResearchSinkPreparationUnresolved extends Error {
 }
 
 async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false, execution?: ResearchRegisteredExecution) {
-  const controllerPath = codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId });
-  const manifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: request.jobId });
-  const controllerBytes = researchRead(controllerPath), manifestBytes = researchRead(manifestPath);
-  const controller = await loadProjectControlController({ registryRootDir, controllerJobId });
-  const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
-  const { manifest, launch } = loaded;
-  researchCustody(registryRootDir);
-  if (controller.registryRootDir !== registryRootDir || loaded.registryRootDir !== registryRootDir ||
-      !manifest.projectPreStartAdmission || manifest.jobId !== request.jobId) researchInvalid();
-  const policy = createAccessPolicyService({ boundary: AccessBoundary.ProjectScopedControl, scope: controller.scope });
-  if (!policy.canStartWorker({ jobId: request.jobId, registryRoot: registryRootDir, workspacePath: request.workspacePath }).allowed ||
-      request.accounts.some(accountId => !policy.canUseAccount({ accountId }).allowed)) researchInvalid();
-  for (const key of ["jobId", "taskId", "jobRootDir", "workspacePath", "promptPath", "authRootDir", "codexBinaryPath",
-    "model", "reasoningEffort", "serviceTier", "taskTimeoutMs"] as const) {
-    if (request[key] !== launch.config[key]) researchInvalid();
-  }
-  // The action has selected/reserved the account. A sink token cannot select a
-  // foreign account outside the effective registered launch's candidate set.
-  if (request.accounts.length !== 1 || !launch.config.accounts.some(account => account.name === request.accounts[0])) researchInvalid();
-  const sink = researchPath(launch.config.durableHandoffRootDir);
-  if (sink !== join(registryRootDir, "durable-handoffs")) throw new RegisteredResearchHandoffUnsupportedSink();
   const codexPackage = hostedCodexExecutableReadPath({ codexBinaryPath: request.codexBinaryPath,
     sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
-  for (const path of [request.jobRootDir, request.workspacePath, request.authRootDir, installedResearchRuntimeDirectory(),
-    ...(codexPackage ? [codexPackage] : []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
-    if (overlaps(sink, path)) researchInvalid();
-  }
-  assertRegisteredResearchExecutionSupported({ registryRootDir, manifest, controller: controller.controller, launch, request, execution });
-  researchCustody(manifest.projectPreStartAdmission.receiptPath, true);
-  const { receipt, receiptSha256 } = preStart
-    ? await readAuthorizedProjectPreStartLaunchReceipt({ manifest, scope: controller.scope })
-    : await readCurrentAuthorizedProjectPreStartLaunchReceipt(manifest);
-  // The clean-workspace proof becomes historical after start, but these
-  // immutable launch inputs and the exact authorized receipt remain live.
-  for (const [path, key] of [[manifest.promptPath, "promptSha256"],
-    [manifest.projectPreStartAdmission.contractPath, "contractSha256"],
-    [manifest.projectPreStartAdmission.statePath, "stateSha256"]] as const) {
-    if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
-  }
-  const boundRequest = parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
-  const binding = Object.freeze({ registryRootDir, controllerJobId,
-    manifestSha256: digest(manifest), scopeSha256: digest(controller.scope), receiptSha256,
-    requestSha256: researchHashRequest(boundRequest), ...(execution ? { registeredExecution: execution } : {}) });
-  // Awaited receipt/loader work can overlap a revocation. Re-read supported
-  // metadata and finish with a nofollow, private exact-byte custody witness.
-  const freshManifest = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
-  const freshController = await loadProjectControlController({ registryRootDir, controllerJobId });
-  if (digest(freshManifest.manifest) !== binding.manifestSha256 || digest(freshController.scope) !== binding.scopeSha256) researchInvalid();
-  const assertAuthorityBytes = (): void => {
-    if (researchHash(researchRead(manifest.projectPreStartAdmission!.receiptPath)) !== receiptSha256 ||
-        !researchRead(controllerPath).equals(controllerBytes) || !researchRead(manifestPath).equals(manifestBytes)) researchInvalid();
-    for (const [path, key] of [[manifest.promptPath, "promptSha256"],
-      [manifest.projectPreStartAdmission!.contractPath, "contractSha256"],
-      [manifest.projectPreStartAdmission!.statePath, "stateSha256"]] as const) {
-      if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
-    }
-  };
-  assertAuthorityBytes();
-  researchCustody(codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId }), true);
-  researchCustody(codexGoalJobManifestPath({ registryRootDir, jobId: request.jobId }), true);
+  const current = await researchProjectLaunchInputs({ registryRootDir, controllerJobId, request, preStart,
+    ...(execution ? { execution } : {}), bindSupportedRequest: ({ manifest, launch }, controller) => {
+      const sink = researchPath(launch.config.durableHandoffRootDir);
+      if (sink !== join(registryRootDir, "durable-handoffs")) throw new RegisteredResearchHandoffUnsupportedSink();
+      for (const path of [request.jobRootDir, request.workspacePath, request.authRootDir, installedResearchRuntimeDirectory(),
+        ...(codexPackage ? [codexPackage] : []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
+        if (overlaps(sink, path)) researchInvalid();
+      }
+      assertRegisteredResearchExecutionSupported({ registryRootDir, manifest, controller: controller.controller, launch, request, execution });
+      return parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
+    },
+  });
   const readDirectory = (path: string): string => lstatSync("/proc/1/root" + path).isDirectory() ? path : dirname(path);
-  return { binding, request: boundRequest, assertAuthorityBytes, protectedSources: [request.jobRootDir, request.workspacePath, request.authRootDir,
+  return { ...current, protectedSources: [request.jobRootDir, request.workspacePath, request.authRootDir,
     installedResearchRuntimeDirectory(), ...(codexPackage ? [readDirectory(codexPackage)] : []), readDirectory(process.execPath),
-    controller.controller.jobRootDir, "/usr", "/etc"] };
+    current.controller.controller.jobRootDir, "/usr", "/etc"] };
 }
 async function currentRegisteredHandoff(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false,
   execution?: ResearchRegisteredExecution, beforeSinkEffects?: () => void) {

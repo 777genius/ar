@@ -76,11 +76,15 @@ export type ResearchGrant = Readonly<{
   jobDirectory: ResearchDirectoryIdentity; workspaceDirectory: ResearchDirectoryIdentity;
   registeredHandoff?: ResearchRegisteredHandoff;
 }>;
-export type ResearchRegisteredHandoff = Readonly<{
+export type ResearchProjectLaunchBinding = Readonly<{
   registryRootDir: string; controllerJobId: string; manifestSha256: string;
   scopeSha256: string; receiptSha256: string; requestSha256: string;
-  durableDirectory: ResearchDurableDirectory;
   registeredExecution?: ResearchRegisteredExecution;
+}>;
+/** Keep the existing flattened OpenAI wire format. Native project binding does
+ * not imply a durable publication sink. */
+export type ResearchRegisteredHandoff = ResearchProjectLaunchBinding & Readonly<{
+  durableDirectory: ResearchDurableDirectory;
 }>;
 export type ResearchRegisteredExecution = Readonly<{
   sourceConfigSha256: string; reservedConfigSha256: string; selectedAccountSha256: string;
