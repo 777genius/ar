@@ -138,20 +138,29 @@ function registeredResearchHandoffGuard(jobId: string, startId: string, allowClo
 }
 export function captureResearchRuntime(identity: HostedTestEgressIdentity, ownerPid = process.pid): {
   readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => void;
-  readonly assertAuthorityCurrent: () => void;
+  readonly assertAuthorityCurrent: () => void; readonly assertInertAuthorityCurrent: () => void;
 } {
   assertResearchInitialRoot(); assertResearchSharedHost();
   const initial = researchCurrentStart(identity.jobId), bindingBytes = researchRead(join(initial.directory, "binding.json"));
   const binding = readResearchStartBinding(initial.directory), { spec } = initial;
   if (spec.request.jobRootDir !== identity.jobRootDir || spec.request.workspacePath !== identity.workspacePath ||
       binding.specSha256 !== researchHash(initial.bytes) || binding.process.pid !== ownerPid || binding.service.unit !== spec.unit) researchInvalid();
-  const assertAuthorityCurrent = (): void => {
+  // The confined startup holds bootstrap/auth while systemd may be busy
+  // constructing its namespace. Poll fresh authority and kernel identity here;
+  // this check grants no effect permission and deliberately avoids the manager.
+  const assertInertAuthorityCurrent = (): void => {
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
-    const current = researchProcessIdentity(ownerPid), service = researchServiceIdentity(spec.unit);
-    assertResearchServiceOwner(current, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
-    if (JSON.stringify(current) !== JSON.stringify(binding.process) || JSON.stringify(service) !== JSON.stringify(binding.service) ||
+    const current = researchProcessIdentity(ownerPid);
+    if (JSON.stringify(current) !== JSON.stringify(binding.process) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
+  };
+  const assertAuthorityCurrent = (): void => {
+    assertInertAuthorityCurrent();
+    const service = researchServiceIdentity(spec.unit);
+    assertResearchServiceOwner(binding.process, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
+    if (JSON.stringify(service) !== JSON.stringify(binding.service)) researchInvalid();
+    assertInertAuthorityCurrent();
   };
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
@@ -162,7 +171,7 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   };
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
-  return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent });
+  return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent, assertInertAuthorityCurrent });
 }
 
 export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {

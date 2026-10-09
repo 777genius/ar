@@ -216,7 +216,8 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     // startup budget; retain all fences and hold bootstrap throughout.
     const deadline = performance.now() + researchProviderSetupAllowanceMs(request);
     const assertTransportPermission = (): void => {
-      assertForwardPermission();
+      captured.assertInertAuthorityCurrent();
+      assertResearchProviderNotCancelled(directory, unit);
       if (performance.now() >= deadline) throw transportDenial("research-provider-transport:setup-deadline");
       if (proxyExited) throw transportDenial("research-provider-transport:proxy-exited");
       if (transportFailed) throw transportDenial("research-provider-transport:transport-failed");
@@ -228,6 +229,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     const readiness = monitorResearchReady(proxy, assertTransportPermission, deadline);
     try {
       await readiness.ready;
+      assertForwardPermission();
       for (let attempt = 0; attempt < 100 && performance.now() < deadline && proxy.exitCode === null; attempt++) {
         readiness.assertCurrent();
         try {
@@ -261,8 +263,9 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       await new Promise<void>(resolve => setImmediate(resolve));
       const settledLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
       if (settledLaunch.command !== launch.command || JSON.stringify(settledLaunch.args) !== JSON.stringify(launch.args)) researchInvalid();
+      assertForwardPermission(); // Fresh full runtime ownership after the final yield.
       assertRetainedOwner();
-      readiness.assertCurrent(); // An accepted start is not permission to send auth.
+      readiness.assertCurrent(); // Fresh authority, transport and control latch before auth.
       readiness.stop(); // No async gap between control consumption and forwarding.
       phase("native-forwarding");
       proxy.stdout.pipe(process.stdout);

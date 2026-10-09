@@ -737,6 +737,41 @@ describe("slow bounded material at research effect boundaries", () => {
 });
 
 describe("bounded confined-launcher readiness (real streams; settled proc/systemd observations substituted)", () => {
+  // RED: synchronous manager reads during inert namespace setup deny before
+  // readiness; existing tests exercise manager failure only after readiness.
+  it("waits without manager reads, then freshly verifies both owners before forwarding", async () => {
+    researchClock();
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const original = processes.spawnSync;
+    let managerBusy = false, earlyReads = 0;
+    const verified: string[] = [];
+    vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
+      if (command === "/usr/bin/systemctl" && args[0] === "show") {
+        if (managerBusy) {
+          earlyReads++;
+          return { status: null, error: Object.assign(new Error("TEST manager busy"), { code: "ETIMEDOUT" }), stdout: "", stderr: "" };
+        }
+        verified.push(args[1]!);
+      }
+      return original(command, args, options);
+    }) as typeof processes.spawnSync);
+    host.spawn.mockImplementation(() => { const result = submit(); managerBusy = true; verified.length = 0; return result; });
+    proxy.stdin.once("data", () => {
+      expect(verified).toContain(current.unit); expect(verified).toContain(current.provider);
+      expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+      proxy.exitCode = 0; proxy.emit("exit", 0, null);
+    });
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(earlyReads).toBe(0); expect(verified).toHaveLength(0);
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".owner")).toThrow();
+    managerBusy = false; proxy.stdout.write(readyFrame);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true); expect(earlyReads).toBe(0);
+    expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
+    expect(record(current, ".submission").state).toBe("settled");
+  });
   it("admits settled readiness after forty-six seconds without releasing bootstrap while waiting", async () => {
     const now = researchClock();
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
