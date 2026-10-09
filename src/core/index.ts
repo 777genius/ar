@@ -39,3 +39,5 @@ export * from "./host-infrastructure/fd-collector-profile";
 export * from "./dependency-environment/dependency-custody-evidence";
 export * from "./host-infrastructure/host-inventory";
 export * from "./domain/native-web-receipt";
+
+export * from "./dependency-environment/dependency-generation-continuity";
