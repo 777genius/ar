@@ -1,7 +1,7 @@
 /** Binary fixtures are parsed, never executed. No Python/ELF/tool launch. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, linkSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, chownSync, lchownSync, lstatSync, symlinkSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -91,18 +91,38 @@ test("native census refuses caller-owned fixture before reading candidate conten
 });
 
 const nativeSkip=process.platform!=="linux"||process.getuid?.()!==0?"requires root-owned Linux TEST fixture; no host interpreter execution":false;
+function fixtureCustody(path:string,directory:boolean):void {
+ const s=lstatSync(path,{bigint:true});
+ assert(s.uid===0n&&s.gid===0n&&!(s.mode&0o022n)&&s.isDirectory()===directory,
+  `owned TEST fixture custody ${path}: uid=${s.uid} gid=${s.gid} mode=${(s.mode&0o7777n).toString(8)} directory=${s.isDirectory()}`);
+}
+function fixtureFile(path:string,bytes:Buffer|string,mode=0o444):void {
+ writeFileSync(path,bytes,{mode});chownSync(path,0,0);fixtureCustody(path,false);
+}
+function fixtureAlias(literal:string,path:string):void {symlinkSync(literal,path);lchownSync(path,0,0);}
 function nativeFixture():string {
  const root=mkdtempSync(join(tmpdir(),"TEST-python-envelope-census-"));
- for(const dir of ["/usr/lib/python3.12","/usr/lib/x86_64-linux-gnu","/usr/lib64","/usr/bin"])mkdirSync(root+dir,{recursive:true,mode:0o755});
- writeFileSync(root+"/usr/lib/python3.12/json.py","# independently authenticated fixture text\n",{mode:0o444});
- writeFileSync(root+"/usr/bin/python3.12",elf(),{mode:0o555});return root;
+ try{
+  // Root uid does not imply root gid: TMPDIR can have an inherited setgid group.
+  // Normalize only paths just created by this fixture, never TMPDIR or host ancestors.
+  chownSync(root,0,0);chmodSync(root,0o700);fixtureCustody(root,true);
+  for(const dir of ["/usr","/usr/lib","/usr/lib/python3.12","/usr/lib/x86_64-linux-gnu","/usr/lib64","/usr/bin"]){
+   mkdirSync(root+dir,{mode:0o755});chownSync(root+dir,0,0);chmodSync(root+dir,0o755);fixtureCustody(root+dir,true);
+  }
+  fixtureFile(root+"/usr/lib/python3.12/json.py","# independently authenticated fixture text\n");
+  fixtureFile(root+"/usr/bin/python3.12",elf(),0o555);return root;
+ }catch(error){rmSync(root,{recursive:true});throw error;}
 }
 test("complete native census reconciles all candidates and refuses late unknown source/bytecode",{skip:nativeSkip},()=>{
  const root=nativeFixture();try{const initial=capturePythonEnvelope(root,packages,budget);const bytes=Buffer.from(JSON.stringify(initial.catalog));
   const expected=parsePythonEnvelopeCatalog(bytes,hash(bytes),budget);assert.deepEqual(initial.catalog,expected);
   assert(initial.catalog.entries.some(e=>e.path==="/usr/lib/python3.12/json.py"&&e.kind===PythonEnvelopeKind.Source));
-  writeFileSync(root+"/usr/lib/python3.12/z-unknown.py","# unknown late candidate\n",{mode:0o444});const changed=capturePythonEnvelope(root,packages,budget);assert.notDeepEqual(changed.catalog,expected);
-  writeFileSync(root+"/usr/lib/python3.12/z-unknown.pyc",Buffer.from([0,0,0,0]),{mode:0o444});assert.throws(()=>capturePythonEnvelope(root,packages,budget),/competing bytecode/);
+  for(const [uid,gid,mode] of [[1,0,0o700],[0,1,0o700],[0,0,0o722]] as const){
+   try{chownSync(root,uid,gid);chmodSync(root,mode);assert.throws(()=>capturePythonEnvelope(root,packages,budget),/prefix custody/);}
+   finally{chownSync(root,0,0);chmodSync(root,0o700);fixtureCustody(root,true);}
+  }
+  fixtureFile(root+"/usr/lib/python3.12/z-unknown.py","# unknown late candidate\n");const changed=capturePythonEnvelope(root,packages,budget);assert.notDeepEqual(changed.catalog,expected);
+  fixtureFile(root+"/usr/lib/python3.12/z-unknown.pyc",Buffer.from([0,0,0,0]));assert.throws(()=>capturePythonEnvelope(root,packages,budget),/competing bytecode/);
  }finally{rmSync(root,{recursive:true});}
 });
 test("native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape",{skip:nativeSkip},()=>{
@@ -110,7 +130,7 @@ test("native complete EOF is mandatory at exact entry/byte limits and aliases ca
   assert.doesNotThrow(()=>capturePythonEnvelope(root,packages,{...budget,entries:m.entries,bytes:m.bytes,fileBytes:m.largestFile,depth:m.depth}));
   assert.throws(()=>capturePythonEnvelope(root,packages,{...budget,entries:m.entries-1}),/entry\/depth limit/);
   assert.throws(()=>capturePythonEnvelope(root,packages,{...budget,bytes:m.bytes-1}),/total\/file byte limit|file bound/);
-  symlinkSync("/tmp/foreign.py",root+"/usr/lib/python3.12/foreign.py");assert.throws(()=>capturePythonEnvelope(root,packages,budget),/alias escape/);
+  fixtureAlias("/tmp/foreign.py",root+"/usr/lib/python3.12/foreign.py");assert.throws(()=>capturePythonEnvelope(root,packages,budget),/alias escape/);
  }finally{rmSync(root,{recursive:true});}
 });
 test("native candidate metadata refuses hardlinks and writable source even with matching content",{skip:nativeSkip},()=>{
@@ -154,10 +174,10 @@ test("bytecode/archive aliases cannot hide signed bytes behind another suffix",(
  for(const path of ["/usr/lib/shadow.py","/usr/lib/shadow.so"]){assert.throws(()=>validatePythonEnvelopeLoader(captured(new Map(),[payload,{...alias,path}]),PythonBackend.BuiltinSha256),/alias type/);}
 });
 test("alias literal size participates in file bound and largest-file measurement",{skip:nativeSkip},()=>{
- const root=nativeFixture();try{const literal="./".repeat(600)+"json.py";symlinkSync(literal,root+"/usr/lib/python3.12/alias.py");
+ const root=nativeFixture();try{const literal="./".repeat(600)+"json.py";fixtureAlias(literal,root+"/usr/lib/python3.12/alias.py");
   const result=capturePythonEnvelope(root,packages,budget);assert.equal(result.measurement.largestFile,Buffer.byteLength(literal));
   const bytes=Buffer.from(JSON.stringify(result.catalog));assert.doesNotThrow(()=>parsePythonEnvelopeCatalog(bytes,hash(bytes),{...budget,fileBytes:result.measurement.largestFile}));
   assert.throws(()=>capturePythonEnvelope(root,packages,{...budget,fileBytes:Buffer.byteLength(literal)-1}),/alias length\/file limit/);
-  symlinkSync("json.py",root+"/usr/lib/python3.12/shadow.pyc");assert.throws(()=>capturePythonEnvelope(root,packages,budget),/competing bytecode\/archive/);
+  fixtureAlias("json.py",root+"/usr/lib/python3.12/shadow.pyc");assert.throws(()=>capturePythonEnvelope(root,packages,budget),/competing bytecode\/archive/);
  }finally{rmSync(root,{recursive:true});}
 });
