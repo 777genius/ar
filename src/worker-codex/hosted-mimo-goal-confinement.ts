@@ -8,7 +8,8 @@ export function assertHostedMimoGoalConfinement(config: CodexGoalRunConfig): voi
   const sourceEnv = config.sourceEnv ?? process.env;
   if (sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job" ||
       config.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) return;
-  if ((config.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
+  if (((config.executionEngine ?? "app-server-goal") !== "app-server-goal" &&
+       (config.executionEngine !== "app-server" || config.childLifetime !== undefined)) ||
       (config.model ?? codexMimoDefaultModel) !== codexMimoDefaultModel ||
       config.providerSandboxMode === "danger-full-access" ||
       config.accessBoundary === AccessBoundary.DangerFullAccess ||

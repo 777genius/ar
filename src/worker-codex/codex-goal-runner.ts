@@ -10,14 +10,15 @@ import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction
   invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
-import { researchProviderAdmissionGuard } from "./research-launch-admission";
+import { researchProviderAdmissionGuard, assertOwnedMimoWorkerConfig } from "./research-launch-admission";
+import { researchMimoWorkerLifecycle } from "./research-mimo-worker-result";
 import { snapshotCodexGoalStorageConfig, withCodexGoalStorage, withCodexGoalCheckpointWriter, type CodexGoalNewStorage } from "./job-storage/codex-goal-storage-admission";
 import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
 import { JobStorageCapabilityUnavailableError, JobStorageUnavailableCapability, type JobStorageWriteLease } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalExecutor, CodexGoalExecutorOptionsInput, CodexGoalRunDeps } from "./job-storage/codex-goal-runner-contracts";
 export type { CodexGoalExecutor, CodexGoalRunDeps } from "./job-storage/codex-goal-runner-contracts";
 import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
-import { ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeTool, ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import { assertChildGoalConfig } from "./child-execution-confinement";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
@@ -235,6 +236,7 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
   const appServerProcessFactory = admitHostedReadonlyInputs({
     ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
+    ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   }, toolEntry);
   return await withCodexGoalCheckpointWriter(config, deps, storageLease,
     baseCommit => runCodexGoalAdmitted(config, deps, providerEgressPolicy,
@@ -252,6 +254,7 @@ async function runCodexGoalAdmitted(
   toolEntry: HostedDependencyQualifiedToolEntry | undefined,
   storageLease?: JobStorageWriteLease,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  const ownedMimoLifecycle = researchMimoWorkerLifecycle(appServerProcessFactory);
   const prompt = await readFile(config.promptPath, "utf8");
   storageLease?.assertCurrent();
   const progressPath = codexGoalProgressPath(config);
@@ -393,14 +396,17 @@ async function runCodexGoalAdmitted(
         codexGoalObjective: resolveCodexGoalObjective(config),
       },
     });
-    await resultRecorder.record(await codexRuntimeResultInput({
+    const resultInput = await codexRuntimeResultInput({
       config,
       ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
         ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       result,
       executionGeneration,
+      ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
-    }));
+    });
+    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); return result; }
+    await resultRecorder.record(resultInput);
     await progressHeartbeat.write(progressFromResult(result));
     await runtimeEvents.write("executor_finished", {
       status: result.status,
@@ -410,14 +416,17 @@ async function runCodexGoalAdmitted(
     return result;
   } catch (error) {
     const failure = codexRunnerExceptionFailure(error);
-    await resultRecorder.record(await codexExceptionRuntimeResultInput({
+    const resultInput = await codexExceptionRuntimeResultInput({
       config,
       ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
         ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       error,
       executionGeneration,
+      ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
-    }));
+    });
+    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); throw error; }
+    await resultRecorder.record(resultInput);
     await progressHeartbeat.write({
       status: "failed",
       reason: failure.reason,
@@ -470,7 +479,12 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   assertVerifiedHostedChildConfig(config);
   assertChildGoalConfig(config);
   const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
-  const executionLifetime = input.executionLifetime ?? (childBudget ? new AppServerExecutionLifetime({ childBudget }) : undefined);
+  const ownedMimoWorker = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && !!researchAdmission;
+  if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
+  const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
+    deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
+    binding: { allocationId: config.jobId ?? config.taskId, incarnationId: randomUUID() },
+  }) : childBudget ? new AppServerExecutionLifetime({ childBudget }) : undefined);
   if (input.executionLifetime && childBudget && input.executionLifetime.childBudget !== childBudget) throw new Error("codex_goal_lifetime_budget_conflict");
   executionLifetime?.assertActive();
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
@@ -504,7 +518,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     ...(executionLifetime ? { executionLifetime } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
-    ...(!childBudget && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
+    ...(!childBudget && !ownedMimoWorker && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
     ...(input.activeAttemptRegistry
       ? { activeAttemptRegistry: input.activeAttemptRegistry }
       : {}),
@@ -581,6 +595,8 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
         ...(publicSourceReader ? { publicSourceReader } : {}),
         capacityAccountId: account.name,
         ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
+        ...(ownedMimoWorker ? { boundedWorkspaceTools: { denyProjectInstructions: true,
+          allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles] } } : {}),
         ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
           refreshConflictRetryMaxMs: 0,
           boundedWorkspaceTools: { allowedTools: childBudget.lifetime.allowedTools, denyProjectInstructions: true } } : {}),
@@ -672,10 +688,10 @@ function assertCodexGoalRunConfig(config: CodexGoalRunConfig): void {
     config.reconnectCooldownMs,
     "codex_goal_reconnect_cooldown_invalid",
   );
-  assertPositiveInteger(
-    config.maxReconnectRetriesPerAccount,
-    "codex_goal_reconnect_retries_invalid",
-  );
+  if (config.maxReconnectRetriesPerAccount !== undefined &&
+      (!Number.isInteger(config.maxReconnectRetriesPerAccount) || config.maxReconnectRetriesPerAccount < 0)) {
+    throw new Error("codex_goal_reconnect_retries_invalid");
+  }
   assertPositiveInteger(
     config.progressHeartbeatMs,
     "codex_goal_progress_heartbeat_invalid",

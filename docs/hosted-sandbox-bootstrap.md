@@ -44,3 +44,12 @@ is a suitable qualification fixture.
 This is a Linux hosted-adapter fix only. Unmarked local processes and macOS/
 Windows invocation behavior are unchanged. It does not qualify unrelated
 Runtime hardening, or change consumer architecture/package semantics.
+
+## Host credential directories
+
+Hosted tools run as host UID 0 without capabilities, so the Codex permission
+profile is the only thing that hides host files from them. Both hosted profiles
+deny `/etc/subscription-runtime`, `/etc/ssh` and `/etc/ssl/private`. On Codex
+0.159.2 only directory denies are allowed: a sandbox that masks more than one
+file does not start, so the profile carries at most one file mask (an optional
+private key file outside these directories) and no nested denies.
