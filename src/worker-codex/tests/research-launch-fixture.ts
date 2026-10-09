@@ -154,7 +154,11 @@ vi.mock("node:fs/promises", async original => {
   link: (from: string, to: string) => real.link(local(from), local(to)),
   readdir: (path: string, options: Parameters<typeof real.readdir>[1]) => real.readdir(local(path), options),
   stat: (path: string) => real.stat(local(path)),
-  lstat: async (path: string) => Object.assign(await real.lstat(local(path)), { uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
+  lstat: async (path: string, options?: { bigint?: boolean }) => {
+    const info = await real.lstat(local(path), options);
+    const uid = fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0;
+    return Object.assign(info, { uid: options?.bigint ? BigInt(uid) : uid });
+  },
   readlink: async (path: string) => path.startsWith("/proc/") ? "TEST-host" : real.readlink(local(path)),
   open: async (path: string, flags: string | number) => {
     const file = await real.open(local(path), flags), stat = file.stat.bind(file);
