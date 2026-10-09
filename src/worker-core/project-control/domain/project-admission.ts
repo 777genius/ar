@@ -46,7 +46,13 @@ export enum ProjectDebtReason {
   DiskPressure = "disk_pressure",
 }
 
+/** Trusted observation classification, never a caller-supplied permission. */
+export enum ProjectDebtScope {
+  ControlState = "control_state",
+}
+
 export type ProjectDebtItem = {
+  readonly scope?: ProjectDebtScope;
   readonly reason: ProjectDebtReason;
   readonly subject: string;
   readonly evidence: readonly string[];
@@ -463,6 +469,7 @@ export function projectAdmissionDebtFingerprint(
     reason: item.reason,
     subject: item.subject,
     severity: item.severity ?? "blocking",
+    ...(item.scope ? { scope: item.scope } : {}),
     evidence: canonicalProjectAdmissionEvidence(item),
     ...(item.affectedPaths
       ? { affectedPaths: [...item.affectedPaths].sort() }

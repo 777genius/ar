@@ -2,6 +2,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 
 import {
   ProjectDebtReason,
+  ProjectDebtScope,
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
 } from "../domain/project-admission";
@@ -81,6 +82,7 @@ export async function readConsumedOutputLedgers(input: {
     roots: uniqueStrings(input.roots),
   });
   const debt: ProjectDebtItem[] = loaded.failures.map((failure) => ({
+    scope: ProjectDebtScope.ControlState,
     reason: ProjectDebtReason.UnreadableRoot,
     subject: failure.subject,
     severity: "blocking",
@@ -98,6 +100,7 @@ export async function readConsumedOutputLedgers(input: {
       });
     } catch (error) {
       debt.push({
+        scope: ProjectDebtScope.ControlState,
         reason: ProjectDebtReason.UnreadableRoot,
         subject: entry.ledgerPath,
         severity: "blocking",

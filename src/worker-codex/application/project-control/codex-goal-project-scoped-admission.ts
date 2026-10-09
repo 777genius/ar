@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 import {
   ProjectDebtReason,
+  ProjectDebtScope,
   ProjectOperation,
   type ProjectAccessScope,
   type ProjectAdmissionRequest,
@@ -283,6 +284,9 @@ function isTargetSafetyDebt(
   overlaps: readonly WriterCensusEntry[],
   registryRootDir: string,
 ): boolean {
+  // An unclassified control/evidence read failure cannot be proven unrelated
+  // from its lexical path. Configured ledgers may live outside the registry.
+  if (item.scope === ProjectDebtScope.ControlState) return true;
   if (item.severity === "info") return false;
   if (
     item.reason === ProjectDebtReason.DiskPressure ||
@@ -340,5 +344,6 @@ function debtKey(item: ProjectDebtItem): string {
     [...item.evidence].sort(),
     item.affectedPaths ? [...item.affectedPaths].sort() : null,
     item.pathDisjointProducerEligible ?? null,
+    item.scope ?? null,
   ]);
 }

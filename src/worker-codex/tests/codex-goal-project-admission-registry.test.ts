@@ -2,9 +2,10 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ProjectDebtReason, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { ProjectDebtReason, ProjectDebtScope, ProjectOperation, projectAdmissionDebtFingerprint, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { assertAdmissionRegistryComplete } from "../application/project-control/codex-goal-project-admission-target";
 import { readCodexGoalConsumedOutputLedgers } from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import { prepareCodexProjectScopedAdmission } from "../application/project-control/codex-goal-project-scoped-admission";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -47,6 +48,34 @@ async function nativeJobRecord(f: Awaited<ReturnType<typeof fixture>>, archiveRo
 }
 
 describe("admission native consumed-output registry", () => {
+  it("keeps corrupt external ledger control state out of advisory backlog", async () => {
+    const f = await fixture();
+    const external = await mkdtemp(join(tmpdir(), "admission-external-ledger-"));
+    roots.push(external);
+    await mkdir(join(external, "items"));
+    await writeFile(join(external, "items", "job.json"), "{");
+    const scope = { ...f.input.scope, consumedOutputLedgerRoots: [f.ledger, external] };
+    await expect(assertAdmissionRegistryComplete({ ...f.input, scope })).resolves.toBeUndefined();
+    const ledger = await readCodexGoalConsumedOutputLedgers({
+      roots: scope.consumedOutputLedgerRoots, evidenceRoots: [f.archives],
+    });
+    expect(ledger.debt).toEqual([expect.objectContaining({
+      reason: ProjectDebtReason.UnreadableRoot, scope: ProjectDebtScope.ControlState,
+    })]);
+    const scoped = await prepareCodexProjectScopedAdmission({
+      registryRootDir: f.registryRootDir, scope,
+      request: { operation: ProjectOperation.CreateWorktree },
+      snapshot: { schemaVersion: 1, projectId: scope.projectId, observedAt: new Date().toISOString(), debt: ledger.debt },
+      deps: { async listJobs() { return []; }, async buildOverviewItems() { return []; } },
+    });
+    expect(scoped.safetyDebt).toEqual(ledger.debt);
+    expect(scoped.backlog.count).toBe(0);
+    const { scope: classification, ...unclassified } = ledger.debt[0]!;
+    expect(classification).toBe(ProjectDebtScope.ControlState);
+    expect(projectAdmissionDebtFingerprint(ledger.debt))
+      .not.toBe(projectAdmissionDebtFingerprint([unclassified]));
+  });
+
   it("recognizes a scoped evidence container separate from its ledger", async () => {
     const f = await fixture("split");
     await nativeJobRecord(f);
