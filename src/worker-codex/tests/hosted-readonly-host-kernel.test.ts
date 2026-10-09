@@ -7,7 +7,9 @@ import type { HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-co
 // run unchanged; no host inventory, systemd manager or credentials are accessed.
 const os = vi.hoisted(() => ({ files: new Map<string, string>(), fileErrors: new Map<string, string>(), records: new Map<string, Buffer>(),
   groups: new Map<string, string[]>(), units: "", jobs: "", show: new Map<string, string>(),
-  descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn() }));
+  descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn(),
+  externalExec: vi.fn<(...args: Parameters<typeof import("node:child_process").execFile>) => ReturnType<typeof import("node:child_process").execFile>>(
+    () => { throw new Error("TEST external exec forbidden"); }) }));
 vi.mock("node:fs", async original => ({
   ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string) => {
@@ -27,7 +29,7 @@ vi.mock("node:child_process", () => ({
   spawnSync: (...args: unknown[]) => os.systemctl(...args),
   // Transitive adapters initialize promisify(execFile), but this fixture must
   // never execute their host commands.
-  execFile: () => { throw new Error("unplanned synthetic execFile operation"); },
+  execFile: os.externalExec,
   execFileSync: () => { throw new Error("unplanned synthetic execFileSync operation"); },
   spawn: () => { throw new Error("unplanned synthetic spawn operation"); },
 }));
