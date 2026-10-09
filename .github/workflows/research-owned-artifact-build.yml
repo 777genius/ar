@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-reviewed-artifact:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     env:
       SOURCE_SHA: 68f154568ea6e072e7e5a186e71c119f18d0a728
