@@ -12,9 +12,9 @@ import { CodexJsonAgentDriver, CodexAppServerExecutionEngine, CodexModelBackend,
   codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
 import { parseResearchOperatorRequest, researchRunConfig } from "../research-launch-contract";
 import { grantOwnedMimoWorkerLaunch, revokeResearchLaunch, startResearchLaunch } from "../research-launch-owner";
-import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart, researchJobAuthority } from "../research-launch-admission";
+import { assertResearchMimoProviderHome, admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart, researchJobAuthority } from "../research-launch-admission";
 import { cancelResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
-import { assertResearchMimoProviderHome, researchMimoWorkerLifecycle } from "../research-mimo-worker-result";
+import { researchMimoWorkerLifecycle } from "../research-mimo-worker-result";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { runCodexGoal, codexGoalOutputPath, codexGoalProgressPath } from "../codex-goal-runner";
 import { StaticRunner } from "./file-backend-codex-worker-test-support";

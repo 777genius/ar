@@ -2,24 +2,10 @@ import { join, relative } from "node:path";
 import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { buildRuntimeResultEnvelope, type RuntimeResultEnvelope, type RuntimeResultEnvelopeInput } from "@vioxen/subscription-runtime/worker-core";
-import { CodexModelBackend, type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
-import { ownedMimoWorkerStart, researchCurrentStart, researchProviderAdmissionGuard } from "./research-launch-admission";
+import type { CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
+import { assertResearchMimoProviderHome, ownedMimoWorkerStart, researchCurrentStart, researchProviderAdmissionGuard } from "./research-launch-admission";
 import { researchDirectoryIdentity, assertResearchDirectory, researchCustody, researchHash, researchInvalid, researchJson, researchPublish, researchRead, researchRecord } from "./research-launch-files";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
-import type { ResearchStartSpec } from "./research-launch-contract";
-
-/** The exclusive home record bounds later MiMo provider preparations to the
- * original allocation. A same-job path or a parsed caller plan is insufficient. */
-export function assertResearchMimoProviderHome(spec: ResearchStartSpec, path: string): void {
-  if (spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) return;
-  const current = researchCurrentStart(spec.request.jobId);
-  if (JSON.stringify(current.spec) !== JSON.stringify(spec) ||
-      !/^mimo-[A-Za-z0-9]+\/codex-home$/.test(relative(join(spec.request.jobRootDir, "home"), path))) researchInvalid();
-  const retained = researchRecord(researchJson(researchRead(join(current.directory, "mimo-home.json"))), "schemaVersion,specSha256,identity");
-  const identity = researchRecord(retained.identity, "path,device,inode");
-  if (retained.schemaVersion !== 1 || retained.specSha256 !== researchHash(current.bytes) || identity.path !== path ||
-      JSON.stringify(identity) !== JSON.stringify(researchDirectoryIdentity(path))) researchInvalid();
-}
 
 /** Minted from the real owned Worker factory, never serialized in run config.
  * Retention transfers storage to the outside owner, not provider termination. */

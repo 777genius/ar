@@ -107,6 +107,7 @@ export function readResearchProviderReservation(directory: string, unit: string)
   return { spec, specSha256: researchHash(specBytes), description: record.description as string };
 }
 export enum ResearchProviderSubmissionState { Pending = "pending", Settled = "settled" }
+export const researchProviderReservationLimit = 256;
 export function researchProviderUnits(directory: string): string[] {
   const names = readdirSync(join(directory, "providers"));
   if (names.length > 1024) researchInvalid();

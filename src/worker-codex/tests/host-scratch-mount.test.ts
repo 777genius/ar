@@ -165,4 +165,8 @@ test("admission backing compares bind aliases using the FD-selected device/root"
     assert.throws(() => selectKernelPathBacking("/worktree-b/src", 30, dev, corrupt), /Ambiguous/);
   }
   assert.throws(() => selectKernelPathBacking("/worktree-b/src", 30, 2050, table), /Ambiguous/);
+  for (const filesystem of ["overlay", "fuse", "nfs", "btrfs"]) {
+    assert.throws(() => selectKernelPathBacking("/worktree-b/src", 30, dev,
+      table.replaceAll(" - ext4 ", ` - ${filesystem} `)), /Ambiguous/);
+  }
 });

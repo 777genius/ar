@@ -1,15 +1,14 @@
-import { assertResearchMimoProviderHome } from "./research-mimo-worker-result";
 import { trustedResearchProviderLaunch } from "./trusted-custody-systemd-launch";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
-import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
+import { assertResearchMimoProviderHome, captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
 import { copyResearchHostCommandFailure, researchHostCommandFailure, isResearchDenialObservation, researchHash, researchInvalid,
   researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupAllowanceMs } from "./research-launch-contract";
-import { assertResearchProviderRoot, captureResearchProviderRootTiming, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck, type ResearchProviderRootTiming } from "./research-provider-root";
+import { bindResearchMimoWritableFootprint, assertResearchProviderRoot, captureResearchProviderRootTiming, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck, type ResearchProviderRootTiming } from "./research-provider-root";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
@@ -170,12 +169,14 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
   phase("service-plan");
   assertResearchMimoProviderHome(spec, selectedCodexHome);
   const rootPlan = capture(RootTimingScope.Prepare, () => prepareResearchProviderRoot(spec, unit, selectedCodexHome));
+  bindResearchMimoWritableFootprint(rootPlan);
   const launch = capture(RootTimingScope.InitialLaunch, () => trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan));
   phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
     captured.assertAuthorityCurrent(); assertResearchProviderNotCancelled(directory, unit);
     assertResearchMimoProviderHome(spec, selectedCodexHome);
+    bindResearchMimoWritableFootprint(rootPlan);
   };
   phase("submission-custody");
   assertForwardPermission();
@@ -267,8 +268,10 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       await new Promise<void>(resolve => setImmediate(resolve));
       const settledLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
       if (settledLaunch.command !== launch.command || JSON.stringify(settledLaunch.args) !== JSON.stringify(launch.args)) researchInvalid();
-      assertForwardPermission(); // Fresh full runtime ownership after the final yield.
+      assertForwardPermission();
       assertRetainedOwner();
+      // The extent check must follow the last manager read without adding one.
+      bindResearchMimoWritableFootprint(rootPlan);
       readiness.assertCurrent(); // Fresh authority, transport and control latch before auth.
       readiness.stop(); // No async gap between control consumption and forwarding.
       phase("native-forwarding");

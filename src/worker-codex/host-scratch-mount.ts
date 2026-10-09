@@ -161,6 +161,11 @@ export function inspectKernelPathBacking(path: string): KernelPathBacking {
 export function selectKernelPathBacking(path: string, mountId: number, dev: number, table: string): KernelPathBacking {
   if (!isAbsolute(path) || resolve(path) !== path || !Number.isSafeInteger(dev) || dev < 0) return fail();
   const line = mountLine(integer(mountId), table), record = parseMountRecord(mountId, line);
+  const fields = line.split(" "), filesystem = fields[fields.indexOf("-") + 1];
+  // These filesystems expose one stable device/root extent. Overlay/FUSE/network
+  // backings require a different owner contract; nominal merged paths cannot
+  // establish independence between their underlying writable stores.
+  if (filesystem === undefined || !["ext4", "xfs", "tmpfs"].includes(filesystem)) return fail();
   if ((record.target !== path && record.target !== "/" && !path.startsWith(record.target + "/")) ||
       resolve(record.root) !== record.root || /[\x00-\x1f\x7f]/.test(record.root)) return fail();
   const device = line.split(" ")[2], native = BigInt(dev);

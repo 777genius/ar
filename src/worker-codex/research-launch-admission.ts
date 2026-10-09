@@ -1,17 +1,17 @@
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { existsSync } from "node:fs";
 import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId,
   type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import { parseResearchGrant, parseResearchStartSpec, researchRunConfig, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
-import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchHash,
+import { assertResearchDirectory, researchDirectoryIdentity, researchArtifactDigest, researchAuthorityRoot, researchHash,
   researchId, researchInvalid, researchJson, researchName, researchPublish, researchRead, researchRecord, researchCustody, researchPath } from "./research-launch-files";
 import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSharedHost,
   researchDescription, researchExecutableDigest, researchProcessIdentity, researchServiceIdentity,
   researchUnitFromCurrentProcess } from "./research-launch-host";
-import { researchProviderUnits, signalResearchProvider } from "./research-launch-lifecycle";
+import { researchProviderReservationLimit, researchProviderUnits, signalResearchProvider } from "./research-launch-lifecycle";
 import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 
@@ -28,6 +28,19 @@ export function researchCurrentStart(jobId: string): { directory: string; spec: 
   if (spec.request.jobId !== jobId || spec.startId !== active.startId || researchHash(bytes) !== active.specSha256) researchInvalid();
   return { directory, spec, bytes };
 }
+/** The exclusive home record bounds later MiMo provider preparations to the
+ * original allocation. A same-job path or a parsed caller plan is insufficient. */
+export function assertResearchMimoProviderHome(spec: ResearchStartSpec, path: string): void {
+  if (spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) return;
+  const current = researchCurrentStart(spec.request.jobId);
+  if (JSON.stringify(current.spec) !== JSON.stringify(spec) ||
+      !/^mimo-[A-Za-z0-9]+\/codex-home$/.test(relative(join(spec.request.jobRootDir, "home"), path))) researchInvalid();
+  const retained = researchRecord(researchJson(researchRead(join(current.directory, "mimo-home.json"))), "schemaVersion,specSha256,identity");
+  const identity = researchRecord(retained.identity, "path,device,inode");
+  if (retained.schemaVersion !== 1 || retained.specSha256 !== researchHash(current.bytes) || identity.path !== path ||
+      JSON.stringify(identity) !== JSON.stringify(researchDirectoryIdentity(path))) researchInvalid();
+}
+
 export function readResearchStartBinding(directory: string): ResearchStartBinding {
   const r = researchRecord(researchJson(researchRead(join(directory, "binding.json"))), "schemaVersion,specSha256,process,service");
   if (r.schemaVersion !== 1 || typeof r.specSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.specSha256)) researchInvalid();
@@ -189,7 +202,7 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
       captured.assertCurrent();
       // Reserve space for reservation, ownership, submission and cancel facts;
       // helpers cannot grow the existing 1,024-file bound after admission.
-      if (researchProviderUnits(captured.directory).length >= 256) researchInvalid();
+      if (researchProviderUnits(captured.directory).length >= researchProviderReservationLimit) researchInvalid();
       researchPublish(join(captured.directory, "providers", unit + ".json"), {
         schemaVersion: 1, unit, runtimeUnit: captured.spec.unit,
         specSha256: researchHash(researchRead(join(captured.directory, "spec.json"))),
