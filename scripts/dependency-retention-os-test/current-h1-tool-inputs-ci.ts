@@ -12,10 +12,12 @@ import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredA
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
-import { readFixedGnuBasicMembers, serializeFixedGnuMembers, type FixedGnuArchiveMembers } from "./current-h1-archive-members-TEST.ts";
+import { materializeFixedH1SelectedToolrootData } from "./current-h1-selected-toolroot-TEST.ts";
+import { SelectedPhysicalDisposition, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
+import { FixedGnuMemberKind, readFixedGnuBasicMembers, serializeFixedGnuMembers, type FixedGnuArchiveMembers } from "./current-h1-archive-members-TEST.ts";
 enum CiTool { AptGet="/usr/bin/apt-get", Gpgv="/usr/bin/gpgv", DpkgDeb="/usr/bin/dpkg-deb", AptHelper="/usr/lib/apt/apt-helper", Git="/usr/bin/git" }
 enum CiDataStatus { Complete="signed-data-extraction-measurement-complete", Failed="signed-data-stage-failed" }
-enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", RawFormat="authenticated-raw-archive-format-survey", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
+enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", RawFormat="authenticated-raw-archive-format-survey", SelectedToolroot="selected-toolroot-physical-DATA", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
 enum CiMeasuredKind { Directory="directory", Alias="alias-literal-not-followed", File="file" }
 enum CiEnvelopeCandidate { Held="HOLD-not-native-qualified", Captured="captured-candidate-not-native-qualified" }
 enum CiByteRole { OwnRecord="own-record", InstalledTool="installed-CI-tool-data", SignedPayload="signed-extracted-payload-data" }
@@ -97,10 +99,10 @@ export async function mainCiSignedToolInputs():Promise<void> {
   // One closed TEST invocation after this own process established GID0. This
   // is not a runner port and cannot select another test/path/command.
   const sibling=dirname(fileURLToPath(import.meta.url));
-  const physicalTestArgv=["--test","--test-reporter=tap",join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-publication.node-test.js"),join(sibling,"current-h1-archive-format-census.node-test.js"),join(sibling,"current-h1-archive-members.node-test.js"),join(sibling,"current-h1-archive-path-graph.node-test.js")];
+  const physicalTestArgv=["--test","--test-reporter=tap",join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-publication.node-test.js"),join(sibling,"current-h1-archive-format-census.node-test.js"),join(sibling,"current-h1-archive-members.node-test.js"),join(sibling,"current-h1-archive-path-graph.node-test.js"),join(sibling,"current-h1-selected-toolroot.node-test.js")];
   const physicalTests=spawnSync(process.execPath,physicalTestArgv,{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"root-tests.tap"),physicalTests.stdout??"");file(join(evidence,"root-tests.stderr"),physicalTests.stderr??"");assert(!physicalTests.error&&physicalTests.status===0&&physicalTests.signal===null,"fixed root CI protocol/custody tests");
-  const tap=physicalTests.stdout;assert(/^# tests 26$/m.test(tap)&&/^# pass 25$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap));
+  const tap=physicalTests.stdout;assert(/^# tests 36$/m.test(tap)&&/^# pass 35$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap));
   for(const name of ["real acquired file hashes retained bytes and refuses post-read deadline/identity mutation","retained original archive rejects equal-byte replacement between verification and extraction"])assert(tap.split("\n").some(line=>/^ok [0-9]+ - /.test(line)&&line.endsWith(name)),"original ROOT filesystem case cannot skip");
   assert.equal(command(CiTool.Git,["-c","safe.directory="+workspace,"rev-parse","HEAD"]).toString().trim(),sourceSha);
   file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),rootTestArgv:physicalTestArgv,tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
@@ -135,7 +137,8 @@ export async function mainCiSignedToolInputs():Promise<void> {
   phase=CiDataPhase.RawFormat;
   const rawPackageVector=packages.map(({package:name,version,arch,sha256,size})=>({package:name,version,arch,sha256,size})),rawPackageVectorSha256=hash(JSON.stringify(rawPackageVector)),previousVectorSha256="d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b";
   file(join(evidence,"archive-format-image.json"),JSON.stringify({purpose:"ACTUAL_SIGNED_SURVEY_IMAGE_NOT_NATIVE_AUTHORITY",sourceSha,packages:rawPackageVector,sha256:rawPackageVectorSha256,previous01dfVectorSha256:previousVectorSha256,matchesPreviouslyVerified01dfImage:rawPackageVectorSha256===previousVectorSha256})+"\n");
-  const formats:{archive:string;stream:string;streamBytes:number;streamSha256:string;survey:RawArchiveSurvey}[]=[],rawNames=new Map<string,{archive:string;offset:number}[]>(),memberRecords:{archive:string;record:string;bytes:number;sha256:string;rows:number}[]=[];const originalMembers:FixedGnuArchiveMembers[]=[];let rawBytes=0,rawHeaders=0;
+  const formats:{archive:string;stream:string;streamBytes:number;streamSha256:string;survey:RawArchiveSurvey}[]=[],rawNames=new Map<string,{archive:string;offset:number}[]>(),memberRecords:{archive:string;record:string;bytes:number;sha256:string;rows:number}[]=[];const originalMembers:FixedGnuArchiveMembers[]=[];
+  const selectedOriginals:SelectedRetainedStreamData[]=[];let rawBytes=0,rawHeaders=0;
   for(const [name,original] of archives){
    tick();const dpkg=tools.get(CiTool.DpkgDeb);assert(dpkg);const captured=await inspectRetainedOriginalDebFsys(original,dpkg,deadline,scratch);assert(captured.tool.sha256===dpkg.sha256&&captured.tool.identity===dpkg.stamp,"same existing original CI tool input");
    rawBytes+=captured.bytes.length+captured.stderr.bytes;rawHeaders+=captured.survey.headers.length;assert(rawBytes<=measureCeilings.bytes&&rawHeaders<=measureCeilings.entries,"whole original CI raw survey ceilings");
@@ -146,6 +149,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
    const originalPackages=packages.filter(row=>row.sha256===original.sha256&&row.size===original.size);assert.equal(originalPackages.length,1,"single original signed package for GNU stream");const pkg=originalPackages[0];assert(pkg);original.rejoin();
    const members=readFixedGnuBasicMembers(captured.bytes,pkg,{sha256:captured.survey.streamSha256,bytes:captured.bytes.length,archiveSha256:original.sha256,archiveBytes:original.size},deadline);tick();original.rejoin();
    const serialized=serializeFixedGnuMembers(members,deadline),record=`archive-members-${formats.length}.json`;file(join(evidence,record),serialized.bytes);tick();original.rejoin();
+   selectedOriginals.push(Object.freeze({archive:original,bytes:captured.bytes,members}));
    originalMembers.push(members);memberRecords.push({archive:name,record,bytes:serialized.bytes.length,sha256:serialized.sha256,rows:members.rows.length});
    for(const header of captured.survey.headers)if([0,48,49,50].includes(header.type)){const key=header.format+":"+header.prefixBase64+":"+header.nameBase64,rows=rawNames.get(key)??[];rows.push({archive:name,offset:header.offset});rawNames.set(key,rows);}
    tick();
@@ -157,6 +161,43 @@ export async function mainCiSignedToolInputs():Promise<void> {
   const graphRecords=serializeFixedH1ArchiveRole(graphData,graphInputs,sourceSha,graphDeadline);rejoinGraphOriginals();
   for(const [i,commitment] of graphRecords.memberRecords.entries()){const original=memberRecords[i];assert(original&&original.sha256===commitment.sha256&&original.bytes===commitment.bytes&&original.rows===commitment.rows,"original published member record vector");}
   file(join(evidence,"archive-path-graph-UNADMITTED.json"),graphRecords.graph);rejoinGraphOriginals();file(join(evidence,"archive-role-selection-UNADMITTED.json"),graphRecords.selection);rejoinGraphOriginals();
+  phase = CiDataPhase.SelectedToolroot;
+  const selectedDeadline = Math.min(deadline, performance.now() + 30000);
+  const rejoinSelectedOriginals = () => {
+   tick();
+   assert(performance.now() < selectedDeadline, "original selected DATA phase deadline");
+   for (const original of archives.values()) original.rejoin();
+   tick();
+   assert(performance.now() < selectedDeadline, "original selected DATA phase deadline");
+  };
+  rejoinSelectedOriginals();
+  const selectedToolroot = await materializeFixedH1SelectedToolrootData({
+   sourceSha, scratch, evidence, deadline: selectedDeadline,
+   originals: Object.freeze(selectedOriginals), graph: graphData,
+   graphBytes: graphRecords.graph, selectionBytes: graphRecords.selection
+  });
+  rejoinSelectedOriginals();
+  assert.equal(selectedToolroot.disposition, SelectedPhysicalDisposition.Complete);
+  assert.equal(selectedToolroot.measurement.objects, 1056, "fixed selected DATA object count");
+  const selectedPaths = new Set(graphData.selected);
+  const selectedPayloadBytes = graphData.nodes.filter(node => selectedPaths.has(node.path) && node.kind === FixedGnuMemberKind.Regular)
+   .reduce((bytes, node) => { const origin = node.origins[0]; assert(origin); return bytes + origin.row.size; }, 0);
+  assert.equal(selectedToolroot.measurement.regularBytes, selectedPayloadBytes, "complete original selected payload count");
+  assert.equal(selectedToolroot.nativeQualified, false);
+  assert.equal(selectedToolroot.fixedImageQualified, false);
+  assert.equal(selectedToolroot.originalIssuerQualified, false);
+  assert.deepEqual(selectedToolroot.records.map(record => record.name), [
+   "selected-toolroot-source-output-UNADMITTED.json",
+   "selected-toolroot-physical-UNADMITTED.json",
+   "selected-toolroot-materialization-UNADMITTED.json"
+  ]);
+  for (const record of selectedToolroot.records) {
+   rejoinSelectedOriginals();
+   const bytes = fullBytes(join(evidence, record.name), ciIndexOperationalBytes, rejoinSelectedOriginals);
+   assert.equal(bytes.length, record.bytes);
+   assert.equal(hash(bytes), record.sha256);
+   rejoinSelectedOriginals();
+  }
   phase=CiDataPhase.Extraction;dir(extraction,0o755);for(const name of ["usr","usr/bin","usr/sbin","usr/lib","usr/lib64"])dir(join(extraction,name),0o755);for(const name of ["bin","sbin","lib","lib64"]){symlinkSync("usr/"+name,join(extraction,name));lchownSync(join(extraction,name),0,0);}
   for(const original of archives.values()){original.rejoin();command(CiTool.DpkgDeb,["--extract",`/proc/${process.pid}/fd/${original.fd}`,extraction],4*1024*1024,30000,env);original.rejoin();}
   phase=CiDataPhase.Measurement;const measureStart=performance.now();let entries=0,bytes=0,largestFile=0,depth=0;const members:{path:string;kind:CiMeasuredKind;bytes:number;sha256:string;targetBase64:string;nlink:string;mode:number;uid:string;gid:string}[]=[];
@@ -170,7 +211,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   try{const candidate=captureFixedSignedPythonEnvelopeData(extraction,signed,measureCeilings),serialized=serializeFixedSignedPythonEnvelopeData(candidate.catalog,measureCeilings);file(join(evidence,"envelope-catalog-measurement.json"),JSON.stringify({schemaVersion:1,purpose:"fixed-signed-extraction-DATA-only",status:serialized.status,...serialized.measurement,census:candidate.measurement,elfEntries:candidate.elf.size,completeCensus:true,nativeQualified:false,originalNamespaceQualified:false,inlineReviewQualified:false})+"\n");
    const provenance=serialized.status===PythonDataCatalogStatus.CapacityHeld?{signedPackagesSha256:hash(fullBytes(join(evidence,"signed-packages.json"),ciIndexOperationalBytes,tick)),completeIndicesSha256:hash(fullBytes(join(evidence,"complete-indices.json"),ciIndexOperationalBytes,tick)),sourceAndToolsSha256:hash(fullBytes(join(evidence,"source-and-tools.json"),ciIndexOperationalBytes,tick))}:undefined;
    envelopeCandidate=publishCiEnvelopeCatalogData(sourceSha,candidate,serialized,provenance,(name,bytes)=>file(join(evidence,name),bytes));}catch(error){const reason=error instanceof Error&&/^TEST H1 Python envelope Held: [A-Za-z0-9 /+-]{1,128}$/.test(error.message)?error.message:"existing-conservative-envelope-policy-refused";file(join(evidence,"envelope-candidate-HOLD.json"),JSON.stringify({reason,nativeQualified:false})+"\n");}
-  file(join(evidence,"result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Complete,purpose:"independently-signed-CI-data-not-live-host-admission",sourceSha,uid:0,packages,packageOrigins,indices:indices.map(({bytes,...row})=>row),trustAnchor:ubuntuArchive2018Fingerprint,keyringSha256:hash(keyBytes),measurement:{entries,bytes,largestFile,depth,elapsedMs:rawMeasurementElapsedMs},operationalCeilings:measureCeilings,envelopeCandidate,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",elapsedMs:performance.now()-started})+"\n");
+  file(join(evidence,"result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Complete,purpose:"independently-signed-CI-data-not-live-host-admission",sourceSha,uid:0,packages,packageOrigins,indices:indices.map(({bytes,...row})=>row),trustAnchor:ubuntuArchive2018Fingerprint,keyringSha256:hash(keyBytes),measurement:{entries,bytes,largestFile,depth,elapsedMs:rawMeasurementElapsedMs},operationalCeilings:measureCeilings,selectedToolroot,envelopeCandidate,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",elapsedMs:performance.now()-started})+"\n");
  }catch(error){primaryFailed=true;try{file(join(evidence,"failed-result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Failed,sourceSha,phase,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",errorType:error instanceof Error?error.name:"unknown"})+"\n");}catch{process.stderr.write("TEST CI failure record not sealed; primary stage failure retained\n");}throw new Error("TEST CI signed data stage failed at "+phase);}
  finally{
   // Only this entry's curated PUBLIC records become job-readable. Extraction,
