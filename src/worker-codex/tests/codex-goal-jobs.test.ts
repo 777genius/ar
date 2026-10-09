@@ -1,3 +1,4 @@
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -41,6 +42,26 @@ import {
   "../../worker-local/project-control-evidence-custody-local-adapter";
 
 describe("codex goal job registry", () => {
+  it.each([undefined, "explicit", "legacy"] as const)("keeps native worker sink intent %s through real creation", async intent => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-native-worker-creation-"));
+    try {
+      const { projectAccessScope: _scope, accessBoundary: _boundary, ...ordinaryJob } = jobManifest(root);
+      const manifest = await createCodexGoalJob({ registryRootDir: join(root, "registry"), manifest: {
+        ...ordinaryJob, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, executionEngine: intent === "legacy" ? "app-server-goal" : "app-server",
+        model: codexMimoDefaultModel, accounts: ["account-q"], maxAccountCycles: 1,
+        serviceTier: "default", taskTimeoutMs: 30_000, networkAccess: NetworkAccessMode.Unrestricted,
+        workerReportMode: "structured-output", maxGoalTurns: 8,
+        safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
+          retryOnAccountUnavailable: false, retryOnReconnectRequired: false },
+        ...(intent === "explicit" ? { durableHandoffRootDir: join(root, "explicit-sink") } : {}),
+      } });
+      const stored = await readCodexGoalJob({ registryRootDir: join(root, "registry"), jobId: manifest.jobId });
+      expect(stored.durableHandoffRootDir).toBe(intent === "explicit" ? join(root, "explicit-sink")
+        : intent === "legacy" ? join(root, "registry", "durable-handoffs") : undefined);
+      expect(stored.maxGoalTurns).toBe(8);
+      expect(stored.safeExecutionPolicy?.continuationMode).toBe("disabled");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("updates ordinary account provenance and rejects unknown-origin replacement of marked pools", async () => {
     const root = await mkdtemp(join(tmpdir(), "account-update-provenance-"));
     const registryRootDir = join(root, "registry");

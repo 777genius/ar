@@ -1,3 +1,4 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { optionalWorkerMode } from "./project-control-worker-mode";
 import { childConfigFromRecord } from "./child-execution-confinement";
 import { createHash } from "node:crypto";
@@ -241,10 +242,13 @@ export async function createCodexGoalJob(input: {
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
+  const nativeWorker = input.manifest.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    input.manifest.executionEngine === "app-server" && input.manifest.workerReportMode === "structured-output" && input.manifest.maxGoalTurns === 8 &&
+    input.manifest.childLifetime === undefined;
   const manifest = parseCodexGoalJobManifest({
     ...input.manifest,
-    durableHandoffRootDir: input.manifest.durableHandoffRootDir ??
-      join(registryRootDir, "durable-handoffs"),
+    ...(!nativeWorker || input.manifest.durableHandoffRootDir !== undefined
+      ? { durableHandoffRootDir: input.manifest.durableHandoffRootDir ?? join(registryRootDir, "durable-handoffs") } : {}),
     schemaVersion: codexGoalJobManifestSchemaVersion,
     createdAt: input.manifest.createdAt ?? now,
     updatedAt: input.manifest.updatedAt ?? now,
