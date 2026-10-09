@@ -216,7 +216,7 @@ export class HostedFdLaunch {
    * exit/Stop or serialized kernel metadata. Works for the retained provider. */
   assertOriginalZeroWaitClosed(): void {
     if (!this.closed || !this.released || this.outputFailed || this.signalTerminated || this.exitStatus !== 0 ||
-        !this.input.destroyed && !this.input.writableFinished || !this.output || !this.errorOutput ||
+        !this.input.writableFinished || !this.output || !this.errorOutput ||
         !(this.output as Readable).readableEnded || !(this.errorOutput as Readable).readableEnded) invalid();
   }
   /** Called after the real --wait proxy closes all streams, and only after the
