@@ -1,7 +1,9 @@
+import { host, local, request, setupResearchFixture, cleanupResearchFixture, enterResearchOperatorScope } from "./research-launch-fixture";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import * as workspaceChanges from "../codex-goal-workspace-changes";
 import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
-import { host, local, request, setupResearchFixture, cleanupResearchFixture, enterResearchOperatorScope } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync } from "node:fs";
 import { join } from "node:path";
@@ -401,13 +403,25 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
   });
 });
 
-async function registeredMimoCandidate() {
+async function registeredMimoCandidate(dirty = false) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
   await initializeRegisteredFixture(); await grantAndRequest();
   const started = await start(), current = researchCurrentStart(started.jobId);
   host.group = `/system.slice/${started.unit}`; await bindRegisteredResearchRuntime(started.jobId, started.startId);
+  if (dirty) {
+    const git = async (args: string[]) => await promisify(execFile)("git", ["-C", selected().workspacePath, ...args], { env: {
+      ...process.env, GIT_AUTHOR_NAME: "iliya", GIT_AUTHOR_EMAIL: "iliyazelenkog@gmail.com",
+      GIT_COMMITTER_NAME: "iliya", GIT_COMMITTER_EMAIL: "iliyazelenkog@gmail.com",
+    } });
+    await git(["init"]); writeFileSync(join(selected().workspacePath, "proof.txt"), "TEST baseline\n");
+    await git(["add", "proof.txt"]);
+    expect((await git(["var", "GIT_AUTHOR_IDENT"])).stdout).toMatch(/^iliya <iliyazelenkog@gmail\.com>/);
+    expect((await git(["var", "GIT_COMMITTER_IDENT"])).stdout).toMatch(/^iliya <iliyazelenkog@gmail\.com>/);
+    await git(["commit", "-m", "test: create registered MiMo TEST baseline"]);
+    writeFileSync(join(selected().workspacePath, "proof.txt"), "TEST registered MiMo change\n");
+  }
   researchPublish(join(current.directory, "mimo-candidate.json"), { schemaVersion: 1, jobId: started.jobId,
     taskId: current.spec.request.taskId, startId: started.startId, specSha256: started.specSha256,
     bindingSha256: researchHash(researchRead(join(current.directory, "binding.json"))),
@@ -418,6 +432,17 @@ async function registeredMimoCandidate() {
 }
 
 describe.skipIf(process.platform !== "linux")("registered MiMo terminal publication", () => {
+  it("preserves truthful partial report and actual patch in the registered durable sink", async () => {
+    const current = await registeredMimoCandidate(true);
+    expect(await finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256)).toMatchObject({ status: "partial" });
+    const result = JSON.parse(readFileSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`), "utf8"));
+    expect(result).toMatchObject({ status: "partial", nextAction: "continue", evidence: ["TEST report retained"], changedFiles: ["proof.txt"] });
+    expect(result.details.handoffPacketPath.startsWith(sink + "/")).toBe(true);
+    const patch = result.artifacts.find((artifact: { kind: string }) => artifact.kind === "handoff_worktree");
+    expect(readFileSync(patch.path, "utf8")).toContain("+TEST registered MiMo change");
+    expect(existsSync(local(join(current.directory, "../../active.json")))).toBe(false);
+    expect(host.units.get(current.unit)?.active).toBe(false);
+  });
   it("refuses revoked registered receipt and retains active ownership and candidate", async () => {
     const current = await registeredMimoCandidate(); mutateReceipt();
     await expect(finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256)).rejects.toThrow();
