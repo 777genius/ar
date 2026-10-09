@@ -13,6 +13,8 @@ import { trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch"
 import { prepareHelper, providerProxy, providerStreams, readyFrame, settledNamespaces, record, researchClock, slowBoundedMaterial } from "./research-provider-service-fixture";
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { parseResearchOperatorRequest } from "../research-launch-contract";
+import { observeResearchJobWriterAuthority } from "../research-writer-observation";
+import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 
 let previousExitCode: typeof process.exitCode;
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
@@ -44,6 +46,14 @@ describe("slow bounded material at research effect boundaries", () => {
       artifactSha256: current.spec.artifactSha256, homeSha256: researchHash(researchRead(join(current.directory, "mimo-home.json"))) });
     expect(footprint.planSha256).toBe(researchHash(researchRead(join(current.directory, "provider-roots", current.provider, "plan.json"))));
     expect(footprint.roots.length).toBeGreaterThanOrEqual(2);
+    const manifest: CodexGoalJobManifest = { ...current.spec.request, schemaVersion: 1,
+      createdAt: "2026-10-09T00:00:00.000Z", updatedAt: "2026-10-09T00:00:00.000Z" };
+    const managerCalls = host.calls.length;
+    expect(await observeResearchJobWriterAuthority(manifest)).toEqual({ status: "allocated",
+      roots: footprint.roots.map(({ device, backingPath }: { device: string; backingPath: string }) => ({ device, backingPath })) });
+    expect(await observeResearchJobWriterAuthority({ ...manifest, taskId: "different-claim" }))
+      .toEqual({ status: "unknown" });
+    expect(host.calls).toHaveLength(managerCalls);
 
   });
   // RED: footprint drift was not observed at the real submission/forwarding boundary.
