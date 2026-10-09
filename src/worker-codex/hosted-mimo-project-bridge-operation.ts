@@ -27,7 +27,7 @@ function owner(request: MimoProjectBridgeRequest) {
   const bytes = hostedMimoBridgeMetadataBytes(files.requestPath), retained = parseMimoProjectBridgeRequest(JSON.parse(bytes.toString()));
   const digest = researchHash(canonical(retained));
   if (!Number.isSafeInteger(value.generation) || (value.generation as number) < 0 ||
-      (retained.operation !== MimoProjectBridgeOperation.Status && value.generation !== 0)) throw new Error("mimo_project_bridge_operation_invalid");
+      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop].includes(retained.operation) && value.generation !== 0)) throw new Error("mimo_project_bridge_operation_invalid");
   const unitDigest = researchHash(digest + ":" + value.generation), unit = `subscription-runtime-mimo-project-${unitDigest}.service`;
   if (value.schemaVersion !== 1 || value.requestSha256 !== digest || value.unit !== unit || value.description !== `subscription-runtime MiMo project ${unitDigest}` ||
       retained.machineId !== request.machineId || retained.projectId !== request.projectId || retained.workstreamId !== request.workstreamId ||
@@ -47,7 +47,8 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
   if (!existsSync(current.resultPath)) return { state: "unresolved", unit: current.value.unit };
   const result = JSON.parse(hostedMimoBridgeMetadataBytes(current.resultPath, 1048576).toString()) as { ok?: unknown; result?: unknown; error?: unknown };
   if (typeof result.ok !== "boolean") throw new Error("mimo_project_bridge_operation_invalid");
-  return { state: "settled", unit: current.value.unit, result };
+  return { state: "settled", unit: current.value.unit, result, terminalVerified: state.LoadState === "loaded" &&
+    ["inactive", "failed"].includes(state.ActiveState ?? "") && state.MainPID === "0" };
 }
 export async function submitHostedMimoProjectBridge(value: unknown): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
@@ -57,6 +58,23 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
   if (hostedMimoBridgeMetadataBytes("/etc/machine-id").toString().trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   let previousStatus: unknown;
   let generation = 0;
+  const retainedFiles = operationFiles(request);
+  // Real submissions must retain the exact request. Synthetic observations
+  // intentionally lack Create payload fields and only verify job identity.
+  if (request.operation !== MimoProjectBridgeOperation.Status && existsSync(retainedFiles.ownerPath) &&
+      owner(request).value.requestSha256 !== researchHash(canonical(request)))
+    throw new Error("mimo_project_bridge_request_mismatch");
+  if (request.operation === MimoProjectBridgeOperation.Stop) {
+    for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start])
+      if (observation({ ...request, operation }).state === "running") throw new Error("mimo_project_bridge_control_pending");
+    const prior = observation(request);
+    // Only a verified terminal unit plus a durable settled result permits a
+    // fresh explicit stop. An uncertain/collected unit keeps its exact owner.
+    if (prior.state === "settled" && prior.terminalVerified === true) {
+      const old = owner(request); generation = (old.value.generation as number) + 1;
+      for (const path of [old.requestPath, old.resultPath, old.ownerPath]) renameSync(path, path + ".generation-" + old.value.generation);
+    }
+  }
   if (request.operation === MimoProjectBridgeOperation.Status) {
     const operations: Record<string, unknown> = {};
     for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Stop])
@@ -89,14 +107,14 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
   writeFileSync(files.requestPath, bytes + "\n", { flag: "wx", mode: 0o600 });
   writeFileSync(files.ownerPath, JSON.stringify({ schemaVersion: 1, requestSha256: digest, generation, unit, description, entry: executable, node }) + "\n", { flag: "wx", mode: 0o600 });
   // The persisted exact owner precedes submission. A timeout never replaces it.
-  researchCommand("/usr/bin/systemd-run", ["--quiet", "--collect", "--unit=" + unit, "--description=" + description,
+  researchCommand("/usr/bin/systemd-run", ["--quiet", ...(request.operation === MimoProjectBridgeOperation.Stop ? [] : ["--collect"]), "--unit=" + unit, "--description=" + description,
     "--property=Type=exec", "--property=KillMode=control-group", "--property=RuntimeMaxSec=" + Math.ceil(binding.operationTimeoutMs / 1000),
     "--property=TimeoutStopSec=30", "--property=WorkingDirectory=/", "--property=UMask=0077", "--property=NoNewPrivileges=yes",
     "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", node, executable, "--execute-owned", files.requestPath]);
   return { ok: true, mode: "mimo_project_bridge_operation_started", operation: request.operation, unit, pending: true, jobId: request.jobId, ...(previousStatus ? previousStatus as object : {}) };
 }
 /** Only the installed owned service invokes this fixed execution mode. */
-export async function executeHostedMimoProjectBridgeOperation(requestPath: string): Promise<void> {
+export async function executeHostedMimoProjectBridgeOperation(requestPath: string): Promise<boolean> {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   const request = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(requestPath).toString())), current = owner(request);
   if (current.requestPath !== requestPath || current.value.entry !== realpathSync(process.argv[1]!) || current.value.node !== realpathSync(process.execPath))
@@ -115,4 +133,6 @@ export async function executeHostedMimoProjectBridgeOperation(requestPath: strin
   if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
   const temp = current.resultPath + ".tmp";
   writeFileSync(temp, serialized, { flag: "wx", mode: 0o600 }); renameSync(temp, current.resultPath);
+  const outcome = result as { ok: boolean; result?: { ok?: boolean } };
+  return outcome.ok && outcome.result?.ok !== false;
 }

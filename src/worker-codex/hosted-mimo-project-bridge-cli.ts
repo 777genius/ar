@@ -6,7 +6,7 @@ try {
   if (process.argv[2] === "--onboard" && process.argv.length === 4) {
     process.stdout.write(JSON.stringify(await onboardHostedMimoProject(process.argv[3]!)) + "\n");
   } else if (process.argv[2] === "--execute-owned" && process.argv.length === 4) {
-    await executeHostedMimoProjectBridgeOperation(process.argv[3]!);
+    if (!await executeHostedMimoProjectBridgeOperation(process.argv[3]!)) process.exitCode = 1;
   } else {
   if (process.argv.length !== 2) throw new Error("mimo_project_bridge_request_invalid");
   for await (const chunk of process.stdin) {

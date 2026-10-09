@@ -41,7 +41,56 @@ it("checks the service PID and strips private error detail from durable results"
     expect(state.handler).not.toHaveBeenCalled();
     state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
     state.handler.mockRejectedValue(new Error("project_control_source_invalid: TEST private path/prompt"));
-    await executeHostedMimoProjectBridgeOperation(prefix + ".request.json");
+    await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).resolves.toBe(false);
     expect(JSON.parse(state.files.get(prefix + ".result.json")!)).toEqual({ ok: false, error: "project_control_source_invalid" });
   } finally { process.argv[1] = previous!; }
+});
+function control(operation: MimoProjectBridgeOperation) { const { prompt: _prompt, sourceCommit: _commit, ...identity } = request; return { ...identity, operation }; }
+function terminalShow(unit: string) {
+  const retained = [...state.files.entries()].find(([path, bytes]) => path.endsWith(".owner.json") && JSON.parse(bytes).unit === unit);
+  if (!retained) return "LoadState=not-found\nActiveState=inactive";
+  const value = JSON.parse(retained[1]);
+  return `Id=${value.unit}\nDescription=${value.description}\nLoadState=loaded\nActiveState=failed\nMainPID=0`;
+}
+it.each(["prompt", "sourceCommit"])("rejects changed retained Create %s instead of returning another request receipt", async field => {
+  await submitHostedMimoProjectBridge(request);
+  await expect(submitHostedMimoProjectBridge({ ...request, [field]: field === "prompt" ? "TEST changed" : "c".repeat(40) })).rejects.toThrow("mimo_project_bridge_request_mismatch");
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
+});
+it("permits a fresh explicit stop only after its prior owned unit is verified terminal and settled", async () => {
+  const stopPrefix = prefix.replace(".create", ".stop");
+  await submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop));
+  const first = JSON.parse(state.files.get(stopPrefix + ".owner.json")!);
+  expect((state.command.mock.calls[0]![1] as string[])).not.toContain("--collect");
+  state.files.set(stopPrefix + ".result.json", JSON.stringify({ ok: false, error: "project_control_stop_denied" }));
+  state.command.mockImplementation((executable: string, args: string[]) => executable === "/usr/bin/systemctl" ? terminalShow(args[1]!) : "");
+  await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop))).resolves.toMatchObject({ pending: true });
+  const second = JSON.parse(state.files.get(stopPrefix + ".owner.json")!);
+  expect(second.generation).toBe(1); expect(second.unit).not.toBe(first.unit);
+  expect(JSON.parse(state.files.get(stopPrefix + ".owner.json.generation-0")!)).toEqual(first);
+  // The new service has no settled result: another request cannot replace it.
+  await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop))).resolves.toMatchObject({ state: "unresolved" });
+  expect(JSON.parse(state.files.get(stopPrefix + ".owner.json")!).generation).toBe(1);
+});
+it("retains a settled stop if its unit has been collected and terminal ownership cannot be verified", async () => {
+  const stopPrefix = prefix.replace(".create", ".stop");
+  await submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop));
+  state.files.set(stopPrefix + ".result.json", JSON.stringify({ ok: false, error: "project_control_stop_denied" }));
+  await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop))).resolves.toMatchObject({ state: "settled", terminalVerified: false });
+  expect(JSON.parse(state.files.get(stopPrefix + ".owner.json")!).generation).toBe(0);
+});
+it.each([MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start])("does not schedule Stop while owned %s is running", async operation => {
+  await submitHostedMimoProjectBridge(request);
+  if (operation === MimoProjectBridgeOperation.Start) {
+    state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } }));
+    await submitHostedMimoProjectBridge(control(operation));
+  }
+  state.command.mockImplementation((executable: string, args: string[]) => {
+    if (executable !== "/usr/bin/systemctl") return "";
+    const out = terminalShow(args[1]!);
+    const row = [...state.files.entries()].find(([p, bytes]) => p.endsWith(`.${operation}.owner.json`) && JSON.parse(bytes).unit === args[1]);
+    return row ? out.replace("ActiveState=failed", "ActiveState=active").replace("MainPID=0", "MainPID=123") : out;
+  });
+  await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop))).rejects.toThrow("mimo_project_bridge_control_pending");
+  expect(state.files.has(prefix.replace(".create", ".stop.owner.json"))).toBe(false);
 });
