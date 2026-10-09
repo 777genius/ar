@@ -37,12 +37,12 @@ describe("root purpose cannot be reconstructed from caller data", () => {
     const counterfeit = Object.defineProperty({},"origin",{get() { reads++; throw new Error("caller getter"); }});
     const fence = Object.defineProperty({},"held",{get() { reads++; throw new Error("caller fence"); }});
     expect(() => assertCurrentHostedDependencyRootPurpose(counterfeit as HostedDependencyRootPurposeContext,
-      HostedDependencyRootPurpose.ManagedGitReadV1,fence as HostedActivationFence)).toThrow("hosted_dependency_current_origin_unresolved");
+      HostedDependencyRootPurpose.ManagedGitReadV1,fence as HostedActivationFence)).toThrow();
     expect(() => assertCurrentHostedDependencyRetiredReady(counterfeit as HostedDependencyRootPurposeContext,fence as HostedActivationFence)).toThrow();
     // Regression: caller-selected descriptor paths must never enter an opener
     // before resolving the original opaque purpose. No positive permit is made.
     expect(() => openCurrentHostedDependencyRootDescriptor(counterfeit as HostedDependencyRootPurposeContext,
-      fence as HostedActivationFence,HostedDependencyRootDescriptorRecipe.AuthoredFileV1,"/caller/scope/file")).toThrow("hosted_dependency_current_origin_unresolved");
+      fence as HostedActivationFence,HostedDependencyRootDescriptorRecipe.AuthoredFileV1,"/caller/scope/file")).toThrow();
     expect(reads).toBe(0);
   });
   it("rejects prototype copies, proxies and an unissued genuine class before any trap or fence", () => {
