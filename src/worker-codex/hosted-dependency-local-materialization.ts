@@ -6,15 +6,15 @@ import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, Depend
 import { DependencyInstallProfile } from "../worker-core/dependency-environment/domain/dependency-install-key";
 import { assertDependencyLocalOutputEvidence, encodeDependencySourceBindingOutputBody } from "../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import type { DependencyCompletedLocalReady, DependencyLocalOutputEvidence, DependencySourceBindingRecordV2 } from "../worker-core/dependency-environment/ports/dependency-source-binding";
-import { encodeDependencyTreeManifest } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
+import { encodeDependencyTreeManifest, type DependencyCapturedTreeObservation } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { capturedDependencySourceBindingOutputBody, openCapturedDependencySourceLinks, closeDependencySourceLinkSession,
-  readDependencySourceLinkSession, readDependencyProtectedReference } from "../worker-local/dependency-environment/dependency-source-binding";
+  readDependencySourceLinkSession, readDependencyProtectedReference, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { assertHostedDependencyMaterializationOwner as assertOwner, assertHostedDependencyMaterializationOwnerUnderFence as assertOwnerUnderFence,
   assertHostedDependencyKeyInputsCurrent, readHostedDependencyKeyInputs, sameHostedDependencyKeyInputs,
-  hostedDependencyObservationLimits, beginHostedDependencyInstallation, type HostedDependencyLocalKeyInputs } from "./hosted-dependency-materialization-context";
+  hostedDependencyObservationLimits, beginHostedDependencyInstallation, type HostedDependencyKeyInputs, type HostedDependencyLocalKeyInputs } from "./hosted-dependency-materialization-context";
 import { HostedDependencyInstaller, assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { HostedDependencyInstallerRecipe as Recipe } from "./hosted-dependency-installer-inputs";
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
@@ -104,16 +104,31 @@ function assertRoot(workspace: DependencyWorkspaceIdentity, tree: DependencyTree
   if (!stat.isDirectory() || stat.uid !== 0n || (stat.mode & 0o700n) !== 0o700n || !sameDependencyTree({ dev: String(stat.dev), ino: String(stat.ino) }, tree)) fail(Failure.UnsafeTree);
 }
 
+/** Named opaque types keep declaration emit from expanding private brands. */
+export type HostedDependencyLocalMaterializationResult = {
+  readonly installing: Extract<DependencyReceipt, { state: DependencyReceiptState.Installing }>;
+} & (
+  | { readonly inputs: Extract<HostedDependencyKeyInputs, { recipe: Recipe.NpmRegistryNoScriptsV1 }>; readonly cold: undefined }
+  | { readonly inputs: HostedDependencyLocalKeyInputs; readonly cold: {
+      readonly ready: DependencyCompletedLocalReady;
+      readonly observed: Extract<DependencyCapturedTreeObservation, { status: DependencyTreeObservationStatus.Complete }> & {
+        readonly exposure: DependencySourceExposure;
+      };
+      readonly source: DependencySourceLinkSession;
+      readonly exposure: DependencySourceExposure;
+    } }
+);
+
 /** Closed local composition. Public arguments contain no observation, key,
  * claimed evidence or arbitrary path. Genuine qualified creator exclusion and
  * durable ExclusiveMutation span every await; each boundary reauthenticates
  * owner, physical source, actual profile/key and real installer drain. Unknown
  * failure retains Installing, output/evidence and owner for reconciliation. */
-export async function materializeHostedDependencyLocalAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt) {
+export async function materializeHostedDependencyLocalAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<HostedDependencyLocalMaterializationResult> {
   const prepared = await beginHostedDependencyInstallation(binding, attempt), { inputs, installing } = prepared;
   // Registry continues its existing recipe with this same actual capture and
   // legal Installing transition. Local retains its initial physical pins.
-  if (inputs.recipe === Recipe.NpmRegistryNoScriptsV1) return { inputs, installing };
+  if (inputs.recipe === Recipe.NpmRegistryNoScriptsV1) return { inputs, installing, cold: undefined };
   const current = () => {
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     const stored = readHostedDependencyReceipt(binding); if (!stored || !encode(stored).equals(encode(installing))) fail();
@@ -160,7 +175,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
     try { if (await blobs.put(final.canonicalBytes) !== final.digest) fail(); } finally { await blobs.close(); }
     // All observer/placement descriptors have joined close before FDA origin
     // inspection. Source sessions retain logical pins, not leaked scan FDs.
-    withHostedActivationFence(fence => {
+    const ready = withHostedActivationFence(fence => {
       assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
       assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
@@ -184,11 +199,16 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
       assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
       publishHostedDependencyReceipt(binding, installing.revision, ready);
+      return ready;
     });
+    // Transfer only after actual protected Ready publication. These are genuine
+    // logical selection/source pins; scan FDs and placement already joined close.
+    const cold = { ready, observed: final, source: originalSession, exposure: final.exposure };
+    finalExposure = undefined; ownedOriginalSession = undefined;
+    return { inputs, installing, cold };
   } finally {
     if (stagedExposure) closeDependencySourceExposure(stagedExposure);
     if (finalExposure) closeDependencySourceExposure(finalExposure);
     closeDependencySourceLinkSession(stagedSession); if (ownedOriginalSession) closeDependencySourceLinkSession(ownedOriginalSession);
   }
-  return null;
 }
