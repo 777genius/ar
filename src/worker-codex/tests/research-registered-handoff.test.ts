@@ -1,4 +1,4 @@
-import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
+import { host, local, request, setupResearchFixture, cleanupResearchFixture, enterResearchOperatorScope } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync } from "node:fs";
 import { join } from "node:path";
@@ -471,6 +471,9 @@ describe("native project launch authorization", () => {
       controllerJobId: "TEST-controller", reservedLaunch: selected.reservedLaunch });
     const started = await start!(), authority = researchJobAuthority(started.jobId);
     const activePath = join(authority, "active.json"), activeBytes = researchRead(activePath);
+    host.group = `/system.slice/${started.unit}`;
+    await bindProjectResearchRuntime(started.jobId, started.startId);
+    enterResearchOperatorScope(started.unit);
     cancelResearchLaunch(started.jobId);
     const read = await prepareResearchJobWriterObservation(selected.manifest);
     const calls = host.calls.length;
