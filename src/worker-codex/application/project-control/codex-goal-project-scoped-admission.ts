@@ -182,7 +182,9 @@ async function targetIdentity(
   const writableRoots = [...new Set(physicalResources as string[])];
   const backings = await Promise.all(writableRoots.map(prospectiveAdmissionResourceBacking));
   if (backings.some(root => root === undefined)) return {};
-  const physicalWritableRoots = (backings as readonly ProjectAdmissionPhysicalRoot[][]).flat();
+  const physicalWritableRoots = backings.filter(
+    (roots): roots is readonly ProjectAdmissionPhysicalRoot[] => roots !== undefined,
+  ).flat();
   const ownedPaths = binding?.createWorktree?.ownedPaths ??
     (input.request.ownedPaths?.length ? input.request.ownedPaths : undefined);
   return {

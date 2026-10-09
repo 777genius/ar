@@ -1,3 +1,4 @@
+import { assertResearchMimoProviderHome } from "./research-mimo-worker-result";
 import { trustedResearchProviderLaunch } from "./trusted-custody-systemd-launch";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -167,12 +168,14 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
   const reservation = readResearchProviderReservation(directory, unit);
   assertResearchProviderNotCancelled(directory, unit);
   phase("service-plan");
+  assertResearchMimoProviderHome(spec, selectedCodexHome);
   const rootPlan = capture(RootTimingScope.Prepare, () => prepareResearchProviderRoot(spec, unit, selectedCodexHome));
   const launch = capture(RootTimingScope.InitialLaunch, () => trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan));
   phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
     captured.assertAuthorityCurrent(); assertResearchProviderNotCancelled(directory, unit);
+    assertResearchMimoProviderHome(spec, selectedCodexHome);
   };
   phase("submission-custody");
   assertForwardPermission();
@@ -218,6 +221,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     const assertTransportPermission = (): void => {
       captured.assertInertAuthorityCurrent();
       assertResearchProviderNotCancelled(directory, unit);
+      assertResearchMimoProviderHome(spec, selectedCodexHome);
       if (performance.now() >= deadline) throw transportDenial("research-provider-transport:setup-deadline");
       if (proxyExited) throw transportDenial("research-provider-transport:proxy-exited");
       if (transportFailed) throw transportDenial("research-provider-transport:transport-failed");

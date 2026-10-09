@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
 import { bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
-import { researchHash, researchPublish, researchRead } from "../research-launch-files";
+import { researchDirectoryIdentity, researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
 import { cancelResearchLaunch, signalResearchProvider, statusResearchLaunch } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
@@ -538,8 +538,10 @@ function slowBoundedMaterial() {
 describe("slow bounded material at research effect boundaries", () => {
   // RED: provider transport and its service reject at 300s despite the sealed allocation.
   it.each([[600_000, 1_200_000, 600], [600_000, 400_000, 400]])("shares owned MiMo startup %s / task %s allowance with the actual provider transport", async (startup, task, seconds) => {
-    const current = prepareHelper("TEST-mimo", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    const current = prepareHelper("mimo-TEST/codex-home", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
       model: codexMimoDefaultModel, maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: startup, taskTimeoutMs: task }));
+    researchPublish(join(current.directory, "mimo-home.json"), { schemaVersion: 1,
+      specSha256: researchHash(current.bytes), identity: researchDirectoryIdentity(current.home) }, true);
     const { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     expect(trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args).toContain("--property=TimeoutStartSec=300s");
