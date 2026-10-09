@@ -277,7 +277,8 @@ describe.skipIf(process.platform !== "linux")("protected source links in fresh T
       try {
         const whole = await observeDependencyDirectoryRoot({ parentPath: f.trash.destinationParent.canonicalPath, name: f.trash.destinationName,
           expectedTree: f.binding.tree, limits, sourceLinkSession: detached });
-        expect(whole.status).toBe(Observed.Complete); if (whole.status === Observed.Complete) expect(whole.digest).toBe(f.binding.manifestDigest);
+        expect(whole.status, whole.status === Observed.Incomplete ? whole.reason : undefined).toBe(Observed.Complete);
+        if (whole.status === Observed.Complete) expect(whole.digest).toBe(f.binding.manifestDigest);
         await writeFile(join(f.workspacePath, "packages/a/package.json"), encode({ name: "a", version: "2.0.0" }));
         const partial = await openCommittedDependencyTrashRemoval({ ...input, commit, maxRemovals: 1 });
         try { await expect(partial.remove()).rejects.toThrow("bounds"); } finally { await partial.close(); }
