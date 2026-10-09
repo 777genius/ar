@@ -1,3 +1,5 @@
+import { delegateMimoProjectOperation } from "../mimo-project-bridge-client";
+import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
 import { collectRegisteredCodexGoalJobStatus } from "./codex-goal-registered-job-observation";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -183,6 +185,8 @@ export async function updateCodexGoalJobUseCase(
 export async function getCodexGoalStatusByIdUseCase(
   args: CodexGoalJobIdInput,
 ): Promise<JsonObject> {
+  const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Status, args);
+  if (remote !== undefined) return remote;
   const registryRootDir = registryRootFromInput(args);
   const manifest = await readCodexGoalJob({
     registryRootDir,

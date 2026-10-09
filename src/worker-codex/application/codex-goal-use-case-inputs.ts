@@ -1,3 +1,4 @@
+import { assertNoUnsupportedMimoRemoteRoute } from "../mimo-project-bridge-client";
 import type {
   WorkerControlActor,
   WorkerControlDeliveryMode,
@@ -57,6 +58,8 @@ export type CodexGoalInput = {
 };
 
 export type CodexGoalJobRegistryInput = {
+  readonly mimoProjectId?: string;
+  readonly mimoWorkstreamId?: string;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -143,6 +146,7 @@ export type CodexGoalWorkerControlInput = CodexGoalJobIdInput & {
 };
 
 export function registryRootFromInput(args: CodexGoalJobRegistryInput): string {
+  assertNoUnsupportedMimoRemoteRoute(args);
   return resolveCodexGoalJobRegistryRoot({
     ...(args.registryRootDir ? { registryRootDir: args.registryRootDir } : {}),
     ...(args.cwd ? { cwd: args.cwd } : {}),

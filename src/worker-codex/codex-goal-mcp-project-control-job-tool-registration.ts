@@ -39,6 +39,8 @@ export function registerCodexGoalProjectControlJobTools(server: McpServer): void
         workerRole: z.enum(projectAdmissionWorkerRoleSchemaValues).optional(),
         overwrite: z.boolean().optional(),
         confirmCreate: z.boolean().optional(),
+        promptBody: z.string().optional(),
+        sourceCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
       },
     },
     async (args) => withMcpErrors(async () =>
@@ -54,7 +56,7 @@ export function registerCodexGoalProjectControlJobTools(server: McpServer): void
         "Create a scoped worktree, write a prompt, create a child job and optionally start it through one ProjectScopedControl broker flow.",
       inputSchema: {
         ...goalInputSchema(),
-        workspacePath: z.string(),
+        workspacePath: z.string().optional(),
         ...jobRegistryInputSchema(),
         controllerJobId: z.string().optional(),
         sourceWorkspacePath: z.string().optional(),

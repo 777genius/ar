@@ -34,3 +34,45 @@ Each worker has one account cycle, one attempt, at most eight goal turns, no rec
 Use the existing project status and stop tools for the same registered job. A submission timeout is uncertain: reconcile its retained attempt before retrying. Never replace its job ID, remove its ownership records or launch an unmanaged replacement to work around uncertainty.
 
 Run qualification only in newly allocated TEST projects, not existing user repositories. A standalone worker proof does not qualify the registered project broker, scope, reservation and finalization path; validate those boundaries separately with the exact deployed revision.
+
+## Remote agents and the trusted bridge
+
+A local macOS agent uses the configured project bridge rather than submitting native services locally. The bridge runs through the existing restricted `sr-transport` SSH ingress, with no remote shell text or caller-selected executable. Its finite operations are `create`, `start`, `status` and `stop`; creation and start are separate so an uncertain response can be reconciled against the same job.
+
+The wire request contains only `kind: "MimoProject"`, `schemaVersion: 1`, expected `machineId`, `projectId`, `workstreamId`, `operation` and `jobId`. Creation also carries bounded `prompt` text and an exact 40-character `sourceCommit`. It accepts no paths, controller IDs, environment, credentials, tool names, admission commands or executable arguments.
+
+The operator installs a root-owned protected purpose binding at `/etc/subscription-runtime/mimo-projects/<projectId>/<workstreamId>.json`, using these exact fields:
+
+```text
+schemaVersion: 1
+projectId, workstreamId, machineId
+routingEnabled
+stateRoot: /srv/worker-state/jobs/<projectId>/<workstreamId>
+scratchRoot: /srv/workers/jobs/<projectId>/<workstreamId>
+registryRootDir: <stateRoot>/registry
+controllerJobId: existing registered scoped controller
+sourceWorkspacePath: existing source checkout within scratchRoot
+sourceCommit: exact reviewed source commit
+sourceRef: approved origin/<branch> resolving to sourceCommit
+codexBinaryPath: installed absolute executable
+taskTimeoutMs, appServerStartupTimeoutMs, operationTimeoutMs
+admission: reviewed existing serial-builtin launch admission template
+```
+
+This is operator metadata, not an agent-supplied configuration bag. The admission template fixes ownership, packet paths, checks and execution policy before the agent requests work. The source checkout, controller, packet documents and project scope must already be onboarded and consistent; the bridge does not invent them or initialize foreign registries. Update the binding through the trusted deployment procedure when the source/admission packet changes.
+
+The bridge checks actual workstream YAML identity and `routing_enabled`, both project/workstream disabled markers, machine identity and current controller account scope. It derives `<stateRoot>/jobs/<jobId>` and `<scratchRoot>/workspaces/<jobId>`, then calls the normal registered refill and launch APIs. Every creation retains a private request record before effects; reusing the job ID cannot repeat uncertain creation. Control operations accept only jobs created by this binding with the same paths, MiMo backend, account and project identity. Closing routing blocks creation/start while preserving same-job status and stop.
+
+Deployment must install the matching root-owned bridge CLI from the exact runtime release and upgrade the restricted endpoint. Merely configuring a local route or placing a project YAML on the host does not enable this bridge. Qualify the complete local-agent-to-root-to-provider route on a new TEST project before claiming it is deployed.
+
+After ordinary project onboarding has created the scoped controller, source checkout and reviewed admission template, enroll it with the protected operator metadata file:
+
+```sh
+node /opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js --onboard /etc/subscription-runtime/reviewed-mimo-binding.json
+```
+
+This root-only helper validates machine/workstream routing, current explicit account-q scope, protected runtime files and frozen source branch, then installs the binding once. It does not launch workers, widen scope, open routing or clone repositories. An existing binding is refused; revisions use the trusted deployment procedure.
+
+Each bridge mutation runs in its own finite owned service. The endpoint returns a pending receipt quickly; poll status using the same job identity. Start is accepted after the retained creation operation has settled with a successful semantic result. Status/finalization also runs in an owned service, and a poll can return the last settled observation while scheduling a fresh one. A timeout or unresolved operation never creates a replacement service or job.
+
+The trusted admission template's `contract.executionPolicy.sandboxRoot` must be a strict subdirectory of `sourceWorkspacePath`, for example `<source>/sandbox`. For each child the bridge preserves that relative subdirectory under the derived child workspace. Other admission fields remain unchanged, and the normal admission validator runs for that child's actual workspace; this supports multiple jobs without widening the sandbox.
