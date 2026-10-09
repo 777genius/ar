@@ -9,10 +9,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // Its operator tuple qualifies the compiled context guard's mechanics only.
 type Prelude = Pick<typeof import("../research-provider-root-assembler"), "researchProviderRootTransition">;
 type ContextGuard = Pick<typeof import("../research-launch-host"), "assertResearchProviderInitialRoot">;
-type DescriptorGuard = Pick<typeof import("../../provider-codex/app-server/adapters/hosted-process-descriptors"), "assertHostedProcessDescriptors">;
-type Mode = "clean" | "file" | "directory";
+type DescriptorGuard = Pick<typeof import("../../provider-codex/app-server/adapters/hosted-process-descriptors"), "assertHostedFdPreludeDescriptors">;
+type Mode = "clean" | "unmounted" | "file" | "directory";
 type Expected = Readonly<{ schemaVersion: 1; hostUser: string; hostPid: string; initialHostContext: import("../research-launch-host").ResearchInitialHostContext; outside: string; sentinelSha256: string; inside: string }>;
-const phases = ["arguments", "custody", "initial-caps", "no-new-privileges", "provider-context", "import", "bind", "remount", "transition", "child-oracle", "oracle-inputs", "oracle-isolation", "oracle-leak", "oracle-descriptors", "receipt", "userns-capset", "userns-root", "private-proc"] as const;
+const phases = ["arguments", "custody", "initial-caps", "no-new-privileges", "provider-context", "import", "bind", "remount", "transition", "child-oracle", "oracle-inputs", "oracle-isolation", "oracle-nested-userns", "oracle-descriptors", "receipt", "userns-capset", "userns-root", "private-proc"] as const;
 type Target = "none" | "operator" | "root" | "runtime" | "expected" | "usr" | "node" | "probe" | "guard" | "bin" | "sbin" | "lib" | "lib64" | "outside-file" | "outside-directory";
 let phase: typeof phases[number] = "arguments", target: Target = "none", role: "operator" | "assembler" | "oracle" = "operator", activeMode: Mode | null = null;
 let failedCommand: ReturnType<typeof spawnSync> | undefined;
@@ -57,7 +57,7 @@ function mount(args: readonly string[], deadline: number, fds: readonly number[]
 async function oracle(mode: Mode): Promise<void> {
   role = "oracle"; activeMode = mode; mark("oracle-inputs", "expected");
   const expected = JSON.parse(readFileSync("/expected.json", "utf8")) as Expected;
-  requireFact(expected.schemaVersion === 1 && /^[a-f0-9]{64}$/.test(expected.sentinelSha256));
+  requireFact(mode === "clean" && expected.schemaVersion === 1 && /^[a-f0-9]{64}$/.test(expected.sentinelSha256));
   mark("oracle-isolation", "root");
   const status = readFileSync("/proc/self/status", "utf8");
   const capabilitiesZero = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"].every(key => new RegExp(`^${key}:\\s+0+$`, "m").test(status));
@@ -69,21 +69,18 @@ async function oracle(mode: Mode): Promise<void> {
   const pidPrivate = readlinkSync("/proc/self/ns/pid") !== expected.hostPid && readFileSync("/proc/1/comm", "utf8").trim() === "tini";
   const userPrivate = readlinkSync("/proc/self/ns/user") !== expected.hostUser;
   requireFact(process.getuid?.() === 65532 && process.getgid?.() === 65532 && mapsCorrect && capabilitiesZero && /^NoNewPrivs:\s+1$/m.test(status) && insideReadable && rootClosed && pidPrivate && userPrivate);
-  let leakAccessible = false;
-  if (mode !== "clean") {
-    mark("oracle-leak", mode === "file" ? "outside-file" : "outside-directory");
-    // The negative is a real retained outside TEST object, not a mocked guard.
-    const bytes = readFileSync(mode === "file" ? "/proc/self/fd/3" : "/proc/self/fd/3/sentinel.txt");
-    leakAccessible = sha(bytes) === expected.sentinelSha256; requireFact(leakAccessible);
-  }
+  // A real CLONE_NEWUSER after the final zero-capability transition rejects
+  // the former chroot recipe. This is not proof of Codex/bubblewrap behavior.
+  mark("oracle-nested-userns", "root");
+  const nested = spawnSync("/usr/bin/unshare", ["--user", "--map-root-user", "/usr/bin/true"], {
+    cwd: "/", env, stdio: ["ignore", "pipe", "pipe"], timeout: 10000, killSignal: "SIGKILL", maxBuffer: 4096,
+  });
+  requireFact(!nested.error && !nested.signal && nested.status === 0 && nested.stdout.length === 0 && nested.stderr.length === 0);
   mark("oracle-descriptors", "guard");
   const guard = await import(pathToFileURL("/guard.mjs").href) as DescriptorGuard;
-  let leakDenied = false;
-  try { guard.assertHostedProcessDescriptors(); }
-  catch (error) { if ((error as Error).message !== "hosted_custody_inherited_handle_denied") throw error; leakDenied = true; }
-  requireFact(leakDenied === (mode !== "clean"));
+  guard.assertHostedFdPreludeDescriptors();
   process.stdout.write(JSON.stringify({ schemaVersion: 1, mode, insideReadable, rootClosed, pidPrivate, userPrivate, mapsCorrect, capabilitiesZero, noNewPrivileges: true,
-    descriptorsAccepted: !leakDenied, leakAccessible, leakDenied }) + "\n");
+    nestedUserNamespace: true, descriptorsAccepted: true, leakAccessible: false, leakDenied: false }) + "\n");
 }
 
 async function assemble(root: string, runtime: string, expectedPath: string, mode: Mode, deadline: number): Promise<void> {
@@ -98,6 +95,11 @@ async function assemble(root: string, runtime: string, expectedPath: string, mod
   const hostGuardModule = join(runtime, "dist/worker-codex/research-launch-host.js"), hostGuardSha256 = sha(readFileSync(hostGuardModule));
   const guard = await import(pathToFileURL(hostGuardModule).href) as ContextGuard, expected = JSON.parse(readFileSync(expectedPath, "utf8")) as Expected;
   mark("provider-context", "root"); guard.assertResearchProviderInitialRoot(expected.initialHostContext);
+  if (mode !== "unmounted") {
+    mark("bind", "root");
+    const lower = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { mount(["--bind", "/proc/self/fd/3", "/proc/self/fd/3"], deadline, [lower]); } finally { closeSync(lower); }
+  }
   const bind = (source: string, target: string, directory: boolean, selected: Target): void => {
     mark("custody", selected);
     trusted(source); const destination = join(root, target.slice(1));
@@ -126,11 +128,25 @@ async function assemble(root: string, runtime: string, expectedPath: string, mod
   }
   mark("transition", "root");
   const transition = module.researchProviderRootTransition(root);
-  mark("child-oracle", mode === "clean" ? "none" : mode === "file" ? "outside-file" : "outside-directory");
-  const held = mode === "clean" ? undefined : openSync(mode === "file" ? expected.outside : dirname(expected.outside), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  mark("child-oracle", mode === "file" ? "outside-file" : mode === "directory" ? "outside-directory" : "root");
+  const mountedRoot = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  let held: number | undefined;
   try {
+    if (mode === "file" || mode === "directory") held = openSync(mode === "file" ? expected.outside : dirname(expected.outside), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (held !== undefined) requireFact(sha(readFileSync(mode === "file" ? held : expected.outside)) === expected.sentinelSha256);
+    if (mode !== "unmounted") {
+      mark("remount", "root"); mount(["-o", "remount,bind,ro,nosuid,nodev", "/proc/self/fd/3"], deadline, [mountedRoot]);
+    }
+    requireFact(sha(readFileSync(transitionModule)) === transitionSha256 && sha(readFileSync(hostGuardModule)) === hostGuardSha256);
     mark("child-oracle", "root");
-    const result = call(transition.command, [...transition.args, process.execPath, "/probe.mts", "oracle", mode], deadline, held === undefined ? [] : [held]);
+    const result = call(transition.command, [...transition.args, process.execPath, "/probe.mts", "oracle", mode], deadline, held === undefined ? [mountedRoot] : [mountedRoot, held]);
+    // Missing pivot mount or a real outside FD must reject before any oracle
+    // runs. Reaching any oracle output instead makes these negatives red.
+    if (mode !== "clean") {
+      requireFact(!result.error && !result.signal && result.status === 70 && result.stdout.length === 0 && result.stderr.length === 0);
+      process.stdout.write(JSON.stringify({ schemaVersion: 1, mode, transitionDenied: true, descriptorsAccepted: false,
+        runtime, transitionSha256, hostGuardSha256 }) + "\n"); return;
+    }
     if (result.status !== 0 || result.error || result.signal) {
       failedCommand = result;
       const stderr = result.stderr?.toString("utf8") ?? "";
@@ -140,13 +156,15 @@ async function assemble(root: string, runtime: string, expectedPath: string, mod
         const selected = phases.find(value => value === child.phase); if (child.primitiveFailed === true && child.role === "oracle" && selected?.startsWith("oracle-")) oracleFailure = { phase: selected, errno: errno({ code: child.errno }) }; } } catch { /* Closed diagnostic only. */ }
       process.stdout.write(JSON.stringify({ ...failure(result.error), phase, oracleFailure }) + "\n"); process.exitCode = 70; return;
     }
-    requireFact(result.stdout.length < 4096 && sha(readFileSync(transitionModule)) === transitionSha256 && sha(readFileSync(hostGuardModule)) === hostGuardSha256);
+    // Pivot also changes this trusted supervisor's root/cwd. All filesystem
+    // currentness checks precede it; the independent operator rechecks hashes.
+    requireFact(result.stdout.length < 4096);
     const report = JSON.parse(result.stdout.toString("utf8")) as Record<string, unknown>;
     process.stdout.write(JSON.stringify({ ...report, runtime, transitionSha256, hostGuardSha256 }) + "\n");
-  } finally { if (held !== undefined) closeSync(held); }
+  } finally { try { closeSync(mountedRoot); } finally { if (held !== undefined) closeSync(held); } }
 }
 
-async function run(operator: string, runtime: string): Promise<void> {
+async function run(operator: string, runtime: string, negativesOnly = false): Promise<void> {
   mark("custody", "operator");
   requireFact(process.platform === "linux" && process.getuid?.() === 0 && readFileSync("/etc/machine-id", "utf8").trim() === "d856d40da5ad4e23b4f67773e5942842");
   trusted(operator); trusted(runtime); requireFact(lstatSync(operator).dev === 66305 && (lstatSync(operator).mode & 0o777) === 0o700);
@@ -169,7 +187,7 @@ async function run(operator: string, runtime: string): Promise<void> {
     outside: sentinel, sentinelSha256: sha(readFileSync(sentinel)), inside: "PUBLIC-TEST-inside-root\n" };
   writeFileSync(expectedPath, JSON.stringify(expected) + "\n", { mode: 0o600, flag: "wx" });
   const receipts: unknown[] = [];
-  for (const mode of ["clean", "file", "directory"] as const) {
+  for (const mode of negativesOnly ? ["unmounted", "file", "directory"] as const : ["clean", "unmounted", "file", "directory"] as const) {
     const root = join(directory, mode); mkdirSync(root, { mode: 0o755 });
     for (const target of ["usr", "proc"]) mkdirSync(join(root, target), { mode: 0o755 });
     for (const target of ["probe.mts", "expected.json", "guard.mjs"]) writeFileSync(join(root, target), "", { mode: 0o644, flag: "wx" });
@@ -183,6 +201,7 @@ async function run(operator: string, runtime: string): Promise<void> {
     requireFact(sha(readFileSync(script)) === fixtureSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256 &&
       sha(readFileSync(join(runtime, "dist/worker-codex/research-launch-host.js"))) === hostGuardSha256);
     const before = resources(); requireFact(before.rootFreeBytes >= 5 * 1024 ** 3 && before.scratchFreeBytes >= 5 * 1024 ** 3 && before.memAvailableKiB >= 1024 ** 2);
+    writeFileSync(join(directory, "dispatch-" + mode + ".json"), JSON.stringify({ unit, mode, deadline }) + "\n", { mode: 0o600, flag: "wx" });
     const result = call("/usr/bin/systemd-run", ["--quiet", "--wait", "--pipe", "--collect", "--service-type=exec", "--expand-environment=no", "--working-directory=/", "--unit=" + unit,
       "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Restart=no", "--property=Delegate=no", "--property=TimeoutStartSec=300s", "--property=RuntimeMaxSec=90s",
       "--property=MemoryMax=1G", "--property=TasksMax=128", "--property=CPUQuota=200%", "--property=MemorySwapMax=0", "--property=LimitCORE=0", "--property=NoNewPrivileges=yes",
@@ -195,9 +214,10 @@ async function run(operator: string, runtime: string): Promise<void> {
     receipts.push({ unit, mode, before, exitCode: result.status, signal: result.signal, transportError: Boolean(result.error), creatorUnchanged, report });
     writeFileSync(join(directory, "receipt-" + mode + ".json"), JSON.stringify(receipts.at(-1)) + "\n", { mode: 0o600, flag: "wx" });
     if (result.error || result.signal || result.status !== 0) failedCommand = result;
-    requireFact(!result.error && !result.signal && result.status === 0 && creatorUnchanged && report?.mode === mode && report.runtime === runtime && report.transitionSha256 === transitionSha256 && report.hostGuardSha256 === hostGuardSha256 &&
-      report.insideReadable === true && report.rootClosed === true && report.capabilitiesZero === true && report.userPrivate === true && report.pidPrivate === true && report.mapsCorrect === true && report.noNewPrivileges === true &&
-      report.leakDenied === (mode !== "clean") && report.leakAccessible === (mode !== "clean"));
+    requireFact(!result.error && !result.signal && result.status === 0 && creatorUnchanged && report?.mode === mode && report.runtime === runtime && report.transitionSha256 === transitionSha256 && report.hostGuardSha256 === hostGuardSha256);
+    requireFact(report !== undefined && (mode === "clean" ? report.insideReadable === true && report.rootClosed === true && report.capabilitiesZero === true && report.userPrivate === true && report.pidPrivate === true &&
+      report.mapsCorrect === true && report.noNewPrivileges === true && report.nestedUserNamespace === true && report.descriptorsAccepted === true : report.transitionDenied === true && report.descriptorsAccepted === false));
+    requireFact(sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-launch-host.js"))) === hostGuardSha256);
   }
   requireFact(sha(readFileSync(script)) === fixtureSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256 &&
     sha(readFileSync(join(runtime, "dist/worker-codex/research-launch-host.js"))) === hostGuardSha256);
@@ -207,7 +227,8 @@ async function run(operator: string, runtime: string): Promise<void> {
 try {
   const [command, ...args] = process.argv.slice(2);
   if (command === "run" && args.length === 2) await run(path(args[0]!), path(args[1]!));
-  else if (command === "assemble" && args.length === 5 && ["clean", "file", "directory"].includes(args[3]!)) await assemble(path(args[0]!), path(args[1]!), path(args[2]!), args[3] as Mode, Number(args[4]));
-  else if (command === "oracle" && args.length === 1 && ["clean", "file", "directory"].includes(args[0]!)) await oracle(args[0] as Mode);
+  else if (command === "run-negatives" && args.length === 2) await run(path(args[0]!), path(args[1]!), true);
+  else if (command === "assemble" && args.length === 5 && ["clean", "unmounted", "file", "directory"].includes(args[3]!)) await assemble(path(args[0]!), path(args[1]!), path(args[2]!), args[3] as Mode, Number(args[4]));
+  else if (command === "oracle" && args.length === 1 && args[0] === "clean") await oracle("clean");
   else throw new Error("TEST_root_transition_arguments_invalid");
 } catch (error) { process.stdout.write(JSON.stringify(failure(error)) + "\n"); process.exitCode = 70; }

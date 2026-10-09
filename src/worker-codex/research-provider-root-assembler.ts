@@ -19,6 +19,29 @@ const inside = (parent: string, path: string): boolean => path === parent || pat
 // without opening /dev/tty (which fails ENXIO in a headless service).
 const linuxPathDescriptor = 0x200000;
 const apiDevices = [["null", 1, 3], ["zero", 1, 5], ["full", 1, 7], ["random", 1, 8], ["urandom", 1, 9], ["tty", 5, 0]] as const;
+// Static OS glue, never a request recipe. FD3 is the freshly pinned root mount
+// in this already private mount namespace, not the skeleton's covered lower FD.
+// No new mount namespace is cloned here: an inherited FD would still reference
+// the original mount. The trusted supervisor only awaits/signals after pivot.
+const pivotRoot = [
+  '[ "$#" -ge 2 ] && [ -d /proc/self/fd/3 ] && [ /proc/self/fd/3 -ef "$1" ] || exit 70',
+  'for handle in /proc/self/fd/*; do',
+  '  case "$handle" in',
+  '    /proc/self/fd/0|/proc/self/fd/1|/proc/self/fd/2) [ -p "$handle" ] || [ -S "$handle" ] || exit 70 ;;',
+  '    /proc/self/fd/3) ;;',
+  '    *) [ ! -e "$handle" ] && [ ! -L "$handle" ] || exit 70 ;;',
+  '  esac',
+  'done',
+  'exec 4>/dev/null || exit 70',
+  'cd -P /proc/self/fd/3 2>&4 || exit 70',
+  '[ "$PWD" = "$1" ] || exit 70',
+  'shift',
+  '/usr/sbin/pivot_root . . 2>&4 || exit 70',
+  '/usr/bin/umount --no-canonicalize --internal-only --no-mtab --lazy -- . 2>&4 || exit 70',
+  'cd / 2>&4 || exit 70',
+  'exec 3<&- 4>&- || exit 70',
+  'exec "$@"',
+].join("\n");
 const deviceNumber = (value: number): readonly [number, number] => {
   const device = BigInt(value);
   return [Number((device >> 8n & 0xfffn) | (device >> 32n & 0xfffff000n)), Number((device & 0xffn) | (device >> 12n & 0xffffff00n))];
@@ -28,7 +51,8 @@ const deviceNumber = (value: number): readonly [number, number] => {
  * fixture. This is not request configuration or a public launch capability. */
 export function researchProviderRootTransition(root: string): Readonly<{ command: string; args: readonly string[] }> {
   researchPath(root);
-  return Object.freeze({ command: "/usr/bin/unshare", args: Object.freeze(["--map-user=65532", "--map-group=65532", "--keep-caps", "--root=" + root,
+  return Object.freeze({ command: "/usr/bin/bash", args: Object.freeze(["--noprofile", "--norc", "-p", "-c", pivotRoot, "research-root-pivot", root,
+    "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps",
     "--wd=/", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL", "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all",
     "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--"]) });
 }
@@ -64,6 +88,7 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
   };
   assertAuthority();
   const root = readResearchProviderAssemblyRoot(jobId, unit, home, seal);
+  let handoffRoot: number | undefined, child: ReturnType<typeof spawn> | undefined;
   try {
   if (JSON.stringify(root.spec) !== JSON.stringify(current.spec)) researchInvalid();
   assertResearchProviderAssemblyContext(root);
@@ -75,7 +100,7 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     if (now() >= deadline) researchInvalid();
   };
   assertAuthority(); assertResearchProviderStartMaterial(root); assertAuthority(); finalAuthority();
-  for (const path of ["/usr/bin/mount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
+  for (const path of ["/usr/bin/mount", "/usr/bin/bash", "/usr/sbin/pivot_root", "/usr/bin/umount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const check = (): void => { assertAuthority(); root.assertCurrent(); finalAuthority(); };
   const descriptors = new Map<number, Readonly<{ path: string; identity: string }>>([
     [root.rootFd, { path: root.root, identity: descriptorIdentity(root.rootFd) }],
@@ -201,21 +226,32 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     const liveRoot = openSync(root.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     descriptors.set(liveRoot, { path: root.root, identity: descriptorIdentity(liveRoot) });
     try { protectMount(liveRoot, "/", true, false, [...new Set([...flags(liveRoot), "nosuid", "nodev"])]); } finally { closeTarget(liveRoot); }
+    handoffRoot = openSync(root.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const mountedId = mountId(handoffRoot), mountedFlags = flags(handoffRoot);
+    const row = readKernelMountTable().trimEnd().split("\n").find(line => line.split(" ")[0] === mountedId)?.split(" ");
+    if (!row || row.indexOf("-") < 6) researchInvalid();
+    if (descriptorIdentity(handoffRoot) !== descriptorIdentity(root.rootFd) || readlinkSync(`/proc/self/fd/${handoffRoot}`) !== root.root ||
+        realpathSync(root.root) !== root.root || mountedId === mountId(root.rootFd) || row[4] !== root.root ||
+        row.slice(6, row.indexOf("-")).some(field => /^(?:shared|master|propagate_from):/.test(field)) ||
+        ["ro", "nosuid", "nodev"].some(flag => !mountedFlags.includes(flag)) || process.cwd() !== "/" ||
+        readlinkSync("/proc/self/root") !== "/" || readlinkSync("/proc/self/cwd") !== "/") researchInvalid();
     check();
     assertAuthority(); finalAuthority();
-  } finally { root.close(); }
-  // No source/root/target FD is inherited. The only supplied descriptors are
-  // the existing transport pipes; the final launcher independently refuses
-  // regular/directory inherited FDs before emitting READY or reading bootstrap.
-  const transition = researchProviderRootTransition(root.root);
-  const child = spawn(transition.command, [...transition.args, process.execPath,
-    join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"],
-  { cwd: "/", env: environment, stdio: "inherit" });
+    const transition = researchProviderRootTransition(root.root);
+    root.close();
+    // Only the mounted root FD3 crosses this trusted transition. The glue
+    // detaches the old root and closes FD3 before user mapping or payload exec.
+    child = spawn(transition.command, [...transition.args, process.execPath,
+      join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"],
+    { cwd: "/", env: environment, stdio: ["inherit", "inherit", "inherit", handoffRoot] });
+  } finally { try { root.close(); } finally { if (handoffRoot !== undefined) closeSync(handoffRoot); } }
+  if (!child) researchInvalid();
+  const payload = child;
   return await new Promise<number>(resolveExit => {
-    const terminate = (): void => { child.kill("SIGKILL"); };
+    const terminate = (): void => { payload.kill("SIGKILL"); };
     process.once("SIGTERM", terminate); process.once("SIGINT", terminate);
     const finish = (code: number): void => { process.removeListener("SIGTERM", terminate); process.removeListener("SIGINT", terminate); resolveExit(code); };
-    child.once("error", () => finish(70)); child.once("exit", (code, signal) => finish(signal ? 70 : code ?? 70));
+    payload.once("error", () => finish(70)); payload.once("exit", (code, signal) => finish(signal ? 70 : code ?? 70));
   });
 }
 
