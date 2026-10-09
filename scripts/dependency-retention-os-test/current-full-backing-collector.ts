@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { assertRetainedCurrentFullParent, readOriginalFullMonitorTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../src/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { currentBackingStorage } from "./current-backing-geometry.js";
@@ -45,7 +45,7 @@ type Identity = Readonly<{dev:string;
 type Mount = Readonly<{id:string;
   parent:string;
   device:string;
-  root:string;
+  root:MountRoot;
   point:string;
   options:readonly string[];
   superOptions:readonly string[]}>;
@@ -74,19 +74,14 @@ const same=(a:Identity,b:Identity):boolean=>a.dev===b.dev && a.ino===b.ino;
 function device(dev:bigint):string {
   return String(((dev>>8n)&0xfffn)|((dev>>32n)&0xfffff000n))+":"+String((dev&0xffn)|((dev>>12n)&0xffffff00n));
 }
-function unescapeMount(value:string):string { return value.replace(/\\(040|011|012|134)/g,(_,oct:string)=>String.fromCharCode(Number.parseInt(oct,8)));
-}
 /** Kernel mount DATA, not a protection/lock or future exclusion predicate. */
 export function fullBackingMounts(raw:string):readonly Mount[] {
-  assert(Buffer.byteLength(raw)<=1024*1024 && raw.endsWith("\n"));
   const ids=new Set<string>();
-  return raw.trimEnd().split("\n").map(row=>{
+  return fullMountLines(raw).map(row=>{
     const parts=row.split(" "),separator=parts.indexOf("-");
     assert(separator>=6 && parts.length===separator+4 && /^[1-9][0-9]*$/.test(parts[0]!) && /^[0-9]+$/.test(parts[1]!) && /^\d+:\d+$/.test(parts[2]!));
-    assert(!ids.has(parts[0]!));
-    ids.add(parts[0]!);
-    assert(ids.size<=8192);
-    return {id:parts[0]!,parent:parts[1]!,device:parts[2]!,root:unescapeMount(parts[3]!),point:unescapeMount(parts[4]!),options:parts[5]!.split(","),superOptions:parts[separator+3]!.split(",")};
+    assert(!ids.has(parts[0]!));ids.add(parts[0]!);
+    return {id:parts[0]!,parent:parts[1]!,device:parts[2]!,root:fullMountRoot(parts[3],parts[separator+1]!),point:fullMountPath(parts[4]),options:parts[5]!.split(","),superOptions:parts[separator+3]!.split(",")};
   });
 }
 function boundedRead(path:string,bound:number,budget:()=>void):Buffer {
@@ -324,7 +319,7 @@ export function retainFullProcTaskView(anchor:FullProcTaskAnchor,budget:()=>void
     for(const object of objects){const fresh=openSync(prefix+"/"+object.name,constants.O_RDONLY|(object.name==="root"?constants.O_DIRECTORY:0));
       try{assert(same(identity(fstatSync(object.fd,{bigint:true})),identity(object.stat)) && same(identity(fstatSync(fresh,{bigint:true})),identity(object.stat)) && mountId(fresh,budget)===object.mount);}finally{closeSync(fresh);}}
     const root=statSync(prefix+"/root",{bigint:true});
-    return {exe:readlinkSync(prefix+"/exe"),birth:birthAt(prefix,budget),names:names(),statusFields,root:identity(root),user:readlinkSync(prefix+"/ns/user"),mnt:readlinkSync(prefix+"/ns/mnt"),pid:readlinkSync(prefix+"/ns/pid"),cgroup:text(prefix+"/cgroup",4096,budget),uidMap:text(prefix+"/uid_map",4096,budget),gidMap:text(prefix+"/gid_map",4096,budget),cmdline:hash(boundedRead(prefix+"/cmdline",32768,budget)),maps:hash(boundedRead(prefix+"/maps",1024*1024,budget)),mounts:hash(boundedRead(prefix+"/mountinfo",1024*1024,budget))};
+    return {exe:readlinkSync(prefix+"/exe"),birth:birthAt(prefix,budget),names:names(),statusFields,root:identity(root),user:readlinkSync(prefix+"/ns/user"),mnt:readlinkSync(prefix+"/ns/mnt"),pid:readlinkSync(prefix+"/ns/pid"),cgroup:text(prefix+"/cgroup",4096,budget),uidMap:text(prefix+"/uid_map",4096,budget),gidMap:text(prefix+"/gid_map",4096,budget),cmdline:hash(boundedRead(prefix+"/cmdline",32768,budget)),maps:hash(boundedRead(prefix+"/maps",1024*1024,budget)),mounts:hash(readFullMountTableBytes(prefix+"/mountinfo",budget))};
   }
   let closed=false;
   try{for(const name of ["root","cwd","exe","ns/user","ns/pid","ns/mnt"]){const fd=open(prefix+"/"+name,constants.O_RDONLY|(name==="root"?constants.O_DIRECTORY:0));
@@ -378,7 +373,7 @@ export function readOriginalAdministrativeTaskReferences(anchor:FullProcTaskAnch
     // ancestor FD. A cwd at an actual image ancestor IS a concrete reference.
     material ||= same(identity(object),target.image) || (object.isBlockDevice() && String(object.rdev)===target.loopRdev) || (target.storageDevice!==null && device(object.dev)===target.storageDevice) || (name==="cwd" && target.ancestors.some(value=>same(value,identity(object))));
   }
-  const mounts=fullBackingMounts(text(anchor.path+"/mountinfo",1024*1024,budget));
+  const mounts=fullBackingMounts(readFullMountTable(anchor.path+"/mountinfo",budget));
   material ||= target.storageDevice!==null && mounts.some(value=>value.device===target.storageDevice);
   for(const row of text(anchor.path+"/maps",1024*1024,budget).split("\n")){const match=/^[0-9a-f]+-[0-9a-f]+ [rwxps-]{4} [0-9a-f]+ ([0-9a-f]+):([0-9a-f]+) ([0-9]+)/.exec(row);if(!match)continue;
     const mappedDevice=String(BigInt("0x"+match[1]!))+":"+String(BigInt("0x"+match[2]!));
@@ -511,7 +506,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     guestUnitBirth=liveGuestUnit();
     sealBytes=bytes;
     revalidateSelection();
-    const mounts=fullBackingMounts(text(`/proc/${seen.pid}/mountinfo`,1024*1024,budget));
+    const mounts=fullBackingMounts(readFullMountTable(`/proc/${seen.pid}/mountinfo`,budget));
     const matches=mounts.filter(m=>m.point===currentBackingStorage);
     assert.equal(matches.length,1);
     storageMount=matches[0]!;
@@ -543,7 +538,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     const ids=/^NSpid:\s+([0-9 \t]+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
     assert(ids?.[0]===String(s.pid) && ids.at(-1)==="1");
     for(let i=0;i<sealBytes.length;i++)assert(boundedRead(fullNativeLiveRoot+(i===0?"/current-full-pair.json":"/current-full-pair-invocation.json"),16384,budget).equals(sealBytes[i]!));
-    if(storageMount){const current=fullBackingMounts(text(prefix+"/mountinfo",1024*1024,budget)).filter(m=>m.id===storageMount!.id);
+    if(storageMount){const current=fullBackingMounts(readFullMountTable(prefix+"/mountinfo",budget)).filter(m=>m.id===storageMount!.id);
       assert.deepEqual(current,[storageMount]);
     }
     if(loopFd!==undefined && loopStat){const actual=fstatSync(loopFd,{bigint:true}),named=lstatSync("/dev/loop"+storageMount!.device.split(":")[1],{bigint:true});
@@ -653,12 +648,12 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     // current RO flags alone never discharge their remount/uncover authority.
     if([...exposures].some(kind=>kind!==FullBackingExposure.PrivilegeCandidate && kind!==FullBackingExposure.StorageMount))return false;
     const ownImage=held.find(entry=>entry.path===image)!;
-    const baseMount=fullBackingMounts(text("/proc/self/mountinfo",1024*1024,budget)).find(row=>row.id===ownImage.mount);assert(baseMount);
-    const relative=(baseMount.root==="/"?"":baseMount.root)+image.slice(baseMount.point==="/"?0:baseMount.point.length);
+    const baseMount=fullBackingMounts(readFullMountTable("/proc/self/mountinfo",budget)).find(row=>row.id===ownImage.mount);assert(baseMount && baseMount.root.kind===MountRootKind.Path);
+    const relative=(baseMount.root.path==="/"?"":baseMount.root.path)+image.slice(baseMount.point==="/"?0:baseMount.point.length);
     const covers=(root:string,path:string)=>root==="/" || path===root || path.startsWith(root+"/");
     // Every actual alias that can name the image or backing storage is RO.
     // An unrelated own-job RW bind cannot reach the target outside its root.
-    if(mounts.some(row=>((row.device===device(BigInt(imageIdentity.dev)) && covers(row.root,relative)) || row.device===storageMount!.device) && !row.options.includes("ro")))return false;
+    if(mounts.some(row=>((row.device===device(BigInt(imageIdentity.dev)) && row.root.kind===MountRootKind.Path && covers(row.root.path,relative)) || row.device===storageMount!.device) && !row.options.includes("ro")))return false;
     for(const path of ["/run/systemd/private","/run/dbus","/var/lib/subscription-runtime-host-policy","/var/lib/subscription-runtime-full-parent-live","/run/docker.sock","/run/containerd/containerd.sock","/run/podman/podman.sock"]){
       try{const stat=statSync(prefix+"/root"+path,{bigint:true});if(stat.isSocket() || (stat.isDirectory() && (stat.mode&0o777n)!==0n))return false;}catch(error){if(!["ENOENT","EACCES"].includes((error as NodeJS.ErrnoException).code??""))throw error;}
     }
@@ -764,7 +759,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
                 const exposures=descriptorSample.exposures,fdJoins=descriptorSample.joins;
                 descriptors+=descriptorSample.count;assert(descriptors<=131072);
                 if(pid===process.pid)memberships.push(()=>descriptorSample.revalidate());
-                const mounts=fullBackingMounts(text(prefix+"/mountinfo",1024*1024,scanBudget));
+                const mounts=fullBackingMounts(readFullMountTable(prefix+"/mountinfo",scanBudget));
                 if(mounts.some(m=>m.device===storageMount!.device))exposures.add(FullBackingExposure.StorageMount);
                 const maps=text(prefix+"/maps",1024*1024,scanBudget);
                 for(const row of maps.split("\n")){const match=/^[0-9a-f]+-[0-9a-f]+ [rwxps-]{4} [0-9a-f]+ ([0-9a-f]+):([0-9a-f]+) ([0-9]+)/.exec(row);

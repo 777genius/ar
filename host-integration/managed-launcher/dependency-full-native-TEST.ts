@@ -3,7 +3,7 @@ import { managedSystemdRunExecutable } from "./launch.mjs";
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
+import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -601,27 +601,63 @@ export function retainCurrentFullParent():FullParentSession {
     });fullParentDescriptors.set(session,()=>{check(!closed);return c.pins.descriptors().concat(procFds);});retainedFullParent=session;return session;}catch{for(const fd of procFds.reverse())closeSync(fd);c.pins.close();refuse();}
 }
 
+// Complete mount-table bounds, independent of cumulative collector admission caps.
+export const fullMountTableBytes=8*1024*1024;
+export const fullMountTableRows=32768;
+export const fullMountLineBytes=65536;
+export enum MountRootKind { Path="path", Namespace="namespace" }
+export type MountRoot=Readonly<{kind:MountRootKind.Path;path:string}> |
+  Readonly<{kind:MountRootKind.Namespace;name:string;inode:string}>;
+export function fullMountPath(value:unknown):string {
+  check(typeof value==="string" && value.startsWith("/") && !/\\(?!040|011|012|134)/.test(value));
+  return value.replace(/\\(040|011|012|134)/g,(_,digits:string)=>String.fromCharCode(parseInt(digits,8)));
+}
+/** Linux v6.8 fs/nsfs.c ns_dname uses ns->ops->name and inode->i_ino.
+ * fs/proc/namespaces.c lists the finite operations; pid/time child aliases
+ * resolve to the original pid/time object's ops, not the proc alias name. */
+export function fullMountRoot(value:unknown,filesystem:string):MountRoot {
+  check(typeof value==="string");
+  if(value.startsWith("/"))return {kind:MountRootKind.Path,path:fullMountPath(value)};
+  const ns=/^(cgroup|ipc|mnt|net|pid|time|user|uts):\[([1-9][0-9]{0,19})\]$/.exec(value);
+  check(filesystem==="nsfs" && ns && BigInt(ns[2]!)<=18446744073709551615n);
+  return {kind:MountRootKind.Namespace,name:ns[1]!,inode:ns[2]!};
+}
+export function fullMountLines(raw:string):readonly string[] {
+  check(Buffer.byteLength(raw)<=fullMountTableBytes && raw.endsWith("\n") && raw.length>1);
+  const lines=raw.slice(0,-1).split("\n");
+  check(lines.length<=fullMountTableRows && lines.every(line=>line.length>0 && Buffer.byteLength(line)<=fullMountLineBytes));
+  return lines;
+}
+/** Bound allocations and require observed EOF even at the exact table limit. */
+export function readFullMountTableBytes(path:string,budget:()=>void=()=>{}):Buffer {
+  budget();const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  try {
+    const bytes=Buffer.alloc(fullMountTableBytes+1);let size=0,count=0;
+    while((count=readSync(fd,bytes,size,bytes.length-size,null))>0){size+=count;check(size<=fullMountTableBytes);budget();}
+    const result=bytes.subarray(0,size);fullMountLines(result.toString("utf8"));return result;
+  }finally{closeSync(fd);}
+}
+
+export function readFullMountTable(path:string,budget:()=>void=()=>{}):string {
+  return readFullMountTableBytes(path,budget).toString("utf8");
+}
+
 /** DATA predicate only; it grants no physical protection or launch permission. */
 export function fullReadonlyMountData(raw:string,path:string,mountId:string,device:string){
-  check(Buffer.byteLength(raw)<=1024*1024 && raw.endsWith("\n") && raw.length>1);
   const ids=new Set<string>();
-  const mounts=raw.slice(0,-1).split("\n").map(line=>{
+  const mounts=fullMountLines(raw).map(line=>{
     const fields=line.split(" "),split=fields.indexOf("-");
     check(fields.length>=10 && split>=6 && fields.length===split+4);
     const id=fields[0],parent=fields[1],dev=fields[2],root=fields[3],point=fields[4],options=fields[5];
     check(id && /^[1-9][0-9]{0,19}$/.test(id) && parent && /^[1-9][0-9]{0,19}$/.test(parent) && !ids.has(id));ids.add(id);
     check(dev && /^(?:0|[1-9][0-9]{0,9}):(?:0|[1-9][0-9]{0,9})$/.test(dev));
-    function decoded(value:unknown):string{
-      check(typeof value==="string" && value.startsWith("/") && !/\\(?!040|011|012|134)/.test(value));
-      return value.replace(/\\(040|011|012|134)/g,(_,digits:string)=>String.fromCharCode(parseInt(digits,8)));
-    }
-    const decodedRoot=decoded(root),decodedPoint=decoded(point);
+    const decodedRoot=fullMountRoot(root,fields[split+1]!),decodedPoint=fullMountPath(point);
     check(options && /^(?:[A-Za-z0-9_.=+-]+)(?:,[A-Za-z0-9_.=+-]+)*$/.test(options));
     const flags=options.split(",");check(new Set(flags).size===flags.length && flags.filter(v=>v==="ro" || v==="rw").length===1);
     check(fields.slice(split+1).every(v=>typeof v==="string" && v.length>0));
     return {id,device:dev,root:decodedRoot,point:decodedPoint,readonly:flags.includes("ro")};
   });
-  check(mounts.length<=8192);
+  check(mounts.length<=fullMountTableRows);
   const selected=mounts.filter(m=>m.id===mountId);check(selected.length===1);const own=selected[0];check(own && own.device===device);
   const covers=(point:string)=>path===point || path.startsWith(point==="/"?"/":point+"/");
   check(covers(own.point) && own.readonly);
@@ -632,7 +668,7 @@ export function fullReadonlyMountData(raw:string,path:string,mountId:string,devi
 /** Actual retained descriptor mount IDs, device/inode and unchanged complete
  * kernel view are joined before interpreting any readonly observation. */
 function assertReadonlyMounts(pins:Pins,paths:readonly string[]){
-  const raw=readFileSync("/proc/self/mountinfo","utf8");check(Buffer.byteLength(raw)<=1024*1024);
+  const raw=readFullMountTable("/proc/self/mountinfo");
   for(const path of paths){
     const fd=pins.hold(path,true),before=fstatSync(fd,{bigint:true}),info=readFileSync(`/proc/self/fdinfo/${fd}`,"utf8");
     check(Buffer.byteLength(info)<=4096);const ids=[...info.matchAll(/^mnt_id:\s+([1-9][0-9]{0,19})$/gm)],inos=[...info.matchAll(/^ino:\s+([1-9][0-9]{0,19})$/gm)];
@@ -642,7 +678,7 @@ function assertReadonlyMounts(pins:Pins,paths:readonly string[]){
     const after=fstatSync(fd,{bigint:true}),named=lstatSync(path,{bigint:true});check(after.dev===before.dev && after.ino===before.ino && named.dev===before.dev && named.ino===before.ino && !named.isSymbolicLink());
     check(readFileSync(`/proc/self/fdinfo/${fd}`,"utf8")===info);
   }
-  check(readFileSync("/proc/self/mountinfo","utf8")===raw);pins.validate();
+  check(readFullMountTable("/proc/self/mountinfo")===raw);pins.validate();
 }
 
 /** One fixed demand: 8GiB summed caps plus 1GiB host reserve, 14GiB real OS
