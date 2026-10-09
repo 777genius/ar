@@ -1,18 +1,22 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fstatSync, readdirSync, readlinkSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
   DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis,
   type DependencyCapturedTreeObservation } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { observeDependencyDirectoryRoot, observeDependencyTree, captureDependencySourceExposure, captureDependencyPhysicalTreeExposure,
   assertDependencySourceExposureCurrent, closeDependencySourceExposure, type DependencySourceExposure } from "../observe-dependency-tree";
 import { observeDependencyPinnedFile } from "../observe-dependency-pinned-file";
+
+// Only the race barrier is intercepted; metadata and operations use the real FS.
+vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof import("node:fs/promises")>() }));
 
 const run = promisify(execFile);
 const limits = { maxEntries: 64, maxTotalBytes: 4096, maxManifestBytes: 16384, maxDurationMs: 10000 };
@@ -204,6 +208,61 @@ describe.skipIf(process.platform !== "linux")("dependency full-tree inventory", 
       expect(await observeDependencyTree({ workspacePath: join(f.path, "alias"), treeName: "node_modules", limits }))
         .toEqual({ status: Status.Incomplete, reason: Failure.UnsafeNamespace });
     } finally { await f.cleanup(); }
+  });
+
+  // RED before the fix: unrelated output creation changes ancestor nlink/ctime
+  // between lstat and open, incorrectly rejecting an unchanged dependency tree.
+  it("permits unrelated private ancestor output created during directory retention", async () => {
+    const f = await fixture(), baseline = complete(await f.observe()), nativeOpen = fs.open;
+    const before = await lstat(f.path, { bigint: true });
+    let changed = false;
+    const barrier = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (!changed && await realpath(args[0]) === f.path) {
+        changed = true;
+        await mkdir(join(f.path, "parallel-output"));
+      }
+      return nativeOpen(...args);
+    });
+    try {
+      const observed = complete(await f.observe()), after = await lstat(f.path, { bigint: true });
+      expect(changed).toBe(true);
+      expect(after.ino).toBe(before.ino);
+      expect(after.nlink).toBe(before.nlink + 1n);
+      expect(observed.tree).toEqual(baseline.tree);
+      expect(observed.digest).toBe(baseline.digest);
+      expect(observed.canonicalBytes).toEqual(baseline.canonicalBytes);
+      expect(await readFile(f.file, "utf8")).toBe("abc");
+    } finally { barrier.mockRestore(); await f.cleanup(); }
+  });
+
+  // RED if the ancestor correction also accepts identity/mode substitutions or
+  // relaxes full target metadata at the same lstat/open boundary.
+  it.each([
+    ["ancestor", "inode"], ["ancestor", "mode"],
+    ["target", "inode"], ["target", "mode"], ["target", "membership"],
+  ] as const)("rejects %s %s substitution during directory retention", async (scope, change) => {
+    const f = await fixture(), selected = scope === "ancestor" ? f.path : f.tree, held = selected + ".held", nativeOpen = fs.open;
+    let changed = false;
+    const barrier = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (!changed && await realpath(args[0]) === selected) {
+        changed = true;
+        if (change === "inode") {
+          await rename(selected, held); await mkdir(selected);
+          if (scope === "ancestor") await rename(join(held, "node_modules"), f.tree);
+        } else if (change === "mode") await chmod(selected, scope === "ancestor" ? 0o720 : 0o700);
+        else await mkdir(join(selected, "parallel-output"));
+      }
+      return nativeOpen(...args);
+    });
+    try {
+      const observed = await f.observe();
+      expect(changed).toBe(true);
+      expect(observed.status).toBe(Status.Incomplete);
+      if (observed.status !== Status.Incomplete) throw new Error("TEST substituted directory accepted");
+      expect([Failure.IdentityChanged, Failure.AllocationChanged]).toContain(observed.reason);
+      const preserved = scope === "target" && change === "inode" ? join(held, "pkg/index.js") : f.file;
+      expect(await readFile(preserved, "utf8")).toBe("abc");
+    } finally { barrier.mockRestore(); await f.cleanup(); await rm(held, { recursive: true, force: true }); }
   });
 
   it("pins exact file bytes and refuses an alias or exceeded file bound", async () => {
