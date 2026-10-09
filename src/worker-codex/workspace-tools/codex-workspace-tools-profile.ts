@@ -88,7 +88,8 @@ export function buildCodexWorkspaceToolsProfile(input: {
     `command = ${tomlString(process.execPath)}`,
     `args = ${tomlStringArray(args)}`,
     `cwd = ${tomlString(input.workspaceRoot)}`,
-    ...(input.childLifetime ? ['env_vars = ["PATH", "HOME", "CI", "CODEX_HOME"]'] : []),
+    ...((input.childLifetime || modelBackend === CodexModelBackend.XiaomiMimoTokenPlan)
+      ? ['env_vars = ["PATH", "HOME", "CI", "CODEX_HOME"]'] : []),
     `enabled_tools = ${tomlStringArray(enabledTools)}`,
     'default_tools_approval_mode = "approve"',
     "",
