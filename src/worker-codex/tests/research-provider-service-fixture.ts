@@ -62,8 +62,9 @@ export const record = (current: ReturnType<typeof prepareHelper>, suffix: string
 /** Move the substituted Host monotonic clock without replaying every 25 ms permission poll. Tests still execute the real poll at the selected boundary. */
 export function researchClock() {
   vi.useFakeTimers();
-  const origin = Date.now(); let elapsed = 0;
+  const origin = Date.now(), monotonicOrigin = process.hrtime.bigint(); let elapsed = 0;
   vi.spyOn(performance, "now").mockImplementation(() => Date.now() - origin + elapsed);
+  vi.spyOn(process.hrtime, "bigint").mockImplementation(() => monotonicOrigin + BigInt(Date.now() - origin + elapsed) * 1_000_000n);
   return Object.assign(() => performance.now(), { advance: (ms: number) => { elapsed += ms; } });
 }
 /** Model a three-second artifact traversal on slow Host I/O, still inside its finite thirty-second bound. All retained bytes/digests remain real; only the Host clock and directory-observation latency are substituted. */

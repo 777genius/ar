@@ -1,4 +1,4 @@
-import { openWorkerProfileApplies } from "./project-control-worker-mode";
+import { openWorkerProfileApplies, openWorkerToolCacheEnvironmentSet } from "./project-control-worker-mode";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory, readHostedDependencyToolFactoryEntry } from "./hosted-readonly-admission";
@@ -41,7 +41,7 @@ import {
   codexHostedDefaultEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
-  hostedCodexExecutableReadPath,
+  hostedCodexExecutableReadClosure,
   hostedCodexResolverReadPaths,
   hostedCodexPermissionProfilesToml,
   assertHostedOpenWorkerLayout, renderHostedOpenWorkerProfilesToml, requiresHostedProcessAdmission,
@@ -310,7 +310,7 @@ function createCodexAgentDriver(input: {
     }
   }
   const executableReadPath = projectReadBoundary
-    ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
+    ? hostedCodexExecutableReadClosure({ codexBinaryPath: options.codexBinaryPath, sourceEnv })?.paths
     : undefined;
   // MiMo's egress domain is fixed by modelBackend, not by the host-trusted
   // `providerEgressPolicy` input (`assertWorkerOptions` rejects the two
@@ -489,6 +489,7 @@ function createCodexAgentDriver(input: {
         ? { configToml: codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true, modelBackend, mimoApiKeyEnvVarName,
             shellEnvironmentSet: { HOME: join(options.openWorker.toolRoot, "home"), TMPDIR: join(options.openWorker.toolRoot, "tmp"),
               TMP: join(options.openWorker.toolRoot, "tmp"), TEMP: join(options.openWorker.toolRoot, "tmp"),
+              ...openWorkerToolCacheEnvironmentSet(options.openWorker.toolRoot),
               ...(options.openWorker.commitAllowed
                 ? { GIT_DIR: join(options.openWorker.toolRoot, "git"), GIT_WORK_TREE: options.workspacePath! }
                 : {}) } }) + "\n" +
@@ -529,7 +530,7 @@ function createCodexAgentDriver(input: {
 
 function projectReadBoundaryConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: readonly string[],
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   privateKeyFilePath?: string,
@@ -543,7 +544,7 @@ function projectReadBoundaryConfigToml(
 
 function hostedGlobalScanConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: readonly string[],
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   dependencyTools?: DependencyToolGuestConfig,

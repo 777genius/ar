@@ -17,3 +17,6 @@ export * from "./ports/scoped-termination-port";
 export * from "./application/terminate-owned-scope";
 export * from "./domain/source-worker-service-ownership";
 export * from "./ports/source-worker-request-store-port";
+
+export { parseHostedReadonlyHostInventory } from "./domain/hosted-readonly-inventory";
+export type { HostedReadonlyHostInventory, HostedOrdinaryCreator } from "./domain/hosted-readonly-inventory";

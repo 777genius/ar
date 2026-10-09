@@ -117,8 +117,16 @@ vi.mock("node:fs", async original => {
       if (path === "/etc/machine-id") return "b".repeat(32);
       return real.readFileSync(typeof path === "string" ? local(path) : path, opts);
     },
-    readlinkSync: (path: string) => path.startsWith("/proc/") ? (fixture.processNamespaces.get(Number(path.split("/")[2]))?.[path.split("/").at(-1) as "user"] ??
-      (fixture.namespaceRoot && path.startsWith("/proc/self") ? "TEST-namespace" : "TEST-host")) : real.readlinkSync(local(path)),
+    readlinkSync: (path: string) => {
+      if (!path.startsWith("/proc/")) return real.readlinkSync(local(path));
+      const parts = path.split("/"), pid = parts[2] === "self" ? process.pid : Number(parts[2]);
+      const ids = { user: 4026531837, mnt: 4026531841, pid: 4026531836, net: 4026531840 } as const;
+      const kind = parts.at(-1) as keyof typeof ids, selected = fixture.processNamespaces.get(pid)?.[kind];
+      if (selected !== undefined) return selected;
+      // Canonical labelled TEST identities, not physical namespace evidence.
+      if (parts[3] === "ns" && kind in ids) return `${kind}:[${ids[kind] + (fixture.namespaceRoot && pid === process.pid ? 1000 : 0)}]`;
+      return "TEST-host";
+    },
     realpathSync: (path: string) => { if (fixture.scratchNodes.has(path)) return path; const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target.startsWith(join(fixture.root, "system") + "/") ? target.slice(join(fixture.root, "system").length) : target === local(path) ? path : target; },
     readdirSync: (path: string, opts: Parameters<typeof real.readdirSync>[1]) => real.readdirSync(local(path), opts),
     mkdirSync: (path: string, opts: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), opts),

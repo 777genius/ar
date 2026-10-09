@@ -14,7 +14,7 @@ import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
 import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
 import { researchProjectLaunchInputs } from "./research-project-launch-inputs";
-import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
+import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 
 /** Root adapters must already hold the registered action's activity/workspace
  * locks and have authorized its receipt through the policy/semantic broker.
@@ -32,14 +32,14 @@ export class RegisteredResearchSinkPreparationUnresolved extends Error {
 }
 
 async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false, execution?: ResearchRegisteredExecution) {
-  const codexPackage = hostedCodexExecutableReadPath({ codexBinaryPath: request.codexBinaryPath,
+  const codexClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: request.codexBinaryPath,
     sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
   const current = await researchProjectLaunchInputs({ registryRootDir, controllerJobId, request, preStart,
     ...(execution ? { execution } : {}), bindSupportedRequest: ({ manifest, launch }, controller) => {
       const sink = researchPath(launch.config.durableHandoffRootDir);
       if (sink !== join(registryRootDir, "durable-handoffs")) throw new RegisteredResearchHandoffUnsupportedSink();
       for (const path of [request.jobRootDir, request.workspacePath, request.authRootDir, installedResearchRuntimeDirectory(),
-        ...(codexPackage ? [codexPackage] : []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
+        ...(codexClosure?.paths ?? []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
         if (overlaps(sink, path)) researchInvalid();
       }
       assertRegisteredResearchExecutionSupported({ registryRootDir, manifest, controller: controller.controller, launch, request, execution });
@@ -48,7 +48,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
   });
   const readDirectory = (path: string): string => lstatSync("/proc/1/root" + path).isDirectory() ? path : dirname(path);
   return { ...current, protectedSources: [request.jobRootDir, request.workspacePath, request.authRootDir,
-    installedResearchRuntimeDirectory(), ...(codexPackage ? [readDirectory(codexPackage)] : []), readDirectory(process.execPath),
+    installedResearchRuntimeDirectory(), ...(codexClosure?.paths.map(readDirectory) ?? []), readDirectory(process.execPath),
     current.controller.controller.jobRootDir, "/usr", "/etc"] };
 }
 async function currentRegisteredHandoff(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false,

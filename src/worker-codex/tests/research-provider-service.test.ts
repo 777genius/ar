@@ -14,7 +14,7 @@ import { signalCodexAppServerChildGroup } from "../../provider-codex/app-server/
 import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
-import { prepareResearchProviderRoot, observeResearchProviderWritableRoots, type ResearchProviderRootPlan } from "../research-provider-root";
+import { prepareResearchProviderRoot, observeResearchProviderWritableRoots, ResearchRootMountAccess, type ResearchProviderRootPlan } from "../research-provider-root";
 import { prepareHelper, providerProxy, providerStreams as streams, readyFrame, settledNamespaces, record, researchClock } from "./research-provider-service-fixture";
 
 let previousExitCode: typeof process.exitCode;
@@ -26,6 +26,10 @@ function providerLaunch(current: ReturnType<typeof prepareHelper>, home = curren
   if (!root) { root = prepareResearchProviderRoot(current.spec, current.provider, home, scratchHost); rootPlans.set(current, root); }
   return trustedResearchProviderLaunch(current.spec, current.provider, home, root);
 }
+function writableBindings(current: ReturnType<typeof prepareHelper>) {
+  return rootPlans.get(current)!.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite);
+}
+
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
@@ -33,7 +37,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(plan.args).toContain("--property=TimeoutStartSec=300s");
     const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
     expect(runtime.args).toContain("--property=MountFlags=private");
-    expect(plan.args).toContain("--property=MountFlags=private");
+    expect(plan.args.slice(plan.args.indexOf("--") + 1, plan.args.indexOf("--") + 5)).toEqual(["/usr/bin/unshare", "--mount", "--propagation", "private"]);
     // Propagation is installed policy; caller input cannot replace it or append properties.
     for (const injected of [{ ...current.spec, mountFlags: "shared" }, { ...current.spec, systemdProperties: ["MountFlags=shared"] }]) {
       expect(() => trustedResearchRuntimeLaunch(injected, researchHash(current.bytes))).toThrow("hosted_research_launch_denied");
@@ -45,8 +49,8 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
       { source: "/TEST-nvme/runtime-caches/37e385e326df74a53659409f92ea51bf571e9b9ee28533aff43ea69d4a5af86c", target: join(current.home, "plugins/cache") },
       { source: "/TEST-nvme/runtime-caches/a071e67a38dd8556cbcfc146144797299a85af79956fd438f852c7c4364ed5c6", target: join(current.home, "cache/remote_plugin_catalog") },
     ];
-    expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual([
-      ...pinBinds, ...selected.map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
+    expect(writableBindings(current).map(({ source, target }) => [source, target])).toEqual([
+      ...pinBinds.map(arg => arg.slice("--property=BindPaths=".length).split(":").slice(0, 2)), ...selected.map(({ source, target }) => [source, target]),
     ]);
     // Model the independently observed topology: original nonrecursive pins contain none of these later private mounts. Only explicit physical binds
     // can resolve their data. This assertion does not simulate Linux confinement.
@@ -54,11 +58,11 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     const visible = (args: readonly string[]) => new Map(args.filter(arg => arg.startsWith("--property=BindPaths="))
       .map(arg => { const [source, target] = arg.slice("--property=BindPaths=".length).split(":"); return [target, data.get(source!)] as const; }));
     for (const { target } of selected) expect(visible(pinBinds).get(target)).toBeUndefined();
-    expect(selected.map(({ target }) => visible(plan.args).get(target))).toEqual(["TEST-agent-marker", "TEST-plugin-data", "TEST-catalog-data"]);
-    expect(plan.args).toContain("--property=MountAPIVFS=yes");
-    expect(plan.args.filter(arg => arg.startsWith("--property=BindReadOnlyPaths="))).toContain("--property=BindReadOnlyPaths=/usr:/usr:norbind");
-    expect(plan.args).toContain(`--property=ReadWritePaths=${current.spec.request.jobRootDir} ${current.spec.request.workspacePath}`);
-    expect(plan.args).toContain("--mount-proc"); expect(plan.args.at(-1)).toBe("--research-ready-v1");
+    const physical = new Map(writableBindings(current).map(bind => [bind.target, data.get(bind.source)]));
+    expect(selected.map(({ target }) => physical.get(target))).toEqual(["TEST-agent-marker", "TEST-plugin-data", "TEST-catalog-data"]);
+    expect(rootPlans.get(current)!.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadOnly).map(bind => bind.target)).toContain("/usr");
+    expect(plan.args.some(arg => /^--property=(?:RootDirectory|MountAPIVFS|BindPaths|BindReadOnlyPaths|ReadWritePaths|MountFlags)=/.test(arg))).toBe(false);
+    expect(plan.args.slice(-5, -2)).toEqual([current.spec.request.jobId, current.provider, current.home]);
     expect(f.mutations).toEqual([]);
   });
   it.each(["absent", "legacy"])("keeps %s policy as a positive launch without extra binds or mutations", async kind => {
@@ -75,8 +79,8 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
       f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps });
     }
     const plan = providerLaunch(current, current.home, f.host);
-    expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual(
-      trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")));
+    expect(writableBindings(current).map(({ source, target }) => [source, target])).toEqual(
+      trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")).map(arg => arg.slice("--property=BindPaths=".length).split(":").slice(0, 2)));
     expect(f.mutations).toEqual([]);
   });
   async function fallbackHomes(partial = false) {
@@ -94,16 +98,16 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     const foreign = f.prepared.filter(bind => bind.target.startsWith(earlier + "/") && f.mounts.has(bind.target));
     expect(foreign).toHaveLength(partial ? 1 : 2);
     for (const { target } of foreign) expect(host.scratchMounts.get(target)).toEqual(f.mounts.get(target));
-    const plan = providerLaunch(current, other, f.host), binds = plan.args.filter(arg => arg.startsWith("--property=BindPaths="));
+    const plan = providerLaunch(current, other, f.host), binds = writableBindings(current).map(({ source, target }) => [source, target]);
     const footprint = observeResearchProviderWritableRoots(rootPlans.get(current)!);
     expect(footprint).toHaveLength(5);
     expect(footprint.some(root => foreign.some(bind => root.source === bind.source || root.target === bind.target))).toBe(false);
     expect(binds).toEqual([
-      ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")),
-      ...f.prepared.filter(bind => !bind.target.startsWith(earlier + "/")).map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
+      ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")).map(arg => arg.slice("--property=BindPaths=".length).split(":").slice(0, 2)),
+      ...f.prepared.filter(bind => !bind.target.startsWith(earlier + "/")).map(({ source, target }) => [source, target]),
     ]);
-    expect(binds.slice(2).map(arg => arg.split(":")[1])).toEqual([join(current.spec.request.jobRootDir, "tmp"), join(other, "plugins/cache"), join(other, "cache/remote_plugin_catalog")]);
-    expect(plan.args.some(arg => foreign.some(bind => arg.includes(bind.source) || arg.includes(bind.target)))).toBe(false);
+    expect(binds.slice(2).map(bind => bind[1])).toEqual([join(current.spec.request.jobRootDir, "tmp"), join(other, "plugins/cache"), join(other, "cache/remote_plugin_catalog")]);
+    expect(binds.some(([source, target]) => foreign.some(bind => source === bind.source || target === bind.target))).toBe(false);
     expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
     expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
@@ -113,7 +117,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     fs.writeFileSync("/etc/ssl/certs/ca-certificates.crt", bytes, { mode: 0o644 });
     const plan = providerLaunch(current);
     expect(providerLaunch(current).args).toEqual(plan.args);
-    expect(plan.args.some(arg => arg.startsWith("--property=RootDirectory="))).toBe(true);
+    expect(plan.args).toContain(join(current.spec.runtimeDirectory, "dist/worker-codex/research-provider-root-assembler.js"));
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   // Regression: the real policy is over 1 MiB; borrowing DNS's 64 KiB cap rejects valid fallback, while an unbounded policy reader admits >8 MiB.
@@ -130,7 +134,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     fs.writeFileSync(f.configPath, bytes);
     const plan = providerLaunch(current, other, f.host);
     expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
-    expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toHaveLength(5);
+    expect(writableBindings(current)).toHaveLength(5);
     expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   // Regression: the omission class must retain native/policy/base custody, and reject the same corrupted topology both initially and on a retained receipt.
@@ -197,7 +201,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     // Revalidate the same retained receipt on healthy and corrupted facts. Re-entering the service would deny the pre-existing root independently.
     const healthy = (): string[] => {
       const args = providerLaunch(current).args;
-      expect(args).toContain(`--property=BindPaths=${selected.source}:${selected.target}:norbind`);
+      expect(writableBindings(current)).toContainEqual(expect.objectContaining({ source: selected.source, target: selected.target }));
       return args;
     };
     const originalArgs = healthy();
@@ -241,9 +245,9 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
     const healthy = () => providerLaunch(current).args;
     const originalArgs = healthy();
-    expect(originalArgs.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual([
-      ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")),
-      ...f.prepared.filter(bind => bind.target !== selected.target).map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
+    expect(writableBindings(current).map(({ source, target }) => [source, target])).toEqual([
+      ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")).map(arg => arg.slice("--property=BindPaths=".length).split(":").slice(0, 2)),
+      ...f.prepared.filter(bind => bind.target !== selected.target).map(({ source, target }) => [source, target]),
     ]);
     const rootRecord = join(current.directory, "provider-roots", current.provider, "plan.json"), originalRootBytes = researchRead(rootRecord);
     for (const entry of [true, { device: originalEntry.device, inode: originalEntry.inode + 1 }]) {

@@ -9,7 +9,8 @@ import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
-import { trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
+import { prepareResearchProviderRoot } from "../research-provider-root";
+import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareHelper, providerProxy, providerStreams, readyFrame, settledNamespaces, record, researchClock, slowBoundedMaterial } from "./research-provider-service-fixture";
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { parseResearchOperatorRequest } from "../research-launch-contract";
@@ -24,6 +25,23 @@ afterEach(() => {
 });
 
 describe("slow bounded material at research effect boundaries", () => {
+  // RED: recreating the assembly deadline on each check extends an expired seal.
+  it.each([400_000, 600_000])("retains the original %i ms MiMo seal deadline across repeated launch checks", allowance => {
+    const current = prepareHelper("mimo-TEST/codex-home", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      model: codexMimoDefaultModel, maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: allowance, taskTimeoutMs: 1_200_000 }));
+    researchPublish(join(current.directory, "mimo-home.json"), { schemaVersion: 1,
+      specSha256: researchHash(current.bytes), identity: researchDirectoryIdentity(current.home) }, true);
+    const now = slowBoundedMaterial();
+    const root = prepareResearchProviderRoot(current.spec, current.provider, current.home);
+    const launch = trustedResearchProviderLaunch(current.spec, current.provider, current.home, root), deadline = Number(launch.args.at(-1));
+    const checkLaunch = () => trustedResearchProviderLaunch(current.spec, current.provider, current.home, root);
+    expect(deadline - Number(process.hrtime.bigint() / 1_000_000n)).toBe(allowance);
+    now.advance(310_000); expect(checkLaunch().args).toEqual(launch.args);
+    now.advance(deadline - Number(process.hrtime.bigint() / 1_000_000n));
+    expect(() => checkLaunch()).toThrow("hosted_research_launch_denied");
+    now.advance(1); expect(() => checkLaunch()).toThrow("hosted_research_launch_denied");
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   // RED: provider transport and its service reject at 300s despite the sealed allocation.
   it.each([[600_000, 1_200_000, 600], [600_000, 400_000, 400]])("shares owned MiMo startup %s / task %s allowance with the actual provider transport", async (startup, task, seconds) => {
     const current = prepareHelper("mimo-TEST/codex-home", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
