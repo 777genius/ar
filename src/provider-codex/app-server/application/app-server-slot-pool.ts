@@ -27,6 +27,7 @@ import {
   type CodexAppServerNativeToolSurface,
 } from "../domain/app-server-types";
 import { CodexAppServerClient } from "./app-server-client";
+import { appServerSessionLifetime } from "./app-server-child-lifetime";
 import { AppServerGoalRunner } from "./app-server-goal-runner";
 import type { AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
@@ -255,6 +256,8 @@ export class AppServerSlotPool {
     try {
       await client.start();
     } catch (error) {
+      // Fence with the startup cause before stop() closes the same lifetime.
+      appServerSessionLifetime(input.session)?.close(error);
       await this.cleanupStartupFailure(input.key, error);
       throw error;
     }

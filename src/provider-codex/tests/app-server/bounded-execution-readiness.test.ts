@@ -30,6 +30,20 @@ function fixture(onReadiness?: (event: AppServerExecutionReadyEvent) => void, to
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 describe("original allocation deadline and actual execution readiness", () => {
+  it("preserves the startup failure before cleanup closes the execution lifetime", async () => {
+    const f = fixture();
+    const result = f.engine.run(f.input).catch((error: unknown) => error);
+    try {
+      f.peer.fail(await f.peer.next("initialize"));
+      expect(await result).toMatchObject({ message: "codex_app_server_initialize_failed:TEST failure" });
+      expect(f.lifetime.signal.reason).toMatchObject({ message: "codex_app_server_initialize_failed:TEST failure" });
+      expect(f.events.some(event => event.state === AppServerExecutionReadiness.Ready)).toBe(false);
+    } finally {
+      await f.engine.dispose();
+    }
+    expect(f.peer.ended).toBe(true);
+  });
+
   it("publishes READY only after the actual thread and ACTIVE GoalAPI, and resolves env once", async () => {
     const f = fixture(), result = f.engine.run(f.input);
     try {
