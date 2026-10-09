@@ -42,21 +42,7 @@ export function createProjectBrokerAdmission(
   // One mutation port retains its original admission proof. A second create
   // cannot replace it while the first asynchronous operation is in flight.
   let admittedCreation: ProjectCreationAdmissionProof | undefined;
-  return {
-    creationProof: () => admittedCreation,
-    gate: { async evaluate(request) {
-      let creation: typeof admittedCreation;
-      if (request.operation === ProjectOperation.CreateWorktree && input.createWorktreeInput) {
-        if (admittedCreation) throw new Error("project_control_creation_broker_already_admitted");
-        if (request.workspacePath !== input.createWorktreeInput.path || request.jobId !== input.createWorktreeInput.jobId) {
-          throw new Error("project_control_creation_request_binding_mismatch");
-        }
-        const missing = !await pathExists(input.createWorktreeInput.path);
-        const identity = missing ? await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) : undefined;
-        if (missing && !identity) throw new Error("project_control_creation_target_unproved");
-        creation = { missing, identity };
-      }
-      const decision = await codexProjectAdmissionGate({
+  const mutationGate = codexProjectAdmissionGate({
       registryRootDir: input.registryRootDir,
       scope: input.scope,
       controllerJobId: input.controller.jobId,
@@ -66,6 +52,7 @@ export function createProjectBrokerAdmission(
         ...(input.createManifest ? { createManifest: input.createManifest } : {}),
         ...(input.startManifest && input.startLaunch && input.startWorkspaceLease ? {
           start: { manifest: input.startManifest, launch: input.startLaunch, workspaceLease: input.startWorkspaceLease,
+            ...(input.startAdmissionWorkspaceMode ? { workspaceMode: input.startAdmissionWorkspaceMode } : {}),
             ...(input.controlledRuntimeInPlaceContinuation ? { continuation: input.controlledRuntimeInPlaceContinuation } : {}),
           },
         } : {}),
@@ -98,12 +85,42 @@ export function createProjectBrokerAdmission(
           }
         : {}),
       ...(admittedInputPatchTarget ? { admittedInputPatchTarget } : {}),
-      }).evaluate(request);
+      });
+  const evaluateBound: ProjectAdmissionGate["evaluate"] = async (request) => {
+    return await evaluateWithGate(request, mutationGate);
+  };
+  const evaluateWithGate = async (
+    request: Parameters<ProjectAdmissionGate["evaluate"]>[0],
+    gate: ProjectAdmissionGate,
+  ) => {
+      let creation: typeof admittedCreation;
+      if (request.operation === ProjectOperation.CreateWorktree && input.createWorktreeInput) {
+        if (admittedCreation) throw new Error("project_control_creation_broker_already_admitted");
+        if (request.workspacePath !== input.createWorktreeInput.path || request.jobId !== input.createWorktreeInput.jobId) {
+          throw new Error("project_control_creation_request_binding_mismatch");
+        }
+        const missing = !await pathExists(input.createWorktreeInput.path);
+        const identity = missing ? await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) : undefined;
+        if (missing && !identity) throw new Error("project_control_creation_target_unproved");
+        creation = { missing, identity };
+      }
+      const decision = await gate.evaluate(request);
       if (decision.allowed && creation) {
         if (admittedCreation) throw new Error("project_control_creation_broker_already_admitted");
         admittedCreation = creation;
       }
       return decision;
-    } },
+  };
+  return {
+    creationProof: () => admittedCreation,
+    gate: {
+      async prepare(request) {
+        const prepared = mutationGate.prepare
+          ? await mutationGate.prepare(request)
+          : mutationGate;
+        return { evaluate: async (current) => await evaluateWithGate(current, prepared) };
+      },
+      evaluate: evaluateBound,
+    },
   };
 }

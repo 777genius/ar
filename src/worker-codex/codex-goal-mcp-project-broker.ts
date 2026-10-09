@@ -3,9 +3,11 @@ import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, 
 import { CodexGoalLaunchState, buildCodexGoalNoTmuxCommand } from "./codex-goal-ops";
 import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   AccessBoundary,
   ProjectControlBroker,
+  ProjectControlSubmissionUncertainError,
   type ProjectAccessScope,
   type ProjectControlBrokerEvent,
   type ProjectControlBrokerPorts,
@@ -37,7 +39,12 @@ import {
   boundCreationTargetIdentity,
   revalidateAdmissionCreatedWorktree,
 } from "./application/project-control/codex-goal-project-admission-target";
-import { withProjectPreStartAdmissionLaunchAuthorization } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
+import {
+  authorizeProjectPreStartAdmissionLaunch,
+  readCurrentAuthorizedProjectPreStartLaunchReceipt,
+  rollbackProjectPreStartAdmissionLaunch,
+  type ProjectPreStartAdmissionLaunchAuthorization,
+} from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/project-control/codex-goal-project-pre-start-admission";
 import {
   assertPendingInputPatchTerminalFree,
@@ -61,7 +68,10 @@ import {
 } from "./reviewed-worker-output";
 import { LocalProjectAuthorityTupleStore } from
   "../worker-local/project-authority-tuple-local-adapter";
-import type { ProjectControlWorkspaceLease } from "./codex-goal-project-workspace-lock";
+import {
+  withProjectAdmissionPublicationLock,
+  type ProjectControlWorkspaceLease,
+} from "./codex-goal-project-workspace-lock";
 import {
   noopOperationResult,
   type CodexGoalProjectCreateWorktreeInput,
@@ -235,8 +245,17 @@ function codexProjectControlPorts(
   authorityStore: LocalProjectAuthorityTupleStore,
   creationProof: () => ProjectCreationAdmissionProof | undefined,
 ): ProjectControlBrokerPorts {
+  let preparedAuthorization: ProjectPreStartAdmissionLaunchAuthorization | undefined;
   return {
     authority: authorityStore,
+    admissionCoordination: {
+      withPublication: async (_input, effect) =>
+        await withProjectAdmissionPublicationLock({
+          registryRootDir: input.registryRootDir,
+          owner: `project-admission-publication:${input.controller.jobId}`,
+          effect,
+        }),
+    },
 
     audit: {
       async record(event) {
@@ -330,6 +349,32 @@ function codexProjectControlPorts(
       },
     },
     supervisor: {
+      async prepareStartWorker() {
+        if (!input.startManifest || !input.startLaunch) return;
+        preparedAuthorization = await authorizeProjectPreStartAdmissionLaunch({
+          manifest: input.startManifest,
+          scope: input.scope,
+          ...(input.startAdmissionWorkspaceMode
+            ? { workspaceMode: input.startAdmissionWorkspaceMode }
+            : {}),
+          ...(input.startPendingInputPatchAdmission
+            ? { expectedPendingInputPatch: input.startPendingInputPatchAdmission }
+            : {}),
+          assertLaunchEligible: async () => {
+            await assertAdmissionStoredLaunchIdentity({
+              registryRootDir: input.registryRootDir,
+              manifest: input.startManifest!,
+              launch: input.startLaunch!,
+            });
+            if (input.startPendingInputPatchAdmission) {
+              assertPendingInputPatchTerminalFree(
+                await collectCodexGoalStatus(statusInput(input.startLaunch!)),
+              );
+            }
+          },
+          authorityStore,
+        });
+      },
       async startWorker() {
         if (!input.startLaunch) {
           throw new Error("project_control_start_launch_required");
@@ -353,6 +398,7 @@ function codexProjectControlPorts(
         ) {
           throw new Error("project_control_start_workspace_lease_mismatch");
         }
+        let submissionMayHaveOccurred = false;
         const start = async () => {
           if (input.controlledRuntimeInPlaceContinuation) {
             if (!input.startManifest) {
@@ -408,7 +454,11 @@ function codexProjectControlPorts(
             process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START;
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START = "1";
           const launchWorker = async () => {
+            submissionMayHaveOccurred = true;
             const outerStatus = await routeHostedGoalLaunch(startLaunch);
+            // Undefined is the router's explicit no-submission/local outcome.
+            // An exception remains uncertain and keeps the allocated claim.
+            if (outerStatus === undefined) submissionMayHaveOccurred = false;
             if (outerStatus !== undefined) {
               return { args: [], preview: buildCodexGoalNoTmuxCommand(startLaunch), launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed };
             }
@@ -426,35 +476,21 @@ function codexProjectControlPorts(
               );
             }
           }
+            submissionMayHaveOccurred = true;
             return await startCodexGoalTmux(startLaunch);
           };
           let command: Awaited<ReturnType<typeof startCodexGoalTmux>>;
           try {
-            command = input.startManifest
-              ? await withProjectPreStartAdmissionLaunchAuthorization(
-                  {
-                    manifest: input.startManifest,
-                    scope: input.scope,
-                    authorityStore,
-                    ...(input.startAdmissionWorkspaceMode
-                      ? { workspaceMode: input.startAdmissionWorkspaceMode }
-                      : {}),
-                    ...(input.startPendingInputPatchAdmission
-                      ? {
-                          expectedPendingInputPatch:
-                            input.startPendingInputPatchAdmission,
-                          assertLaunchEligible: async () =>
-                            assertPendingInputPatchTerminalFree(
-                              await collectCodexGoalStatus(
-                                statusInput(startLaunch),
-                              ),
-                            ),
-                        }
-                      : {}),
-                  },
-                  launchWorker,
-                )
-              : await launchWorker();
+            if (input.startManifest?.projectPreStartAdmission) {
+              const current = await readCurrentAuthorizedProjectPreStartLaunchReceipt(
+                input.startManifest,
+              );
+              if (!preparedAuthorization ||
+                !isDeepStrictEqual(current.receipt, preparedAuthorization.authorizedReceipt)) {
+                throw new Error("project_control_prepared_launch_authorization_changed");
+              }
+            }
+            command = await launchWorker();
           } finally {
             if (previousBrokeredStart === undefined) {
               delete process.env
@@ -467,7 +503,24 @@ function codexProjectControlPorts(
           if (command.launchState === CodexGoalLaunchState.Failed) throw new Error("hosted_custody_foreground_failed_after_submission");
           return operationResult(`${command.launchState ?? CodexGoalLaunchState.Scheduled}: ${command.preview}`);
         };
-        return await start();
+        try {
+          return await start();
+        } catch (error) {
+          if (!submissionMayHaveOccurred && preparedAuthorization) {
+            try {
+              await rollbackProjectPreStartAdmissionLaunch(preparedAuthorization);
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [error, rollbackError],
+                "project_control_pre_start_launch_rollback_failed",
+              );
+            }
+          }
+          if (submissionMayHaveOccurred) {
+            throw new ProjectControlSubmissionUncertainError(error);
+          }
+          throw error;
+        }
       },
       async stopWorker() {
         if (!input.stopLaunch) {

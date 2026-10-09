@@ -10,7 +10,7 @@ import type { CodexGoalProjectCreateWorktreeInput } from "./codex-goal-project-c
 import { defaultProjectControlGitPort } from "./adapters/host-command-adapters";
 import { pathInsideOrEqual } from "./codex-goal-project-utils";
 import { projectControlCanonicalWorkspacePath } from "./codex-goal-project-workspace-scope";
-import { assertProjectPreStartAdmissionLaunchBinding } from "./codex-goal-project-pre-start-admission";
+import { assertProjectPreStartAdmissionLaunchBinding, type ProjectPreStartAdmissionLaunchWorkspaceMode } from "./codex-goal-project-pre-start-admission";
 import { readBoundedFile } from "./codex-goal-project-pre-start-artifact-io";
 import { parseWorkerLaunchSpec } from "./worker-launch-spec";
 import { assertProjectControlledRuntimeInPlaceContinuation, type ProjectControlledRuntimeInPlaceContinuation } from "./codex-goal-project-in-place-continuation";
@@ -25,6 +25,7 @@ export type ProjectAdmissionTargetBinding = {
     readonly manifest: CodexGoalJobManifest;
     readonly launch: CodexGoalLaunchInput;
     readonly workspaceLease: ProjectControlWorkspaceLease;
+    readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
     readonly continuation?: ProjectControlledRuntimeInPlaceContinuation;
   };
 };
@@ -202,6 +203,11 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
         !sameOwnedPaths(request.ownedPaths, start.continuation.ownedPaths)) return undefined;
       await assertProjectControlledRuntimeInPlaceContinuation({ manifest: stored,
         scope: input.scope, workspacePath: workspace, expected: start.continuation });
+    } else if (start.workspaceMode) {
+      // Exact continuation/input-patch modes keep their original receipt/HEAD
+      // verifier, and still require a current observation of no live process.
+      if (item.workerProcessAlive !== false || item.progressProcessAlive !== false ||
+        !["none", "dirty_workspace_without_worker"].includes(String(item.activeWriterRisk))) return undefined;
     } else {
       if (item.workspaceDirty !== false || item.resultExists !== false || item.activeWriterRisk !== "none") return undefined;
       // Dead native PIDs also map to false/false; only artifact-free prepared
@@ -211,10 +217,13 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
     const descriptor = stored.projectPreStartAdmission;
     const contractBefore = await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract");
     await assertProjectPreStartAdmissionLaunchBinding({ manifest: stored, scope: input.scope,
-      ...(start.continuation ? { workspaceMode: "admitted_input_patch_runtime_continuation" as const } : {}),
+      ...(start.continuation ? { workspaceMode: "admitted_input_patch_runtime_continuation" as const }
+        : start.workspaceMode ? { workspaceMode: start.workspaceMode } : {}),
     });
     const contractAfter = await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract");
-    if (contractBefore !== contractAfter || !sameOwnedPaths(request.ownedPaths, parseWorkerLaunchSpec(JSON.parse(contractBefore)).ownedPaths)) return undefined;
+    const storedOwnership = parseWorkerLaunchSpec(JSON.parse(contractBefore)).ownedPaths;
+    if (contractBefore !== contractAfter || !storedOwnership.length ||
+      (request.ownedPaths !== undefined && !sameOwnedPaths(request.ownedPaths, storedOwnership))) return undefined;
     return { jobId: stored.jobId, workspacePath: workspace };
   } catch { return undefined; }
 }
@@ -223,7 +232,7 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
   const manifest = input.binding?.createManifest;
   const request = input.request;
   if (!manifest || !request || request.operation !== ProjectOperation.CreateJob || request.jobId !== jobId ||
-    manifest.jobId !== jobId || resolve(manifest.jobRootDir) !== join(resolve(input.registryRootDir), jobId) ||
+    manifest.jobId !== jobId ||
     request.workspacePath !== manifest.workspacePath || !manifest.projectPreStartAdmission || !request.ownedPaths?.length) return false;
   // Prepared target staging has only its bound prompt and pre-start artifacts.
   // Existing runtime/progress/output paths or arbitrary directories are not staging.
@@ -245,6 +254,14 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
     manifest, scope: input.scope,
   });
   return true;
+}
+
+export async function admissionCreateJobTargetIdentity(input: TargetInput): Promise<string | undefined> {
+  try {
+    const jobId = input.request?.jobId;
+    if (!jobId || !await trustedUnpublishedStage(input, jobId)) return undefined;
+    return await projectControlCanonicalWorkspacePath(input.binding!.createManifest!.workspacePath, input.scope);
+  } catch { return undefined; }
 }
 
 async function consumedOutputInfrastructure(input: TargetInput, path: string): Promise<boolean> {
@@ -342,7 +359,9 @@ export async function assertAdmissionRegistryComplete(input: TargetInput & {
     if (await absent(manifestPath)) {
       if (registryInfrastructure.has(entry.name) ||
         await consumedOutputInfrastructure(input, join(resolve(input.registryRootDir), entry.name)) ||
-        await trustedUnpublishedStage(input, entry.name)) continue;
+        (resolve(input.binding?.createManifest?.jobRootDir ?? "") ===
+          join(resolve(input.registryRootDir), entry.name) &&
+          await trustedUnpublishedStage(input, entry.name))) continue;
       throw new Error(`unregistered registry directory: ${entry.name}`);
     }
     const manifestStat = await lstat(manifestPath);

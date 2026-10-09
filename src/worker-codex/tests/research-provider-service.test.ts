@@ -15,7 +15,7 @@ import { signalCodexAppServerChildGroup } from "../../provider-codex/app-server/
 import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
-import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
+import { prepareResearchProviderRoot, observeResearchProviderWritableRoots, type ResearchProviderRootPlan } from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { parseResearchOperatorRequest } from "../research-launch-contract";
@@ -122,6 +122,9 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(foreign).toHaveLength(partial ? 1 : 2);
     for (const { target } of foreign) expect(host.scratchMounts.get(target)).toEqual(f.mounts.get(target));
     const plan = providerLaunch(current, other, f.host), binds = plan.args.filter(arg => arg.startsWith("--property=BindPaths="));
+    const footprint = observeResearchProviderWritableRoots(rootPlans.get(current)!);
+    expect(footprint).toHaveLength(5);
+    expect(footprint.some(root => foreign.some(bind => root.source === bind.source || root.target === bind.target))).toBe(false);
     expect(binds).toEqual([
       ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")),
       ...f.prepared.filter(bind => !bind.target.startsWith(earlier + "/")).map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),

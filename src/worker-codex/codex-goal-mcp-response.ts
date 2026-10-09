@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ProjectControlAdmissionDeniedError } from "@vioxen/subscription-runtime/worker-core";
 import { DurableHandoffPostStopError, DurableHandoffStopError } from "./codex-goal-preserve-before-stop";
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -21,6 +22,18 @@ export async function withMcpErrors(
       ok: false,
       error: error instanceof Error ? error.message : "codex_goal_mcp_error",
       ...handoff,
+      ...(error instanceof ProjectControlAdmissionDeniedError ? {
+        admission: {
+          allowed: false,
+          reason: error.decision.reason,
+          ...(error.decision.summary?.target.canonicalPath ? {
+            resource: error.decision.summary.target.canonicalPath
+              .replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 240),
+          } : {}),
+          examples: error.decision.debt.slice(0, 2).map((item) => ({ reason: item.reason })),
+          action: "Inspect the target and current resource owner; use an independent sibling workspace for conflicting writes.",
+        },
+      } : {}),
     };
     return {
       ...mcpJson(value),

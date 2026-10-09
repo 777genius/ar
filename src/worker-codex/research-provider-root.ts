@@ -151,7 +151,8 @@ const rootPlanBrand: unique symbol = Symbol("research-provider-root");
 /** Opaque retained receipt; its DTO fields cannot confer execution authority. */
 export type ResearchProviderRootPlan = Readonly<{ fixedRootDirectory: string; bindings: readonly Binding[]; [rootPlanBrand]: true }>;
 type Retained = { spec: ResearchStartSpec; unit: string; home: string; scratchHost: ScratchTempHost | undefined; host: ResearchProviderRootHost;
-  directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string };
+  directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string;
+  omittedCaches: readonly (OmittedCache & { baseIdentity: readonly [number, number] })[] };
 const retained = new WeakMap<ResearchProviderRootPlan, Retained>();
 function freezeFacts<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freezeFacts(child); Object.freeze(value); }
@@ -529,10 +530,87 @@ export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: stri
   const record = JSON.stringify({ schemaVersion: 1, unit, specSha256: reservation.specSha256, artifactSha256: spec.artifactSha256, captured, materialized, skeleton, custody }) + "\n";
   host.publish(join(unitDirectory, "plan.json"), JSON.parse(record));
   const plan: ResearchProviderRootPlan = freezeFacts({ fixedRootDirectory: root, bindings: materialized, [rootPlanBrand]: true as const });
-  retained.set(plan, { spec, unit, home, scratchHost, host, directory, snapshot: serialized, skeleton, custody, record, materialized: materializedBytes });
+  const omittedCaches = captured.omittedCaches.map(entry => {
+    const base = host.info(join(directory, "pins/job", relative(spec.request.jobRootDir, entry.target)));
+    return { ...entry, baseIdentity: [base.dev, base.ino] as const };
+  });
+  retained.set(plan, { spec, unit, home, scratchHost, host, directory, snapshot: serialized, skeleton, custody, record,
+    materialized: materializedBytes, omittedCaches: freezeFacts(omittedCaches) });
   assertResearchProviderRoot(plan, spec, unit, home); return plan;
   });
 }
+/** Facts from an owner-retained allocated plan, not a serializable launch permit.
+ * Both nominal paths and kernel backing are needed when comparing bind aliases. */
+export type ResearchProviderWritableRoot = Readonly<{
+  source: string; target: string; device: string; backingPath: string;
+}>;
+
+/** Lightweight census observation. The opaque plan is retained by its actual
+ * owner; callers cannot supply a parsed plan.json as authority. Revocation does
+ * not imply release: these allocated roots remain conservatively reserved.
+ * This avoids executable/public-file walks and all manager/provider waits. */
+export function observeResearchProviderWritableRoots(plan: ResearchProviderRootPlan): readonly ResearchProviderWritableRoot[] {
+  const state = retained.get(plan);
+  if (!state) researchInvalid();
+  const { host, spec, unit, directory } = state;
+  const recordPath = join(directory, "provider-roots", unit, "plan.json");
+  const assertBinding = (): void => {
+    const reservation = readResearchProviderReservation(directory, unit);
+    if (JSON.stringify(reservation.spec) !== JSON.stringify(spec) ||
+        host.record(recordPath) !== state.record) researchInvalid();
+  };
+  assertBinding();
+  const mounts = mountTable(host);
+  const writable = plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite);
+  if (writable.length < 2 || writable.length > 5 || state.omittedCaches.length > 30) researchInvalid();
+  const assertOmissions = (): void => {
+    for (const omitted of state.omittedCaches) {
+      const basePath = join(directory, "pins/job", relative(spec.request.jobRootDir, omitted.target));
+      const source = host.info(omitted.source), target = host.info(omitted.target), base = host.info(basePath);
+      if ([source, target, base].some(info => !info.isDirectory() || info.isSymbolicLink()) ||
+          source.dev !== omitted.identity[0] || source.ino !== omitted.identity[1] ||
+          target.dev !== source.dev || target.ino !== source.ino ||
+          base.dev !== omitted.baseIdentity[0] || base.ino !== omitted.baseIdentity[1] ||
+          host.canonical(omitted.source) !== omitted.source || host.canonical(omitted.target) !== omitted.target ||
+          host.canonical(basePath) !== basePath || host.entries(basePath).length ||
+          JSON.stringify(backing(omitted.source, mounts)) !== JSON.stringify(omitted.backing) ||
+          JSON.stringify(backing(omitted.target, mounts, true)) !== JSON.stringify(omitted.mounted) ||
+          JSON.stringify(backing(basePath, mounts, true)) !== JSON.stringify(omitted.base) ||
+          mounts.some(m => m.point !== omitted.source && contains(omitted.source, m.point)) ||
+          mounts.some(m => m.point !== basePath && contains(basePath, m.point))) researchInvalid();
+    }
+  };
+  const observe = (): ResearchProviderWritableRoot[] => writable.map(bind => {
+    const source = host.info(bind.source), target = host.info(bind.target);
+    if (!source.isDirectory() || source.isSymbolicLink() || !target.isDirectory() || target.isSymbolicLink() ||
+        host.canonical(bind.source) !== bind.source || host.canonical(bind.target) !== bind.target ||
+        source.dev !== bind.identity[0] || source.ino !== bind.identity[1] ||
+        target.dev !== source.dev || target.ino !== source.ino) researchInvalid();
+    const current = backing(bind.source, mounts, true), nominal = backing(bind.target, mounts, true);
+    if (nativeDevice(source) !== current.device || JSON.stringify(current) !== JSON.stringify(bind.backing) ||
+        !sameBacking(current, nominal)) researchInvalid();
+    // A new descendant bind could redirect writes outside the retained graph.
+    for (const mount of mounts.filter(m => m.point !== bind.target && contains(bind.target, m.point))) {
+      const child = plan.bindings.find(candidate => candidate.target === mount.point);
+      if (child && sameBacking(child.backing, backing(mount.point, mounts, true))) continue;
+      // A retained foreign cache is absent from the nonrecursive job pin. Its
+      // empty underlying anchor is covered by job RW; the foreign source is not.
+      if (state.omittedCaches.some(omitted => omitted.target === mount.point &&
+          sameBacking(omitted.mounted, backing(mount.point, mounts, true)))) continue;
+      researchInvalid();
+    }
+    return { source: bind.source, target: bind.target, device: current.device, backingPath: current.path };
+  });
+  assertOmissions();
+  const roots = observe();
+  assertBinding();
+  if (JSON.stringify(mountTable(host)) !== JSON.stringify(mounts) ||
+      JSON.stringify(observe()) !== JSON.stringify(roots)) researchInvalid();
+  assertOmissions();
+  assertBinding();
+  return Object.freeze(roots.map(root => Object.freeze(root)));
+}
+
 export function assertResearchProviderRoot(plan: ResearchProviderRootPlan, value: ResearchStartSpec, unit: string, home: string): void {
   return observeRootFailure(ResearchProviderRootCheck.Assert, () => {
   const state = retained.get(plan), spec = parseResearchStartSpec(value);

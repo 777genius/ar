@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   ProjectAdmissionWorkerRole,
   ProjectDebtReason,
@@ -55,6 +56,7 @@ import {
   admissionWorkspacePathsMatch,
   optionalRealPathForAdmission,
 } from "./codex-goal-project-admission-paths";
+import { prepareCodexProjectScopedAdmission } from "./codex-goal-project-scoped-admission";
 import {
   hasBlockingActiveWriterRisk,
   stoppedWorkspaceTerminalConsumption,
@@ -98,6 +100,15 @@ export type CodexProjectAdmissionDeps = {
     readonly registryRootDir: string;
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
+  /** Trusted, fresh executor/owner observation of every physical writable root.
+   * Undefined means unresolved authority. An empty list requires proven release;
+   * neither missing files nor a stopped-looking overview establish release.
+   * Native owner adapters verify grant/spec hashes and pinned backing identities.
+   * This is an internal observation port, never caller-supplied MCP permission.
+   */
+  readonly readWriterWritableRoots?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<readonly string[] | undefined>;
   readonly observeManifestRuntime?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<{
@@ -177,8 +188,7 @@ export function projectAdmissionDetailView(input: {
 export function codexProjectAdmissionGate(
   input: CodexProjectMutationAdmissionInput,
 ): ProjectAdmissionGate {
-  return {
-    async evaluate(request) {
+  const observe = async (request: ProjectAdmissionRequest): Promise<ProjectAdmissionSnapshot> => {
       // Admission protects a mutation. A cached pre-launch snapshot can no
       // longer prove that another writer did not start in the meantime.
       const observedSnapshot = await buildCodexProjectAdmissionSnapshot({
@@ -207,13 +217,47 @@ export function codexProjectAdmissionGate(
           ? { binding: input.inPlaceContinuationTarget }
           : {}),
       });
+      return continuationSnapshot;
+  };
+  const evaluatePrepared = async (
+    request: ProjectAdmissionRequest,
+    continuationSnapshot: ProjectAdmissionSnapshot,
+  ) => {
+      const hasScopedBinding = Boolean(input.targetBinding?.createWorktree ||
+        input.targetBinding?.createManifest?.projectPreStartAdmission ||
+        input.targetBinding?.start?.manifest.projectPreStartAdmission);
+      const scoped = hasScopedBinding ? await prepareCodexProjectScopedAdmission({
+        registryRootDir: input.registryRootDir,
+        scope: input.scope,
+        ...(input.controllerJobId ? { controllerJobId: input.controllerJobId } : {}),
+        request,
+        snapshot: continuationSnapshot,
+        ...(input.targetBinding ? { targetBinding: input.targetBinding } : {}),
+        deps: input.deps,
+      }) : undefined;
       return evaluateProjectAdmission({
+        ...(scoped ? { scoped } : {}),
         request: {
           ...request,
           projectId: request.projectId ?? input.scope.projectId,
         },
         snapshot: continuationSnapshot,
       });
+  };
+  return {
+    async prepare(request) {
+      const snapshot = await observe(request);
+      return {
+        async evaluate(currentRequest) {
+          if (!isDeepStrictEqual(currentRequest, request)) {
+            throw new Error("project_control_prepared_admission_request_changed");
+          }
+          return await evaluatePrepared(currentRequest, snapshot);
+        },
+      };
+    },
+    async evaluate(request) {
+      return await evaluatePrepared(request, await observe(request));
     },
   };
 }

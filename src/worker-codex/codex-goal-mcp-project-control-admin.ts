@@ -7,7 +7,6 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   AccessBoundary,
-  ProjectAdmissionWorkerRole,
   ProjectOperation,
   evaluateProjectAdmission,
   type ProjectAccessScope,
@@ -171,19 +170,11 @@ export async function projectControlAdmissionSnapshotView(
         snapshot,
       })
     : undefined;
-  const operationalDecision = decision ?? evaluateProjectAdmission({
-    request: {
-      operation: ProjectOperation.CreateJob,
-      projectId: controller.scope.projectId,
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-    },
-    snapshot,
-  });
   const operations = await buildCodexProjectOperationsSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
     admissionSnapshot: snapshot,
-    admissionDecision: operationalDecision,
+    ...(decision ? { admissionDecision: decision } : {}),
     deps: deps.admissionDeps,
   });
   const detailView = projectAdmissionDetailView({

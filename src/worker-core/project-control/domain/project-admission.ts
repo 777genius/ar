@@ -115,6 +115,41 @@ export type ProjectAdmissionRequest = {
   readonly ownedPaths?: readonly string[];
 };
 
+export type ProjectAdmissionDebtScope =
+  | "target"
+  | "project"
+  | "unrelated_history"
+  | "unknown";
+
+export type ProjectAdmissionScopedTarget = {
+  readonly canonicalPath?: string;
+  readonly writableRoots?: readonly string[];
+  readonly ownedPaths?: readonly string[];
+};
+
+export type ProjectAdmissionBacklogSummary = {
+  readonly count: number;
+  readonly preview: readonly ProjectDebtItem[];
+};
+
+/**
+ * Internal trusted context assembled by a broker adapter. It is deliberately
+ * not part of the MCP request shape: callers cannot opt out of target/resource
+ * checks by supplying a scope or an exemption flag.
+ */
+export type ProjectAdmissionScopedContext = {
+  readonly target: ProjectAdmissionScopedTarget;
+  readonly safetyDebt: readonly ProjectDebtItem[];
+  readonly backlog: ProjectAdmissionBacklogSummary;
+  readonly scope: ProjectAdmissionDebtScope;
+};
+
+export type ProjectAdmissionSummary = {
+  readonly scope: ProjectAdmissionDebtScope;
+  readonly target: ProjectAdmissionScopedTarget;
+  readonly backlog: ProjectAdmissionBacklogSummary;
+};
+
 export type ProjectAdmissionDecision = {
   readonly status: ProjectAdmissionDecisionStatus;
   readonly allowed: boolean;
@@ -124,9 +159,14 @@ export type ProjectAdmissionDecision = {
   readonly workerRole: ProjectAdmissionWorkerRole;
   readonly evidence: readonly string[];
   readonly debt: readonly ProjectDebtItem[];
+  readonly summary?: ProjectAdmissionSummary;
 };
 
 export interface ProjectAdmissionGate {
+  /** Prepare expensive advisory observations; returned gate checks fresh safety. */
+  prepare?(
+    request: ProjectAdmissionRequest,
+  ): Promise<ProjectAdmissionGate>;
   evaluate(
     request: ProjectAdmissionRequest,
   ): Promise<ProjectAdmissionDecision> | ProjectAdmissionDecision;
@@ -135,11 +175,20 @@ export interface ProjectAdmissionGate {
 export function evaluateProjectAdmission(input: {
   readonly request: ProjectAdmissionRequest;
   readonly snapshot?: ProjectAdmissionSnapshot;
+  readonly scoped?: ProjectAdmissionScopedContext;
 }): ProjectAdmissionDecision {
   const workerRole = normalizeProjectAdmissionWorkerRole(
     input.request.workerRole,
     input.request.tags,
   );
+  if (input.scoped) {
+    return evaluateScopedProjectAdmission({
+      request: input.request,
+      snapshot: input.snapshot,
+      scoped: input.scoped,
+      workerRole,
+    });
+  }
   const base = {
     operation: input.request.operation,
     ...(input.request.projectId === undefined
@@ -235,6 +284,99 @@ function producerBlockingAdmissionDebt(input: {
     !producerDebtCanBeBypassedByDisjointPaths(item) ||
     admissionPathsOverlap(ownedPaths, item.affectedPaths)
   );
+}
+
+function evaluateScopedProjectAdmission(input: {
+  readonly request: ProjectAdmissionRequest;
+  readonly snapshot?: ProjectAdmissionSnapshot;
+  readonly scoped: ProjectAdmissionScopedContext;
+  readonly workerRole: ProjectAdmissionWorkerRole;
+}): ProjectAdmissionDecision {
+  const summary: ProjectAdmissionSummary = {
+    scope: input.scoped.scope,
+    target: input.scoped.target,
+    backlog: input.scoped.backlog,
+  };
+  const base = {
+    operation: input.request.operation,
+    ...(input.request.projectId === undefined
+      ? {}
+      : { projectId: input.request.projectId }),
+    workerRole: input.workerRole,
+    summary,
+  };
+  const snapshot = input.snapshot;
+  if (!snapshot || snapshot.unavailable) {
+    return denied({
+      ...base,
+      reason: ProjectAdmissionDecisionReason.SnapshotUnavailable,
+      evidence: ["project admission snapshot is unavailable"],
+      debt: [],
+    });
+  }
+  if (snapshot.stale) {
+    return denied({
+      ...base,
+      reason: ProjectAdmissionDecisionReason.SnapshotStale,
+      evidence: ["project admission snapshot is stale"],
+      debt: input.scoped.safetyDebt,
+    });
+  }
+  if (!input.scoped.target.canonicalPath || input.scoped.scope === "unknown") {
+    return denied({
+      ...base,
+      reason: ProjectAdmissionDecisionReason.UnreadableProjectState,
+      evidence: ["verified admission target is unavailable"],
+      debt: input.scoped.safetyDebt,
+    });
+  }
+  const safety = input.scoped.safetyDebt.filter((item) =>
+    item.severity !== "info"
+  );
+  const unreadable = safety.filter((item) =>
+    item.reason === ProjectDebtReason.UnreadableRoot
+  );
+  if (unreadable.length > 0) {
+    return denied({
+      ...base,
+      reason: ProjectAdmissionDecisionReason.UnreadableProjectState,
+      evidence: ["scoped project state is unreadable"],
+      debt: unreadable,
+    });
+  }
+  const diskPressure = safety.filter((item) =>
+    item.reason === ProjectDebtReason.DiskPressure
+  );
+  if (diskPressure.length > 0) {
+    return denied({
+      ...base,
+      reason: ProjectAdmissionDecisionReason.DiskPressure,
+      evidence: ["scoped project state is under disk pressure"],
+      debt: diskPressure,
+    });
+  }
+  const blocking = safety.filter((item) =>
+    item.reason !== ProjectDebtReason.SnapshotStale &&
+    item.reason !== ProjectDebtReason.DiskPressure
+  );
+  if (blocking.length > 0) {
+    return denied({
+      ...base,
+      reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
+      evidence: ["target/resource safety debt is present"],
+      debt: blocking,
+    });
+  }
+  return {
+    ...base,
+    status: ProjectAdmissionDecisionStatus.Allowed,
+    allowed: true,
+    reason: ProjectAdmissionDecisionReason.Allowed,
+    evidence: input.scoped.backlog.count > 0
+      ? ["independent target is safe; unrelated backlog is informational"]
+      : ["independent target is safe"],
+    debt: [],
+  };
 }
 
 function producerDebtCanBeBypassedByDisjointPaths(

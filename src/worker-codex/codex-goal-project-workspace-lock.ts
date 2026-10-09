@@ -1,4 +1,5 @@
-import { dirname, join } from "node:path";
+import { realpath } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import type {
   ProjectAccessScope,
   WorkspaceLock,
@@ -30,6 +31,33 @@ export function projectControlWorkspaceLockRoot(
     "reviewed-worker-outputs",
     ".locks",
   );
+}
+
+/**
+ * A short registry-topology publication section. It coordinates the fresh
+ * admission/census check with the existing registration or launch-authorization
+ * write, then releases before any provider submission or wait.
+ */
+export async function withProjectAdmissionPublicationLock<T>(input: {
+  readonly registryRootDir: string;
+  readonly owner: string;
+  readonly effect: () => Promise<T>;
+}): Promise<T> {
+  const locks = projectControlWorkspaceLocks(input.registryRootDir);
+  const registryPath = await realpath(resolve(input.registryRootDir));
+  const lock = await locks.acquire({
+    workspacePath: registryPath,
+    owner: input.owner,
+  });
+  try {
+    if (await realpath(resolve(input.registryRootDir)) !== registryPath ||
+      lock.workspacePath !== registryPath) {
+      throw new Error("project_control_registry_real_path_changed");
+    }
+    return await input.effect();
+  } finally {
+    await locks.release(lock);
+  }
 }
 
 export async function withValidatedProjectWorkspaceLock<T>(input: {

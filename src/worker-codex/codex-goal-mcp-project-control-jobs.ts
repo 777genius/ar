@@ -10,6 +10,7 @@ import { basename, dirname, join } from "node:path";
 import {
   AccessBoundary,
   NetworkAccessMode,
+  ProjectControlSubmissionUncertainError,
   type ProjectControlBroker,
   type ProjectControlOperationResult,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -691,11 +692,13 @@ export async function projectControlRefillWorkerView(
             accountReservation: reservedAccount,
           };
         } catch (error) {
-          await releaseCodexProjectAccount({
-            manifest,
-            launch: reservedLaunch,
-            reason: "worker_start_failed",
-          });
+          if (!(error instanceof ProjectControlSubmissionUncertainError)) {
+            await releaseCodexProjectAccount({
+              manifest,
+              launch: reservedLaunch,
+              reason: "worker_start_failed",
+            });
+          }
           throw error;
         }
       },

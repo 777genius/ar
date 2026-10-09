@@ -1,6 +1,7 @@
 import {
   ProjectAdmissionWorkerRole,
   type ProjectAccessScope,
+  ProjectControlSubmissionUncertainError,
   type ProjectControlBroker,
 } from "@vioxen/subscription-runtime/worker-core";
 import { assertLocalControllerMaintenanceFenceOpen, withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
@@ -590,11 +591,13 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             }),
         });
       } catch (error) {
-        await releaseCodexProjectAccount({
-          manifest: loaded.manifest,
-          launch: reservedLaunch,
-          reason: "worker_start_failed",
-        });
+        if (!(error instanceof ProjectControlSubmissionUncertainError)) {
+          await releaseCodexProjectAccount({
+            manifest: loaded.manifest,
+            launch: reservedLaunch,
+            reason: "worker_start_failed",
+          });
+        }
         throw error;
       }
       return {
