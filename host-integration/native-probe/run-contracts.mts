@@ -143,7 +143,7 @@ try {
   async function copyTree(from:string,to:string):Promise<void>{await mkdir(to,{recursive:true});for(const name of await readdir(from)){const path=join(from,name),s=await lstat(path);if(s.isDirectory())await copyTree(path,join(to,name));else if(s.isFile())await copyFile(path,join(to,name));else throw new Error("nonregular emitted admin input");}}
   await copyTree(join(build,"src"),join(admin,"src"));
   await mkdir(join(admin,"host-integration/native-probe"),{recursive:true});
-  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs","newtest-bootstrap.mjs","newtest-guest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
+  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs","newtest-bootstrap.mjs","newtest-guest.mjs","newtest-cgroup.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
   await copyFile(join(build,"package.json"),join(admin,"package.json"));
   // Retain an independently executable fixed NEWTEST v1 closure. These
   // binaries are never run by Source CI and cannot select production paths.
