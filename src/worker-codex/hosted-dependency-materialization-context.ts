@@ -37,7 +37,7 @@ export class HostedDependencyInputCaptureError extends DependencyAdmissionError 
 function profile() {
   const value = readHostedDependencyInstallerProfile();
   const { schemaVersion: _version, networkInputs: _networkInputs, privilegeDropper: _privilegeDropper,
-    recipeRevision: _recipeRevision, ...toolchain } = value;
+    recipeRevision: _recipeRevision, rootGit: _rootGit, ...toolchain } = value;
   return { value, toolchain, sha256: createHash("sha256").update(JSON.stringify(value) + "\n").digest("hex") };
 }
 function registryKey(capture: QualifiedNpmInstallInputs) {
