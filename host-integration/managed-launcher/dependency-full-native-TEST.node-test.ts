@@ -1,7 +1,7 @@
 /** DATA-only regressions. No ROOT, filesystem, launch or account probe. */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
+import { withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
 test("counterfeit accessors and proxies cannot execute during request capture",()=>{
   let calls=0;const getter={get jobId(){calls++;return "TEST-dependency-full-native-20261007-r1";}};
   const proxy=new Proxy({}, {get(){calls++;throw Error("TEST-private");},getPrototypeOf(){calls++;throw Error("TEST-private");},ownKeys(){calls++;throw Error("TEST-private");},getOwnPropertyDescriptor(){calls++;throw Error("TEST-private");}});
@@ -69,4 +69,44 @@ test("FULL input readonly mounts override job scratch write access",()=>{
   for(const foreign of ["/var/lib/subscription-runtime-full-TEST-input/"+"1".repeat(40)+"/toolchain","/srv/workers/jobs/TEST-other/input/"+"1".repeat(40)+"/toolchain"]) {
     assert.throws(()=>fullReadonlyMountData(snapshot,foreign,"4","8:1"));
   }
+});
+
+// Red if the default command changes, H1 loses its fingerprint command cell,
+// or arbitrary caller flags can enter the fixed exceptional request.
+test("H1 is a separate finite removal case with one fixed parent argv flag",()=>{
+  assert.equal(fullNativeRemovalCase(undefined),FullRemovalCase.Positive);
+  assert.deepEqual(fullNativeParentArgv("TEST-node","TEST-parent",FullRemovalCase.Positive),["TEST-node","TEST-parent"]);
+  assert.deepEqual(fullNativeParentArgv("TEST-node","TEST-parent",FullRemovalCase.ParentCrashH1),["TEST-node","TEST-parent","--parent-crash-h1"]);
+  for(const value of [null,"readonly","h1",{},"--parent-crash-h1"])assert.throws(()=>fullNativeRemovalCase(value));
+  const request={operation:"job",unit:fullNativeUnit,jobId:fullNativeJob,payload:["TEST-node","TEST-parent","--parent-crash-h1"],fingerprint:"1".repeat(64),limits:{...fullNativeLimits}};
+  assert.deepEqual(captureFullNativeRequest(request).payload,request.payload);
+  for(const flag of ["--h1","--readonly","--parent-crash-h1 --exec"])assert.throws(()=>captureFullNativeRequest({...request,payload:["TEST-node","TEST-parent",flag]}));
+  let calls=0;const payload=["TEST-node","TEST-parent","--parent-crash-h1"];Object.defineProperty(payload,"2",{get(){calls++;return "--parent-crash-h1";}});
+  assert.throws(()=>captureFullNativeRequest({...request,payload}));assert.equal(calls,0);
+});
+
+// Red if the single H1 libc exception broadens to a different inode, link3,
+// mutable/root-foreign leaf, or changed metadata. This supplies no host grant.
+test("H1 libc requires exact reviewed root-owned two-link metadata",()=>{
+  const expected={dev:"8",ino:"101",uid:"0",gid:"0",mode:String(0o100755),nlink:"2",size:"4096",mtimeNs:"123",ctimeNs:"456"};
+  assert.deepEqual(fullH1LibcMetadataData(expected),expected);assert.doesNotThrow(()=>fullH1LibcMetadataMatches({...expected},expected));
+  for(const changed of [{nlink:"1"},{nlink:"3"},{uid:"1"},{gid:"1"},{mode:String(0o100777)},{ino:"102"},{size:"4097"},{mtimeNs:"124"},{ctimeNs:"457"}])assert.throws(()=>fullH1LibcMetadataMatches({...expected,...changed},expected));
+  assert.throws(()=>fullH1LibcMetadataData({...expected,grant:true}));
+});
+
+test("H1 libc two-name DATA never widens to unknown hardlink routes",()=>{
+  // Synthetic names test the finite parser only; no real second alias is claimed.
+  const canonical="/usr/lib/x86_64-linux-gnu/libc.so.6",other="/usr/lib/x86_64-linux-gnu/TEST-libc-closed-name";
+  assert.deepEqual(fullH1LibcAliasesData([other,canonical]),[other,canonical]);
+  for(const names of [[canonical,canonical],[canonical,other],[other,"/usr/lib/x86_64-linux-gnu/TEST-other"],["/srv/TEST/libc.so.6",canonical],[other,canonical,"/usr/lib/x86_64-linux-gnu/TEST-third"]])assert.throws(()=>fullH1LibcAliasesData(names));
+});
+
+// Uses the actual private tool entry points. The unsupported source gate must
+// refuse before any callback/descriptor access, independent of parent identity.
+// This creates no parent brand, child, ROOT fixture or qualification claim.
+test("unsupported H1 stdlib closure cannot reach private tool callbacks",()=>{
+  let calls=0;const parent=Object.freeze({});
+  assert.throws(()=>withOriginalH1PythonTool(parent,()=>{calls++;throw Error("child launch must be unreachable");}),/Held: h1_python_stdlib_source_unsupported$/);
+  assert.throws(()=>withOriginalH1NamespaceTool(parent,()=>{calls++;throw Error("child launch must be unreachable");}),/Held: h1_python_stdlib_source_unsupported$/);
+  assert.equal(calls,0);
 });

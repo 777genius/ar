@@ -24,6 +24,7 @@ import { prepareEvictRestoreSentinels, captureEvictRestoreSentinels, assertEvict
 import { readEvictRestoreReady, readEvictRestoreAbsent, assertPathAbsent, assertRetainedEvictionProof,
   assertSameRootFinalGateRestore, assertSameRootReadonlyFinalGateRestore } from "./current-evict-restore-readback.js";
 import { command, node, runtime, directory, json } from "./common.ts";
+import { FullH1Case, captureOriginalH1Checkpoint, requestOriginalH1 } from "./current-removal-h1-fixture.js";
 const policyPath="/var/lib/subscription-runtime-host-policy/dependency-retention-policy.json";
 export enum EvictRestorePhase { Cold="cold", Hot="hot", RootPolicyInput="root_policy_input", Evict="evict",
   Provenance="provenance_before_unlink", Remove="committed_trash_remove", Restore="same_root_final_gate_restore", Close="close" }
@@ -50,9 +51,10 @@ function measuredInstall(trace:ReturnType<typeof startNativeInstallerTrace>,prio
  * auth, proofs, holds and partial trash for original owned-OS teardown; earlier
  * protected provider/runtime result records are never rewritten by this test. */
 enum RestoreConsumer { Ordinary = "ordinary", Readonly = "readonly" }
-export function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void) {return run(roots,progress,RestoreConsumer.Ordinary);}
+export function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,removalCase=FullH1Case.Positive) {return run(roots,progress,RestoreConsumer.Ordinary,removalCase);}
 export function runCurrentFullEvictReadonlyRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void) {return run(roots,progress,RestoreConsumer.Readonly);}
-async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,consumer:RestoreConsumer) {
+async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,consumer:RestoreConsumer,removalCase=FullH1Case.Positive) {
+  assert(removalCase===FullH1Case.Positive || (removalCase===FullH1Case.ParentCrash && consumer===RestoreConsumer.Ordinary));
   assertRootScope(roots);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Closed);
   const deadline=performance.now()+27*60*1000,store=new HostedInstallationActivationStore();
   const auth=mountCurrentConfiguredAuth(roots.jobRoot,roots.accountName);assertCurrentConfiguredAuth(roots);
@@ -88,7 +90,10 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
     assertEvictRestoreSentinels(roots,sentinels);assertPolicyCurrent(policy);
     // Remove while original owner is released RetiredEvicting, BEFORE new Active
     // generation. The existing global legacy-writer denial is left intact.
-    progress(EvictRestorePhase.Remove);const removed=await store.removeDependencyCommittedTrash(roots.candidateJobId,proof.absent.receipt.revision);
+    progress(EvictRestorePhase.Remove);
+    if(removalCase===FullH1Case.ParentCrash){captureOriginalH1Checkpoint(roots,sentinels,proof);await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
+    const removed=await store.removeDependencyCommittedTrash(roots.candidateJobId,proof.absent.receipt.revision);
+    assert.equal(removalCase,FullH1Case.Positive,"TEST_H1_original_parent_not_killed_at_proven_boundary_HOLD");
     assert.equal(removed.outcome,HostedDependencyTransactionOutcome.TrashRemoved);
     assert("operationId" in removed && "removedEntries" in removed);assert.equal(removed.operationId,proof.absent.receipt.operationId);
     assert(typeof removed.removedEntries==="number" && removed.removedEntries>0);

@@ -6,6 +6,8 @@
   "files": [
     "./current-full-outer.ts",
     "./current-full-supervisor.ts",
+    "./current-full-h1-supervision.node-test.ts",
+    "./current-removal-h1-fixture.node-test.ts",
     "./current-full-guest.ts",
     "./current-full-backing-collector.node-test.ts",
     "./current-full-backing-interval.node-test.ts"

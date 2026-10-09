@@ -79,6 +79,8 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-real-codex-emit.json
       - name: Emit finite future FULL TEST caller without auth or activation
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-full-emit.json
+      - name: Check finite H1 supervisor readiness and one-shot continuation
+        run: node --test scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.js scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.js
       - name: Check retained image descriptor and backing mount observation contracts
         env:
           TMPDIR: ${{ runner.temp }}
@@ -135,6 +137,10 @@ jobs:
             scripts/dependency-retention-os-test/current-full-r-entry.js
             scripts/dependency-retention-os-test/current-full-r-continuation.js
             scripts/dependency-retention-os-test/current-full-supervisor.js
+            scripts/dependency-retention-os-test/current-full-h1-supervision.js
+            scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.js
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.js
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.js
             scripts/dependency-retention-os-test/current-full-warm-edit.js
             scripts/dependency-retention-os-test/current-real-codex-input.js
             scripts/dependency-retention-os-test/current-tools-fixture.js
@@ -182,6 +188,10 @@ jobs:
             scripts/dependency-retention-os-test/current-full-r-continuation.ts
             scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
             scripts/dependency-retention-os-test/current-full-supervisor.ts
+            scripts/dependency-retention-os-test/current-full-h1-supervision.ts
+            scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.ts
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.ts
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.ts
             scripts/dependency-retention-os-test/current-full-warm-edit.ts
             scripts/dependency-retention-os-test/current-real-codex-input.ts
             scripts/dependency-retention-os-test/current-tools-fixture.ts

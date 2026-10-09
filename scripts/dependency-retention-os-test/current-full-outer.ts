@@ -10,7 +10,8 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { FullRestoreConsumer, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRestoreConsumer, FullRemovalCase, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { H1ReadinessRecord, h1Qualification, readH1ReadinessRecord, readOriginalH1SupervisorAcceptance, startOriginalH1Observer, H1ObserverState } from "./current-removal-h1-fixture.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
@@ -43,7 +44,7 @@ const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
 const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
-const qualification=restoreConsumer===FullRestoreConsumer.Readonly
+const qualification=managedParent.removalCase===FullRemovalCase.ParentCrashH1?h1Qualification:restoreConsumer===FullRestoreConsumer.Readonly
   ? "native_actual_c_cold_hot_committed_absent_first_r_restore_only"
   : "native_actual_c_cold_hot_committed_absent_restore_coldv2_r_entries_only";
 const restoreConsumerMarker=restoreConsumer===FullRestoreConsumer.Readonly ? `--setenv=TEST_FULL_RESTORE_CONSUMER=${restoreConsumer} ` : "";
@@ -95,7 +96,7 @@ const command = (file: string, args: readonly string[], timeout = 30000): string
 try {
   remaining(deadline);
   directory(outbox);directory(outbox+"/current-full-pulses");directory(reviewed);
-  assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry);
+  assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry,managedParent.removalCase);
   remaining(deadline);
   // Boot replaces guest /run with tmpfs. Keep protected inputs outside it and
   // bind the same validated directories readonly into the exact guest paths.
@@ -223,9 +224,13 @@ try {
     assert.match(invocationId ?? "", /^[a-f0-9]{32}$/); evidence.invocationId = invocationId;
     throw new Error("owned TEST diagnostic-only observation; qualification not attempted");
   }
+  let h1Observer:ReturnType<typeof startOriginalH1Observer>|undefined;
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     remaining(deadline);
+    if(managedParent.removalCase===FullRemovalCase.ParentCrashH1 && !h1Observer && readH1ReadinessRecord(outbox,H1ReadinessRecord.Request)){
+      assert(evidence.backingIntervalQualified);h1Observer=startOriginalH1Observer(managedParent);await h1Observer.armed;
+    }
     const intervalRequest=outbox+"/current-full-interval-request.json";
     if(existsSync(intervalRequest) && !evidence.backingIntervalQualified) {
       const stat=lstatSync(intervalRequest);assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && stat.nlink===1 && (stat.mode&0o7777)===0o600 && stat.size<=4096);
@@ -298,6 +303,7 @@ try {
   }
   assert.match(invocationId ?? "", /^[a-f0-9]{32}$/);
   evidence.invocationId = invocationId;
+  if(managedParent.removalCase===FullRemovalCase.ParentCrashH1){assert(h1Observer);assert.equal(await h1Observer.closed,H1ObserverState.ParentDead);while(!readH1ReadinessRecord(outbox,H1ReadinessRecord.Accepted)){remaining(deadline);assert(!existsSync(root+runtime+"/guest-child-exit.json"));await new Promise(resolve=>setTimeout(resolve,10));}assert(!existsSync(root+runtime+"/guest-child-exit.json"));readOriginalH1SupervisorAcceptance(managedParent);}
   const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.size < 65536);
   const guest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);
@@ -359,6 +365,7 @@ try {
         } catch { delete evidence.guestBootFailure; evidence.guestBootDiagnosticUnavailable = true; }
       }
       if (backing) { try { backing.revalidate(); } catch { evidence.backingFinalObservationUncertain = true; } }
+      if(backing && evidence.status==="partial_pass" && managedParent.removalCase===FullRemovalCase.ParentCrashH1){try{backing.prepareH1Terminal();}catch{evidence.backingRetentionTerminalUnproven=true;evidence.status="failed";process.exitCode=1;}}
       command("/usr/bin/systemctl", ["stop", unit], 45000);
       evidence.ownedOsStopped = true;
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }

@@ -58,8 +58,10 @@ function prepareCurrentTestEvictionPolicy(roots:CurrentColdHotRoots,inputReferen
     return Object.freeze({purpose:"ROOT_TEST_v1_fixture_configuration_only",reference:selected.reference,nativePolicyV2Qualification:"pending"});
   });
 }
+import { FullH1Case, originalH1Case } from "./current-removal-h1-fixture.js";
 try {
-  assert.equal(process.argv.length,3);assert.equal(process.argv[2],"qualify");assertReadonlyHostOperator();
+  assertReadonlyHostOperator();assert.equal(process.argv[2],"qualify");
+  const removalCase=process.argv.length===4 && process.argv[3]==="--parent-crash-h1" ? originalH1Case() : FullH1Case.Positive;assert.equal(process.argv.length,removalCase===FullH1Case.ParentCrash?4:3);
   assert.equal(readCurrentBackingGeometry(),CurrentBackingGeometry.Adoptable);
   assert.match(process.env.TEST_SOURCE_SHA??"",/^[a-f0-9]{40}$/);
   const consumer=process.env.TEST_FULL_RESTORE_CONSUMER??FullGuestRestoreConsumer.Ordinary;
@@ -91,7 +93,9 @@ try {
     assertOriginalFullBackingPreparation();assert(performance.now()<fullDeadline);await new Promise(resolve=>setTimeout(resolve,100));
   }
   evidence.phase=FullGuestSetup.Policy;evidence.testEvictionPolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);
-  const evictRestore=await (consumer===FullGuestRestoreConsumer.Readonly ? runCurrentFullEvictReadonlyRestoreFlow : runCurrentFullEvictRestoreFlow)(roots,(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};});
+  assert(removalCase!==FullH1Case.ParentCrash || consumer===FullGuestRestoreConsumer.Ordinary);
+  const progress=(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};};
+  const evictRestore=await (consumer===FullGuestRestoreConsumer.Readonly ? runCurrentFullEvictReadonlyRestoreFlow(roots,progress) : runCurrentFullEvictRestoreFlow(roots,progress,removalCase));
   // Preserve observed C slice if later independent review/R continuation fails.
   evidence.evictRestore=evictRestore;
   const restored=evictRestore.entries.at(-1);assert(restored);

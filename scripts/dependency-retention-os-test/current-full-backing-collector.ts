@@ -4,9 +4,13 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../src/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
+import { H1DescriptorKind, H1ReadinessRecord, parseH1Request, readH1ReadinessRecord, readOriginalH1Observer, readOriginalH1SupervisorAcceptance } from "./current-removal-h1-fixture.js";
+import { parseHostedDependencyRemovalClaim, parseHostedDependencyRemovalActor } from "../../dist/worker-codex/hosted-dependency-removal-records.js";
+import { HostedActivationPhase, HostedCustodyReservationState, HostedCustodyPhase } from "../../dist/worker-core/index.js";
+import { parseDependencyOwner, DependencyOwnerPhase } from "../../dist/core/index.js";
 import { currentBackingStorage } from "./current-backing-geometry.js";
 
 export enum FullBackingExposure {
@@ -424,6 +428,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
   let qualifiedSeal:Buffer|undefined,qualificationStarted=false;
   const answeredPulses=new Set<string>();
   let guestSources:ReadonlyMap<string,string>|undefined;
+  let h1Terminal:ReturnType<typeof retainH1Terminal>|undefined;
   let guestUnitBirth:Readonly<Record<string,string>>|undefined;
   function liveGuestUnit():Readonly<Record<string,string>> {
     assert(selection);
@@ -480,9 +485,10 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     revalidateImage(6n*1024n*1024n*1024n);
     const pairPath=fullNativeLiveRoot+"/current-full-pair.json",invocationPath=fullNativeLiveRoot+"/current-full-pair-invocation.json";
     const bytes=[pairPath,invocationPath].map(path=>{const fd=hold(path,false,0o600n);return fdBytes(fd,16384,budget);});
-    const pair=fullData(JSON.parse(bytes[0]!.toString()),["schemaVersion","jobId","parentUnit","parentInvocationId","guestMachineId","parentProc","guestSources","unit","fragmentSha256","root","rootDev","rootIno","machineId","bootId","sourceSha"]);
+    const pair=fullData(JSON.parse(bytes[0]!.toString()),["schemaVersion","jobId","parentUnit","parentInvocationId","guestMachineId","parentProc","guestSources","unit","fragmentSha256","root","rootDev","rootIno","machineId","bootId","sourceSha",...(parent.removalCase===FullRemovalCase.ParentCrashH1?["removalCase","restoreConsumer"]:[])]);
     const invocation=fullData(JSON.parse(bytes[1]!.toString()),["schemaVersion","pairSha256","parentInvocationId","unit","guestInvocationId"]);
     for(let i=0;i<bytes.length;i++)assert(Buffer.from(JSON.stringify(i===0?pair:invocation)+"\n").equals(bytes[i]!));
+    assert(parent.removalCase!==FullRemovalCase.ParentCrashH1 || (pair.removalCase===FullRemovalCase.ParentCrashH1 && pair.restoreConsumer==="ordinary"));
     assert(pair.schemaVersion===2 && pair.jobId===fullNativeJob && pair.parentUnit===fullNativeUnit && pair.parentInvocationId===process.env.INVOCATION_ID && pair.root===root && pair.unit===`TEST-retention-os-${id}.service` && pair.sourceSha===process.env.TEST_SOURCE_SHA);
     assert.equal(pair.machineId,text("/etc/machine-id",64,budget).trim());
     assert.equal(pair.bootId,text("/proc/sys/kernel/random/boot_id",64,budget).trim());
@@ -497,7 +503,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     assert.equal(String(fstatSync(extra[0]!,{bigint:true}).ino),/^mnt:\[([0-9]+)\]$/.exec(seen.mnt)?.[1]);
     assert.equal(String(fstatSync(extra[1]!,{bigint:true}).ino),/^pid:\[([0-9]+)\]$/.exec(seen.pidNamespace)?.[1]);
     assert(same(identity(fstatSync(extra[2]!,{bigint:true})),{dev:seen.rootDev,ino:seen.rootIno}));
-    assert(Array.isArray(pair.guestSources) && pair.guestSources.length===8);
+    assert(Array.isArray(pair.guestSources) && pair.guestSources.length===(parent.removalCase===FullRemovalCase.ParentCrashH1?10:8));
     const sources=new Map<string,string>();
     for(const entry of pair.guestSources){const row=fullData(entry,["path","sha256"]);assert(typeof row.path==="string" && typeof row.sha256==="string" && /^[a-f0-9]{64}$/.test(row.sha256) && !sources.has(row.path));sources.set(row.path,row.sha256);}
     guestSources=sources;
@@ -583,6 +589,90 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     try{assert(same(identity(fstatSync(exe,{bigint:true})),identity(named)) && readlinkSync(prefix+"/exe")===path);}finally{closeSync(exe);}
     return true;
   }
+  /** Retain the exact completed policy graph before teardown. After stop,
+   * relative names are rejoined through these original directory descriptors;
+   * the vanished guest proc/root alias cannot supply replacement authority. */
+  function retainH1Terminal(){
+    assert(parent.removalCase===FullRemovalCase.ParentCrashH1 && selection && qualifiedSeal);
+    parent.revalidate();const acceptance=readOriginalH1SupervisorAcceptance(parent),request=acceptance.originalRequest;
+    const descriptors:number[]=[],directories=new Map<string,{fd:number;stat:BigIntStats;parent:string|null;name:string;mount:string}>(),files=new Map<string,{fd:number;stat:BigIntStats;bytes:Buffer}>();
+    let released=false;
+    function directory(relative:string):number {const found=directories.get(relative);if(found)return found.fd;
+      assert(relative==="" || (/^[A-Za-z0-9_.+/-]+$/.test(relative) && !relative.split("/").some(part=>part==="." || part===".." || !part)));
+      const parentPath=relative===""?null:dirname(relative)==="."?"":dirname(relative),name=relative===""?"":basename(relative),parentFd=parentPath===null?undefined:directory(parentPath);
+      const fd=openSync(parentFd===undefined?root:`/proc/self/fd/${parentFd}/${name}`,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW|constants.O_NONBLOCK),stat=fstatSync(fd,{bigint:true});
+      descriptors.push(fd);assert(stat.isDirectory() && stat.uid===0n && stat.gid===0n && !(stat.mode&0o022n));directories.set(relative,{fd,stat,parent:parentPath,name,mount:mountId(fd,budget)});return fd;
+    }
+    function file(path:string):{fd:number;stat:BigIntStats;bytes:Buffer} {const found=files.get(path);if(found)return found;
+      assert(path.startsWith("/var/lib/subscription-runtime-host-policy/") && !path.split("/").some(part=>part==="." || part==="..") && !path.includes("//"));
+      const relative=path.slice(1),dir=directory(dirname(relative)),fd=openSync(`/proc/self/fd/${dir}/${basename(relative)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),stat=fstatSync(fd,{bigint:true});descriptors.push(fd);
+      assert(stat.isFile() && stat.uid===0n && stat.gid===0n && stat.nlink===1n && (stat.mode&0o7777n)===0o600n && stat.size>0n && stat.size<=65536n);
+      const bytes=fdBytes(fd,65536,budget);assert(BigInt(bytes.length)===stat.size);const value:unknown=JSON.parse(bytes.toString("utf8"));assert(Buffer.from(JSON.stringify(value)+"\n").equals(bytes));const entry={fd,stat,bytes};files.set(path,entry);return entry;
+    }
+    function value(path:string):unknown{return JSON.parse(file(path).bytes.toString("utf8"));}
+    function reference(input:unknown){const ref=fullData(input,["path","identity","sha256"]),i=fullData(ref.identity,["dev","ino"]);assert(typeof ref.path==="string" && typeof ref.sha256==="string" && /^[a-f0-9]{64}$/.test(ref.sha256) && typeof i.dev==="string" && typeof i.ino==="string");const pinned=file(ref.path);assert(i.dev===String(pinned.stat.dev) && i.ino===String(pinned.stat.ino) && hash(pinned.bytes)===ref.sha256);return {path:ref.path,identity:{dev:i.dev,ino:i.ino},sha256:ref.sha256};}
+    try{
+    const policy="/var/lib/subscription-runtime-host-policy",proof=file(policy+"/current-full-h1-terminal-proof.json"),row=fullData(JSON.parse(proof.bytes.toString("utf8")),["schemaVersion","purpose","sourceSha","bootId","supervisorId","jobId","revision","workspace","claim","actor","retirement","completion","idle","originalIdle","sourceClosed","absent","header","archivedWitness","owner","expectedOwner","operationId","removedEntries","activation","epochGeneration","terminal"]);
+    assert(row.schemaVersion===1 && row.purpose==="TEST_original_H1_closed_archive_facts_only" && row.sourceSha===process.env.TEST_SOURCE_SHA && row.sourceSha===request.sourceSha && row.bootId===request.bootId && row.supervisorId===request.supervisorId && row.jobId===request.jobId && row.revision===request.revision);assert.deepEqual(row.workspace,request.workspace);
+    const refs=new Map<string,ReturnType<typeof reference>>();for(const name of ["claim","actor","retirement","completion","idle","originalIdle","sourceClosed","absent","header","archivedWitness","owner","terminal"])refs.set(name,reference(row[name]));
+    const claimRef=refs.get("claim")!,claim=parseHostedDependencyRemovalClaim(value(claimRef.path)),actor=parseHostedDependencyRemovalActor(value(refs.get("actor")!.path),claim,claimRef);
+    assert(claim.binding.jobId===request.jobId && claim.absent.receipt.revision===request.revision && claim.absent.receipt.operationId===row.operationId);assert.deepEqual(value(refs.get("absent")!.path),claim.absent.receipt);assert.deepEqual(claim.absent.reference,request.absent);
+    for(const [name,expected] of [["originalIdle",claim.originalIdle],["sourceClosed",claim.sourceClosed],["absent",claim.absent.reference],["header",claim.header]] as const)assert.deepEqual(refs.get(name),expected);
+    assert(actor.parent.pidBirth===request.parentBirth && actor.parent.supervisorId===request.supervisorId && actor.parent.bootId===request.bootId);
+    const completion=fullData(value(refs.get("completion")!.path),["version","kind","claim","actor","disposition","removedEntries"]),idle=fullData(value(refs.get("idle")!.path),["version","kind","claim","retirement","completion","fenced","released"]);
+    assert(completion.version===1 && completion.kind==="removal_session_closed" && completion.disposition==="removed" && Number.isSafeInteger(completion.removedEntries) && Number(completion.removedEntries)>0 && completion.removedEntries===row.removedEntries);assert.deepEqual(completion.claim,claimRef);assert.deepEqual(completion.actor,refs.get("actor"));
+    assert(idle.version===1 && idle.kind==="removal_idle");for(const name of ["claim","retirement","completion"])assert.deepEqual(idle[name],refs.get(name));
+    const fenced=parseDependencyOwner(idle.fenced),owner=parseDependencyOwner(value(refs.get("owner")!.path));assert(fenced.owner && fenced.owner.phase===DependencyOwnerPhase.Fenced);assert.deepEqual(fenced,parseDependencyOwner({...claim.claimed,revision:claim.claimed.revision+1,owner:{...claim.claimed.owner,phase:DependencyOwnerPhase.Fenced}}));assert.deepEqual(owner,parseDependencyOwner({...fenced,revision:fenced.revision+1,owner:null}));assert.deepEqual(owner,idle.released);assert.deepEqual(owner,row.expectedOwner);
+    const retired=value(refs.get("retirement")!.path);assert(retired && typeof retired==="object" && "claim" in retired && "actor" in retired);assert.deepEqual(retired.claim,claimRef);assert.deepEqual(retired.actor,refs.get("actor"));
+    const archiveRef=refs.get("archivedWitness")!,archived=fullData(value(archiveRef.path),["version","purpose","acquisitionId","bootId","parent","mutex","claim","actor","lock","completion"]);
+    assert(archived.version===1 && archived.purpose==="retire_completed_dependency_removal_v1" && typeof archived.acquisitionId==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(archived.acquisitionId) && archived.bootId===request.bootId && archiveRef.path===policy+"/activation-fence-retired/"+archived.acquisitionId+"/owner.json");
+    const archiveDirectory=directory(dirname(archiveRef.path).slice(1)),mutex=fullData(archived.mutex,["dev","ino"]);assert.deepEqual(mutex,identity(fstatSync(archiveDirectory,{bigint:true})));assert.deepEqual(archived.claim,claimRef);assert.deepEqual(archived.actor,refs.get("actor"));assert.deepEqual(archived.completion,refs.get("completion"));
+    const activation=value(policy+"/host-activation.json");assert.deepEqual(activation,row.activation);assert(activation && typeof activation==="object" && "phase" in activation && activation.phase===HostedActivationPhase.Closed && "bootId" in activation && activation.bootId===request.bootId && "supervisorId" in activation && activation.supervisorId===request.supervisorId && "ordinaryStarts" in activation && Array.isArray(activation.ordinaryStarts) && activation.ordinaryStarts.every(value=>value && typeof value==="object" && "state" in value && value.state===HostedCustodyReservationState.Terminal));
+    const terminal=file(refs.get("terminal")!.path),terminalRow=fullData(JSON.parse(terminal.bytes.toString("utf8")),["schemaVersion","sourceSha","pairSha256","invocationSealSha256","activationGeneration","epochGeneration","workspace","sourceClosed","idleClosed"]);assert(activation && typeof activation==="object" && "generation" in activation && activation.generation===terminalRow.activationGeneration);assert.deepEqual(terminalRow.workspace,row.workspace);assert(terminalRow.schemaVersion===1 && terminalRow.sourceSha===row.sourceSha && terminalRow.pairSha256===hash(sealBytes[0]!) && terminalRow.invocationSealSha256===hash(sealBytes[1]!) && terminalRow.epochGeneration===row.epochGeneration);assert.deepEqual(terminalRow.sourceClosed,refs.get("sourceClosed"));assert.deepEqual(terminalRow.idleClosed,refs.get("originalIdle"));
+    function epoch(){const fd=directory(policy.slice(1));if(row.epochGeneration===null){for(const name of ["readonly-enrollment.json","readonly-epoch.json"]){try{const unexpected=openSync(`/proc/self/fd/${fd}/${name}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);closeSync(unexpected);assert.fail("H1 null epoch filename exists");}catch(error){assert((error as NodeJS.ErrnoException).code==="ENOENT");}}assert(activation && typeof activation==="object" && "exclusiveEnrollmentSha256" in activation && activation.exclusiveEnrollmentSha256===null);}else{assert(Number.isSafeInteger(row.epochGeneration));const epoch=value(policy+"/readonly-epoch.json");file(policy+"/readonly-enrollment.json");assert(epoch && typeof epoch==="object" && "phase" in epoch && epoch.phase===HostedCustodyPhase.Closed && "generation" in epoch && epoch.generation===row.epochGeneration && "revoked" in epoch && epoch.revoked===true && "reservations" in epoch && Array.isArray(epoch.reservations) && epoch.reservations.every(value=>value && typeof value==="object" && "state" in value && value.state===HostedCustodyReservationState.Terminal) && "outerRuntime" in epoch && (epoch.outerRuntime===null || (typeof epoch.outerRuntime==="object" && "state" in epoch.outerRuntime && epoch.outerRuntime.state===HostedCustodyReservationState.Terminal)));}}
+    function revalidate(){assert(!released);parent.revalidate();assert.deepEqual(readOriginalH1SupervisorAcceptance(parent),acceptance);epoch();
+      for(const entry of directories.values()){const actual=fstatSync(entry.fd,{bigint:true});assert(same(identity(actual),identity(entry.stat)) && actual.uid===entry.stat.uid && actual.gid===entry.stat.gid && actual.mode===entry.stat.mode && mountId(entry.fd,budget)===entry.mount);if(entry.parent!==null){const fd=openSync(`/proc/self/fd/${directories.get(entry.parent)!.fd}/${entry.name}`,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{assert(same(identity(fstatSync(fd,{bigint:true})),identity(entry.stat)) && mountId(fd,budget)===entry.mount);}finally{closeSync(fd);}}}
+      for(const [path,entry] of files){const relative=path.slice(1),fd=openSync(`/proc/self/fd/${directories.get(dirname(relative))!.fd}/${basename(relative)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);try{const actual=fstatSync(fd,{bigint:true});assert(same(identity(actual),identity(entry.stat)) && actual.uid===entry.stat.uid && actual.gid===entry.stat.gid && actual.mode===entry.stat.mode && actual.nlink===1n && actual.size===entry.stat.size && actual.ctimeNs===entry.stat.ctimeNs && actual.mtimeNs===entry.stat.mtimeNs && fdBytes(fd,65536,budget).equals(entry.bytes) && fdBytes(entry.fd,65536,budget).equals(entry.bytes));}finally{closeSync(fd);}}
+      epoch();for(const name of ["dependency-transactions","dependency-owners"]){const fd=directory(policy.slice(1)+"/"+name);assert(!readdirSync(`/proc/self/fd/${fd}`).some(name=>/\.remove\.lock$|\.close-unresolved\.json$|\.lock$|^\.pending-/.test(name)));}parent.revalidate();}
+    revalidate();return {terminal:terminal.bytes,proofSha256:hash(proof.bytes),revalidate,close(){if(released)return;released=true;for(const fd of descriptors.reverse())closeSync(fd);}};
+    }catch(error){for(const fd of descriptors.reverse())closeSync(fd);throw error;}
+  }
+  /** One source-controlled own supervisor child, born while its exact FD3
+   * gate was held. The record is factual; all original source/process joins
+   * below are mandatory before it can designate this live recovery actor. */
+  function originalH1RecoveryGuest(prefix:string):boolean {
+    if(parent.removalCase!==FullRemovalCase.ParentCrashH1)return false;
+    const outbox=dirname(root)+"/policy-request-outbox",alias=root+"/run/TEST-full-flow-outbox";
+    const hostDirectory=hold(outbox,true,0o700n),guestDirectory=hold(alias,true,0o700n);
+    assert(same(identity(fstatSync(hostDirectory,{bigint:true})),identity(fstatSync(guestDirectory,{bigint:true}))));
+    const record=readH1ReadinessRecord(outbox,H1ReadinessRecord.Recovery),requestBytes=readH1ReadinessRecord(outbox,H1ReadinessRecord.Request);
+    if(!record || !requestBytes)return false;
+    const row=fullData(JSON.parse(record.toString("utf8")),["schemaVersion","purpose","sourceSha","bootId","supervisorBirth","originalParentBirth","recoveryBirth","requestRef","programSha256"]);
+    const request=parseH1Request(JSON.parse(requestBytes.toString("utf8"))),requestFd=hold(outbox+"/"+H1ReadinessRecord.Request,false,0o600n),requestStat=fstatSync(requestFd,{bigint:true});
+    const ref=fullData(row.requestRef,["identity","sha256"]),ri=fullData(ref.identity,["dev","ino"]);
+    assert(Buffer.from(JSON.stringify(row)+"\n").equals(record) && Buffer.from(JSON.stringify(request)+"\n").equals(requestBytes));
+    assert(row.schemaVersion===1 && row.purpose==="TEST_original_supervisor_recovery_child_birth_only" && row.sourceSha===process.env.TEST_SOURCE_SHA && row.sourceSha===request.sourceSha && row.bootId===request.bootId && row.originalParentBirth===request.parentBirth && row.supervisorBirth===request.supervisorId);
+    assert(ri.dev===String(requestStat.dev) && ri.ino===String(requestStat.ino) && ref.sha256===hash(requestBytes) && fdBytes(requestFd,16384,budget).equals(requestBytes));
+    function processBirth(path:string):string {const raw=text(path+"/stat",4096,budget),fields=raw.slice(raw.lastIndexOf(") ")+2).trim().split(/\s+/),status=text(path+"/status",16384,budget),ids=/^NSpid:\s+([0-9 \t]+)$/m.exec(status)?.[1]?.trim().split(/\s+/);assert(ids?.length && /^[1-9][0-9]*$/.test(fields[19]??"") && !["Z","X","x"].includes(fields[0]??""));return ids[ids.length-1]+":"+fields[19];}
+    assert.equal(processBirth(prefix),row.recoveryBirth);
+    const status=text(prefix+"/status",16384,budget),ppid=/^PPid:\s+([1-9][0-9]*)$/m.exec(status)?.[1];assert(ppid);
+    const supervisor="/proc/"+ppid;assert.equal(processBirth(supervisor),row.supervisorBirth);
+    assert(text(supervisor+"/cgroup",4096,budget)===text(prefix+"/cgroup",4096,budget));
+    assert(readlinkSync(supervisor+"/ns/pid")===selection!.pidNamespace && same(identity(statSync(supervisor+"/root",{bigint:true})),{dev:selection!.rootDev,ino:selection!.rootIno}));
+    const expectedSupervisor=["/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node","--experimental-strip-types","/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-supervisor.js","supervisor","--parent-crash-h1",""];
+    assert.equal(text(supervisor+"/cmdline",32768,budget),expectedSupervisor.join("\0"));
+    const nodePath=expectedSupervisor[0]!,nodeFd=hold(root+nodePath,false),supervisorExe=openSync(supervisor+"/exe",constants.O_RDONLY);
+    try{assert(readlinkSync(supervisor+"/exe")===nodePath && same(identity(fstatSync(supervisorExe,{bigint:true})),identity(fstatSync(nodeFd,{bigint:true}))) && hash(fdBytes(nodeFd,128*1024*1024,budget))===guestSources!.get(nodePath));}finally{closeSync(supervisorExe);}
+    const supervisorStatus=text(supervisor+"/status",16384,budget);assert(/^Uid:\s+0\s+0\s+0\s+0$/m.test(supervisorStatus) && /^Gid:\s+0\s+0\s+0\s+0$/m.test(supervisorStatus) && /^NoNewPrivs:\s+1$/m.test(supervisorStatus));
+    const supervisorSource=hold(root+expectedSupervisor[2],false),program=hold(root+"/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-removal-h1-fixture.js",false);
+    assert.equal(hash(fdBytes(supervisorSource,128*1024*1024,budget)),guestSources!.get(expectedSupervisor[2]!));
+    assert.equal(hash(fdBytes(program,128*1024*1024,budget)),row.programSha256);assert.equal(row.programSha256,guestSources!.get("/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-removal-h1-fixture.js"));
+    // Gate has been consumed/closed before any production operation. There is
+    // no generic namespace/control/socket enrollment through the birth record.
+    assert.equal(processBirth(prefix),row.recoveryBirth);assert.equal(processBirth(supervisor),row.supervisorBirth);
+    assert(readH1ReadinessRecord(outbox,H1ReadinessRecord.Recovery)?.equals(record) && readH1ReadinessRecord(outbox,H1ReadinessRecord.Request)?.equals(requestBytes));
+    parent.revalidate();return true;
+  }
   /** Finite original ROOT guest callgraph. Arbitrary guest ROOT programs,
    * descendants and helper names never inherit this designation. Its complete
    * source/ELF closure was held by the original parent before guest submission. */
@@ -594,10 +684,11 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     const nodePath="/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",argv=text(prefix+"/cmdline",32768,budget).split("\0");assert(argv.pop()==="");
     const exe=readlinkSync(prefix+"/exe");let script:string|undefined;
     if(exe===nodePath){
-      if(argv.length===4 && argv[1]==="--experimental-strip-types" && argv[2]==="/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-supervisor.js" && argv[3]==="supervisor")script=argv[2];
-      if(argv.length===3 && argv[1]==="/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-guest.js" && argv[2]==="qualify")script=argv[1];
+      if(argv.length===(parent.removalCase===FullRemovalCase.ParentCrashH1?5:4) && (parent.removalCase!==FullRemovalCase.ParentCrashH1 || argv[4]==="--parent-crash-h1") && argv[1]==="--experimental-strip-types" && argv[2]==="/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-supervisor.js" && argv[3]==="supervisor")script=argv[2];
+      if(argv.length===(parent.removalCase===FullRemovalCase.ParentCrashH1?4:3) && (parent.removalCase!==FullRemovalCase.ParentCrashH1 || argv[3]==="--parent-crash-h1") && argv[1]==="/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-guest.js" && argv[2]==="qualify")script=argv[1];
       if(argv.length===3 && argv[1]==="/opt/subscription-runtime-dependency-os-TEST/dist/worker-codex/hosted-readonly-host-launch-cli.js" && argv[2]==="ordinary-bootstrap")script=argv[1];
       if(argv.length===2 && argv[1]==="/opt/subscription-runtime-dependency-os-TEST/dist/worker-codex/hosted-readonly-runtime-bootstrap.js")script=argv[1];
+      if(argv.length===3 && argv[1]==="/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-removal-h1-fixture.js" && argv[2]==="recover_h1" && originalH1RecoveryGuest(prefix))script=argv[1];
       if(!script)return false;
     }else if(exe!=="/usr/bin/dbus-daemon" || argv.join(" ")!=="/usr/bin/dbus-daemon --config-file=/etc/subscription-runtime/system-bus/bus.conf --address=systemd: --nofork --nopidfile --nosyslog")return false;
     const expected=guestSources.get(exe);if(!expected)return false;
@@ -605,6 +696,16 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     try{const actual=hold(root+exe,false);assert(same(identity(fstatSync(kernel,{bigint:true})),identity(fstatSync(actual,{bigint:true}))) && hash(fdBytes(actual,128*1024*1024,budget))===expected);}finally{closeSync(kernel);}
     if(script){const fd=hold(root+script,false);assert.equal(hash(fdBytes(fd,128*1024*1024,budget)),guestSources.get(script));}
     return true;
+  }
+  /** Only the child's original constructor may designate this H1 actor.
+   * Its reader rejoins argv/birth/namespaces, every descriptor and source map. */
+  function originalH1(anchor:FullProcTaskAnchor,joins:readonly Record<string,unknown>[],exposures:ReadonlySet<FullBackingExposure>):boolean {
+    if(parent.removalCase!==FullRemovalCase.ParentCrashH1)return false;
+    const fact=readOriginalH1Observer(parent,anchor);if(!fact)return false;
+    assert(fact.pid===anchor.processPid && fact.birth===anchor.processBirth);
+    for(const exposure of exposures)assert([FullBackingExposure.PrivilegeCandidate,FullBackingExposure.ProcDescriptor,FullBackingExposure.NamespaceDescriptor,FullBackingExposure.SocketDescriptor].includes(exposure));
+    for(const join of joins){const original=fact.descriptors.find(entry=>String(entry.fd)===join.fd);assert(original && original.dev===String(join.dev) && original.ino===String(join.ino));if(join.exposure===FullBackingExposure.SocketDescriptor)assert(original.kind===H1DescriptorKind.OwnPipe && original.fd<3);}
+    anchor.revalidate();assert.deepEqual(readOriginalH1Observer(parent,anchor),fact);return true;
   }
   /** Fixed nspawn's own native protocol is the only additional setup route.
    * Source was selected and held before its single original submit. Datagram
@@ -782,8 +883,9 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
                 // nonprivileged host actors. For every actual target/privilege
                 // candidate, ALL such inherited routes remain veto checks.
                 if(relevant){assert(owners.length<256);
-                  const monitor=originalMonitor(taskAnchor,user,mnt,fdJoins);
-                  const original=pid===process.pid || (pid===selection!.pid && tid===pid) || monitor || originalGuest(pid,prefix,user);
+                  const monitor=originalMonitor(taskAnchor,user,mnt,fdJoins),h1Actor=originalH1(taskAnchor,fdJoins,exposures);
+                  const original=pid===process.pid || (pid===selection!.pid && tid===pid) || monitor || h1Actor || originalGuest(pid,prefix,user);
+                  if(h1Actor){const anchored=taskAnchor;memberships.push(()=>assert(originalH1(anchored,fdJoins,exposures)));}
                   if(monitor){const anchored=taskAnchor;memberships.push(()=>{
                     assert(originalMonitor(anchored,readlinkSync(anchored.path+"/ns/user"),readlinkSync(anchored.path+"/ns/mnt"),fdJoins));
                   });}
@@ -866,16 +968,21 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
         completion.revalidate();linkSync(pending,path);unlinkSync(pending);fsyncSync(parentFd);answeredPulses.add(requestPath);
       }finally{completion?.close();}
     },
+    prepareH1Terminal(){assert(!h1Terminal && !closed);h1Terminal=retainH1Terminal();},
     closeAfterTerminal(){
       assert(!closed && qualifiedSeal && selection);
       parent.revalidate();revalidateImage(6n*1024n*1024n*1024n);
-      const policy=root+"/var/lib/subscription-runtime-host-policy",terminalFd=hold(policy+"/current-full-terminal.json",false,0o600n),terminal=fdBytes(terminalFd,16384,budget),row=fullData(JSON.parse(terminal.toString("utf8")),["schemaVersion","sourceSha","pairSha256","invocationSealSha256","activationGeneration","epochGeneration","workspace","sourceClosed","idleClosed"]);
+      let terminal:Buffer,terminalFd:number|undefined;
+      if(parent.removalCase===FullRemovalCase.ParentCrashH1){assert(h1Terminal);h1Terminal.revalidate();terminal=h1Terminal.terminal;}
+      else {
+      const policy=root+"/var/lib/subscription-runtime-host-policy";terminalFd=hold(policy+"/current-full-terminal.json",false,0o600n);terminal=fdBytes(terminalFd,16384,budget);const row=fullData(JSON.parse(terminal.toString("utf8")),["schemaVersion","sourceSha","pairSha256","invocationSealSha256","activationGeneration","epochGeneration","workspace","sourceClosed","idleClosed"]);
       assert(Buffer.from(JSON.stringify(row)+"\n").equals(terminal) && row.schemaVersion===1 && row.sourceSha===process.env.TEST_SOURCE_SHA && row.pairSha256===hash(sealBytes[0]!) && row.invocationSealSha256===hash(sealBytes[1]!));
       for(const name of ["host-activation.json","readonly-epoch.json"]){const fd=hold(policy+"/"+name,false,0o600n),bytes=fdBytes(fd,65536,budget),value:unknown=JSON.parse(bytes.toString("utf8"));
         assert(value && typeof value==="object" && "phase" in value && value.phase==="closed" && "generation" in value && value.generation===row[name==="host-activation.json"?"activationGeneration":"epochGeneration"]);
       }
       for(const reference of [row.sourceClosed,row.idleClosed]){assert(reference && typeof reference==="object" && "path" in reference && typeof reference.path==="string" && /^\/var\/lib\/subscription-runtime-host-policy\/dependency-generation-(?:source-closures\/[0-9a-f-]{36}|idle-closures\/[1-9][0-9]*-[1-9][0-9]*\/[0-9]+)\.json$/.test(reference.path) && "sha256" in reference && typeof reference.sha256==="string");assert.equal(hash(fdBytes(hold(root+reference.path,false,0o600n),65536,budget)),reference.sha256);}
       for(const directory of [policy+"/dependency-transactions",policy+"/dependency-owners"]){const fd=hold(directory,true,0o700n);assert(!readdirSync(`/proc/self/fd/${fd}`).some(name=>/\.remove\.lock$|\.close-unresolved\.json$|\.lock$|^\.pending-/.test(name)));}
+      }
       const unit=`TEST-retention-os-${id}.service`,group="/system.slice/"+unit;
       function stopped(){const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=InvocationID,ActiveState,SubState,MainPID,ControlGroup,Job"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:2000,maxBuffer:4096});assert(!result.error && result.status===0 && result.signal===null);
         const values:Record<string,string>={};for(const line of result.stdout.trimEnd().split("\n")){const at=line.indexOf("=");assert(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}
@@ -885,9 +992,9 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       function drained(path:string,depth:number){budget();assert(++groups<=4096 && depth<=16);let names:string[];try{names=readdirSync(path);}catch(error){assert((error as NodeJS.ErrnoException).code==="ENOENT");return;}
         assert(text(path+"/cgroup.procs",65536,budget)==="" && text(path+"/cgroup.threads",65536,budget)==="");for(const name of names){assert(/^[A-Za-z0-9_.:@+-]+$/.test(name));if(lstatSync(path+"/"+name).isDirectory())drained(path+"/"+name,depth+1);}}
       drained("/sys/fs/cgroup"+group,0);assert.deepEqual(stopped(),before);
-      revalidateImage(6n*1024n*1024n*1024n);parent.revalidate();assert(fdBytes(terminalFd,16384,budget).equals(terminal));
-      closed=true;collectorDescriptors.clear();selectedTask?.close();selectedProcess?.close();for(const entry of held)closeSync(entry.fd);for(const fd of extra)closeSync(fd);for(const entry of ownerNamespaces.values())closeSync(entry.fd);if(loopFd!==undefined){collectorDescriptors.delete(loopFd);closeSync(loopFd);}
-      const result=Object.freeze({purpose:"actual_recursive_guest_and_original_source_terminal",terminalSha256:hash(terminal),groups});fullBackingTerminals.set(result,parent);return result;
+      revalidateImage(6n*1024n*1024n*1024n);parent.revalidate();if(h1Terminal)h1Terminal.revalidate();else{assert(terminalFd!==undefined);assert(fdBytes(terminalFd,16384,budget).equals(terminal));}
+      h1Terminal?.close();closed=true;collectorDescriptors.clear();selectedTask?.close();selectedProcess?.close();for(const entry of held)closeSync(entry.fd);for(const fd of extra)closeSync(fd);for(const entry of ownerNamespaces.values())closeSync(entry.fd);if(loopFd!==undefined){collectorDescriptors.delete(loopFd);closeSync(loopFd);}
+      const result=Object.freeze({purpose:"actual_recursive_guest_and_original_source_terminal",terminalSha256:hash(terminal),...(h1Terminal?{h1ProofSha256:h1Terminal.proofSha256}:{}),groups});fullBackingTerminals.set(result,parent);return result;
     },
     close(){assert(closed);return;}
   });
