@@ -1,3 +1,5 @@
+import { selectedRequest, storedRequestPlan, installedInventory, assertHostedForegroundPriorOutput, type HostedForegroundRequest } from "./hosted-foreground-request-custody";
+export { requireHostedForegroundRequest, closeHostedForegroundRequest, recheckHostedForegroundRequest, type HostedForegroundRequest } from "./hosted-foreground-request-custody";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
@@ -8,12 +10,13 @@ import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { completionBytes, completionPath, ordinaryCompletionBytes, ordinaryCompletionPath, HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 import { HostedCustodyReservationState, parseHostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
-import { readHostedInstallationActivation } from "./hosted-installation-activation";
+import { isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
+import { parseStoredProjectStartArgs, parseStoredProjectStartBinding,
+  resolveStoredProjectStartPlan, type StoredProjectStartPlan } from "./stored-start-planning";
+import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 
-export type HostedForegroundRequest = Readonly<{ path: string; jobRoot: string; args: readonly string[] }>;
 const published = new WeakSet<object>();
-const requests = new WeakMap<HostedForegroundRequest, { prior?: { fd: number; dev: number; ino: number; sha256: string } }>();
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 function denied(): never { throw new Error("hosted_foreground_result_unresolved"); }
 function ancestry(path: string): void {
@@ -39,39 +42,21 @@ function stableBytes(path: string, expected?: { dev: string; ino: string; byteLe
   } finally { closeSync(fd); }
 }
 
-/** Request data only. The publisher must independently bind this to the actual
- * retained inventoried start after terminal drain. Unsupported routes fail
- * before reservation/spawn, never after silently dropping their stdout. */
-function selectedRequest(args: readonly string[], cwd: string): HostedForegroundRequest {
-  const indices = args.flatMap((arg, i) => arg === "--output" ? [i] : []);
-  const jobRoot = dirname(cwd), path = indices.length === 1 ? args[indices[0]! + 1] : undefined;
-  const option = (name: string) => {
-    const at = args.flatMap((arg, i) => arg === name ? [i] : []);
-    if (at.length !== 1) denied(); return args[at[0]! + 1];
-  };
-  const task = option("--task-id");
-  const defaultPath = task && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(task) ? `${jobRoot}/${task}.latest-result.json` : undefined;
-  const stateResult = path?.startsWith(`${jobRoot}/state/`) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}-result\.json$/.test(path.slice(`${jobRoot}/state/`.length));
-  if (!args[0]?.endsWith("/codex-goal-cli.js") || args[1] !== "run" || cwd !== `${jobRoot}/workspace` ||
-      args.some(arg => ["--dry-run", "--print-command", "--tmux", "--tmux-session", "--hosted-lifecycle"].includes(arg) ||
-        /^(?:--dry-run|--print-command|--tmux|--tmux-session|--hosted-lifecycle)=/.test(arg)) ||
-      option("--job-root") !== jobRoot || option("--workspace") !== cwd ||
-      args.some(arg => arg.startsWith("--output=")) || !path || path !== defaultPath && !stateResult ||
-      !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(path) || path.split("/").some(p => p === "." || p === "..")) denied();
-  for (const [i, arg] of args.entries()) {
-    const value = args[i + 1];
-    if (value && (["--prompt", "--progress", "--log", "--checkpoint-publisher-socket"].includes(arg) && value === path ||
-        ["--auth-root", "--workspace", "--registry-root", "--durable-handoff-root"].includes(arg) &&
-        (value === path || path.startsWith(value + "/")))) denied();
-  }
-  return Object.freeze({ path, jobRoot, args: Object.freeze([...args]) });
-}
-function installedInventory() {
-  assertReadonlyHostOperator();
-  const origin = readHostedInstallationActivation(), inventory = readHostedReadonlyHostInventory();
-  const bytes = readHostedPrivateBytes(`${readonlySupervisorRoot}/readonly-inventory.json`, 64 * 1024);
-  if (inventory.schemaVersion !== 4 || !bytes || hash(bytes) !== origin.installation.inventorySha256) denied();
-  return { ...origin, inventory };
+/** Only the actual retained ordinary runtime selects this start. Equality
+ * supplied in tool JSON is never an alternative to that original origin. */
+export function hostedStoredProjectStartPlan(args: ProjectControlMcpArgs): StoredProjectStartPlan | undefined {
+  if (!isHostedOrdinaryRuntime()) return undefined;
+  return withHostedActivationFence(fence => {
+    const origin = readHostedOrdinaryRuntime(fence);
+    if (origin.launch.args[1] !== "tool") return undefined;
+    const plan = storedRequestPlan(origin.launch.args, origin.launch.cwd);
+    const actual = parseStoredProjectStartArgs(JSON.stringify(args));
+    const sameArgs = (value: ProjectControlMcpArgs) => JSON.stringify(Object.keys(value).sort().map(key =>
+      [key, key === "storedStartBinding" ? parseStoredProjectStartBinding(value.storedStartBinding) : value[key as keyof ProjectControlMcpArgs]]));
+    if (sameArgs(actual) !== sameArgs(plan.args) || origin.creator.jobId !== plan.jobId ||
+        origin.creator.jobRootDir !== plan.jobRoot || origin.creator.workspacePath !== plan.workspace) denied();
+    return resolveStoredProjectStartPlan(origin.launch.args[4]!, origin.launch.cwd);
+  });
 }
 function selectOutputPath(path: string): void {
   const { inventory } = installedInventory();
@@ -80,32 +65,6 @@ function selectOutputPath(path: string): void {
     try { return selectedRequest(launch.args, launch.cwd).path === path; } catch { return false; }
   })) denied();
 }
-export function requireHostedForegroundRequest(args: readonly string[], cwd: string): HostedForegroundRequest {
-  return withHostedActivationFence(() => {
-    const { inventory } = installedInventory();
-    const launches = [inventory.runtimeLaunch, ...inventory.ordinaryCreators.map(row => row.launch)];
-    if (!launches.some(launch => launch.cwd === cwd && JSON.stringify(launch.args) === JSON.stringify(args))) denied();
-    const request = selectedRequest(args, cwd);
-    ancestry(request.path);
-    let prior: { fd: number; dev: number; ino: number; sha256: string } | undefined;
-    try {
-      const fd = openSync(request.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      try {
-        const stat = fstatSync(fd);
-        if (!stat.isFile() || stat.uid !== 0 || stat.nlink !== 1 || (stat.mode & 0o077) || stat.size > 64 * 1024 * 1024) denied();
-        const bytes = stableBytes(request.path), current = lstatSync(request.path);
-        if (stat.dev !== current.dev || stat.ino !== current.ino) denied();
-        prior = { fd, dev: stat.dev, ino: stat.ino, sha256: hash(bytes) };
-      } catch (error) { closeSync(fd); throw error; }
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    requests.set(request, prior ? { prior } : {}); return request;
-  });
-}
-export function closeHostedForegroundRequest(request: HostedForegroundRequest): void {
-  const baseline = requests.get(request); requests.delete(request);
-  if (baseline?.prior) closeSync(baseline.prior.fd);
-}
-
 /** Runs synchronously inside the existing actual owner's terminal fence. It
  * preserves the existing result and artifacts, adding data refs, not authority. */
 export function publishHostedForegroundResult(request: HostedForegroundRequest, result: HostedForegroundResult,
@@ -117,15 +76,7 @@ export function publishHostedForegroundResult(request: HostedForegroundRequest, 
       selectedRequest(origin.args, `${origin.jobRoot}/workspace`).path !== request.path) denied();
   if (published.has(result) || request.jobRoot !== owner.jobRootDir || JSON.stringify(request.args) !== JSON.stringify(owner.args)) denied();
   const original = stableBytes(request.path), value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(original));
-  const baseline = requests.get(request), current = lstatSync(request.path);
-  if (!baseline) denied();
-  if (baseline.prior) {
-    const prior = fstatSync(baseline.prior.fd);
-    if (!prior.isFile() || prior.uid !== 0 || (prior.mode & 0o077) || prior.size > 64 * 1024 * 1024 ||
-        prior.dev !== baseline.prior.dev || prior.ino !== baseline.prior.ino ||
-        current.dev === baseline.prior.dev && current.ino === baseline.prior.ino ||
-        hash(readFileSync(baseline.prior.fd)) !== baseline.prior.sha256) denied();
-  }
+  assertHostedForegroundPriorOutput(request, lstatSync(request.path));
   if (!value || typeof value !== "object" || Array.isArray(value)) denied();
   const envelope = value as Record<string, unknown>;
   if (!["done", "partial", "blocked", "failed"].includes(envelope.status as string) ||

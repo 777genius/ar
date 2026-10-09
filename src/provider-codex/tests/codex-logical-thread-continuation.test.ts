@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AgentRuntimeExecutionMode,
   DefaultRedactor,
@@ -65,6 +65,69 @@ describe("Codex logical-thread continuation", () => {
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("retains returned usage and native web evidence when checkpoint persistence rejects without replay", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-thread-checkpoint-failure-"));
+    const usage = { inputTokens: 123, outputTokens: 45, totalTokens: 168 };
+    const fakeFactory = new FakeAppServerFactory({
+      turnUsage: usage,
+      onRequest: (request) => {
+        if (request.method !== "turn/start") return;
+        const stdout = fakeFactory.processes[0]!.stdout;
+        const emit = stdout.emit.bind(stdout);
+        vi.spyOn(stdout, "emit").mockImplementation((event, ...args) => {
+          if (event === "data") {
+            const frame = JSON.parse(String(args[0]));
+            if (frame.method === "turn/completed") {
+              const nativeFrame = { method: "item/completed", params: {
+                threadId: request.params?.threadId, turnId: frame.params.turn.id,
+                item: { type: "webSearch", id: "web-1", query: "private query",
+                  action: { type: "openPage", url: "turn0search0" }, results: null },
+              } };
+              return emit(event, JSON.stringify(nativeFrame) + "\n" + String(args[0]));
+            }
+          }
+          return emit(event, ...args);
+        });
+      },
+    });
+    const driver = logicalThreadDriver(fakeFactory);
+    const checkpointFailure = new Error("checkpoint persistence failed");
+    const onCheckpoint = vi.fn(async () => { throw checkpointFailure; });
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: logicalThreadTask(), workspace: { path: workspace },
+        runner: new StaticRunner(""), redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+        logicalThread: { threadId: "logical-thread-1", previousCheckpoint: "source-thread-1", onCheckpoint },
+      });
+      expect(result.status).toBe("failed");
+      if (result.status !== "failed") throw new Error("expected checkpoint failure");
+      expect(result.failure).toMatchObject({
+        code: "unknown_runtime_failure", safeMessage: "Codex runtime failed.",
+        details: { rawCause: checkpointFailure.message },
+      });
+      expect(result.telemetry?.usage).toEqual(usage);
+      expect(result.telemetry?.nativeWeb).toEqual({ truncated: false, turns: [{
+        threadId: "thread-1", acknowledgedTurnId: "turn-1", unknown: false, truncated: false,
+        records: [{ itemId: "web-1", status: "completion_only", action: "open_page",
+          resultSummary: { shape: "null", truncated: false } }],
+      }] });
+      expect(onCheckpoint).toHaveBeenCalledTimes(1);
+      expect(onCheckpoint).toHaveBeenCalledWith({
+        checkpoint: "thread-1", outcome: ProviderLogicalThreadOutcome.Continued,
+      });
+      expect(fakeFactory.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+      expect(fakeFactory.requests.filter(request => request.method === "thread/start")).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain("private query");
+      expect(JSON.stringify(result)).not.toContain("source-thread-1");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+      vi.restoreAllMocks();
     }
   });
 
