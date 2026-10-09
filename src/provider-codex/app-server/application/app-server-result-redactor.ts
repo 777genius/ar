@@ -1,3 +1,4 @@
+import { parseNativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
 import type { CodexExecutionResult } from "../../codex-json-execution-engine";
 import { assertOutputWithinBounds } from "../domain/app-server-errors";
@@ -24,20 +25,24 @@ export function redactCompletedAppServerResult(input: {
       redactor: input.redactor,
       context: "codex-app-server-result-warning",
     });
+    const nativeWeb = input.result.nativeWeb === undefined ? undefined : parseNativeWebEvidence(input.result.nativeWeb);
+    if (nativeWeb) input.redactor.assertNoKnownSecret(JSON.stringify(nativeWeb), "codex-native-web-receipt");
+    const receipt = nativeWeb === undefined ? {} : { nativeWeb };
     if (isAppServerWaitingForInputResult(input.result)) {
-      return redactWaitingForInputResult({
+      return { ...receipt, ...redactWaitingForInputResult({
         result: input.result,
         outputText,
         redactor: input.redactor,
         warnings,
-      });
+      }) };
     }
     return {
       outputText,
+      ...receipt,
       ...(input.result.usage === undefined ? {} : { usage: input.result.usage }),
       warnings,
     };
   } catch (error) {
-    throw new AppServerUsageError(error, input.result.usage, true);
+    throw new AppServerUsageError(error, input.result.usage, true, input.result.nativeWeb === undefined ? undefined : { turns: [], truncated: true });
   }
 }
