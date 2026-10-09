@@ -189,6 +189,8 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-archive-format-census.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-archive-members-TEST.ts \
             scripts/dependency-retention-os-test/current-h1-archive-members.node-test.ts \
+            scripts/dependency-retention-os-test/current-h1-archive-path-graph-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-archive-path-graph.node-test.ts \
             scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json \
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
             .github/workflows/ci.yml \
@@ -209,6 +211,8 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-archive-format-census.node-test.js \
             scripts/dependency-retention-os-test/current-h1-archive-members-TEST.js \
             scripts/dependency-retention-os-test/current-h1-archive-members.node-test.js \
+            scripts/dependency-retention-os-test/current-h1-archive-path-graph-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-archive-path-graph.node-test.js \
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
             > dependency-h1-tool-inputs-ci-source-evidence/emitted.sha256
       - name: Collect independently signed exact tool DATA on disposable root ARC job
@@ -235,8 +239,8 @@ jobs:
           grep -Eq '^ok [0-9]+ - raw tar survey preserves literal bytes, privileged mode and repeated hardlink observations without path authority$' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU and PAX raw extensions preserve original bytes while effective member census stays unresolved$' "$TAP"
           grep -Eq '^ok [0-9]+ - unsupported size or checksum and incomplete raw EOF hold without guessing another header$' "$TAP"
-          grep -Fxq '# tests 21' "$TAP"
-          grep -Fxq '# pass 20' "$TAP"
+          grep -Fxq '# tests 26' "$TAP"
+          grep -Fxq '# pass 25' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU basic rows retain original privileged mode and absolute dotdot literals without namespace authority$' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU basic profile drift and interpayload padding refuse before any row publication$' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU original stream package commitments and one absolute deadline veto stale results$' "$TAP"
@@ -244,6 +248,11 @@ jobs:
           grep -Fxq '# fail 0' "$TAP"
           grep -Fxq '# skipped 1' "$TAP"
           grep -Eq '^ok [0-9]+ - ordinary caller-owned file cannot become original root-owned archive authority # SKIP nonroot negative is exercised by separate caller-owned environment$' "$TAP"
+          grep -Eq '^ok [0-9]+ - fixed H1 graph retains repeated directory origins and mtimes with deterministic DATA identity$' "$TAP"
+          grep -Eq '^ok [0-9]+ - fixed H1 canonical collisions unsafe parents and directory security drift refuse before writes$' "$TAP"
+          grep -Eq '^ok [0-9]+ - fixed H1 alias graph keeps missing unselected targets and pending site recipe but vetoes unsafe edges$' "$TAP"
+          grep -Eq '^ok [0-9]+ - fixed H1 role selects original nsenter but excludes privileged and absent objects and refuses origin drift$' "$TAP"
+          grep -Eq '^ok [0-9]+ - fixed H1 complete records enforce operational boundary deadline and owned exclusive publication$' "$TAP"
           test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
       - name: Retain curated signed DATA and exact workflow evidence even on failure
         if: always()
