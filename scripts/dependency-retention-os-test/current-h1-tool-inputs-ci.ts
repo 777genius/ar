@@ -7,20 +7,53 @@ import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lch
 import { get } from "node:https";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { types } from "node:util";
 import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, PythonEnvelopeKind, type SignedPackage, type CapturedEnvelope, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
 import { materializeFixedH1SelectedToolrootData } from "./current-h1-selected-toolroot-TEST.ts";
-import { SelectedPhysicalDisposition, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
+import { SelectedPhysicalDisposition, SelectedPhysicalHeld, SelectedPhysicalHold, SelectedPhysicalPhase, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
 import { FixedGnuMemberKind, readFixedGnuBasicMembers, serializeFixedGnuMembers, type FixedGnuArchiveMembers } from "./current-h1-archive-members-TEST.ts";
 enum CiTool { AptGet="/usr/bin/apt-get", Gpgv="/usr/bin/gpgv", DpkgDeb="/usr/bin/dpkg-deb", AptHelper="/usr/lib/apt/apt-helper", Git="/usr/bin/git" }
+export enum CiFailureErrorType { Physical="SelectedPhysicalHeld", Assertion="AssertionError", Error="Error", Unknown="unknown" }
 enum CiDataStatus { Complete="signed-data-extraction-measurement-complete", Failed="signed-data-stage-failed" }
 enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", RawFormat="authenticated-raw-archive-format-survey", SelectedToolroot="selected-toolroot-physical-DATA", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
 enum CiMeasuredKind { Directory="directory", Alias="alias-literal-not-followed", File="file" }
 enum CiEnvelopeCandidate { Held="HOLD-not-native-qualified", Captured="captured-candidate-not-native-qualified" }
 enum CiByteRole { OwnRecord="own-record", InstalledTool="installed-CI-tool-data", SignedPayload="signed-extracted-payload-data" }
+export interface CiSelectedPhysicalFailure {
+ readonly status:SelectedPhysicalDisposition.PartialHeld;
+ readonly reason:SelectedPhysicalHold;
+ readonly phase:SelectedPhysicalPhase;
+ readonly processedObjects:number;
+ readonly rootCreated:boolean;
+}
+/** Only finite facts from the original physical writer; no message or path. */
+export function readCiSelectedPhysicalFailure(error:unknown):CiSelectedPhysicalFailure|null {
+ if(types.isProxy(error)||!types.isNativeError(error)||Object.getPrototypeOf(error)!==SelectedPhysicalHeld.prototype)return null;
+ const value=(key:string):unknown=>{
+  const descriptor=Object.getOwnPropertyDescriptor(error,key);
+  return descriptor&&"value" in descriptor?descriptor.value:undefined;
+ };
+ const reason=Object.values(SelectedPhysicalHold).find(candidate=>candidate===value("reason"));
+ const phase=Object.values(SelectedPhysicalPhase).find(candidate=>candidate===value("phase"));
+ const processedObjects=value("processedObjects"),rootCreated=value("rootCreated");
+ if(value("disposition")!==SelectedPhysicalDisposition.PartialHeld||reason===undefined||phase===undefined||
+  typeof processedObjects!=="number"||!Number.isSafeInteger(processedObjects)||processedObjects<0||processedObjects>1055||
+  typeof rootCreated!=="boolean")return null;
+ return Object.freeze({status:SelectedPhysicalDisposition.PartialHeld,reason,phase,processedObjects,rootCreated});
+}
+/** Exact immediate native prototypes only; never traverses unknown ancestry. */
+export function readCiFailureErrorType(error:unknown):CiFailureErrorType {
+ if(types.isProxy(error)||!types.isNativeError(error))return CiFailureErrorType.Unknown;
+ const prototype=Object.getPrototypeOf(error);
+ if(prototype===SelectedPhysicalHeld.prototype&&readCiSelectedPhysicalFailure(error))return CiFailureErrorType.Physical;
+ if(prototype===assert.AssertionError.prototype)return CiFailureErrorType.Assertion;
+ if(prototype===Error.prototype)return CiFailureErrorType.Error;
+ return CiFailureErrorType.Unknown;
+}
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes:32*1024*1024,depth:2047,elapsedMs:30000,catalogBytes:128*1024});
@@ -212,7 +245,16 @@ export async function mainCiSignedToolInputs():Promise<void> {
    const provenance=serialized.status===PythonDataCatalogStatus.CapacityHeld?{signedPackagesSha256:hash(fullBytes(join(evidence,"signed-packages.json"),ciIndexOperationalBytes,tick)),completeIndicesSha256:hash(fullBytes(join(evidence,"complete-indices.json"),ciIndexOperationalBytes,tick)),sourceAndToolsSha256:hash(fullBytes(join(evidence,"source-and-tools.json"),ciIndexOperationalBytes,tick))}:undefined;
    envelopeCandidate=publishCiEnvelopeCatalogData(sourceSha,candidate,serialized,provenance,(name,bytes)=>file(join(evidence,name),bytes));}catch(error){const reason=error instanceof Error&&/^TEST H1 Python envelope Held: [A-Za-z0-9 /+-]{1,128}$/.test(error.message)?error.message:"existing-conservative-envelope-policy-refused";file(join(evidence,"envelope-candidate-HOLD.json"),JSON.stringify({reason,nativeQualified:false})+"\n");}
   file(join(evidence,"result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Complete,purpose:"independently-signed-CI-data-not-live-host-admission",sourceSha,uid:0,packages,packageOrigins,indices:indices.map(({bytes,...row})=>row),trustAnchor:ubuntuArchive2018Fingerprint,keyringSha256:hash(keyBytes),measurement:{entries,bytes,largestFile,depth,elapsedMs:rawMeasurementElapsedMs},operationalCeilings:measureCeilings,selectedToolroot,envelopeCandidate,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",elapsedMs:performance.now()-started})+"\n");
- }catch(error){primaryFailed=true;try{file(join(evidence,"failed-result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Failed,sourceSha,phase,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",errorType:error instanceof Error?error.name:"unknown"})+"\n");}catch{process.stderr.write("TEST CI failure record not sealed; primary stage failure retained\n");}throw new Error("TEST CI signed data stage failed at "+phase);}
+ }catch(error){
+  primaryFailed=true;
+  const selectedPhysicalFailure=phase===CiDataPhase.SelectedToolroot?readCiSelectedPhysicalFailure(error):null;
+  const errorType=readCiFailureErrorType(error);
+  try{
+   file(join(evidence,"failed-result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Failed,sourceSha,phase,
+    liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",errorType,selectedPhysicalFailure})+"\n");
+  }catch{process.stderr.write("TEST CI failure record not sealed; primary stage failure retained\n");}
+  throw new Error("TEST CI signed data stage failed at "+phase);
+ }
  finally{
   // Only this entry's curated PUBLIC records become job-readable. Extraction,
   // private scratch and every external ancestor retain their original modes.

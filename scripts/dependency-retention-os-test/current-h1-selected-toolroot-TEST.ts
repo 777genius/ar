@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole, type FixedH1ArchiveRoleData } from "./current-h1-archive-path-graph-TEST.ts";
 import { FixedGnuMemberKind as Kind } from "./current-h1-archive-members-TEST.ts";
-import { writeOwnedSelectedToolrootData, SelectedOutputOrigin, SelectedTransformation, selectedRecipeSha256, type SelectedFilesystemInput, type SelectedOutputRow, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
+import { writeOwnedSelectedToolrootData, readSelectedPhysicalHoldFacts, SelectedPhysicalHeld, SelectedPhysicalHold, SelectedPhysicalPhase, SelectedOutputOrigin, SelectedTransformation, selectedRecipeSha256, type SelectedFilesystemInput, type SelectedOutputRow, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
 
 export interface FixedSelectedToolrootInput {
  readonly sourceSha:string;readonly scratch:string;readonly evidence:string;readonly deadline:number;
@@ -28,16 +28,18 @@ function assertPlainGraph(value:unknown):void {
 /** Genuine existing CI supplies signed origins and original retained handles.
  * These typed values and the resulting records alone grant no authority. */
 export async function materializeFixedH1SelectedToolrootData(input:FixedSelectedToolrootInput):ReturnType<typeof writeOwnedSelectedToolrootData> {
+ let phase=SelectedPhysicalPhase.Input;
+ try {
  assert(input!==null&&!types.isProxy(input)&&Object.getPrototypeOf(input)===Object.prototype&&Reflect.ownKeys(input).every(k=>typeof k==="string"&&k!=="toJSON")&&Object.values(Object.getOwnPropertyDescriptors(input)).every(d=>"value" in d&&d.enumerable));
  const deadline=Math.min(input.deadline,performance.now()+30000);
- const tick=()=>assert(Number.isFinite(deadline)&&performance.now()<deadline,"selected fixed DATA deadline");
+ const tick=()=>{if(!Number.isFinite(deadline)||performance.now()>=deadline)throw new SelectedPhysicalHeld(SelectedPhysicalHold.Deadline,false,phase,0);};
  tick();assert(/^[a-f0-9]{40}$/.test(input.sourceSha));
  assert(Array.isArray(input.originals)&&!types.isProxy(input.originals)&&Object.getPrototypeOf(input.originals)===Array.prototype);
  assert.equal(input.originals.length,41,"exact original archive count");
  assert(Reflect.ownKeys(input.originals).length===42&&Object.values(Object.getOwnPropertyDescriptors(input.originals)).every(d=>"value" in d));
  const archives=Object.freeze(input.originals.map(o=>{assert(o!==null&&!types.isProxy(o)&&Object.getPrototypeOf(o)===Object.prototype&&Reflect.ownKeys(o).every(k=>typeof k==="string")&&Object.values(Object.getOwnPropertyDescriptors(o)).every(d=>"value" in d&&d.enumerable));return o.members;}));
  let streamBytes=0;
- for(const original of input.originals){
+ phase=SelectedPhysicalPhase.Originals;for(const original of input.originals){
   assertPlainGraph(original.members);assert(Buffer.isBuffer(original.bytes)&&!types.isProxy(original.bytes));
   assert(original.archive!==null&&!types.isProxy(original.archive)&&Object.getPrototypeOf(original.archive)===Object.prototype&&Object.values(Object.getOwnPropertyDescriptors(original.archive)).every(d=>"value" in d&&d.enumerable));
   tick();original.archive.rejoin();
@@ -47,14 +49,14 @@ export async function materializeFixedH1SelectedToolrootData(input:FixedSelected
   streamBytes+=original.bytes.length;assert(streamBytes<=512*1024*1024);
   assert.equal(hash(original.bytes),original.members.stream.sha256);tick();original.archive.rejoin();
  }
- const graph=preflightFixedH1ArchiveRole(archives,vector,deadline);
+ phase=SelectedPhysicalPhase.Graph;const graph=preflightFixedH1ArchiveRole(archives,vector,deadline);
  assertPlainGraph(input.graph);tick();
  assert.equal(JSON.stringify(input.graph),JSON.stringify(graph),"recomputed complete fixed graph");
  const serialized=serializeFixedH1ArchiveRole(graph,archives,input.sourceSha,deadline);
  assert(Buffer.isBuffer(input.graphBytes)&&!types.isProxy(input.graphBytes)&&Buffer.isBuffer(input.selectionBytes)&&!types.isProxy(input.selectionBytes));
  assert(serialized.graph.equals(input.graphBytes)&&serialized.selection.equals(input.selectionBytes),"original complete graph/selection bytes");
  assert.equal(archives.reduce((n,a)=>n+a.rows.length,0),2506);
- const selectedSet=new Set(graph.selected),nodes=graph.nodes.filter(n=>selectedSet.has(n.path));
+ phase=SelectedPhysicalPhase.Recipe;const selectedSet=new Set(graph.selected),nodes=graph.nodes.filter(n=>selectedSet.has(n.path));
  assert.equal(nodes.length,1054);
  for(const [kind,count] of [[Kind.Directory,64],[Kind.Regular,951],[Kind.Symlink,39]] as const)assert.equal(nodes.filter(n=>n.kind===kind).length,count);
  assert(!selectedSet.has("usr/bin/su")&&!selectedSet.has("usr/share/zoneinfo/localtime")&&!graph.nodes.some(n=>n.path==="lib64"));
@@ -78,4 +80,8 @@ export async function materializeFixedH1SelectedToolrootData(input:FixedSelected
  const physicalInput:SelectedFilesystemInput={sourceSha:input.sourceSha,scratch:input.scratch,evidence:input.evidence,
   deadline,originals:input.originals,rows,provenance};
  return await writeOwnedSelectedToolrootData(physicalInput);
+ }catch(error){
+  if(readSelectedPhysicalHoldFacts(error))throw error;
+  throw new SelectedPhysicalHeld(SelectedPhysicalHold.Unknown,false,phase,0);
+ }
 }

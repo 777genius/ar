@@ -13,7 +13,8 @@ import { ciIndexOperationalBytes } from "./current-h1-tool-inputs-ci-index.ts";
 export enum SelectedOutputOrigin { Archive="archive-data",Recipe="recipe-data" }
 export enum SelectedTransformation { Identity="identity",SitecustomizeRelative="SitecustomizeRelativeV1",LoaderNamespace="LoaderNamespaceV1" }
 export enum SelectedPhysicalDisposition { Complete="MATERIALIZED_UNADMITTED_DATA",PartialHeld="PARTIAL_HELD" }
-export enum SelectedPhysicalHold { Plan="plan",Origin="origin",Namespace="namespace",Parent="parent",Budget="budget",Deadline="deadline",Ownership="ownership",Identity="identity",Content="content",Time="time",Filesystem="filesystem",Cancelled="cancelled" }
+export enum SelectedPhysicalHold { Unknown="unknown",Plan="plan",Origin="origin",Namespace="namespace",Parent="parent",Budget="budget",Deadline="deadline",Ownership="ownership",Identity="identity",Content="content",Time="time",Filesystem="filesystem",Cancelled="cancelled" }
+export enum SelectedPhysicalPhase { Unknown="unknown",Input="input",Originals="originals",Graph="graph",Recipe="recipe",Plan="plan",Anchor="anchor",Directories="directories",Regular="regular",Aliases="aliases",Finalize="finalize",Census="census",Publication="publication",Completion="completion",Cleanup="cleanup" }
 export const selectedRecipeSha256="9c13c0ed23d678ecb829486373f73bf46e3021fb31c4bfffaa0664fa0fd9ddd0";
 export interface SelectedRetainedStreamData {
  readonly archive:ReturnType<typeof retainOriginalAcquiredArchive>;readonly bytes:Buffer;readonly members:FixedGnuArchiveMembers;
@@ -37,7 +38,15 @@ export interface SelectedProvenance {
 }
 export class SelectedPhysicalHeld extends Error {
  readonly disposition=SelectedPhysicalDisposition.PartialHeld;
- constructor(readonly reason:SelectedPhysicalHold,readonly rootCreated:boolean){super("selected toolroot DATA HOLD: "+reason);}
+ constructor(readonly reason:SelectedPhysicalHold,readonly rootCreated:boolean,readonly phase:SelectedPhysicalPhase=SelectedPhysicalPhase.Unknown,readonly processedObjects:number=0){super("selected toolroot DATA HOLD: "+reason);this.name="SelectedPhysicalHeld";}
+}
+/** Finite diagnostic facts only; rejects exotic thrown values without hooks. */
+export function readSelectedPhysicalHoldFacts(error:unknown):Readonly<{reason:SelectedPhysicalHold;rootCreated:boolean;phase:SelectedPhysicalPhase;processedObjects:number}>|undefined {
+ if(error===null||typeof error!=="object"||types.isProxy(error)||!types.isNativeError(error)||Object.getPrototypeOf(error)!==SelectedPhysicalHeld.prototype)return undefined;
+ const d=Object.getOwnPropertyDescriptors(error),value=(key:string)=>{const row=d[key];return row&&"value" in row?row.value:undefined;};
+ const reason:unknown=value("reason"),rootCreated:unknown=value("rootCreated"),phase:unknown=value("phase"),processedObjects:unknown=value("processedObjects");
+ if(value("disposition")!==SelectedPhysicalDisposition.PartialHeld||typeof reason!=="string"||!Object.values(SelectedPhysicalHold).includes(reason as SelectedPhysicalHold)||typeof rootCreated!=="boolean"||typeof phase!=="string"||!Object.values(SelectedPhysicalPhase).includes(phase as SelectedPhysicalPhase)||typeof processedObjects!=="number"||!Number.isSafeInteger(processedObjects)||processedObjects<0||processedObjects>1055)return undefined;
+ return Object.freeze({reason:reason as SelectedPhysicalHold,rootCreated,phase:phase as SelectedPhysicalPhase,processedObjects});
 }
 interface Directory { fd:number;parent:number;name:string;initial:fs.BigIntStats }
 interface PhysicalRow { path:string;kind:Kind;identity:Readonly<Record<string,string>>;sha256:string;literalBytesBase64:string;literalSha256:string }
@@ -142,6 +151,8 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
  measurement:Readonly<{objects:number;regularBytes:number;elapsedMs:number;ownedDescriptorHighWater:number}>;
  nativeQualified:false;fixedImageQualified:false;originalIssuerQualified:false;
 }>> {
+ let phase=SelectedPhysicalPhase.Plan,processedObjects=0;
+ try {
  plain(input);
  const started=performance.now(),deadline=Math.min(input.deadline,started+30000),byPath=validatePlan(input);
  const sourceSha=input.sourceSha,scratchPath=input.scratch,evidencePath=input.evidence,provenance=input.provenance;
@@ -209,7 +220,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   const name=path===""?rootName:posix.basename(path),location=anchored(parent.fd,name);fs.mkdirSync(location,{mode:0o700});if(path==="")rootCreated=true;
   const fd=keep(fs.openSync(location,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW));
   const before=fs.fstatSync(fd,{bigint:true});need(before.isDirectory()&&before.uid===0n&&before.nlink>=2n,SelectedPhysicalHold.Ownership);
-  fs.fchownSync(fd,0,0);fs.fchmodSync(fd,0o700);const d={fd,parent:parent.fd,name,initial:fs.fstatSync(fd,{bigint:true})};directories.set(path,d);checkDirectory(d);refreshOwnedAncestor(parent);
+  fs.fchownSync(fd,0,0);fs.fchmodSync(fd,0o700);const d={fd,parent:parent.fd,name,initial:fs.fstatSync(fd,{bigint:true})};directories.set(path,d);checkDirectory(d);refreshOwnedAncestor(parent);if(path!=="")processedObjects++;
  };
  const parentFor=(p:string)=>{const d=directories.get(posix.dirname(p)==="."?"":posix.dirname(p));need(d,SelectedPhysicalHold.Parent);checkDirectory(d);return d;};
  const finalize=(fd:number,mode:number,time:number)=>{
@@ -244,43 +255,47 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   }finally{close(fd);}fs.fsyncSync(evidence.fd);refreshOwnedAncestor(evidence);records.push({name,bytes:bytes.length,sha256:hash(bytes)});await checkpoint();
  };
  try {
-  let total=0,headers=0;for(const original of originals){plain(original);need(Buffer.isBuffer(original.bytes)&&!types.isProxy(original.bytes),SelectedPhysicalHold.Origin);jsonData(original.members);headers+=original.members.rows.length;need(headers<=20000,SelectedPhysicalHold.Budget);need(!streams.has(original.members.package.sha256),SelectedPhysicalHold.Origin);streams.set(original.members.package.sha256,original);total+=original.bytes.length;need(total<=512*1024*1024,SelectedPhysicalHold.Budget);streamCheck(original);}
+  phase=SelectedPhysicalPhase.Originals;let total=0,headers=0;for(const original of originals){plain(original);need(Buffer.isBuffer(original.bytes)&&!types.isProxy(original.bytes),SelectedPhysicalHold.Origin);jsonData(original.members);headers+=original.members.rows.length;need(headers<=20000,SelectedPhysicalHold.Budget);need(!streams.has(original.members.package.sha256),SelectedPhysicalHold.Origin);streams.set(original.members.package.sha256,original);total+=original.bytes.length;need(total<=512*1024*1024,SelectedPhysicalHold.Budget);streamCheck(original);}
   for(const row of rows)for(const origin of row.origins)slice(origin);
-  scratch=anchor(scratchPath);evidence=anchor(evidencePath);need(scratch.fd!==evidence.fd&&!(scratch.initial.dev===evidence.initial.dev&&scratch.initial.ino===evidence.initial.ino),SelectedPhysicalHold.Ownership);
+  phase=SelectedPhysicalPhase.Anchor;scratch=anchor(scratchPath);evidence=anchor(evidencePath);need(scratch.fd!==evidence.fd&&!(scratch.initial.dev===evidence.initial.dev&&scratch.initial.ino===evidence.initial.ino),SelectedPhysicalHold.Ownership);
   await checkpoint();for(const original of originals)streamCheck(original);for(const row of rows)for(const origin of row.origins)slice(origin);createDirectory("");await checkpoint();
-  for(const row of rows.filter(r=>r.kind===Kind.Directory).sort((a,b)=>a.path.split("/").length-b.path.split("/").length||order(a.path,b.path))){createDirectory(row.path);await checkpoint();}
-  for(const original of originals){
+  phase=SelectedPhysicalPhase.Directories;for(const row of rows.filter(r=>r.kind===Kind.Directory).sort((a,b)=>a.path.split("/").length-b.path.split("/").length||order(a.path,b.path))){createDirectory(row.path);await checkpoint();}
+  phase=SelectedPhysicalPhase.Regular;for(const original of originals){
    streamCheck(original);
    for(const row of rows.filter(r=>r.kind===Kind.Regular&&r.origins[0]?.archiveSha256===original.members.package.sha256)){
     const origin=row.origins[0];need(origin,SelectedPhysicalHold.Origin);original.archive.rejoin();const payload=slice(origin),parent=parentFor(row.path),p=anchored(parent.fd,posix.basename(row.path));
     const fd=keep(fs.openSync(p,fs.constants.O_RDWR|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600));
-    try{let at=0;while(at<payload.length){tick();const n=fs.writeSync(fd,payload,at,Math.min(65536,payload.length-at),at);need(n>0,SelectedPhysicalHold.Filesystem);at+=n;}const s=finalize(fd,row.mode,row.mtime);need(s.isFile()&&s.nlink===1n&&stamp(fs.lstatSync(p,{bigint:true}))===stamp(s)&&readHash(fd,payload.length)===origin.row.payloadSha256,SelectedPhysicalHold.Content);slice(origin);original.archive.rejoin();regularBytes+=payload.length;}finally{close(fd);}refreshOwnedAncestor(parent);await checkpoint();
+    try{let at=0;while(at<payload.length){tick();const n=fs.writeSync(fd,payload,at,Math.min(65536,payload.length-at),at);need(n>0,SelectedPhysicalHold.Filesystem);at+=n;}const s=finalize(fd,row.mode,row.mtime);need(s.isFile()&&s.nlink===1n&&stamp(fs.lstatSync(p,{bigint:true}))===stamp(s)&&readHash(fd,payload.length)===origin.row.payloadSha256,SelectedPhysicalHold.Content);slice(origin);original.archive.rejoin();regularBytes+=payload.length;}finally{close(fd);}refreshOwnedAncestor(parent);processedObjects++;await checkpoint();
    }
    streamCheck(original);
   }
-  for(const row of rows.filter(r=>r.kind===Kind.Symlink)){
+  phase=SelectedPhysicalPhase.Aliases;for(const row of rows.filter(r=>r.kind===Kind.Symlink)){
    for(const origin of row.origins)slice(origin);const parent=parentFor(row.path),p=anchored(parent.fd,posix.basename(row.path));fs.symlinkSync(row.outputLiteral,p);fs.lchownSync(p,0,0);fs.lutimesSync(p,row.mtime,row.mtime);
-   const s=fs.lstatSync(p,{bigint:true});need(s.isSymbolicLink()&&s.uid===0n&&s.gid===0n&&(s.mode&0o7777n)===0o777n&&s.nlink===1n&&s.mtimeNs===BigInt(row.mtime)*1000000000n&&fs.readlinkSync(p,{encoding:"buffer"}).equals(Buffer.from(row.outputLiteral))&&stamp(fs.lstatSync(p,{bigint:true}))===stamp(s),SelectedPhysicalHold.Content);for(const origin of row.origins)slice(origin);fs.fsyncSync(parent.fd);refreshOwnedAncestor(parent);await checkpoint();
+   const s=fs.lstatSync(p,{bigint:true});need(s.isSymbolicLink()&&s.uid===0n&&s.gid===0n&&(s.mode&0o7777n)===0o777n&&s.nlink===1n&&s.mtimeNs===BigInt(row.mtime)*1000000000n&&fs.readlinkSync(p,{encoding:"buffer"}).equals(Buffer.from(row.outputLiteral))&&stamp(fs.lstatSync(p,{bigint:true}))===stamp(s),SelectedPhysicalHold.Content);for(const origin of row.origins)slice(origin);fs.fsyncSync(parent.fd);refreshOwnedAncestor(parent);processedObjects++;await checkpoint();
   }
-  for(const [path,d] of [...directories].sort(([a],[b])=>b.split("/").length-a.split("/").length||order(a,b))){d.initial=finalize(d.fd,0o755,0);finalized.add(d.fd);checkDirectory(d);await checkpoint();}
-  fs.fsyncSync(scratch.fd);joinAll();const physical=census(),root=directories.get("");need(root,SelectedPhysicalHold.Parent);const rootIdentity=identity(root.initial),frozenPhysical=hash(JSON.stringify(physical));completionPhysicalHash=frozenPhysical;
+  phase=SelectedPhysicalPhase.Finalize;for(const [path,d] of [...directories].sort(([a],[b])=>b.split("/").length-a.split("/").length||order(a,b))){d.initial=finalize(d.fd,0o755,0);finalized.add(d.fd);checkDirectory(d);await checkpoint();}
+  phase=SelectedPhysicalPhase.Census;fs.fsyncSync(scratch.fd);joinAll();const physical=census(),root=directories.get("");need(root,SelectedPhysicalHold.Parent);const rootIdentity=identity(root.initial),frozenPhysical=hash(JSON.stringify(physical));completionPhysicalHash=frozenPhysical;
   for(const original of originals)streamCheck(original);
   const sourceOutput=serialize({schemaVersion:1,purpose:"UNADMITTED_FILESYSTEM_DATA",sourceSha:sourceSha,recipeSha256:selectedRecipeSha256,provenance:provenance,root:{path:"",origin:SelectedOutputOrigin.Recipe,origins:[],mode:0o755,mtime:0},rows:rows.map(row=>({...row,originalLiterals:row.origins.map(o=>({base64:o.row.linkBytesBase64,bytes:Buffer.from(o.row.linkBytesBase64,"base64").length,sha256:hash(Buffer.from(o.row.linkBytesBase64,"base64"))})),outputLiteralBytesBase64:Buffer.from(row.outputLiteral).toString("base64"),outputLiteralBytes:Buffer.byteLength(row.outputLiteral),outputLiteralSha256:hash(row.outputLiteral)})),nativeQualified:false,fixedImageQualified:false});
-  await publish(recordNames[0],sourceOutput);need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
+  phase=SelectedPhysicalPhase.Publication;await publish(recordNames[0],sourceOutput);need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
   await publish(recordNames[1],serialize({schemaVersion:1,sourceOutput:records[0],rootIdentity,entries:physical,nativeQualified:false,fixedImageQualified:false}));need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);
   const measurement={objects:rows.length+1,regularBytes,elapsedMs:performance.now()-started,ownedDescriptorHighWater:highWater};
   await publish(recordNames[2],serialize({schemaVersion:1,disposition:SelectedPhysicalDisposition.Complete,sourceSha:sourceSha,recipeSha256:selectedRecipeSha256,records:[...records],rootIdentity,counts:{archiveSelected:rows.filter(r=>r.origin===SelectedOutputOrigin.Archive).length,generated:rows.filter(r=>r.origin===SelectedOutputOrigin.Recipe).length,root:1},measurement,nativeQualified:false,fixedImageQualified:false,rootReadonly:false,executableQualified:false,originalIssuerQualified:false,FULL8:"UNPROVEN"}));
-  need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);joinAll();
+  phase=SelectedPhysicalPhase.Completion;need(hash(JSON.stringify(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);joinAll();
   completed=true;return Object.freeze({disposition:SelectedPhysicalDisposition.Complete,rootIdentity,records:Object.freeze(records.map(r=>Object.freeze(r))),measurement:Object.freeze(measurement),nativeQualified:false,fixedImageQualified:false,originalIssuerQualified:false});
  }catch(error){
-  throw new SelectedPhysicalHeld(error instanceof SelectedPhysicalHeld?error.reason:SelectedPhysicalHold.Filesystem,rootCreated);
+  throw new SelectedPhysicalHeld(readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem,rootCreated,phase,processedObjects);
  }finally{
-  let failed:SelectedPhysicalHold|undefined;
-  for(const d of [...directories.values()].reverse())try{fs.fsyncSync(d.fd);if(completed&&!failed){tick();await checkpoint();}}catch(error){failed??=error instanceof SelectedPhysicalHeld?error.reason:SelectedPhysicalHold.Filesystem;}
-  if(completed&&!failed)try{joinAll();need(hash(JSON.stringify(census()))===completionPhysicalHash,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);rejoinPublished();tick();}catch(error){failed=error instanceof SelectedPhysicalHeld?error.reason:SelectedPhysicalHold.Filesystem;}
-  for(const fd of [...owned].reverse())try{close(fd);if(completed&&!failed)tick();}catch(error){failed??=error instanceof SelectedPhysicalHeld?error.reason:SelectedPhysicalHold.Filesystem;}
-  if(completed&&!failed)try{tick();}catch(error){failed=error instanceof SelectedPhysicalHeld?error.reason:SelectedPhysicalHold.Filesystem;}
+  phase=SelectedPhysicalPhase.Cleanup;let failed:SelectedPhysicalHold|undefined;
+  for(const d of [...directories.values()].reverse())try{fs.fsyncSync(d.fd);if(completed&&!failed){tick();await checkpoint();}}catch(error){failed??=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
+  if(completed&&!failed)try{joinAll();need(hash(JSON.stringify(census()))===completionPhysicalHash,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);rejoinPublished();tick();}catch(error){failed=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
+  for(const fd of [...owned].reverse())try{close(fd);if(completed&&!failed)tick();}catch(error){failed??=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
+  if(completed&&!failed)try{tick();}catch(error){failed=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}
   process.removeListener("SIGTERM",signal);process.removeListener("SIGINT",signal);
-  if(failed)throw new SelectedPhysicalHeld(failed,rootCreated);
+  if(failed)throw new SelectedPhysicalHeld(failed,rootCreated,phase,processedObjects);
+ }
+ }catch(error){
+  const facts=readSelectedPhysicalHoldFacts(error);if(facts&&facts.phase!==SelectedPhysicalPhase.Unknown)throw error;
+  throw new SelectedPhysicalHeld(facts?.reason??SelectedPhysicalHold.Unknown,facts?.rootCreated??false,phase,processedObjects);
  }
 }

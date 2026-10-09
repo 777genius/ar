@@ -10,7 +10,7 @@ import {FixedGnuMemberKind as Kind,readFixedGnuBasicMembers} from "./current-h1-
 import {FixedH1Normalization,FixedH1Role,FixedH1Disposition} from "./current-h1-archive-path-graph-TEST.ts";
 import {retainOriginalAcquiredArchive,ToolInputArchitecture} from "./current-h1-tool-inputs-package.ts";
 import {materializeFixedH1SelectedToolrootData} from "./current-h1-selected-toolroot-TEST.ts";
-import {writeOwnedSelectedToolrootData,SelectedPhysicalHeld,SelectedPhysicalHold,SelectedOutputOrigin as Origin,SelectedTransformation as Transform,selectedRecipeSha256,type SelectedFilesystemInput,type SelectedOutputRow} from "./current-h1-selected-toolroot-filesystem-TEST.ts";
+import {writeOwnedSelectedToolrootData,readSelectedPhysicalHoldFacts,SelectedPhysicalHeld,SelectedPhysicalHold,SelectedPhysicalPhase,SelectedOutputOrigin as Origin,SelectedTransformation as Transform,selectedRecipeSha256,type SelectedFilesystemInput,type SelectedOutputRow} from "./current-h1-selected-toolroot-filesystem-TEST.ts";
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex"),sourceSha="6dd8c978dd0b8a9beb02929c286a4fb6cfb57a6b";
 const rootOnly={skip:process.platform!=="linux"||process.getuid?.()!==0||process.getgid?.()!==0};
 const emptyGraph=Object.freeze({schemaVersion:1 as const,role:FixedH1Role.PythonNsenter,packageVectorSha256:hash("unsigned-negative"),archives:[],roots:[],nodes:[],aliases:[],selected:[],unselected:[],disposition:FixedH1Disposition.AwaitingPhysicalRecipe,nativeQualified:false as const,physicalRootCreated:false as const,selectedPlanExecutable:false as const});
@@ -18,12 +18,22 @@ const provenance=()=>({sourceSha,packageVectorSha256:hash("UNSIGNED-MECHANICS"),
 const badRow=(path:string):SelectedOutputRow=>({path,kind:Kind.Directory,origin:Origin.Archive,transformation:Transform.Identity,origins:[],mode:0o755,mtime:0,outputLiteral:""});
 test("selected main refuses incomplete fixed image before filesystem writes",async()=>{
  const own=fs.mkdtempSync(join(tmpdir(),"TEST-H1-selected-main-negative-"));
- try{await assert.rejects(materializeFixedH1SelectedToolrootData({sourceSha,scratch:own,evidence:own,deadline:performance.now()+1000,originals:[],graph:emptyGraph,graphBytes:Buffer.from(""),selectionBytes:Buffer.from("")}),/exact original archive count/);assert.deepEqual(fs.readdirSync(own),[]);}finally{fs.rmSync(own,{recursive:true});}
+ try{await assert.rejects(materializeFixedH1SelectedToolrootData({sourceSha,scratch:own,evidence:own,deadline:performance.now()+1000,originals:[],graph:emptyGraph,graphBytes:Buffer.from(""),selectionBytes:Buffer.from("")}),e=>e instanceof SelectedPhysicalHeld&&e.reason===SelectedPhysicalHold.Unknown&&e.phase===SelectedPhysicalPhase.Input&&e.processedObjects===0&&!e.rootCreated);assert.deepEqual(fs.readdirSync(own),[]);
+  await assert.rejects(materializeFixedH1SelectedToolrootData({sourceSha,scratch:own,evidence:own,deadline:0,originals:[],graph:emptyGraph,graphBytes:Buffer.from(""),selectionBytes:Buffer.from("")}),e=>readSelectedPhysicalHoldFacts(e)?.reason===SelectedPhysicalHold.Deadline&&readSelectedPhysicalHoldFacts(e)?.phase===SelectedPhysicalPhase.Input&&readSelectedPhysicalHoldFacts(e)?.processedObjects===0&&!readSelectedPhysicalHoldFacts(e)?.rootCreated);
+  let traps=0;const thrown=new Proxy({}, {getPrototypeOf(){traps++;throw new Error("must not invoke");},get(){traps++;throw new Error("must not invoke");},ownKeys(){traps++;throw new Error("must not invoke");}});
+  // Invalid empty custody placeholders test only the negative callback catch;
+  // they cannot pass source/vector/graph or create a physical root.
+  const invalidOriginal={archive:Object.freeze({rejoin(){throw thrown;}}),bytes:Buffer.alloc(0),members:{}} as unknown as SelectedFilesystemInput["originals"][number];
+  await assert.rejects(materializeFixedH1SelectedToolrootData({sourceSha,scratch:own,evidence:own,deadline:performance.now()+1000,originals:Array.from({length:41},()=>invalidOriginal),graph:emptyGraph,graphBytes:Buffer.alloc(0),selectionBytes:Buffer.alloc(0)}),e=>{assert.equal(traps,0);return readSelectedPhysicalHoldFacts(e)?.reason===SelectedPhysicalHold.Unknown&&readSelectedPhysicalHoldFacts(e)?.phase===SelectedPhysicalPhase.Originals;});
+  const proxyAncestor=Object.create(thrown) as object;assert.equal(readSelectedPhysicalHoldFacts(thrown),undefined);assert.equal(readSelectedPhysicalHoldFacts(proxyAncestor),undefined);
+  const spoof=Object.create(SelectedPhysicalHeld.prototype) as object;assert.equal(readSelectedPhysicalHoldFacts(spoof),undefined);
+  const genuine=new SelectedPhysicalHeld(SelectedPhysicalHold.Content,true,SelectedPhysicalPhase.Regular,7);assert.deepEqual(readSelectedPhysicalHoldFacts(genuine),{reason:SelectedPhysicalHold.Content,rootCreated:true,phase:SelectedPhysicalPhase.Regular,processedObjects:7});
+  const exotic=new SelectedPhysicalHeld(SelectedPhysicalHold.Content,true);Object.defineProperty(exotic,"reason",{get(){traps++;throw new Error("must not invoke");}});assert.equal(readSelectedPhysicalHoldFacts(exotic),undefined);assert.equal(traps,0);assert.deepEqual(fs.readdirSync(own),[]);}finally{fs.rmSync(own,{recursive:true});}
 });
 test("selected filesystem refuses unsafe namespace budget and expired deadline before any anchor",async()=>{
  const base:SelectedFilesystemInput={sourceSha,scratch:"/must-not-be-opened",evidence:"/must-not-be-opened",deadline:performance.now()+1000,originals:[],rows:[],provenance:provenance()};
  await assert.rejects(writeOwnedSelectedToolrootData({...base,rows:Array.from({length:1056},()=>badRow("usr"))}),e=>e instanceof SelectedPhysicalHeld&&e.reason===SelectedPhysicalHold.Budget);
- await assert.rejects(writeOwnedSelectedToolrootData({...base,deadline:0}),e=>e instanceof SelectedPhysicalHeld&&e.reason===SelectedPhysicalHold.Deadline);
+ await assert.rejects(writeOwnedSelectedToolrootData({...base,deadline:0}),e=>e instanceof SelectedPhysicalHeld&&e.reason===SelectedPhysicalHold.Deadline&&e.phase===SelectedPhysicalPhase.Plan&&e.processedObjects===0&&!e.rootCreated);
  for(const path of ["/etc/outside","usr/../outside","usr/lib//x","usr/share/secret","usr/bin/su"]){await assert.rejects(writeOwnedSelectedToolrootData({...base,rows:[badRow(path)]}),e=>e instanceof SelectedPhysicalHeld&&e.reason===SelectedPhysicalHold.Namespace);}
 });
 test("selected filesystem refuses hidden JSON hooks getters and proxies without invoking them",async()=>{
@@ -113,11 +123,12 @@ test("selected ROOT mechanics refuses substituted retained parent and preserves 
  }finally{f.close();}
 });
 test("selected ROOT mechanics holds on real write fsync readback and post-I/O deadline faults",rootOnly,async()=>{
- for(const fault of ["write","fsync","readback","deadline","source-after-write","time","cleanup-deadline"] as const){
+ for(const fault of ["write","throw-proxy","fsync","readback","deadline","source-after-write","time","cleanup-deadline"] as const){
   const f=fixture(),before=fs.readdirSync("/proc/self/fd").length;
   const originalWrite=mutableFs.writeSync,originalSync=mutableFs.fsyncSync,originalRead=mutableFs.readSync;
-  let fired=false;
+  let fired=false,trapCalls=0;
   try{
+   if(fault==="throw-proxy")mutableFs.writeSync=(()=>{fired=true;throw new Proxy({}, {getPrototypeOf(){trapCalls++;throw new Error("must not invoke");},get(){trapCalls++;throw new Error("must not invoke");}});}) as typeof originalWrite;
    if(fault==="write")mutableFs.writeSync=((...args:Parameters<typeof originalWrite>)=>{fired=true;return 0;}) as typeof originalWrite;
    if(fault==="source-after-write")mutableFs.writeSync=((...args:Parameters<typeof originalWrite>)=>{const n=originalWrite(...args);if(!fired&&n>0){fired=true;const row=f.members.rows.find(r=>r.kind===Kind.Regular);assert(row);f.bytes[row.payloadOffset]=(f.bytes[row.payloadOffset]??0)^1;}return n;}) as typeof originalWrite;
    if(fault==="fsync")mutableFs.fsyncSync=((fd:number)=>{if(!fired){fired=true;throw new Error("injected owned fsync failure");}return originalSync(fd);});
@@ -125,8 +136,8 @@ test("selected ROOT mechanics holds on real write fsync readback and post-I/O de
    if(fault==="cleanup-deadline")mutableFs.fsyncSync=((fd:number)=>{originalSync(fd);if(!fired&&mutableFs.fstatSync(fd).isDirectory()&&fs.readlinkSync(`/proc/self/fd/${fd}`).startsWith(f.root+"/")&&fs.existsSync(join(f.input.evidence,"selected-toolroot-materialization-UNADMITTED.json"))){fired=true;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,300);}});
    if(fault==="readback"||fault==="deadline")mutableFs.readSync=((...args:Parameters<typeof originalRead>)=>{const n=originalRead(...args);if(!fired&&n>0){fired=true;if(fault==="deadline")Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,300);else {const b=args[1];assert(Buffer.isBuffer(b));b[0]=(b[0]??0)^1;}}return n;}) as typeof originalRead;
    syncBuiltinESMExports();
-   await assert.rejects(writeOwnedSelectedToolrootData({...f.input,deadline:performance.now()+(fault==="deadline"||fault==="cleanup-deadline"?200:10000)}),e=>e instanceof SelectedPhysicalHeld&&(fault!=="cleanup-deadline"||e.reason===SelectedPhysicalHold.Deadline));
-   assert(fired);assert.equal(fs.existsSync(join(f.input.evidence,"selected-toolroot-materialization-UNADMITTED.json")),fault==="cleanup-deadline");assert.equal(fs.readdirSync("/proc/self/fd").length,before);
+   await assert.rejects(writeOwnedSelectedToolrootData({...f.input,deadline:performance.now()+(fault==="deadline"||fault==="cleanup-deadline"?200:10000)}),e=>e instanceof SelectedPhysicalHeld&&(fault!=="cleanup-deadline"||e.reason===SelectedPhysicalHold.Deadline)&&e.phase===(fault==="cleanup-deadline"?SelectedPhysicalPhase.Cleanup:SelectedPhysicalPhase.Regular)&&e.processedObjects===(fault==="cleanup-deadline"?12:7)&&e.rootCreated&&e.name==="SelectedPhysicalHeld");
+   assert(fired);assert.equal(trapCalls,0);assert.equal(fs.existsSync(join(f.input.evidence,"selected-toolroot-materialization-UNADMITTED.json")),fault==="cleanup-deadline");assert.equal(fs.readdirSync("/proc/self/fd").length,before);
   }finally{mutableFs.writeSync=originalWrite;mutableFs.fsyncSync=originalSync;mutableFs.readSync=originalRead;syncBuiltinESMExports();f.close();}
  }
 });
