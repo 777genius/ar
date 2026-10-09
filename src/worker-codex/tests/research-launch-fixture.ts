@@ -161,6 +161,9 @@ vi.mock("node:child_process", async original => {
   return { ...real, spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
     fixture.calls.push({ command, args });
     if (command === "/usr/bin/findmnt") {
+      // util-linux treats explicit table selectors as mutually exclusive.
+      if (args.includes("--task") && args.some(value => ["--kernel", "--mtab", "--fstab"].includes(value)))
+        throw new Error("TEST findmnt mutually exclusive table selectors");
       fixture.findmntHook?.();
       const path = args[args.indexOf("--target") + 1]!, pins = [...fixture.pins];
       const index = pins.findIndex(([pin]) => path === pin || path.startsWith(pin + "/"));

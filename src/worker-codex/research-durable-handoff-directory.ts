@@ -49,7 +49,7 @@ export function researchDurableDirectory(path: string, privateLeaf = true): Rese
         parts.slice(6, separator).some(field => !/^(?:shared|master|propagate_from):[1-9]\d*$|^unbindable$/.test(field)) ||
         !/^[a-zA-Z0-9_.-]+$/.test(parts[separator + 1] ?? "") || /[\0\r\n\\]/.test(parts[separator + 2] ?? "") ||
         !/^[a-zA-Z0-9_,.=:-]+$/.test(parts[separator + 3] ?? "")) researchInvalid();
-    const query: unknown = JSON.parse(researchCommand("/usr/bin/findmnt", ["--kernel", "--task", "1", "--json", "--target", path,
+    const query: unknown = JSON.parse(researchCommand("/usr/bin/findmnt", ["--task", "1", "--json", "--target", path,
       "--output", "ID,TARGET,UUID,FSROOT,MAJ:MIN"]));
     if (!query || typeof query !== "object" || !("filesystems" in query) || !Array.isArray(query.filesystems) || query.filesystems.length !== 1) researchInvalid();
     const row = researchRecord(query.filesystems[0], "id,target,uuid,fsroot,maj:min");
