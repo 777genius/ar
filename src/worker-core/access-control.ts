@@ -107,6 +107,8 @@ export enum NetworkAccessMode {
   Unrestricted = "unrestricted",
 }
 
+export enum WorkerMode { Open = "open", Strict = "strict" }
+
 export function isNetworkAccessMode(value: unknown): value is NetworkAccessMode {
   return typeof value === "string" &&
     (Object.values(NetworkAccessMode) as readonly string[]).includes(value);
@@ -132,6 +134,7 @@ export enum ProjectAuthorityMode {
 
 export type ProjectAccessScope = {
   readonly projectId: string;
+  readonly workerMode?: WorkerMode;
   readonly projectSlug?: string;
   readonly readRoots?: readonly string[];
   readonly observedWorkspaceRoots?: readonly string[];
