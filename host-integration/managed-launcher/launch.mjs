@@ -45,7 +45,7 @@ const UNSHARE_PATH = '/usr/bin/unshare';
 const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
-const JOB_STARTUP_SECONDS = 300;
+const MANAGED_STARTUP_SECONDS = 300;
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
 export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
 
@@ -104,9 +104,9 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   }
   const properties = [
     'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
+    `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
     ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
-      `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`,
-      `TimeoutStartSec=${JOB_STARTUP_SECONDS}`] :
+      `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
       ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
     ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
     'ProtectControlGroups=yes',
