@@ -152,8 +152,22 @@ jobs:
           test "$UNIT_TEST_ANCILLARY_RESULT" = success
 
   archive-root-tests:
-    # Only the fixed disposable TEST command is elevated, on an ephemeral host.
-    runs-on: ubuntu-latest
+    # The unchanged archive TEST runs as native UID 0 in the existing disposable
+    # SOURCE container. Its command and completed JSON report are mandatory there.
+    needs: native-probe-source
+    if: ${{ always() }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - name: Require completed SOURCE and native root archive TEST container
+        env:
+          NATIVE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
+        run: test "$NATIVE_SOURCE_RESULT" = success
+
+  observer-mount-tests:
+    # Qualify the existing runner's actual namespaces before any TEST workload.
+    # Unsupported capabilities fail this required check; guards stay unchanged.
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -163,42 +177,25 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
-      - run: npm run build:packages
-      - name: Qualify every native archive positive and race on disposable TEST identities
+      - name: Require genuine runner identity and disposable namespace capabilities
         shell: bash
         run: |
           set -euo pipefail
-          archive_test_root=$(mktemp -d /tmp/sr-archive-ci-TEST-XXXXXX)
-          trap 'sudo -n /bin/rm -rf --one-file-system -- "$archive_test_root"' EXIT
-          # No checkout Git metadata, HOME, credentials or real job data enters
-          # the TEST copy. Fixtures create their own root-owned 0600 permits.
-          cp -a src packages node_modules package.json vitest.config.ts tsconfig.json "$archive_test_root/"
-          mkdir "$archive_test_root/home" "$archive_test_root/temp"
-          archive_test_node=$(command -v node)
-          cd "$archive_test_root"
-          sudo -n /usr/bin/env -i \
-            PATH=/usr/bin:/bin HOME="$archive_test_root/home" \
-            TMPDIR="$archive_test_root/temp" XDG_CONFIG_HOME="$archive_test_root/home" \
-            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-            SR_ARCHIVE_TEST_PRIVILEGE=root \
-            "$archive_test_node" node_modules/vitest/vitest.mjs run \
-            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
-            --maxWorkers=1 --no-cache --configLoader runner
-
-  observer-mount-tests:
-    # Fresh disposable VM: namespace capabilities on the shared ARC runner are
-    # not assumed. Only the fixed TEST helper receives sudo here.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+          id
+          cat /etc/os-release
+          node --version
+          cat /proc/self/uid_map
+          wc -c /proc/self/mountinfo
+          readlink /proc/self/ns/user /proc/self/ns/mnt /proc/self/ns/pid
+          test "$(id -u)" -gt 0
+          test "$(id -g)" -gt 0
+          test "$(stat -c %u -- "$GITHUB_WORKSPACE")" = "$(id -u)"
+          grep -q '^VERSION_ID="24\.04"$' /etc/os-release
+          node -e 'if (!process.versions.node.startsWith("22.")) process.exit(1)'
+          sudo -n -l
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+            /usr/bin/unshare --user --map-root-user --mount --pid --fork \
+            --mount-proc --propagation private --kill-child=SIGKILL -- /bin/true
       - name: Fetch locked TEST dependencies
         run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
@@ -299,12 +296,27 @@ jobs:
           npm run typecheck:native-probe
           npm run typecheck:native-probe:root-source
           npm run test:native-probe
+          npm run build:packages
+          SR_ARCHIVE_TEST_PRIVILEGE=root \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
+            node node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
+            --outputFile=delivery/a0-native-probe/archive-root-result.json
+          node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
+            --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
+            --target ES2022 --module NodeNext --moduleResolution NodeNext \
+            scripts/require-archive-root-result.mts
+          node --experimental-strip-types scripts/require-archive-root-result.mts
           TEST_COMMAND
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
-            --user 0:0 --init node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+            --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
+            node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
             /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
             HOME=/native-probe-source-workspace/home \
             TMPDIR=/native-probe-source-workspace/tmp \
+            XDG_CONFIG_HOME=/native-probe-source-workspace/home \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
             npm_config_cache=/native-probe-source-workspace/cache \
             SR_NATIVE_PROBE_TMP=/native-probe-source-workspace/tmp \
             /usr/bin/timeout --signal=TERM --kill-after=10s 15m \
