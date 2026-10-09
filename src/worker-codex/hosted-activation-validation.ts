@@ -1,4 +1,4 @@
-import { HostedCustodyPhase, type HostedCustodyEpoch } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
+import { HostedCustodyPhase, parseHostedCustodyEpoch, type HostedCustodyEpoch } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import type { HostedActivation, HostedOrdinaryReservation } from "../worker-core/hosted-custody/domain/hosted-installation-activation";
 
 /** Pure record checks only. Callers retain the actual file/kernel reads, common
@@ -7,6 +7,10 @@ export function custodyEnrollmentJobId(birth: HostedCustodyEpoch): string {
   if (birth.generation !== 1 || birth.phase !== HostedCustodyPhase.Closed || birth.revoked ||
       birth.reservations.length || birth.outerRuntime !== null) invalid();
   return birth.identity.jobId;
+}
+export function parseHostedCustodyEnrollment(value: unknown): string {
+  const birth = parseHostedCustodyEpoch(value);
+  return custodyEnrollmentJobId(birth);
 }
 export function managedReservations(epoch: HostedCustodyEpoch | undefined) {
   return epoch ? [...epoch.reservations, ...(epoch.outerRuntime ? [epoch.outerRuntime] : [])] : [];

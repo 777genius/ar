@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   DefaultRedactor,
   type AgentUsage,
+  type NativeWebEvidence,
   type ClockPort,
   type ManagedRunInputRequest,
   type ManagedRunRecoveryPacket,
@@ -71,6 +72,7 @@ export type FileBackendCodexWorkerResult = {
   readonly outputText: string;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly warnings: readonly {
     readonly code: string;
     readonly safeMessage: string;
@@ -83,6 +85,7 @@ export type FileBackendCodexWorkerResult = {
   readonly resumeHandle: ManagedRunResumeHandle;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly warnings: readonly {
     readonly code: string;
     readonly safeMessage: string;
