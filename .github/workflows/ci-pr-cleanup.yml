@@ -1,0 +1,151 @@
+name: CI closed PR cleanup
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      closed-pr-number:
+        description: Closed PR number to recheck and clean up
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ci-pr-cleanup-${{ github.event.pull_request.number || inputs.closed-pr-number }}
+  cancel-in-progress: false
+
+jobs:
+  cancel-obsolete-ci:
+    # Both entry points execute the trusted default-branch workflow only.
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+       github.base_ref == github.event.repository.default_branch) ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      pull-requests: read
+      contents: read
+    steps:
+      # Metadata only: no checkout, PR code, logs deletion, or force cancellation.
+      - name: Cancel verified CI runs belonging to the closed PR
+        uses: actions/github-script@v7
+        with:
+          retries: 0
+          script: |
+            const api = { ...context.repo, request: { timeout: 10000 } };
+            const numberText = String(context.payload.pull_request?.number ??
+              context.payload.inputs?.['closed-pr-number'] ?? '');
+            if (!/^[1-9][0-9]*$/.test(numberText) || !Number.isSafeInteger(Number(numberText))) {
+              throw new Error('Expected a positive PR number');
+            }
+            const number = Number(numberText);
+            const repositoryId = context.payload.repository.id;
+            const workflowPath = '.github/workflows/ci.yml';
+            const active = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+            const { data: workflow } = await github.rest.actions.getWorkflow({
+              ...api, workflow_id: 'ci.yml'
+            });
+            if (workflow.path !== workflowPath) throw new Error('Unexpected CI workflow identity');
+            const readPr = async () => (await github.rest.pulls.get({
+              ...api, pull_number: number
+            })).data;
+            const closed = await readPr();
+            const closedAt = closed.closed_at;
+            const isStillClosed = pr => pr.number === number && pr.state === 'closed' &&
+              Boolean(closedAt) && pr.closed_at === closedAt && pr.base.repo.id === repositoryId;
+            if (!isStillClosed(closed) || (context.payload.pull_request &&
+                context.payload.pull_request.closed_at !== closedAt)) {
+              core.info('PR is open or the close event is stale; no cancellation');
+              return;
+            }
+            const isCiRun = run => run.event === 'pull_request' && active.has(run.status) &&
+              run.workflow_id === workflow.id && run.path?.split('@')[0] === workflowPath &&
+              run.repository?.id === repositoryId;
+            const sameHead = run => Boolean(closed.head.repo?.id) &&
+              run.head_repository?.id === closed.head.repo.id &&
+              run.head_branch === closed.head.ref && run.head_sha === closed.head.sha;
+            const exactPr = pr => pr.number === number && pr.base?.repo?.id === repositoryId;
+            const candidates = new Set();
+            // Collect first: cancellation must not shift the pages being scanned.
+            // Branch is only a scan hint; it never establishes PR ownership.
+            for (const status of active) {
+              for (let page = 1; page <= 10; page++) {
+                const { data } = await github.rest.actions.listWorkflowRuns({
+                  ...api, workflow_id: workflow.id, event: 'pull_request',
+                  branch: closed.head.ref, status, per_page: 100, page,
+                  exclude_pull_requests: false
+                });
+                for (const run of data.workflow_runs) {
+                  if (isCiRun(run)) candidates.add(run.id);
+                }
+                if (data.workflow_runs.length < 100) break;
+                if (page === 10) core.warning(`Scan limit reached for ${status}; remaining runs preserved`);
+              }
+            }
+            let commitAssociations;
+            const hasUniqueCommitAssociation = async () => {
+              if (commitAssociations === undefined) {
+                commitAssociations = [];
+                for (let page = 1; page <= 10; page++) {
+                  const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    ...api, commit_sha: closed.head.sha, per_page: 100, page
+                  });
+                  commitAssociations.push(...data);
+                  if (data.length < 100) break;
+                  if (page === 10) {
+                    core.warning('Commit association scan incomplete; ambiguous runs preserved');
+                    commitAssociations = null;
+                    return false;
+                  }
+                }
+              }
+              if (commitAssociations === null) return false;
+              const matching = commitAssociations.filter(pr =>
+                pr.base?.repo?.id === repositoryId && pr.head?.repo?.id === closed.head.repo?.id &&
+                pr.head?.ref === closed.head.ref && pr.head?.sha === closed.head.sha);
+              return matching.length === 1 && exactPr(matching[0]);
+            };
+            let cancelled = 0;
+            let examined = 0;
+            for (const id of candidates) {
+              if (++examined > 100) {
+                core.warning('Candidate limit reached; remaining runs preserved');
+                break;
+              }
+              // Detail can restore associations omitted in a list response.
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                ...api, run_id: id, exclude_pull_requests: false
+              });
+              if (!isCiRun(run)) continue;
+              let associated = run.pull_requests?.length === 1 && exactPr(run.pull_requests[0]);
+              if (Array.isArray(run.pull_requests) && run.pull_requests.length === 0 && sameHead(run)) {
+                // GitHub may omit PR links after merge. Require the full head tuple
+                // and a unique authoritative commit/PR association, never branch alone.
+                associated = await hasUniqueCommitAssociation();
+              }
+              if (!associated) {
+                core.info(`Preserved run ${id}: exact PR association not established`);
+                continue;
+              }
+              // Last read before the mutation refuses reopened/reclosed PR races.
+              const livePr = await readPr();
+              if (!isStillClosed(livePr) || livePr.head.sha !== closed.head.sha ||
+                  livePr.head.ref !== closed.head.ref || livePr.head.repo?.id !== closed.head.repo?.id) {
+                core.info('PR lifecycle/head changed during cleanup; stopping');
+                break;
+              }
+              try {
+                await github.rest.actions.cancelWorkflowRun({ ...api, run_id: id });
+                cancelled++;
+                core.info(`Cancellation requested for CI run ${id}, closed PR #${number}`);
+              } catch (error) {
+                if (error.status !== 409) throw error;
+                core.info(`Run ${id} changed state before cancellation; preserved`);
+              }
+            }
+            core.info(`Closed PR #${number}: ${cancelled} cancellation request(s); logs and artifacts preserved`);
