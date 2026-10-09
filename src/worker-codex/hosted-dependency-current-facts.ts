@@ -89,7 +89,8 @@ export function isCurrentHostedDependencyManagedReadonlyOrigin(fence: HostedActi
 /** Routing only, before any caller workspace/context-based fallback. The
  * actual C/R unit selects its protected dependency branch; no origin is issued.
  * Inconsistent protected state throws, so omission cannot select legacy IO. */
-export function requiresCurrentHostedDependencyRootPurpose(): boolean {
+export function requiresCurrentHostedDependencyRootPurpose(heldFence?: HostedActivationFence): boolean {
+  if (heldFence !== undefined) assertHostedActivationFence(heldFence);
   if (process.platform !== "linux") return false;
   const group = readFileSync("/proc/self/cgroup","utf8");
   if (group.length > 4096) invalid();
@@ -97,7 +98,7 @@ export function requiresCurrentHostedDependencyRootPurpose(): boolean {
   const outer = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.exec(current);
   const ordinary = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.exec(current);
   if ((!outer || outer[0] !== current) && (!ordinary || ordinary[0] !== current)) return false;
-  return withHostedActivationFence(fence => {
+  const classify = (fence: HostedActivationFence): boolean => {
     if (outer) {
       assertHostedActivationOperator();
       if (readHostedActivationBytes("readonly-epoch.next")) invalid();
@@ -120,7 +121,8 @@ export function requiresCurrentHostedDependencyRootPurpose(): boolean {
         binding.installationId !== actual.start.installationId || binding.grantDigest !== actual.start.grantSha256) invalid();
     if (binding.version === 3) invalid(); // Protected reference has no helper/provider purpose.
     return binding.version === 2;
-  });
+  };
+  return heldFence === undefined ? withHostedActivationFence(classify) : classify(heldFence);
 }
 
 export function readHostedDependencyAttemptFacts(facts: CurrentHostedDependencyOriginFacts, phase: DependencyOwnerPhase) {

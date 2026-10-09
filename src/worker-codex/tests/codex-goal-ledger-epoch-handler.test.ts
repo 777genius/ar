@@ -22,6 +22,7 @@ import {
   releaseConsumedOutputLedgerMaintenanceLock,
 } from "@vioxen/subscription-runtime/worker-local";
 import {
+  listCodexGoalJobs,
   readCodexGoalJob,
   updateCodexGoalJob,
   type CodexGoalJobManifest,
@@ -806,7 +807,7 @@ export async function handlerFixture(
   let upgradeCrashBoundary: ((boundary: string) => void) | undefined;
   const observedAdmissionControllerJobIds: string[] = [];
   const admissionDeps = {
-    listJobs: async () => [],
+    listJobs: listCodexGoalJobs,
     buildOverviewItems: async () => [],
   };
   const postAdmissionCount = currentSocialDebt ? 266 : 414;

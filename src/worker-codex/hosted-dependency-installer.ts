@@ -161,6 +161,8 @@ function prepareInstaller(fence:HostedActivationFence,request:HostedDependencyIn
     const unit = `subscription-runtime-installer-${startId}.service`;
 
       assertOwner(fence,request,context,access);
+      const fdProfile = readHostedFdProfile();
+      if(context && !fdProfile)fail();
       const plan = createHostedDependencyInstallerPlan(startId, inputs), profileSha256 = digest(encode(plan.profile));
       // One manager invocation per exact private attempt, including uncertainty.
       // A new random startId cannot resurrect a consumed or revoked attempt.
@@ -174,8 +176,6 @@ function prepareInstaller(fence:HostedActivationFence,request:HostedDependencyIn
       // O_EXCL supplies future-start exclusion. Unlike idempotent record
       // publication, this marker must never permit a second manager submission.
       retainOnce(join(plan.directory, "consumed.json"), encode({ schemaVersion: 1, startId, startSha256: digest(start) }));
-      const fdProfile = readHostedFdProfile();
-      if(context && !fdProfile)fail();
       const launch = hostedFdCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
       // Actual submitter birth occurs in the final admission fence, never from a
       // precomputed command returned to a later caller. Its child identity is

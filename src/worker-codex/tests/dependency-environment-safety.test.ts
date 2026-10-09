@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -90,6 +90,30 @@ afterEach(async () => {
 });
 
 describe("node dependency environment safety", () => {
+  // Old RED: a dangling root link reaches realpath in the directory writer
+  // guard and refuses with ENOENT instead of removing only that unsafe leaf.
+  it.each(["dangling", "external"] as const)("unlinks an unsafe %s root without touching its parent or target", async scenario => {
+    const workspacePath = await createWorkspace();
+    const dependencyRoot = join(workspacePath, "node_modules");
+    const outsidePath = join(workspacePath, "..", "TEST-outside");
+    await mkdir(outsidePath);
+    const outsideSentinel = join(outsidePath, "sentinel");
+    const sibling = join(workspacePath, "TEST-sibling");
+    await writeFile(outsideSentinel, "TEST external bytes");
+    await writeFile(sibling, "TEST sibling bytes");
+    const parentBefore = await lstat(workspacePath), outsideBefore = await lstat(outsidePath);
+    await symlink(scenario === "dangling" ? join(outsidePath, "missing") : outsidePath, dependencyRoot, "dir");
+    await expect(sanitizeNodeDependencyEnvironment({ workspacePath })).resolves.toEqual({ removedPaths: ["node_modules"] });
+    await expect(lstat(dependencyRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(workspacePath)).toEqual(["TEST-sibling"]);
+    expect(await readdir(outsidePath)).toEqual(["sentinel"]);
+    expect(await readFile(sibling, "utf8")).toBe("TEST sibling bytes");
+    expect(await readFile(outsideSentinel, "utf8")).toBe("TEST external bytes");
+    const parentAfter = await lstat(workspacePath), outsideAfter = await lstat(outsidePath);
+    expect([parentAfter.dev, parentAfter.ino]).toEqual([parentBefore.dev, parentBefore.ino]);
+    expect([outsideAfter.dev, outsideAfter.ino]).toEqual([outsideBefore.dev, outsideBefore.ino]);
+  });
+
   it("caches a shared lexical target while preserving safe in-workspace links", async () => {
     const workspacePath = await createWorkspace();
     const dependencyRoot = join(workspacePath, "node_modules");
