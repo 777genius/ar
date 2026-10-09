@@ -8,7 +8,7 @@ import { JobStorageHomeStateRequirement, JobStorageIntentKind, JobStorageProduce
 import { CodexSessionHomeProfileKind } from "../codex-session-home-profile";
 
 const harness = vi.hoisted(() => ({ hosted: false, ordinary: false, roots: new Set<string>(),
-  route: vi.fn<() => Promise<number | undefined>>(async () => undefined) }));
+  route: vi.fn<typeof import("../hosted-readonly-goal-launch")["routeHostedGoalLaunch"]>(async () => undefined) }));
 // Replace only host discovery/delegation. The parser, scope guard, manifest
 // branch and runner/storage admission remain actual code. These TEST cases
 // qualify no native owner or successful provider execution.
@@ -117,10 +117,19 @@ describe("actual CLI trusted storage composition", () => {
   // still unqualified here. A discovery projection cannot replace that proof.
   // Linux UID0 must obtain separate nonoperator Source coverage for this case.
   it.runIf(process.platform !== "linux" || process.getuid?.() !== 0)(
-    "refuses an unqualified ordinary observation at the actual host operator guard", async () => {
+    "refuses at the actual ordinary admission guard delegated from the CLI", async () => {
       expect(process.platform !== "linux" || process.getuid?.() !== 0).toBe(true);
       const { root, io, args } = await testInput();
       harness.hosted = true; harness.ordinary = true;
+      const actual = await vi.importActual<typeof import("../hosted-installation-activation")>("../hosted-installation-activation");
+      let identitySeen: Parameters<typeof actual.admitHostedOrdinaryIdentity>[0] | undefined;
+      // Discovery is TEST data. Delegate this one CLI route to the real public
+      // ordinary admission guard; this proves no owned origin or native route.
+      harness.route.mockImplementationOnce(async ({ config }) => {
+        identitySeen = { jobId: config.jobId ?? config.taskId, jobRootDir: config.jobRootDir, workspacePath: config.workspacePath };
+        actual.admitHostedOrdinaryIdentity(identitySeen);
+        return undefined;
+      });
       const admission = vi.fn(async () => { throw new Error("TEST_unexpected_admission"); });
       const egress = vi.fn(async () => { throw new Error("TEST_unexpected_egress"); });
       expect(await runCodexGoalCli([...args, ...newStorageArgs()], io, { runDeps: {
@@ -129,6 +138,7 @@ describe("actual CLI trusted storage composition", () => {
       expect(io.stderr).toBe("hosted_readonly_host_operator_required\n");
       expect(io.stdout).toBe("");
       expect(harness.route).toHaveBeenCalledOnce();
+      expect(identitySeen).toStrictEqual({ jobId: "TEST-task", jobRootDir: join(root, "job"), workspacePath: join(root, "workspace") });
       expect(admission).not.toHaveBeenCalled(); expect(egress).not.toHaveBeenCalled();
       await expect(access(join(root, "job"))).rejects.toMatchObject({ code: "ENOENT" });
     },
