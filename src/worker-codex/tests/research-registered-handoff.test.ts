@@ -1,0 +1,396 @@
+import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync } from "node:fs";
+import { join } from "node:path";
+import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
+import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
+import { bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { cancelResearchLaunch, cancelRegisteredResearchLaunch } from "../research-launch-lifecycle";
+import { researchHash, researchRead } from "../research-launch-files";
+import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
+import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
+import { parseResearchOperatorRequest, researchRunConfig } from "../research-launch-contract";
+import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
+
+const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false }));
+// This suite exercises the native registered boundary with real TEST manifests,
+// receipt bytes and directory replacements. The upstream clean Git admission
+// and controller loader have their own tests; neither Host services nor models run.
+vi.mock("../codex-goal-mcp-project-control-deps", async original => {
+  const real = await original<typeof import("../codex-goal-mcp-project-control-deps")>();
+  return { ...real, loadProjectControlController: async () => ({ registryRootDir: "/TEST-project/registry",
+    controller: { jobId: "TEST-controller", jobRootDir: "/TEST-project/controller", checkpointRequired: state.checkpointRequired }, scope: state.scope! }) };
+});
+vi.mock("../application/project-control/codex-goal-project-pre-start-admission", async original => {
+  const real = await original<typeof import("../application/project-control/codex-goal-project-pre-start-admission")>();
+  return { ...real, readLaunchAuthorizedWorkerLaunchAttestation: async (input: { manifest: { projectPreStartAdmission: { receiptPath: string } } }) => {
+    const { researchRead, researchHash } = await import("../research-launch-files");
+    return { launch: {}, receiptSha256: researchHash(researchRead(input.manifest.projectPreStartAdmission.receiptPath)) };
+  } };
+});
+const registry = "/TEST-project/registry", sink = join(registry, "durable-handoffs");
+const selected = () => parseResearchOperatorRequest({ ...request(), accounts: ["TEST-a"], projectId: "TEST-original-project", maxAccountCycles: 1,
+  prewarmOnStart: false, appServerStartupTimeoutMs: 330_000 });
+const receiptPath = () => join(selected().jobRootDir, "pre-start-admission/receipt.json");
+beforeEach(async () => {
+  setupResearchFixture();
+  state.checkpointRequired = false;
+  vi.stubEnv("SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET", undefined);
+  const r = selected(), descriptorRoot = join(r.jobRootDir, "pre-start-admission");
+  state.scope = { projectId: "TEST-project", registryRoot: registry, workspaceRoots: [r.workspacePath],
+    authRoot: r.authRootDir, jobIdPrefixes: ["TEST-research"], allowedAccountIds: ["TEST-a"] };
+  for (const path of [sink, join(registry, r.jobId), join(registry, "TEST-controller"), descriptorRoot, "/TEST-project/controller"]) {
+    mkdirSync(local(path), { recursive: true, mode: 0o700 });
+  }
+  writeFileSync(local(codexGoalJobManifestPath({ registryRootDir: registry, jobId: "TEST-controller" })), "{}", { mode: 0o600 });
+  writeFileSync(local(join(descriptorRoot, "contract.json")), "{}", { mode: 0o600 });
+  writeFileSync(local(join(descriptorRoot, "state.json")), "{}", { mode: 0o600 });
+  writeFileSync(local(codexGoalJobManifestPath({ registryRootDir: registry, jobId: r.jobId })), JSON.stringify({ ...r,
+    durableHandoffRootDir: sink, maxAccountCycles: 5, accounts: request().accounts,
+    accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+    accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Unrestricted,
+    projectAccessScope: { projectId: "TEST-original-project", projectSlug: "TEST/original-project",
+      readRoots: [r.workspacePath, registry], workspaceRoots: [r.workspacePath], registryRoot: registry,
+      isolatedWorkspaceRoot: r.workspacePath, authRoot: r.authRootDir },
+    createdAt: "2026-10-08T00:00:00.000Z", updatedAt: "2026-10-08T00:00:00.000Z",
+    projectPreStartAdmission: { schemaVersion: 1, mode: "serial-builtin", contractPath: join(descriptorRoot, "contract.json"),
+      statePath: join(descriptorRoot, "state.json"), receiptPath: receiptPath() },
+  }), { mode: 0o600 });
+  const manifest = await readCodexGoalJob({ registryRootDir: registry, jobId: r.jobId });
+  writeFileSync(local(receiptPath()), JSON.stringify({ status: "launch_authorized", launchAuthorizationCount: 1,
+    jobId: r.jobId, manifestSha256: researchHash(JSON.stringify(manifest)), contractSha256: researchHash("{}"),
+    stateSha256: researchHash("{}"), promptSha256: researchHash(researchRead(r.promptPath)),
+  }), { mode: 0o600 });
+});
+afterEach(() => { vi.unstubAllEnvs(); cleanupResearchFixture(); });
+async function reserved() {
+  const loaded = await loadJobLaunch({ registryRootDir: registry, jobId: selected().jobId });
+  const reservation = await reserveCodexProjectAccount({ manifest: loaded.manifest, launch: loaded.launch,
+    deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+  return { ...loaded, reservedLaunch: reservation.launch };
+}
+const authorize = async () => authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller",
+  request: selected(), reservedLaunch: (await reserved()).reservedLaunch });
+async function grantAndRequest() {
+  const authorization = await authorize();
+  await grantRegisteredResearchLaunch(authorization);
+  writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(authorization.request) + "\n", { mode: 0o600 });
+  return authorization.request;
+}
+const start = () => startRegisteredResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
+function mutateReceipt() {
+  const receipt = JSON.parse(readFileSync(local(receiptPath()), "utf8"));
+  writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, status: "admitted" }), { mode: 0o600 });
+}
+
+describe("registered durable handoff authorization (NEW TEST source fixtures only)", () => {
+  it("prepares only the missing canonical private leaf after current authorized admission", async () => {
+    rmdirSync(local(sink));
+    await authorize();
+    expect(statSync(local(sink)).mode & 0o777).toBe(0o700);
+    expect(host.pins.size).toBe(0);
+  });
+  it("reports unsupported stored custom sinks before foreign-directory effects", async () => {
+    const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: selected().jobId });
+    const manifest = JSON.parse(readFileSync(local(path), "utf8"));
+    writeFileSync(local(path), JSON.stringify({ ...manifest, durableHandoffRootDir: "/TEST-project/foreign-sink" }), { mode: 0o600 });
+    await expect(authorize()).rejects.toBeInstanceOf(RegisteredResearchHandoffUnsupportedSink);
+    expect(existsSync(local("/TEST-project/foreign-sink"))).toBe(false);
+    expect(host.pins.size).toBe(0);
+  });
+  it("creates no missing sink when its authorized receipt is revoked", async () => {
+    rmdirSync(local(sink)); mutateReceipt();
+    await expect(authorize()).rejects.toThrow();
+    expect(existsSync(local(sink))).toBe(false);
+  });
+  it("retains its canonical preparation as unresolved if authority changes after mkdir", async () => {
+    rmdirSync(local(sink));
+    const fs = await import("node:fs"), mkdir = fs.mkdirSync;
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((path: string, options: Parameters<typeof mkdir>[1]) => {
+      const result = mkdir(path, options);
+      if (path === sink) mutateReceipt();
+      return result;
+    }) as typeof mkdir);
+    await expect(authorize()).rejects.toBeInstanceOf(RegisteredResearchSinkPreparationUnresolved);
+    expect(statSync(local(sink)).mode & 0o777).toBe(0o700);
+    expect(host.pins.size).toBe(0);
+  });
+  // RED: the leaf exists, but failure during its final cold witness escapes
+  // the retained-preparation classification after all intermediate checks pass.
+  it.each(["receipt", "sink"] as const)("retains preparation on final cold readback %s drift", async fault => {
+    rmdirSync(local(sink));
+    let changed = false;
+    host.findmntHook = () => {
+      const command = host.calls.at(-1)!;
+      if (command.args[command.args.indexOf("--target") + 1] !== sink) return;
+      host.findmntHook = undefined;
+      changed = true;
+      if (fault === "receipt") mutateReceipt();
+      if (fault === "sink") {
+        renameSync(local(sink), local(sink) + "-retained");
+        mkdirSync(local(sink), { mode: 0o700 });
+      }
+    };
+    const error = await authorize().catch(error => error);
+    expect(changed).toBe(true);
+    expect(error).toBeInstanceOf(RegisteredResearchSinkPreparationUnresolved);
+    expect(error.preparationRetained).toBe(true);
+    expect(statSync(local(sink)).mode & 0o777).toBe(0o700);
+    if (fault === "sink") expect(existsSync(local(sink) + "-retained")).toBe(true);
+    expect(host.pins.size).toBe(0);
+    expect(host.calls.filter(call => call.command === "/usr/bin/mount" || call.command === "/usr/bin/systemd-run")).toEqual([]);
+  });
+  // RED: a cold bind alias of a provider-readable root can create the sink
+  // before the eventual provider graph rejects exposure.
+  it("rejects a provider-readable physical alias before missing-leaf preparation", async () => {
+    rmdirSync(local(sink));
+    cpSync(local(registry), local("/usr"), { recursive: true });
+    host.pins.set(registry, "/usr");
+    await expect(authorize()).rejects.toThrow();
+    expect(existsSync(local(sink))).toBe(false);
+  });
+  it("rejects a reserved launch clone before preparing a missing sink", async () => {
+    rmdirSync(local(sink)); const selection = await reserved();
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller", request: selected(),
+      reservedLaunch: { ...selection.reservedLaunch, config: { ...selection.reservedLaunch.config } },
+    })).rejects.toThrow("project_control_reserved_launch_authority_invalid");
+    expect(existsSync(local(sink))).toBe(false);
+  });
+  it("consumes the real original selection once and never re-reserves for grant/lifetime checks", async () => {
+    const selection = await reserved();
+    await authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller", request: selected(),
+      reservedLaunch: selection.reservedLaunch });
+    expect(() => assertCodexProjectReservedLaunchAuthority({ manifest: selection.manifest, sourceLaunch: selection.launch,
+      reservedLaunch: selection.reservedLaunch })).toThrow("project_control_reserved_launch_authority_invalid");
+  });
+  // RED: omission inherits native 330000 rather than ordinary provider
+  // 120000; genuine declared max5 is mistaken for the reserved attempt budget1.
+  it("preserves ordinary omitted startup and stored prewarm without re-reserving", async () => {
+    const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: selected().jobId });
+    const manifest = JSON.parse(readFileSync(local(path), "utf8"));
+    delete manifest.appServerStartupTimeoutMs;
+    writeFileSync(local(path), JSON.stringify(manifest), { mode: 0o600 });
+    const loaded = await readCodexGoalJob({ registryRootDir: registry, jobId: selected().jobId });
+    const receipt = JSON.parse(readFileSync(local(receiptPath()), "utf8"));
+    writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, manifestSha256: researchHash(JSON.stringify(loaded)) }), { mode: 0o600 });
+    const selection = await reserved();
+    expect(selection.launch.config.maxAccountCycles).toBe(5);
+    expect(selection.reservedLaunch.config.maxAccountCycles).toBe(1);
+    const authorization = await authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller",
+      request: parseResearchOperatorRequest({ ...selected(), appServerStartupTimeoutMs: 120_000 }), reservedLaunch: selection.reservedLaunch });
+    await grantRegisteredResearchLaunch(authorization);
+    expect(researchRunConfig(authorization.request)).toMatchObject({ maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: 120_000 });
+  });
+  it.each([{ workerReportMode: "structured-output" }, { codexGoalObjective: "TEST objective" }, { staleLockMs: 5000 }])(
+    "rejects unsupported stored execution semantics before sink preparation: %j", async fields => {
+      rmdirSync(local(sink));
+      const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: selected().jobId });
+      const manifest = JSON.parse(readFileSync(local(path), "utf8"));
+      writeFileSync(local(path), JSON.stringify({ ...manifest, ...fields }), { mode: 0o600 });
+      const receiptBefore = readFileSync(local(receiptPath()));
+      await expect(authorize()).rejects.toThrow("hosted_research_registered_execution_unsupported");
+      expect(existsSync(local(sink))).toBe(false);
+      expect(readFileSync(local(receiptPath()))).toEqual(receiptBefore);
+      expect(host.pins.size).toBe(0);
+    });
+  it.each(["controller", "host"] as const)("rejects effective %s checkpoint requirements before sink creation", async source => {
+    rmdirSync(local(sink));
+    if (source === "controller") state.checkpointRequired = true;
+    if (source === "host") vi.stubEnv("SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET", "/TEST-host/checkpoint.sock");
+    await expect(authorize()).rejects.toThrow("hosted_research_registered_execution_unsupported");
+    expect(existsSync(local(sink))).toBe(false);
+    expect(host.authReads).toBe(0);
+  });
+  it("rejects request budget override before effects without consuming a valid selection", async () => {
+    rmdirSync(local(sink)); const selection = await reserved();
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller",
+      request: parseResearchOperatorRequest({ ...selected(), maxAccountCycles: 5 }), reservedLaunch: selection.reservedLaunch,
+    })).rejects.toThrow("hosted_research_registered_execution_unsupported");
+    expect(existsSync(local(sink))).toBe(false);
+    expect(assertCodexProjectReservedLaunchAuthority({ manifest: selection.manifest, sourceLaunch: selection.launch,
+      reservedLaunch: selection.reservedLaunch }).maxAccountCycles).toBe(1);
+  });
+  // RED: dropping a negative source scope constraint widens permission to
+  // an otherwise admitted subtree, even when positive read roots are narrowed.
+  it.each(["deniedRoots", "registryRoot"] as const)("rejects restrictive source %s before leaf creation", async field => {
+    rmdirSync(local(sink));
+    const forbidden = join(selected().workspacePath, "TEST-private-subtree");
+    mkdirSync(local(forbidden), { mode: 0o700 });
+    const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: selected().jobId });
+    const manifest = JSON.parse(readFileSync(local(path), "utf8"));
+    manifest.projectAccessScope[field] = field === "deniedRoots" ? [forbidden] : forbidden;
+    writeFileSync(local(path), JSON.stringify(manifest), { mode: 0o600 });
+    const loaded = await loadJobLaunch({ registryRootDir: registry, jobId: selected().jobId });
+    const sourcePolicy = createAccessPolicyService({ boundary: loaded.launch.config.accessBoundary!, scope: loaded.launch.config.projectAccessScope! });
+    const derived = researchRunConfig(selected());
+    const derivedPolicy = createAccessPolicyService({ boundary: derived.accessBoundary!, scope: derived.projectAccessScope! });
+    const target = join(forbidden, "TEST-result.txt");
+    expect(sourcePolicy.canWritePath({ path: target }).allowed).toBe(false);
+    if (field === "deniedRoots") expect(sourcePolicy.canReadPath({ path: target }).allowed).toBe(false);
+    expect(derivedPolicy.canWritePath({ path: target }).allowed).toBe(true);
+    const receiptBefore = readFileSync(local(receiptPath()));
+    await expect(authorize()).rejects.toThrow("hosted_research_registered_execution_unsupported");
+    expect(existsSync(local(sink))).toBe(false);
+    expect(readFileSync(local(receiptPath()))).toEqual(receiptBefore);
+    expect(host.pins.size).toBe(0);
+    expect(host.authReads).toBe(0);
+  });
+  it("rejects the actual declared registry when it contains the admitted workspace", async () => {
+    rmdirSync(local(sink));
+    const workspace = join(registry, "TEST-workspace");
+    mkdirSync(local(workspace), { mode: 0o700 });
+    const request = parseResearchOperatorRequest({ ...selected(), workspacePath: workspace });
+    state.scope = { ...state.scope!, workspaceRoots: [workspace] };
+    const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: request.jobId });
+    const manifest = JSON.parse(readFileSync(local(path), "utf8"));
+    manifest.workspacePath = workspace;
+    manifest.projectAccessScope = { ...manifest.projectAccessScope, isolatedWorkspaceRoot: workspace, workspaceRoots: [workspace] };
+    writeFileSync(local(path), JSON.stringify(manifest), { mode: 0o600 });
+    const loaded = await loadJobLaunch({ registryRootDir: registry, jobId: request.jobId });
+    const source = createAccessPolicyService({ boundary: loaded.launch.config.accessBoundary!, scope: loaded.launch.config.projectAccessScope! });
+    const derived = researchRunConfig(request);
+    expect(source.canWritePath({ path: workspace }).allowed).toBe(false);
+    expect(createAccessPolicyService({ boundary: derived.accessBoundary!, scope: derived.projectAccessScope! }).canWritePath({ path: workspace }).allowed).toBe(true);
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller", request,
+      reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow("hosted_research_registered_execution_unsupported");
+    expect(existsSync(local(sink))).toBe(false);
+    expect(host.pins.size).toBe(0);
+  });
+  it("rejects a caller project identity substitution without widening the derived child scope", async () => {
+    rmdirSync(local(sink)); const selection = await reserved();
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller",
+      request: parseResearchOperatorRequest({ ...selected(), projectId: "TEST-foreign-project" }), reservedLaunch: selection.reservedLaunch,
+    })).rejects.toThrow("hosted_research_registered_execution_unsupported");
+    expect(existsSync(local(sink))).toBe(false);
+    expect(host.authReads).toBe(0);
+  });
+  it("rejects a changed nested reserved account rather than blessing its original object", async () => {
+    rmdirSync(local(sink)); const selection = await reserved();
+    Object.assign(selection.reservedLaunch.config.accounts[0]!, { authJsonPath: "/TEST-foreign/account.json" });
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller", request: selected(),
+      reservedLaunch: selection.reservedLaunch })).rejects.toThrow("project_control_reserved_launch_authority_invalid");
+    expect(existsSync(local(sink))).toBe(false);
+    expect(host.authReads).toBe(0);
+  });
+
+  it("mints a single-use derived sink capability and rejects a serialized lookalike", async () => {
+    const authorization = await authorize();
+    expect(authorization.request.durableHandoffRootDir).toBe(sink);
+    await expect(consumeRegisteredResearchHandoffAuthorization({ ...authorization })).rejects.toThrow();
+    await grantRegisteredResearchLaunch(authorization);
+    await expect(grantRegisteredResearchLaunch(authorization)).rejects.toThrow();
+    expect(host.calls.filter(call => call.command === "/usr/bin/mount" || call.command === "/usr/bin/systemd-run")).toEqual([]);
+    expect(host.authReads).toBe(0);
+  });
+  // RED: stale authority still publishes a native grant or touches the sink.
+  it.each(["receipt", "receipt-bytes", "manifest", "scope"] as const)("denies changed %s before grant/native effects", async fault => {
+    const authorization = await authorize();
+    if (fault === "receipt") mutateReceipt();
+    if (fault === "receipt-bytes") writeFileSync(local(receiptPath()), readFileSync(local(receiptPath()), "utf8") + "\n", { mode: 0o600 });
+    if (fault === "manifest") {
+      const path = codexGoalJobManifestPath({ registryRootDir: registry, jobId: selected().jobId });
+      const manifest = JSON.parse(readFileSync(local(path), "utf8"));
+      writeFileSync(local(path), JSON.stringify({ ...manifest, taskId: "TEST-other" }), { mode: 0o600 });
+    }
+    if (fault === "scope") state.scope = { ...state.scope!, allowedAccountIds: ["TEST-other"] };
+    await expect(grantRegisteredResearchLaunch(authorization)).rejects.toThrow();
+    expect(existsSync(local(join("/run/user/subscription-runtime-research-v1", researchHash(selected().jobId), "grant.json")))).toBe(false);
+    expect(host.calls.filter(call => call.command === "/usr/bin/mount" || call.command === "/usr/bin/systemd-run")).toEqual([]);
+    expect(host.authReads).toBe(0);
+  });
+  it("refuses free/native sinks without retained registered authority", async () => {
+    const r = await grantAndRequest();
+    expect(() => startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")))).toThrow();
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller", request: r, reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow();
+    expect(host.pins.size).toBe(0);
+  });
+  it("detects a scope revocation during an awaited authorized receipt read before grant", async () => {
+    const authorization = await authorize();
+    const receipts = await import("../application/project-control/codex-goal-project-pre-start-launch-authorization");
+    const read = receipts.readCurrentAuthorizedProjectPreStartLaunchReceipt;
+    vi.spyOn(receipts, "readCurrentAuthorizedProjectPreStartLaunchReceipt").mockImplementationOnce(async manifest => {
+      const result = await read(manifest);
+      state.scope = { ...state.scope!, allowedAccountIds: ["TEST-other"] };
+      return result;
+    });
+    await expect(grantRegisteredResearchLaunch(authorization)).rejects.toThrow();
+    expect(existsSync(local(join("/run/user/subscription-runtime-research-v1", researchHash(selected().jobId), "grant.json")))).toBe(false);
+  });
+  it("retains a verified durable pin and forwards its sink only to the trusted runtime", async () => {
+    await grantAndRequest();
+    const started = await start(), current = researchCurrentStart(started.jobId);
+    host.group = `/system.slice/${started.unit}`;
+    await bindRegisteredResearchRuntime(started.jobId, started.startId);
+    expect(host.pins.get(join(current.directory, "pins/durable-handoff"))).toBe(sink);
+    const submission = host.calls.find(call => call.command === "/usr/bin/systemd-run")!;
+    expect(submission.args).toContain(`--property=BindPaths=${join(current.directory, "pins/durable-handoff")}:${sink}:norbind`);
+    expect(researchRunConfig(current.spec.request).durableHandoffRootDir).toBe(sink);
+    expect(researchRunConfig(current.spec.request)).toMatchObject({ maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: 330_000 });
+    expect(current.spec.registeredHandoff?.registeredExecution?.maxAccountCycles).toBe(1);
+    expect(researchRunConfig(current.spec.request).projectAccessScope).toEqual({ projectId: "TEST-original-project",
+      isolatedWorkspaceRoot: current.spec.request.workspacePath, authRoot: current.spec.request.authRootDir });
+    await expect(researchTerminalHandoffGuard(started.jobId, started.startId)()).resolves.toBeUndefined();
+    expect(host.authReads).toBe(0);
+  });
+  // RED: blocking mount observation revokes the grant but submission/guard
+  // still succeeds from a native read performed before the observation.
+  it("does not submit a grant revoked during the final cold mount witness", async () => {
+    await grantAndRequest();
+    host.findmntHook = () => {
+      if (host.pins.size !== 3) return;
+      host.findmntHook = undefined;
+      writeFileSync(local(join("/run/user/subscription-runtime-research-v1", researchHash(selected().jobId), "grant.json")), "{}", { mode: 0o600 });
+    };
+    await expect(start()).rejects.toThrow();
+    expect(host.calls.filter(call => call.command === "/usr/bin/systemd-run")).toEqual([]);
+  });
+  it("denies publication if the native grant changes during cold mount observation", async () => {
+    await grantAndRequest(); const started = await start();
+    host.group = `/system.slice/${started.unit}`;
+    await bindRegisteredResearchRuntime(started.jobId, started.startId);
+    const guard = researchTerminalHandoffGuard(started.jobId, started.startId);
+    host.findmntHook = () => {
+      host.findmntHook = undefined;
+      writeFileSync(local(join("/run/user/subscription-runtime-research-v1", researchHash(selected().jobId), "grant.json")), "{}", { mode: 0o600 });
+    };
+    await expect(guard()).rejects.toThrow();
+    expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+  });
+  it("requires the registered revoke port and retains active ownership after receipt invalidation", async () => {
+    await grantAndRequest(); const started = await start();
+    const grantPath = join("/run/user/subscription-runtime-research-v1", researchHash(selected().jobId), "grant.json");
+    const sha = researchHash(researchRead(grantPath));
+    expect(() => revokeResearchLaunch(started.jobId)).toThrow();
+    mutateReceipt();
+    await expect(revokeRegisteredResearchLaunch(started.jobId, "0".repeat(64))).rejects.toThrow();
+    expect(existsSync(local(grantPath))).toBe(true);
+    await revokeRegisteredResearchLaunch(started.jobId, sha);
+    expect(existsSync(local(grantPath))).toBe(false);
+    expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+  });
+  it("a stale registered cancel nonce cannot fence or stop the current start", async () => {
+    await grantAndRequest(); const started = await start(), current = researchCurrentStart(started.jobId);
+    const before = host.calls.length;
+    await expect(cancelRegisteredResearchLaunch({ jobId: started.jobId,
+      startId: "11111111-1111-1111-1111-111111111111", specSha256: started.specSha256,
+      requestSha256: current.spec.requestSha256 })).rejects.toThrow();
+    expect(host.calls.slice(before)).toEqual([]);
+    expect(existsSync(local(join(current.directory, "closing.json")))).toBe(false);
+  });
+  it.each(["directory", "pin", "receipt"] as const)("denies replaced %s at publication and retains active ownership", async fault => {
+    await grantAndRequest(); const started = await start();
+    host.group = `/system.slice/${started.unit}`;
+    await bindRegisteredResearchRuntime(started.jobId, started.startId);
+    const guard = researchTerminalHandoffGuard(started.jobId, started.startId), current = researchCurrentStart(started.jobId);
+    if (fault === "directory") { renameSync(local(sink), local(sink) + "-retired"); mkdirSync(local(sink), { mode: 0o700 }); }
+    if (fault === "pin") host.pins.delete(join(current.directory, "pins/durable-handoff"));
+    if (fault === "receipt") mutateReceipt();
+    await expect(guard()).rejects.toThrow();
+    expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+    expect(() => cancelResearchLaunch(started.jobId)).toThrow();
+    await expect(cancelRegisteredResearchLaunch({ jobId: started.jobId, startId: started.startId,
+      specSha256: started.specSha256, requestSha256: current.spec.requestSha256 })).rejects.toThrow();
+    expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+  });
+});

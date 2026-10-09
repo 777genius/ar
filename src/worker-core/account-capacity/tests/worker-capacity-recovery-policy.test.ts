@@ -10,6 +10,14 @@ import {
 } from "../domain";
 
 describe("worker capacity recovery policy", () => {
+  it("keeps a confirmed invalid session unavailable even when a legacy cooldown has elapsed", () => {
+    const capacity = { availability: "cooldown" as const, reason: "provider_session_invalid",
+      cooldownUntil: new Date("2026-06-01T01:00:00Z") };
+    const snapshots = [slot(capacity)];
+    expect(normalizeWorkerCapacitySnapshot(capacity, new Date("2026-06-02"))).toEqual(capacity);
+    expect(nextWorkerCapacityRecoveryAt(snapshots)).toBeNull();
+    expect(assessWorkerCapacityRecovery(snapshots).kind).toBe("unavailable");
+  });
   it("defers unavailable decisions when resettable capacity has a recovery time", () => {
     const recoveryAt = new Date("2026-06-01T01:00:00.000Z");
     const snapshots = [

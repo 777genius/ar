@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { materializeCodexEffectiveSeed } from "../codex-effective-seed";
 import {
   AccountAvailability,
   AgentProvider,
@@ -60,17 +60,28 @@ export class CodexAccountCapacityRechecker
     readonly accountId: string;
     readonly now: Date;
   }): Promise<WorkerCapacitySnapshot> {
-    const observation = await this.observer.observe({
+    const effective = await materializeCodexEffectiveSeed(this.options.authJsonPath);
+    let finishing = false;
+    let observation: Awaited<ReturnType<CodexAccountObserver["observe"]>>;
+    try {
+      observation = await this.observer.observe({
       account: {
         provider: AgentProvider.Codex,
         slotId: input.accountId,
-        authHome: dirname(this.options.authJsonPath),
-        authJsonPath: this.options.authJsonPath,
+        authHome: effective.home,
+        authJsonPath: effective.authJsonPath,
         codexBinaryPath: this.options.codexBinaryPath,
       },
       now: input.now,
       ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
-    });
+      });
+      finishing = true;
+      await effective.finish(observation.decision.availability === AccountAvailability.Available ||
+        observation.decision.availability === AccountAvailability.Limited);
+    } catch {
+      if (!finishing) await effective.finish(false);
+      throw new Error("codex_quota_effective_seed_observation_failed");
+    }
     const observedAccountId = codexCapacityAccountIdFromIdentity(
       observation.auth.identity,
       input.accountId,

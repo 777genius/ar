@@ -24,7 +24,9 @@ export function projectControlCustodyMaterializationPaths(input: {
   };
   for (const root of roots) {
     addWithAncestors(root);
-    addWithAncestors(join(root, "items"));
+    // Native evidence archives live directly under their root; only ledgers
+    // have an authoritative items directory.
+    if (input.ledgerRoots.includes(root)) addWithAncestors(join(root, "items"));
   }
   for (const root of input.ledgerRoots) {
     addWithAncestors(join(root, ".mutation-locks"));
