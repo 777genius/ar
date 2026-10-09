@@ -51,6 +51,19 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
   return { state: "settled", unit: current.value.unit, result, terminalVerified: state.LoadState === "loaded" &&
     ["inactive", "failed"].includes(state.ActiveState ?? "") && state.MainPID === "0" };
 }
+/** Status may reconcile an existing publication, but never submits a provider.
+ * Recover only after the exact prior observer cannot execute any further work. */
+function recoverableStatus(request: MimoProjectBridgeRequest): boolean {
+  const current = owner(request), unit = current.value.unit as string;
+  const output = researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID"]);
+  const fields = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
+  if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== current.value.description))
+    throw new Error("mimo_project_bridge_operation_invalid");
+  if (!(fields.LoadState === "not-found" || fields.LoadState === "loaded" &&
+      ["inactive", "failed"].includes(fields.ActiveState ?? "") && fields.MainPID === "0")) return false;
+  const jobs = researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]);
+  return !jobs.trim().split("\n").some(line => line.trim().split(/\s+/)[1] === unit);
+}
 export async function submitHostedMimoProjectBridge(value: unknown): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
   assertResearchInitialRoot(true); assertResearchSharedHost();
@@ -85,10 +98,14 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
     // no provider-control operation is still executing.
     if (Object.values(operations).some(row => (row as { state: string }).state === "running")) return { ok: true, jobId: request.jobId, operations };
     const prior = observation(request);
-    if (prior.state === "settled") {
-      previousStatus = { operations, worker: prior.result };
+    if (prior.state === "settled" || prior.state === "unresolved" && recoverableStatus(request)) {
+      previousStatus = { operations, worker: prior.state === "settled" ? prior.result : prior };
       const old = owner(request); generation = (old.value.generation as number) + 1;
-      for (const path of [old.requestPath, old.resultPath, old.ownerPath]) renameSync(path, path + ".generation-" + old.value.generation);
+      const evidence = [old.requestPath, old.resultPath, old.resultPath + ".tmp", old.ownerPath]
+        .filter(path => path === old.requestPath || path === old.ownerPath || existsSync(path));
+      if (evidence.some(path => existsSync(path + ".generation-" + old.value.generation)))
+        throw new Error("mimo_project_bridge_operation_invalid");
+      for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
     } else if (prior.state !== "absent") return { ok: true, jobId: request.jobId, operations, worker: prior };
   }
   if (request.operation === MimoProjectBridgeOperation.Start) {

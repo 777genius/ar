@@ -125,3 +125,57 @@ it.each([
 ])("trusted recipe rejects injected or mismatched %s", (key, value) => {
   expect(() => trustedMimoProjectOperationLaunch({ ...recipeInput(), [key]: value })).toThrow();
 });
+
+it.each(["absent", "failed"])("recovers a %s status observer without replaying provider controls", async lifecycle => {
+  const status = control(MimoProjectBridgeOperation.Status), statusPrefix = prefix.replace(".create", ".status");
+  await submitHostedMimoProjectBridge(status);
+  const retainedRequest = state.files.get(statusPrefix + ".request.json"), first = JSON.parse(state.files.get(statusPrefix + ".owner.json")!);
+  state.files.set(statusPrefix + ".result.json.tmp", "TEST interrupted result");
+  state.command.mockImplementation((executable: string, args: string[]) => {
+    if (executable !== "/usr/bin/systemctl" || args[0] === "list-jobs") return "";
+    return lifecycle === "failed" ? terminalShow(args[1]!) : `Id=${first.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0`;
+  });
+  await expect(submitHostedMimoProjectBridge(status)).resolves.toMatchObject({ pending: true });
+  expect(state.files.get(statusPrefix + ".request.json.generation-0")).toBe(retainedRequest);
+  expect(JSON.parse(state.files.get(statusPrefix + ".owner.json.generation-0")!)).toEqual(first);
+  expect(JSON.parse(state.files.get(statusPrefix + ".owner.json")!).generation).toBe(1);
+  expect(state.files.has(statusPrefix + ".result.json.generation-0")).toBe(false);
+  expect(state.files.get(statusPrefix + ".result.json.tmp.generation-0")).toBe("TEST interrupted result");
+  expect(state.files.has(statusPrefix + ".result.json.tmp")).toBe(false);
+  expect(state.files.has(prefix + ".owner.json")).toBe(false);
+  expect(state.files.has(prefix.replace(".create", ".start.owner.json"))).toBe(false);
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(2);
+});
+it.each(["pending-job", "nonzero-pid", "unknown-state", "running"])("retains an unresolved status observer with %s", async condition => {
+  const status = control(MimoProjectBridgeOperation.Status), statusPrefix = prefix.replace(".create", ".status");
+  await submitHostedMimoProjectBridge(status);
+  const first = JSON.parse(state.files.get(statusPrefix + ".owner.json")!);
+  state.command.mockImplementation((executable: string, args: string[]) => {
+    if (executable !== "/usr/bin/systemctl") return "";
+    if (args[0] === "list-jobs") return condition === "pending-job" ? `123 ${first.unit} start waiting` : "";
+    const out = terminalShow(args[1]!);
+    return condition === "nonzero-pid" ? out.replace("MainPID=0", "MainPID=99") : condition === "unknown-state" ? out.replace("ActiveState=failed", "ActiveState=maintenance") : condition === "running" ? out.replace("ActiveState=failed", "ActiveState=active") : out;
+  });
+  await expect(submitHostedMimoProjectBridge(status)).resolves.toMatchObject({ worker: { state: condition === "running" ? "running" : "unresolved" } });
+  expect(JSON.parse(state.files.get(statusPrefix + ".owner.json")!)).toEqual(first);
+  expect(state.files.has(statusPrefix + ".owner.json.generation-0")).toBe(false);
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
+});
+it("rejects foreign terminal status ownership before archiving", async () => {
+  const status = control(MimoProjectBridgeOperation.Status), statusPrefix = prefix.replace(".create", ".status");
+  await submitHostedMimoProjectBridge(status);
+  state.command.mockReturnValue("Id=foreign.service\nLoadState=not-found\nActiveState=inactive\nMainPID=0");
+  await expect(submitHostedMimoProjectBridge(status)).rejects.toThrow("mimo_project_bridge_operation_invalid");
+  expect(state.files.has(statusPrefix + ".owner.json.generation-0")).toBe(false);
+});
+it("never overwrites prior status generation evidence", async () => {
+  const status = control(MimoProjectBridgeOperation.Status), statusPrefix = prefix.replace(".create", ".status");
+  await submitHostedMimoProjectBridge(status);
+  const first = state.files.get(statusPrefix + ".owner.json");
+  state.files.set(statusPrefix + ".owner.json.generation-0", "TEST existing evidence");
+  state.command.mockImplementation((executable: string, args: string[]) => executable !== "/usr/bin/systemctl" || args[0] === "list-jobs" ? "" : terminalShow(args[1]!));
+  await expect(submitHostedMimoProjectBridge(status)).rejects.toThrow("mimo_project_bridge_operation_invalid");
+  expect(state.files.get(statusPrefix + ".owner.json")).toBe(first);
+  expect(state.files.get(statusPrefix + ".owner.json.generation-0")).toBe("TEST existing evidence");
+  expect(state.files.has(statusPrefix + ".request.json.generation-0")).toBe(false);
+});
