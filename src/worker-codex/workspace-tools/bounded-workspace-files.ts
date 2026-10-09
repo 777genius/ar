@@ -207,6 +207,7 @@ export class BoundedWorkspaceFiles {
     try {
       const fileStat = await handle.stat();
       if (!fileStat.isFile()) throw new Error("workspace_path_is_not_a_regular_file");
+      if (fileStat.nlink > 1) throw new Error("workspace_hardlink_rejected");
       if (fileStat.size > this.limits.maxFileBytes) {
         throw new Error("workspace_file_size_limit_exceeded");
       }
@@ -237,6 +238,7 @@ export class BoundedWorkspaceFiles {
     if (existing && !existing.isFile()) {
       throw new Error("workspace_path_is_not_a_regular_file");
     }
+    if (existing && existing.nlink > 1) throw new Error("workspace_hardlink_rejected");
     if (existing && !overwrite) throw new Error("workspace_file_already_exists");
 
     const parent = dirname(absolutePath);
