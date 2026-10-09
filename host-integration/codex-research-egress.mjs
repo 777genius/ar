@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Host operator entrypoint. Observation is diagnostic, never launch authority.
 const operation = process.argv[2];
-if (['grant-owned-research', 'start-owned-research', 'status-owned-research', 'cancel-owned-research', 'revoke-owned-research'].includes(operation)) {
+if (['grant-owned-mimo-worker', 'finalize-owned-mimo-worker', 'grant-owned-research', 'start-owned-research', 'status-owned-research', 'cancel-owned-research', 'revoke-owned-research'].includes(operation)) {
   let diagnostics;
   try {
     diagnostics = await import('../dist/worker-codex/research-launch-diagnostics.js');
@@ -9,7 +9,9 @@ if (['grant-owned-research', 'start-owned-research', 'status-owned-research', 'c
     const lifecycle = await import('../dist/worker-codex/research-launch-lifecycle.js');
     const args = process.argv.slice(3);
     let result;
-    if (operation === 'grant-owned-research' && args.length === 3) { owner.grantResearchLaunch(...args); }
+    if (operation === 'grant-owned-mimo-worker' && args.length === 3) { owner.grantOwnedMimoWorkerLaunch(...args); }
+    else if (operation === 'finalize-owned-mimo-worker' && args.length === 3) { result = await lifecycle.finalizeOwnedMimoWorker(...args); }
+    else if (operation === 'grant-owned-research' && args.length === 3) { owner.grantResearchLaunch(...args); }
     else if (operation === 'start-owned-research' && args.length === 2) { result = owner.startResearchLaunch(...args); }
     else if (operation === 'status-owned-research' && args.length === 1) { result = lifecycle.statusResearchLaunch(args[0]); }
     else if (operation === 'cancel-owned-research' && args.length === 1) { result = lifecycle.cancelResearchLaunch(args[0]); }

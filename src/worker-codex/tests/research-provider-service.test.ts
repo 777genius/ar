@@ -17,6 +17,8 @@ import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { parseResearchOperatorRequest } from "../research-launch-contract";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
@@ -51,7 +53,6 @@ function providerProxy(current: ReturnType<typeof prepareHelper>, accept = true,
 }
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
-
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
@@ -74,8 +75,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual([
       ...pinBinds, ...selected.map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
     ]);
-    // Model the independently observed topology: original nonrecursive pins
-    // contain none of these later private mounts. Only explicit physical binds
+    // Model the independently observed topology: original nonrecursive pins contain none of these later private mounts. Only explicit physical binds
     // can resolve their data. This assertion does not simulate Linux confinement.
     const data = new Map(f.prepared.map(({ source }, i) => [source, ["TEST-agent-marker", "TEST-plugin-data", "TEST-catalog-data"][i]]));
     const visible = (args: readonly string[]) => new Map(args.filter(arg => arg.startsWith("--property=BindPaths="))
@@ -115,8 +115,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     f.nodes.set(other, f.directory()); await scratch.prepareHostScratchCaches(other, {}, f.host); f.mutations.length = 0;
     return { current, f, other, earlier };
   }
-  // Regression: A's genuine native mounts survive when B is selected; neither
-  // complete nor partially prepared A caches may become B's explicit sources.
+  // Regression: A's genuine native mounts survive when B is selected; neither complete nor partially prepared A caches may become B's explicit sources.
   it.each([false, true])("selects only this account's caches with earlier partial=%s preparation", async partial => {
     const { current, f, other, earlier } = await fallbackHomes(partial);
     const foreign = f.prepared.filter(bind => bind.target.startsWith(earlier + "/") && f.mounts.has(bind.target));
@@ -132,8 +131,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
     expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  // Regression: the default descriptor reader must select the fixed CA role
-  // for both public source and retained snapshot, rather than the DNS limit.
+  // Regression: the default descriptor reader must select the fixed CA role for both public source and retained snapshot, rather than the DNS limit.
   it("prepares and revalidates a public CA bundle above 64 KiB through the default root adapter", () => {
     const current = prepareHelper(), bytes = publicTestCa.repeat(94);
     fs.writeFileSync("/etc/ssl/certs/ca-certificates.crt", bytes, { mode: 0o644 });
@@ -142,8 +140,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(plan.args.some(arg => arg.startsWith("--property=RootDirectory="))).toBe(true);
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  // Regression: the real policy is over 1 MiB; borrowing DNS's 64 KiB cap
-  // rejects valid fallback, while an unbounded policy reader admits >8 MiB.
+  // Regression: the real policy is over 1 MiB; borrowing DNS's 64 KiB cap rejects valid fallback, while an unbounded policy reader admits >8 MiB.
   it("accepts a large legacy policy through the policy-role contract and denies its fixed ceiling", async () => {
     const { current, f, other } = await fallbackHomes(true);
     const legacyTemps = Object.fromEntries(Array.from({ length: 25000 }, (_, index) =>
@@ -160,8 +157,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toHaveLength(5);
     expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  // Regression: the omission class must retain native/policy/base custody, and
-  // reject the same corrupted topology both initially and on a retained receipt.
+  // Regression: the omission class must retain native/policy/base custody, and reject the same corrupted topology both initially and on a retained receipt.
   it.each(["native-source", "mount-backing", "source-owner", "home-owner", "base-data", "base-alias", "unknown-child", "unknown-suffix", "unknown-home", "foreign-uuid", "selected-alias"])(
     "denies foreign cache %s before root effects and at revalidation", async fault => {
       const { current, f, other, earlier } = await fallbackHomes(true), foreign = f.prepared.find(bind => bind.target === join(earlier, "plugins/cache"))!;
@@ -203,8 +199,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     const { current, f, other, earlier } = await fallbackHomes(true), foreign = f.prepared.find(bind => bind.target === join(earlier, "plugins/cache"))!;
     const base = join(current.directory, "pins/job", foreign.target.slice(current.spec.request.jobRootDir.length));
     const plan = providerLaunch(current, other, f.host), policyBytes = fs.readFileSync(f.configPath);
-    // Valid unrelated legacy data preserves the adapter's selected binds, but
-    // changes the trusted policy fingerprint retained by this exact receipt.
+    // Valid unrelated legacy data preserves the adapter's selected binds, but changes the trusted policy fingerprint retained by this exact receipt.
     f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps: { "/TEST-unselected": { device: 2049, inode: 1 } } });
     expect(() => providerLaunch(current, other, f.host)).toThrow();
     f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid });
@@ -223,8 +218,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     const selected = f.prepared[index]!, mount = f.mounts.get(selected.target)!, originalSource = f.nodes.get(selected.source)!;
     const resolve = scratch.resolvePreparedHostScratchBinds;
     vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
-    // Revalidate the same retained receipt on healthy and corrupted facts.
-    // Re-entering the service would deny the pre-existing root independently.
+    // Revalidate the same retained receipt on healthy and corrupted facts. Re-entering the service would deny the pre-existing root independently.
     const healthy = (): string[] => {
       const args = providerLaunch(current).args;
       expect(args).toContain(`--property=BindPaths=${selected.source}:${selected.target}:norbind`);
@@ -322,7 +316,6 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce(); expect(f.mutations).toEqual([]);
   });
 });
-
 describe("owned research provider cancellation (real files and streams; systemd/proc substituted)", () => {
   it("consumes fixed readiness and forwards the held frame only after retaining settled ownership", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
@@ -475,8 +468,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
       return sync(command, args, options);
     }) as typeof processes.spawnSync);
     expect(() => cancelResearchLaunch(current.jobId)).toThrow();
-    // Keep durable assertions outside the failing observer: cancel's expected
-    // rejection must not swallow a missing-fence assertion and make this pass.
+    // Keep durable assertions outside the failing observer: cancel's expected rejection must not swallow a missing-fence assertion and make this pass.
     expect(observations).toBeGreaterThan(0);
     expect(JSON.parse(researchRead(join(current.directory, "closing.json")).toString()).specSha256).toBe(researchHash(current.bytes));
     expect(record(current, ".cancel").specSha256).toBe(researchHash(current.bytes));
@@ -523,23 +515,39 @@ describe("owned research provider cancellation (real files and streams; systemd/
     expect(cancelResearchLaunch(current.jobId)).toMatchObject({ terminal: true });
   });
 });
-
-/** Model a three-second artifact traversal on slow Host I/O, still inside its
- * finite thirty-second bound. All retained bytes/digests remain real; only the
- * Host clock and directory-observation latency are substituted. */
-function slowBoundedMaterial() {
+/** Move the substituted Host monotonic clock without replaying every 25 ms permission poll. Tests still execute the real poll at the selected boundary. */
+function researchClock() {
   vi.useFakeTimers();
-  const origin = Date.now(); let materialTime = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => Date.now() - origin + materialTime);
+  const origin = Date.now(); let elapsed = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => Date.now() - origin + elapsed);
+  return Object.assign(() => performance.now(), { advance: (ms: number) => { elapsed += ms; } });
+}
+/** Model a three-second artifact traversal on slow Host I/O, still inside its finite thirty-second bound. All retained bytes/digests remain real; only the Host clock and directory-observation latency are substituted. */
+function slowBoundedMaterial() {
+  const now = researchClock();
   const readDirectory = fs.readdirSync;
   vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
-    if (path === "/TEST-artifact/dist") materialTime += 3_000;
+    if (path === "/TEST-artifact/dist") now.advance(3_000);
     return readDirectory(path, options);
   }) as typeof fs.readdirSync);
-  return Object.assign(() => performance.now(), { advance: (elapsed: number) => { materialTime += elapsed; } });
+  return now;
 }
-
 describe("slow bounded material at research effect boundaries", () => {
+  // RED: provider transport and its service reject at 300s despite the sealed allocation.
+  it.each([[600_000, 1_200_000, 600], [600_000, 400_000, 400]])("shares owned MiMo startup %s / task %s allowance with the actual provider transport", async (startup, task, seconds) => {
+    const current = prepareHelper("TEST-mimo", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      model: codexMimoDefaultModel, maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: startup, taskTimeoutMs: task }));
+    const { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
+    expect(trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args).toContain("--property=TimeoutStartSec=300s");
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
+    expect(host.spawn.mock.calls[0]?.[1]).toContain(`--property=TimeoutStartSec=${seconds}s`);
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    now.advance(310_000); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true);
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(record(current, ".submission").state).toBe("settled");
+  });
   it.each(["timeout", "nonzero"])("retains a closed Host command %s observation before bootstrap", async fault => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const original = processes.spawnSync;
@@ -565,7 +573,7 @@ describe("slow bounded material at research effect boundaries", () => {
     let readyAt = 0, releasedAt = 0;
     proxy.stdin.once("data", () => { releasedAt = now(); proxy.exitCode = 0; proxy.emit("exit", 0, null); });
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
-    await vi.advanceTimersByTimeAsync(setupMs);
+    now.advance(setupMs - 25); await vi.advanceTimersByTimeAsync(25);
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
     readyAt = now();
     for (const part of [readyFrame.slice(0, 7), readyFrame.slice(7, 28), readyFrame.slice(28)]) proxy.stdout.write(part);
@@ -592,20 +600,24 @@ describe("slow bounded material at research effect boundaries", () => {
     expect(releasedAt - readyAt).toBeLessThan(10_000);
     expect(forwarded.length).toBeGreaterThan(0);
   });
-  it("finishes real eleven-second ownership I/O before releasing bootstrap within the original setup deadline", async () => {
+  it("finishes eleven-second ownership I/O before releasing bootstrap within the original setup deadline", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
-    const sync = fs.fsyncSync; let verifiedAt = 0;
+    const now = researchClock(), sync = fs.fsyncSync; let verifiedAt = 0;
     host.spawn.mockImplementation(submit);
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
       sync(fd);
       if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) {
-        verifiedAt = performance.now();
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 11_000);
+        verifiedAt = now();
+        expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
+        // Synchronous fsync cannot yield to polling, even on slow Host I/O.
+        now.advance(11_000);
+        expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
       }
     });
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
-    await runResearchProviderService(current.jobId, current.provider, current.home);
-    expect(performance.now() - verifiedAt).toBeGreaterThanOrEqual(11_000);
+    const running = runResearchProviderService(current.jobId, current.provider, current.home);
+    await vi.advanceTimersByTimeAsync(0); await running;
+    expect(now() - verifiedAt).toBeGreaterThanOrEqual(11_000);
     expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
     expect(record(current, ".submission").state).toBe("settled");
@@ -726,15 +738,14 @@ describe("slow bounded material at research effect boundaries", () => {
 
 describe("bounded confined-launcher readiness (real streams; settled proc/systemd observations substituted)", () => {
   it("admits settled readiness after forty-six seconds without releasing bootstrap while waiting", async () => {
-    vi.useFakeTimers();
+    const now = researchClock();
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     host.spawn.mockImplementation(submit);
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
-    // Capture rejection immediately so the old fifteen-second deadline fails the
-    // outcome assertion, rather than producing an unhandled rejection.
+    // Capture rejection immediately so the old fifteen-second deadline fails the outcome assertion, rather than producing an unhandled rejection.
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home)
       .then(() => true, () => false);
-    await vi.advanceTimersByTimeAsync(46_025);
+    now.advance(46_000); await vi.advanceTimersByTimeAsync(25);
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
     expect(() => record(current, ".owner")).toThrow();
     proxy.stdout.write(readyFrame);
@@ -754,8 +765,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
       });
       return result;
     });
-    // Make an incorrect bootstrap release terminate, so old code fails an
-    // effect assertion instead of merely hanging until the test timeout.
+    // Make an incorrect bootstrap release terminate, so old code fails an effect assertion instead of merely hanging until the test timeout.
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
     let denied = false;
     try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch { denied = true; }
@@ -814,7 +824,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
   });
   it.each(["native-output", "oversize", "extra-output", "eof", "close", "stdout-error", "stderr-error", "stdin-error", "stdin-epipe", "stdin-destroyed", "spawn-error", "exit", "signal", "timeout", "cancel"])(
     "fails closed before owner/bootstrap/auth on readiness %s", async fault => {
-      if (fault === "timeout") vi.useFakeTimers();
+      const now = fault === "timeout" ? researchClock() : undefined;
       const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
       host.spawn.mockImplementation(() => {
         const result = submit();
@@ -837,7 +847,12 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
         return result;
       });
       const rejected = expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
-      if (fault === "timeout") await vi.advanceTimersByTimeAsync(300_025);
+      if (now) {
+        now.advance(299_974); await vi.advanceTimersByTimeAsync(25);
+        expect(proxy.kill).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0);
+        expect(current.forward).not.toHaveBeenCalled(); expect(() => record(current, ".owner")).toThrow();
+        now.advance(1); await vi.advanceTimersByTimeAsync(25);
+      }
       await rejected;
       expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
       expect(() => record(current, ".owner")).toThrow(); expect(record(current, ".cancel").unit).toBe(current.provider);
@@ -958,8 +973,6 @@ describe("independent review: selected plan changes across the added handoff yie
     }
   });
 });
-
-
 describe("independent review: runtime binding authority after material I/O", () => {
   it.each(["unchanged", "revoke-during-walk"])("checks %s before publishing binding", fault => {
     const req = request();
