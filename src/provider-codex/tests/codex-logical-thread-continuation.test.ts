@@ -72,26 +72,24 @@ describe("Codex logical-thread continuation", () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-thread-checkpoint-failure-"));
     const usage = { inputTokens: 123, outputTokens: 45, totalTokens: 168 };
     const fakeFactory = new FakeAppServerFactory({
-      emitTurnEventsWithStartResponse: true,
+      turnUsage: usage,
       onRequest: (request) => {
         if (request.method !== "turn/start") return;
         const stdout = fakeFactory.processes[0]!.stdout;
         const emit = stdout.emit.bind(stdout);
-        vi.spyOn(stdout, "emit").mockImplementationOnce((event, ...args) => {
-          const frames = String(args[0]).trim().split("\n").map(line => JSON.parse(line));
-          const terminal = frames.pop();
-          const threadId = request.params?.threadId;
-          const turnId = frames[0].result.turn.id;
-          terminal.params.threadId = threadId;
-          const usageFrame = { method: "thread/tokenUsage/updated", params: {
-            threadId, turnId, tokenUsage: { total: usage, last: usage },
-          } };
-          const nativeFrame = { method: "item/completed", params: { threadId, turnId,
-            item: { type: "webSearch", id: "web-1", query: "private query",
-              action: { type: "openPage", url: "turn0search0" }, results: null },
-          } };
-          return emit(event, [...frames, usageFrame, nativeFrame, terminal]
-            .map(frame => JSON.stringify(frame)).join("\n") + "\n");
+        vi.spyOn(stdout, "emit").mockImplementation((event, ...args) => {
+          if (event === "data") {
+            const frame = JSON.parse(String(args[0]));
+            if (frame.method === "turn/completed") {
+              const nativeFrame = { method: "item/completed", params: {
+                threadId: request.params?.threadId, turnId: frame.params.turn.id,
+                item: { type: "webSearch", id: "web-1", query: "private query",
+                  action: { type: "openPage", url: "turn0search0" }, results: null },
+              } };
+              return emit(event, JSON.stringify(nativeFrame) + "\n" + String(args[0]));
+            }
+          }
+          return emit(event, ...args);
         });
       },
     });
@@ -123,6 +121,7 @@ describe("Codex logical-thread continuation", () => {
         checkpoint: "thread-1", outcome: ProviderLogicalThreadOutcome.Continued,
       });
       expect(fakeFactory.requests.filter(request => request.method === "turn/start")).toHaveLength(1);
+      expect(fakeFactory.requests.filter(request => request.method === "thread/start")).toEqual([]);
       expect(JSON.stringify(result)).not.toContain("private query");
       expect(JSON.stringify(result)).not.toContain("source-thread-1");
     } finally {
