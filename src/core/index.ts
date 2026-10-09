@@ -34,4 +34,5 @@ export * from "./dependency-environment/dependency-tool-ready-reader";
 export * from "./host-infrastructure/system-bus-infrastructure";
 export * from "./host-infrastructure/fd-collector-profile";
 
+export * from "./host-infrastructure/host-inventory";
 export * from "./domain/native-web-receipt";

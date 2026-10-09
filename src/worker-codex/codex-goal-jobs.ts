@@ -504,7 +504,7 @@ export function parseCodexGoalJobManifest(
   return parseCodexGoalJobManifestValue(value, {});
 }
 
-function parseStoredCodexGoalJobManifest(
+export function parseStoredCodexGoalJobManifest(
   value: unknown,
 ): CodexGoalJobManifest {
   return parseCodexGoalJobManifestValue(value, {
