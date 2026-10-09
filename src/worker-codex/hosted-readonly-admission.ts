@@ -4,7 +4,7 @@ import { HostedCustodyLaunchKind, HostedCustodySupervisor } from "@vioxen/subscr
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { admittedReadonlyCodexProcessFactory, admittedDependencyToolCodexProcessFactory, CodexProviderEgressProfileId, requiresHostedProcessAdmission,
-  type CodexAppServerProcessFactory, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
+  CodexModelBackend, type CodexAppServerProcessFactory, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { assertReadonlyHostOperator, decodePrivateJson, readReadonlyManagedGrant,
   readReadonlyReview, readonlyIdentityName } from "./hosted-readonly-authority";
@@ -58,11 +58,12 @@ export function assertReadonlyAdmittedFactory(factory: CodexAppServerProcessFact
 export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   readonly providerEgressPolicy: CodexProviderEgressPolicy;
   readonly executionEngine?: CodexWorkerExecutionEngine;
+  readonly modelBackend?: CodexModelBackend;
   readonly sourceEnv: Readonly<Record<string, string | undefined>>;
 }, toolEntry?: HostedDependencyQualifiedToolEntry): CodexAppServerProcessFactory | undefined {
   const research = admitResearchRuntime(input);
   if (research) {
-    assertResearchRuntimeEngine(input);
+    assertResearchRuntimeEngine(input, research);
     if (input.providerEgressPolicy.profileId !== research) throw new Error("hosted_research_launch_denied");
     return admitResearchProcessFactory(input);
   }

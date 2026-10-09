@@ -1,3 +1,4 @@
+import { readHostedMimoWorkerOrigin } from "./hosted-mimo-worker-origin";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
@@ -11,7 +12,7 @@ const maximumCredentialBytes = 4096;
 export function hostedMimoCredentialSourceReady(): boolean {
   if (process.platform !== "linux" || process.getuid?.() !== 0) return false;
   try {
-    assertHostedActivationOperator();
+    if (!readHostedMimoWorkerOrigin()) assertHostedActivationOperator();
     const ancestry: string[] = [];
     for (let current = dirname(hostedMimoCredentialPath);; current = dirname(current)) {
       ancestry.unshift(current);
@@ -41,6 +42,12 @@ export function resolveHostedMimoCredential(redactor: RedactorPort): string {
 
 /** Origin is independently read before touching the shared source. */
 export function resolveAuthorizedHostedMimoCredential(redactor: RedactorPort): string {
+  const worker = readHostedMimoWorkerOrigin();
+  if (worker) {
+    const credential = readHostedMimoCredentialAtPath(hostedMimoCredentialPath, redactor);
+    if (readHostedMimoWorkerOrigin()?.digest !== worker.digest) throw new Error("hosted_mimo_worker_origin_invalid");
+    return credential;
+  }
   return withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
     if ((origin.profileId as CodexProviderEgressProfileId) !== CodexProviderEgressProfileId.MimoTokenPlan) {
