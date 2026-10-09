@@ -1,3 +1,4 @@
+import { goalExecutionConfigFromRecord } from "./goal-execution-config";
 import {
   createCodexGoalJob,
   updateCodexGoalJob,
@@ -55,6 +56,8 @@ export function codexGoalLaunchManifestInputFromLaunch(
     ...(metadata.description ? { description: metadata.description } : {}),
     ...(metadata.tags?.length ? { tags: metadata.tags } : {}),
     jobRootDir: launch.config.jobRootDir,
+    ...(launch.config.durableHandoffRootDir === undefined ? {}
+      : { durableHandoffRootDir: launch.config.durableHandoffRootDir }),
     authRootDir: launch.config.authRootDir,
     ...(launch.config.stateRootDir ? { stateRootDir: launch.config.stateRootDir } : {}),
     workspacePath: launch.config.workspacePath,
@@ -87,8 +90,11 @@ export function codexGoalLaunchManifestInputFromLaunch(
       ? { appServerStartupTimeoutMs: launch.config.appServerStartupTimeoutMs }
       : {}),
     ...(launch.config.staleLockMs ? { staleLockMs: launch.config.staleLockMs } : {}),
-    ...(launch.config.childLifetime ? { childLifetime: launch.config.childLifetime,
-      maxGoalTurns: launch.config.maxGoalTurns!, safeExecutionPolicy: launch.config.safeExecutionPolicy! } : {}),
+    ...goalExecutionConfigFromRecord({
+      childLifetime: launch.config.childLifetime,
+      maxGoalTurns: launch.config.maxGoalTurns,
+      safeExecutionPolicy: launch.config.safeExecutionPolicy,
+    }),
     ...(launch.config.maxAccountCycles
       ? { maxAccountCycles: launch.config.maxAccountCycles }
       : {}),

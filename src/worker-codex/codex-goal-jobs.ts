@@ -1,4 +1,4 @@
-import { childConfigFromRecord } from "./child-execution-confinement";
+import { goalExecutionConfigFromRecord } from "./goal-execution-config";
 import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import {
@@ -456,7 +456,7 @@ export function codexGoalJobToArgs(
     appServerStartupTimeoutMs: manifest.appServerStartupTimeoutMs,
     staleLockMs: manifest.staleLockMs,
     maxAccountCycles: manifest.maxAccountCycles,
-    ...childConfigFromRecord(manifest as unknown as Readonly<Record<string, unknown>>),
+    ...goalExecutionConfigFromRecord(manifest as unknown as Readonly<Record<string, unknown>>),
     editMode: manifest.editMode,
     providerSandboxMode: manifest.providerSandboxMode,
     accessBoundary: manifest.accessBoundary,
@@ -625,7 +625,7 @@ function parseCodexGoalJobManifestValue(
     ),
     ...optionalPositiveIntegerProperty(value.staleLockMs, "staleLockMs"),
     ...optionalPositiveIntegerProperty(value.maxAccountCycles, "maxAccountCycles"),
-    ...childConfigFromRecord(value),
+    ...goalExecutionConfigFromRecord(value),
     ...(editMode === undefined ? {} : { editMode }),
     ...(providerSandboxMode === undefined ? {} : { providerSandboxMode }),
     ...(accessBoundary === undefined ? {} : { accessBoundary }),

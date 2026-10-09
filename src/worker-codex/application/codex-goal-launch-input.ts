@@ -1,4 +1,5 @@
-import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
+import { assertChildGoalConfig } from "../child-execution-confinement";
+import { goalExecutionConfigFromRecord } from "../goal-execution-config";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -88,7 +89,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     "maxAccountCycles",
   ) ?? 5;
   const config: CodexGoalRunConfig = {
-    ...childConfigFromRecord(merged),
+    ...goalExecutionConfigFromRecord(merged),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
     ...(durableHandoffRootDir === undefined
