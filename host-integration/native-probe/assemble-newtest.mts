@@ -227,21 +227,28 @@ export function assembleNewtest(candidate: string, artifact: string, artifactDig
   return { installationDigest: retainedResourceDigest(manifest), files: files.length, authorityIssued: false };
 }
 export function assembleRetainedV2Newtest(candidate: string, artifact: string, artifactDigest: string, daemonUid: number, daemonGid: number): unknown {
-  const nativeInstallation="/opt/subscription-runtime/native-retained-v2";
+  return assembleRetainedNative(candidate,artifact,artifactDigest,daemonUid,daemonGid,false);
+}
+export function assembleRetainedV2ActorNewtest(candidate: string, artifact: string, artifactDigest: string, daemonUid: number, daemonGid: number): unknown {
+  return assembleRetainedNative(candidate,artifact,artifactDigest,daemonUid,daemonGid,true);
+}
+function assembleRetainedNative(candidate: string, artifact: string, artifactDigest: string, daemonUid: number, daemonGid: number, actors: boolean): unknown {
+  const nativeInstallation=actors?"/opt/subscription-runtime/native-retained-v2-b1a":"/opt/subscription-runtime/native-retained-v2";
+  const entry=actors?"retained-v2-actor-entry":"retained-v2-entry",operator=actors?"retained-v2-actor-operator.mjs":"retained-v2-operator.mjs";
   // No installed writes until the whole artifact and dependency plan admits.
   verifyTree(artifact, artifactDigest); admitJsImports(join(artifact, "admin"));
   protectedPath(candidate, true);
   if (readdirSync(candidate).length) throw new Error("nonempty candidate refused");
   const node = "/opt/subscription-runtime/runtime/node";
-  const binaries = [node, join(artifact, "retained-v2-entry"), join(artifact, "original-owner-associated.node"), join(artifact, "native-root-client")];
+  const binaries = [node, join(artifact, entry), join(artifact, "original-owner-associated.node"), join(artifact, "native-root-client")];
   const elf = elfClosure([...binaries,"/usr/bin/dbus-daemon"]);
   const plan: Array<{ path: string; source: string; mode: number }> = [
-    { path: nativeInstallation + "/retained-v2-entry", source: binaries[1]!, mode: 0o700 },
+    { path: nativeInstallation + "/"+entry, source: binaries[1]!, mode: 0o700 },
     { path: nativeInstallation + "/test-root/opt/native/node", source: node, mode: 0o755 },
     { path: nativeInstallation + "/test-root/opt/native/original-owner-helper.mjs", source: join(artifact, "original-owner-helper.mjs"), mode: 0o644 },
     { path: nativeInstallation + "/test-root/opt/native/original-owner-associated.node", source: binaries[2]!, mode: 0o644 },
     { path: "/usr/bin/dbus-daemon", source: "/usr/bin/dbus-daemon", mode: lstatSync("/usr/bin/dbus-daemon").mode & 0o7777 },
-    { path: nativeInstallation + "/admin/host-integration/native-probe/retained-v2-operator.mjs", source: join(artifact, "admin/host-integration/native-probe/retained-v2-operator.mjs"), mode: 0o644 },
+    { path: nativeInstallation + "/admin/host-integration/native-probe/"+operator, source: join(artifact, "admin/host-integration/native-probe",operator), mode: 0o644 },
     { path: nativeInstallation + "/expected-helper-policy.json", source: join(artifact,"expected-helper-policy.json"), mode: 0o644 },
     { path: nativeInstallation + "/native-root-client", source: binaries[3]!, mode: 0o700 },
   ];
@@ -265,7 +272,7 @@ export function assembleRetainedV2Newtest(candidate: string, artifact: string, a
     const bytes = measured(row.source); files.push({ path: row.path, bytes: bytes.length, mode: row.mode, sha256: digest(bytes) }); admitted.push({ row, bytes });
   }
   if (![daemonUid, daemonGid].every(v => Number.isInteger(v) && v >= 0 && v <= 0xffffffff)) throw new Error("invalid original daemon identity");
-  const manifest = { version: 1, profile: "NativeRetainedV2A1", daemonUid, daemonGid, files };
+  const manifest = { version: 1, profile: actors?"NativeRetainedV2B1a":"NativeRetainedV2A1", daemonUid, daemonGid, files };
   if (Buffer.byteLength(retainedResourceCanonicalJson(manifest)) > 65536) throw new Error("installation manifest capacity");
   for (const { row, bytes } of admitted) {
     if (!row.path.startsWith(nativeInstallation + "/")) continue;

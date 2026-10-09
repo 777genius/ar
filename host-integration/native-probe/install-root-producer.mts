@@ -50,14 +50,21 @@ export function installOriginalCandidate(): void {
   process.stdout.write(JSON.stringify({installationDigest:retainedResourceDigest(m),files:m.files.length,authorityIssued:false})+"\n");
 }
 export function installRetainedV2Candidate(): void {
-  const target="/opt/subscription-runtime/native-retained-v2",candidate=join(target,"source-candidate");
-  if(process.argv.length!==3||process.argv[2]!=="--retained-v2-a1"||process.getuid?.()!==0||process.getgid?.()!==0)throw new Error("fixed Root-only candidate installation required");
+  installRetainedCandidate(false);
+}
+export function installRetainedV2ActorCandidate(): void {
+  installRetainedCandidate(true);
+}
+function installRetainedCandidate(actors: boolean): void {
+  const target=actors?"/opt/subscription-runtime/native-retained-v2-b1a":"/opt/subscription-runtime/native-retained-v2",candidate=join(target,"source-candidate");
+  const profile=actors?"NativeRetainedV2B1a":"NativeRetainedV2A1";
+  if(process.argv.length!==3||process.argv[2]!==(actors?"--retained-v2-b1a":"--retained-v2-a1")||process.getuid?.()!==0||process.getgid?.()!==0)throw new Error("fixed Root-only candidate installation required");
   protectedAncestors(join(candidate,"manifest.json"));
   const raw=readFileSync(join(candidate,"manifest.json"));
   if(raw.length>65536)throw new Error("candidate manifest capacity");
-  const m=JSON.parse(raw.toString("utf8")) as Omit<CandidateManifest,"profile"> & {readonly profile:"NativeRetainedV2A1"};
-  if(Object.keys(m).sort().join(",")!=="daemonGid,daemonUid,files,profile,version"||![m.daemonUid,m.daemonGid].every(value=>Number.isSafeInteger(value)&&value>=0&&value<=0xffffffff)||m.version!==1||m.profile!=="NativeRetainedV2A1"||!Array.isArray(m.files)||m.files.length<7||m.files.length>128)throw new Error("invalid candidate manifest");
-  const required=[join(target,"retained-v2-entry"),join(target,"test-root/opt/native/node"),join(target,"test-root/opt/native/original-owner-helper.mjs"),join(target,"test-root/opt/native/original-owner-associated.node"),"/usr/bin/dbus-daemon",join(target,"admin/host-integration/native-probe/retained-v2-operator.mjs"),join(target,"expected-helper-policy.json")];
+  const m=JSON.parse(raw.toString("utf8")) as Omit<CandidateManifest,"profile"> & {readonly profile:"NativeRetainedV2A1"|"NativeRetainedV2B1a"};
+  if(Object.keys(m).sort().join(",")!=="daemonGid,daemonUid,files,profile,version"||![m.daemonUid,m.daemonGid].every(value=>Number.isSafeInteger(value)&&value>=0&&value<=0xffffffff)||m.version!==1||m.profile!==profile||!Array.isArray(m.files)||m.files.length<7||m.files.length>128)throw new Error("invalid candidate manifest");
+  const required=[join(target,actors?"retained-v2-actor-entry":"retained-v2-entry"),join(target,"test-root/opt/native/node"),join(target,"test-root/opt/native/original-owner-helper.mjs"),join(target,"test-root/opt/native/original-owner-associated.node"),"/usr/bin/dbus-daemon",join(target,"admin/host-integration/native-probe",actors?"retained-v2-actor-operator.mjs":"retained-v2-operator.mjs"),join(target,"expected-helper-policy.json")];
   if(required.some((path,index)=>m.files[index]?.path!==path))throw new Error("missing fixed retained V2 cohort");
   const seen=new Set<string>(),admitted:Array<{file:InstallationFile;source:string;bytes:Buffer}>=[];
   for(const file of m.files){
@@ -87,4 +94,4 @@ export function installRetainedV2Candidate(): void {
   // and private NEWTEST operation directory only after reviewing these hashes.
   process.stdout.write(JSON.stringify({installationDigest:retainedResourceDigest(m),files:m.files.length,authorityIssued:false})+"\n");
 }
-if(resolve(process.argv[1]??"")===fileURLToPath(import.meta.url))try{if(process.argv[2]==="--retained-v2-a1")installRetainedV2Candidate();else installOriginalCandidate();}catch(error){process.stderr.write(String(error)+"\n");process.exitCode=77;}
+if(resolve(process.argv[1]??"")===fileURLToPath(import.meta.url))try{if(process.argv[2]==="--retained-v2-a1")installRetainedV2Candidate();else if(process.argv[2]==="--retained-v2-b1a")installRetainedV2ActorCandidate();else installOriginalCandidate();}catch(error){process.stderr.write(String(error)+"\n");process.exitCode=77;}

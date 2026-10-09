@@ -137,6 +137,23 @@ try {
   for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(retainedAdmin,"src/core",name));
   await copyFile(join(build,"package.json"),join(retainedAdmin,"package.json"));
   await writeFile(join(retainedCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2A1",closed:true,source:false,work:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
+  // B1a is a separate effect-closed actor tuple. No old permit or A1 resource
+  // evidence qualifies these new fork/scope/freezer effects.
+  const actorEntry=join(temporary,"retained-v2-actor-entry"),actorTest=join(temporary,"retained-v2-actor-test");
+  const actorSources=[...retainedSources,...["retained-v2-actors.c","retained-v2-actor-manager.c","retained-v2-actor-census.c","original-birth-interlock.c"].map(file=>join(native,file))];
+  const actorFlags=[...associated,"-DNP_RETAINED_V2_A1","-DNP_RETAINED_V2_B1A"];
+  await run("/usr/bin/cc",[...actorFlags,...actorSources,join(native,"retained-v2-actor-entry.c"),"-Wl,-l:libsystemd.so.0","-o",actorEntry]);
+  await run("/usr/bin/cc",[...actorFlags,...actorSources,join(native,"retained-v2-actor-test.c"),"-Wl,-l:libsystemd.so.0","-o",actorTest]);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/retained-v2-actor-contracts.test.mjs")],{NP_RETAINED_V2_ACTOR_ENTRY:actorEntry,NP_RETAINED_V2_ACTOR_TEST:actorTest});
+  const actorCandidate=join(evidence,`${attempt}-retained-v2-b1a-source-candidate`);await mkdir(actorCandidate,{mode:0o700});
+  for(const [from,name] of [[actorEntry,"retained-v2-actor-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(actorCandidate,name!));
+  await copyFile(join(retainedCandidate,"expected-helper-policy.json"),join(actorCandidate,"expected-helper-policy.json"));
+  const actorAdmin=join(actorCandidate,"admin");await mkdir(join(actorAdmin,"host-integration/native-probe"),{recursive:true});await mkdir(join(actorAdmin,"src/core"),{recursive:true});
+  for(const name of ["retained-v2-actor-operator.mjs","retained-v2-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(actorAdmin,"host-integration/native-probe",name));
+  for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(actorAdmin,"src/core",name));
+  await copyFile(join(build,"package.json"),join(actorAdmin,"package.json"));
+  await writeFile(join(actorCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2B1a",closed:true,source:false,work:false,actorAdmission:false,enqueue:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
+  await writeFile(join(actorCandidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(actorCandidate)},null,2)+"\n",{flag:"wx"});
   const admin = join(candidate,"admin");await mkdir(admin,{recursive:true});
   // Preserve the compiler's import layout; each actual emitted leaf is in the
   // retained candidate inventory and the checked source input graph.
