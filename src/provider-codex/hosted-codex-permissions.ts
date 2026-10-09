@@ -115,6 +115,12 @@ export function hostedCodexResolverReadPaths(
   return [target];
 }
 
+/** Host credential directories hidden from hosted tools. Directories only: Codex 0.159.2 cannot start a
+ * sandbox that masks more than one file, and nested masks are not used. */
+export const hostedCredentialDenyDirectories: readonly string[] = Object.freeze([
+  "/etc/subscription-runtime", "/etc/ssh", "/etc/ssl/private",
+]);
+
 export function hostedCodexPermissionProfilesToml(
   policy: CodexProviderEgressPolicy,
   executableReadPath?: string,
@@ -147,13 +153,12 @@ export function hostedCodexPermissionProfilesToml(
   const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
     .filter((path): path is string => path !== undefined))]
     .map(path => `${JSON.stringify(path)} = "read"`);
-  const privateRoot = "/etc/subscription-runtime/secrets";
   if (privateKeyFilePath && !isAbsolute(privateKeyFilePath)) {
     throw new Error("hosted_permission_private_key_path_invalid");
   }
   const privateFile = privateKeyFilePath ? resolve(privateKeyFilePath) : undefined;
-  const privateRules = [privateRoot, ...(privateFile &&
-    privateFile !== privateRoot && !privateFile.startsWith(`${privateRoot}/`)
+  const privateRules = [...hostedCredentialDenyDirectories, ...(privateFile &&
+    !hostedCredentialDenyDirectories.some(dir => privateFile === dir || privateFile.startsWith(`${dir}/`))
     ? [privateFile] : [])]
     .map(path => `${JSON.stringify(path)} = "deny"`);
   return [
