@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, chownSync, lc
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { capturePythonEnvelope, parsePythonEnvelopeCatalog, parsePythonEnvelopeElf, validatePythonEnvelopeLoader, validatePythonEnvelope,
+import { captureFixedSignedPythonEnvelopeData, parseFixedSignedPythonEnvelopeDataCatalog, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, capturePythonEnvelope, parsePythonEnvelopeCatalog, parsePythonEnvelopeElf, validatePythonEnvelopeLoader, validatePythonEnvelope,
  PythonBackend, PythonEnvelopeKind, type CapturedEnvelope, type EnvelopeEntry, type ElfFacts, type PythonEnvelopeCatalog, type ReviewAuthority } from "./dependency-full-python-envelope-TEST.ts";
 if(process.env.TEST_PYTHON_ENVELOPE_ROOT_CI==="1"){
  assert.equal(process.platform,"linux","root CI requires Linux");assert.equal(process.getuid?.(),0,"root CI requires uid0");assert.equal(process.geteuid?.(),0,"root CI requires euid0");
@@ -180,4 +180,60 @@ test("alias literal size participates in file bound and largest-file measurement
   assert.throws(()=>capturePythonEnvelope(root,packages,{...budget,fileBytes:Buffer.byteLength(literal)-1}),/alias length\/file limit/);
   fixtureAlias("json.py",root+"/usr/lib/python3.12/shadow.pyc");assert.throws(()=>capturePythonEnvelope(root,packages,budget),/competing bytecode\/archive/);
  }finally{rmSync(root,{recursive:true});}
+});
+
+// Independently retained signed libpython3.12-minimal DATA fixture, never executed.
+const fixedSiteSource=Buffer.from("# install the apport exception handler if available\ntry:\n    import apport_python_hook\nexcept ImportError:\n    pass\nelse:\n    apport_python_hook.install()\n");
+const fixedSignedPackages=Object.freeze([{package:"libpython3.12-minimal",version:"3.12.3-1ubuntu0.17",arch:"amd64" as const,sha256:"d646ad7112b5adec21ba0e1af015f04ae8ca7f5efdc619622547dd6673c4c14b",size:838536}]);
+function fixedDataCatalogFixture():PythonEnvelopeCatalog {
+ assert.equal(fixedSiteSource.length,155);assert.equal(hash(fixedSiteSource),"43d81125d92376b1a69d53a71126a041cc9a18d8080e92dea0a2ae23be138b1e");
+ const target="/etc/python3.12/sitecustomize.py";
+ const entries=[{...row("/etc"),mode:0o755},{...row("/etc/python3.12"),mode:0o755},
+ {...row(target,PythonEnvelopeKind.Source,155),mode:0o644,sha256:hash(fixedSiteSource)},
+ row("/usr/lib"),row("/usr/lib/python3.12"),{...row("/usr/lib/python3.12/sitecustomize.py",PythonEnvelopeKind.Alias,32,target),sha256:hash(Buffer.from(target))},
+ row("/usr/lib64"),row("/usr/bin/python3.12",PythonEnvelopeKind.Elf)].sort((a,b)=>a.path<b.path?-1:1);
+ return {schemaVersion:1,packages:fixedSignedPackages,entries};
+}
+test("fixed signed DATA catalog admits only exact sitecustomize source and preserves original namespace refusal",()=>{
+ const fixture=fixedDataCatalogFixture(),bytes=Buffer.from(JSON.stringify(fixture));assert.equal(parseFixedSignedPythonEnvelopeDataCatalog(bytes,hash(bytes),budget).entries.length,8);
+ assert.throws(()=>parsePythonEnvelopeCatalog(bytes,hash(bytes),budget),/catalog path order/);
+ const source="/etc/python3.12/sitecustomize.py",alias="/usr/lib/python3.12/sitecustomize.py";
+ const edits=[fixture.entries.filter(e=>e.path!==source),[...fixture.entries,row("/etc/other.py",PythonEnvelopeKind.Source)],
+ fixture.entries.map(e=>e.path===source?{...e,sha256:"a".repeat(64)}:e),fixture.entries.map(e=>e.path==="/etc"?{...e,mode:0o555}:e),
+ fixture.entries.map(e=>e.path===alias?{...e,target:"/etc/other.py"}:e),fixture.entries.map(e=>e.path===alias?{...e,sha256:"b".repeat(64)}:e),
+ fixture.entries.map(e=>e.path===source?{...e,kind:PythonEnvelopeKind.Data}:e),[...fixture.entries,fixture.entries[0]!]];
+ for(const entries of edits){const b=Buffer.from(JSON.stringify({...fixture,entries:entries.slice().sort((a,b)=>a.path<b.path?-1:1)}));assert.throws(()=>parseFixedSignedPythonEnvelopeDataCatalog(b,hash(b),budget),/Held/);}
+ for(const changed of [{...fixedSignedPackages[0]!,version:"3.12.3-1ubuntu0.18"},{...fixedSignedPackages[0]!,sha256:"c".repeat(64)}]){const b=Buffer.from(JSON.stringify({...fixture,packages:[changed]}));assert.throws(()=>parseFixedSignedPythonEnvelopeDataCatalog(b,hash(b),budget),/fixed DATA signed source package/);}
+ assert.throws(()=>parseFixedSignedPythonEnvelopeDataCatalog(bytes,"d".repeat(64),budget),/commitment/);
+});
+test("complete fixed DATA serialization measures exact bytes and holds one-byte excess without publishing partial catalog",()=>{
+ const fixture=fixedDataCatalogFixture(),expected=Buffer.from(JSON.stringify(fixture)),exact={...budget,catalogBytes:expected.length};
+ const accepted=serializeFixedSignedPythonEnvelopeData(fixture,exact);assert.equal(accepted.status,PythonDataCatalogStatus.Captured);assert(accepted.bytes?.equals(expected));
+ assert.deepEqual(accepted.measurement,{serializedBytes:expected.length,sha256:hash(expected),entries:8,packages:1,kindCounts:{directory:5,source:1,elf:1,alias:1,data:0}});
+ const held=serializeFixedSignedPythonEnvelopeData(fixture,{...exact,catalogBytes:expected.length-1});assert.equal(held.status,PythonDataCatalogStatus.CapacityHeld);assert.equal(held.bytes,null);assert.deepEqual(held.measurement,accepted.measurement);
+ assert.throws(()=>parseFixedSignedPythonEnvelopeDataCatalog(expected,hash(expected),{...exact,catalogBytes:expected.length-1}),/catalog byte limit/);
+});
+function fixedDataPhysicalFixture():string {
+ const root=nativeFixture();for(const path of ["/etc","/etc/python3.12"]){mkdirSync(root+path);chownSync(root+path,0,0);chmodSync(root+path,0o755);}
+ const target=root+"/etc/python3.12/sitecustomize.py";writeFileSync(target,fixedSiteSource);chownSync(target,0,0);chmodSync(target,0o644);fixtureAlias("/etc/python3.12/sitecustomize.py",root+"/usr/lib/python3.12/sitecustomize.py");return root;
+}
+test("ROOT fixed DATA census pins exact signed site target and excludes arbitrary etc content",{skip:nativeSkip},()=>{
+ const root=fixedDataPhysicalFixture();try{
+  assert.throws(()=>capturePythonEnvelope(root,fixedSignedPackages,budget),/alias escape/);
+  const captured=captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget);assert.equal(captured.elf.size,1);assert.deepEqual(captured.catalog.entries.filter(e=>e.path.startsWith("/etc")).map(e=>e.path),["/etc","/etc/python3.12","/etc/python3.12/sitecustomize.py"]);
+  const serialized=serializeFixedSignedPythonEnvelopeData(captured.catalog,budget);assert.equal(serialized.status,PythonDataCatalogStatus.Captured);assert(serialized.bytes);assert.deepEqual(parseFixedSignedPythonEnvelopeDataCatalog(serialized.bytes,serialized.measurement.sha256,budget),captured.catalog);
+  fixtureFile(root+"/etc/unknown.py",Buffer.from("not admitted"));const again=captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget);assert.deepEqual(again.catalog,captured.catalog);
+  writeFileSync(root+"/etc/python3.12/sitecustomize.py",Buffer.from("changed"));assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget),/fixed DATA source/);
+  writeFileSync(root+"/etc/python3.12/sitecustomize.py",fixedSiteSource);rmSync(root+"/etc/python3.12/sitecustomize.py");assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget));
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
+test("ROOT fixed DATA census refuses ancestor aliases unknown raw literals and wrong signed provider",{skip:nativeSkip},()=>{
+ const root=fixedDataPhysicalFixture();try{
+  const alias=root+"/usr/lib/python3.12/sitecustomize.py";
+  for(const target of ["/etc/other.py","../python3.12/sitecustomize.py",Buffer.from([47,101,116,99,47,255])]){rmSync(alias);symlinkSync(target,alias);lchownSync(alias,0,0);assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget),/Held/);}
+  rmSync(alias);fixtureAlias("/etc/python3.12/sitecustomize.py",alias);assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,packages,budget),/fixed DATA signed source package/);
+  chmodSync(root+"/etc",0o555);assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget),/ancestor custody/);chmodSync(root+"/etc",0o755);
+  linkSync(root+"/etc/python3.12/sitecustomize.py",root+"/etc/extra-hardlink.py");assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget),/hardlink/);rmSync(root+"/etc/extra-hardlink.py");
+  rmSync(root+"/etc/python3.12",{recursive:true});fixtureAlias("/usr/lib/python3.12",root+"/etc/python3.12");assert.throws(()=>captureFixedSignedPythonEnvelopeData(root,fixedSignedPackages,budget),/ancestor custody/);
+ }finally{rmSync(root,{recursive:true,force:true});}
 });

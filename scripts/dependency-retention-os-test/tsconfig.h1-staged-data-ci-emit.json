@@ -20,6 +20,10 @@
     "../../host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts",
     "../../host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts",
     "../../host-integration/managed-launcher/dependency-full-native-TEST.ts",
-    "../../host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts"
+    "../../host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts",
+    "../../host-integration/managed-launcher/launch.mjs",
+    "../../host-integration/managed-launcher/payload-guard.mjs",
+    "../../host-integration/managed-launcher/profiles.mjs",
+    "../../host-integration/host-jobs/storage-policy.mjs"
   ]
 }

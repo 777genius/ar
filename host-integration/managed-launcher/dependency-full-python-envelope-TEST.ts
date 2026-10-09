@@ -6,7 +6,7 @@ import { posix } from "node:path";
 import { types } from "node:util";
 
 export enum PythonEnvelopeKind { Directory="directory", Source="source", Elf="elf", Alias="alias", Data="data" }
-enum EnvelopeLocation { SignedExtraction="signed-extraction", OriginalNamespace="original-namespace" }
+enum EnvelopeLocation { SignedExtraction="signed-extraction", OriginalNamespace="original-namespace", FixedSignedData="fixed-signed-data" }
 export enum PythonBackend { OpenSsl3="openssl3", BuiltinSha256="builtin-sha256" }
 export interface EnvelopeLimits { readonly entries:number; readonly bytes:number; readonly fileBytes:number; readonly depth:number; readonly elapsedMs:number; readonly catalogBytes:number }
 export interface SignedPackage { readonly package:string; readonly version:string; readonly arch:"amd64"|"all"; readonly sha256:string; readonly size:number }
@@ -30,6 +30,24 @@ function safePath(path:string):void {requireThat(path.startsWith("/") && path.le
 function noBytecodeArchive(path:string):void {requireThat(!/\.(?:pyc|pyo|zip)$/.test(path),"competing bytecode/archive");}
 function under(path:string,root:string):boolean{return path===root||path.startsWith(root+"/");}
 function member(path:string):boolean{return roots.some(root=>under(path,root));}
+// Fixed signed-extraction DATA coverage only. These paths never expand original namespace authority.
+const dataAncestors=Object.freeze(["/etc","/etc/python3.12"]);
+const dataSource="/etc/python3.12/sitecustomize.py",dataAlias="/usr/lib/python3.12/sitecustomize.py";
+const dataSourceSha="43d81125d92376b1a69d53a71126a041cc9a18d8080e92dea0a2ae23be138b1e";
+const dataLiteralSha="32f1de153f7e1e3f9b543ada197eb2630524868b92869513a393775d30c77cbd";
+function dataMember(path:string):boolean{return member(path)||dataAncestors.includes(path)||path===dataSource;}
+function fixedDataPackages(packages:readonly SignedPackage[]):void {
+ const source=packages.find(row=>row.package==="libpython3.12-minimal");
+ requireThat(source?.version==="3.12.3-1ubuntu0.17"&&source.arch==="amd64"&&source.sha256==="d646ad7112b5adec21ba0e1af015f04ae8ca7f5efdc619622547dd6673c4c14b"&&source.size===838536,"fixed DATA signed source package");
+}
+function fixedDataCatalog(catalog:PythonEnvelopeCatalog):void {
+ fixedDataPackages(catalog.packages);const rows=new Map(catalog.entries.map(row=>[row.path,row]));
+ for(const path of dataAncestors){const row=rows.get(path);requireThat(row?.kind===PythonEnvelopeKind.Directory&&row.mode===0o755&&row.bytes===0&&row.sha256===sha("")&&row.target==="","fixed DATA ancestor");}
+ const source=rows.get(dataSource),alias=rows.get(dataAlias);
+ requireThat(source?.kind===PythonEnvelopeKind.Source&&source.mode===0o644&&source.bytes===155&&source.sha256===dataSourceSha&&source.target==="","fixed DATA source");
+ requireThat(alias?.kind===PythonEnvelopeKind.Alias&&alias.mode===0o555&&alias.bytes===32&&alias.sha256===dataLiteralSha&&alias.target===dataSource,"fixed DATA literal");
+ for(const row of catalog.entries){requireThat(dataMember(row.path),"fixed DATA path");if(row.kind===PythonEnvelopeKind.Alias){requireThat(member(row.target)||(row.path===dataAlias&&row.target===dataSource),"fixed DATA alias escape");const target=rows.get(aliasTarget(row.path,rows));requireThat(target,"fixed DATA alias target");if(row.path.endsWith(".py"))requireThat(target.kind===PythonEnvelopeKind.Source,"source alias type");if(/\.so(?:\.[A-Za-z0-9_.+-]+)?$/.test(row.path))requireThat(target.kind===PythonEnvelopeKind.Elf,"extension alias type");}}
+}
 function fields(value:unknown,keys:readonly string[]):Record<string,unknown>{
  requireThat(value!==null && typeof value==="object" && !types.isProxy(value) && Object.getPrototypeOf(value)===Object.prototype,"data object");
  const descriptors=Object.getOwnPropertyDescriptors(value); requireThat(Reflect.ownKeys(descriptors).length===keys.length,"data keys");
@@ -47,19 +65,27 @@ function packageRows(rows:unknown):readonly SignedPackage[]{
 }
 /** Trust comes from original review's exact independently issued digest, not this parser. */
 export function parsePythonEnvelopeCatalog(bytes:Buffer,expectedSha256:string,bounds:EnvelopeLimits):PythonEnvelopeCatalog {
+ return parseCatalog(EnvelopeLocation.SignedExtraction,bytes,expectedSha256,bounds);
+}
+/** DATA parser does not authenticate origin or grant a native namespace capability. */
+export function parseFixedSignedPythonEnvelopeDataCatalog(bytes:Buffer,expectedSha256:string,bounds:EnvelopeLimits):PythonEnvelopeCatalog {
+ return parseCatalog(EnvelopeLocation.FixedSignedData,bytes,expectedSha256,bounds);
+}
+function parseCatalog(location:EnvelopeLocation,bytes:Buffer,expectedSha256:string,bounds:EnvelopeLimits):PythonEnvelopeCatalog {
+ const includes=location===EnvelopeLocation.FixedSignedData?dataMember:member;
  limits(bounds);const started=process.hrtime.bigint();const tick=()=>requireThat(process.hrtime.bigint()-started<BigInt(bounds.elapsedMs)*1000000n,"catalog deadline");tick();requireThat(bytes.length<=bounds.catalogBytes,"catalog byte limit");requireThat(digest(expectedSha256)&&sha(bytes)===expectedSha256,"catalog commitment");
  // A bounded original reader must supply these bytes; entry bound additionally rejects huge JSON lists.
  tick();const parsed=JSON.parse(bytes.toString("utf8")) as unknown;tick();const r=fields(parsed,["schemaVersion","packages","entries"]);
  requireThat(r.schemaVersion===1&&Array.isArray(r.entries)&&r.entries.length>0&&r.entries.length<=bounds.entries,"catalog schema/count");
  requireThat(Array.isArray(r.packages)&&r.packages.length<=bounds.entries,"package count");const packages=packageRows(r.packages);let prior="",total=0;
  const entries=r.entries.map((value:unknown)=>{tick();const row=fields(value,["path","kind","mode","bytes","sha256","target"]);
- requireThat(typeof row.path==="string"&&member(row.path)&&row.path>prior,"catalog path order");safePath(row.path);noBytecodeArchive(row.path);prior=row.path;
+ requireThat(typeof row.path==="string"&&includes(row.path)&&row.path>prior,"catalog path order");safePath(row.path);noBytecodeArchive(row.path);prior=row.path;
  requireThat(Object.values(PythonEnvelopeKind).includes(row.kind as PythonEnvelopeKind)&&integer(row.mode)&&row.mode<=0o7777&&!(row.mode&0o022)&&integer(row.bytes)&&row.bytes<=bounds.fileBytes&&digest(row.sha256)&&typeof row.target==="string","catalog row");
  total+=row.bytes;requireThat(Number.isSafeInteger(total)&&total<=bounds.bytes,"catalog byte limit");
- if(row.kind===PythonEnvelopeKind.Alias){safePath(row.target);requireThat(member(row.target),"alias escape");}else requireThat(row.target==="","unexpected alias target");
+ if(row.kind===PythonEnvelopeKind.Alias){safePath(row.target);requireThat(member(row.target)||(location===EnvelopeLocation.FixedSignedData&&row.path===dataAlias&&row.target===dataSource),"alias escape");}else requireThat(row.target==="","unexpected alias target");
  if(row.kind===PythonEnvelopeKind.Directory)requireThat(row.bytes===0&&row.sha256===sha(Buffer.alloc(0)),"directory catalog");
  return Object.freeze({path:row.path,kind:row.kind as PythonEnvelopeKind,mode:row.mode,bytes:row.bytes,sha256:row.sha256,target:row.target});});
- tick();return Object.freeze({schemaVersion:1,packages,entries:Object.freeze(entries)});
+ tick();const catalog:PythonEnvelopeCatalog=Object.freeze({schemaVersion:1,packages,entries:Object.freeze(entries)});if(location===EnvelopeLocation.FixedSignedData)fixedDataCatalog(catalog);tick();return catalog;
 }
 const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 function metadata(s:BigIntStats,device:bigint):void {requireThat(s.dev===device&&s.uid===0n&&s.gid===0n&&(s.isSymbolicLink()||!(s.mode&0o022n)),"metadata/mount/owner");if(!s.isDirectory())requireThat(s.nlink===1n,"hardlink");}
@@ -77,14 +103,30 @@ export interface CapturedEnvelope { readonly catalog:PythonEnvelopeCatalog; read
 export function capturePythonEnvelope(prefix:string,packages:readonly SignedPackage[],bounds:EnvelopeLimits):CapturedEnvelope {
  safePath(prefix);return captureEnvelope(EnvelopeLocation.SignedExtraction,prefix,packages,bounds);
 }
+/** Only the fixed CI signed-extraction DATA producer calls this distinct role.
+ * It covers no other /etc member and leaves live original namespace rules unchanged. */
+export function captureFixedSignedPythonEnvelopeData(prefix:string,packages:readonly SignedPackage[],bounds:EnvelopeLimits):CapturedEnvelope {
+ safePath(prefix);requireThat(process.platform==="linux","fixed DATA Linux anchored reader");return captureEnvelope(EnvelopeLocation.FixedSignedData,prefix,packages,bounds);
+}
+export enum PythonDataCatalogStatus { Captured="captured-DATA-only", CapacityHeld="catalog-capacity-HOLD" }
+export interface PythonDataCatalogSerialization { readonly status:PythonDataCatalogStatus;readonly bytes:Buffer|null;readonly measurement:Readonly<{serializedBytes:number;sha256:string;entries:number;packages:number;kindCounts:Readonly<Record<PythonEnvelopeKind,number>>}> }
+/** Serialize the complete deterministic DATA catalog once. Over-cap bytes are never published as a candidate. */
+export function serializeFixedSignedPythonEnvelopeData(catalog:PythonEnvelopeCatalog,bounds:EnvelopeLimits):PythonDataCatalogSerialization {
+ limits(bounds);const started=process.hrtime.bigint();const tick=()=>requireThat(process.hrtime.bigint()-started<BigInt(bounds.elapsedMs)*1000000n,"DATA serialization deadline");tick();fixedDataCatalog(catalog);tick();
+ const bytes=Buffer.from(JSON.stringify(catalog)),sha256=sha(bytes);tick();
+ const kindCounts:Record<PythonEnvelopeKind,number>={[PythonEnvelopeKind.Directory]:0,[PythonEnvelopeKind.Source]:0,[PythonEnvelopeKind.Elf]:0,[PythonEnvelopeKind.Alias]:0,[PythonEnvelopeKind.Data]:0};for(const row of catalog.entries){tick();kindCounts[row.kind]++;}
+ const measurement=Object.freeze({serializedBytes:bytes.length,sha256,entries:catalog.entries.length,packages:catalog.packages.length,kindCounts:Object.freeze(kindCounts)});
+ if(bytes.length>bounds.catalogBytes){tick();return Object.freeze({status:PythonDataCatalogStatus.CapacityHeld,bytes:null,measurement});}
+ parseFixedSignedPythonEnvelopeDataCatalog(bytes,sha256,bounds);tick();return Object.freeze({status:PythonDataCatalogStatus.Captured,bytes,measurement});
+}
 function captureEnvelope(location:EnvelopeLocation,prefix:string,packages:readonly SignedPackage[],bounds:EnvelopeLimits):CapturedEnvelope {
- requireThat(location===EnvelopeLocation.SignedExtraction||location===EnvelopeLocation.OriginalNamespace,"root location");
+ requireThat(location===EnvelopeLocation.SignedExtraction||location===EnvelopeLocation.OriginalNamespace||location===EnvelopeLocation.FixedSignedData,"root location");
  requireThat(location===EnvelopeLocation.OriginalNamespace?prefix==="":prefix!=="","root role");limits(bounds);if(prefix!=="")safePath(prefix);requireThat(packages.length<=bounds.entries,"package count");const base=lstatSync(prefix||"/",{bigint:true});requireThat(base.isDirectory()&&base.uid===0n&&base.gid===0n&&!(base.mode&0o022n),"prefix custody");const signed=packageRows(packages),device=base.dev;
  const start=process.hrtime.bigint();let count=0,total=0,largest=0,depth=0;const entries:EnvelopeEntry[]=[],elf=new Map<string,ElfFacts>();
  const tick=()=>requireThat(process.hrtime.bigint()-start<BigInt(bounds.elapsedMs)*1000000n,"census deadline");
- function walk(path:string,level:number):void {
+ function walk(path:string,level:number,namedOverride?:string):void {
  tick();requireThat(++count<=bounds.entries&&level<=bounds.depth,"census entry/depth limit");depth=Math.max(depth,level);safePath(path);noBytecodeArchive(path);
- const named=prefix+path,before=lstatSync(named,{bigint:true});metadata(before,device);const mode=Number(before.mode&0o7777n);
+ const named=namedOverride??prefix+path,before=lstatSync(named,{bigint:true});metadata(before,device);const mode=Number(before.mode&0o7777n);
  if(before.isDirectory()){
   entries.push(Object.freeze({path,kind:PythonEnvelopeKind.Directory,mode,bytes:0,sha256:sha(Buffer.alloc(0)),target:""}));
   const fd=openSync(named,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{
@@ -93,8 +135,9 @@ function captureEnvelope(location:EnvelopeLocation,prefix:string,packages:readon
   }finally{closeSync(fd);}return;
  }
  if(before.isSymbolicLink()){
-  const literal=readlinkSync(named);tick();const aliasBytes=Buffer.byteLength(literal);requireThat(aliasBytes<=4096&&aliasBytes<=bounds.fileBytes,"alias length/file limit");largest=Math.max(largest,aliasBytes);
-  const target=literal.startsWith("/")?literal:posix.resolve(posix.dirname(path),literal);safePath(target);requireThat(member(target),"alias escape");
+  const raw=location===EnvelopeLocation.FixedSignedData?readlinkSync(named,{encoding:"buffer"}):null;
+  const literal=raw===null?readlinkSync(named):raw.toString("utf8");if(raw!==null)requireThat(Buffer.from(literal).equals(raw),"alias literal encoding");tick();const aliasBytes=raw===null?Buffer.byteLength(literal):raw.length;requireThat(aliasBytes<=4096&&aliasBytes<=bounds.fileBytes,"alias length/file limit");largest=Math.max(largest,aliasBytes);
+  const target=literal.startsWith("/")?literal:posix.resolve(posix.dirname(path),literal);safePath(target);requireThat(member(target)||(location===EnvelopeLocation.FixedSignedData&&path===dataAlias&&target===dataSource&&raw!==null&&raw.equals(Buffer.from(dataSource))),"alias escape");
   requireThat(tuple(lstatSync(named,{bigint:true}))===tuple(before),"alias replacement");
   entries.push(Object.freeze({path,kind:PythonEnvelopeKind.Alias,mode:0o555,bytes:Buffer.byteLength(literal),sha256:sha(literal),target}));total+=Buffer.byteLength(literal);requireThat(total<=bounds.bytes,"total byte limit");return;
  }
@@ -105,8 +148,23 @@ function captureEnvelope(location:EnvelopeLocation,prefix:string,packages:readon
  else requireThat(!/\.so(?:\.[A-Za-z0-9_.+-]+)?$/.test(path),"non-ELF extension");
  const hashed=sha(bytes);tick();entries.push(Object.freeze({path,kind,mode,bytes:bytes.length,sha256:hashed,target:""}));
  }
- for(const root of roots)walk(root,1); entries.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);requireThat(tuple(lstatSync(prefix||"/",{bigint:true}))===tuple(base),"prefix replacement");tick();
- return Object.freeze({catalog:Object.freeze({schemaVersion:1,packages:signed,entries:Object.freeze(entries)}),measurement:Object.freeze({entries:count,bytes:total,largestFile:largest,depth}),elf});
+ const anchors:{fd:number;named:string;before:BigIntStats}[]=[];
+ try{
+ if(location===EnvelopeLocation.FixedSignedData){
+  fixedDataPackages(signed);const rootFd=openSync(prefix,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);anchors.push({fd:rootFd,named:prefix,before:base});requireThat(tuple(fstatSync(rootFd,{bigint:true}))===tuple(base),"fixed DATA root identity");
+  let parent=rootFd;for(const [index,path] of dataAncestors.entries()){
+   tick();const component=index===0?"etc":"python3.12",named=`/proc/self/fd/${parent}/${component}`,before=lstatSync(named,{bigint:true});metadata(before,device);requireThat(before.isDirectory()&&(before.mode&0o7777n)===0o755n,"fixed DATA ancestor custody");
+   const fd=openSync(named,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);anchors.push({fd,named:prefix+path,before});requireThat(tuple(fstatSync(fd,{bigint:true}))===tuple(before),"fixed DATA ancestor identity");parent=fd;
+   requireThat(++count<=bounds.entries&&index+1<=bounds.depth,"census entry/depth limit");depth=Math.max(depth,index+1);entries.push(Object.freeze({path,kind:PythonEnvelopeKind.Directory,mode:0o755,bytes:0,sha256:sha(""),target:""}));
+  }
+  walk(dataSource,3,`/proc/self/fd/${parent}/sitecustomize.py`);
+ }
+ for(const root of roots)walk(root,1);
+ for(const anchor of anchors){tick();requireThat(tuple(fstatSync(anchor.fd,{bigint:true}))===tuple(anchor.before)&&tuple(lstatSync(anchor.named,{bigint:true}))===tuple(anchor.before),"fixed DATA anchor replacement");}
+ }finally{for(const anchor of anchors.reverse())closeSync(anchor.fd);}
+ entries.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);requireThat(tuple(lstatSync(prefix||"/",{bigint:true}))===tuple(base),"prefix replacement");tick();
+ const catalog:PythonEnvelopeCatalog=Object.freeze({schemaVersion:1,packages:signed,entries:Object.freeze(entries)});if(location===EnvelopeLocation.FixedSignedData)fixedDataCatalog(catalog);tick();
+ return Object.freeze({catalog,measurement:Object.freeze({entries:count,bytes:total,largestFile:largest,depth}),elf});
 }
 /** Narrow ELF64 little-endian x86-64 parser. Unsupported audited/config/filter/auxiliary code-selection routes refuse. */
 export function parsePythonEnvelopeElf(bytes:Buffer):ElfFacts {
