@@ -231,9 +231,9 @@ jobs:
         run: test "$NATIVE_SOURCE_RESULT" = success
 
   observer-mount-tests:
-    # Qualify the existing runner's actual namespaces before any TEST workload.
-    # Unsupported capabilities fail this required check; guards stay unchanged.
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    # This native mount gate requires the stock Ubuntu VM namespace contract.
+    # Keep the shared ARC runner and its security policy unchanged.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -358,6 +358,11 @@ jobs:
           tar -xf /source.tar -C /native-probe-source-workspace/source
           cd /native-probe-source-workspace/source
           mkdir -p delivery/a0-native-probe
+          # Archive fixtures observe a real isolated tmux socket, never a mocked absence.
+          timeout --signal=TERM --kill-after=5s 90s apt-get update
+          timeout --signal=TERM --kill-after=5s 90s apt-get install --yes --no-install-recommends tmux=3.3a-3
+          dpkg-query --show --showformat='${Version}\n' tmux
+          tmux -V
           npm ci
           npm run typecheck:native-probe
           npm run typecheck:native-probe:root-source
