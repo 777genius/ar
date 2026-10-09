@@ -69,10 +69,10 @@ export async function prepareCodexProjectScopedAdmission(
   try {
     await assertAdmissionRegistryComplete({
       registryRootDir: input.registryRootDir,
-      controllerJobId: input.controllerJobId,
+      ...(input.controllerJobId === undefined ? {} : { controllerJobId: input.controllerJobId }),
       scope: input.scope,
       request: input.request,
-      binding: input.targetBinding,
+      ...(input.targetBinding === undefined ? {} : { binding: input.targetBinding }),
       summaries,
     });
   } catch (error) {
@@ -134,7 +134,7 @@ async function targetIdentity(
   if (binding?.start && input.request.operation === ProjectOperation.StartWorker) {
     const self = await admissionStartSelfIdentity({
       registryRootDir: input.registryRootDir,
-      controllerJobId: input.controllerJobId,
+      ...(input.controllerJobId === undefined ? {} : { controllerJobId: input.controllerJobId }),
       scope: input.scope,
       request: input.request,
       binding,
@@ -150,7 +150,7 @@ async function targetIdentity(
   } else if (binding?.createWorktree && input.request.operation === ProjectOperation.CreateWorktree) {
     canonicalPath = await admissionCreationTargetIdentity({
       registryRootDir: input.registryRootDir,
-      controllerJobId: input.controllerJobId,
+      ...(input.controllerJobId === undefined ? {} : { controllerJobId: input.controllerJobId }),
       scope: input.scope,
       request: input.request,
       binding,
@@ -159,7 +159,7 @@ async function targetIdentity(
   if (binding?.createManifest && input.request.operation === ProjectOperation.CreateJob) {
     canonicalPath = await admissionCreateJobTargetIdentity({
       registryRootDir: input.registryRootDir,
-      controllerJobId: input.controllerJobId,
+      ...(input.controllerJobId === undefined ? {} : { controllerJobId: input.controllerJobId }),
       scope: input.scope,
       request: input.request,
       binding,
@@ -307,7 +307,7 @@ function writerDebt(
     reason: ProjectDebtReason.ActiveWriterConflict,
     subject: entry.jobId,
     severity: "blocking",
-    affectedPaths: target.ownedPaths ? [...target.ownedPaths] : undefined,
+    ...(target.ownedPaths ? { affectedPaths: [...target.ownedPaths] } : {}),
     evidence: [
       entry.authority === "proved"
         ? `allocated writer overlaps target: ${entry.jobId}`

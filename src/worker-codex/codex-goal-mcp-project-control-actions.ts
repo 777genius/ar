@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   ProjectAdmissionWorkerRole,
   type ProjectAccessScope,
@@ -13,7 +14,7 @@ import {
   listCodexGoalAccountStatuses,
   type CodexGoalLaunchInput,
 } from "./codex-goal-ops";
-import { runDependencyBootstrap } from "./dependency-bootstrap";
+import { inspectDependencyBootstrap, runDependencyBootstrap } from "./dependency-bootstrap";
 import {
   type CodexGoalProjectCreateWorktreeInput,
   type CodexGoalProjectIntegrateCommitInput,
@@ -67,6 +68,7 @@ import {
   sameProjectPreStartContinuation,
 } from "./codex-goal-project-continuation-runtime";
 import {
+  assertProjectControlledRuntimeInPlaceContinuation,
   projectRuntimeContinuationCause,
   resolveProjectControlledRuntimeInPlaceContinuation,
 } from "./application/project-control/codex-goal-project-in-place-continuation";
@@ -94,6 +96,8 @@ import type {
 } from "./codex-goal-mcp-inputs";
 import { localCodexProjectSafeExecutionJournal } from "./codex-goal-project-safe-execution-journal";
 import {
+  assertCodexProjectReservedLaunchAuthority,
+  assertCodexProjectReservedAccountReceiptCurrent,
   codexProjectContinuationReservationInput,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
@@ -543,6 +547,12 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
               : authorizedContinuationWorkspaceMode));
       let result;
       try {
+        // Capture after bootstrap and supervisor reap, whose effects are intentional.
+        const publicationBaseline = await observeProjectPreStartContinuation({
+          manifest: loaded.manifest,
+          launch: loaded.launch,
+          ...(reviewedOutputId ? { reviewedOutputId } : {}),
+        });
         const broker = deps.codexProjectControlBroker({
           registryRootDir: controller.registryRootDir,
           controller: currentController,
@@ -556,6 +566,75 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             ? { startPendingInputPatchAdmission: pendingInputPatchAdmission }
             : {}),
           startWorkspaceLease: workspace,
+          revalidateStartPublication: async (currentWorkspace) => {
+            const freshController = await deps.loadProjectControlController(args);
+            const freshManifest = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: loaded.manifest.jobId });
+            const fresh = await loadProjectPreStartObservation(freshManifest, reviewedOutputId, controller.registryRootDir);
+            if (freshController.registryRootDir !== controller.registryRootDir ||
+              !isDeepStrictEqual(freshController.scope, controller.scope) ||
+              !isDeepStrictEqual(freshController.controller, currentController) ||
+              !isDeepStrictEqual(fresh.manifest, loaded.manifest) ||
+              !isDeepStrictEqual(fresh.launch, loaded.launch)) {
+              throw new Error("project_control_start_binding_changed_before_publication");
+            }
+            const observation = await observeProjectPreStartContinuation({
+              manifest: fresh.manifest,
+              launch: fresh.launch,
+              ...(reviewedOutputId ? { reviewedOutputId } : {}),
+            });
+            if (observation.workerAlive ||
+              (observation.status.workspaceDirty === true) !== (publicationBaseline.status.workspaceDirty === true) ||
+              observation.status.resultExists !== publicationBaseline.status.resultExists ||
+              !sameProjectPreStartContinuation(observation.decision, publicationBaseline.decision)) {
+              throw new Error("project_control_workspace_state_changed_before_start");
+            }
+            await assertProjectPreStartContinuationEvidence({
+              decision: lockedContinuationDecision, manifest: fresh.manifest, launch: canonicalLaunch,
+            });
+            if (reviewedContinuation) {
+              await assertReviewedWorkerOutputStillMatchesLocked(reviewedOutputDeps, reviewedContinuation, currentWorkspace.lease);
+              await assertReviewedWorkerContinuationEnvironmentLocked(reviewedOutputDeps, currentWorkspace.lease);
+            } else if (terminalRecovery) {
+              await verifyTerminalHandoffRecovery({
+                producer: fresh.manifest, workspacePath: currentWorkspace.canonicalWorkspacePath,
+                snapshotter: reviewedOutputDeps.snapshotter,
+                consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+                consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots, expected: terminalRecovery,
+              });
+              await assertReviewedWorkerContinuationEnvironmentLocked(reviewedOutputDeps, currentWorkspace.lease);
+            }
+            if (startAdmissionWorkspaceMode) {
+              await assertProjectPreStartAdmissionLaunchBinding({
+                manifest: fresh.manifest, scope: controller.scope, workspaceMode: startAdmissionWorkspaceMode,
+              });
+            } else {
+              const mode = await validateProjectRefillPreStartAdmissionLocked({
+                manifest: fresh.manifest, scope: controller.scope,
+                ...(freshAdmittedInputPatchCandidate ? { admittedInputPatch: true } : {}),
+              });
+              if (mode !== startAdmissionWorkspaceMode) throw new Error("project_control_start_admission_mode_changed");
+            }
+            if (pendingInputPatchAdmission) {
+              const pending = await readValidatedInputPatchWorkerLaunchSpec({ manifest: fresh.manifest, scope: controller.scope });
+              if (!isDeepStrictEqual(pending, pendingInputPatchAdmission)) throw new Error("project_control_start_input_patch_changed");
+            }
+            if (controlledRuntimeInPlaceContinuation) {
+              await assertProjectControlledRuntimeInPlaceContinuation({
+                manifest: fresh.manifest, scope: controller.scope,
+                workspacePath: currentWorkspace.canonicalWorkspacePath,
+                expected: controlledRuntimeInPlaceContinuation,
+              });
+            }
+            const dependencies = await inspectDependencyBootstrap(currentWorkspace.canonicalWorkspacePath, dependencyPreflight.mode);
+            assertProjectControlDependencyBootstrapReady(dependencies);
+            if (!isDeepStrictEqual(dependencies.fingerprintInputs, dependencyPreflight.fingerprintInputs) ||
+              !isDeepStrictEqual(dependencies.binaryChecks, dependencyPreflight.binaryChecks) ||
+              dependencies.environmentExists !== dependencyPreflight.environmentExists) {
+              throw new Error("project_control_dependency_environment_changed_before_start");
+            }
+            assertCodexProjectReservedLaunchAuthority({ manifest: fresh.manifest, sourceLaunch: continuationLaunch, reservedLaunch });
+            await assertCodexProjectReservedAccountReceiptCurrent({ manifest: fresh.manifest, reservedLaunch });
+          },
           startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           ...(reviewedContinuation ? { reviewedContinuation } : {}),
           ...(controlledRuntimeInPlaceContinuation
@@ -591,7 +670,10 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             }),
         });
       } catch (error) {
-        if (!(error instanceof ProjectControlSubmissionUncertainError)) {
+        let leafHeld = false;
+        try { leafHeld = workspace.lease.workspacePath === workspace.canonicalWorkspacePath; }
+        catch { /* Failed handoff: preserve the reservation for reconciliation. */ }
+        if (!(error instanceof ProjectControlSubmissionUncertainError) && leafHeld) {
           await releaseCodexProjectAccount({
             manifest: loaded.manifest,
             launch: reservedLaunch,

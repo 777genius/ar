@@ -12,6 +12,13 @@ export type ProjectControlWorkspaceLease = {
   readonly requestedWorkspacePath: string;
   readonly canonicalWorkspacePath: string;
   readonly lease: WorkspaceLock;
+  /** Explicit handoff: release leaf, take topology then reacquire leaf, and
+   * revalidate before publishing. The current lease getter follows that token. */
+  readonly withOrderedAdmissionPublication?: <T>(input: {
+    readonly registryRootDir: string;
+    readonly revalidate: (current: ProjectControlWorkspaceLease) => Promise<void>;
+    readonly effect: () => Promise<T>;
+  }) => Promise<T>;
 };
 
 export function projectControlWorkspaceLocks(
@@ -78,27 +85,57 @@ export async function withValidatedProjectWorkspaceLock<T>(input: {
   ) {
     throw new Error("project_control_workspace_real_path_changed");
   }
-  const lock = await input.locks.acquire({
+  let lock: WorkspaceLock | undefined = await input.locks.acquire({
     workspacePath: canonicalWorkspacePath,
     owner: input.owner,
   });
-  try {
+  let publicationActive = false;
+  let closed = false;
+  const assertCanonicalBinding = async (): Promise<void> => {
     const reboundWorkspacePath = await projectControlCanonicalWorkspacePath(
       input.requestedWorkspacePath,
       input.scope,
     );
     if (
-      lock.workspacePath !== canonicalWorkspacePath ||
+      !lock || lock.workspacePath !== canonicalWorkspacePath ||
       reboundWorkspacePath !== canonicalWorkspacePath
     ) {
       throw new Error("project_control_workspace_real_path_changed");
     }
-    return await input.effect({
-      requestedWorkspacePath: input.requestedWorkspacePath,
-      canonicalWorkspacePath,
-      lease: lock,
-    });
+  };
+  const workspace: ProjectControlWorkspaceLease = {
+    requestedWorkspacePath: input.requestedWorkspacePath,
+    canonicalWorkspacePath,
+    get lease() {
+      if (!lock || closed) throw new Error("project_control_workspace_lease_not_held");
+      return lock;
+    },
+    async withOrderedAdmissionPublication(publication) {
+      if (!lock || closed || publicationActive) {
+        throw new Error("project_control_workspace_publication_not_available");
+      }
+      publicationActive = true;
+      try {
+        await input.locks.release(lock);
+        lock = undefined;
+        return await withProjectAdmissionPublicationLock({
+          registryRootDir: publication.registryRootDir,
+          owner: input.owner,
+          effect: async () => {
+            lock = await input.locks.acquire({ workspacePath: canonicalWorkspacePath, owner: input.owner });
+            await assertCanonicalBinding();
+            await publication.revalidate(workspace);
+            return await publication.effect();
+          },
+        });
+      } finally { publicationActive = false; }
+    },
+  };
+  try {
+    await assertCanonicalBinding();
+    return await input.effect(workspace);
   } finally {
-    await input.locks.release(lock);
+    closed = true;
+    if (lock) await input.locks.release(lock);
   }
 }

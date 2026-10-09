@@ -184,7 +184,7 @@ export function evaluateProjectAdmission(input: {
   if (input.scoped) {
     return evaluateScopedProjectAdmission({
       request: input.request,
-      snapshot: input.snapshot,
+      ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }),
       scoped: input.scoped,
       workerRole,
     });

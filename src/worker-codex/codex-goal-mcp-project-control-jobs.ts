@@ -7,6 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   AccessBoundary,
   NetworkAccessMode,
@@ -29,6 +30,7 @@ import {
   type CodexGoalJobManifestInput,
 } from "./codex-goal-jobs";
 import {
+  inspectDependencyBootstrap,
   runDependencyBootstrap,
   type DependencyPreflightResult,
 } from "./dependency-bootstrap";
@@ -121,6 +123,8 @@ import {
 } from "./application/project-control/codex-goal-project-verifier-handoff";
 import { codexGoalStatusInputFromLaunch } from "./application/codex-goal-status-input";
 import {
+  assertCodexProjectReservedLaunchAuthority,
+  assertCodexProjectReservedAccountReceiptCurrent,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
   type CodexProjectAccountReservation,
@@ -627,7 +631,7 @@ export async function projectControlRefillWorkerView(
       expectedCanonicalWorkspacePath,
       owner: `project-refill-start:${controller.controller.jobId}:${manifest.jobId}`,
       effect: async (workspace) => {
-        dependencyPreflight = await runDependencyBootstrap({
+        const publicationDependencyBaseline = await runDependencyBootstrap({
           workspacePath: workspace.canonicalWorkspacePath,
           jobRootDir: manifest.jobRootDir,
           cacheNamespace: controller.scope.projectId,
@@ -635,7 +639,8 @@ export async function projectControlRefillWorkerView(
           confirmInstall:
             booleanValue(args.confirmDependencyBootstrap) === true,
         });
-        assertProjectControlDependencyBootstrapReady(dependencyPreflight);
+        dependencyPreflight = publicationDependencyBaseline;
+        assertProjectControlDependencyBootstrapReady(publicationDependencyBaseline);
         const startAdmissionWorkspaceMode =
           await validateProjectRefillPreStartAdmissionLocked({
             manifest,
@@ -665,6 +670,29 @@ export async function projectControlRefillWorkerView(
               ? { startAdmissionWorkspaceMode }
               : {}),
             startWorkspaceLease: workspace,
+            revalidateStartPublication: async (currentWorkspace) => {
+              const freshController = await deps.loadProjectControlController(args);
+              const freshManifest = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: manifest.jobId });
+              if (freshController.registryRootDir !== controller.registryRootDir ||
+                !isDeepStrictEqual(freshController.scope, controller.scope) ||
+                !isDeepStrictEqual(freshController.controller, currentController) ||
+                !isDeepStrictEqual(freshManifest, manifest)) {
+                throw new Error("project_control_start_binding_changed_before_publication");
+              }
+              const currentMode = await validateProjectRefillPreStartAdmissionLocked({
+                manifest: freshManifest, scope: controller.scope, admittedInputPatch: Boolean(producerInputPatch),
+              });
+              if (currentMode !== startAdmissionWorkspaceMode) throw new Error("project_control_start_admission_mode_changed");
+              const dependencies = await inspectDependencyBootstrap(currentWorkspace.canonicalWorkspacePath, publicationDependencyBaseline.mode);
+              assertProjectControlDependencyBootstrapReady(dependencies);
+              if (!isDeepStrictEqual(dependencies.fingerprintInputs, publicationDependencyBaseline.fingerprintInputs) ||
+                !isDeepStrictEqual(dependencies.binaryChecks, publicationDependencyBaseline.binaryChecks) ||
+                dependencies.environmentExists !== publicationDependencyBaseline.environmentExists) {
+                throw new Error("project_control_dependency_environment_changed_before_start");
+              }
+              assertCodexProjectReservedLaunchAuthority({ manifest: freshManifest, sourceLaunch: canonicalLaunch, reservedLaunch });
+              await assertCodexProjectReservedAccountReceiptCurrent({ manifest: freshManifest, reservedLaunch });
+            },
             startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           });
           const startResult = await withCurrentControllerScopeActivity({
@@ -692,7 +720,10 @@ export async function projectControlRefillWorkerView(
             accountReservation: reservedAccount,
           };
         } catch (error) {
-          if (!(error instanceof ProjectControlSubmissionUncertainError)) {
+          let leafHeld = false;
+          try { leafHeld = workspace.lease.workspacePath === workspace.canonicalWorkspacePath; }
+          catch { /* Failed handoff: preserve the reservation for reconciliation. */ }
+          if (!(error instanceof ProjectControlSubmissionUncertainError) && leafHeld) {
             await releaseCodexProjectAccount({
               manifest,
               launch: reservedLaunch,

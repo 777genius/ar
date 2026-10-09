@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   AccessBoundary,
   ProjectControlBroker,
+  ProjectOperation,
   ProjectControlSubmissionUncertainError,
   type ProjectAccessScope,
   type ProjectControlBrokerEvent,
@@ -152,6 +153,7 @@ export type CodexProjectControlBrokerInput = {
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
   readonly startPendingInputPatchAdmission?: ValidatedPendingInputPatchAdmission;
   readonly startWorkspaceLease?: ProjectControlWorkspaceLease;
+  readonly revalidateStartPublication?: (workspace: ProjectControlWorkspaceLease) => Promise<void>;
   readonly startSkipDoctor?: boolean;
   readonly controlledRuntimeInPlaceContinuation?: ProjectControlledRuntimeInPlaceContinuation;
   readonly stopLaunch?: CodexGoalLaunchInput;
@@ -249,12 +251,29 @@ function codexProjectControlPorts(
   return {
     authority: authorityStore,
     admissionCoordination: {
-      withPublication: async (_input, effect) =>
-        await withProjectAdmissionPublicationLock({
+      withPublication: async (request, effect) => {
+        if (request.operation === ProjectOperation.StartWorker && input.startWorkspaceLease) {
+          if (input.startManifest && input.startLaunch) {
+            await assertAdmissionStoredLaunchIdentity({
+              registryRootDir: input.registryRootDir, manifest: input.startManifest, launch: input.startLaunch,
+            });
+          }
+          const publish = input.startWorkspaceLease.withOrderedAdmissionPublication;
+          if (!publish || !input.revalidateStartPublication) {
+            throw new Error("project_control_ordered_start_publication_required");
+          }
+          return await publish({
+            registryRootDir: input.registryRootDir,
+            revalidate: input.revalidateStartPublication,
+            effect,
+          });
+        }
+        return await withProjectAdmissionPublicationLock({
           registryRootDir: input.registryRootDir,
           owner: `project-admission-publication:${input.controller.jobId}`,
           effect,
-        }),
+        });
+      },
     },
 
     audit: {
