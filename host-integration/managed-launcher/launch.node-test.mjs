@@ -247,7 +247,9 @@ test('pressure CLI exits finitely after its child exits despite a pending observ
   const { spawnSync } = await import('node:child_process');
   const root = mkdtempSync(join(tmpdir(), 'payload-pressure-exit-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const policy = `export const MINIMUM_FREE_BYTES=5368709120n,MINIMUM_FREE_INODES=50000n;
+  // Bypass this loader's suffix match while retaining the real policy exports.
+  const realPolicy = new URL('../host-jobs/storage-policy.mjs?pressure-cli-fixture-real', import.meta.url).href;
+  const policy = `export * from ${JSON.stringify(realPolicy)};
     export async function requireFinalJobStorage(){return {layout:{jobRoot:'/TEST/jobs/owned'},device:2n};}`;
   const pressure = `export class ScratchPressureError extends Error{}
     export async function prepareScratchPressureGuard(){return {reason:'scratch_bytes',
