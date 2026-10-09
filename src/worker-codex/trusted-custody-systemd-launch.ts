@@ -1,17 +1,19 @@
 import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, lstatSync } from "node:fs";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseResearchStartSpec, researchProviderSetupTimeoutMs, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
-import { researchInvalid, researchName, researchPath } from "./research-launch-files";
+import { researchInvalid, researchName, researchPath, researchHash, researchRecord, researchCustody } from "./research-launch-files";
 import { assertResearchProviderRoot, researchProviderProtectedPaths, ResearchRootMountAccess, type ResearchProviderRootPlan } from "./research-provider-root";
 import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
+
+import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 
 export const trustedCustodySystemdRunExecutable = "/usr/bin/systemd-run";
 const ordinaryRecipeId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -197,4 +199,39 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
     ...properties.map(p => `--property=${p}`), "--", "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
     "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--", process.execPath,
     join(spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"] };
+}
+
+/** Closed root MiMo operation recipe: fixed entry, exact durable request and
+ * derived ownership only; no caller commands, environment or properties. */
+export function trustedMimoProjectOperationLaunch(value: Readonly<{
+  request: MimoProjectBridgeRequest; requestSha256: string; generation: number; unit: string; description: string;
+  requestPath: string; entry: string; node: string; operationTimeoutMs: number;
+}>): { command: string; args: string[] } {
+  const data = researchRecord(value, "request,requestSha256,generation,unit,description,requestPath,entry,node,operationTimeoutMs");
+  const request = parseMimoProjectBridgeRequest(data.request);
+  const digest = researchHash(JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))));
+  const generation = data.generation;
+  if (data.requestSha256 !== digest || !Number.isSafeInteger(generation) || (generation as number) < 0 ||
+      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop].includes(request.operation) && generation !== 0) ||
+      !Number.isSafeInteger(data.operationTimeoutMs) || (data.operationTimeoutMs as number) < 1000 || (data.operationTimeoutMs as number) > 86400000)
+    throw new Error("mimo_project_bridge_operation_invalid");
+  const unitDigest = researchHash(digest + ":" + generation), unit = `subscription-runtime-mimo-project-${unitDigest}.service`;
+  const requestPath = `/srv/worker-state/mimo-projects/${request.projectId}/${request.workstreamId}/mimo-bridge-operations/${request.jobId}.${request.operation}.request.json`;
+  const description = `subscription-runtime MiMo project ${unitDigest}`;
+  const entry = researchPath(data.entry), node = researchPath(data.node);
+  if (data.unit !== unit || data.description !== description || data.requestPath !== requestPath ||
+      !/^\/opt\/subscription-runtime\/releases\/[a-f0-9]{40}\/dist\/worker-codex\/hosted-mimo-project-bridge-cli\.js$/.test(entry) ||
+      entry !== realpathSync(entry) || node !== realpathSync(process.execPath)) throw new Error("mimo_project_bridge_operation_invalid");
+  researchCustody(entry); researchCustody(node);
+  for (const path of [entry, node]) {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.nlink !== 1 || (path === node && !(file.mode & 0o111)))
+      throw new Error("mimo_project_bridge_operation_invalid");
+  }
+  return { command: trustedCustodySystemdRunExecutable, args: ["--quiet",
+    ...(request.operation === MimoProjectBridgeOperation.Stop ? [] : ["--collect"]),
+    "--unit=" + unit, "--description=" + description, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
+    ...["KillMode=control-group", "Restart=no", "Delegate=no", "SendSIGKILL=yes",
+      "RuntimeMaxSec=" + Math.ceil((data.operationTimeoutMs as number) / 1000), "TimeoutStopSec=30", "UMask=0077", "NoNewPrivileges=yes"].map(p => "--property=" + p),
+    "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", node, entry, "--execute-owned", requestPath] };
 }

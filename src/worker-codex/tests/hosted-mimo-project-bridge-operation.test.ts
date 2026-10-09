@@ -1,18 +1,26 @@
 import { beforeEach, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({ files: new Map<string, string>(), command: vi.fn(), handler: vi.fn() }));
-vi.mock("node:fs", () => ({ existsSync: (p: string) => state.files.has(p), mkdirSync: (p: string) => state.files.set(p, ""),
-  realpathSync: (p: string) => p, lstatSync: () => ({ isFile: () => true, uid: 0, mode: 0o100600 }),
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), mkdirSync: (p: string) => state.files.set(p, ""),
+  realpathSync: (p: string) => p === "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js" ? "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js" : p, lstatSync: () => ({ isFile: () => true, uid: 0, nlink: 1, mode: 0o100700 }),
   writeFileSync: (p: string, bytes: string, options: { flag: string }) => { if (options.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, bytes); },
   renameSync: (a: string, b: string) => { state.files.set(b, state.files.get(a)!); state.files.delete(a); } }));
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ handleHostedMimoProjectBridge: state.handler,
   hostedMimoBridgeMetadataBytes: (p: string) => Buffer.from(state.files.get(p)!), parseHostedMimoProjectBinding: () => ({ operationTimeoutMs: 900000 }) }));
+import { trustedMimoProjectOperationLaunch } from "../trusted-custody-systemd-launch";
+import { researchHash } from "../research-launch-files";
+// Keep unrelated recipes' provider/install graphs outside this unit boundary;
+// the new closed recipe and its input validation remain real.
+vi.mock("../hosted-readonly-inputs", () => ({ readHostedPrivateBytes: vi.fn() }));
+vi.mock("../research-launch-contract", () => ({ parseResearchStartSpec: vi.fn(), researchProviderSetupTimeoutMs: 1000, researchProviderSetupAllowanceMs: vi.fn() }));
+vi.mock("../research-provider-root", () => ({ assertResearchProviderRoot: vi.fn(), researchProviderProtectedPaths: vi.fn(), ResearchRootMountAccess: {} }));
+vi.mock("../hosted-dependency-installer-recipe", () => ({ hostedDependencyInstallerProperties: vi.fn(), hostedDependencyInstallerBootstrapCommand: vi.fn() }));
 import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-operation";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
-const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) };
-const prefix = "/srv/worker-state/jobs/test-project/test-stream/mimo-bridge-operations/test-job.create";
-const entry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
+const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
+const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
+const entry = "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
 beforeEach(() => { state.files.clear(); vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); });
 it("retains an exact owner before uncertain submission and never launches replacement", async () => {
   state.command.mockImplementationOnce(() => { expect(state.files.has(prefix + ".owner.json")).toBe(true); throw new Error("TEST transport timeout"); });
@@ -93,4 +101,27 @@ it.each([MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start])("
   });
   await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop))).rejects.toThrow("mimo_project_bridge_control_pending");
   expect(state.files.has(prefix.replace(".create", ".stop.owner.json"))).toBe(false);
+});
+
+function recipeInput() {
+  const digest = researchHash(JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))));
+  const suffix = researchHash(digest + ":0");
+  return { request, requestSha256: digest, generation: 0, unit: `subscription-runtime-mimo-project-${suffix}.service`,
+    description: `subscription-runtime MiMo project ${suffix}`, requestPath: prefix + ".request.json", entry, node: process.execPath, operationTimeoutMs: 900000 };
+}
+it("trusted recipe keeps service and environment arguments closed", () => {
+  const launch = trustedMimoProjectOperationLaunch(recipeInput());
+  expect(launch.command).toBe("/usr/bin/systemd-run");
+  expect(launch.args).toContain("--expand-environment=no"); expect(launch.args).toContain("--property=Restart=no");
+  const delimiter = launch.args.indexOf("--");
+  expect(launch.args.slice(delimiter + 1)).toEqual(["/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", process.execPath, entry, "--execute-owned", prefix + ".request.json"]);
+});
+it.each([
+  ["requestSha256", "0".repeat(64)], ["generation", 1], ["unit", "other.service"], ["description", "other"],
+  ["requestPath", "/srv/worker-state/jobs/test-project/test-stream/request.json"],
+  ["entry", "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js"],
+  ["entry", "/opt/subscription-runtime/releases/main/dist/worker-codex/hosted-mimo-project-bridge-cli.js"],
+  ["node", "/bin/sh"], ["operationTimeoutMs", 0], ["operationTimeoutMs", 86400001], ["args", ["/bin/sh"]],
+])("trusted recipe rejects injected or mismatched %s", (key, value) => {
+  expect(() => trustedMimoProjectOperationLaunch({ ...recipeInput(), [key]: value })).toThrow();
 });

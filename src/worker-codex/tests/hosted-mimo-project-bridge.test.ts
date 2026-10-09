@@ -22,11 +22,12 @@ vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlCon
 vi.mock("../project-mimo-worker-launch", () => ({ reconcileProjectMimoWorker: vi.fn() }));
 vi.mock("../codex-goal-ops", () => ({ collectCodexGoalStatus: async () => ({ state: "done" }) }));
 vi.mock("../codex-goal-mcp-status-input", () => ({ codexGoalStatusInputFromLaunch: () => ({}) }));
+import { researchCustody } from "../research-launch-files";
 import { onboardHostedMimoProject } from "../hosted-mimo-project-bridge-onboard";
 import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST prompt", sourceCommit: "b".repeat(40) };
-const root = "/srv/worker-state/jobs/test-project/test-stream", scratch = "/srv/workers/jobs/test-project/test-stream";
+const root = "/srv/worker-state/mimo-projects/test-project/test-stream", scratch = "/srv/workers/jobs/test-project/test-stream";
 const config = "/etc/subscription-runtime/mimo-projects/test-project/test-stream.json";
 const binding = { schemaVersion: 1, projectId: request.projectId, workstreamId: request.workstreamId, machineId: request.machineId, routingEnabled: true,
   stateRoot: root, scratchRoot: scratch, registryRootDir: root + "/registry", controllerJobId: "test-controller", sourceWorkspacePath: scratch + "/source",
@@ -35,7 +36,7 @@ const control = (operation: MimoProjectBridgeOperation) => { const { prompt: _p,
 beforeEach(() => {
   state.files.clear(); state.fds.clear(); vi.clearAllMocks(); state.allowed = ["account-q"];
   state.files.set("/etc/machine-id", Buffer.from(request.machineId)); state.files.set(config, Buffer.from(JSON.stringify(binding)));
-  state.files.set("/etc/subscription-runtime/projects/test-project.d/test-stream.yml", Buffer.from(`project_id: test-project\nworkstream_id: test-stream\nstate_root: ${root}\nscratch_root: ${scratch}\nrouting_enabled: true\n`));
+  state.files.set("/etc/subscription-runtime/projects/test-project.d/test-stream.yml", Buffer.from(`project_id: test-project\nworkstream_id: test-stream\nstate_root: /srv/worker-state/jobs/test-project/test-stream\nscratch_root: ${scratch}\nrouting_enabled: true\n`));
   const response = { content: [{ type: "text", text: '{"ok":true}' }] }; state.refill.mockResolvedValue(response); state.start.mockResolvedValue(response); state.stop.mockResolvedValue(response);
   state.load.mockResolvedValue({ launch: { config: { jobRootDir: root + "/jobs/test-job", workspacePath: scratch + "/workspaces/test-job", modelBackend: "xiaomi-mimo-token-plan", accounts: [{ name: "account-q" }], projectAccessScope: { projectId: request.projectId } } } });
 });
@@ -107,4 +108,30 @@ it("refuses a template sandbox outside or equal to the source root", async () =>
     await expect(handleHostedMimoProjectBridge(request)).rejects.toThrow("mimo_project_bridge_admission_invalid");
   }
   expect(state.refill).not.toHaveBeenCalled();
+});
+
+it("rejects a binding in shared state ancestry while accepting original routing-only YAML state_root", async () => {
+  state.files.set(config, Buffer.from(JSON.stringify({ ...binding, stateRoot: "/srv/worker-state/jobs/test-project/test-stream", registryRootDir: "/srv/worker-state/jobs/test-project/test-stream/registry" })));
+  await expect(handleHostedMimoProjectBridge(request)).rejects.toThrow("mimo_project_bridge_binding_invalid");
+  expect(state.refill).not.toHaveBeenCalled();
+  state.files.set(config, Buffer.from(JSON.stringify(binding)));
+  await expect(handleHostedMimoProjectBridge(request)).resolves.toMatchObject({ ok: true });
+  expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ registryRootDir: root + "/registry", jobRootDir: root + "/jobs/test-job" }));
+});
+it("rejects YAML state-root drift even though routing state is separate from protected state", async () => {
+  const yamlPath = "/etc/subscription-runtime/projects/test-project.d/test-stream.yml";
+  state.files.set(yamlPath, Buffer.from(state.files.get(yamlPath)!.toString().replace("state_root: /srv/worker-state/jobs/test-project/test-stream", "state_root: " + root)));
+  await expect(handleHostedMimoProjectBridge(request)).rejects.toThrow("mimo_project_bridge_route_closed");
+  expect(state.refill).not.toHaveBeenCalled();
+});
+
+it("keeps private authority out of shared state ancestry without changing custody", async () => {
+  vi.mocked(researchCustody).mockImplementation(path => {
+    if (path === "/srv/worker-state/jobs" || path.startsWith("/srv/worker-state/jobs/")) throw new Error("TEST shared ancestry is not authority");
+  });
+  try {
+    await expect(handleHostedMimoProjectBridge(request)).resolves.toMatchObject({ ok: true });
+    expect(state.files.has(root + "/mimo-bridge-attempts/test-job.json")).toBe(true);
+    expect(vi.mocked(researchCustody).mock.calls.some(([path]) => path.startsWith("/srv/worker-state/jobs"))).toBe(false);
+  } finally { vi.mocked(researchCustody).mockReset(); }
 });

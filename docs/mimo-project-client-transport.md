@@ -21,7 +21,7 @@ Use `mimoProjectId` and `mimoWorkstreamId` with the ordinary tools:
 
 - `codex_goal_project_create_job`: `jobId`, `promptBody`, exact enrolled `sourceCommit`, `confirmCreate: true`.
 - `codex_goal_project_refill_worker`: the same identity, `promptBody`, `expectedSourceCommit`, `confirmRefill: true`. Remote refill accepts creation; observe its operation before starting.
-- `codex_goal_get_job_status`: the same identity and `jobId`; no local registry path is needed.
+- `codex_goal_status_by_id`: the same identity and `jobId`; no local registry path is needed.
 - `codex_goal_project_start`: the same identity, `jobId`, `confirmStart: true`, after create settled successfully.
 - `codex_goal_project_stop`: the same identity, `jobId`, `confirmStop: true`.
 

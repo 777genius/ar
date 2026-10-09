@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readHostedMimoWorkerOrigin } from "../hosted-mimo-worker-origin";
-import { parseResearchOperatorRequest, researchHashRequest } from "../../worker-codex/research-launch-contract";
 import { CodexModelBackend, codexMimoDefaultModel } from "../codex-model-backend";
 import { CodexProviderEgressProfileId } from "../codex-provider-egress-policy";
 import { HostedMimoProfile } from "../hosted-mimo-profile";
@@ -47,12 +46,13 @@ beforeEach(() => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   const startId = "11111111-1111-1111-1111-111111111111";
-  const request = parseResearchOperatorRequest({ schemaVersion: 1, jobId: "test-job", taskId: "test-task", jobRootDir: "/TEST/job",
-    workspacePath: "/TEST/workspace", promptPath: "/TEST/job/prompt.md", authRootDir: "/TEST/auth", accounts: ["account-q"], codexBinaryPath: "/usr/bin/codex",
-    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: codexMimoDefaultModel, reasoningEffort: "medium", serviceTier: "default", taskTimeoutMs: 60000,
-    projectId: "test-project", maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: 30000, durableHandoffRootDir: "/TEST/registry/durable-handoffs" });
+  // Explicit sealed wire fixture: provider tests do not import worker contracts.
+  const request = { schemaVersion: 1, jobId: "test-job", taskId: "test-task", jobRootDir: "/TEST/job",
+    workspacePath: "/TEST/workspace", promptPath: "/TEST/job/prompt.md", authRootDir: "/TEST/auth", durableHandoffRootDir: "/TEST/registry/durable-handoffs",
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], codexBinaryPath: "/usr/bin/codex", model: codexMimoDefaultModel, reasoningEffort: "medium", serviceTier: "default", taskTimeoutMs: 60000,
+    projectId: "test-project", maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: 30000 };
   const registeredHandoff = { registryRootDir: "/TEST/registry", controllerJobId: "test-controller", manifestSha256: "a".repeat(64), scopeSha256: "b".repeat(64),
-    receiptSha256: "c".repeat(64), requestSha256: researchHashRequest(request),
+    receiptSha256: "c".repeat(64), requestSha256: digest(JSON.stringify(request)),
     durableDirectory: { path: request.durableHandoffRootDir, device: 7, inode: 21, mountId: 5, mountDevice: "0:7", mountRoot: "/", mountPoint: "/", filesystemUuid: "12345678" },
     registeredExecution: { sourceConfigSha256: "d".repeat(64), reservedConfigSha256: "e".repeat(64), selectedAccountSha256: "f".repeat(64), accountId: "account-q",
       projectId: "test-project", maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: 30000 } };

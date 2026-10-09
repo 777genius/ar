@@ -47,10 +47,10 @@ The operator installs a root-owned protected purpose binding at `/etc/subscripti
 schemaVersion: 1
 projectId, workstreamId, machineId
 routingEnabled
-stateRoot: /srv/worker-state/jobs/<projectId>/<workstreamId>
+stateRoot: /srv/worker-state/mimo-projects/<projectId>/<workstreamId>
 scratchRoot: /srv/workers/jobs/<projectId>/<workstreamId>
 registryRootDir: <stateRoot>/registry
-controllerJobId: existing registered scoped controller
+controllerJobId: purpose-owned scoped controller in this protected registry
 sourceWorkspacePath: existing source checkout within scratchRoot
 sourceCommit: exact reviewed source commit
 sourceRef: approved origin/<branch> resolving to sourceCommit
@@ -65,7 +65,7 @@ The bridge checks actual workstream YAML identity and `routing_enabled`, both pr
 
 Deployment must install the matching root-owned bridge CLI from the exact runtime release and upgrade the restricted endpoint. Merely configuring a local route or placing a project YAML on the host does not enable this bridge. Qualify the complete local-agent-to-root-to-provider route on a new TEST project before claiming it is deployed.
 
-After ordinary project onboarding has created the scoped controller, source checkout and reviewed admission template, enroll it with the protected operator metadata file:
+After project onboarding has created the purpose-owned scoped controller in the protected MiMo registry, source checkout and reviewed admission template, enroll it with the protected operator metadata file:
 
 ```sh
 node /opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js --onboard /etc/subscription-runtime/reviewed-mimo-binding.json
@@ -76,3 +76,5 @@ This root-only helper validates machine/workstream routing, current explicit acc
 Each bridge mutation runs in its own finite owned service. The endpoint returns a pending receipt quickly; poll status using the same job identity. Start is accepted after the retained creation operation has settled with a successful semantic result. Status/finalization also runs in an owned service, and a poll can return the last settled observation while scheduling a fresh one. A timeout or unresolved operation never creates a replacement service or job.
 
 The trusted admission template's `contract.executionPolicy.sandboxRoot` must be a strict subdirectory of `sourceWorkspacePath`, for example `<source>/sandbox`. For each child the bridge preserves that relative subdirectory under the derived child workspace. Other admission fields remain unchanged, and the normal admission validator runs for that child's actual workspace; this supports multiple jobs without widening the sandbox.
+
+MiMo authority and durable state use the dedicated root-owned `0700` namespace `/srv/worker-state/mimo-projects/<project>/<workstream>`: controller registry, job state, retained attempts and operation ledgers all live there. Provision its protected parents through trusted operator onboarding, without changing ownership or permissions of `/srv/worker-state/jobs`. The existing project YAML retains its canonical `state_root: /srv/worker-state/jobs/<project>/<workstream>` as routing metadata; the bridge checks that fixed value but never treats that shared ancestry as authority. Workspace/source paths remain under `/srv/workers/jobs/<project>/<workstream>`, whose entire ancestry must retain root ownership and no group/other write permission. A controller from a shared registry cannot be reused by changing the binding path; create an explicitly scoped purpose-owned controller in the protected registry through the normal project API.

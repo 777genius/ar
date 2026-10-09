@@ -1,3 +1,4 @@
+import { trustedMimoProjectOperationLaunch } from "./trusted-custody-systemd-launch";
 import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
@@ -10,7 +11,7 @@ function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));
 }
 function operationFiles(request: MimoProjectBridgeRequest) {
-  const root = `/srv/worker-state/jobs/${request.projectId}/${request.workstreamId}/mimo-bridge-operations`;
+  const root = `/srv/worker-state/mimo-projects/${request.projectId}/${request.workstreamId}/mimo-bridge-operations`;
   const name = `${request.jobId}.${request.operation}`;
   return { root, requestPath: join(root, name + ".request.json"), resultPath: join(root, name + ".result.json"), ownerPath: join(root, name + ".owner.json") };
 }
@@ -104,13 +105,12 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
   const bytes = canonical(request), digest = researchHash(bytes), unitDigest = researchHash(digest + ":" + generation), unit = `subscription-runtime-mimo-project-${unitDigest}.service`;
   const description = `subscription-runtime MiMo project ${unitDigest}`, executable = entry(), node = realpathSync(process.execPath);
   researchCustody(dirname(node));
+  const launch = trustedMimoProjectOperationLaunch({ request, requestSha256: digest, generation, unit, description,
+    requestPath: files.requestPath, entry: executable, node, operationTimeoutMs: binding.operationTimeoutMs });
   writeFileSync(files.requestPath, bytes + "\n", { flag: "wx", mode: 0o600 });
   writeFileSync(files.ownerPath, JSON.stringify({ schemaVersion: 1, requestSha256: digest, generation, unit, description, entry: executable, node }) + "\n", { flag: "wx", mode: 0o600 });
   // The persisted exact owner precedes submission. A timeout never replaces it.
-  researchCommand("/usr/bin/systemd-run", ["--quiet", ...(request.operation === MimoProjectBridgeOperation.Stop ? [] : ["--collect"]), "--unit=" + unit, "--description=" + description,
-    "--property=Type=exec", "--property=KillMode=control-group", "--property=RuntimeMaxSec=" + Math.ceil(binding.operationTimeoutMs / 1000),
-    "--property=TimeoutStopSec=30", "--property=WorkingDirectory=/", "--property=UMask=0077", "--property=NoNewPrivileges=yes",
-    "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", node, executable, "--execute-owned", files.requestPath]);
+  researchCommand(launch.command, launch.args);
   return { ok: true, mode: "mimo_project_bridge_operation_started", operation: request.operation, unit, pending: true, jobId: request.jobId, ...(previousStatus ? previousStatus as object : {}) };
 }
 /** Only the installed owned service invokes this fixed execution mode. */

@@ -25,7 +25,7 @@ export function parseHostedMimoProjectBinding(value: unknown, request: MimoProje
       typeof row.sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(row.sourceCommit)) throw new Error("mimo_project_bridge_binding_invalid");
   if (typeof row.sourceRef !== "string" || !/^origin\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,127}$/.test(row.sourceRef) || row.sourceRef.includes(".."))
     throw new Error("mimo_project_bridge_binding_invalid");
-  const state = `/srv/worker-state/jobs/${request.projectId}/${request.workstreamId}`;
+  const state = `/srv/worker-state/mimo-projects/${request.projectId}/${request.workstreamId}`;
   const scratch = `/srv/workers/jobs/${request.projectId}/${request.workstreamId}`;
   if (row.stateRoot !== state || row.scratchRoot !== scratch || row.registryRootDir !== join(state, "registry")) throw new Error("mimo_project_bridge_binding_invalid");
   for (const key of ["sourceWorkspacePath", "codexBinaryPath"]) researchPath(row[key]);
@@ -63,7 +63,7 @@ export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBindi
   // Read only the fixed scalar routing contract, not arbitrary YAML features.
   // The reviewed Ansible template emits these scalars as plain/JSON strings.
   for (const [key, expected] of Object.entries({ project_id: binding.projectId, workstream_id: binding.workstreamId,
-    state_root: binding.stateRoot, scratch_root: binding.scratchRoot, routing_enabled: true })) {
+    state_root: `/srv/worker-state/jobs/${binding.projectId}/${binding.workstreamId}`, scratch_root: binding.scratchRoot, routing_enabled: true })) {
     const lines = yaml.split("\n").filter(line => line.startsWith(key + ":"));
     if (lines.length !== 1) throw new Error("mimo_project_bridge_route_closed");
     const raw = lines[0]!.slice(key.length + 1).trim();
