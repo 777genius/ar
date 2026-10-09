@@ -184,6 +184,7 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.ts \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-publication.node-test.ts \
             scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json \
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
             .github/workflows/ci.yml \
@@ -199,6 +200,7 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.js \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-publication.node-test.js \
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
             > dependency-h1-tool-inputs-ci-source-evidence/emitted.sha256
       - name: Collect independently signed exact tool DATA on disposable root ARC job
@@ -219,8 +221,11 @@ jobs:
           TAP=dependency-h1-tool-inputs-ci-evidence/root-tests.tap
           grep -Eq '^ok [0-9]+ - real acquired file hashes retained bytes and refuses post-read deadline/identity mutation$' "$TAP"
           grep -Eq '^ok [0-9]+ - retained original archive rejects equal-byte replacement between verification and extraction$' "$TAP"
-          grep -Fxq '# tests 11' "$TAP"
-          grep -Fxq '# pass 10' "$TAP"
+          grep -Eq '^ok [0-9]+ - over-cap same DATA capture retains complete canonical body while original candidate stays absent/HOLD$' "$TAP"
+          grep -Eq '^ok [0-9]+ - stale size/hash/count commitments refuse before any publication$' "$TAP"
+          grep -Eq '^ok [0-9]+ - fixed operational boundary is inclusive but plus one refuses before serialization/write$' "$TAP"
+          grep -Fxq '# tests 14' "$TAP"
+          grep -Fxq '# pass 13' "$TAP"
           grep -Fxq '# fail 0' "$TAP"
           grep -Fxq '# skipped 1' "$TAP"
           grep -Eq '^ok [0-9]+ - ordinary caller-owned file cannot become original root-owned archive authority # SKIP nonroot negative is exercised by separate caller-owned environment$' "$TAP"

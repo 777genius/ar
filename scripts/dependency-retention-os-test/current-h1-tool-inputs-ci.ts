@@ -7,7 +7,7 @@ import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lch
 import { get } from "node:https";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, type SignedPackage } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
+import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, PythonEnvelopeKind, type SignedPackage, type CapturedEnvelope, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 enum CiTool { AptGet="/usr/bin/apt-get", Gpgv="/usr/bin/gpgv", DpkgDeb="/usr/bin/dpkg-deb", AptHelper="/usr/lib/apt/apt-helper", Git="/usr/bin/git" }
@@ -19,6 +19,30 @@ enum CiByteRole { OwnRecord="own-record", InstalledTool="installed-CI-tool-data"
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes:32*1024*1024,depth:2047,elapsedMs:30000,catalogBytes:128*1024});
+export enum CiEnvelopePublication { CompleteUnadmitted="envelope-complete-UNADMITTED.json", Retention="envelope-complete-UNADMITTED-retention.json", Held="envelope-candidate-HOLD.json", Candidate="envelope-candidate.json" }
+export interface CiEnvelopeProvenance { readonly signedPackagesSha256:string;readonly completeIndicesSha256:string;readonly sourceAndToolsSha256:string }
+/** DATA persistence only. The original candidate parser/cap and native guards stay unchanged. */
+export function publishCiEnvelopeCatalogData(sourceSha:string,capture:CapturedEnvelope,serialized:PythonDataCatalogSerialization,provenance:CiEnvelopeProvenance|undefined,file:(name:CiEnvelopePublication,bytes:Buffer|string)=>void):CiEnvelopeCandidate {
+ if(serialized.status===PythonDataCatalogStatus.CapacityHeld){
+  assert.equal(serialized.bytes,null,"unchanged over-cap candidate absence");
+  assert(serialized.measurement.serializedBytes>measureCeilings.catalogBytes,"original capacity HOLD");
+  assert(serialized.measurement.serializedBytes<=ciIndexOperationalBytes,"complete unadmitted operational record ceiling");
+  const bytes=Buffer.from(JSON.stringify(capture.catalog));
+  assert(bytes.length<=ciIndexOperationalBytes,"complete unadmitted operational record ceiling");
+  assert.equal(bytes.length,serialized.measurement.serializedBytes,"complete unadmitted byte count");
+  assert.equal(hash(bytes),serialized.measurement.sha256,"complete unadmitted SHA256");
+  assert.equal(capture.catalog.entries.length,serialized.measurement.entries,"complete unadmitted entries");
+  assert.equal(capture.catalog.packages.length,serialized.measurement.packages,"complete unadmitted packages");
+  for(const kind of Object.values(PythonEnvelopeKind))assert.equal(capture.catalog.entries.filter(row=>row.kind===kind).length,serialized.measurement.kindCounts[kind],"complete unadmitted kind counts");
+  assert(provenance&&Object.values(provenance).every(value=>/^[a-f0-9]{64}$/.test(value)),"original public DATA provenance commitments");
+  file(CiEnvelopePublication.CompleteUnadmitted,bytes);
+  file(CiEnvelopePublication.Retention,JSON.stringify({schemaVersion:1,purpose:"COMPLETE_UNADMITTED_DATA_ONLY",sourceSha,body:CiEnvelopePublication.CompleteUnadmitted,serializedBytes:bytes.length,sha256:serialized.measurement.sha256,entries:serialized.measurement.entries,packages:serialized.measurement.packages,kindCounts:serialized.measurement.kindCounts,elfEntries:capture.elf.size,provenanceRecords:{"signed-packages.json":provenance.signedPackagesSha256,"complete-indices.json":provenance.completeIndicesSha256,"source-and-tools.json":provenance.sourceAndToolsSha256},originalStatus:serialized.status,candidatePresent:false,physicalCatalogQualified:false,nativeQualified:false,originalNamespaceQualified:false,inlineReviewQualified:false})+"\n");
+  file(CiEnvelopePublication.Held,JSON.stringify({reason:"complete DATA catalog exceeds unchanged serialized byte cap",serializedBytes:serialized.measurement.serializedBytes,catalogBytes:measureCeilings.catalogBytes,nativeQualified:false})+"\n");
+  return CiEnvelopeCandidate.Held;
+ }
+ assert.equal(serialized.status,PythonDataCatalogStatus.Captured);assert(serialized.bytes!==null);
+ file(CiEnvelopePublication.Candidate,serialized.bytes);return CiEnvelopeCandidate.Captured;
+}
 function fullBytes(path:string,maximum:number,tick:()=>void,role:CiByteRole=CiByteRole.OwnRecord):Buffer {
  tick();const before=lstatSync(path,{bigint:true});assert(before.isFile()&&before.nlink>0n&&before.size<=BigInt(maximum));
  if(role===CiByteRole.OwnRecord)assert(before.uid===0n&&before.gid===0n&&before.nlink===1n&&!(before.mode&0o022n));
@@ -70,12 +94,13 @@ export async function mainCiSignedToolInputs():Promise<void> {
   // One closed TEST invocation after this own process established GID0. This
   // is not a runner port and cannot select another test/path/command.
   const sibling=dirname(fileURLToPath(import.meta.url));
-  const physicalTests=spawnSync(process.execPath,["--test","--test-reporter=tap",join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js")],{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
+  const physicalTestArgv=["--test","--test-reporter=tap",join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-publication.node-test.js")];
+  const physicalTests=spawnSync(process.execPath,physicalTestArgv,{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"root-tests.tap"),physicalTests.stdout??"");file(join(evidence,"root-tests.stderr"),physicalTests.stderr??"");assert(!physicalTests.error&&physicalTests.status===0&&physicalTests.signal===null,"fixed root CI protocol/custody tests");
-  const tap=physicalTests.stdout;assert(/^# tests 11$/m.test(tap)&&/^# pass 10$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap));
+  const tap=physicalTests.stdout;assert(/^# tests 14$/m.test(tap)&&/^# pass 13$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap));
   for(const name of ["real acquired file hashes retained bytes and refuses post-read deadline/identity mutation","retained original archive rejects equal-byte replacement between verification and extraction"])assert(tap.split("\n").some(line=>/^ok [0-9]+ - /.test(line)&&line.endsWith(name)),"original ROOT filesystem case cannot skip");
   assert.equal(command(CiTool.Git,["-c","safe.directory="+workspace,"rev-parse","HEAD"]).toString().trim(),sourceSha);
-  file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
+  file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),rootTestArgv:physicalTestArgv,tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
   dir(state);for(const name of ["etc","etc/parts","etc/auth-parts","etc/preferences-parts","etc/trusted-parts","lists","lists/partial","archives","archives/partial","log"])dir(join(state,name));
   for(const name of ["status","etc/main.conf","etc/auth.conf","etc/preferences","etc/trusted.gpg"])file(join(state,name),"");
   phase=CiDataPhase.Key;const keyBytes=await downloadArchiveKey(Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))));tick();file(keyring,keyBytes);file(join(evidence,"ubuntu-archive-keyring.gpg"),keyBytes);
@@ -114,7 +139,8 @@ export async function mainCiSignedToolInputs():Promise<void> {
   };walk("",0);const rawMeasurementElapsedMs=performance.now()-measureStart;members.sort((a,b)=>a.path.localeCompare(b.path));file(join(evidence,"data-members.json"),JSON.stringify(members)+"\n");
   const signed:SignedPackage[]=packages.map(({package:name,version,arch,sha256,size})=>({package:name,version,arch,sha256,size}));let envelopeCandidate=CiEnvelopeCandidate.Held;
   try{const candidate=captureFixedSignedPythonEnvelopeData(extraction,signed,measureCeilings),serialized=serializeFixedSignedPythonEnvelopeData(candidate.catalog,measureCeilings);file(join(evidence,"envelope-catalog-measurement.json"),JSON.stringify({schemaVersion:1,purpose:"fixed-signed-extraction-DATA-only",status:serialized.status,...serialized.measurement,census:candidate.measurement,elfEntries:candidate.elf.size,completeCensus:true,nativeQualified:false,originalNamespaceQualified:false,inlineReviewQualified:false})+"\n");
-   if(serialized.status===PythonDataCatalogStatus.CapacityHeld){file(join(evidence,"envelope-candidate-HOLD.json"),JSON.stringify({reason:"complete DATA catalog exceeds unchanged serialized byte cap",serializedBytes:serialized.measurement.serializedBytes,catalogBytes:measureCeilings.catalogBytes,nativeQualified:false})+"\n");}else{assert(serialized.bytes!==null);file(join(evidence,"envelope-candidate.json"),serialized.bytes);envelopeCandidate=CiEnvelopeCandidate.Captured;}}catch(error){const reason=error instanceof Error&&/^TEST H1 Python envelope Held: [A-Za-z0-9 /+-]{1,128}$/.test(error.message)?error.message:"existing-conservative-envelope-policy-refused";file(join(evidence,"envelope-candidate-HOLD.json"),JSON.stringify({reason,nativeQualified:false})+"\n");}
+   const provenance=serialized.status===PythonDataCatalogStatus.CapacityHeld?{signedPackagesSha256:hash(fullBytes(join(evidence,"signed-packages.json"),ciIndexOperationalBytes,tick)),completeIndicesSha256:hash(fullBytes(join(evidence,"complete-indices.json"),ciIndexOperationalBytes,tick)),sourceAndToolsSha256:hash(fullBytes(join(evidence,"source-and-tools.json"),ciIndexOperationalBytes,tick))}:undefined;
+   envelopeCandidate=publishCiEnvelopeCatalogData(sourceSha,candidate,serialized,provenance,(name,bytes)=>file(join(evidence,name),bytes));}catch(error){const reason=error instanceof Error&&/^TEST H1 Python envelope Held: [A-Za-z0-9 /+-]{1,128}$/.test(error.message)?error.message:"existing-conservative-envelope-policy-refused";file(join(evidence,"envelope-candidate-HOLD.json"),JSON.stringify({reason,nativeQualified:false})+"\n");}
   file(join(evidence,"result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Complete,purpose:"independently-signed-CI-data-not-live-host-admission",sourceSha,uid:0,packages,packageOrigins,indices:indices.map(({bytes,...row})=>row),trustAnchor:ubuntuArchive2018Fingerprint,keyringSha256:hash(keyBytes),measurement:{entries,bytes,largestFile,depth,elapsedMs:rawMeasurementElapsedMs},operationalCeilings:measureCeilings,envelopeCandidate,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",elapsedMs:performance.now()-started})+"\n");
  }catch(error){primaryFailed=true;try{file(join(evidence,"failed-result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Failed,sourceSha,phase,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",errorType:error instanceof Error?error.name:"unknown"})+"\n");}catch{process.stderr.write("TEST CI failure record not sealed; primary stage failure retained\n");}throw new Error("TEST CI signed data stage failed at "+phase);}
  finally{
