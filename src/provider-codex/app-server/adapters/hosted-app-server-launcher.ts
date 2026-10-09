@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { managedProviderScratchEnvironment } from "./managed-provider-scratch-environment";
 import { assertHostedProcessDescriptors, assertHostedFdPreludeDescriptors } from "./hosted-process-descriptors";
 import { announceHostedFdPrelude } from "./hosted-fd-prelude";
 import {
@@ -48,9 +49,12 @@ function onInput(chunk: Buffer): void {
   try { if (fdReady) assertHostedFdPreludeDescriptors(); else assertHostedProcessDescriptors(); }
   catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
 
+  let environment: Readonly<Record<string, string>>;
+  try { environment = managedProviderScratchEnvironment(frame.env); }
+  catch { fail("hosted_provider_scratch_boundary_invalid"); }
   const child = spawn(frame.command, frame.args, {
     cwd: frame.cwd,
-    env: frame.env,
+    env: environment,
     stdio: ["pipe", "inherit", "inherit"],
   });
   child.on("error", () => fail("hosted_app_server_child_spawn_failed"));
