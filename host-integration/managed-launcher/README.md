@@ -3,6 +3,26 @@
 Install with `sudo sh host-integration/managed-launcher/install`. The installer
 copies the launcher and the shared storage-policy loader into root-owned,
 non-writable directories under `/opt/subscription-runtime`.
+The artifact also contains `managed-launcher/host-inventory-codec.cjs`, compiled
+from the shared pure host inventory codec. Install publishes that fixed sibling
+before the launcher. Missing or conflicting codec bytes refuse before any
+copied cohort is changed. All copied files must have a single hard link.
+Bootstrap installation refuses an existing inventory or collector profile; replacing a
+governed copied launcher requires its separate qualified pair transaction.
+`install --qualified-pair ORIGINAL_OPERATION_UUID` selects the fixed compiled
+ordinary issuer with protected `/usr/bin/node`. The issuer refuses any packet
+whose measured Node differs. It retains the original operation and genuine
+NEWTEST qualification in one process, then publishes the exact pair under the
+existing activation fence. Other copied files retain their exact cohort.
+The source composition requires that actual qualification producer; this
+launcher slice alone supplies no physical qualification receipt.
+The same transaction publishes the fixed collector profile. Existing Node,
+ss, wrapper/ELF pins, renderer and FD limits stay identical; only the finite
+reviewed bootstrap entries change. Old protected profile bytes are retained.
+Before the first global profile change or launcher rename, consumption is
+treated as unknown. These separate file updates are not one atomic operation.
+Restoration needs actual discharge of every applicable consumer; closing only
+the issuer's supervisor cannot prove that a foreign HostJobs route is settled.
 The fixed installation path requires `/opt` and every ancestor to be root-owned
 and not group/world writable. It avoids `/usr/local/lib`, which may be owned by
 the deployment user on hosted machines; there is no alternative install path.
