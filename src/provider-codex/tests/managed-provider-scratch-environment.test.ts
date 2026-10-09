@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { managedProviderScratchEnvironment } from '../app-server/adapters/managed-provider-scratch-environment';
+import { managedProviderScratchEnvironment, managedProviderScratchLaunch } from '../app-server/adapters/managed-provider-scratch-environment';
 
 // Actual disposable directory and FD operations; only the fixed host root
 // device and cgroup selector are substituted in this focused boundary test.
@@ -27,6 +27,28 @@ function fixture(): string {
   return root;
 }
 describe('provider bootstrap admitted scratch defaults', () => {
+  it('binds native writer tmp permission to the physically verified launch, leaving named reader unchanged', () => {
+    const root = fixture();
+    const args = ['app-server', '--listen', 'stdio://', '--config', 'features.network_proxy.enabled=true'];
+    const result = managedProviderScratchLaunch({ TMPDIR: '/outside', HOME: root + '/home/session/home' }, args);
+    expect(result.environment.TMPDIR).toBe(root + '/tmp');
+    expect(result.args.slice(0, args.length)).toEqual(args);
+    // No permission profile, filesystem table or broad absolute rule is replaced.
+    expect(result.args.slice(args.length)).toEqual(['--config', 'permissions.hosted-project-write.filesystem.:tmpdir="write"']);
+    expect(result.args.join('\n')).not.toContain('permissions.hosted-project-read');
+    expect(result.args.join('\n')).not.toContain(':root=');
+    expect(result.args.join('\n')).not.toContain(':slash_tmp');
+    facts.cgroup = '0::/user.slice\n';
+    expect(() => managedProviderScratchLaunch({ TMPDIR: root + '/tmp' }, args)).toThrow('hosted_provider_scratch_boundary_invalid');
+  });
+  it('adds no tmp permission through an unverified caller environment', () => {
+    vi.stubEnv('SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH', undefined);
+    const args = ['app-server'];
+    const frame = { TMPDIR: '/outside', SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: '1' };
+    const result = managedProviderScratchLaunch(frame, args);
+    expect(result.environment).toBe(frame);
+    expect(result.args).toBe(args);
+  });
   it('restores actual tool defaults after private launch-frame env replacement', () => {
     const root = fixture(); const home = root + '/home/session/home';
     vi.stubEnv('OPENAI_API_KEY', 'host-secret-must-not-pass');

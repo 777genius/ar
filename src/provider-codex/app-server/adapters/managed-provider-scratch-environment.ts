@@ -5,6 +5,20 @@ export const managedScratchToolEnvironmentKeys = [
   'PIP_CACHE_DIR', 'UV_CACHE_DIR', 'GOCACHE', 'GOMODCACHE',
 ] as const;
 
+/** Bootstrap-only config overlay: Codex 0.160 resolves :tmpdir from its actual
+ * environment. Grant that verified leaf only in the named writer profile;
+ * the reader, root denial and existing secret/code rules stay intact. */
+export function managedProviderScratchLaunch(
+  frameEnvironment: Readonly<Record<string, string>>,
+  frameArguments: readonly string[],
+): Readonly<{ environment: Readonly<Record<string, string>>; args: readonly string[] }> {
+  const environment = managedProviderScratchEnvironment(frameEnvironment);
+  // The verifier returns the original object only for non-managed providers.
+  return { environment, args: environment === frameEnvironment ? frameArguments : [
+    ...frameArguments, '--config', 'permissions.hosted-project-write.filesystem.:tmpdir="write"',
+  ] };
+}
+
 /** Runs inside the installed managed provider bootstrap, after its descriptor
  * and final storage guards. The launch frame never selects this boundary. */
 export function managedProviderScratchEnvironment(
