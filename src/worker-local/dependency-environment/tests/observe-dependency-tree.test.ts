@@ -4,7 +4,7 @@ import { fstatSync, readdirSync, readlinkSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
@@ -208,6 +208,52 @@ describe.skipIf(process.platform !== "linux")("dependency full-tree inventory", 
       expect(await observeDependencyTree({ workspacePath: join(f.path, "alias"), treeName: "node_modules", limits }))
         .toEqual({ status: Status.Incomplete, reason: Failure.UnsafeNamespace });
     } finally { await f.cleanup(); }
+  });
+
+  // RED on the old initial comparator: real sibling creation after lstat
+  // changes ancestor nlink/mtime/ctime without changing the selected tree.
+  it.each(["unrelated-output", "replacement", "mode"] as const)("checks ancestor identity across genuine IO with %s", async change => {
+    const f = await fixture(), held = f.path + ".held";
+    try {
+      const before = complete(await f.observe()), ancestor = await lstat(f.path, { bigint: true });
+      const actualLstat = fs.lstat;
+      let mutated = false;
+      // Use the existing mutable TEST module projection that the observer imports.
+      // Only scheduling is controlled: every returned Stat and all IO are real.
+      const gate = vi.spyOn(fs, "lstat").mockImplementation(async (path, options) => {
+        const actual = await actualLstat(path, options);
+        if (!mutated && Buffer.isBuffer(path) && path.toString().startsWith("/proc/self/fd/") &&
+            path.toString().endsWith("/" + basename(f.path))) {
+          mutated = true;
+          if (change === "unrelated-output") await mkdir(join(f.path, "TEST-unrelated-output"));
+          if (change === "replacement") {
+            await rename(f.path, held); await mkdir(f.path, { mode: 0o700 });
+            await rename(join(held, "node_modules"), f.tree);
+          }
+          if (change === "mode") await chmod(f.path, 0o755);
+        }
+        return actual;
+      });
+      try {
+        const observed = await f.observe();
+        expect(mutated).toBe(true);
+        const current = await actualLstat(f.path, { bigint: true });
+        if (change === "unrelated-output") {
+          expect([current.dev, current.ino, current.mode]).toEqual([ancestor.dev, ancestor.ino, ancestor.mode]);
+          expect(current.nlink).toBeGreaterThan(ancestor.nlink);
+          expect((await actualLstat(join(f.path, "TEST-unrelated-output"))).isDirectory()).toBe(true);
+          const completeAfter = complete(observed);
+          expect(completeAfter.tree).toEqual(before.tree);
+          expect(completeAfter.canonicalBytes).toEqual(before.canonicalBytes);
+          expect(completeAfter.digest).toBe(before.digest);
+        } else {
+          expect(observed).toEqual({ status: Status.Incomplete, reason: Failure.IdentityChanged });
+          if (change === "replacement") expect(current.ino).not.toBe(ancestor.ino);
+          else expect(current.mode).not.toBe(ancestor.mode);
+        }
+        expect(await readFile(f.file, "utf8")).toBe("abc");
+      } finally { gate.mockRestore(); }
+    } finally { await f.cleanup(); await rm(held, { recursive: true, force: true }); }
   });
 
   // RED before the fix: unrelated output creation changes ancestor nlink/ctime

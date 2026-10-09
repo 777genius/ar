@@ -1,3 +1,5 @@
+import { safeNativeWebFromError } from "./app-server/domain/app-server-usage-error";
+import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained } from "./hosted-mimo-worker-origin";
 import { join } from "node:path";
@@ -236,6 +238,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
 
     let materialized: CodexMaterializedSession | null = null;
     let engineEntered = false;
+    const returned = new AppServerReturnedEvidence();
     const outputAbortController = new AbortController();
     const outputAbortSignal = AbortSignal.any([
       input.abortSignal,
@@ -329,11 +332,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
           : await this.runLogicalThread({
               engineInput,
               logicalThread: input.logicalThread,
+              returned,
             });
       const result =
         logicalThreadResult === undefined
           ? await this.engine.run(engineInput)
           : logicalThreadResult;
+      returned.capture(result);
       this.executionLifetime?.assertActive(outputAbortSignal);
       textDeltaRedactor?.flush();
       if (result.status === "waiting_for_input") {
@@ -352,6 +357,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
             durationMs: Date.now() - startedAt,
             finishReason: "waiting_for_input",
             ...(result.usage === undefined ? {} : { usage: result.usage }),
+            ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
           },
           warnings: result.warnings,
         };
@@ -376,21 +382,25 @@ export class CodexJsonAgentDriver implements AgentDriver {
           durationMs: Date.now() - startedAt,
           finishReason: "completed",
           ...(result.usage === undefined ? {} : { usage: result.usage }),
+          ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
         },
         warnings: [...result.warnings, ...snapshot.warnings],
       };
     } catch (error) {
+      error = returned.retain(error);
       textDeltaRedactor?.discard();
       const outputFailure =
         !input.abortSignal.aborted && outputAbortController.signal.aborted
           ? outputAbortController.signal.reason
           : error;
       const failure = codexExecutionFailure(outputFailure, input.redactor);
+      const nativeWeb = safeNativeWebFromError(error, input.redactor);
       return {
         ...failure,
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(nativeWeb === undefined ? {} : { nativeWeb }),
           ...(usageFromError(error)
             ? { usage: usageFromError(error)! }
             : {}),
@@ -511,6 +521,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   private async runLogicalThread(input: {
     readonly engineInput: Parameters<CodexExecutionEngine["run"]>[0];
     readonly logicalThread: ProviderLogicalThreadExecution;
+    readonly returned: AppServerReturnedEvidence;
   }) {
     if (!this.engine.runLogicalThread) {
       throw new Error("codex_logical_thread_unsupported");
@@ -527,6 +538,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         ? {}
         : { previousCheckpoint: input.logicalThread.previousCheckpoint }),
     });
+    input.returned.capture(result);
     await input.logicalThread.onCheckpoint({
       checkpoint: result.providerCheckpoint,
       outcome: result.outcome,
@@ -615,6 +627,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
             durationMs: Date.now() - startedAt,
             finishReason: "waiting_for_input",
             ...(result.usage === undefined ? {} : { usage: result.usage }),
+            ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
           },
           warnings: result.warnings,
         };
@@ -640,6 +653,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
           durationMs: Date.now() - startedAt,
           finishReason: "completed",
           ...(result.usage === undefined ? {} : { usage: result.usage }),
+          ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
         },
         warnings: [...result.warnings, ...snapshot.warnings],
       };
@@ -647,11 +661,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
       this.managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
       const failure = codexExecutionFailure(error, input.redactor);
+      const nativeWeb = safeNativeWebFromError(error, input.redactor);
       return {
         ...failure,
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(nativeWeb === undefined ? {} : { nativeWeb }),
           ...(usageFromError(error)
             ? { usage: usageFromError(error)! }
             : {}),
