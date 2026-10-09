@@ -1,3 +1,4 @@
+import { parseNativeWebEvidence, type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { createHash } from "node:crypto";
 import type {
   AgentUsage,
@@ -60,6 +61,7 @@ export type ManagedRunWorkerResult = {
   readonly outputText: string;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly warnings: readonly {
     readonly code: string;
     readonly safeMessage: string;
@@ -72,6 +74,7 @@ export type ManagedRunWorkerResult = {
   readonly resumeHandle: ManagedRunResumeHandle;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly warnings: readonly {
     readonly code: string;
     readonly safeMessage: string;
@@ -229,6 +232,7 @@ export class FileBackendCodexManagedRunCoordinator {
         ...(waiting.telemetry?.usage === undefined
           ? {}
           : { usage: waiting.telemetry.usage }),
+        ...(waiting.telemetry?.nativeWeb === undefined ? {} : { nativeWeb: parseNativeWebEvidence(waiting.telemetry.nativeWeb) }),
         warnings: waiting.warnings,
       };
     }
@@ -241,6 +245,7 @@ export class FileBackendCodexManagedRunCoordinator {
       ...(result.telemetry?.usage === undefined
         ? {}
         : { usage: result.telemetry.usage }),
+      ...(result.telemetry?.nativeWeb === undefined ? {} : { nativeWeb: parseNativeWebEvidence(result.telemetry.nativeWeb) }),
       warnings: result.warnings,
     };
   }
@@ -429,9 +434,23 @@ export class FileBackendCodexManagedRunCoordinator {
   }
 }
 
+/** Ephemeral provider-origin facts, kept separate from editable failure details.
+ * Durable replay without this error supplies no trusted native observations. */
+export class ManagedRunNativeWebError extends SubscriptionWorkerError {
+  readonly nativeWeb: NativeWebEvidence;
+  constructor(result: Extract<ProviderTaskResult, { readonly status: "failed" }>, nativeWeb: NativeWebEvidence) {
+    super("subscription_worker_run_failed", result.failure.safeMessage, {
+      ...(result.telemetry?.usage === undefined ? {} : { usage: result.telemetry.usage }),
+      details: { code: result.failure.code, ...(result.failure.details ?? {}) },
+    });
+    this.nativeWeb = parseNativeWebEvidence(nativeWeb);
+  }
+}
+
 export function managedRunFailureToWorkerError(
   result: Extract<ProviderTaskResult, { readonly status: "failed" }>,
 ): SubscriptionWorkerError {
+  if (result.telemetry?.nativeWeb !== undefined) return new ManagedRunNativeWebError(result, result.telemetry.nativeWeb);
   return new SubscriptionWorkerError(
     "subscription_worker_run_failed",
     result.failure.safeMessage,

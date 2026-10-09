@@ -1,4 +1,5 @@
-import { custodyEnrollmentJobId, managedReservations, assertActivationSession, ordinaryUnitGroup } from "./hosted-activation-validation";
+import { assertHostedOrdinaryDependencyNotAdopted } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
+import { parseHostedCustodyEnrollment, managedReservations, assertActivationSession, ordinaryUnitGroup } from "./hosted-activation-validation";
 import type { HostedForegroundRequest } from "./hosted-foreground-request-custody";
 import type { ChildProcess } from "node:child_process";
 import { assertOrdinaryInstallationRuntimeWait, retainOrdinaryInstallationReservation, retainOrdinaryInstallationChild, bindOrdinaryInstallationReady, ordinaryInstallationSpawnCustody } from "./hosted-ordinary-installation-owned";
@@ -49,6 +50,7 @@ export class HostedInstallationActivationStore {
       const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       const origin = readHostedOrdinaryBirth(jobId);
       assertInspectedInstallation(origin.installation); assertActivationSession(origin.activation, session);
+      assertHostedOrdinaryDependencyNotAdopted(fence, origin.birth.workspacePath);
       const binding = readHostedDependencyBinding(jobId);
       if (!binding || binding.installationId !== origin.installation.installationId || binding.runtimeSha !== origin.installation.runtimeSha ||
           binding.workspace.canonicalPath !== origin.birth.workspacePath || binding.jobRootDir !== origin.birth.jobRootDir ||
@@ -195,7 +197,7 @@ export class HostedInstallationActivationStore {
       const binding = inspectedInstallation();
       kernel.verifyExclusiveInventory(fence); kernel.verifyDescriptorBoundary();
       const enrollment = required("readonly-enrollment.json");
-      parseHostedCustodyEnrollment(enrollment);
+      parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment));
       const epoch = new HostedReadonlyEpochStore().readEpoch();
       if (epoch.hostId !== binding.hostId || epoch.identity.runtimeSha !== binding.runtimeSha ||
           epoch.identity.runtimeManifestSha256 !== binding.runtimeManifestSha256 ||
@@ -249,6 +251,7 @@ export class HostedInstallationActivationStore {
       kernel.verifyExclusiveInventory(fence); kernel.verifyDescriptorBoundary();
       const creator = readHostedReadonlyHostInventory().ordinaryCreators.find(row => row.creatorId === creatorId);
       if (!creator) invalid();
+      assertHostedOrdinaryDependencyNotAdopted(fence, creator.workspacePath);
       readHostedChildSlot(creator);
       const birth = parseHostedOrdinaryBirth({ schemaVersion: 1, installationId: installation.installationId,
         jobId: creator.jobId, jobRootDir: creator.jobRootDir, workspacePath: creator.workspacePath, origin: HostedOriginKind.Ordinary });
@@ -316,6 +319,7 @@ export class HostedInstallationActivationStore {
       row.launch.command === command && row.launch.cwd === cwd && JSON.stringify(row.launch.args) === JSON.stringify(args));
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
+    assertHostedOrdinaryDependencyNotAdopted(fence, creator.workspacePath);
     const childSlot = readHostedChildSlot(creator);
     if (correlation && !childSlot) invalid();
     const childBudget = childSlot ? new ChildExecutionBudget(childSlot.lifetime) : undefined;
@@ -400,6 +404,7 @@ export class HostedInstallationActivationStore {
       const revalidate = () => {
       const launch = this.ordinaryLaunch;
       if (!launch) invalid();
+      assertHostedOrdinaryDependencyNotAdopted(fence, launch.start.workspacePath);
       const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(launch.start.jobId);
       assertInspectedInstallation(installation);
       assertActivationSession(activation, new HostedReadonlyHostKernel().operatorSession());
@@ -552,7 +557,7 @@ export class HostedInstallationActivationStore {
     const retained = this.serialized(fence => {
       const { installation, activation } = readHostedInstallationActivation();
       const enrollment = readHostedActivationBytes("readonly-enrollment.json");
-      if (enrollment && parseHostedCustodyEnrollment(enrollment) === identity.jobId) return undefined;
+      if (enrollment && parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment)) === identity.jobId) return undefined;
       assertInspectedInstallation(installation);
       if (isHostedOrdinaryRuntime()) {
         const origin = readRetainedOrdinaryRuntime(fence);
@@ -638,7 +643,7 @@ export class HostedInstallationActivationStore {
     const retained = this.serialized(fence => {
       const activation = this.read();
       kernel.operatorSession();
-      if (parseHostedCustodyEnrollment(required("readonly-enrollment.json")) !== jobId) invalid();
+      if (parseHostedCustodyEnrollment(decodeHostedActivationBytes(required("readonly-enrollment.json"))) !== jobId) invalid();
       this.publish(fence, { ...activation, generation: activation.generation + 1, phase: HostedActivationPhase.Closed });
       const store = new HostedReadonlyEpochStore();
       const managed = store.withHeldFence(fence, () => {
@@ -749,7 +754,7 @@ export class HostedInstallationActivationStore {
   private retainManagedEnrollment(fence: HostedActivationFence): void {
     const activation = this.readCommitted(fence), bytes = readHostedActivationBytes("readonly-enrollment.json");
     if (!bytes) { if (activation.exclusiveEnrollmentSha256 !== null) invalid(); return; }
-    parseHostedCustodyEnrollment(bytes);
+    parseHostedCustodyEnrollment(decodeHostedActivationBytes(bytes));
     const birth = parseHostedCustodyEpoch(decodeHostedActivationBytes(bytes));
     const installation = parseHostedInstallation(decodeHostedActivationBytes(required("host-installation.json")));
     if (birth.hostId !== activation.hostId || birth.identity.runtimeSha !== installation.runtimeSha ||
@@ -810,7 +815,7 @@ export function readHostedInstallationActivation(): {
   const epochBytes = readHostedActivationBytes("readonly-epoch.json");
   if (readHostedActivationBytes("readonly-epoch.next")) throw new Error("hosted_activation_publication_recovery_required");
   if (enrollment) {
-    const jobId = parseHostedCustodyEnrollment(enrollment);
+    const jobId = parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment));
     if (!epochBytes) invalid();
     const epoch = parseHostedCustodyEpoch(decodeHostedActivationBytes(epochBytes));
     const birth = parseHostedCustodyEpoch(decodeHostedActivationBytes(enrollment));
@@ -853,7 +858,7 @@ function readRetainedOrdinaryBirth(jobId: string) {
   // Partial managed enrollment also takes priority over an older ordinary birth.
   const enrollment = readHostedActivationBytes("readonly-enrollment.json");
   if (enrollment) {
-    const value = parseHostedCustodyEnrollment(enrollment);
+    const value = parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment));
     if (value === jobId) invalid();
   }
   return { installation, activation, birth, originSha256: row.birthSha256 };
@@ -893,10 +898,6 @@ function readRetainedOrdinaryRuntime(fence: HostedActivationFence) {
   assertActivationSession(activation, kernel.ordinaryRuntimeSession(start));
   kernel.verifyDescriptorBoundary();
   return Object.freeze({ ...origin, start, creator, reservation: row, launch: creator.launch });
-}
-function parseHostedCustodyEnrollment(bytes: Buffer): string {
-  const birth = parseHostedCustodyEpoch(decodeHostedActivationBytes(bytes));
-  return custodyEnrollmentJobId(birth);
 }
 function required(name: string): Buffer {
   const bytes = readHostedActivationBytes(name);
@@ -955,7 +956,7 @@ function assertNoManagedOrigin(birth: HostedOrdinaryBirth): string | null {
   if (readHostedPrivateBytes(join(hostedReadonlyPolicyRoot, name), 64 * 1024)) invalid();
   if (readHostedActivationBytes("codex-readonly-custody/" + name) || readHostedActivationBytes("codex-readonly-revoked/" + name)) invalid();
   const enrollment = readHostedActivationBytes("readonly-enrollment.json");
-  if (enrollment && parseHostedCustodyEnrollment(enrollment) === jobId) invalid();
+  if (enrollment && parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment)) === jobId) invalid();
   const grantBytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, name), 4096);
   if (grantBytes) {
     const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(grantBytes));

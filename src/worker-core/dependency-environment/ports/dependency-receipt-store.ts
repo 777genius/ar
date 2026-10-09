@@ -27,6 +27,13 @@ export interface DependencyReceiptStore {
   read(workspace: DependencyWorkspaceIdentity): DependencyReceipt | null;
   compareAndSwap(workspace: DependencyWorkspaceIdentity, expectedRevision: number | null,
     next: DependencyReceipt): DependencyReceipt;
+  // Fixed trusted composition must verify the held owner and factual root;
+  // these methods publish no active continuity or generated authority.
+  retireReady(workspace: DependencyWorkspaceIdentity, expectedRevision: number,
+    expectedReference: DependencyCommittedReceiptReference,
+    next: Extract<DependencyReceipt, { state: DependencyReceiptState.Unverified }>): DependencyCommittedUnverifiedReceipt;
+  publishFactualUnverified(workspace: DependencyWorkspaceIdentity,
+    next: Extract<DependencyReceipt, { state: DependencyReceiptState.Unverified }>): DependencyCommittedUnverifiedReceipt;
   getCommittedReady(workspace: DependencyWorkspaceIdentity, revision: number): DependencyCommittedReadyReceipt;
   getCommittedUnverified(workspace: DependencyWorkspaceIdentity, revision: number): DependencyCommittedUnverifiedReceipt;
   getCommittedAbsent(workspace: DependencyWorkspaceIdentity, revision: number): DependencyCommittedAbsentReceipt;

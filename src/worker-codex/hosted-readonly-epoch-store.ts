@@ -1,3 +1,4 @@
+import { assertHostedReadonlyDependencyReadyPublication } from "./hosted-readonly-dependency-publication";
 import { closeSync, constants, fsyncSync, openSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { HostedCustodyPhase, HostedCustodyRequirement, HostedCustodyReservationState, parseHostedCustodyEpoch,
@@ -17,6 +18,13 @@ const nextPath = join(readonlySupervisorRoot, "readonly-epoch.next");
  * A crash between next-file creation and rename retains that file as evidence. */
 export class HostedReadonlyEpochStore {
   private locked = false;
+  private heldFence: HostedActivationFence | undefined;
+
+  /** Actual live publication mutex only; never retained across an await. */
+  publicationFence(): HostedActivationFence {
+    if (!this.locked || !this.heldFence) throw new Error("hosted_custody_common_fence_required");
+    assertHostedActivationFence(this.heldFence); return this.heldFence;
+  }
 
   readEpoch(): HostedCustodyEpoch {
     const epoch = this.readCommittedEpoch();
@@ -111,7 +119,7 @@ export class HostedReadonlyEpochStore {
   withHeldFence<T>(fence: HostedActivationFence, action: () => T, recoverPublication = false): T {
     assertHostedActivationFence(fence);
     if (this.locked) throw new Error("hosted_custody_common_fence_required");
-    this.locked = true;
+    this.locked = true; this.heldFence = fence;
     try {
       this.readCommittedEpoch();
       const pending = readHostedPrivateBytes(nextPath, 64 * 1024);
@@ -121,7 +129,7 @@ export class HostedReadonlyEpochStore {
       }
       if (recoverPublication) this.publishEpoch({ ...this.readEpoch(), phase: HostedCustodyPhase.Closed });
       return action();
-    } finally { this.locked = false; }
+    } finally { this.heldFence = undefined; this.locked = false; }
   }
 
   publishEpoch(value: HostedCustodyEpoch): void {
@@ -169,6 +177,7 @@ export class HostedReadonlyEpochStore {
             record.creatorId !== current.creatorId || (record.state === HostedCustodyReservationState.Terminal &&
               current.state !== HostedCustodyReservationState.Terminal);
         })) throw new Error("hosted_custody_epoch_replacement_denied");
+    if (reopening) assertHostedReadonlyDependencyReadyPublication(this.publicationFence(), next);
     const bytes = Buffer.from(JSON.stringify(next) + "\n");
     if (bytes.length > 64 * 1024) throw new Error("hosted_custody_epoch_invalid");
     // create-only + byte-identical replay preserves partial publication. A
