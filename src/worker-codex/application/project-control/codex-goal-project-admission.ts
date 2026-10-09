@@ -105,6 +105,11 @@ export type CodexProjectAdmissionDeps = {
   readonly readWriterWritableRoots?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<ProjectAdmissionWriterObservation>;
+  /** Owner reconciliation outside topology; returned reader must cold-check
+   * exact retained authority and never treat the prepared decision as a permit. */
+  readonly prepareWriterObservation?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<() => Promise<ProjectAdmissionWriterObservation>>;
   readonly observeManifestRuntime?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<{

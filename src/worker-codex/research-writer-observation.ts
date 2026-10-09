@@ -6,7 +6,7 @@ import { assertResearchProjectLaunchBindingCurrent } from "./research-project-la
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
-import { researchProviderReservationLimit, researchProviderUnits } from "./research-launch-lifecycle";
+import { researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
 
 function optionalPrivateRecord(path: string): Buffer | undefined {
@@ -68,4 +68,36 @@ export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobMa
   } catch {
     return { status: "unknown" };
   }
+}
+
+/** Prepare actual terminal closure outside publication coordination. The retained
+ * reader checks bytes again, so a successor grant/active slot cannot inherit it. */
+export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
+  const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
+  try {
+    assertResearchInitialRoot(true);
+    const authority = researchJobAuthority(manifest.jobId), activePath = join(authority, "active.json");
+    if (optionalPrivateRecord(activePath) !== undefined) return async () => await observeResearchJobWriterAuthority(manifest);
+    const terminalPath = join(authority, "last-terminal.json"), grantPath = join(authority, "grant.json");
+    const terminalBytes = researchRead(terminalPath), grantBytes = researchRead(grantPath);
+    const current = terminalResearchStart(manifest.jobId), { spec } = current;
+    const binding = spec.projectLaunchBinding;
+    if (!binding || spec.request.jobId !== manifest.jobId || spec.request.taskId !== manifest.taskId ||
+        spec.request.jobRootDir !== manifest.jobRootDir || spec.request.workspacePath !== manifest.workspacePath ||
+        spec.request.promptPath !== manifest.promptPath || spec.request.modelBackend !== manifest.modelBackend ||
+        researchHash(grantBytes) !== spec.grantSha256 || spec.runtimeDirectory !== installedResearchRuntimeDirectory()) return unknown;
+    const assertProjectBytes = await assertResearchProjectLaunchBindingCurrent(binding, spec.request);
+    const read = async (): Promise<ProjectAdmissionWriterObservation> => {
+      try {
+        assertResearchInitialRoot(true);
+        if (optionalPrivateRecord(activePath) !== undefined || !researchRead(terminalPath).equals(terminalBytes) ||
+            !researchRead(grantPath).equals(grantBytes) || !researchRead(join(current.directory, "spec.json")).equals(current.bytes)) return { status: "unknown" };
+        assertProjectBytes();
+        return { status: "released" };
+      } catch { return { status: "unknown" }; }
+    };
+    // Preparation also has an async gap. A changed origin is never retained.
+    if ((await read()).status !== "released") return unknown;
+    return read;
+  } catch { return unknown; }
 }

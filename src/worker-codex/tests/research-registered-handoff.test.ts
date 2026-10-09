@@ -8,7 +8,8 @@ import { prepareProjectResearchLaunch } from "../research-project-launch-adapter
 import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorization } from "../research-project-launch-authorization";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
-import { bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { prepareResearchJobWriterObservation } from "../research-writer-observation";
+import { bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
 import { cancelResearchLaunch, cancelRegisteredResearchLaunch } from "../research-launch-lifecycle";
 import { researchHash, researchRead } from "../research-launch-files";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
@@ -460,6 +461,28 @@ describe("native project launch authorization", () => {
     expect(() => captured.assertAuthorityCurrent()).toThrow();
     host.group = "/user.slice/TEST-operator.scope";
     expect(() => grantOwnedMimoWorkerLaunch(started.jobId, selected.request.jobRootDir, selected.request.workspacePath)).toThrow();
+    expect(host.authReads).toBe(0);
+  });
+  // A terminal closure may release only its exact owner; a successor must
+  // invalidate the prepared reader without systemd observation under topology.
+  it.each(["grant", "active"] as const)("cold-checks a prepared native terminal release against successor %s", async successor => {
+    const selected = await nativeProjectSelection();
+    const start = await prepareProjectResearchLaunch({ registryRootDir: registry,
+      controllerJobId: "TEST-controller", reservedLaunch: selected.reservedLaunch });
+    const started = await start!(), authority = researchJobAuthority(started.jobId);
+    const activePath = join(authority, "active.json"), activeBytes = researchRead(activePath);
+    cancelResearchLaunch(started.jobId);
+    const read = await prepareResearchJobWriterObservation(selected.manifest);
+    const calls = host.calls.length;
+    expect(await read()).toEqual({ status: "released" });
+    expect(host.calls).toHaveLength(calls);
+    if (successor === "active") writeFileSync(local(activePath), activeBytes, { mode: 0o600 });
+    else {
+      const path = join(authority, "grant.json"), grant = JSON.parse(researchRead(path).toString());
+      writeFileSync(local(path), JSON.stringify({ ...grant, grantId: "00000000-0000-4000-8000-000000000001" }), { mode: 0o600 });
+    }
+    expect(await read()).toEqual({ status: "unknown" });
+    expect(host.calls).toHaveLength(calls);
     expect(host.authReads).toBe(0);
   });
   // RED: revocation between broker authorization and native grant consumption.
