@@ -10,12 +10,6 @@ import type {
   RedactorPort,
   RunnerPort,
 } from "@vioxen/subscription-runtime/core";
-import {
-  AgentRuntimeBudgetEnforcement,
-  AgentRuntimeBudgetMetric,
-  AgentRuntimeExecutionMode,
-  AgentRuntimeTurnLimitEnforcement,
-} from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "./codex-execution-profile";
 import { resolveCodexExecutionProfile } from "./codex-execution-profile";
 import type {
@@ -82,7 +76,7 @@ import {
   isCodexAppServerRateLimitsRejectedError,
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
-import { appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
+import { appServerEngineCapabilities, appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
 import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
 export type {
@@ -124,37 +118,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       "codex_app_server_startup_timeout_invalid",
     );
     codexAppServerRolloutBudgetConfig(options.rolloutBudget);
-    this.capabilities = {
-      supportsStructuredOutput: true,
-      supportsJsonEvents: true,
-      supportsThreadResume: false,
-      requiresSchemaFile: false,
-      taskExecutionCapabilities: [
-        { mode: AgentRuntimeExecutionMode.SingleRun },
-        ...(options.goalMode
-          ? [{
-              mode: AgentRuntimeExecutionMode.Goal,
-              maxCompletionConditionChars: 4_000,
-            } as const]
-          : []),
-      ],
-      ...(options.goalMode
-        ? {
-            turnLimitEnforcement:
-              AgentRuntimeTurnLimitEnforcement.ProviderNative,
-          }
-        : {}),
-      ...(options.rolloutBudget
-        ? {
-            budgetCapabilities: [
-              {
-                metric: AgentRuntimeBudgetMetric.WeightedTokens,
-                enforcement: AgentRuntimeBudgetEnforcement.ProviderNative,
-              },
-            ],
-          }
-        : {}),
-    };
+    this.capabilities = appServerEngineCapabilities(options);
     if (options.childBudget && (!options.goalMode || options.nativeToolSurface !== "disabled" ||
         options.cleanThreadPrewarm !== false || options.fallback !== undefined || options.hostedControllerTools !== undefined ||
         options.maxGoalTurns !== options.childBudget.lifetime.maxGoalTurns)) throw new Error("child_engine_confinement_conflict");

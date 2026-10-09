@@ -1,3 +1,4 @@
+import type { CodexAppServerClientOptions } from "./app-server-client-options";
 import { nativeWebId } from "@vioxen/subscription-runtime/core";
 import { AppServerNativeWebCapture } from "./app-server-native-web";
 import { appServerThreadToolPolicy } from "./app-server-thread-tool-policy";
@@ -11,20 +12,13 @@ import { AppServerUsageError } from "../domain/app-server-usage-error";
 import { appServerTurnStartParams } from "./app-server-turn-start-params";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
-import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
-import {
-  CodexModelBackend,
-} from "../../codex-model-backend";
 import type {
-  CodexMaterializedSession,
   CodexReasoningEffort,
   CodexSandboxMode,
   CodexServiceTier,
 } from "../../codex-json-execution-engine";
 import type {
   CodexAppServerChildProcess,
-  CodexAppServerChildProcessSignaler,
-  CodexAppServerProcessFactory,
 } from "./app-server-process-port";
 import {
   appServerGoalObjectiveLimitError,
@@ -34,8 +28,6 @@ import {
   codexAppServerSandboxPolicy,
   codexAppServerThreadRuntimePolicy,
   type AppServerWarning,
-  type CodexAppServerCommandApprovalPolicy,
-  type CodexAppServerNativeToolSurface,
   type CodexAppServerSandboxPolicy,
   type CodexThreadGoal,
   type CodexThreadGoalStatus,
@@ -53,9 +45,6 @@ import {
   type TurnState,
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
-import {
-  type CodexAppServerRolloutBudget,
-} from "../domain/app-server-rollout-budget";
 import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import {
@@ -87,14 +76,11 @@ import { handleAppServerStdout } from "./app-server-stdout-handler";
 import {
   AppServerRateLimitsMonitor,
   isCodexAppServerRateLimitsRejectedError,
-  type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
 import { appServerThreadStartParams } from "./app-server-thread-start-params";
 import { PublicResearchToolSession } from "./public-research-source-tool";
-import type { PublicResearchSourceReader } from "./public-research-source-port";
-import { codexProviderWebSearchMode, CodexWebSearchMode, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
-import { type HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import { codexProviderWebSearchMode, CodexWebSearchMode, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 import { AppServerDynamicToolHandler } from "./app-server-dynamic-tool-handler";
 import { modelUnavailableError } from "./app-server-model-unavailable";
 export {
@@ -137,32 +123,7 @@ export class CodexAppServerClient {
   private readonly rateLimitsMonitor: AppServerRateLimitsMonitor | null;
 
   constructor(
-    private readonly options: {
-      readonly codexBinaryPath: string;
-      readonly childBudget?: ChildExecutionBudget;
-      readonly sourceEnv: Readonly<Record<string, string | undefined>>;
-      readonly providerEgressPolicy?: CodexProviderEgressPolicy;
-      readonly publicSourceReader?: PublicResearchSourceReader;
-      readonly hostedPermissionProfiles?: boolean;
-      readonly processFactory: CodexAppServerProcessFactory;
-      readonly signalChildProcess: CodexAppServerChildProcessSignaler;
-      readonly session: CodexMaterializedSession;
-      readonly workspacePath: string;
-      readonly executionProfile: ResolvedCodexExecutionProfile;
-      readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-      readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
-      readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
-      readonly rolloutBudget?: CodexAppServerRolloutBudget;
-      readonly bypassHookTrust?: boolean;
-      readonly timeoutMs: number;
-      readonly startupTimeoutMs: number;
-      readonly reconnectGraceMs: number;
-      readonly maxOutputBytes: number;
-      readonly abortSignal: AbortSignal;
-      readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
-      /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
-      readonly modelBackend?: CodexModelBackend;
-    },
+    private readonly options: CodexAppServerClientOptions,
   ) {
     this.executionLifetime = observeAppServerExecutionLifetime(options.session, error => this.failProtocol(error));
     this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {

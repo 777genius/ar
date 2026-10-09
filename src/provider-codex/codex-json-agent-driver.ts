@@ -332,6 +332,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
           : await this.runLogicalThread({
               engineInput,
               logicalThread: input.logicalThread,
+              returned,
             });
       const result =
         logicalThreadResult === undefined
@@ -520,6 +521,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   private async runLogicalThread(input: {
     readonly engineInput: Parameters<CodexExecutionEngine["run"]>[0];
     readonly logicalThread: ProviderLogicalThreadExecution;
+    readonly returned: AppServerReturnedEvidence;
   }) {
     if (!this.engine.runLogicalThread) {
       throw new Error("codex_logical_thread_unsupported");
@@ -536,6 +538,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         ? {}
         : { previousCheckpoint: input.logicalThread.previousCheckpoint }),
     });
+    input.returned.capture(result);
     await input.logicalThread.onCheckpoint({
       checkpoint: result.providerCheckpoint,
       outcome: result.outcome,
