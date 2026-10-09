@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   runSubscriptionAgentRuntimeTaskCli,
   type AgentRuntimeTaskWorker,
@@ -489,57 +489,75 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     expect(overrideCalls.factory?.timeoutMs).toBeLessThanOrEqual(120_000);
   });
 
-  it("returns a timeout result when the worker run never resolves", async () => {
-    const stdout: string[] = [];
-    let aborted = false;
-    let disposed = false;
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          timeoutMs: 5,
-          task: {
-            kind: "structured-prompt",
-            prompt: "never finishes",
+  it("returns a timeout result when the worker run never resolves", async ({ onTestFinished }) => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    try {
+      const stdout: string[] = [];
+      let aborted = false;
+      let disposed = false;
+      let resolveWorkerEntered!: () => void;
+      const workerEntered = new Promise<void>((resolve) => {
+        resolveWorkerEntered = resolve;
+      });
+      const execution = runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "claude",
+          "--state-root",
+          "/tmp/runtime-state",
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            timeoutMs: 5,
+            task: {
+              kind: "structured-prompt",
+              prompt: "never finishes",
+            },
+          }),
+          env: {
+            SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
           },
         }),
-        env: {
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async run(job) {
-          job.abortSignal?.addEventListener("abort", () => {
-            aborted = true;
-          });
-          return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
-        },
-        async dispose() {
-          disposed = true;
-        },
-      }),
-    );
+        () => ({
+          async start() {},
+          async run(job) {
+            job.abortSignal?.addEventListener("abort", () => {
+              aborted = true;
+            });
+            resolveWorkerEntered();
+            return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
+          },
+          async dispose() {
+            disposed = true;
+          },
+        }),
+      );
 
-    expect(exitCode).toBe(1);
-    expect(aborted).toBe(true);
-    expect(disposed).toBe(true);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "failed",
-      failure: {
-        code: "task_timeout",
-      },
-    });
+      // The total deadline includes preflight; expire it only after run observes abort.
+      await workerEntered;
+      await vi.advanceTimersByTimeAsync(5);
+      const exitCode = await execution;
+
+      expect(exitCode).toBe(1);
+      expect(aborted).toBe(true);
+      expect(disposed).toBe(true);
+      expect(JSON.parse(stdout.join(""))).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "task_timeout",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a timeout result when the worker start never resolves", async () => {
