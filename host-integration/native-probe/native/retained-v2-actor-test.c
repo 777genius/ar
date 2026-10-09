@@ -23,6 +23,10 @@ static pid_t clone_child(int *pidfd) {
   struct clone_args args={.flags=CLONE_PIDFD,.pidfd=(uint64_t)(uintptr_t)pidfd,.exit_signal=SIGCHLD};
   pid_t parent=getpid();
   pid_t pid=(pid_t)syscall(SYS_clone3,&args,sizeof args);
+  if(pid<0){
+    int failure=errno;
+    fprintf(stderr,"actor TEST clone3(CLONE_PIDFD) failed: errno=%d (%s)\n",failure,strerror(failure));
+  }
   assert(pid>=0);
   if(!pid){assert(!prctl(PR_SET_PDEATHSIG,SIGKILL));
     if(getppid()!=parent)_exit(78);

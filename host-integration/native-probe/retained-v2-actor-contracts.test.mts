@@ -6,12 +6,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const fixture=process.env.NP_RETAINED_V2_ACTOR_TEST,entry=process.env.NP_RETAINED_V2_ACTOR_ENTRY;
 if(!fixture||!entry)throw new Error("actual separately compiled native actor TEST/entry required");
+// A signaled native fixture must expose its original C assertion/syscall error.
+// This diagnostic adds no retry, skip or substitute syscall/authority.
+function nativeDiagnostic(result: ReturnType<typeof spawnSync>): string {
+  return `native actor fixture: status=${result.status}, signal=${result.signal}, error=${String(result.error)}\nstdout:\n${result.stdout?.toString() ?? ""}\nstderr:\n${result.stderr?.toString() ?? ""}`;
+}
 for(const mode of ["protocol","whole-group","observer","refuse","birth-close","notifications"]) {
   test(`real original syscall boundary: ${mode}`,()=>{
     const directory=mkdtempSync(join(tmpdir(),"sr-native-b1a-contract-TEST-"));
     try {
       const result=spawnSync(fixture,[mode],{cwd:directory,env:{PATH:"/usr/bin:/bin"},timeout:6000});
-      assert.equal(result.error,undefined);assert.equal(result.signal,null);assert.equal(result.status,0,result.stderr.toString());
+      assert.equal(result.error,undefined,nativeDiagnostic(result));assert.equal(result.signal,null,nativeDiagnostic(result));assert.equal(result.status,0,result.stderr.toString());
       assert.deepEqual(readdirSync(directory),[]);
     }finally{rmSync(directory,{recursive:true,force:false});}
   });
@@ -22,7 +27,7 @@ test("actual post-READY filter denies new clone, path open and exec",{skip:proce
   const directory=mkdtempSync(join(tmpdir(),"sr-native-b1a-seal-TEST-"));
   try {
     const result=spawnSync(fixture,["seal"],{cwd:directory,env:{PATH:"/usr/bin:/bin"},timeout:6000});
-    assert.equal(result.error,undefined);assert.equal(result.signal,null);assert.equal(result.status,0,result.stderr.toString());
+    assert.equal(result.error,undefined,nativeDiagnostic(result));assert.equal(result.signal,null,nativeDiagnostic(result));assert.equal(result.status,0,result.stderr.toString());
     assert.deepEqual(readdirSync(directory),[]);
   }finally{rmSync(directory,{recursive:true,force:false});}
 });
@@ -31,7 +36,7 @@ for(const args of [[],[JSON.stringify({generation:1,held:true,pidfd:7,qualified:
     const directory=mkdtempSync(join(tmpdir(),"sr-native-b1a-entry-TEST-"));
     try {
       const result=spawnSync(entry,args,{cwd:directory,env:{PATH:"/usr/bin:/bin"},stdio:["ignore","pipe","pipe"],timeout:2000});
-      assert.equal(result.error,undefined);assert.equal(result.signal,null);assert.equal(result.status,77);assert.equal(result.stdout.length,0);assert.deepEqual(readdirSync(directory),[]);
+      assert.equal(result.error,undefined,nativeDiagnostic(result));assert.equal(result.signal,null,nativeDiagnostic(result));assert.equal(result.status,77);assert.equal(result.stdout.length,0);assert.deepEqual(readdirSync(directory),[]);
     }finally{rmSync(directory,{recursive:true,force:false});}
   });
 }
