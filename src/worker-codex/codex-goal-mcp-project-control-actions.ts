@@ -577,11 +577,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
               !isDeepStrictEqual(fresh.launch, loaded.launch)) {
               throw new Error("project_control_start_binding_changed_before_publication");
             }
-            const observation = await observeProjectPreStartContinuation({
-              manifest: fresh.manifest,
-              launch: fresh.launch,
-              ...(reviewedOutputId ? { reviewedOutputId } : {}),
-            });
+            const observation = fresh;
             if (observation.workerAlive ||
               (observation.status.workspaceDirty === true) !== (publicationBaseline.status.workspaceDirty === true) ||
               observation.status.resultExists !== publicationBaseline.status.resultExists ||
