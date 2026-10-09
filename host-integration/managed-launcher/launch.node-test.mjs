@@ -182,3 +182,27 @@ test('log descriptors reject foreign devices and hard links and close on failure
     else { await assert.rejects(openJobLogs('/TEST', job.unit, 2n, probe), /unsafe log/); assert.equal(closed, fault === 'directory' ? 0 : 1); }
   }
 });
+
+test("both supported launches derive tool bulk from admitted scratch tmp", async () => {
+  for (const request of [job, provider]) {
+    const { args } = await build(request);
+    const env = Object.fromEntries(args.filter(x => x.startsWith("--setenv=")).map(x => {
+      const value = x.slice(9), boundary = value.indexOf("=");
+      return [value.slice(0, boundary), value.slice(boundary + 1)];
+    }));
+    const tmp = `/TEST/jobs/${job.jobId}/tmp`;
+    for (const key of ["TMPDIR", "TMP", "TEMP", "GOTMPDIR"]) assert.equal(env[key], tmp);
+    for (const key of ["XDG_CACHE_HOME", "npm_config_cache", "COREPACK_HOME", "YARN_CACHE_FOLDER",
+      "PIP_CACHE_DIR", "UV_CACHE_DIR", "GOCACHE", "GOMODCACHE"])
+      assert.ok(env[key].startsWith(tmp + "/tool-caches"), key);
+    assert.equal(env.RUSTUP_HOME, undefined, "Retained scratch HOME toolchains remain selected");
+    assert.equal(env.CARGO_HOME, undefined, "Cargo credential lookup remains with admitted HOME");
+    assert.equal(env.HOME, `/TEST/jobs/${job.jobId}/home`);
+    assert.ok(args.includes(`--property=ReadWritePaths=/TEST/jobs/${job.jobId}`));
+  }
+});
+test("admission cannot supply a host HOME or tmp fallback", async () => {
+  for (const field of ["home", "tmp"]) {
+    await assert.rejects(build(job, {}, async () => ({ ...(await admit()), [field]: "/root/cache" })), /unsupported/);
+  }
+});

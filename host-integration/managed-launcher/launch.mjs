@@ -93,7 +93,17 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   const policy = await admit(request.jobId);
   if (!policy || !safePath(policy.storageRoot) || policy.storageRoot === '/') denied();
   const cwd = policy.workspace;
-  if (policy.jobRoot !== `${policy.storageRoot}/jobs/${request.jobId}` || cwd !== `${policy.jobRoot}/workspace`) denied();
+  if (policy.jobRoot !== `${policy.storageRoot}/jobs/${request.jobId}` || cwd !== `${policy.jobRoot}/workspace` ||
+      policy.home !== `${policy.jobRoot}/home` || policy.tmp !== `${policy.jobRoot}/tmp`) denied();
+  // Writable bulk is derived from the admitted job, never inherited host caches.
+  const bulk = `${policy.tmp}/tool-caches`;
+  const scratchEnv = {
+    TMPDIR: policy.tmp, TMP: policy.tmp, TEMP: policy.tmp, GOTMPDIR: policy.tmp,
+    XDG_CACHE_HOME: bulk, npm_config_cache: `${bulk}/npm`,
+    COREPACK_HOME: `${bulk}/corepack`, YARN_CACHE_FOLDER: `${bulk}/yarn`,
+    PIP_CACHE_DIR: `${bulk}/pip`, UV_CACHE_DIR: `${bulk}/uv`,
+    GOCACHE: `${bulk}/go-build`, GOMODCACHE: `${bulk}/go-mod`,
+  };
   for (const path of [nodePath, PAYLOAD_GUARD_PATH, MANAGED_LAUNCHER_PATH, ...trusted]) {
     if (path === policy.storageRoot || path.startsWith(policy.storageRoot + '/')) denied();
   }
@@ -118,7 +128,8 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   return { command: '/usr/bin/systemd-run', args: [
     ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}`] : ['--quiet', '--wait', '--pipe', '--collect']),
     `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
-    `--setenv=HOME=${policy.home}`, `--setenv=TMPDIR=${policy.tmp}`,
+    `--setenv=HOME=${policy.home}`,
+    ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
     ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
     `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
     '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
