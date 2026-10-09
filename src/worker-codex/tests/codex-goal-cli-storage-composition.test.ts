@@ -12,7 +12,8 @@ const harness = vi.hoisted(() => ({ hosted: false, ordinary: false, roots: new S
 // Replace only host discovery/delegation. The parser, scope guard, manifest
 // branch and runner/storage admission remain actual code. These TEST cases
 // qualify no native owner or successful provider execution.
-vi.mock("../hosted-readonly-goal-launch", () => ({
+vi.mock("../hosted-readonly-goal-launch", async original => ({
+  ...await original<typeof import("../hosted-readonly-goal-launch")>(),
   isHostedGoalLaunch: () => harness.hosted,
   routeHostedGoalLaunch: harness.route,
 }));
