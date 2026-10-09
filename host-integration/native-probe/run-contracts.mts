@@ -76,7 +76,7 @@ try {
   await mkdir(rawDirectory, { recursive: true });
   for (const name of ["read-request.mjs", "endpoint.mjs", "manager.mjs", "contract.mjs", "storage-policy.mjs"]) await copyFile(join(workspace, "host-integration/host-jobs", name), join(rawDirectory, name));
   const managedDirectory = join(build, "host-integration/managed-launcher"); await mkdir(managedDirectory, { recursive: true });
-  for (const name of ["launch.mjs", "profiles.mjs", "payload-guard.mjs"]) await copyFile(join(workspace, "host-integration/managed-launcher", name), join(managedDirectory, name));
+  for (const name of ["launch.mjs", "profiles.mjs", "payload-guard.mjs", "storage-pressure-guard.mjs"]) await copyFile(join(workspace, "host-integration/managed-launcher", name), join(managedDirectory, name));
   // The staged launcher receives the policy emitted by this same checked source
   // graph, without depending on the workspace's independently built dist.
   await writeFile(join(managedDirectory, "hosted-host-policy.mjs"),
