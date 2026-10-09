@@ -107,6 +107,64 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Strict emit Python envelope filesystem TEST in existing package job
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          mkdir -p dependency-python-envelope-package-root-evidence
+          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"package-job-four-root-filesystem-TEST-not-native-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-python-envelope-package-root-evidence/source.json
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node --version > dependency-python-envelope-package-root-evidence/node-version.txt
+          node node_modules/typescript/bin/tsc --version > dependency-python-envelope-package-root-evidence/typescript-version.txt
+          grep -Fxq 'Version 6.0.3' dependency-python-envelope-package-root-evidence/typescript-version.txt
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.ts \
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.ts \
+            scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json \
+            scripts/dependency-retention-os-test/assemble-current-full.ts \
+            .github/workflows/dependency-retention-os-registration-test.yml \
+            .github/workflows/ci.yml \
+            > dependency-python-envelope-package-root-evidence/source.sha256
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json 2>&1 | tee dependency-python-envelope-package-root-evidence/strict-emit.log
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js \
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js \
+            > dependency-python-envelope-package-root-evidence/emitted.sha256
+      - name: Require four actual root Linux filesystem envelope scenarios on existing ARC runner
+        run: |
+          set -o pipefail
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          if [ "$(id -u)" -eq 0 ]; then
+            env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TMPDIR="$RUNNER_TEMP" TEST_PYTHON_ENVELOPE_ROOT_CI=1 \
+              "$TEST_NODE" --test --test-reporter=tap \
+              "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js"
+          else
+            sudo -n env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TMPDIR="$RUNNER_TEMP" TEST_PYTHON_ENVELOPE_ROOT_CI=1 \
+              "$TEST_NODE" --test --test-reporter=tap \
+              "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js"
+          fi 2>&1 | tee dependency-python-envelope-package-root-evidence/root-tests.tap
+          TAP=dependency-python-envelope-package-root-evidence/root-tests.tap
+          grep -Eq '^ok [0-9]+ - complete native census reconciles all candidates and refuses late unknown source/bytecode$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native candidate metadata refuses hardlinks and writable source even with matching content$' "$TAP"
+          grep -Eq '^ok [0-9]+ - alias literal size participates in file bound and largest-file measurement$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native census refuses caller-owned fixture before reading candidate content # SKIP root-owned positive census requires separate Linux integration$' "$TAP"
+          grep -Fxq '# tests 17' "$TAP"
+          grep -Fxq '# pass 16' "$TAP"
+          grep -Fxq '# fail 0' "$TAP"
+          grep -Fxq '# skipped 1' "$TAP"
+          test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
+      - name: Retain package-job exact-source root filesystem TEST evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-python-envelope-package-root-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-python-envelope-package-root-evidence/
+          if-no-files-found: error
+
   crash-boundary-shards:
     permissions:
       contents: read
