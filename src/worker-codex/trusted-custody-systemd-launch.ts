@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
+import { parseResearchStartSpec, researchProviderSetupTimeoutMs, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { researchInvalid, researchName, researchPath } from "./research-launch-files";
 import { assertResearchProviderRoot, researchProviderProtectedPaths, ResearchRootMountAccess, type ResearchProviderRootPlan } from "./research-provider-root";
@@ -84,7 +84,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   assertResearchProviderRoot(rootPlan, spec, unit, home);
   const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no", "MountFlags=private",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
-    `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
+    `TimeoutStartSec=${researchProviderSetupAllowanceMs(request) / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "ProtectControlGroups=yes", "PrivateDevices=yes", "ProtectKernelModules=yes", "RestrictSUIDSGID=yes", "AmbientCapabilities=",
     "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes", "ProtectSystem=strict",

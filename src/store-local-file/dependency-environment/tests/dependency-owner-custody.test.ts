@@ -12,9 +12,9 @@ const id = "00000000-0000-4000-8000-000000000001";
 const association: DependencyProtectedReference = { path: "/TEST-protected/association.json", identity: { dev: "1", ino: "2" }, sha256: "a".repeat(64) };
 const launch = { installationId: id, bootId: id, runtimeSha: "b".repeat(40), grantDigest: "c".repeat(64), startId: id,
   unit: "subscription-runtime-ordinary-" + id + ".service" };
-async function fixture(legacy = false) {
+async function fixture(legacy = false, workspaceName = "workspace") {
   const path = await realpath(await mkdtemp(join(tmpdir(), "dependency-custody-TEST-")));
-  const rootPath = join(path, "protected"), workspacePath = join(path, "workspace");
+  const rootPath = join(path, "protected"), workspacePath = join(path, workspaceName);
   await mkdir(rootPath, { mode: 0o700 }); await mkdir(workspacePath, { mode: 0o700 });
   const stat = await lstat(workspacePath, { bigint: true });
   const workspace = { canonicalPath: workspacePath, dev: String(stat.dev), ino: String(stat.ino) };
@@ -70,6 +70,26 @@ describe.skipIf(process.platform !== "linux")("idle-only protected owner custody
       expect(await snapshot(f.rootPath)).toEqual(before);
     } finally { reopened?.close(); await f.cleanup(); }
   });
+  it.each(["sk-AAAAAAAAAAAAAAAA", "Bearer token", "line\nbreak", "delete\x7f"])(
+    "rejects unsafe idle-v2 workspace %j before mutex/publication without changing retained bytes or key", async workspaceName => {
+      const f = await fixture(false, workspaceName);
+      try {
+        expect(f.current.version).toBe(2);
+        const key = dependencyOwnerStorageName(f.workspace), original = await readFile(f.file);
+        const before = await snapshot(f.rootPath), next = modern(f.current);
+        expect(reason(() => f.store.compareAndSwap(f.workspace, f.current.revision, next))).toBe(Failure.InvalidRecord);
+        expect(await snapshot(f.rootPath)).toEqual(before);
+        expect(await readFile(f.file)).toEqual(original);
+        expect(dependencyOwnerStorageName(f.workspace)).toBe(key);
+        expect(f.store.read(f.workspace)).toEqual(f.current);
+        // Existing mutex would yield Busy if the v3 parser reached acquisition.
+        await writeFile(f.file.replace(/\.json$/, ".lock"), '{"version":1,"TEST":"retained-lock"}\n', { mode: 0o600 });
+        const held = await snapshot(f.rootPath);
+        expect(reason(() => f.store.compareAndSwap(f.workspace, f.current.revision, next))).toBe(Failure.InvalidRecord);
+        expect(await snapshot(f.rootPath)).toEqual(held);
+      } finally { await f.cleanup(); }
+    },
+  );
   it("rejects stale/nonincrementing revision, activity/epoch drift and nonidle proposed migration without effects", async () => {
     const f = await fixture();
     try {
