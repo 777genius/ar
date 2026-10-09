@@ -16,9 +16,12 @@ export async function codexGoalManifestRevision(path: string): Promise<string> {
 /** Serializes registry publication and relocation collision checks together. */
 export async function withCodexGoalRegistryMutation<T>(input: {
   readonly registryRootDir: string;
+  /** Trusted registered callers already witnessed an existing registry. Never
+   * recreate a lost root or its ancestors before their qualified lock/effect. */
+  readonly requireExistingRegistryRoot?: true;
   readonly effect: () => Promise<T>;
 }): Promise<T> {
-  await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
+  if (!input.requireExistingRegistryRoot) await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
   const registryRootDir = await realpath(input.registryRootDir);
   const locks = projectControlWorkspaceLocks(registryRootDir);
   const lease = await locks.acquire({
