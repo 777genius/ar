@@ -1,3 +1,4 @@
+import { isHostedDependencySignedTaskId } from "./hosted-dependency-root-purpose-record";
 /** Closed N3 initial-host CLI writer recipe. It validates configuration only;
  * the caller must independently resolve the installed start/fence/binding. */
 export function assertHostedDependencyParentRecipe(args: readonly string[], job: string, workspace: string): void {
@@ -21,7 +22,7 @@ export function assertHostedDependencyParentRecipe(args: readonly string[], job:
     }
   }
   const task = values.get("--task-id");
-  if (!task || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(task) || values.get("--job-root") !== job || values.get("--workspace") !== workspace) fail();
+  if (!isHostedDependencySignedTaskId(task) || values.get("--job-root") !== job || values.get("--workspace") !== workspace) fail();
   // Explicit finite scope removes both environment and HOME/~ default
   // resolution before the privileged account-capacity migration writer.
   if (values.get("--auth-root") !== `${job}/auth`) fail();

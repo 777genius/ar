@@ -76,7 +76,8 @@ export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence)
   const qualification = privatePin(root+"/"+dependencyToolQualificationRecordName(attempt.launch.startId),16384);
   const committed = readHostedDependencyCommittedReady(binding,receipt.revision);
   if (!encode(committed.receipt).equals(encode(receipt))) invalid();
-  const record: HostedDependencyRootPreparationRecord = {version:1,attempt,custodyReference:current.facts.association.reference,
+  const record: HostedDependencyRootPreparationRecord = {version:2,attempt,custodyReference:current.facts.association.reference,
+    providerReady:qualified.providerReady,
     qualification:qualification.reference,ready:committed.reference,readyRevision:receipt.revision,
     protectedProfile:profilePin.reference,config:configPin.reference,configAncestors:configPin.ancestors,durableHandoffRoot,scratchParent,authoredRoots,generatedRoots,sourceLookupAncestors};
   ensureHostedDependencyDirectory(root+"/dependency-root-preparations");

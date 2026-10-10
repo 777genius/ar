@@ -393,11 +393,11 @@ function fail(reason = DependencyAdmissionFailure.Unsupported): never { throw ne
 export function readCurrentHostedDependencyRootQualification(fence: HostedActivationFence): Readonly<{
   context: CurrentHostedDependencyOrigin; binding: HostedDependencyBinding; attempt: DependencyAttempt;
   inputs: HostedDependencyKeyInputs; receipt: Ready; readonlySources: readonly DependencyToolSourceRoot[];
-  phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running;
+  providerReady: DependencyToolReadyFacts; phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running;
 }> {
   if (!currentQualifiedEntry) fail(DependencyAdmissionFailure.StaleAttempt);
   const state = entryState(currentQualifiedEntry);
   assertHostedDependencyQualifiedToolEntry(currentQualifiedEntry,fence,state.phase);
   return Object.freeze({context:state.context,binding:state.binding,attempt:state.attempt,inputs:state.inputs,receipt:state.receipt,
-    readonlySources:state.readonlySources,phase:state.phase});
+    readonlySources:state.readonlySources,providerReady:currentEntry(state,state.phase),phase:state.phase});
 }
