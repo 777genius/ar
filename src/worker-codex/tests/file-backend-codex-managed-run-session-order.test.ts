@@ -45,24 +45,25 @@ async function fixture(mode:"failed"|"completed"|"waiting",rejectCompletion=fals
     const output = await coordinator.taskResultToOutput(result,{kind:"run",runId:waiting.runId,job:{prompt:"original test task"},attempt:1});
     if (output.status !== "waiting_for_input") throw new Error("fixture did not persist real waiting result"); seed = false; events.length = 0;
     return {events,write,persist,exported,complete,driver,resume:() => coordinator.resume({runId:output.runId,requestId:output.request.id,answer:"test answer",resumeHandle:output.resumeHandle}),
-      cleanup:async () => { write.release(); persist.release(); exported.release(); complete.release(); await driver.dispose(); await rm(root,{recursive:true,force:true}); }};
-  } catch (error) { await driver.dispose(); await rm(root,{recursive:true,force:true}); throw error; }
+      cleanup:async () => { write.release(); persist.release(); exported.release(); complete.release(); await coordinator.cancelRetainedSessions().catch(() => undefined); await driver.dispose().catch(() => undefined); await rm(root,{recursive:true,force:true}); }};
+  } catch (error) { await coordinator.cancelRetainedSessions().catch(() => undefined); await driver.dispose().catch(() => undefined); await rm(root,{recursive:true,force:true}); throw error; }
 }
 describe("managed resume exact-use completion ordering", () => {
   it("does not restart failed resume before old auth export and exact use completion", async () => {
     const f = await fixture("failed"); const pending = f.resume();
     try {
-      await waitUntil(() => f.events.includes("export.begin")); expect(f.events).not.toContain("recovery"); expect(f.events).not.toContain("complete.begin");
+      await waitUntil(() => f.events.includes("write.begin")); expect(f.events).not.toContain("export.begin"); expect(f.events).not.toContain("complete.begin");
+      f.write.release(); await waitUntil(() => f.events.includes("export.begin")); expect(f.events).not.toContain("recovery"); expect(f.events).not.toContain("complete.begin");
       f.exported.release(); await waitUntil(() => f.events.includes("complete.begin")); expect(f.events).not.toContain("recovery");
       f.complete.release(); await expect(pending).resolves.toMatchObject({outputText:"recovered"});
-      expect(f.events).toEqual(["materialized.release","export.begin","export.done","complete.begin","complete.done","recovery"]);
+      expect(f.events).toEqual(["materialized.release","write.begin","write.done","export.begin","export.done","complete.begin","complete.done","recovery"]);
     } finally { await f.cleanup(); }
   });
   it("does not dispatch recovery when exact old-use completion rejects", async () => {
     const f = await fixture("failed",true); const pending = f.resume(); void pending.catch(() => {});
     try {
-      await waitUntil(() => f.events.includes("export.begin")); f.exported.release(); await waitUntil(() => f.events.includes("complete.begin")); f.complete.release();
-      await expect(pending).rejects.toThrow("old-use-held"); expect(f.events).not.toContain("recovery");
+      await waitUntil(() => f.events.includes("write.begin")); f.write.release(); await waitUntil(() => f.events.includes("export.begin")); f.exported.release(); await waitUntil(() => f.events.includes("complete.begin")); f.complete.release();
+      await expect(pending).rejects.toMatchObject({details:{code:"unknown_runtime_failure",sessionFinalization:"pending"}}); expect(f.events).not.toContain("complete.done"); expect(f.events).not.toContain("recovery");
     } finally { await f.cleanup(); }
   });
   it("holds auth export and use completion until resumed direct session write finishes", async () => {

@@ -23,12 +23,31 @@ import {
   prepareProjectPreStartAdmission,
   readLaunchAuthorizedWorkerLaunchSpec,
 } from "../application/project-control/codex-goal-project-pre-start-admission";
-import { authorizeProjectPreStartAdmissionLaunch } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
+import { authorizeProjectPreStartAdmissionLaunch, readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjectPreStartLaunchReceipt } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 
 const execFileAsync = promisify(execFile);
 
 describe("Codex project admission snapshot", () => {
+  it("reads the real fresh launch_authorized attestation and retains exact receipt bytes after dirty execution", async () => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-research-authorized-receipt-"));
+    const scope: ProjectAccessScope = { projectId: "test-project", jobIdPrefixes: ["test-"],
+      preStartAdmission: { required: true, mode: "serial-builtin" } };
+    try {
+      const producer = await createAttestedLiveProducer({ root, jobId: "test-research", ownedPaths: ["src/a/"], scope });
+      const snapshot = await readAuthorizedProjectPreStartLaunchReceipt({ manifest: producer.manifest, scope });
+      const receiptPath = producer.manifest.projectPreStartAdmission!.receiptPath;
+      const bytes = await readFile(receiptPath);
+      expect(snapshot.receipt.status).toBe("launch_authorized");
+      expect(snapshot.receiptSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+      await writeFile(join(producer.manifest.workspacePath, "TEST-dirty.txt"), "TEST worker result\n");
+      expect((await readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest)).receiptSha256).toBe(snapshot.receiptSha256);
+      await writeFile(receiptPath, Buffer.concat([bytes, Buffer.from("\n")]));
+      const rewritten = await readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest);
+      expect(rewritten.receipt).toEqual(snapshot.receipt);
+      expect(rewritten.receiptSha256).not.toBe(snapshot.receiptSha256);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("admits a disjoint writer and denies a writer targeting the active workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-active-writer-admission-"));
     const workspacePath = join(root, "worktrees", "project-producer");
@@ -105,7 +124,7 @@ describe("Codex project admission snapshot", () => {
     }
   });
 
-  it("admits only path-disjoint producers past terminal output debt", async () => {
+  it("keeps legacy reviewed paths blocking without complete retained terminal evidence", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-terminal-path-admission-"));
     const heldWorkspace = join(root, "worktrees", "project-held-output");
     const nextWorkspace = join(root, "worktrees", "project-next-producer");
@@ -163,11 +182,10 @@ describe("Codex project admission snapshot", () => {
       expect(snapshot.debt).toEqual([expect.objectContaining({
         reason: ProjectDebtReason.UnconsumedCompletedJob,
         subject: heldWorkspace,
-        affectedPaths: ["src/held/output.ts"],
       })]);
+      expect(snapshot.debt[0]).not.toHaveProperty("affectedPaths");
       await expect(gate.evaluate(request(["src/new/"]))).resolves.toMatchObject({
-        allowed: true,
-        debt: [],
+        allowed: false,
       });
       await expect(gate.evaluate(request(["src/held/"]))).resolves.toMatchObject({
         allowed: false,

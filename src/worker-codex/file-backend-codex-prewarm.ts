@@ -37,6 +37,7 @@ export type FileBackendCodexPrewarmerOptions = {
     context: "prewarm" | "run",
   ) => Promise<void>;
   readonly rememberQuotaGroup: (session: SessionArtifact) => void;
+  readonly onFailure?: (error: unknown) => void;
 };
 
 export class FileBackendCodexPrewarmer {
@@ -103,6 +104,9 @@ export class FileBackendCodexPrewarmer {
             : {}),
         },
       };
+    } catch (error) {
+      this.options.onFailure?.(error);
+      throw error;
     } finally {
       await workspace.dispose?.();
       if (!isMimo) await this.options.exportAuthJsonFileQuietly("prewarm");

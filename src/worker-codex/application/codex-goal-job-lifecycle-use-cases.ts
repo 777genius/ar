@@ -1,6 +1,6 @@
 import { HostedGoalLifecycleOperation } from "./codex-goal-foreground-command";
 import { CodexGoalLaunchState } from "../codex-goal-ops";
-import { isHostedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
+import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -307,7 +307,7 @@ export async function stopStoredJobLifecycle(
     staleAfterMs: numberValue(args.staleAfterMs) ?? 10 * 60_000,
     tailLines: numberValue(args.tailLines) ?? 20,
   });
-  if (isHostedGoalLaunch(loaded.launch)) {
+  if (isHostedActivatedGoalLaunch(loaded.launch)) {
     if (!brief.silentStale && !brief.heartbeatOnlyNoOutput && !args.forceStop) {
       return { ok: false, reason: "worker_not_silent_stale_or_heartbeat_only_no_output", requiredOverride: "forceStop" };
     }
@@ -315,7 +315,7 @@ export async function stopStoredJobLifecycle(
     stopHostedGoalLaunch(loaded.launch);
     return { ok: true, jobId: loaded.manifest.jobId, stopRequested: true, terminalCustodyProven: false };
   }
-  if (!loaded.launch.tmuxSession) {
+  if (!loaded.launch.tmuxSession || isHostedGoalLaunch(loaded.launch)) {
     return stopDirectCodexGoalRun({
       manifest: loaded.manifest,
       launch: loaded.launch,
@@ -501,11 +501,16 @@ export async function maintenancePauseStoredJobLifecycle(
     staleAfterMs: numberValue(args.staleAfterMs) ?? 10 * 60_000,
     tailLines: numberValue(args.tailLines) ?? 20,
   });
-  if (isHostedGoalLaunch(loaded.launch)) {
+  if (isHostedActivatedGoalLaunch(loaded.launch)) {
     if (status.workspaceDirty && !args.forcePause) return { ok: false, reason: "workspace_dirty_requires_force_pause" };
     if (!args.confirmPause) return { ok: false, reason: "confirm_pause_required" };
     stopHostedGoalLaunch(loaded.launch);
     return { ok: true, jobId: loaded.manifest.jobId, stopRequested: true, terminalCustodyProven: false };
+  }
+  if (isHostedGoalLaunch(loaded.launch)) {
+    if (status.workspaceDirty && !args.forcePause) return { ok: false, reason: "workspace_dirty_requires_force_pause" };
+    return stopDirectCodexGoalRun({ manifest: loaded.manifest, launch: loaded.launch, status, brief,
+      confirmStop: Boolean(args.confirmPause) });
   }
   if (!loaded.launch.tmuxSession) {
     return {

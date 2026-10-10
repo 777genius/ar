@@ -61,10 +61,14 @@ export function hostedFdCustodySystemdLaunch(role: TrustedCustodyLaunchRole, sta
 export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha256: string): { command: string; args: string[] } {
   const spec = parseResearchStartSpec(value), { request } = spec;
   const directory = join("/run/user/subscription-runtime-research-v1", researchName(request.jobId), "starts", spec.startId);
-  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
+  // Captured roots consume explicit sources, never later Host mount propagation.
+  // Recursive private propagation belongs to this service and ends with it.
+  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no", "MountFlags=private",
+    `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "MemoryMax=6G", "TasksMax=1024", "CPUQuota=300%", "MemorySwapMax=0", "LimitCORE=0",
     `BindPaths=${join(directory, "pins", "job")}:${request.jobRootDir}:norbind`,
     `BindPaths=${join(directory, "pins", "workspace")}:${request.workspacePath}:norbind`,
+    ...(spec.registeredHandoff ? [`BindPaths=${join(directory, "pins", "durable-handoff")}:${spec.registeredHandoff.durableDirectory.path}:norbind`] : []),
     "StandardOutput=journal", "StandardError=journal"];
   return { command: "/usr/bin/systemd-run", args: ["--quiet", `--unit=${spec.unit}`,
     `--description=${researchDescription(request.jobId, specSha256)}`, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
@@ -78,7 +82,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   const home = researchPath(selectedCodexHome);
   if (!rootPlan) researchInvalid();
   assertResearchProviderRoot(rootPlan, spec, unit, home);
-  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
+  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no", "MountFlags=private",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
     `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
