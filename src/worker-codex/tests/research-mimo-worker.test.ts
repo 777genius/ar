@@ -115,7 +115,7 @@ describe("owned standalone MiMo worker", () => {
       expect(inspected).toBe(true);
       expect(abort.signal.aborted).toBe(true);
       expect(result.status).toBe("failed");
-    } finally { await runtime.agentDriver.dispose?.(); }
+    } finally { if ("dispose" in runtime.agentDriver) await runtime.agentDriver.dispose(); }
     expect(generated).toContain('[permissions.hosted-project-read.filesystem]');
     expect(generated).toContain('[mcp_servers.agent_runtime_workspace]');
     expect(generated).toContain('enabled_tools = ["edit_file", "read_file", "search_files", "write_file"]');
