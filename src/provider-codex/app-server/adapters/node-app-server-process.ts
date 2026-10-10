@@ -3,6 +3,7 @@ import type { DependencyToolReadyReader } from "../../../core/dependency-environ
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type {
   CodexAppServerChildProcess,
@@ -84,6 +85,27 @@ export function signalHostedSystemdUnit(
       (finalActiveResult.status === 3 || finalActiveResult.status === 4)
     ? "stopping"
     : "bounded";
+}
+
+/** Research units own their mount namespace (MountFlags=private); their scratch binds stay there. */
+export function isResearchUnitCgroup(cgroup: string): boolean {
+  return /\/subscription-runtime-research-/.test(cgroup);
+}
+
+/** True when the provider of a run is a separate `subscription-runtime-hosted-*` unit created
+ * from PID 1's mount namespace. Unlike `isHostedContainment`, research units are excluded:
+ * their scratch binds live in the unit's own namespace and must stay. */
+export function hostedProviderRunsInSeparateUnit(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform,
+  readCgroup: () => string = () => readFileSync("/proc/self/cgroup", "utf8"),
+): boolean {
+  if (platform !== "linux") return false;
+  const cgroup = readCgroup();
+  if (isResearchUnitCgroup(cgroup)) return false;
+  return env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(cgroup);
 }
 
 export type CodexAppServerProcessInvocation = {

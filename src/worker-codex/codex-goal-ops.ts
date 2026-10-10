@@ -3,6 +3,7 @@ export { buildCodexGoalForegroundArgv } from "./application/codex-goal-foregroun
 import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manifest";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
+import { launchTmuxInHostNamespace } from "./scratch-mount-namespace";
 import { constants, lstatSync } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
@@ -346,7 +347,8 @@ export async function startCodexGoalTmux(
   const command = buildCodexGoalTmuxCommand(input);
   const tmuxExecutable = await resolveCodexGoalTmuxExecutable();
   try {
-    await execFileAsync(tmuxExecutable, command.args);
+    // The tmux server outlives this runner: start it in the host namespace, not in ours.
+    await launchTmuxInHostNamespace(tmuxExecutable, command.args, execFileAsync);
   } catch (error) {
     throw new Error(tmuxCodexGoalStartFailedMessage(error));
   }

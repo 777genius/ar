@@ -44,7 +44,7 @@ export async function preparedResearchScratch(job: string, home: string, partial
   const mutations: string[] = [], prepared: { source: string; target: string }[] = [];
   const cacheFailure = new Error("TEST second cache preparation failed"); let observedCacheFailure: Error | undefined, mountId = 100;
   const host: ScratchTempHost = {
-    uid: 0, realpath: path => path,
+    uid: 0, mountNamespace: () => "mnt:[4026532000]", managerMountNamespace: () => "mnt:[4026531841]", ownsRunnerNamespace: () => true, realpath: path => path,
     lstat: path => { const node = nodes.get(path); if (!node) throw Object.assign(new Error("Missing TEST node"), { code: "ENOENT" }); return node; },
     read: () => JSON.stringify(policy), inspectMount: path => mounts.get(path), statfs: () => ({ bavail: 10 * 1024 ** 3, bsize: 1 }),
     mkdir: (path, mode) => { if (partialCaches && path === `${home}/cache/remote_plugin_catalog`) throw cacheFailure; mutations.push(path); nodes.set(path, directory(mode)); },
