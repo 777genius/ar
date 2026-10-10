@@ -80,7 +80,7 @@ describe("closed research control-command failure diagnostics", () => {
     ["/usr/bin/systemd-run", ["--quiet", `--unit=${unit}`], Operation.SystemdRun, Role.Runtime, 330_000],
     ["/usr/bin/systemd-run", ["--quiet", "--wait", "--pipe", "--collect", `--unit=${provider}`], Operation.SystemdRun, Role.Provider, 60_000],
     ["/usr/bin/systemd-run", ["--quiet", "TEST-private-argument", `--unit=${provider}`], Operation.SystemdRun, Role.Unknown, 60_000],
-    ["/usr/bin/systemctl", ["show", "TEST-private-unit", unit], Operation.SystemctlShow, Role.Unknown, 30_000],
+    ["/usr/bin/systemctl", ["show", "TEST-private-unit", unit], Operation.SystemctlShow, Role.Unknown, 60_000],
     ["/usr/bin/findmnt", ["show", unit], Operation.Unknown, Role.Unknown, 15_000],
   ] as const)("closes failed %s classification for %j", (command, args, operation, unitRole, timeout) => {
     const execute = vi.spyOn(processes, "spawnSync").mockReturnValue({ status: 1, stdout: "", stderr: "TEST-private-stderr" } as ReturnType<typeof processes.spawnSync>);
@@ -89,6 +89,16 @@ describe("closed research control-command failure diagnostics", () => {
     expect((error as Error).message).toBe("hosted_research_launch_denied"); expect((error as Error).cause).toBe("host-command-failed");
     expect(researchHostCommandFailure(error)).toEqual({ operation, unitRole, elapsedMs: 0 });
     expect(execute).toHaveBeenCalledWith(command, [...args], expect.objectContaining({ timeout, env: { PATH: "/usr/bin:/bin", LANG: "C" } }));
+  });
+  it("allows the measured slow runtime read while keeping list-jobs bounded and timeout nonretrying", () => {
+    const execute = vi.spyOn(processes, "spawnSync").mockReturnValue({ status: 0, stdout: "TEST-read" } as ReturnType<typeof processes.spawnSync>);
+    expect(researchCommand("/usr/bin/systemctl", ["show", unit])).toBe("TEST-read");
+    expect(execute.mock.calls[0]?.[2]).toMatchObject({ timeout: 60_000 });
+    execute.mockReturnValueOnce({ pid: 0, output: [], stderr: "", signal: null, status: null, stdout: "", error: Object.assign(new Error("TEST-private"), { code: "ETIMEDOUT" }) } as ReturnType<typeof processes.spawnSync>);
+    let failure: unknown; try { researchCommand("/usr/bin/systemctl", ["list-jobs"]); } catch (error) { failure = error; }
+    expect(execute.mock.calls[1]?.[2]).toMatchObject({ timeout: 30_000 });
+    expect((failure as Error).cause).toBe("host-command-timeout");
+    expect(execute).toHaveBeenCalledTimes(2);
   });
   it.each([[3, 0], [NaN, 0], [Infinity, 0], [Number.MAX_VALUE, Number.MAX_SAFE_INTEGER]] as const)(
     "bounds an elapsed observation ending at %s", (ended, elapsedMs) => {

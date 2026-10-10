@@ -15,6 +15,7 @@ import { researchProviderUnits, signalResearchProvider } from "./research-launch
 import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
+import { researchAdmissionObservation, ResearchAdmissionFailureStage } from "./research-launch-admission-diagnostics";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
@@ -161,21 +162,22 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   const binding = readResearchStartBinding(initial.directory), { spec } = initial;
   if (spec.request.jobRootDir !== identity.jobRootDir || spec.request.workspacePath !== identity.workspacePath ||
       binding.specSha256 !== researchHash(initial.bytes) || binding.process.pid !== ownerPid || binding.service.unit !== spec.unit) researchInvalid();
-  const assertAuthorityCurrent = (): void => {
+  const observe = researchAdmissionObservation(initial.directory, initial.bytes, bindingBytes);
+  const assertAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
     const current = researchProcessIdentity(ownerPid), service = researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(current, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(current) !== JSON.stringify(binding.process) || JSON.stringify(service) !== JSON.stringify(binding.service) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
-  };
+  });
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
-  const assertCurrent = (): void => {
+  const assertCurrent = (): void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
     assertAuthorityCurrent();
     assertResearchMaterialBytes(spec);
     assertAuthorityCurrent();
-  };
+  });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
   return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent });

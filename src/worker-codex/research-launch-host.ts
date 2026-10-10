@@ -16,7 +16,8 @@ export function researchCommand(command: string, args: readonly string[]): strin
   const ownedRuntimeStart = isSystemdRun && args.some(arg => arg.startsWith("--unit=") &&
     researchRuntimeUnitPattern.test(arg.slice("--unit=".length)));
   const timeout = ownedRuntimeStart ? researchProviderSetupTimeoutMs + 30_000
-    : command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
+    : command === "/usr/bin/systemctl" && args[0] === "show" ? 60_000
+    : command === "/usr/bin/systemctl" && args[0] === "list-jobs" ? 30_000
     : isSystemdRun ? 60_000 : 15_000;
   let started: number | undefined;
   try { started = performance.now(); } catch { /* Observation only. */ }
