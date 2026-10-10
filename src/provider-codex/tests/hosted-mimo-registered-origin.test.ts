@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readHostedMimoWorkerOrigin, readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent } from "../hosted-mimo-worker-origin";
+import { readHostedMimoWorkerOrigin, readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, readHostedMimoWorkerProfileOrigin, assertHostedMimoCodingWorkerHomeRetained } from "../hosted-mimo-worker-origin";
 import { CodexModelBackend, codexMimoDefaultModel } from "../codex-model-backend";
 import { CodexProviderEgressProfileId } from "../codex-provider-egress-policy";
 import { HostedMimoProfile } from "../hosted-mimo-profile";
@@ -158,5 +158,26 @@ describe("independent CodingV1 metadata proof, without activation", () => {
     expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
     codingRequest(); grant.hostedProfile = HostedMimoProfile.Worker; publish();
     expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+});
+
+describe("single classified origin and coding retained-home receipt", () => {
+  it("classifies Worker with exactly one full material observation", () => {
+    expect(readHostedMimoWorkerProfileOrigin()?.profile).toBe(HostedMimoProfile.Worker);
+    expect(state.materialCalls).toBe(1);
+  });
+  it("classifies CodingV1 once and authenticates its exact home receipt", () => {
+    codingRequest(); const classified = readHostedMimoWorkerProfileOrigin()!;
+    expect(classified.profile).toBe(HostedMimoProfile.CodingV1); expect(state.materialCalls).toBe(1);
+    if (classified.profile !== HostedMimoProfile.CodingV1) throw new Error("TEST_profile");
+    const path = "/TEST/job/home/mimo-TEST/codex-home";
+    state.files.set(`${directory}/mimo-home.json`, Buffer.from(JSON.stringify({ schemaVersion: 1, specSha256: classified.origin.digest,
+      identity: { path, device: 7, inode: 21 } })));
+    expect(() => assertHostedMimoCodingWorkerHomeRetained(classified.origin, path)).not.toThrow();
+    expect(() => assertHostedMimoCodingWorkerHomeRetained({ ...classified.origin }, path)).toThrow("hosted_mimo_worker_origin_invalid");
+    expect(() => assertHostedMimoCodingWorkerHomeRetained(classified.origin, path.replace("mimo-TEST", "mimo-foreign"))).toThrow();
+    state.files.set(`${directory}/mimo-home.json`, Buffer.from(JSON.stringify({ schemaVersion: 1, specSha256: "0".repeat(64),
+      identity: { path, device: 7, inode: 21 } })));
+    expect(() => assertHostedMimoCodingWorkerHomeRetained(classified.origin, path)).toThrow("hosted_mimo_worker_origin_invalid");
   });
 });

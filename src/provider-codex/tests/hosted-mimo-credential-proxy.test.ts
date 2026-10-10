@@ -195,3 +195,29 @@ it("uses a replacement outside the credential alphabet, so redaction cannot matc
     expect(await response.text()).toContain('"delta":"***"');
   } finally { await proxy.close(); }
 });
+
+it("revokes start authority before upstream when the retained owner becomes stale", async () => {
+  const transport = vi.fn<typeof fetch>();
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from(key), model: "mimo-v2.6-pro", limits: limits(), fetchUpstream: transport,
+    assertCurrent: () => { throw new Error("TEST-owner-stale-secret"); } });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { authorization: `Bearer ${proxy.capability}`, "content-type": "application/json" }, body: JSON.stringify({ model: "mimo-v2.6-pro" }) });
+    expect(response.status).toBe(503); expect(await response.text()).not.toContain("TEST-owner-stale-secret"); expect(transport).not.toHaveBeenCalled();
+  } finally { await proxy.close(); }
+});
+it("revokes if authority changes while reading the admitted request body", async () => {
+  const transport = vi.fn<typeof fetch>(); let observations = 0;
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from(key), model: "mimo-v2.6-pro", limits: limits(), fetchUpstream: transport,
+    assertCurrent: () => { if (++observations === 2) throw new Error("TEST-lost-owner"); } });
+  const post = () => fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { authorization: `Bearer ${proxy.capability}`, "content-type": "application/json" }, body: JSON.stringify({ model: "mimo-v2.6-pro" }) });
+  try { expect((await post()).status).toBe(503); expect((await post()).status).toBe(503); expect(observations).toBe(2); expect(transport).not.toHaveBeenCalled(); }
+  finally { await proxy.close(); }
+});
+it("rejects unauthenticated callers without consulting retained custody", async () => {
+  const current = vi.fn(); const transport = vi.fn<typeof fetch>();
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from(key), model: "mimo-v2.6-pro", limits: limits(), fetchUpstream: transport, assertCurrent: current });
+  try {
+    expect((await fetch(proxy.baseUrl + "/responses", { method: "POST" })).status).toBe(401);
+    expect(current).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
+  } finally { await proxy.close(); }
+});

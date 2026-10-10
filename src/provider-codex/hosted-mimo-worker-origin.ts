@@ -54,6 +54,10 @@ export type HostedMimoCodingWorkerOrigin = Readonly<{
   codexBinaryPath: string; workspacePath: string; workspaceDevice: number; workspaceInode: number; model: string;
   taskTimeoutMs: number; maxGoalTurns: number;
 }>;
+type HostedMimoWorkerOrigin = Readonly<{ homeRoot: string; digest: string; directory: string }>;
+export type HostedMimoWorkerProfileOrigin =
+  | Readonly<{ profile: HostedMimoProfile.Worker; origin: HostedMimoWorkerOrigin }>
+  | Readonly<{ profile: HostedMimoProfile.CodingV1; origin: HostedMimoCodingWorkerOrigin }>;
 const codingProofs = new WeakMap<HostedMimoCodingWorkerOrigin, () => void>();
 
 export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; readonly digest: string; readonly directory: string } | null {
@@ -61,7 +65,16 @@ export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; reado
 }
 /** Metadata only. This proof does not admit a provider root, network or tool policy. */
 export function readHostedMimoCodingWorkerOrigin(): HostedMimoCodingWorkerOrigin | null {
-  return readOrigin(true) as HostedMimoCodingWorkerOrigin | null;
+  const classified = readHostedMimoWorkerProfileOrigin();
+  return classified?.profile === HostedMimoProfile.CodingV1 ? classified.origin : null;
+}
+/** Single full authenticated observation for driver profile selection. */
+export function readHostedMimoWorkerProfileOrigin(): HostedMimoWorkerProfileOrigin | null {
+  const origin = readOrigin(true);
+  if (!origin) return null;
+  return Object.freeze(codingProofs.has(origin as HostedMimoCodingWorkerOrigin)
+    ? { profile: HostedMimoProfile.CodingV1, origin: origin as HostedMimoCodingWorkerOrigin }
+    : { profile: HostedMimoProfile.Worker, origin });
 }
 /** Only an independently minted proof is accepted, never a reconstructed DTO. */
 export function assertHostedMimoCodingWorkerOriginCurrent(proof: HostedMimoCodingWorkerOrigin): void {
@@ -144,7 +157,7 @@ function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; 
   try { lstatSync(join(directory, "closing.json")); invalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (!bytes(join(job, "active.json")).equals(activeBytes) || !bytes(join(job, "grant.json")).equals(grantBytes) ||
       !bytes(join(directory, "binding.json")).equals(bindingBytes) || !bytes(join(directory, "spec.json")).equals(specBytes)) invalid();
-  if (!coding) return allowCodingMetadata ? null : { homeRoot, digest: owner[2]!, directory };
+  if (!coding) return Object.freeze({ homeRoot, digest: owner[2]!, directory });
   const workspace = record(spec.workspaceDirectory);
   keys(workspace, "path,device,inode");
   if (workspace.path !== request.workspacePath || !Number.isSafeInteger(workspace.device) || (workspace.device as number) < 0 ||
@@ -249,11 +262,26 @@ function assertRegisteredOrigin(spec: Wire, grant: Wire, request: Wire, director
 /** Storage transfer requires independently authenticated owner receipt. */
 export function assertHostedMimoWorkerHomeRetained(path: string): void {
   const origin = readHostedMimoWorkerOrigin();
-  if (!origin || !/^mimo-[A-Za-z0-9]+\/codex-home$/.test(path.slice(origin.homeRoot.length + 1)) ||
+  if (!origin) invalid();
+  assertRetainedHome(origin, path);
+}
+/** Exact retained home receipt under current independently branded coding authority. */
+export function assertHostedMimoCodingWorkerHomeRetained(proof: HostedMimoCodingWorkerOrigin, path: string): void {
+  assertHostedMimoCodingWorkerOriginCurrent(proof);
+  assertRetainedHome(proof, path);
+  assertHostedMimoCodingWorkerOriginCurrent(proof);
+}
+function assertRetainedHome(origin: HostedMimoWorkerOrigin, path: string): void {
+  if (!/^mimo-[A-Za-z0-9]+\/codex-home$/.test(path.slice(origin.homeRoot.length + 1)) ||
       !path.startsWith(origin.homeRoot + "/")) invalid();
   const receipt = json(bytes(join(origin.directory, "mimo-home.json")));
   keys(receipt, "schemaVersion,specSha256,identity");
   const identity = record(receipt.identity); keys(identity, "path,device,inode");
+  for (let current = path;; current = dirname(current)) {
+    const info = lstatSync(current);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022)) invalid();
+    if (current === "/") break;
+  }
   const stat = lstatSync(path);
   if (receipt.schemaVersion !== 1 || receipt.specSha256 !== origin.digest || identity.path !== path ||
       !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0 || (stat.mode & 0o022) ||

@@ -43,6 +43,8 @@ export async function startMimoCredentialProxy(input: {
   readonly limits: MimoCredentialProxyLimits;
   /** Trusted transport seam; production defaults to one non-retrying fetch. */
   readonly fetchUpstream?: typeof fetch;
+  /** Retained owner observation, supplied by the trusted producer, not HTTP. */
+  readonly assertCurrent?: () => void;
 }): Promise<MimoCredentialProxy> {
   const limits = Object.freeze({ ...input.limits });
   const remaining = limits.deadlineMs - Date.now();
@@ -76,6 +78,7 @@ export async function startMimoCredentialProxy(input: {
     if (request.headers["content-encoding"] !== undefined || request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") {
       reply(response, 400, "proxy_request_invalid"); return;
     }
+    try { input.assertCurrent?.(); } catch { revoke(); reply(response, 503, "proxy_revoked"); return; }
     if (requests >= limits.maxRequests || active.size >= limits.maxConcurrency) { reply(response, 429, "proxy_limit"); return; }
     requests += 1;
     const controller = new AbortController(); active.add(controller);
@@ -109,6 +112,8 @@ export async function startMimoCredentialProxy(input: {
       }
       body.max_output_tokens ??= limits.maxOutputTokens;
       body.store = false;
+      try { input.assertCurrent?.(); } catch { revoke(); throw new Error("authority_revoked"); }
+      if (Date.now() >= limits.deadlineMs) { revoke(); throw new Error("aborted"); }
       const upstreamResponse = await transport(upstream, {
         method: "POST", redirect: "manual", signal: controller.signal,
         headers: { "content-type": "application/json", authorization: `Bearer ${key.toString("utf8")}` },
