@@ -57,33 +57,57 @@ test.runIf(process.platform === "linux")("real adapter preserves the root or rej
   } finally { closeSync(probe); }
 });
 
-test.runIf(process.platform === "linux")("unavailable system /tmp uses explicit private TMPDIR for anonymous observation only", () => {
+// RED: the old hardcoded-/tmp adapter fails both capability branches below.
+test.runIf(process.platform === "linux")("unavailable system /tmp uses private TMPDIR anonymously or preserves its exact unsupported error", () => {
   const temporaryDirectory = fs.mkdtempSync(join(tmpdir(), "scratch-mount-observation-"));
   const realOpen = fs.openSync;
+  const anonymousFlags = 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL;
   let snapshot = -1;
   vi.stubEnv("TMPDIR", temporaryDirectory);
-  const opens = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: number | string, mode?: fs.Mode) => {
-    if (path === "/tmp") throw Object.assign(new Error("System /tmp unavailable"), { code: "ENOENT" });
-    const fd = realOpen(path, flags, mode);
-    if (path === temporaryDirectory) {
-      assert.equal(flags, 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL);
-      assert.equal(mode, 0o600);
-      assert.equal(fs.fstatSync(fd).nlink, 0);
-      assert.equal(fs.fstatSync(fd).mode & 0o777, 0o600);
-      snapshot = fd;
-    }
-    return fd;
-  }) as typeof fs.openSync);
   try {
     assert.equal(fs.lstatSync(temporaryDirectory).mode & 0o777, 0o700);
-    // Independent real FD witness; no synthetic topology or findmnt response.
-    const root = realOpen("/", 0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    let mountId: number;
-    try { mountId = Number(fs.readFileSync(`/proc/self/fdinfo/${root}`, "utf8").match(/^mnt_id:\s+(\d+)$/m)![1]); }
-    finally { closeSync(root); }
-    const result = inspectVisibleScratchMount("/");
-    assert.ok(result); assert.equal(result.target, "/"); assert.equal(result.mountId, mountId);
-    assert.ok(snapshot >= 0); assert.throws(() => fs.fstatSync(snapshot), { code: "EBADF" });
+    // Probe this new directory with the exact syscall before installing spies.
+    // Only its kernel ENOTSUP permits the refusal branch; other errors fail.
+    let supported = true;
+    let probe: number | undefined;
+    try { probe = realOpen(temporaryDirectory, anonymousFlags, 0o600); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOTSUP" ||
+          !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== temporaryDirectory) throw error;
+      supported = false;
+    } finally { if (probe !== undefined) closeSync(probe); }
+    const opens = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: number | string, mode?: fs.Mode) => {
+      if (path === "/tmp") throw Object.assign(new Error("System /tmp unavailable"), { code: "ENOENT" });
+      if (path === temporaryDirectory) {
+        // Check the attempted syscall even when the real kernel rejects it.
+        assert.equal(flags, anonymousFlags);
+        assert.equal(mode, 0o600);
+      }
+      const fd = realOpen(path, flags, mode);
+      if (path === temporaryDirectory) {
+        assert.equal(fs.fstatSync(fd).nlink, 0);
+        assert.equal(fs.fstatSync(fd).mode & 0o777, 0o600);
+        snapshot = fd;
+      }
+      return fd;
+    }) as typeof fs.openSync);
+    const execute = vi.spyOn(child, "execFileSync");
+    if (supported) {
+      // Independent real FD witness; no synthetic topology or findmnt response.
+      const root = realOpen("/", 0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      let mountId: number;
+      try { mountId = Number(fs.readFileSync(`/proc/self/fdinfo/${root}`, "utf8").match(/^mnt_id:\s+(\d+)$/m)![1]); }
+      finally { closeSync(root); }
+      const result = inspectVisibleScratchMount("/");
+      assert.ok(result); assert.equal(result.target, "/"); assert.equal(result.mountId, mountId);
+      assert.ok(execute.mock.calls.some(([file]) => file === "findmnt"));
+      assert.ok(snapshot >= 0); assert.throws(() => fs.fstatSync(snapshot), { code: "EBADF" });
+    } else {
+      // Exercise the real adapter's strict refusal, without emulating O_TMPFILE.
+      assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: temporaryDirectory });
+      assert.equal(execute.mock.calls.length, 0);
+    }
+    assert.ok(opens.mock.calls.some(([path]) => path === temporaryDirectory));
     assert.deepEqual(fs.readdirSync(temporaryDirectory), []);
     assert.ok(opens.mock.calls.every(([path]) => path !== "/tmp"));
   } finally { fs.rmSync(temporaryDirectory, { recursive: true, force: true }); }
