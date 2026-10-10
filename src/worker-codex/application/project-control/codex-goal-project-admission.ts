@@ -34,7 +34,15 @@ import {
   verifySocialProposedAdmissionAnchorEvidence,
 } from "./codex-goal-ledger-epoch-proposed-admission";
 import { duplicateWorkspaceIdentityJobIds } from "./codex-goal-project-workspace-history";
+import {
+  isolatedRequestedWorkspaceIdentity,
+  stoppedRetainedOutputPathEvidence,
+} from "./codex-goal-project-retained-admission";
 import { retainedTerminalReadOnlyReviewer } from "./codex-goal-project-retained-read-only-reviewer";
+import {
+  assertAdmissionRegistryComplete,
+  type ProjectAdmissionTargetBinding,
+} from "./codex-goal-project-admission-target";
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
   withoutAdmittedInputPatchDebt,
@@ -114,6 +122,7 @@ type CodexProjectAdmissionInput = {
   readonly admittedInputPatchTarget?: ProjectAdmissionJobWorkspaceBinding;
   readonly capacityContinuationTarget?: ProjectAdmissionJobWorkspaceBinding;
   readonly inPlaceContinuationTarget?: ProjectAdmissionInPlaceContinuationBinding;
+  readonly targetBinding?: ProjectAdmissionTargetBinding;
 };
 type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
   readonly controllerJobId: string;
@@ -124,6 +133,7 @@ type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly allowPendingEpochOrphanQuarantine?: boolean;
   readonly skipActiveProposedAdmissionNormalization?: boolean;
   readonly admittedInputPatchRequest?: ProjectAdmissionRequest;
+  readonly targetRequest?: ProjectAdmissionRequest;
 };
 
 export function projectAdmissionDetailView(input: {
@@ -173,6 +183,7 @@ export function codexProjectAdmissionGate(
       // longer prove that another writer did not start in the meantime.
       const observedSnapshot = await buildCodexProjectAdmissionSnapshot({
         ...input,
+        targetRequest: request,
         ...(request.workspacePath
           ? { requestedWorkspacePath: request.workspacePath }
           : {}),
@@ -242,10 +253,16 @@ export async function buildCodexProjectAdmissionSnapshot(
   });
   const consumedOutput = ledgerState.consumedOutput;
   debt.push(...ledgerState.quarantineDebt);
-  let summaries;
+  let summaries: readonly CodexGoalJobSummary[] = [];
+  let registryComplete = true;
   try {
     summaries = await input.deps.listJobs({ registryRootDir: input.registryRootDir });
+    await assertAdmissionRegistryComplete({ ...input, summaries,
+      ...(input.targetBinding ? { binding: input.targetBinding } : {}),
+      ...(input.targetRequest ? { request: input.targetRequest } : {}),
+    });
   } catch (error) {
+    registryComplete = false;
     debt.push({
       reason: ProjectDebtReason.UnreadableRoot,
       subject: input.registryRootDir,
@@ -254,7 +271,7 @@ export async function buildCodexProjectAdmissionSnapshot(
         `registry unreadable: ${error instanceof Error ? error.message : String(error)}`,
       ],
     });
-    summaries = [];
+    summaries ??= [];
   }
   const matchingProjectSummariesBeforeRetirement = summaries.every((summary) =>
       matchesProjectControlPrefix(summary.jobId, prefixes)
@@ -339,6 +356,8 @@ export async function buildCodexProjectAdmissionSnapshot(
   const duplicateWorkspaceJobIds = await duplicateWorkspaceIdentityJobIds(
     overviewItems,
   );
+  const isolatedRequestedWorkspace = registryComplete && projectSummaries.length === matchingProjectSummaries.length &&
+    await isolatedRequestedWorkspaceIdentity(input, summaries, overviewItems);
   for (const item of overviewItems) {
     if (typeof item.workspacePath === "string") {
       await rememberKnownWorkspacePath(knownWorkspacePaths, item.workspacePath);
@@ -350,6 +369,7 @@ export async function buildCodexProjectAdmissionSnapshot(
       registryRootDir: input.registryRootDir,
       scope: input.scope,
       readJob: input.deps.readJob,
+      isolatedRequestedWorkspace,
       duplicateWorkspaceIdentity: duplicateWorkspaceJobIds.has(
         stringValue(item.jobId) ?? "unknown-job",
       ),
@@ -622,6 +642,7 @@ async function debtFromOverviewItem(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
   readonly readJob: CodexProjectAdmissionDeps["readJob"];
+  readonly isolatedRequestedWorkspace: boolean;
   readonly duplicateWorkspaceIdentity: boolean;
   readonly requestedWorkspacePath?: string;
   readonly blockAnyLiveWriter: boolean;
@@ -679,6 +700,7 @@ async function debtFromOverviewItem(input: {
     readJob: input.readJob,
     resolvedWorkspacePath,
   });
+  const retainedOutput = await stoppedRetainedOutputPathEvidence(input);
   const malformedDirtyWriterObservation =
     item.workspaceDirty === true &&
     (typeof item.workerAlive !== "boolean" ||
@@ -720,7 +742,7 @@ async function debtFromOverviewItem(input: {
       scope: input.scope,
       readJob: input.readJob,
     });
-    const pathEvidence = pendingInputPatchEvidence ?? pathDisjointProducerEvidence;
+    const pathEvidence = pendingInputPatchEvidence ?? retainedOutput ?? pathDisjointProducerEvidence;
     debt.push({
       reason: ProjectDebtReason.ActiveWriterConflict,
       subject: jobId,
@@ -728,6 +750,7 @@ async function debtFromOverviewItem(input: {
       ...pathEvidence,
       evidence: uniqueProjectControlStrings([
         ...safeStringArray(item.activeWriterRiskReasons),
+        ...(retainedOutput?.evidence ?? []),
         ...(pendingInputPatchEvidence
           ? ["broker-admitted input patch is validated and pending start"]
           : []),
@@ -807,23 +830,23 @@ async function debtFromOverviewItem(input: {
     return debt;
   }
   const resultStatus = stringValue(item.resultStatus);
-  const completedOrReviewed = resultStatus === "completed" ||
+  const completedOrReviewed = retainedOutput !== undefined || resultStatus === "completed" ||
     recommendedAction === "review_completed" ||
     markerTypes.includes("review");
-  const terminalDebt = completedOrReviewed
+  const terminalDebt = completedOrReviewed && !retainedOutput
     ? withoutInactiveDirtyWorkspaceConflict(debt, item)
     : debt;
-  const affectedPaths = safeStringArray(item.changedFiles);
   terminalDebt.push({
     reason: completedOrReviewed
       ? ProjectDebtReason.UnconsumedCompletedJob
       : ProjectDebtReason.InactiveDirtyWorkspace,
     subject,
     severity: "blocking",
-    ...(completedOrReviewed && affectedPaths.length > 0
-      ? { affectedPaths }
+    ...(retainedOutput
+      ? { affectedPaths: retainedOutput.affectedPaths }
       : {}),
     evidence: [
+      ...(retainedOutput?.evidence ?? []),
       `${jobId} is inactive with dirty workspace`,
       `reviewed marker present: ${String(markerTypes.includes("review"))}`,
       "reviewed is not consumed; output must be integrated/rejected/archived",

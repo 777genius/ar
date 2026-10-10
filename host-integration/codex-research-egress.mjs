@@ -2,7 +2,9 @@
 // Host operator entrypoint. Observation is diagnostic, never launch authority.
 const operation = process.argv[2];
 if (['grant-owned-research', 'start-owned-research', 'status-owned-research', 'cancel-owned-research', 'revoke-owned-research'].includes(operation)) {
+  let diagnostics;
   try {
+    diagnostics = await import('../dist/worker-codex/research-launch-diagnostics.js');
     const owner = await import('../dist/worker-codex/research-launch-owner.js');
     const lifecycle = await import('../dist/worker-codex/research-launch-lifecycle.js');
     const args = process.argv.slice(3);
@@ -14,8 +16,13 @@ if (['grant-owned-research', 'start-owned-research', 'status-owned-research', 'c
     else if (operation === 'revoke-owned-research' && args.length === 1) { owner.revokeResearchLaunch(args[0]); }
     else throw new Error();
     process.stdout.write(JSON.stringify(result ?? { operation, success: true }) + '\n');
-  } catch {
-    process.stderr.write('hosted_research_operator_action_failed\n'); process.exitCode = 1;
+  } catch (error) {
+    process.exitCode = 1;
+    process.stderr.write('hosted_research_operator_action_failed\n');
+    const failure = diagnostics?.normalizeResearchOperatorFailure(error) ?? {
+      stage: 'unknown', diagnostic: 'unknown', cause: 'none', legacyCode: 'unclassified',
+    };
+    process.stderr.write(JSON.stringify({ operation, ...failure }) + '\n');
   }
 } else if (operation === 'observe-launch') {
   try {

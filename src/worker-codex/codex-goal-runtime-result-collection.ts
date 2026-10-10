@@ -5,7 +5,8 @@ import { codexRunnerExceptionFailure, runtimeActionFromSafeExecutionResult,
   runtimeBlockersFromSafeExecutionResult, runtimeEvidenceFromSafeExecutionResult,
   runtimeResultDetails, runtimeStatusFromSafeExecutionResult, workerReportFromSafeExecutionResult } from "./codex-goal-run-result";
 import { assertDirtyTerminalHandoffAvailable, terminalCodexGoalHandoffEvidence,
-  terminalCodexGoalHandoffResultDetails, tryMaterializeTerminalCodexGoalHandoff } from "./codex-goal-terminal-handoff-materialization";
+  terminalCodexGoalHandoffResultDetails, tryMaterializeTerminalCodexGoalHandoff,
+  type TerminalHandoffPublicationAuthority } from "./codex-goal-terminal-handoff-materialization";
 import { changedFilesFromSafeExecutionResult, changedFilesFromWorkspace, uniqueStrings } from "./codex-goal-workspace-changes";
 
 // Collection availability is a diagnostic fact, never execution authority.
@@ -39,6 +40,7 @@ export async function codexRuntimeResultInput(input: {
   readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly publicationAuthority?: TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
   const workspace = await collectWorkspaceChanges(input.config.workspacePath);
@@ -60,7 +62,7 @@ export async function codexRuntimeResultInput(input: {
         ...(input.baseCommit === undefined
           ? {}
           : { expectedBaseCommit: input.baseCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   if (workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
@@ -106,6 +108,7 @@ export async function codexExceptionRuntimeResultInput(input: {
   readonly error: unknown;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly publicationAuthority?: TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const failure = codexRunnerExceptionFailure(input.error);
   const workspace = await collectWorkspaceChanges(input.config.workspacePath);
@@ -117,7 +120,7 @@ export async function codexExceptionRuntimeResultInput(input: {
         ...(input.baseCommit === undefined
           ? {}
           : { expectedBaseCommit: input.baseCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   if (workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
