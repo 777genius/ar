@@ -506,7 +506,7 @@ export function buildNoTmuxShellCommand(command: RunCommand): string {
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
   assertStorageRegistrySupported(command);
-  assertHostedOrdinaryGoalExtent(command.config, [command.registryRootDir], command.registryRootDir);
+  assertHostedOrdinaryGoalExtent(command.config, [], command.registryRootDir);
   return upsertCodexGoalLaunchManifest({
     registryRootDir: command.registryRootDir,
     launch: cliLaunchInput(command),

@@ -5,7 +5,7 @@ import type { HostedInstallation, HostedOrdinaryStart, ProjectAdmissionWriterObs
 import { HostedCustodyReservationState, parseHostedOrdinaryStart, parseHostedOrdinaryOrigins, workerPoolSlotId } from "@vioxen/subscription-runtime/worker-core";
 import { CodexModelBackend, CodexProviderEgressProfileId, withHostedActivationFence, readHostedActivationBytes,
   decodeHostedActivationBytes, type HostedActivationFence, codexWorkerCacheRoot, codexWorkerCacheSlotKey } from "@vioxen/subscription-runtime/provider-codex";
-import { assertHostedOrdinaryWriterPaths, HostedOrdinaryWriterProfile, ordinaryExtentHash, observeOrdinaryWriterPath,
+import { currentHostedOrdinaryWriterExtent, assertHostedOrdinaryPublicationPaths, assertHostedOrdinaryWriterPaths, HostedOrdinaryWriterProfile, ordinaryExtentHash, observeOrdinaryWriterPath,
   parseHostedOrdinaryWriterExtent, readHostedOrdinaryWriterExtent } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
@@ -21,6 +21,9 @@ import { resolveHostScratchLifetimeSources } from "./host-scratch-temp";
 import { researchCustody } from "./research-launch-files";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { readHostedOrdinaryRuntime, readHostedOrdinaryObservationOrigin } from "./hosted-installation-activation";
+import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
+import { projectControlWorkspaceLockRoot } from "./codex-goal-project-workspace-lock";
+import type { TerminalHandoffPublicationAuthority } from "./codex-goal-terminal-handoff-materialization";
 
 function invalid(): never { throw new Error("hosted_ordinary_writer_extent_invalid"); }
 const encoded = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");
@@ -81,11 +84,12 @@ export function sealHostedOrdinaryWriterExtent(fence: HostedActivationFence,
   if (!inputs) return;
   const { config } = inputs; // Other inventoried entries retain their conservative owner contract.
   const binding = configuration(config);
-  // The registered shared sink requires its own publication lease. Ordinary
-  // default handoff has no such trusted dependency; no partial seal may hide it.
-  if (binding.durableHandoffRootDir !== join(start.jobRootDir, "durable-handoffs")) return;
+  // Shared handoff is the frozen registry child, published only by the trusted
+  // packet owner under the existing registry mutation lease.
+  if (binding.durableHandoffRootDir !== join(start.jobRootDir, "durable-handoffs") &&
+      (!inputs.registryRootDir || binding.durableHandoffRootDir !== join(inputs.registryRootDir, "durable-handoffs"))) return;
   const insideJob = (path: string) => path === start.jobRootDir || path.startsWith(start.jobRootDir + "/");
-  if (!insideJob(binding.runtimeHomeRootDir) || (inputs.registryRootDir && !insideJob(inputs.registryRootDir))) return;
+  if (!insideJob(binding.runtimeHomeRootDir)) return;
   if (binding.jobId !== start.jobId || config.jobRootDir !== start.jobRootDir || config.workspacePath !== start.workspacePath ||
       binding.runtimeTempRoot !== join(start.jobRootDir, "tmp")) invalid();
   const homes = config.accounts.map((account, index) => {
@@ -99,15 +103,18 @@ export function sealHostedOrdinaryWriterExtent(fence: HostedActivationFence,
   const scratch = resolveHostScratchLifetimeSources(start.jobRootDir, homes.map(row => row.codexHome));
   const paths = [...new Set([start.jobRootDir, start.workspacePath, binding.stateRootDir,
     binding.runtimeHomeRootDir, binding.runtimeTempRoot, binding.encryptionKeyPath,
-    dirname(binding.progressPath), dirname(binding.outputPath), dirname(binding.encryptionKeyPath), binding.durableHandoffRootDir,
-    ...(inputs.registryRootDir ? [inputs.registryRootDir] : []),
+    dirname(binding.progressPath), dirname(binding.outputPath), dirname(binding.encryptionKeyPath),
+    ...(insideJob(binding.durableHandoffRootDir) ? [binding.durableHandoffRootDir] : []),
     ...homes.flatMap(row => [row.home, row.codexHome]), ...scratch.map(row => row.source)])].map(path => observeOrdinaryWriterPath(path, scratch.some(row => row.target === path && row.source !== path)));
   const extent = parseHostedOrdinaryWriterExtent({ schemaVersion: 1, profile: HostedOrdinaryWriterProfile.LifetimeV1,
     startId, startSha256: ordinaryExtentHash(encoded(start)), runtimeSha: installation.runtimeSha,
     runtimeManifestSha256: installation.runtimeManifestSha256, inventorySha256: installation.inventorySha256,
     launchSha256: ordinaryExtentHash(JSON.stringify(launch)), configSha256: configHash(config),
     taskId: config.taskId, promptPath: config.promptPath, modelBackend: binding.modelBackend,
-    registryRootDir: inputs.registryRootDir ?? null, homes, paths });
+    registryRootDir: inputs.registryRootDir ?? null, homes, paths,
+    publication: { jobId: binding.jobId, durableHandoffRootDir: binding.durableHandoffRootDir,
+      paths: [...new Set([binding.durableHandoffRootDir, ...(inputs.registryRootDir ?
+        [inputs.registryRootDir, join(inputs.registryRootDir, binding.jobId), projectControlWorkspaceLockRoot(inputs.registryRootDir)] : [])])].map(path => observeOrdinaryWriterPath(path)) } });
   createReadonlyPrivateRecord(join(readonlySupervisorRoot, "ordinary-starts", startId + ".extent.json"), encoded(extent));
   if (!readHostedOrdinaryWriterExtent(fence, startId, encoded(start), installation)) invalid();
 }
@@ -123,7 +130,7 @@ export function assertHostedOrdinaryLaunchExtent(fence: HostedActivationFence,
     if (!inputs || configHash(inputs.config) !== extent.configSha256 ||
         (inputs.registryRootDir ?? null) !== extent.registryRootDir) invalid();
   }
-  assertHostedOrdinaryWriterPaths(extent, extent.paths.map(pin => pin.path));
+  assertHostedOrdinaryPublicationPaths(extent, extent.publication?.paths.map(pin => pin.path) ?? []);
 }
 
 /** The actual original process start selects the owner. Sibling reservations
@@ -138,6 +145,46 @@ export function assertHostedOrdinaryGoalExtent(config: CodexGoalRunConfig, paths
         (registryRootDir !== undefined && registryRootDir !== extent.registryRootDir)) invalid();
     assertHostedOrdinaryWriterPaths(extent, [...extent.paths.map(pin => pin.path), ...paths]);
   });
+}
+
+/** Trusted terminal dependency selected from the actual original ordinary start.
+ * The existing registry lease encloses capture and publication; no synchronous
+ * activation fence survives an await and no shared root becomes provider RW. */
+export function hostedOrdinaryHandoffPublicationAuthority(input: {
+  readonly jobId?: string; readonly taskId: string; readonly jobRootDir: string;
+  readonly workspacePath: string; readonly durableHandoffRootDir?: string;
+}): TerminalHandoffPublicationAuthority | undefined {
+  // Missing legacy seal is checked before grant/origin validation, as in raw
+  // effect guards; a present corrupt or unsafe record still fails closed.
+  if (!currentHostedOrdinaryWriterExtent()?.publication) return undefined;
+  const current = (paths: readonly string[] = []) => withHostedActivationFence(fence => {
+    const origin = readHostedOrdinaryRuntime(fence), startId = origin.reservation.startId;
+    const extent = readHostedOrdinaryWriterExtent(fence, startId, encoded(origin.start), origin.installation);
+    if (!extent?.publication) invalid();
+    if (extent.publication.jobId !== (input.jobId ?? input.taskId) || extent.taskId !== input.taskId ||
+        origin.start.jobRootDir !== input.jobRootDir || origin.start.workspacePath !== input.workspacePath ||
+        extent.publication.durableHandoffRootDir !== (input.durableHandoffRootDir ?? join(input.jobRootDir, "durable-handoffs"))) invalid();
+    for (const path of paths) if (path !== extent.publication.durableHandoffRootDir &&
+        !path.startsWith(extent.publication.durableHandoffRootDir + "/")) invalid();
+    assertHostedOrdinaryPublicationPaths(extent, [...extent.publication.paths.map(pin => pin.path), ...paths]);
+    return extent;
+  });
+  const initial = current();
+  if (!initial) return undefined;
+  let held = false;
+  const assertPublicationAuthorized = async (paths: readonly string[] = []) => {
+    if (!held || current(paths)?.startId !== initial.startId) invalid();
+  };
+  return { assertPublicationAuthorized, withPublicationAuthority: async effect => {
+    if (held || current()?.startId !== initial.startId) invalid();
+    const publish = async () => {
+      held = true;
+      try { await assertPublicationAuthorized(); return await effect(); }
+      finally { held = false; }
+    };
+    return initial.registryRootDir ? await withCodexGoalRegistryMutation({ registryRootDir: initial.registryRootDir,
+      requireExistingRegistryRoot: true, effect: publish }) : await publish();
+  } };
 }
 
 function observeOrdinary(manifest: CodexGoalJobManifest): ProjectAdmissionWriterObservation {
@@ -164,7 +211,7 @@ function observeOrdinary(manifest: CodexGoalJobManifest): ProjectAdmissionWriter
           extent.modelBackend !== (manifest.modelBackend ?? CodexModelBackend.OpenAiChatGpt) ||
           extent.launchSha256 !== ordinaryExtentHash(JSON.stringify(creator.launch))) return { status: "unknown" };
       sawRuntime = true;
-      if (!terminal) assertHostedOrdinaryWriterPaths(extent, extent.paths.map(pin => pin.path));
+      if (!terminal) assertHostedOrdinaryPublicationPaths(extent, extent.publication?.paths.map(pin => pin.path) ?? []);
       roots.push(...extent.paths.flatMap(pin => pin.roots));
     }
     if (!sawRuntime) return { status: "unknown" };

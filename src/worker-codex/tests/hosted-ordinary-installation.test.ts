@@ -135,7 +135,17 @@ vi.mock("node:fs/promises", async original => {
     },
   };
 });
-vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpected external command"); },
+vi.mock("node:child_process", async original => {
+  const real = await original<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = (command: string, args: readonly string[], options: import("node:child_process").ExecFileOptions,
+    callback: (error: import("node:child_process").ExecFileException | null, stdout: string | Buffer, stderr: string | Buffer) => void) => {
+    const workspace = args.includes("-C") ? args[args.indexOf("-C") + 1] : options.cwd;
+    if (command !== "git" || typeof workspace !== "string" || !workspace.startsWith("/dev/shm/TEST-ordinary-extent-")) throw new Error("unexpected external command");
+    return real.execFile(command, args, options, callback);
+  };
+  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options: import("node:child_process").ExecFileOptions) =>
+    new Promise((resolve, reject) => execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }),
   spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
   if (command !== "/usr/bin/systemctl") throw new Error("unexpected external command");
   if (args[0] === "kill" || args[0] === "stop") {
@@ -151,7 +161,7 @@ vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpe
   if (args[0] === "list-units") return { status: 0, stdout: args.includes("--type=socket,timer") ? "" : "trusted.service loaded active running trusted\n" };
   if (args[0] === "list-jobs") return { status: 0, stdout: fixture.jobs };
   throw new Error("unexpected service mutation");
-} }));
+} }; });
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const runtimeDirectory = fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
 const stageName = "stages/" + hash(runtimeDirectory) + ".json";

@@ -13,6 +13,7 @@ export type HostedOrdinaryWriterExtent = Readonly<{
   runtimeSha: string; runtimeManifestSha256: string; inventorySha256: string; launchSha256: string;
   configSha256: string; taskId: string; promptPath: string; modelBackend: CodexModelBackend; registryRootDir: string | null;
   homes: readonly Readonly<{ home: string; codexHome: string }>[]; paths: readonly PathPin[];
+  publication: Readonly<{ jobId: string; durableHandoffRootDir: string; paths: readonly PathPin[] }> | null;
 }>;
 function invalid(): never { throw new Error("hosted_ordinary_writer_extent_invalid"); }
 export const ordinaryExtentHash = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
@@ -59,7 +60,9 @@ export function observeOrdinaryWriterPath(path: string, retainParent = false): P
 }
 
 export function parseHostedOrdinaryWriterExtent(value: unknown): HostedOrdinaryWriterExtent {
-  keys(value, "schemaVersion,profile,startId,startSha256,runtimeSha,runtimeManifestSha256,inventorySha256,launchSha256,configSha256,taskId,promptPath,modelBackend,registryRootDir,homes,paths");
+  // Existing job-local seals remain readable; they grant no shared publication.
+  if (value && typeof value === "object" && !("publication" in value)) value = { ...value, publication: null };
+  keys(value, "schemaVersion,profile,startId,startSha256,runtimeSha,runtimeManifestSha256,inventorySha256,launchSha256,configSha256,taskId,promptPath,modelBackend,registryRootDir,homes,paths,publication");
   if (value.schemaVersion !== 1 || value.profile !== HostedOrdinaryWriterProfile.LifetimeV1 ||
       typeof value.startId !== "string" || !/^[a-f0-9-]{36}$/.test(value.startId) ||
       typeof value.runtimeSha !== "string" || !/^[a-f0-9]{40}$/.test(value.runtimeSha) ||
@@ -69,7 +72,14 @@ export function parseHostedOrdinaryWriterExtent(value: unknown): HostedOrdinaryW
       !Array.isArray(value.paths) || value.paths.length === 0) invalid();
   for (const field of ["startSha256", "runtimeManifestSha256", "inventorySha256", "launchSha256", "configSha256"]) hash(value[field]);
   for (const home of value.homes) { keys(home, "home,codexHome"); if (!canonical(home.home) || !canonical(home.codexHome)) invalid(); }
-  for (const pin of value.paths) {
+  let publicationPaths: unknown[] = [];
+  if (value.publication !== null) {
+    keys(value.publication, "jobId,durableHandoffRootDir,paths");
+    if (typeof value.publication.jobId !== "string" || !value.publication.jobId ||
+        !canonical(value.publication.durableHandoffRootDir) || !Array.isArray(value.publication.paths) || value.publication.paths.length === 0) invalid();
+    publicationPaths = value.publication.paths;
+  }
+  for (const pin of [...value.paths, ...publicationPaths]) {
     keys(pin, "path,ancestor,device,inode,roots");
     if (!canonical(pin.path) || !canonical(pin.ancestor) || !inside(pin.ancestor, pin.path) ||
         !Number.isSafeInteger(pin.device) || (pin.device as number) < 0 || !Number.isSafeInteger(pin.inode) || (pin.inode as number) <= 0 || !Array.isArray(pin.roots) || pin.roots.length === 0) invalid();
@@ -111,12 +121,44 @@ export function assertHostedOrdinaryWriterPaths(extent: HostedOrdinaryWriterExte
   }
 }
 
+/** Shared creator publications are cold pinned separately from provider writes.
+ * Only the existing registry/packet owners use this bounded destination check. */
+export function assertHostedOrdinaryPublicationPaths(extent: HostedOrdinaryWriterExtent, paths: readonly string[]): void {
+  assertHostedOrdinaryWriterPaths(extent, extent.paths.map(pin => pin.path));
+  if (!extent.publication) { assertHostedOrdinaryWriterPaths(extent, paths); return; }
+  assertHostedOrdinaryWriterPaths({ ...extent, paths: extent.publication.paths }, paths);
+  for (const path of paths) {
+    const pin = extent.publication.paths.filter(pin => inside(pin.path, path)).sort((a, b) => b.path.length - a.path.length)[0];
+    if (!pin || pin.roots.length !== 1) invalid();
+    const root = pin.roots[0]!, expected = join(root.backingPath, relative(pin.path, path));
+    for (const current of observeOrdinaryWriterPath(path).roots) {
+      if (current.device !== root.device || current.backingPath !== expected) invalid();
+    }
+  }
+}
+export function assertHostedOrdinaryRegistryPublication(registryRootDir: string, lockRootDir: string, paths: readonly string[] = [], jobRootDir?: string): void {
+  withCurrentOrdinaryExtent((extent, originalJobRoot) => {
+    if (extent.registryRootDir !== registryRootDir || (jobRootDir !== undefined && jobRootDir !== originalJobRoot)) invalid();
+    if (extent.publication) {
+      const jobDir = join(registryRootDir, extent.publication.jobId), manifest = join(jobDir, "job.json");
+      for (const path of paths) if (path !== registryRootDir && path !== jobDir && path !== manifest &&
+          !(path.startsWith(join(jobDir, ".job.json.")) && path.endsWith(".tmp")) && !inside(lockRootDir, path)) invalid();
+    }
+    assertHostedOrdinaryPublicationPaths(extent, [registryRootDir, lockRootDir, ...paths]);
+  });
+}
+
 /** Raw effect guard for trusted built-in writers. It neither suppresses nor
  * adopts the independent quota daemon into the job's provider reservation. */
 export function assertHostedOrdinaryEffectPaths(paths: readonly string[]): void {
   withCurrentOrdinaryExtent(extent => assertHostedOrdinaryWriterPaths(extent, paths));
 }
-function withCurrentOrdinaryExtent(action: (extent: HostedOrdinaryWriterExtent) => void): void {
+export function currentHostedOrdinaryWriterExtent(): HostedOrdinaryWriterExtent | undefined {
+  let current: HostedOrdinaryWriterExtent | undefined;
+  withCurrentOrdinaryExtent(extent => { current = extent; });
+  return current;
+}
+function withCurrentOrdinaryExtent(action: (extent: HostedOrdinaryWriterExtent, jobRootDir: string) => void): void {
   if (process.platform !== "linux") return;
   const routed = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-([a-f0-9-]{36})\.service$/.exec(readFileSync("/proc/self/cgroup", "utf8").trim());
   if (!routed) return;
@@ -130,7 +172,9 @@ function withCurrentOrdinaryExtent(action: (extent: HostedOrdinaryWriterExtent) 
     if (!bytes) invalid();
     const extent = readHostedOrdinaryWriterExtent(fence, startId, bytes, origin.installation as { runtimeSha: unknown; runtimeManifestSha256: unknown; inventorySha256: unknown });
     if (!extent) return; // Unsupported legacy allocations stay Unknown in census.
-    action(extent);
+    const start = decodeHostedActivationBytes(bytes);
+    if (typeof start.jobRootDir !== "string") invalid();
+    action(extent, start.jobRootDir);
   });
 }
 

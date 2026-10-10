@@ -24,10 +24,12 @@ export type ProjectControlWorkspaceLease = {
 
 export function projectControlWorkspaceLocks(
   registryRootDir: string,
+  assertPublicationCurrent?: (paths: readonly string[]) => void,
 ): WorkspaceLockPort {
   return new LocalWorkspaceIntegrationLock({
     rootDir: projectControlWorkspaceLockRoot(registryRootDir),
     staleLockMs: 30 * 60_000,
+    ...(assertPublicationCurrent ? { assertPublicationCurrent } : {}),
   });
 }
 

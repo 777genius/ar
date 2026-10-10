@@ -123,7 +123,7 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   readonly expectedBaseCommit?: string;
   readonly expectedHeadCommit?: string;
   /** Trusted runtime adapter only; never part of serialized job configuration. */
-  readonly publicationAuthority?: { readonly assertPublicationAuthorized: () => Promise<void> };
+  readonly publicationAuthority?: { readonly assertPublicationAuthorized: (paths?: readonly string[]) => Promise<void> };
   readonly testHooks?: {
     readonly afterCapture?: (attempt: number) => Promise<void>;
     readonly beforePublish?: (attempt: number) => Promise<void>;
@@ -133,7 +133,7 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   assertSafeHandoffId(input.workerJobId, "worker_job_id");
   assertSafeHandoffId(input.taskId, "task_id");
   const workspacePath = await canonicalDirectory(input.workspacePath, "handoff_workspace");
-  await input.publicationAuthority?.assertPublicationAuthorized();
+  await input.publicationAuthority?.assertPublicationAuthorized([input.durableRootDir]);
   await mkdir(input.durableRootDir, { recursive: true, mode: 0o700 });
   const durableRootDir = await canonicalDirectory(
     input.durableRootDir,
@@ -142,7 +142,7 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   if (handoffPathInside(workspacePath, durableRootDir)) {
     throw new Error("handoff_durable_root_inside_workspace");
   }
-  await input.publicationAuthority?.assertPublicationAuthorized();
+  await input.publicationAuthority?.assertPublicationAuthorized([durableRootDir]);
   await chmod(durableRootDir, 0o700);
 
   for (let attempt = 1; attempt <= captureAttempts; attempt += 1) {
@@ -572,7 +572,7 @@ async function publishPacket(input: {
   readonly captured: Awaited<ReturnType<typeof capturePacketFiles>>;
   readonly verifyWorkspaceStable: () => Promise<void>;
   readonly afterExistingPacketRead?: () => Promise<void>;
-  readonly publicationAuthority?: { readonly assertPublicationAuthorized: () => Promise<void> };
+  readonly publicationAuthority?: { readonly assertPublicationAuthorized: (paths?: readonly string[]) => Promise<void> };
 }): Promise<MaterializedDurableCodexGoalHandoffPacket> {
   const packetName = `${input.taskId}.${input.captured.generation}.packet`;
   const packetPath = join(input.durableRootDir, packetName);
@@ -592,11 +592,12 @@ async function publishPacket(input: {
     input.durableRootDir,
     `.${packetName}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
   );
-  await input.publicationAuthority?.assertPublicationAuthorized();
+  await input.publicationAuthority?.assertPublicationAuthorized([temporaryPath]);
   await mkdir(temporaryPath, { mode: 0o700 });
   try {
     for (const file of input.captured.files) {
       const path = join(temporaryPath, file.path);
+      await input.publicationAuthority?.assertPublicationAuthorized([path]);
       await writeFile(path, file.bytes, { mode: 0o600, flag: "wx" });
       const handle = await open(path, "r");
       try { await handle.sync(); } finally { await handle.close(); }
@@ -605,11 +606,12 @@ async function publishPacket(input: {
     try { await directory.sync(); } finally { await directory.close(); }
     await input.verifyWorkspaceStable();
     await verifyPublishedPacket(temporaryPath, input.captured.files);
-    await input.publicationAuthority?.assertPublicationAuthorized();
+    await input.publicationAuthority?.assertPublicationAuthorized([temporaryPath, packetPath]);
     await rename(temporaryPath, packetPath);
     const root = await open(input.durableRootDir, "r");
     try { await root.sync(); } finally { await root.close(); }
   } catch (error) {
+    await input.publicationAuthority?.assertPublicationAuthorized([temporaryPath]);
     await rm(temporaryPath, { recursive: true, force: true });
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       const raced = await readExistingPacket(

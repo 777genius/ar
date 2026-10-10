@@ -40,6 +40,8 @@ import {
   optionalCodexGoalProviderSandboxMode,
 } from "./codex-goal-control-modes";
 import { withCodexGoalManifestUpdate, withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
+import { currentHostedOrdinaryWriterExtent, assertHostedOrdinaryRegistryPublication } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
+import { projectControlWorkspaceLockRoot } from "./codex-goal-project-workspace-lock";
 import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 import {
@@ -242,6 +244,7 @@ export async function createCodexGoalJob(input: {
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
   readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
 }): Promise<CodexGoalJobManifest> {
+  const original = currentHostedOrdinaryWriterExtent();
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
   const nativeWorker = input.manifest.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
@@ -278,7 +281,8 @@ export async function createCodexGoalJob(input: {
   }
   const publish = () => withCodexGoalRegistryMutation({
     registryRootDir,
-    effect: async () => {
+    effect: async assertPublicationCurrent => {
+      assertPublicationCurrent([join(registryRootDir, manifest.jobId), path], manifest.jobRootDir);
       if ((await pathExists(path)) && !existedBeforeAdmission) {
         throw codexGoalJobManifestAlreadyExists(path);
       }
@@ -298,11 +302,13 @@ export async function createCodexGoalJob(input: {
           input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
         );
         try {
+          assertPublicationCurrent([join(registryRootDir, manifest.jobId)]);
           await mkdir(join(registryRootDir, manifest.jobId), {
             recursive: true,
             mode: 0o700,
           });
           await custodyCertification?.revalidate();
+          assertPublicationCurrent([path]);
           await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
             encoding: "utf8",
             mode: 0o600,
@@ -319,6 +325,8 @@ export async function createCodexGoalJob(input: {
       });
     },
   });
+  if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
+  assertHostedOrdinaryRegistryPublication(registryRootDir, projectControlWorkspaceLockRoot(registryRootDir), [path], manifest.jobRootDir);
   // A new manifest has no checkpointable identity yet. Its registry mutex
   // protects initial publication; preserve the absent-root origin attestation.
   return existedBeforeAdmission
@@ -357,7 +365,7 @@ export async function updateCodexGoalJob(input: {
     manifestPath: lockedManifestPath,
     ...(input.expectedManifestSha256 === undefined
       ? {} : { expectedManifestSha256: input.expectedManifestSha256 }),
-    effect: async () => {
+    effect: async assertPublicationCurrent => {
       const existing = await readCodexGoalJob({
         registryRootDir,
         jobId: input.jobId,
@@ -408,6 +416,7 @@ export async function updateCodexGoalJob(input: {
       try {
         await custodyCertification?.revalidate();
         await durableReplaceJsonFile({ path: manifestPath, value: manifest,
+          assertPublicationCurrent,
           beforePublication: async () => {
             await input.beforeManifestPublication?.();
             assertExpectedParsedManifest(await readCodexGoalJob({ registryRootDir, jobId: input.jobId }));
