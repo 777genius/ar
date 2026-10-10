@@ -1,10 +1,10 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { AgentRuntimeTool, DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { createFileBackendCodexWorkerRuntime } from "../file-backend-codex-runtime-factory";
-import { MemoryWorkerObservability } from "./file-backend-codex-worker-test-support";
+import { MemoryWorkerObservability, StaticRunner } from "./file-backend-codex-worker-test-support";
 import { CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { grantOwnedMimoWorkerLaunch, grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
@@ -59,6 +59,7 @@ describe("owned standalone MiMo worker", () => {
 
   // RED: the old closed request/egress/options boundaries refuse an independently owned MiMo worker.
   it("admits the exact Worker grant into finite real executor composition", async () => {
+    host.physicalPaths = true;
     const { spec, selected } = startMimo();
     const config = researchRunConfig(selected);
     if (config.executionEngine === undefined || config.modelBackend === undefined || config.sourceEnv === undefined) {
@@ -93,7 +94,28 @@ describe("owned standalone MiMo worker", () => {
     const runtime = createFileBackendCodexWorkerRuntime({ options: { ...worker, outputSchemas: options.outputSchemas, workspacePath: selected.workspacePath },
       workerId: "TEST-mimo-worker", observability: new MemoryWorkerObservability(), redactor: new DefaultRedactor(),
       clock: { now: () => new Date(), monotonicMs: () => performance.now() } });
-    const generated = (runtime.agentDriver as unknown as { options: { mimoConfigToml: string } }).options.mimoConfigToml;
+    const credentialPath = local("/etc/subscription-runtime/secrets/shared/mimo-token-plan-api-key");
+    mkdirSync(dirname(credentialPath), { recursive: true, mode: 0o700 });
+    writeFileSync(credentialPath, "TEST-only-mimo-credential", { mode: 0o600 });
+    const abort = new AbortController();
+    let generated = "", inspected = false;
+    try {
+      const result = await runtime.agentDriver.runTask({ session: null,
+        task: { kind: "structured-prompt", prompt: "TEST inspect owned config before provider entry", outputSchemaName: "codex-worker-report" },
+        workspace: { path: selected.workspacePath }, runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }),
+        redactor: new DefaultRedactor(), abortSignal: abort.signal, onTaskStarted: () => {
+          const homeRoot = join(selected.jobRootDir, "home"), homes = readdirSync(homeRoot);
+          expect(homes).toHaveLength(1);
+          expect(homes[0]).toMatch(/^mimo-/);
+          generated = readFileSync(join(homeRoot, homes[0]!, "codex-home", "config.toml"), "utf8");
+          inspected = true;
+          abort.abort();
+          throw new Error("TEST-config-inspected-before-provider-entry");
+        } });
+      expect(inspected).toBe(true);
+      expect(abort.signal.aborted).toBe(true);
+      expect(result.status).toBe("failed");
+    } finally { await runtime.agentDriver.dispose?.(); }
     expect(generated).toContain('[permissions.hosted-project-read.filesystem]');
     expect(generated).toContain('[mcp_servers.agent_runtime_workspace]');
     expect(generated).toContain('enabled_tools = ["edit_file", "read_file", "search_files", "write_file"]');
