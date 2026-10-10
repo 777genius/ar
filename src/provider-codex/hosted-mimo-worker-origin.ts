@@ -49,7 +49,27 @@ function equal(left: unknown, right: unknown): void { if (JSON.stringify(left) !
 
 /** Actual owned runtime MainPID selects authority. Neither env, requested job,
  * a callback nor a grant alone can authorize the fixed shared credential. */
+export type HostedMimoCodingWorkerOrigin = Readonly<{
+  homeRoot: string; digest: string; directory: string; jobId: string; startId: string; unit: string;
+  codexBinaryPath: string; workspacePath: string; workspaceDevice: number; workspaceInode: number; model: string;
+  taskTimeoutMs: number; maxGoalTurns: number;
+}>;
+const codingProofs = new WeakMap<HostedMimoCodingWorkerOrigin, () => void>();
+
 export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; readonly digest: string; readonly directory: string } | null {
+  return readOrigin(false);
+}
+/** Metadata only. This proof does not admit a provider root, network or tool policy. */
+export function readHostedMimoCodingWorkerOrigin(): HostedMimoCodingWorkerOrigin | null {
+  return readOrigin(true) as HostedMimoCodingWorkerOrigin | null;
+}
+/** Only an independently minted proof is accepted, never a reconstructed DTO. */
+export function assertHostedMimoCodingWorkerOriginCurrent(proof: HostedMimoCodingWorkerOrigin): void {
+  const check = codingProofs.get(proof);
+  if (!check) invalid();
+  check();
+}
+function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; readonly digest: string; readonly directory: string } | null {
   if (process.platform !== "linux") return null;
   const group = readFileSync("/proc/self/cgroup", "utf8").trim().split("\n").filter(row => row.startsWith("0::"));
   if (group.length !== 1) invalid();
@@ -98,12 +118,12 @@ export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; reado
   // An operator-selected frozen profile alone must never authorize reading the
   // shared key or exposing native tools. A separately verified root/proxy
   // binding across the provider process boundary is not installed yet.
-  if (coding) throw new Error("hosted_mimo_coding_activation_closed");
+  if (coding && !allowCodingMetadata) throw new Error("hosted_mimo_coding_activation_closed");
   if (active.schemaVersion !== 1 || active.startId !== match[2] || active.specSha256 !== owner[2] || hash(specBytes) !== owner[2] ||
       spec.schemaVersion !== 1 || spec.startId !== match[2] || spec.unit !== unit ||
       spec.runtimeDirectory !== fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "") ||
       typeof request.jobId !== "string" || hash(request.jobId) !== owner[1] || spec.grantSha256 !== hash(grantBytes) ||
-      grant.schemaVersion !== 1 || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan || grant.hostedProfile !== HostedMimoProfile.Worker ||
+      grant.schemaVersion !== 1 || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan || grant.hostedProfile !== (coding ? HostedMimoProfile.CodingV1 : HostedMimoProfile.Worker) ||
       request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || request.model !== codexMimoDefaultModel ||
       request.maxAccountCycles !== 1 || request.prewarmOnStart !== false || JSON.stringify(request.accounts) !== '["account-q"]' ||
       !Number.isSafeInteger(request.taskTimeoutMs) || (request.taskTimeoutMs as number) < 1000 || (request.taskTimeoutMs as number) > 86400000 ||
@@ -124,7 +144,42 @@ export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; reado
   try { lstatSync(join(directory, "closing.json")); invalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (!bytes(join(job, "active.json")).equals(activeBytes) || !bytes(join(job, "grant.json")).equals(grantBytes) ||
       !bytes(join(directory, "binding.json")).equals(bindingBytes) || !bytes(join(directory, "spec.json")).equals(specBytes)) invalid();
-  return { homeRoot, digest: owner[2]!, directory };
+  if (!coding) return allowCodingMetadata ? null : { homeRoot, digest: owner[2]!, directory };
+  const workspace = record(spec.workspaceDirectory);
+  keys(workspace, "path,device,inode");
+  if (workspace.path !== request.workspacePath || !Number.isSafeInteger(workspace.device) || (workspace.device as number) < 0 ||
+      !Number.isSafeInteger(workspace.inode) || (workspace.inode as number) < 1) invalid();
+  const proof: HostedMimoCodingWorkerOrigin = Object.freeze({ homeRoot, digest: owner[2]!, directory,
+    jobId: String(request.jobId), startId: match[2]!, unit, codexBinaryPath: absolutePath(request.codexBinaryPath), workspacePath: absolutePath(request.workspacePath),
+    workspaceDevice: workspace.device as number, workspaceInode: workspace.inode as number,
+    model: String(request.model), taskTimeoutMs: request.taskTimeoutMs as number, maxGoalTurns: request.maxGoalTurns as number });
+  const deadline = performance.now() + proof.taskTimeoutMs;
+  const check = (): void => {
+    if (performance.now() >= deadline || process.platform !== "linux" || process.getuid?.() !== 0 || process.geteuid?.() !== 0) invalid();
+    const assertRetained = (): void => {
+      if (performance.now() >= deadline || !bytes(join(job, "active.json")).equals(activeBytes) || !bytes(join(job, "grant.json")).equals(grantBytes) ||
+          !bytes(join(directory, "binding.json")).equals(bindingBytes) || !bytes(join(directory, "spec.json")).equals(specBytes)) invalid();
+      try { lstatSync(join(directory, "closing.json")); invalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    };
+    assertRetained();
+    if (readFileSync("/proc/self/cgroup", "utf8").trim() !== group[0] ||
+        readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== record(binding.process).bootId ||
+        readFileSync("/etc/machine-id", "utf8").trim() !== record(binding.process).machineId) invalid();
+    const freshStat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    const freshFields = freshStat.slice(freshStat.lastIndexOf(")") + 2).split(/\s+/);
+    if (freshFields[0] === "Z" || freshFields[19] !== fields[19]) invalid();
+    for (const name of ["user", "mnt", "pid", "net"]) if (readlinkSync(`/proc/self/ns/${name}`) !== namespaces[name]) invalid();
+    for (const map of ["uid_map", "gid_map"]) if (!/^0\s+0\s+4294967295$/.test(readFileSync(`/proc/self/${map}`, "utf8").trim())) invalid();
+    for (const path of [proof.workspacePath, join(directory, "pins/workspace")]) {
+      const info = lstatSync(path);
+      if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) ||
+          info.dev !== proof.workspaceDevice || info.ino !== proof.workspaceInode) invalid();
+    }
+    assertRegisteredOrigin(spec, grant, request, directory);
+    assertRetained();
+  };
+  codingProofs.set(proof, check); check();
+  return proof;
 }
 
 
@@ -164,7 +219,7 @@ function assertRegisteredOrigin(spec: Wire, grant: Wire, request: Wire, director
   // normalization itself is independent of worker-layer imports.
   const normalized: Wire = {};
   for (const field of ["schemaVersion", "jobId", "taskId", "jobRootDir", "workspacePath", "promptPath", "authRootDir",
-    "durableHandoffRootDir", "modelBackend", "accounts", "codexBinaryPath", "model", "reasoningEffort", "serviceTier", "taskTimeoutMs"]) {
+    "durableHandoffRootDir", "hostedProfile", "maxGoalTurns", "modelBackend", "accounts", "codexBinaryPath", "model", "reasoningEffort", "serviceTier", "taskTimeoutMs"]) {
     if (Object.hasOwn(request, field)) normalized[field] = request[field];
   }
   Object.assign(normalized, { projectId: request.projectId ?? request.jobId, maxAccountCycles: request.maxAccountCycles ?? 5,

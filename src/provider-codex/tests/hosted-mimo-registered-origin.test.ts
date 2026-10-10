@@ -1,22 +1,23 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readHostedMimoWorkerOrigin } from "../hosted-mimo-worker-origin";
+import { readHostedMimoWorkerOrigin, readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent } from "../hosted-mimo-worker-origin";
 import { CodexModelBackend, codexMimoDefaultModel } from "../codex-model-backend";
 import { CodexProviderEgressProfileId } from "../codex-provider-egress-policy";
 import { HostedMimoProfile } from "../hosted-mimo-profile";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), descriptors: new Map<number, string>(), next: 10,
-  service: "", pinInode: 21, pinMode: 0o700 }));
-vi.mock("../hosted-mimo-worker-material", () => ({ assertHostedMimoWorkerMaterial: () => undefined }));
+  service: "", pinInode: 21, pinMode: 0o700, materialCalls: 0, materialInvalid: false, workspaceInode: 21, closing: false, lateEffect: undefined as undefined | (() => void) }));
+vi.mock("../hosted-mimo-worker-material", () => ({ assertHostedMimoWorkerMaterial: () => { state.materialCalls++; if (state.materialInvalid) throw new Error("TEST_material_invalid"); } }));
 vi.mock("node:child_process", () => ({ spawnSync: () => ({ status: 0, stdout: state.service }) }));
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string, encoding?: string) => { const data = state.files.get(path); if (!data) throw Object.assign(new Error(), { code: "ENOENT" }); return encoding ? data.toString() : data; },
   readlinkSync: (path: string) => `ns-${path.split("/").at(-1)}`,
   lstatSync: (path: string) => {
-    if (path.includes("host-policy") || path.endsWith("closing.json")) throw Object.assign(new Error(), { code: "ENOENT" });
+    if (path.includes("host-policy") || path.endsWith("closing.json") && !state.closing) throw Object.assign(new Error(), { code: "ENOENT" });
     const pin = path.endsWith("durable-handoff");
+    if (pin && state.lateEffect) { const effect = state.lateEffect; state.lateEffect = undefined; effect(); }
     return { isDirectory: () => true, isSymbolicLink: () => false, uid: 0, mode: pin ? state.pinMode : path.endsWith("durable-handoffs") ? 0o700 : 0o755,
-      dev: 7, ino: pin ? state.pinInode : 21 };
+      dev: 7, ino: pin ? state.pinInode : path === "/TEST/workspace" || path.endsWith("pins/workspace") ? state.workspaceInode : 21 };
   },
   openSync: (path: string) => { if (!state.files.has(path)) throw new Error("missing fixture"); const fd = state.next++; state.descriptors.set(fd, path); return fd; },
   closeSync: (fd: number) => state.descriptors.delete(fd),
@@ -42,7 +43,7 @@ function publish(): void {
       fragmentSha256: digest("unit") } });
 }
 beforeEach(() => {
-  state.files.clear(); state.pinInode = 21; state.pinMode = 0o700;
+  state.files.clear(); state.pinInode = 21; state.pinMode = 0o700; state.materialCalls = 0; state.materialInvalid = false; state.workspaceInode = 21; state.closing = false; state.lateEffect = undefined;
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   const startId = "11111111-1111-1111-1111-111111111111";
@@ -91,4 +92,71 @@ describe("sealed registered MiMo origin", () => {
     expect(() => readHostedMimoWorkerOrigin()).toThrow(); });
   it.each(["identity", "custody"])("rejects durable pin %s substitution", kind => { if (kind === "identity") state.pinInode++; else state.pinMode = 0o755;
     expect(() => readHostedMimoWorkerOrigin()).toThrow(); });
+});
+
+function codingRequest(): void {
+  const prior = spec.request as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  for (const key of ["schemaVersion", "jobId", "taskId", "jobRootDir", "workspacePath", "promptPath", "authRootDir", "durableHandoffRootDir"]) normalized[key] = prior[key];
+  Object.assign(normalized, { hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 });
+  for (const key of ["modelBackend", "accounts", "codexBinaryPath", "model", "reasoningEffort", "serviceTier", "taskTimeoutMs", "projectId", "maxAccountCycles", "prewarmOnStart", "appServerStartupTimeoutMs"]) normalized[key] = prior[key];
+  spec.request = normalized;
+  const handoff = { ...(spec.registeredHandoff as object), requestSha256: digest(JSON.stringify(normalized)) };
+  spec.registeredHandoff = handoff; grant.registeredHandoff = handoff; grant.hostedProfile = HostedMimoProfile.CodingV1;
+  publish();
+}
+describe("independent CodingV1 metadata proof, without activation", () => {
+  it("fully checks material and returns immutable scoped metadata while old reader remains closed", () => {
+    codingRequest();
+    expect(() => readHostedMimoWorkerOrigin()).toThrow("hosted_mimo_coding_activation_closed");
+    const proof = readHostedMimoCodingWorkerOrigin()!;
+    expect(state.materialCalls).toBe(1);
+    expect(proof).toMatchObject({ jobId: "test-job", startId: spec.startId, unit: spec.unit, workspacePath: "/TEST/workspace",
+      workspaceDevice: 7, workspaceInode: 21, maxGoalTurns: 64, taskTimeoutMs: 60000 });
+    expect(Object.isFrozen(proof)).toBe(true);
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent(proof)).not.toThrow();
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent({ ...proof })).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+  it("does not shortcut material or registered authority validation", () => {
+    codingRequest(); state.materialInvalid = true;
+    expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("TEST_material_invalid");
+    state.materialInvalid = false;
+    spec.request = { ...(spec.request as object), maxGoalTurns: 65 }; publish();
+    expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+  it.each(["active", "grant", "spec", "binding", "process"])("invalidates retained proof after %s changes", kind => {
+    codingRequest(); const proof = readHostedMimoCodingWorkerOrigin()!;
+    const path = kind === "active" || kind === "grant" ? `${job}/${kind}.json` : `${directory}/${kind}.json`;
+    if (kind === "process") state.files.set(`/proc/${process.pid}/stat`, Buffer.from(`1 (node) S ${Array(18).fill("0").join(" ")} 43`));
+    else state.files.set(path, Buffer.from("{}"));
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent(proof)).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+  it.each(["closing", "workspace", "namespace-map"])("rejects proof use after %s changes", kind => {
+    codingRequest(); const proof = readHostedMimoCodingWorkerOrigin()!;
+    if (kind === "closing") state.closing = true;
+    else if (kind === "workspace") state.workspaceInode++;
+    else state.files.set("/proc/self/uid_map", Buffer.from("0 1000 1"));
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent(proof)).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+  it.each(["active", "closing"])("rejects %s revocation during the final durable pin check", kind => {
+    codingRequest(); const proof = readHostedMimoCodingWorkerOrigin()!;
+    state.lateEffect = () => {
+      if (kind === "active") state.files.set(`${job}/active.json`, Buffer.from("{}"));
+      else state.closing = true;
+    };
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent(proof)).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+  it("returns null only after fully validating Worker, preserving its ordinary reader", () => {
+    expect(readHostedMimoCodingWorkerOrigin()).toBeNull();
+    expect(state.materialCalls).toBe(1);
+    expect(readHostedMimoWorkerOrigin()).not.toBeNull();
+    state.materialInvalid = true;
+    expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("TEST_material_invalid");
+  });
+  it("rejects invalid Worker and mismatched profile grants", () => {
+    grant.hostedProfile = "unknown"; publish();
+    expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+    codingRequest(); grant.hostedProfile = HostedMimoProfile.Worker; publish();
+    expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+  });
 });
