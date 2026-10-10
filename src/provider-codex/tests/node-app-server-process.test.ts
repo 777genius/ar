@@ -1,11 +1,63 @@
 import { describe, expect, it } from "vitest";
 import { pruneCodexChildEnv } from "../codex-cli-domain";
+import { resolveCodexExecutionProfile } from "../codex-execution-profile";
+import { CodexAppServerClient } from "../app-server/application/app-server-client";
+import { decodeHostedAppServerLaunchFrame } from "../app-server/adapters/hosted-app-server-launch-frame";
+import { FakeAppServerFactory } from "../app-server/testing/fake-app-server";
 import {
   codexAppServerProcessInvocation,
   signalHostedSystemdUnit,
+  type CodexAppServerProcessInvocation,
 } from "../app-server/adapters/node-app-server-process";
 
 describe("hosted Codex app-server resource containment", () => {
+  it("keeps the hosted job identity through client environment filtering and managed launch", async () => {
+    const jobId = "TEST-hosted-job-identity";
+    const root = `/srv/workers/jobs/${jobId}`;
+    const home = `${root}/state/codex-session-cache/TEST/home`;
+    const codexHome = `${root}/state/codex-session-cache/TEST/codex-home`;
+    const peer = new FakeAppServerFactory();
+    const invocations: CodexAppServerProcessInvocation[] = [];
+    const client = new CodexAppServerClient({
+      codexBinaryPath: "/opt/codex/bin/codex",
+      sourceEnv: {
+        SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        SUBSCRIPTION_RUNTIME_JOB_ID: jobId,
+        SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: "1",
+        SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1",
+        OPENAI_API_KEY: "synthetic-blocked-secret",
+        GITHUB_TOKEN: "synthetic-blocked-secret",
+        SUBSCRIPTION_RUNTIME_UNREVIEWED_OPTION: "synthetic-blocked-option",
+      },
+      session: { home, codexHome, env: { HOME: home, CODEX_HOME: codexHome }, release: async () => undefined },
+      workspacePath: `${root}/workspace`,
+      processFactory: input => {
+        invocations.push(codexAppServerProcessInvocation({ ...input, platform: "linux" }));
+        return peer.create(input);
+      },
+      signalChildProcess: (child, signal) => { child.kill(signal); },
+      executionProfile: resolveCodexExecutionProfile("stateless-completion"),
+      timeoutMs: 1_000, startupTimeoutMs: 1_000, reconnectGraceMs: 100,
+      maxOutputBytes: 4096, abortSignal: new AbortController().signal,
+    });
+    try {
+      await client.start();
+      expect(peer.requests.some(request => request.method === "initialize")).toBe(true);
+      expect(invocations).toHaveLength(1);
+      const invocation = invocations[0]!;
+      expect(JSON.parse(invocation.args[2]!)).toMatchObject({ operation: "provider", jobId, unit: invocation.systemdUnit });
+      const frame = decodeHostedAppServerLaunchFrame(invocation.stdinBootstrap!);
+      expect(frame.cwd).toBe(home);
+      expect(frame.env).toMatchObject({ SUBSCRIPTION_RUNTIME_JOB_ID: jobId, HOME: home, CODEX_HOME: codexHome });
+      for (const key of ["SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH", "SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START",
+        "OPENAI_API_KEY", "GITHUB_TOKEN", "SUBSCRIPTION_RUNTIME_UNREVIEWED_OPTION"]) {
+        expect(frame.env).not.toHaveProperty(key);
+      }
+    } finally {
+      await client.stop();
+    }
+  });
+
   it("rejects detached provider units without durable host-job ownership", () => {
     expect(() => codexAppServerProcessInvocation({
       command: "/opt/codex/bin/codex",

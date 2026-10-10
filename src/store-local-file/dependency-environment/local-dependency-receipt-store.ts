@@ -8,8 +8,12 @@ import { DependencyInstallProofKind as Install, DependencyPreservationKind as Pr
 } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyReceiptParseStatus, parseDependencyReceipt } from "../../worker-core/dependency-environment/domain/parse-dependency-receipt";
 import { detectSecretLikeContent } from "../../worker-core/secret-detection";
-import type { DependencyCommittedAbsentReceipt, DependencyCommittedReceiptReference, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyCommittedAbsentReceipt, DependencyCommittedReadyReceipt, DependencyCommittedUnverifiedReceipt, DependencyCommittedReceiptReference, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
 import type { DependencyLocalInstallProofVerifier } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
+
+import type { DependencyLegacyComparisonVerifier } from "../../worker-core/dependency-environment/ports/dependency-legacy-comparison";
+
+import type { DependencyGenerationReceiptVerifier } from "../../worker-core/dependency-environment/ports/dependency-generation-continuity";
 
 export enum DependencyReceiptStorageFailure {
   Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root", UnsafeStore = "unsafe_store",
@@ -20,6 +24,9 @@ export class DependencyReceiptStorageError extends Error {
   constructor(readonly reason: DependencyReceiptStorageFailure) { super(`dependency_receipt_storage:${reason}`); }
 }
 const Failure = DependencyReceiptStorageFailure;
+enum PublicationPurpose { Retirement = "retirement", FactualUnverified = "factual_unverified" }
+type PublicationGuard = { readonly purpose: PublicationPurpose.Retirement; readonly previousReference: DependencyCommittedReceiptReference } |
+  { readonly purpose: PublicationPurpose.FactualUnverified };
 function fail(reason: DependencyReceiptStorageFailure): never { throw new DependencyReceiptStorageError(reason); }
 type Reference = { name: string; identity: DependencyTreeIdentity; sha256: string };
 type Commit = { version: 1; workspace: DependencyWorkspaceIdentity; revision: number; receipt: Reference; previous: Reference | null };
@@ -42,10 +49,14 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
   private closed = false;
   private constructor(private readonly rootPath: string, private readonly root: number, private readonly rootIdentity: BigIntStats,
     private readonly rootMount: string, private readonly maxRecordBytes: number, private readonly maxHistorySteps: number,
-    private readonly localInstallVerifier?: DependencyLocalInstallProofVerifier) {}
+    private readonly localInstallVerifier?: DependencyLocalInstallProofVerifier,
+    private readonly legacyComparisonVerifier?: DependencyLegacyComparisonVerifier,
+    private readonly generationReceiptVerifier?: DependencyGenerationReceiptVerifier) {}
 
   static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly maxHistorySteps: number;
-    readonly localInstallVerifier?: DependencyLocalInstallProofVerifier }): LocalDependencyReceiptStore {
+    readonly localInstallVerifier?: DependencyLocalInstallProofVerifier;
+    readonly legacyComparisonVerifier?: DependencyLegacyComparisonVerifier;
+    readonly generationReceiptVerifier?: DependencyGenerationReceiptVerifier }): LocalDependencyReceiptStore {
     if (process.platform !== "linux" || statfsSync("/proc/self/fd", { bigint: true }).type !== 0x9fa0n) fail(Failure.Unsupported);
     if (!isAbsolute(input.rootPath) || resolve(input.rootPath) !== input.rootPath || input.rootPath.includes("\0") ||
       ![input.maxRecordBytes, input.maxHistorySteps].every(n => Number.isSafeInteger(n) && n > 0)) fail(Failure.InvalidConfig);
@@ -58,7 +69,7 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
       // Authenticate root custody separately from immutable receipt bytes.
       if (!stat.isDirectory() || !named.isDirectory() || !privateMode(stat, 0o700n) || !privateMode(named, 0o700n) ||
         !sameDependencyTree(identity(stat), identity(named))) fail(Failure.UnsafeRoot);
-      const store = new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier);
+      const store = new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier, input.legacyComparisonVerifier, input.generationReceiptVerifier);
       store.assertRoot();
       return store;
     } catch (error) { closeSync(root); throw error; }
@@ -89,7 +100,64 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     });
   }
 
+  getCommittedUnverified(workspace: DependencyWorkspaceIdentity, revision: number): DependencyCommittedUnverifiedReceipt {
+    if (!Number.isSafeInteger(revision) || revision < 1) fail(Failure.InvalidReceipt);
+    return this.publicRead(workspace, key => {
+      const current = this.capture(workspace, key);
+      if (!current || revision > current.receipt.revision) fail(Failure.StaleRevision);
+      let ref = current.head.commit, expected = current.receipt.revision;
+      for (let step = 0; step < this.maxHistorySteps; step++) {
+        const commit = this.readCommit(workspace, key, expected, ref);
+        const receipt = this.readReceipt(workspace, key, expected, commit.receipt);
+        if (expected === revision) {
+          if (receipt.state !== State.Unverified) fail(Failure.InvalidReceipt);
+          return { receipt, reference: { path: join(this.rootPath, commit.receipt.name),
+            identity: { ...commit.receipt.identity }, sha256: commit.receipt.sha256 } };
+        }
+        if (!commit.previous) fail(Failure.Corrupt);
+        ref = commit.previous; expected--;
+      }
+      return fail(Failure.Bounds);
+    });
+  }
+
+  getCommittedReady(workspace: DependencyWorkspaceIdentity, revision: number): DependencyCommittedReadyReceipt {
+    if (!Number.isSafeInteger(revision) || revision < 1) fail(Failure.InvalidReceipt);
+    return this.publicRead(workspace, key => {
+      const current = this.capture(workspace, key);
+      if (!current || revision > current.receipt.revision) fail(Failure.StaleRevision);
+      let ref = current.head.commit, expected = current.receipt.revision;
+      for (let step = 0; step < this.maxHistorySteps; step++) {
+        const commit = this.readCommit(workspace, key, expected, ref);
+        const receipt = this.readReceipt(workspace, key, expected, commit.receipt);
+        if (expected === revision) {
+          if (receipt.state !== State.Ready) fail(Failure.InvalidReceipt);
+          return { receipt, reference: { path: join(this.rootPath, commit.receipt.name),
+            identity: { ...commit.receipt.identity }, sha256: commit.receipt.sha256 } };
+        }
+        if (!commit.previous) fail(Failure.Corrupt);
+        ref = commit.previous; expected--;
+      }
+      return fail(Failure.Bounds);
+    });
+  }
+
+  retireReady(workspace: DependencyWorkspaceIdentity, expectedRevision: number,
+    expectedReference: DependencyCommittedReceiptReference,
+    next: Extract<DependencyReceipt, { state: State.Unverified }>): DependencyCommittedUnverifiedReceipt {
+    this.publish(workspace, expectedRevision, next, { purpose: PublicationPurpose.Retirement, previousReference: expectedReference });
+    return this.getCommittedUnverified(workspace, next.revision);
+  }
+  publishFactualUnverified(workspace: DependencyWorkspaceIdentity,
+    next: Extract<DependencyReceipt, { state: State.Unverified }>): DependencyCommittedUnverifiedReceipt {
+    this.publish(workspace, null, next, { purpose: PublicationPurpose.FactualUnverified });
+    return this.getCommittedUnverified(workspace, next.revision);
+  }
   compareAndSwap(workspace: DependencyWorkspaceIdentity, expectedRevision: number | null, next: DependencyReceipt): DependencyReceipt {
+    return this.publish(workspace, expectedRevision, next);
+  }
+  private publish(workspace: DependencyWorkspaceIdentity, expectedRevision: number | null, next: DependencyReceipt,
+    guard?: PublicationGuard): DependencyReceipt {
     const key = this.key(workspace); let receipt: DependencyReceipt;
     try {
       // Validate measurement presence before JSON can omit undefined or hidden fields.
@@ -113,10 +181,30 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
         if ((captured?.receipt.revision ?? null) !== expectedRevision) fail(Failure.StaleRevision);
         // Authenticate against the captured immutable current receipt while our
         // mutex is owned. Public history reads intentionally veto this mutex.
-        transition(captured?.receipt ?? null, receipt, captured ? {
+        const previousReference = captured ? {
           path: join(this.rootPath, captured.commit.receipt.name), identity: captured.commit.receipt.identity,
           sha256: captured.commit.receipt.sha256,
-        } : null, this.localInstallVerifier);
+        } : null;
+        transition(captured?.receipt ?? null, receipt, previousReference, this.localInstallVerifier, this.legacyComparisonVerifier);
+        if (guard) {
+          if (!this.generationReceiptVerifier || receipt.state !== State.Unverified) fail(Failure.InvalidTransition);
+          try {
+            let result: void;
+            if (guard.purpose === PublicationPurpose.Retirement) {
+              if (!captured || captured.receipt.state !== State.Ready || !previousReference ||
+                  !sameDependencyTree(captured.receipt.tree, receipt.tree) ||
+                  guard.previousReference.path !== previousReference.path ||
+                  !sameDependencyTree(guard.previousReference.identity, previousReference.identity) ||
+                  guard.previousReference.sha256 !== previousReference.sha256) fail(Failure.InvalidTransition);
+              result = this.generationReceiptVerifier.assertReadyRetirement({ previousReady: captured.receipt,
+                previousReference, proposedUnverified: receipt });
+            } else {
+              if (captured || receipt.reason !== DependencyUnverifiedReason.BaselineMissing) fail(Failure.InvalidTransition);
+              result = this.generationReceiptVerifier.assertFactualUnverified({ proposedUnverified: receipt });
+            }
+            if (result !== undefined) fail(Failure.InvalidTransition);
+          } catch { fail(Failure.InvalidTransition); }
+        }
         return captured;
       });
       const receiptName = `${key}.r${receipt.revision}-${sha(bytes)}.receipt.json`;
@@ -270,7 +358,7 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
 }
 
 function transition(previous: DependencyReceipt | null, next: DependencyReceipt, committed: DependencyCommittedReceiptReference | null,
-  localInstallVerifier?: DependencyLocalInstallProofVerifier): void {
+  localInstallVerifier?: DependencyLocalInstallProofVerifier, legacyComparisonVerifier?: DependencyLegacyComparisonVerifier): void {
   if (next.revision !== (previous?.revision ?? 0) + 1) fail(Failure.StaleRevision);
   if (!previous) {
     if (next.state === State.Unverified || (next.state === State.Installing && next.preservation.kind === Preserve.KnownFreshAbsence)) return;
@@ -298,7 +386,17 @@ function transition(previous: DependencyReceipt | null, next: DependencyReceipt,
     catch { fail(Failure.InvalidTransition); }
     return;
   }
-  if (previous.state === State.Unverified && next.state === State.Ready && next.provenance.kind === Install.LegacyCompared && sameDependencyTree(previous.tree, next.tree)) return;
+  if (previous.state === State.Unverified && next.state === State.Ready && next.provenance.kind === Install.LegacyCompared && sameDependencyTree(previous.tree, next.tree)) {
+    if (!legacyComparisonVerifier || !committed) fail(Failure.InvalidTransition);
+    try {
+      const result = legacyComparisonVerifier.assertLegacyComparison({ previousUnverified: previous, previousReference: committed,
+        proposedReady: { ...next, provenance: next.provenance } });
+      // A Promise cannot authenticate a publication in this synchronous fence.
+      if (result !== undefined) fail(Failure.InvalidTransition);
+    }
+    catch { fail(Failure.InvalidTransition); }
+    return;
+  }
   if (previous.state === State.Ready && next.state === State.Unverified &&
     (sameDependencyTree(previous.tree, next.tree) || next.reason === DependencyUnverifiedReason.TreeChanged)) return;
   if (previous.state === State.Ready && next.state === State.Evicting && previous.installKey === next.installKey &&

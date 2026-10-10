@@ -1,9 +1,13 @@
+import { withHostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertCurrentHostedDependencyAttempt, isHostedManagedReadonlyOuterRuntime, requiresCurrentHostedDependencyRootPurpose, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
+import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
 import { createHash } from "node:crypto";
 import { assertReadonlyEnrollmentProfile } from "./hosted-readonly-custody";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import {
   codexProviderApiEgressPolicy,
+  codexHostedDefaultEgressPolicy,
   codexProviderEgressPolicy,
   codexMimoTokenPlanEgressPolicy,
   CodexModelBackend,
@@ -19,20 +23,40 @@ import {
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { admitResearchRuntime, assertResearchRuntimeEngine } from "./research-launch-admission";
+import { assertHostedBaselineIdentity, isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
+import type { CodexGoalAccessConfig } from "./codex-goal-access-plan";
+import { hasUnrestrictedNativeProjectBoundary } from "./codex-goal-native-egress";
 
 export async function admitHostedTestEgress(
-  input: HostedTestEgressIdentity & {
+  input: HostedTestEgressIdentity & CodexGoalAccessConfig & {
     readonly executionEngine?: CodexWorkerExecutionEngine;
     readonly modelBackend?: CodexModelBackend;
     readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   },
 ): Promise<CodexProviderEgressPolicy> {
   const mimo = input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
+  // Actual protected R origin selects egress BEFORE any C request grant/policy
+  // lookup or optional research path. Logical C CLI identity is only data.
+  if (isHostedManagedReadonlyOuterRuntime() && requiresCurrentHostedDependencyRootPurpose()) {
+    const managed = withHostedActivationFence(fence => {
+      const retained = readCurrentHostedDependencyRootQualification(fence);
+      const actual = assertCurrentHostedDependencyAttempt(retained.context,fence);
+      if (actual.facts.kind !== CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) throw new Error("hosted_readonly_dependency_egress_denied");
+      if (mimo || input.jobId !== actual.binding.jobId || input.jobRootDir !== actual.binding.jobRootDir ||
+          input.workspacePath !== actual.binding.workspace.canonicalPath || (input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
+          input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") throw new Error("hosted_readonly_dependency_egress_denied");
+      return true;
+    });
+    if (managed) return codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
+  }
+
   const research = admitResearchRuntime(input);
   if (research) {
-    assertResearchRuntimeEngine(input);
+    assertResearchRuntimeEngine(input, research);
     return codexProviderEgressPolicy(research);
   }
+  const contained = isHostedContainment(input.sourceEnv ?? process.env);
+  if (contained && mimo) throw new Error("hosted_mimo_activation_closed");
   // Namespace/local non-root callers never read host-private authority or gain
   // TEST egress from a marker. Actual ordinary-runtime membership still denies
   // a wrong principal before entering its selected route.
@@ -52,6 +76,15 @@ export async function admitHostedTestEgress(
     return mimo ? codexMimoTokenPlanEgressPolicy() : codexProviderApiEgressPolicy();
   }
   const hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
+  if (!hosted) {
+    assertHostedBaselineIdentity(input.jobId);
+    if (contained && !["app-server", "app-server-goal"].includes(input.executionEngine ?? "app-server-goal")) {
+      throw new Error("hosted_permission_profiles_engine_unsupported");
+    }
+    return mimo ? codexMimoTokenPlanEgressPolicy() :
+      contained || hasUnrestrictedNativeProjectBoundary(input)
+        ? codexHostedDefaultEgressPolicy() : codexProviderApiEgressPolicy();
+  }
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if (mimo || profile === CodexProviderEgressProfileId.MimoTokenPlan) {

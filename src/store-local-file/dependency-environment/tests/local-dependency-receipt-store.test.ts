@@ -1,3 +1,6 @@
+import { readFileSync, lstatSync } from "node:fs";
+import { DependencyUnverifiedReason } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
+import type { DependencyLegacyComparisonVerifier, DependencyLegacyComparedReady } from "../../../worker-core/dependency-environment/ports/dependency-legacy-comparison";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -14,7 +17,7 @@ import type { DependencyCommittedAbsentReceipt } from "../../../worker-core/depe
 
 const run = promisify(execFile);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
-async function fixture(options: { maxRecordBytes?: number; maxHistorySteps?: number } = {}) {
+async function fixture(options: { maxRecordBytes?: number; maxHistorySteps?: number; legacyComparisonVerifier?: DependencyLegacyComparisonVerifier } = {}) {
   const path = await realpath(await mkdtemp(join(tmpdir(), "dependency-receipt-TEST-")));
   const rootPath = join(path, "protected"), workspacePath = join(path, "workspace");
   await mkdir(rootPath, { mode: 0o700 }); await mkdir(workspacePath);
@@ -334,5 +337,87 @@ describe.skipIf(process.platform !== "linux")("protected dependency receipts", (
       expect((await readdir(f.rootPath)).filter(name => name.endsWith(".receipt.json"))).toHaveLength(4);
       await chmod(f.rootPath, 0o755); expect(rejected(() => f.store.read(f.workspace))).toBe(Failure.UnsafeRoot);
     } finally { limited?.close(); await f.cleanup(); }
+  });
+});
+
+// Storage-boundary regression: production hosted-chain authentication has its
+// own native gate. This TEST verifier reads a protected immutable evidence leaf
+// and its original actual receipt bytes/inode; it does not manufacture runtime
+// provenance or assert that synthetic TEST trees were independently installed.
+describe.skipIf(process.platform !== "linux")("legacy comparison predecessor CAS", () => {
+  function unverified(workspace: DependencyWorkspaceIdentity): Extract<DependencyReceipt, { state: State.Unverified }> {
+    return { version: 1, revision: 1, generation: "TEST-legacy", coverageRevision: "TEST-coverage", workspace,
+      state: State.Unverified, tree: { dev: workspace.dev, ino: "987654321" }, reason: DependencyUnverifiedReason.BaselineMissing };
+  }
+  function ready(old: Extract<DependencyReceipt, { state: State.Unverified }>, revision = 2): DependencyLegacyComparedReady {
+    const binding = { generation: old.generation, workspace: old.workspace, coverageRevision: old.coverageRevision,
+      tree: old.tree, installKey: "a".repeat(64), manifestDigest: "b".repeat(64) };
+    return { version: 1, revision, state: State.Ready, ...binding, provenance: { ...binding,
+      kind: Install.LegacyCompared, referenceInstallationId: "TEST-reference-install", comparisonEvidenceId: "TEST-comparison" } };
+  }
+  it("denies missing verifier before creating receipt, commit or head bytes", async () => {
+    const f = await fixture();
+    try {
+      const old = unverified(f.workspace); f.store.compareAndSwap(f.workspace, null, old);
+      const before = await readdir(f.rootPath), head = await readFile(f.file);
+      expect(rejected(() => f.store.compareAndSwap(f.workspace, 1, ready(old)))).toBe(Failure.InvalidTransition);
+      expect(await readdir(f.rootPath)).toEqual(before);
+      expect(await readFile(f.file)).toEqual(head);
+      expect(f.store.read(f.workspace)).toEqual(old);
+    } finally { await f.cleanup(); }
+  });
+  it("denies an asynchronous verifier before publishing", async () => {
+    const f = await fixture({ legacyComparisonVerifier: { async assertLegacyComparison() {} } });
+    try {
+      const old = unverified(f.workspace); f.store.compareAndSwap(f.workspace, null, old);
+      const before = await readdir(f.rootPath), head = await readFile(f.file);
+      expect(rejected(() => f.store.compareAndSwap(f.workspace, 1, ready(old)))).toBe(Failure.InvalidTransition);
+      expect(await readdir(f.rootPath)).toEqual(before);
+      expect(await readFile(f.file)).toEqual(head);
+    } finally { await f.cleanup(); }
+  });
+  it("pins actual predecessor reference and rejects r1 replay after genuine r3 publication", async () => {
+    const f = await fixture(); let secured: Store | undefined;
+    try {
+      const old = unverified(f.workspace); f.store.compareAndSwap(f.workspace, null, old);
+      const committed = f.store.getCommittedUnverified(f.workspace, 1);
+      const evidencePath = join(f.rootPath, "TEST-comparison-evidence.json");
+      await writeFile(evidencePath, JSON.stringify(committed) + "\n", { mode: 0o600, flag: "wx" });
+      const verifier: DependencyLegacyComparisonVerifier = { assertLegacyComparison(input) {
+        const evidence: typeof committed = JSON.parse(readFileSync(evidencePath, "utf8"));
+        const stat = lstatSync(evidence.reference.path, { bigint: true });
+        if (stat.dev.toString() !== evidence.reference.identity.dev || stat.ino.toString() !== evidence.reference.identity.ino ||
+          hash(readFileSync(evidence.reference.path)) !== evidence.reference.sha256 ||
+          JSON.stringify(evidence.receipt) !== JSON.stringify(input.previousUnverified) ||
+          JSON.stringify(evidence.reference) !== JSON.stringify(input.previousReference)) throw new Error("TEST predecessor mismatch");
+      } };
+      f.store.close(); secured = Store.open({ rootPath: f.rootPath, maxRecordBytes: 16384, maxHistorySteps: 16, legacyComparisonVerifier: verifier });
+      // Same authentic bytes copied to a different inode/path must not replace
+      // storage's actual immutable predecessor reference.
+      const substitutedPath = join(f.rootPath, "TEST-substituted-receipt.json");
+      await writeFile(substitutedPath, await readFile(committed.reference.path), { mode: 0o600, flag: "wx" });
+      const substituteStat = await lstat(substitutedPath, { bigint: true });
+      await writeFile(evidencePath, JSON.stringify({ ...committed, reference: { ...committed.reference, path: substitutedPath,
+        identity: { dev: String(substituteStat.dev), ino: String(substituteStat.ino) } } }) + "\n");
+      const beforeSubstitution = await readFile(f.file);
+      expect(rejected(() => secured!.compareAndSwap(f.workspace, 1, ready(old)))).toBe(Failure.InvalidTransition);
+      expect(await readFile(f.file)).toEqual(beforeSubstitution);
+      await writeFile(evidencePath, JSON.stringify(committed) + "\n");
+      expect(secured.compareAndSwap(f.workspace, 1, ready(old)).revision).toBe(2);
+      const committedReady = secured.getCommittedReady(f.workspace, 2);
+      expect(hash(await readFile(committedReady.reference.path))).toBe(committedReady.reference.sha256);
+      expect(committedReady.receipt).toEqual(ready(old));
+      const stale = { ...old, revision: 3, reason: DependencyUnverifiedReason.InputsChanged };
+      secured.compareAndSwap(f.workspace, 2, stale);
+      const current = secured.getCommittedUnverified(f.workspace, 3), beforeReplay = await readdir(f.rootPath), head = await readFile(f.file);
+      expect(current.reference).not.toEqual(committed.reference);
+      expect(secured.getCommittedUnverified(f.workspace, 1)).toEqual(committed);
+      expect(secured.getCommittedReady(f.workspace, 2)).toEqual(committedReady);
+      expect(rejected(() => secured!.compareAndSwap(f.workspace, 3, ready(stale, 4)))).toBe(Failure.InvalidTransition);
+      expect(await readdir(f.rootPath)).toEqual(beforeReplay);
+      expect(await readFile(f.file)).toEqual(head);
+      expect(secured.read(f.workspace)).toEqual(stale);
+      expect(await readFile(committed.reference.path)).toEqual(Buffer.from(JSON.stringify(committed.receipt) + "\n"));
+    } finally { secured?.close(); await f.cleanup(); }
   });
 });

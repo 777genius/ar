@@ -10,7 +10,9 @@ export function claimDependencyMaintenance(store: DependencyOwnerStore, workspac
   const current = store.read(workspace);
   if (current?.owner) fail(Failure.Busy);
   const attempt = { operationId, epoch: (current?.epoch ?? 0) + 1, host };
-  const next = parseDependencyOwner({ version: 2, workspace, revision: (current?.revision ?? 0) + 1,
+  // Current custody/continuity survives maintenance; no v3 downgrade or
+  // authority pointer replacement is performed by a generic state transition.
+  const next = parseDependencyOwner({ ...(current?.version === 3 ? current : { version: 2 }), workspace, revision: (current?.revision ?? 0) + 1,
     epoch: attempt.epoch, owner: { kind: DependencyOwnerKind.Maintenance, phase: DependencyOwnerPhase.ExclusiveMutation, attempt },
     ...(current?.activity === undefined ? {} : { activity: current.activity }) });
   store.compareAndSwap(workspace, current?.revision ?? null, next);
@@ -19,7 +21,7 @@ export function claimDependencyMaintenance(store: DependencyOwnerStore, workspac
 export function assertDependencyMaintenance(store: DependencyOwnerStore, workspace: DependencyWorkspaceIdentity,
   attempt: DependencyMaintenanceAttempt): DependencyOwnerRecord {
   const current = store.read(workspace);
-  if (!current || current.version !== 2 || current.owner?.kind !== DependencyOwnerKind.Maintenance ||
+  if (!current || (current.version !== 2 && current.version !== 3) || current.owner?.kind !== DependencyOwnerKind.Maintenance ||
       current.owner.phase !== DependencyOwnerPhase.ExclusiveMutation || !sameDependencyMaintenanceAttempt(current.owner.attempt, attempt)) fail(Failure.StaleAttempt);
   return current;
 }

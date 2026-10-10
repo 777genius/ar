@@ -7,7 +7,9 @@ import type { HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-co
 // run unchanged; no host inventory, systemd manager or credentials are accessed.
 const os = vi.hoisted(() => ({ files: new Map<string, string>(), fileErrors: new Map<string, string>(), records: new Map<string, Buffer>(),
   groups: new Map<string, string[]>(), units: "", jobs: "", show: new Map<string, string>(),
-  descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn() }));
+  descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn(),
+  externalExec: vi.fn<(...args: Parameters<typeof import("node:child_process").execFile>) => ReturnType<typeof import("node:child_process").execFile>>(
+    () => { throw new Error("TEST external exec forbidden"); }) }));
 vi.mock("node:fs", async original => ({
   ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string) => {
@@ -23,7 +25,14 @@ vi.mock("node:fs", async original => ({
   readSync: (_fd: number, buffer: Buffer) => { buffer.write("reviewed"); return 8; },
   closeSync: () => {},
 }));
-vi.mock("node:child_process", () => ({ spawnSync: (...args: unknown[]) => os.systemctl(...args) }));
+vi.mock("node:child_process", () => ({
+  spawnSync: (...args: unknown[]) => os.systemctl(...args),
+  // Transitive adapters initialize promisify(execFile), but this fixture must
+  // never execute their host commands.
+  execFile: os.externalExec,
+  execFileSync: () => { throw new Error("unplanned synthetic execFileSync operation"); },
+  spawn: () => { throw new Error("unplanned synthetic spawn operation"); },
+}));
 vi.mock("../hosted-readonly-authority", async original => ({
   ...await original<typeof import("../hosted-readonly-authority")>(), assertReadonlyHostOperator: os.operator,
 }));
@@ -31,7 +40,15 @@ vi.mock("../hosted-readonly-inputs", async original => ({
   ...await original<typeof import("../hosted-readonly-inputs")>(),
   readHostedPrivateBytes: (path: string) => os.records.get(path) ?? null,
 }));
-vi.mock("@vioxen/subscription-runtime/provider-codex", () => ({ assertHostedProcessDescriptors: os.descriptors }));
+vi.mock("@vioxen/subscription-runtime/provider-codex", async original => {
+  const actual = await original<typeof import("@vioxen/subscription-runtime/provider-codex")>();
+  // Transitive imports may alias any public provider export during module
+  // initialization. Keep real metadata/enums, but never a provider effect or
+  // constructor fallback. Plain throwing functions survive resetAllMocks.
+  return { ...Object.fromEntries(Object.entries(actual).map(([name, value]) => [name,
+    typeof value === "function" ? function () { throw new Error(`unplanned synthetic provider operation: ${name}`); } : value])),
+  assertHostedProcessDescriptors: os.descriptors };
+});
 // These synthetic legacy inventories have no authenticated FD profile. Keep
 // their real kernel-to-recipe delegation without entering installed host IO.
 vi.mock("../../provider-codex/app-server/adapters/hosted-fd-observation", () => ({ readHostedFdProfile: () => undefined }));

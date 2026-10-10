@@ -1,4 +1,7 @@
+import type { OpenWorkerLaunch } from "./project-control-worker-mode";
+import { assertOwnedMimoWorkerFactory, ownedMimoWorkerStart } from "./research-launch-admission";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
 import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type PublicResearchSourceReader, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import { SubscriptionWorkerError, type SubscriptionWorkerState, type CommandPolicy, type WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
@@ -43,6 +46,7 @@ export type FileBackendCodexWorkerOptions = {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   /** Brokered project jobs require native filesystem permissions even without the host marker. */
   readonly enforceProjectReadBoundary?: boolean;
+  readonly openWorker?: OpenWorkerLaunch;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   /** Already admitted by the trusted host; never taken from job configuration. */
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
@@ -119,10 +123,10 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   if (
     modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
-    (options.executionEngine ?? "app-server") !== "app-server-goal"
+    (options.executionEngine ?? "app-server") !== "app-server-goal" &&
+    !(options.executionEngine === "app-server" && ownedMimoWorkerStart(options.appServerProcessFactory))
   ) {
-    // SR-AP-2 fail-closed: MiMo is only validated through the app-server
-    // goal path. Never let it silently fall back to plain-exec/packaged-exec.
+    // Only the authenticated owned Worker can select a contained turn.
     throw new Error("file_backend_codex_mimo_requires_app_server_goal_engine");
   }
   if (
@@ -139,10 +143,9 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   if (options.completedTurnCheckpoint && (options.executionEngine ?? "app-server") !== "app-server-goal") {
     throw new Error("checkpoint_requires_app_server_goal_engine");
   }
-  const hostedGlobalScanGuard =
-    (options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const hostedGlobalScanGuard = isHostedContainment(options.sourceEnv ?? process.env);
   if (hostedGlobalScanGuard && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
-    throw new Error("hosted_mimo_activation_closed");
+    assertOwnedMimoWorkerFactory(options.appServerProcessFactory);
   }
   const hostedExecutionEngine = options.executionEngine ?? "app-server";
   if (

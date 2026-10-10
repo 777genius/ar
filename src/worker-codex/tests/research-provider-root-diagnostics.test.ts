@@ -3,17 +3,41 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { researchHash, researchRead } from "../research-launch-files";
+import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import * as files from "../research-launch-files";
 import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import * as roots from "../research-provider-root";
+import * as mounts from "../host-scratch-mount";
 import { prepareHelper } from "./research-provider-service-fixture";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
+
+describe("private finite launch diagnostics", () => {
+  it("identifies pre-submission plan denial without persisting paths or the selected home", async () => {
+    const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
+    await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
+    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:snapshot" });
+    expect(bytes).not.toContain(secretHome);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".submission")).toThrow();
+  });
+  it("keeps a changed runtime binding denied and records only the capture phase", async () => {
+    const current = prepareHelper();
+    const bindingPath = join(current.directory, "binding.json");
+    const binding = JSON.parse(researchRead(bindingPath).toString()); binding.process.pid++;
+    researchPublish(bindingPath, binding);
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
+      schemaVersion: 1, unit: current.provider, phase: "runtime-capture", check: "captureResearchRuntime",
+    });
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+});
 
 describe("private identity-bound root diagnostics", () => {
   // A real root guard must identify its finite check; the selected private
@@ -28,9 +52,7 @@ describe("private identity-bound root diagnostics", () => {
       if (fault === "owner") host.foreign.add("/usr");
       else if (fault === "accounts") fs.writeFileSync("/etc/group", "TEST-private-account:TEST-private-password:0:\n");
       else {
-        const read = fs.readFileSync;
-        vi.spyOn(fs, "readFileSync").mockImplementation(((path: string, options: never) =>
-          path === "/proc/self/mountinfo" ? "TEST-private-mount-path" : read(path, options)) as typeof fs.readFileSync);
+        vi.spyOn(mounts, "readKernelMountTable").mockReturnValue("TEST-private-mount-path");
       }
       return prepare(...args);
     });
@@ -46,10 +68,12 @@ describe("private identity-bound root diagnostics", () => {
     const getter = vi.fn(() => { throw new Error("TEST-private-accessor"); });
     Object.defineProperties(error, { stack: { get: getter }, cause: { get: getter } });
     const unexpected = (): never => { throw new Error("TEST-unexpected-root-port-operation"); };
+    const info = vi.fn((path: string) => { if (path === "/usr") throw error; return unexpected(); });
     const rootHost: roots.ResearchProviderRootHost = {
-      info: path => { if (path === "/usr") throw error; return unexpected(); },
+      info,
       read: path => fs.readFileSync(path, "utf8"),
-      canonical: unexpected, link: unexpected, entries: unexpected,
+      // Initial Host context is captured before the /usr file observation.
+      canonical: unexpected, link: path => fs.readlinkSync(path), entries: unexpected,
       mkdir: unexpected, symlink: unexpected, file: unexpected,
       regular: unexpected, snapshot: unexpected, publish: unexpected, record: unexpected,
     };
@@ -65,6 +89,7 @@ describe("private identity-bound root diagnostics", () => {
     catch (failure) { observed = failure; }
     expect(getter).not.toHaveBeenCalled();
     expect(observed === error).toBe(true);
+    expect(info.mock.calls).toEqual([["/usr"]]);
     expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
       schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:observe",
     });
@@ -107,15 +132,20 @@ describe("private synchronous root timing", () => {
     const frozen = Object.freeze(Error("TEST-private-error")), proxy = new Proxy(frozen, { get: getter });
     for (const error of [frozen, proxy, "TEST-private-primitive", undefined]) {
       let observed: unknown, outer: readonly roots.ResearchProviderRootTiming[] = [], inner: readonly roots.ResearchProviderRootTiming[] = [];
-      const rootHost: roots.ResearchProviderRootHost = { info: () => { throw error; }, read: path => fs.readFileSync(path, "utf8"),
-        canonical: getter, link: getter, entries: getter, mkdir: getter, symlink: getter, file: getter, regular: getter, snapshot: getter, publish: getter, record: getter };
+      const info = vi.fn((_path: string): never => { throw error; });
+      const rootHost: roots.ResearchProviderRootHost = { info, read: path => fs.readFileSync(path, "utf8"),
+        canonical: getter, link: path => fs.readlinkSync(path), entries: getter, mkdir: getter, symlink: getter, file: getter, regular: getter, snapshot: getter, publish: getter, record: getter };
       try { roots.captureResearchProviderRootTiming(() => {
         try { roots.captureResearchProviderRootTiming(() => roots.prepareResearchProviderRoot(current.spec, current.provider, current.home, undefined, rootHost),
           value => { inner = value; throw Error("TEST-private-observer"); }); } catch { /* Exercise parent restoration. */ }
         return roots.prepareResearchProviderRoot(current.spec, current.provider, current.home, undefined, rootHost);
       }, value => { outer = value; throw Error("TEST-private-observer"); }); } catch (failure) { observed = failure; }
       expect(observed === error).toBe(true);
-      for (const rows of [inner, outer]) expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Prepare)?.count).toBe(1);
+      expect(info.mock.calls).toEqual([["/usr"], ["/usr"]]);
+      for (const rows of [inner, outer]) {
+        expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Prepare)?.count).toBe(1);
+        expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Observe)?.count).toBe(1);
+      }
     }
     expect(getter).not.toHaveBeenCalled();
     expect(roots.captureResearchProviderRootTiming(() => 7, () => { throw Error("TEST-observer"); })).toBe(7);

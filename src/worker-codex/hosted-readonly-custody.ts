@@ -1,3 +1,4 @@
+import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
@@ -53,11 +54,21 @@ export function readonlyCurrentBootLock(legacyPath: string): string {
 }
 
 export function createReadonlyPrivateRecord(path: string, bytes: Buffer): void {
+  publishPrivateRecord(path, bytes, 64 * 1024);
+}
+
+/** Only the fixed inventory receives schema5's larger conflict-read ceiling. */
+export function publishReadonlyInventory(bytes: Buffer): void {
+  assertReadonlyHostOperator();
+  decodeHostedInventoryBytes(bytes);
+  publishPrivateRecord(join(readonlySupervisorRoot, "readonly-inventory.json"), bytes, hostedInventoryMaximumBytes);
+}
+function publishPrivateRecord(path: string, bytes: Buffer, maximum: number): void {
   let fd: number;
   try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    if (!readHostedPrivateBytes(path, 64 * 1024)?.equals(bytes)) {
+    if (!readHostedPrivateBytes(path, maximum)?.equals(bytes)) {
       throw new Error("hosted_readonly_conflicting_enrollment");
     }
     // Replay also repairs interrupted durability, never just acknowledges bytes.
@@ -66,6 +77,13 @@ export function createReadonlyPrivateRecord(path: string, bytes: Buffer): void {
     syncRecordAncestry(path);
     return;
   }
+  try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
+  syncRecordAncestry(path);
+}
+/** One-time consumption: every existing name refuses, including identical
+ * bytes. Partial publication remains held evidence, never repaired as replay. */
+export function createReadonlyPrivateRecordOnce(path: string, bytes: Buffer): void {
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
   syncRecordAncestry(path);
 }

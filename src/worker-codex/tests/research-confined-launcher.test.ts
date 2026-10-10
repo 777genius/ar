@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import type { TestBootstrapClockReport } from "./research-confined-launcher-test-clock";
 
 // Execute the actual adapter source in fresh Node children with real pipe/fd
 // checks. Only TS syntax/import suffixes are translated; no systemd/unshare,
@@ -24,6 +25,10 @@ beforeAll(() => {
       .replace(/from "\.\/(hosted-[a-z-]+)"/g, 'from "./$1.mjs"');
     writeFileSync(join(root, name + ".mjs"), translated);
   }
+  const testClockSource = readFileSync(join(process.cwd(), "src/worker-codex/tests/research-confined-launcher-test-clock.ts"), "utf8");
+  writeFileSync(join(root, "TEST-bootstrap-clock.mjs"), transpileModule(testClockSource, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText);
 });
 describe("actual fixed research helper selected-home transport (TEST service stub)", () => {
   it("forwards exactly job, unit and selected nominal home", () => {
@@ -38,9 +43,13 @@ describe("actual fixed research helper selected-home transport (TEST service stu
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const ready = "subscription-runtime-research-provider-ready-v1\n";
-function launch(args: string[] = ["--research-ready-v1"], ignoreInput = false) {
-  const child = spawn(process.execPath, [join(root, "hosted-app-server-launcher.mjs"), ...args], {
-    env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: [ignoreInput ? "ignore" : "pipe", "pipe", "pipe"],
+function launch(args: string[] = ["--research-ready-v1"], ignoreInput = false, testClock = false) {
+  const child = spawn(process.execPath, [
+    ...(testClock ? ["--import", join(root, "TEST-bootstrap-clock.mjs")] : []),
+    join(root, "hosted-app-server-launcher.mjs"), ...args,
+  ], {
+    env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    stdio: [ignoreInput ? "ignore" : "pipe", "pipe", "pipe", ...(testClock ? ["ipc" as const] : [])],
   });
   let stdout = "", stderr = "";
   child.stdout!.on("data", chunk => { stdout += String(chunk); }); child.stderr!.on("data", chunk => { stderr += String(chunk); });
@@ -51,7 +60,28 @@ function launch(args: string[] = ["--research-ready-v1"], ignoreInput = false) {
     child.once("close", () => { if (!stdout.includes("\n")) reject(new Error("TEST readiness absent")); });
   });
   void first.catch(() => {});
-  return { child, exited, first, output: () => ({ stdout, stderr }) };
+  const clock = testClock ? observeTestClock(child) : undefined;
+  return { child, exited, first, clock, output: () => ({ stdout, stderr }) };
+}
+function observeTestClock(child: ReturnType<typeof spawn>) {
+  function report<K extends keyof TestBootstrapClockReport>(key: K) {
+    const received = new Promise<TestBootstrapClockReport[K]>((resolve, reject) => {
+      child.on("message", message => {
+        if (typeof message === "object" && message !== null && key in message) {
+          resolve((message as TestBootstrapClockReport)[key]);
+        }
+      });
+      child.once("error", reject);
+      child.once("close", () => reject(new Error(`TEST clock report absent: ${key}`)));
+    });
+    void received.catch(() => {});
+    return received;
+  }
+  return {
+    requestedDelay: report("testBootstrapDelayMs"),
+    partialInputBytes: report("testObservedInputBytes"),
+    expire: () => child.send("TEST-expire-bootstrap-timer"),
+  };
 }
 function bootstrap(): string {
   return JSON.stringify({ schemaVersion: 1, command: process.execPath, args: ["-e",
@@ -66,6 +96,18 @@ describe("fixed pre-bootstrap ready mode in the actual launcher (real isolated c
       probe.child.stdin!.end(bootstrap() + "request\n");
       expect(await probe.exited).toBe(0);
       expect(probe.output()).toEqual({ stdout: ready + "TEST-native:request\n", stderr: "" });
+    } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
+  });
+  it("keeps the real launcher ready while final Host verification takes more than ten seconds", async () => {
+    const probe = launch();
+    try {
+      expect(await probe.first).toBe(ready);
+      await new Promise(resolve => setTimeout(resolve, 11_000));
+      expect(probe.child.exitCode).toBeNull();
+      expect(probe.output()).toEqual({ stdout: ready, stderr: "" });
+      probe.child.stdin!.end(bootstrap() + "verified\n");
+      expect(await probe.exited).toBe(0);
+      expect(probe.output()).toEqual({ stdout: ready + "TEST-native:verified\n", stderr: "" });
     } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
   });
   it("keeps the ordinary no-argument protocol free of ready frames", async () => {
@@ -87,7 +129,7 @@ describe("fixed pre-bootstrap ready mode in the actual launcher (real isolated c
     expect(await probe.exited).toBeNull(); expect(probe.child.signalCode).toBe("SIGTERM");
     expect(probe.output()).toEqual({ stdout: ready, stderr: "" });
   });
-  it.each(["eof", "invalid", "oversize", "timeout"])("bounds %s bootstrap after readiness without native execution", async fault => {
+  it.each(["eof", "invalid", "oversize"])("bounds %s bootstrap after readiness without native execution", async fault => {
     const probe = launch();
     try {
       expect(await probe.first).toBe(ready);
@@ -95,11 +137,25 @@ describe("fixed pre-bootstrap ready mode in the actual launcher (real isolated c
       if (fault === "eof") probe.child.stdin!.end();
       if (fault === "invalid") probe.child.stdin!.end("{}\n");
       if (fault === "oversize") probe.child.stdin!.end("x".repeat(4 * 1024 * 1024 + 1));
-      if (fault === "timeout") probe.child.stdin!.write("{");
       expect(await probe.exited).toBe(70);
       expect(probe.output().stdout).toBe(ready);
-      expect(probe.output().stderr).toContain(fault === "timeout" ? "research_bootstrap_timeout" :
-        fault === "eof" ? "launch_frame_missing" : fault === "oversize" ? "launch_frame_too_large" : "launch_frame_invalid");
+      expect(probe.output().stderr).toContain(fault === "eof" ? "launch_frame_missing" : fault === "oversize" ? "launch_frame_too_large" : "launch_frame_invalid");
+    } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
+  });
+  it("expires the actual five-minute bootstrap timer after readiness without native execution", async () => {
+    const probe = launch(["--research-ready-v1"], false, true);
+    try {
+      expect(await probe.first).toBe(ready);
+      // Assert the production scheduling contract independently before advancing
+      // only this isolated child's clock. The 11-second case above stays real.
+      expect(await probe.clock!.requestedDelay).toBe(300_000);
+      probe.child.stdin!.write("{");
+      expect(await probe.clock!.partialInputBytes).toBe(1);
+      expect(probe.child.exitCode).toBeNull();
+      expect(probe.output()).toEqual({ stdout: ready, stderr: "" });
+      probe.clock!.expire();
+      expect(await probe.exited).toBe(70);
+      expect(probe.output()).toEqual({ stdout: ready, stderr: "hosted_app_server_research_bootstrap_timeout\n" });
     } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
   });
 });

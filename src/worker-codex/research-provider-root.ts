@@ -1,12 +1,13 @@
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { X509Certificate } from "node:crypto";
-import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
+import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 import { resolvePreparedHostScratchBinds, resolvePreparedHostScratchCacheBinds, type ScratchTempHost } from "./host-scratch-temp";
-import { parseResearchStartSpec, type ResearchStartSpec } from "./research-launch-contract";
-import { researchAuthorityRoot, researchHash, researchInvalid, researchName, researchPath, researchPublish, researchRead } from "./research-launch-files";
-import { researchProviderUnitPattern } from "./research-launch-host";
+import { parseResearchStartSpec, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
+import { researchAuthorityRoot, researchHash, researchId, researchInvalid, researchJson, researchName, researchPath, researchPublish, researchRead, researchRecord } from "./research-launch-files";
+import { assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
+import { readKernelMountTable } from "./host-scratch-mount";
 
 /** Private finite observations only; never execution authority or error payloads. */
 export enum ResearchProviderRootCheck {
@@ -81,7 +82,7 @@ export interface ResearchProviderRootHost {
   publish(path: string, value: unknown): void; record(path: string): string;
 }
 const nativeHost: ResearchProviderRootHost = {
-  info: lstatSync, canonical: realpathSync, link: readlinkSync, read: path => readFileSync(path, "utf8"), entries: readdirSync,
+  info: lstatSync, canonical: realpathSync, link: readlinkSync, read: path => path === "/proc/self/mountinfo" ? readKernelMountTable() : readFileSync(path, "utf8"), entries: readdirSync,
   mkdir: (path, mode) => { mkdirSync(path, { mode }); }, symlink: symlinkSync,
   file: path => { writeFileSync(path, "", { mode: 0o644, flag: "wx" }); },
   regular(path, expected, role = ResearchRootReadRole.Dns) {
@@ -150,7 +151,7 @@ const rootPlanBrand: unique symbol = Symbol("research-provider-root");
 /** Opaque retained receipt; its DTO fields cannot confer execution authority. */
 export type ResearchProviderRootPlan = Readonly<{ fixedRootDirectory: string; bindings: readonly Binding[]; [rootPlanBrand]: true }>;
 type Retained = { spec: ResearchStartSpec; unit: string; home: string; scratchHost: ScratchTempHost | undefined; host: ResearchProviderRootHost;
-  directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string };
+  directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string; assemblyDeadline?: number };
 const retained = new WeakMap<ResearchProviderRootPlan, Retained>();
 function freezeFacts<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freezeFacts(child); Object.freeze(value); }
@@ -222,6 +223,14 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
   host: ResearchProviderRootHost, scratchHost?: ScratchTempHost): Snapshot {
   return observeRootFailure(ResearchProviderRootCheck.Snapshot, () => {
   const mounts = mountTable(host), observations: unknown[] = [], observed = new Set<string>(), bindings: Binding[] = [], layout: [string, string][] = [], fileLinks: [string, string][] = [], files: PublicFile[] = [];
+  observations.push(["initial-host-context", parseResearchInitialHostContext({
+    bootId: host.read("/proc/sys/kernel/random/boot_id").trim(), machineId: host.read("/etc/machine-id").trim(),
+    namespaces: { user: host.link("/proc/1/ns/user"), mnt: host.link("/proc/1/ns/mnt"), pid: host.link("/proc/1/ns/pid"), net: host.link("/proc/1/ns/net") },
+  })]);
+  const durable = spec.registeredHandoff?.durableDirectory;
+  const durableBacking = durable ? backing(durable.path, mounts) : undefined;
+  if (durable && durableBacking && (durableBacking.device !== durable.mountDevice ||
+      durableBacking.path !== join(durable.mountRoot, relative(durable.mountPoint, durable.path)))) researchInvalid();
   const boundInfos = new Map<Binding, Info>();
   let resolverOwner: number | undefined;
   const observe = (path: string, owner = 0, leafOnly = false, ownedAncestorRoot?: string): Info => observeRootFailure(ResearchProviderRootCheck.Observe, () => {
@@ -242,6 +251,11 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     const info = observe(source, owner, leafOnly), canonicalTarget = normalize(target), sourceBacking = backing(source, mounts, source.startsWith(join(directory, "pins") + "/"));
     if (nativeDevice(info) !== sourceBacking.device) researchInvalid();
     const entry = { source, target, access, identity: [info.dev, info.ino] as const, backing: sourceBacking, file: info.isFile() };
+    // Every provider binding, including read-only runtime/package ancestors,
+    // excludes the durable sink's physical backing and nominal target. A bind
+    // alias cannot turn registry custody into provider-visible source data.
+    if (durable && durableBacking && (overlaps(canonicalTarget, durable.path) || backingOverlap(sourceBacking, durableBacking) ||
+        info.dev === durable.device && info.ino === durable.inode)) researchInvalid();
     if (access === ResearchRootMountAccess.ReadWrite) {
       const targetInfo = observe(target, 0, true);
       const scratchTarget = [join(spec.request.jobRootDir, "tmp"), join(home, "plugins/cache"), join(home, "cache/remote_plugin_catalog")].includes(target);
@@ -329,9 +343,13 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     const info = observe(executable); if (!info.isFile() || !(info.mode & 0o111)) researchInvalid();
     if (!contains("/usr", executable) && !contains(spec.runtimeDirectory, executable)) add(executable, executable, ResearchRootMountAccess.ReadOnly);
   }
-  const packageRoot = hostedCodexExecutableReadPath({ codexBinaryPath: spec.request.codexBinaryPath, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
-  if (!packageRoot && !contains("/usr", spec.request.codexBinaryPath)) researchInvalid();
-  if (packageRoot && !contains("/usr", packageRoot) && !contains(spec.runtimeDirectory, packageRoot) && packageRoot !== spec.request.codexBinaryPath) add(packageRoot, packageRoot, ResearchRootMountAccess.ReadOnly);
+  const executableClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: spec.request.codexBinaryPath, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
+  if (!executableClosure && !contains("/usr", spec.request.codexBinaryPath)) researchInvalid();
+  for (const path of executableClosure?.paths ?? []) {
+    if (!contains("/usr", path) && !contains(spec.runtimeDirectory, path) && path !== spec.request.codexBinaryPath) add(path, path, ResearchRootMountAccess.ReadOnly);
+  }
+  // The retained graph also binds companion bytes, including same-inode changes.
+  if (executableClosure?.companion) observations.push(["codex-companion", executableClosure.companion]);
   const { jobRootDir: job, workspacePath: workspace, authRootDir } = spec.request;
   const pins = join(directory, "pins"), jobBind = add(join(pins, "job"), job, ResearchRootMountAccess.ReadWrite), workspaceBind = add(join(pins, "workspace"), workspace, ResearchRootMountAccess.ReadWrite);
   if (jobBind.identity[0] !== spec.jobDirectory.device || jobBind.identity[1] !== spec.jobDirectory.inode ||
@@ -441,7 +459,8 @@ function skeletonEntries(root: string, snapshot: Snapshot): Map<string, "directo
       entries.set(parent, "directory"); if (parent === root) break;
     }
   };
-  // ProtectSystem=strict prepares this empty anchor; it never binds Host /root.
+  // The fixed private assembler seals this empty anchor read-only; it never
+  // imports Host /root or mounts the creator's skeleton namespace.
   for (const path of ["/run", "/proc", "/sys", "/dev", "/root", "/tmp", "/var/tmp"]) add(path, "directory");
   for (const bind of snapshot.bindings) add(bind.target, bind.file ? "file" : "directory");
   for (const [path, target] of snapshot.aliases) add(path, target.slice(1));
@@ -543,4 +562,119 @@ export function assertResearchProviderRoot(plan: ResearchProviderRootPlan, value
       rootCustody(dirname(plan.fixedRootDirectory), state.host) !== state.custody || [...state.host.entries(dirname(plan.fixedRootDirectory))].sort().join(",") !== names ||
       state.host.record(join(dirname(plan.fixedRootDirectory), "plan.json")) !== state.record) researchInvalid();
   });
+}
+
+/** Internal first-exec input, derived only from the creator's branded receipt.
+ * The independent provider namespace must not impersonate the creator's private
+ * cache observations. Its physical source witnesses are checked separately. */
+export function researchProviderRootSeal(plan: ResearchProviderRootPlan, spec: ResearchStartSpec, unit: string, home: string): Readonly<{ sha256: string; deadline: number }> {
+  assertResearchProviderRoot(plan, spec, unit, home);
+  const state = retained.get(plan);
+  if (!state) researchInvalid();
+  state.assemblyDeadline ??= Number(process.hrtime.bigint() / 1_000_000n) + researchProviderSetupAllowanceMs(state.spec.request);
+  if (Number(process.hrtime.bigint() / 1_000_000n) >= state.assemblyDeadline) researchInvalid();
+  return Object.freeze({ sha256: researchHash(state.record), deadline: state.assemblyDeadline });
+}
+
+type PinnedAssemblyBinding = Readonly<{ source: string; target: string; access: ResearchRootMountAccess; file: boolean; fd: number }>;
+export type ResearchProviderAssemblyRoot = Readonly<{
+  spec: ResearchStartSpec; root: string; rootFd: number; bindings: readonly PinnedAssemblyBinding[];
+  initialHostContext: ResearchInitialHostContext;
+  assertCurrent(): void; close(): void;
+}>;
+const assemblyContexts = new WeakMap<ResearchProviderAssemblyRoot, () => void>();
+/** Only a genuine, still-current sealed reader can enter provider admission. */
+export function assertResearchProviderAssemblyContext(root: ResearchProviderAssemblyRoot): void {
+  const assertContext = assemblyContexts.get(root);
+  if (!assertContext) researchInvalid();
+  assertContext();
+}
+const descriptorSignature = (info: Stats): string => [leafSignature(info), info.size, info.mtimeMs, info.ctimeMs].join(":");
+const pinnedSignature = (info: Stats): string => info.isFile() ? descriptorSignature(info) : [info.dev, info.ino, info.uid, info.gid, info.mode].join(":");
+function positionedPublicBytes(fd: number, expected: Stats): string {
+  if (!expected.isFile() || expected.size > 1024 * 1024) researchInvalid();
+  const buffer = Buffer.alloc(expected.size + 1); let used = 0;
+  while (used < buffer.length) { const count = readSync(fd, buffer, used, buffer.length - used, used); if (!count) break; used += count; }
+  if (used !== expected.size || descriptorSignature(fstatSync(fd)) !== descriptorSignature(expected)) researchInvalid();
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, used)); } catch { researchInvalid(); }
+}
+
+/** Fixed private plan reader. Descriptors remain held until all bind effects
+ * complete; an effect must consume these same descriptors, never reopen source
+ * paths after checking them. No DTO can mint a branded creator root. */
+export function readResearchProviderAssemblyRoot(jobId: string, unit: string, home: string, seal: string): ResearchProviderAssemblyRoot {
+  researchId(jobId); researchPath(home);
+  if (!researchProviderUnitPattern.test(unit) || !/^[a-f0-9]{64}$/.test(seal)) researchInvalid();
+  const directory = join(researchAuthorityRoot, researchName(jobId), "starts");
+  // The reservation is reached through the currently admitted start, never a
+  // caller-selected authority directory or path from the serialized plan.
+  const active = researchRecord(researchJson(researchRead(join(researchAuthorityRoot, researchName(jobId), "active.json"))), "schemaVersion,startId,specSha256");
+  if (active.schemaVersion !== 1 || typeof active.startId !== "string" || !/^[a-f0-9-]{36}$/.test(active.startId)) researchInvalid();
+  const start = join(directory, active.startId), reservation = readResearchProviderReservation(start, unit), spec = reservation.spec;
+  if (spec.request.jobId !== jobId || reservation.specSha256 !== active.specSha256 || !home.startsWith(join(spec.request.jobRootDir, "home") + "/")) researchInvalid();
+  const unitDirectory = join(start, "provider-roots", unit), root = join(unitDirectory, "root"), planPath = join(unitDirectory, "plan.json");
+  const bytes = researchRead(planPath);
+  if (researchHash(bytes) !== seal) researchInvalid();
+  const record = researchRecord(researchJson(bytes), "schemaVersion,unit,specSha256,artifactSha256,captured,materialized,skeleton,custody");
+  if (record.schemaVersion !== 1 || record.unit !== unit || record.specSha256 !== reservation.specSha256 || record.artifactSha256 !== spec.artifactSha256 ||
+      typeof record.skeleton !== "string" || typeof record.custody !== "string") researchInvalid();
+  // The seal comes from the fixed creator above. Still bound every collection
+  // before interpreting it or allocating descriptors in this second process.
+  const captured = researchRecord(record.captured, "omittedCaches,bindings,aliases,fileLinks,observations,files") as unknown as Snapshot;
+  if (![captured.bindings, captured.files, captured.aliases, captured.fileLinks, captured.observations, captured.omittedCaches, record.materialized]
+    .every(list => Array.isArray(list) && list.length <= 512)) researchInvalid();
+  const contexts = captured.observations.filter(value => Array.isArray(value) && value[0] === "initial-host-context");
+  if (contexts.length !== 1 || !Array.isArray(contexts[0]) || contexts[0].length !== 2) researchInvalid();
+  const initialHostContext = parseResearchInitialHostContext(contexts[0][1]);
+  const bindings = record.materialized as Binding[];
+  if (!bindings.length || bindings.length > 64 || bindings.length !== captured.bindings.length ||
+      new Set(bindings.map(bind => bind.target)).size !== bindings.length ||
+      rootCustody(unitDirectory, nativeHost) !== record.custody || skeletonIdentity(skeletonEntries(root, captured), nativeHost) !== record.skeleton) researchInvalid();
+  const names = ["plan.json", "root", ...captured.files.map(file => file.name)].sort().join(",");
+  if ([...readdirSync(unitDirectory)].sort().join(",") !== names) researchInvalid();
+  const held: { fd: number; path: string; before: Stats; bind?: Binding }[] = [];
+  let closed = false;
+  const close = (): void => { if (!closed) { closed = true; for (const entry of held.reverse()) closeSync(entry.fd); } };
+  const pin = (path: string, bind?: Binding): number => {
+    researchPath(path);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    held.push({ fd, path, before: fstatSync(fd), ...(bind ? { bind } : {}) });
+    return fd;
+  };
+  try {
+    const rootFd = pin(root);
+    const pinned = bindings.map(bind => {
+      researchRecord(bind, "source,target,access,identity,backing,file"); researchPath(bind.source); researchPath(bind.target);
+      if (![ResearchRootMountAccess.ReadOnly, ResearchRootMountAccess.ReadWrite].includes(bind.access) || typeof bind.file !== "boolean" ||
+          !Array.isArray(bind.identity) || bind.identity.length !== 2 || !bind.identity.every(Number.isSafeInteger)) researchInvalid();
+      return Object.freeze({ source: bind.source, target: bind.target, access: bind.access, file: bind.file, fd: pin(bind.source, bind) });
+    });
+    const assertCurrent = (): void => {
+      if (closed || researchHash(researchRead(planPath)) !== seal || rootCustody(unitDirectory, nativeHost) !== record.custody) researchInvalid();
+      const mounts = mountTable(nativeHost);
+      for (const entry of held) {
+        const info = fstatSync(entry.fd), pathInfo = lstatSync(entry.path);
+        if (pinnedSignature(info) !== pinnedSignature(entry.before) || pinnedSignature(pathInfo) !== pinnedSignature(info) ||
+            info.uid !== 0 || (info.mode & 0o022) || info.isSymbolicLink() || realpathSync(entry.path) !== entry.path ||
+            readlinkSync(`/proc/self/fd/${entry.fd}`) !== entry.path || (info.isFile() && (info.nlink !== 1 || descriptorSignature(info) !== descriptorSignature(entry.before)))) researchInvalid();
+        if (!entry.bind) { if (!info.isDirectory()) researchInvalid(); continue; }
+        rootCustody(dirname(entry.path), nativeHost);
+        const bind = entry.bind, actual = backing(entry.path, mounts, entry.path.startsWith(join(start, "pins") + "/"));
+        if (info.dev !== bind.identity[0] || info.ino !== bind.identity[1] || info.isFile() !== bind.file ||
+            (!info.isFile() && !info.isDirectory()) || nativeDevice(info) !== actual.device || !sameBacking(actual, bind.backing) ||
+            actual.mount.point !== bind.backing.mount.point || actual.mount.root !== bind.backing.mount.root ||
+            mounts.some(mount => mount.point !== entry.path && contains(entry.path, mount.point))) researchInvalid();
+        const file = captured.files.find(file => file.target === bind.target);
+        if (file && (entry.path !== join(unitDirectory, file.name) || (info.mode & 0o7777) !== 0o444 ||
+            positionedPublicBytes(entry.fd, info) !== file.bytes)) researchInvalid();
+      }
+      const closure = hostedCodexExecutableReadClosure({ codexBinaryPath: spec.request.codexBinaryPath, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
+      const companion = captured.observations.find(value => Array.isArray(value) && value[0] === "codex-companion");
+      if (JSON.stringify(companion) !== JSON.stringify(closure?.companion ? ["codex-companion", closure.companion] : undefined)) researchInvalid();
+    };
+    assertCurrent();
+    const receipt = Object.freeze({ spec, root, rootFd, bindings: Object.freeze(pinned), initialHostContext, assertCurrent, close });
+    assemblyContexts.set(receipt, () => { assertCurrent(); assertResearchProviderInitialRoot(initialHostContext); });
+    return receipt;
+  } catch (error) { close(); throw error; }
 }

@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HostedCustodyLaunchKind, HostedCustodySupervisor } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
-import { admittedReadonlyCodexProcessFactory, CodexProviderEgressProfileId, requiresHostedProcessAdmission,
-  type CodexAppServerProcessFactory, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
+import { admittedReadonlyCodexProcessFactory, admittedDependencyToolCodexProcessFactory, CodexProviderEgressProfileId, requiresHostedProcessAdmission,
+  CodexModelBackend, type CodexAppServerProcessFactory, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { assertReadonlyHostOperator, decodePrivateJson, readReadonlyManagedGrant,
   readReadonlyReview, readonlyIdentityName } from "./hosted-readonly-authority";
@@ -14,8 +14,55 @@ import { readonlyCustodyRoot, readonlyCustodySnapshot, readonlyRevokedRoot,
 
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import { admitResearchProcessFactory, admitResearchRuntime, assertResearchRuntimeEngine } from "./research-launch-admission";
+import { assertHostedBaselineIdentity, isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
+import { withHostedActivationFence, readHostedOrdinaryProcessOrigin, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { captureHostedDependencyToolReadyReader } from "./hosted-dependency-tool-ready-reader";
+import type { HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
+import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
+import { isHostedManagedReadonlyOuterRuntime, requiresCurrentHostedDependencyRootPurpose,
+  readCurrentHostedManagedDependencyProviderParent, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 
 const guardedFactories = new WeakMap<CodexAppServerProcessFactory, string>();
+const toolFactories = new WeakMap<CodexAppServerProcessFactory, Readonly<{
+  workspacePath: string; assertCurrent: (fence: HostedActivationFence) => void; entry?: HostedDependencyQualifiedToolEntry;
+  origin?: CurrentHostedDependencyOrigin;
+}>>();
+
+/** Actual current protected origin selects v2, even if caller options omit or
+ * substitute the egress/config labels. No public reader/factory DTO is a brand. */
+export function assertHostedDependencyToolAdmittedFactory(factory: CodexAppServerProcessFactory | undefined,
+  workspacePath: string | undefined): void {
+  if (isHostedManagedReadonlyOuterRuntime() && requiresCurrentHostedDependencyRootPurpose()) {
+    const selected = withHostedActivationFence(fence => {
+      const actual = readCurrentHostedDependencyRootQualification(fence), retained = factory && toolFactories.get(factory);
+      if (!factory || !retained?.entry || retained.origin !== actual.context ||
+          guardedFactories.get(factory) !== actual.binding.workspace.canonicalPath ||
+          retained.workspacePath !== actual.binding.workspace.canonicalPath || workspacePath !== retained.workspacePath) {
+        throw new Error("hosted_dependency_tool_admitted_factory_required");
+      }
+      readCurrentHostedManagedDependencyProviderParent(retained.origin,fence); retained.assertCurrent(fence); return true;
+    });
+    if (selected) return;
+  }
+  if (!isHostedOrdinaryRuntime()) return;
+  withHostedActivationFence(fence => {
+    const origin = readHostedOrdinaryProcessOrigin(fence);
+    const binding = readHostedDependencyBinding(String(origin.start.jobId));
+    if (binding?.version !== 2) return;
+    const retained = factory && toolFactories.get(factory);
+    if (!retained || retained.workspacePath !== binding.workspace.canonicalPath ||
+        workspacePath !== retained.workspacePath) throw new Error("hosted_dependency_tool_admitted_factory_required");
+    retained.assertCurrent(fence);
+  });
+}
+/** Direct executor configuration derives its context from the SAME genuine
+ * factory brand, never from caller options or a late source capture. */
+export function readHostedDependencyToolFactoryEntry(factory: CodexAppServerProcessFactory | undefined,
+  workspacePath: string | undefined): HostedDependencyQualifiedToolEntry | undefined {
+  assertHostedDependencyToolAdmittedFactory(factory, workspacePath);
+  return factory ? toolFactories.get(factory)?.entry : undefined;
+}
 
 export function assertReadonlyAdmittedFactory(factory: CodexAppServerProcessFactory | undefined, workspacePath: string | undefined): void {
   if (!factory || guardedFactories.get(factory) !== workspacePath || workspacePath === undefined) throw new Error("hosted_readonly_admitted_factory_required");
@@ -27,11 +74,47 @@ export function assertReadonlyAdmittedFactory(factory: CodexAppServerProcessFact
 export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   readonly providerEgressPolicy: CodexProviderEgressPolicy;
   readonly executionEngine?: CodexWorkerExecutionEngine;
+  readonly modelBackend?: CodexModelBackend;
   readonly sourceEnv: Readonly<Record<string, string | undefined>>;
-}): CodexAppServerProcessFactory | undefined {
+}, toolEntry?: HostedDependencyQualifiedToolEntry): CodexAppServerProcessFactory | undefined {
+  // Actual associated R selects both factory brands BEFORE optional adapters
+  // or any policy/grant lookup under the logical C request identity.
+  if (isHostedManagedReadonlyOuterRuntime() && requiresCurrentHostedDependencyRootPurpose()) {
+    const captured = withHostedActivationFence(fence => {
+      const qualified = readCurrentHostedDependencyRootQualification(fence);
+      if (!toolEntry || input.providerEgressPolicy.profileId !== CodexProviderEgressProfileId.TestManagedQualification ||
+          input.jobId !== qualified.binding.jobId || input.jobRootDir !== qualified.binding.jobRootDir ||
+          input.workspacePath !== qualified.binding.workspace.canonicalPath ||
+          (input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
+          input.sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") throw new Error("hosted_readonly_dependency_factory_denied");
+      const retained = captureHostedDependencyToolReadyReader(fence,input,toolEntry);
+      if (!retained || retained.origin !== qualified.context) throw new Error("hosted_readonly_dependency_factory_denied");
+      const current = readCurrentHostedManagedDependencyProviderParent(retained.origin,fence);
+      return {retained,identity:Object.freeze({jobId:current.facts.start.readonlyJobId,
+        jobRootDir:current.binding.jobRootDir,workspacePath:current.binding.workspace.canonicalPath})};
+    });
+    if (captured) {
+      const host = new HostedReadonlySupervisorHost(), supervisor = new HostedCustodySupervisor(host), {identity,retained} = captured;
+      const admitted = host.assertManagedAdmission(identity,CodexProviderEgressProfileId.TestManagedQualification);
+      const factory: CodexAppServerProcessFactory = launch => withReadonlyCustodyLock(identity.jobId,() => {
+        withHostedActivationFence(fence => retained.assertCurrent(fence));
+        const unit = `subscription-runtime-hosted-${randomUUID()}.service`, startId = unit.slice("subscription-runtime-hosted-".length,-".service".length);
+        const reservation = {startId,unit,creatorId:startId};
+        return supervisor.start(HostedCustodyLaunchKind.ManagedProvider,admitted.identity,admitted.generation,reservation,() => {
+          const child = host.spawnDependencyProvider(retained.origin,unit,launch);
+          child.on("exit",(code,signal) => { if (signal === null && code === 0) {
+            try { host.recordWaitCompletion(reservation,code); } catch { /* Actual reservation stays unresolved. */ }
+          } }); return child;
+        });
+      });
+      guardedFactories.set(factory,identity.workspacePath);
+      toolFactories.set(factory,Object.freeze({workspacePath:identity.workspacePath,assertCurrent:retained.assertCurrent,origin:retained.origin,entry:toolEntry!}));
+      return factory;
+    }
+  }
   const research = admitResearchRuntime(input);
   if (research) {
-    assertResearchRuntimeEngine(input);
+    assertResearchRuntimeEngine(input, research);
     if (input.providerEgressPolicy.profileId !== research) throw new Error("hosted_research_launch_denied");
     return admitResearchProcessFactory(input);
   }
@@ -41,6 +124,15 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
     return undefined;
   }
   const hosted = requiresHostedProcessAdmission(input.sourceEnv);
+  if (!hosted && !managed) {
+    assertHostedBaselineIdentity(input.jobId);
+    if (isHostedContainment(input.sourceEnv) &&
+        (input.providerEgressPolicy.profileId !== CodexProviderEgressProfileId.FullInternetV1 ||
+         !["app-server", "app-server-goal"].includes(input.executionEngine ?? "app-server-goal"))) {
+      throw new Error("hosted_permission_profiles_engine_unsupported");
+    }
+    return undefined;
+  }
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if (managed || input.providerEgressPolicy.profileId !== profile ||
@@ -52,7 +144,14 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
         !["app-server", "app-server-goal"].includes(input.executionEngine ?? "app-server-goal")) {
       throw new Error("hosted_permission_profiles_engine_unsupported");
     }
-    return undefined; // Genuine default factory performs its own fresh fenced admission.
+    return withHostedActivationFence(fence => {
+      const captured = captureHostedDependencyToolReadyReader(fence, input, toolEntry);
+      if (!captured) return undefined; // V1 keeps genuine default admission.
+      const factory = admittedDependencyToolCodexProcessFactory(captured.reader);
+      toolFactories.set(factory, Object.freeze({ workspacePath: input.workspacePath, assertCurrent: captured.assertCurrent,
+        ...(toolEntry ? { entry: toolEntry } : {}) }));
+      return factory;
+    });
   }
   const name = readonlyIdentityName(input.jobId);
   const initial = readHostedReadonlyPolicy(input.jobId);

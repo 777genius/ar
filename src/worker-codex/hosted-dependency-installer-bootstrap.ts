@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, writeSync } from "node:fs";
+import { hostedDependencyLocalSelectionVerificationArgv, observeHostedDependencyLocalStage, type HostedDependencyLocalStage } from "./hosted-dependency-installer-local-stage.js";
 
 // This exact switch is emitted only by the protected schema4 recipe. EOF on
 // the one newly-created private stdin is the release boundary. No profile,
@@ -32,7 +33,7 @@ enum LockName { PackageLock = "package-lock.json", Shrinkwrap = "npm-shrinkwrap.
 const profile = JSON.parse(readFileSync("/runtime/profile.json", "utf8")) as {
   nodePath: string; npmCliPath: string; nodeVersion: string; npmVersion: string; stagingDirectory: string; installArgv: string[];
   nodeAbi: string; platform: string; arch: string; environment: Record<string, string>; umask: number;
-  lockName: LockName; inputSha256: string;
+  libc: { family: string; version: string }; lockName: LockName; inputSha256: string; localStage?: HostedDependencyLocalStage;
 };
 process.umask(profile.umask);
 const env = profile.environment;
@@ -55,13 +56,19 @@ function inputBytes(name: string): Buffer {
 const packageBytes = inputBytes("package.json"), lockBytes = inputBytes(profile.lockName);
 const inputSha256 = createHash("sha256").update(String(Buffer.byteLength(profile.lockName)) + ":").update(profile.lockName)
   .update(String(packageBytes.length) + ":").update(packageBytes).update(String(lockBytes.length) + ":").update(lockBytes).digest("hex");
-if (inputSha256 !== profile.inputSha256) process.exit(75);
+const localSnapshot = profile.localStage ? observeHostedDependencyLocalStage(profile.stagingDirectory, profile.localStage, profile.inputSha256) : undefined;
+if (!profile.localStage && inputSha256 !== profile.inputSha256) process.exit(75);
 enum PreflightStage { RuntimeIdentity = "runtime_identity", ToolVersions = "tool_versions" }
 function refusePreflight(stage: PreflightStage, facts: Readonly<Record<string, boolean | number | null>>): never {
   try { writeSync(2, "dependency_installer_preflight_v1 " + JSON.stringify({ stage, ...facts }) + "\n"); }
   finally { process.exit(71); }
 }
 const runtime = { abiMatch: process.versions.modules === profile.nodeAbi, platformMatch: process.platform === profile.platform, archMatch: process.arch === profile.arch };
+if (profile.localStage?.commitment.version === 2) {
+  const report = process.report?.getReport();
+  const header = report && typeof report === "object" && "header" in report ? report.header as { glibcVersionRuntime?: unknown } : undefined;
+  if (profile.libc.family !== "glibc" || header?.glibcVersionRuntime !== profile.libc.version) refusePreflight(PreflightStage.RuntimeIdentity, { glibcMatch: false });
+}
 if (!runtime.abiMatch || !runtime.platformMatch || !runtime.archMatch) refusePreflight(PreflightStage.RuntimeIdentity, runtime);
 function run(args: readonly string[]): { status: number | null; stdout: string; duplicateConfig: boolean } {
   const r = spawnSync(profile.nodePath, args, { cwd: profile.stagingDirectory, env, encoding: "utf8",
@@ -75,7 +82,11 @@ const versions = { nodeStatus: node.status, npmStatus: npm.status, nodeVersionMa
 if (node.status !== 0 || npm.status !== 0 || !versions.nodeVersionMatch || !versions.npmVersionMatch) refusePreflight(PreflightStage.ToolVersions, versions);
 const install = run([profile.npmCliPath, ...profile.installArgv]);
 if (install.status !== 0) process.exit(72);
+if (profile.localStage && observeHostedDependencyLocalStage(profile.stagingDirectory, profile.localStage, profile.inputSha256) !== localSnapshot) process.exit(75);
 // Graph verification runs in the same contained lifetime; receipt/capability and
 // full manifest verification remain the final parent admission responsibility.
-const graph = run([profile.npmCliPath, "ls", "--depth=0", "--json", "--ignore-scripts"]);
+const graphArgv = profile.localStage?.commitment.version === 2 ? hostedDependencyLocalSelectionVerificationArgv(profile.localStage) :
+  ["ls", "--depth=0", "--json", "--ignore-scripts"];
+const graph = run([profile.npmCliPath, ...graphArgv]);
+if (profile.localStage && observeHostedDependencyLocalStage(profile.stagingDirectory, profile.localStage, profile.inputSha256) !== localSnapshot) process.exit(75);
 process.exit(graph.status === 0 ? 0 : 73);

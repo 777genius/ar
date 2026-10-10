@@ -27,6 +27,9 @@ export * from "./run-reconcile-preview";
 export * from "./runtime-result";
 export * from "./secret-detection";
 export * from "./safe-execution";
+export * from "./job-storage/domain/job-storage";
+export * from "./job-storage/ports/job-storage-ports";
+export * from "./job-storage/application/job-storage-settlement";
 export * from "./terminal-checkpoint/domain/select-terminal-attempt";
 export * from "./terminal-checkpoint/domain/terminal-checkpoint-identity";
 export * from "./terminal-checkpoint/domain/terminal-checkpoint-seal";
@@ -42,3 +45,10 @@ export * from "./dependency-environment/application/dependency-consumer-ownershi
 export * from "./dependency-environment/application/dependency-maintenance-ownership";
 export * from "./dependency-environment/domain/dependency-install-key";
 export * from "./dependency-environment/domain/dependency-tree-manifest";
+
+export * from "./dependency-environment/domain/dependency-legacy-comparison";
+export * from "./dependency-environment/ports/dependency-legacy-comparison";
+
+export * from "./dependency-environment/ports/dependency-generation-continuity";
+export * from "./dependency-environment/application/preclaimed-dependency-consumer";
+export * from "./dependency-environment/application/invalidate-dependency-generation";

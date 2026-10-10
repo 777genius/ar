@@ -42,7 +42,7 @@ function executable(value: unknown): FdExecutablePin {
  * inventory digest. Old revisions reject the field rather than accepting a
  * mutable sidecar as a new source of authority. */
 export function readFdCollectorProfileField(value: Record<string, unknown>): FdCollectorProfilePin | undefined {
-  if (value.schemaVersion !== 4) {
+  if (value.schemaVersion !== 4 && value.schemaVersion !== 5) {
     if (![1, 2, 3].includes(value.schemaVersion as number) || "collectorProfile" in value) invalid();
     return undefined;
   }

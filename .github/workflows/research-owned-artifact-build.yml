@@ -1,0 +1,65 @@
+name: Build reviewed owned research artifact
+
+on:
+  pull_request:
+    paths: [.github/workflows/research-owned-artifact-build.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-reviewed-artifact:
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: 5285257d73e430df71da76799f9a9e99486d99f9
+    steps:
+      # Fixed reviewed source, independent of the workflow PR's merge tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 5285257d73e430df71da76799f9a9e99486d99f9
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - name: Build and record exact source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(node --version)" = v24.21.0
+          output="$RUNNER_TEMP/sr-owned-artifact-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$output"
+          export TMPDIR="$output/tmp"
+          export npm_config_cache="$output/npm-cache"
+          mkdir -m 700 "$TMPDIR" "$npm_config_cache"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
+          npm run build
+          npm run check:dist
+          npm pack --ignore-scripts --pack-destination "$output"
+          # Preserve workspace links. Consumers must validate archive paths and
+          # internal link closure before constructing a root-owned frozen tree.
+          tar -czf "$output/runtime-dependencies.tar.gz" node_modules packages/agent-account-observability
+          {
+            printf 'sourceSha=%s\nworkflowSha=%s\nrunId=%s\nrunAttempt=%s\n' "$SOURCE_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'sourceTree=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'nodeVersion=%s\nnpmVersion=%s\n' "$(node --version)" "$(npm --version)"
+            sha256sum package.json package-lock.json
+          } > "$output/build-inputs.txt"
+          (cd "$output" && sha256sum *.tgz runtime-dependencies.tar.gz build-inputs.txt > SHA256SUMS)
+          printf 'ARTIFACT_OUTPUT=%s\n' "$output" >> "$GITHUB_ENV"
+      # Build output only: no launch, installation, credentials or native receipt.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reviewed-research-runtime-5285-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.ARTIFACT_OUTPUT }}/*.tgz
+            ${{ env.ARTIFACT_OUTPUT }}/runtime-dependencies.tar.gz
+            ${{ env.ARTIFACT_OUTPUT }}/build-inputs.txt
+            ${{ env.ARTIFACT_OUTPUT }}/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

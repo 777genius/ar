@@ -1,3 +1,4 @@
+import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,12 +7,12 @@ import { parseFdCollectorProfile, parseFdCollectorRows, readFdCollectorProfileFi
   type FdCollectorProfile, type FdFilePin, type FdCollectorProfilePin, type FdCollectorPeer } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 import { hostedFdUnsetEnvironment } from "./hosted-fd-prelude";
+import { hostedFdTable, type HostedFdFact } from "./hosted-fd-table";
+export { hostedFdTable, type HostedFdFact } from "./hosted-fd-table";
 import { observeSystemBusFdEmptyArrays } from "./system-bus-infrastructure";
 import { SystemdArrayProperty, SystemdArraySignature, type SystemdEmptyArrayFact,
   type SystemdObservationRemaining } from "./systemd-service-arrays";
 
-export type HostedFdFact = Readonly<{ fd: number; target: string; flags: number; dev: string; ino: string; rdev: string;
-  socket: boolean; pipe: boolean; character: boolean; file: boolean; directory: boolean }>;
 export type HostedFdProcess = Readonly<{ pid: number; parentPid: number; birth: string; argv: readonly string[]; exe: string; group: string;
   net: string; user: string; mount: string; pidNamespace: string; uidMap: string; gidMap: string; status: string;
   descriptors: readonly HostedFdFact[] }>;
@@ -66,10 +67,10 @@ function readInstalledFdInventory(remaining?: SystemdObservationRemaining) {
   const inventoryBytes = readHostedActivationBytes("readonly-inventory.json");
   observationTimeout(5000, remaining);
   if (!inventoryBytes) invalid();
-  const inventory = decodeHostedActivationBytes(inventoryBytes) as Record<string, unknown>;
+  const inventory = decodeHostedInventoryBytes(inventoryBytes) as Record<string, unknown>;
   const pin = readFdCollectorProfileField(inventory);
   if (!pin) return undefined;
-  if (Object.keys(inventory).sort().join(",") !==
+  if (inventory.schemaVersion !== 5 && Object.keys(inventory).sort().join(",") !==
       "collectorProfile,disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units") invalid();
   observationTimeout(5000, remaining);
   const installationBytes = readHostedActivationBytes("host-installation.json");
@@ -115,36 +116,6 @@ export function verifyPinnedFdCollectorProfile(input: FdCollectorProfilePin, rem
   for (const file of profile.bootstraps) protectedBytes(file, false, "", remaining);
   if (!protectedBytes(pin, true, "", remaining).equals(bytes)) invalid();
   return profile;
-}
-
-export function hostedFdTable(pid: number): readonly HostedFdFact[] {
-  if (!Number.isSafeInteger(pid) || pid < 1) invalid();
-  const directory = `/proc/${pid}/fd`, names = readdirSync(directory).sort((a, b) => Number(a) - Number(b));
-  if (names.length > 256) invalid();
-  const facts: HostedFdFact[] = [];
-  for (const name of names) {
-    if (!/^(?:0|[1-9][0-9]{0,5})$/.test(name)) invalid();
-    const fd = Number(name), path = `${directory}/${name}`;
-    try {
-      const target = readlinkSync(path), info = readFileSync(`/proc/${pid}/fdinfo/${name}`, "utf8");
-      const flags = /^flags:\s+([0-7]{1,12})$/m.exec(info);
-      const actual = readFileSync(`/proc/${pid}/fdinfo/${name}`, "utf8");
-      if (!flags || /^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) invalid();
-      // No proc FD is opened for IO, including O_PATH handles to directories.
-      const s = pid === process.pid ? fstatSync(fd, { bigint: true }) : statSync(path, { bigint: true });
-      facts.push(Object.freeze({ fd, target, flags: Number.parseInt(flags[1]!, 8), dev: String(s.dev), ino: String(s.ino),
-        rdev: String(s.rdev), socket: s.isSocket(), pipe: s.isFIFO(), character: s.isCharacterDevice(),
-        file: s.isFile(), directory: s.isDirectory() }));
-    } catch (error) {
-      // Only our already-closed enumeration descriptor can vanish from self.
-      if (pid === process.pid && ["ENOENT", "EBADF"].includes((error as NodeJS.ErrnoException).code ?? "")) {
-        try { fstatSync(fd); }
-        catch (closed) { if ((closed as NodeJS.ErrnoException).code === "EBADF") continue; }
-      }
-      throw error;
-    }
-  }
-  return Object.freeze(facts);
 }
 
 export function observeHostedFdProcess(pid: number): HostedFdProcess {
@@ -234,6 +205,12 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   const group = rows.get("ControlGroup")!;
   if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}` &&
       group !== `/system.slice/${unit}`) invalid();
+  // Bind the policy bracket to the same launch instance, not merely its name.
+  const after = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+    { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
+  observationTimeout(5000, remaining);
+  if (after.error || after.signal || after.status !== 0 || after.stderr || after.stdout !== result.stdout) invalid();
   const current = readInstalledFdInventory(remaining);
   if (!current || !current.inventoryBytes.equals(installed.inventoryBytes) ||
       !current.installationBytes.equals(installed.installationBytes)) invalid();
@@ -319,6 +296,7 @@ export function assertHostedFdConfinement(child: HostedFdProcess, serviceArgv: r
   if (child.net !== host.net) invalid();
   const provider = serviceArgv[0] === "/usr/bin/unshare", installer = serviceArgv[0] === "/usr/bin/setpriv";
   const status = (name: string) => new RegExp(`^${name}:[\\t ]*([^\\n]*)$`, "m").exec(child.status)?.[1]?.trim().replace(/\s+/g, " ");
+  if (status("NoNewPrivs") !== "1" || status("Seccomp") !== "2") invalid();
   if (provider || installer) {
     if (status("NoNewPrivs") !== "1" || ["Inh", "Prm", "Eff", "Bnd", "Amb"].some(set =>
       !/^0+$/.test(status("Cap" + set) ?? ""))) invalid();
