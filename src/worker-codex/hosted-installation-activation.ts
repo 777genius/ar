@@ -46,7 +46,6 @@ import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host"
 import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
 import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
-
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
  * caller records and stop requests never substitute for those proofs. */
@@ -54,7 +53,6 @@ export class HostedInstallationActivationStore {
   #ordinaryPhysicalChild:ChildProcess|undefined;
   private ordinaryLaunch: ReturnType<HostedInstallationActivationStore["reserveOrdinaryRuntime"]> | undefined;
   read(): HostedActivation { return readHostedInstallationActivation().activation; }
-
   /** Candidate fields are comparisons only. Actual inspected operator/grant
    * facts are resolved here, never supplied as a request authorization DTO. */
   dependencyMaintenanceAuthority(fence: HostedActivationFence, jobId: string) {
@@ -98,14 +96,12 @@ export class HostedInstallationActivationStore {
     const { compareHostedLegacyDependency } = await import("./hosted-dependency-legacy-comparison");
     return compareHostedLegacyDependency(input);
   }
-
   serialized<T>(action: (fence: HostedActivationFence) => T): T {
     return withHostedActivationFence(fence => {
       this.read();
       return action(fence);
     });
   }
-
   /** Explicit recovery only: finish a retained immediate successor and persist
    * CLOSED before returning control. Do not guess missing history, erase an
    * incompatible .next, or silently resume either execution mode after a crash. */
@@ -127,7 +123,6 @@ export class HostedInstallationActivationStore {
       return action(fence);
     });
   }
-
   publish(fence: HostedActivationFence, next: HostedActivation, recovering = false, authority?: RuntimeValidatedOrdinaryTermination | OriginalHostedOrdinaryProviderTerminal): void {
     assertHostedActivationFence(fence);
     const prior = this.readCommitted(fence);
