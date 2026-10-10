@@ -52,6 +52,7 @@ function local(path: string): string {
   for (const workspace of ["/managed/W", "/jobs/ordinary-job/workspace"]) {
     if (path === workspace || path.startsWith(workspace + "/")) return join(fixture.root, "managed-W", path.slice(workspace.length));
   }
+  if (path.startsWith("/jobs/ordinary-job/")) return join(fixture.root, path.slice("/jobs/ordinary-job/".length));
   if (path === stages || path.startsWith(stages + "/")) return join(fixture.root, "stages", path.slice(stages.length));
   if (path.startsWith(root + "/")) return join(fixture.root, path.slice(root.length + 1));
   if (path === "/etc/systemd/system/trusted.service") return join(fixture.root, "fragment");
@@ -87,6 +88,10 @@ vi.mock("node:fs", async original => {
       if (path === "/etc/systemd/system/trusted.service") return path;
       if (path === manifestScratch || path.startsWith(manifestScratch + "/")) {
         const physical = local(path), actual = real.realpathSync(physical); return physical === actual ? path : actual;
+      }
+      if (path === "/jobs" || path === "/jobs/ordinary-job" || path.startsWith("/jobs/ordinary-job/")) {
+        const physical = local(path), actual = real.realpathSync(physical);
+        return physical === actual ? path : actual;
       }
       if (path.startsWith(root + "/")) { real.realpathSync(local(path)); return path; }
       return real.realpathSync(path);

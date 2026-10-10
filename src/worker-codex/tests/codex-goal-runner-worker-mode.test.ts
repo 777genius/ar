@@ -46,6 +46,7 @@ describe("codex goal runner worker mode", () => {
       workspacePath: join(root, "workspace"), authRootDir: join(root, "auth"),
       promptPath: join(root, "prompt.md"), accounts: codexGoalAccountSlots(["account-a"]),
       accessBoundary: AccessBoundary.ReadOnly,
+      projectAccessScope: { projectId: "TEST-controller", workspaceRoots: [join(root, "workspace")] },
       sourceEnv: { SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1" },
     };
     try {
