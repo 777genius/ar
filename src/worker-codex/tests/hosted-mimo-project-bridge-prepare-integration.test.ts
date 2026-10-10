@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, expect, it, vi } from "vitest";
 const boundary = vi.hoisted(() => ({ root: "", map: (value: unknown): unknown => value, unmap: (value: string) => value }));
 vi.mock("node:fs", async original => {
@@ -37,7 +39,7 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
 import { prepareHostedMimoProject, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-boundary.root = fs.mkdtempSync("/private/tmp/TEST-mimo-prepare-");
+boundary.root = fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-"));
 boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt)(?:\/|$)/.test(value) ? boundary.root + value : value;
 boundary.unmap = value => value.startsWith(boundary.root + "/") ? value.slice(boundary.root.length) : value;
 const physical = (path: string) => boundary.map(path) as string;
