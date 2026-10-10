@@ -1,7 +1,8 @@
+import { assertHostedForegroundResult, type HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 import { assertOriginalFullBackingPreparation, FullBackingInstallationContract } from "../../dist/worker-codex/hosted-full-backing-interval.js";
 /** Owned TEST preparation. Inventory is configuration; ORIGINAL install grants custody. */
 import assert from "node:assert/strict";
-import { assertConfiguredAccountName } from "./current-configured-auth-mount.js";
+import { assertConfiguredAccountName, mountCurrentConfiguredAuth } from "./current-configured-auth-mount.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { HostedActivationPhase } from "../../dist/worker-core/index.js";
@@ -20,6 +21,19 @@ import { command, directory, directoryIdentity, digest, fileDigest, installedArt
 export enum ColdHotPrerequisite { ConfiguredAuth = "configured_auth", IndependentPolicy = "independent_policy" }
 export type CurrentColdHotRoots = Readonly<{ candidateJobId: string; readonlyJobId: string; jobRoot: string; workspace: string;
   accountName: string; workspaceIdentity: ReturnType<typeof directoryIdentity>; sourceSha: string; runtimeManifestSha256: string }>;
+const preparedAuth = new WeakMap<CurrentColdHotRoots,{attachment:ReturnType<typeof mountCurrentConfiguredAuth>;final?:HostedForegroundResult;closed:boolean}>();
+/** Original lexical handle only; serialized roots cannot register or recover it. */
+export function assertPreparedCurrentConfiguredAuth(roots:CurrentColdHotRoots):void {
+  const held=preparedAuth.get(roots);assert(held && !held.closed);assertCurrentConfiguredAuth(roots);
+}
+/** A result is retained as data only. Final release independently rejoins the
+ * actual current Closed/idle/terminal/drained state under its original fence. */
+export function retainPreparedCurrentAuthCompletion(roots:CurrentColdHotRoots,result:HostedForegroundResult):void {
+  assertHostedForegroundResult(result);const held=preparedAuth.get(roots);assert(held && !held.closed);held.final=result;
+}
+export function closePreparedCurrentConfiguredAuth(roots:CurrentColdHotRoots):void {
+  const held=preparedAuth.get(roots);assert(held && !held.closed && held.final);held.attachment.close(held.final);held.closed=true;
+}
 /** New OS only. No installed creator row is removed; legacy cohort remains separate. */
 export function prepareCurrentColdHotRoots(evidence: Record<string, unknown>, accountName: string): Promise<CurrentColdHotRoots> {
   return prepareRoots(evidence, accountName);
@@ -74,11 +88,14 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
   assert(accountAt >= 0 && args[accountAt + 1] === "TEST-account"); args[accountAt + 1] = accountName;
   assert.equal(args[args.indexOf("--service-tier") + 1], "default");
   const launch = { command: node, args, cwd: workspace };
+  // One-shot attachment exists before inventory freeze/install. Partial setup
+  // cannot create an installed attachment role or admission authority.
+  const authAttachment=mountCurrentConfiguredAuth(jobRoot,accountName,args);
   json(policy + "/readonly-inventory.json", { schemaVersion: 4, hostId: readFileSync("/etc/machine-id", "utf8").trim(),
     supervisorUnit, systemBusInfrastructure: bus, collectorProfile,
     units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest(fragment) },
       { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentSha256: bus.service.fragmentSha256 }],
-    ordinaryCreators: [{ creatorId: candidateJobId, jobId: candidateJobId, jobRootDir: jobRoot, workspacePath: workspace, launch }],
+    ordinaryCreators: [{ creatorId: candidateJobId, jobId: candidateJobId, jobRootDir: jobRoot, workspacePath: workspace, launch, authAttachment:authAttachment.profile }],
     disabledCreators: [], runtimeLaunch: launch });
   const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages"; directory(stages);
   if (full) assertOriginalFullBackingPreparation();
@@ -93,6 +110,8 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
   assert.equal(readHostedReadonlyHostInventory().ordinaryCreators.length, 1);
   await registerCurrentTools(candidateJobId);
   const roots = Object.freeze({ candidateJobId, readonlyJobId, jobRoot, workspace, accountName, workspaceIdentity: directoryIdentity(workspace), sourceSha, runtimeManifestSha256 });
+  preparedAuth.set(roots,{attachment:authAttachment,closed:false});
+  kernel.verifyExclusiveInventory();
   // Factual review request only. No reviewReference, issuer digest, lease or Ready.
   json(jobRoot + "/TEST-cold-policy-review-request.json", { schemaVersion: 1, candidateJobId, readonlyJobId,
     jobRoot, workspace: roots.workspaceIdentity, runtimeSha: sourceSha, runtimeManifestSha256,

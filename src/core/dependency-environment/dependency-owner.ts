@@ -190,3 +190,22 @@ function sameLaunchCustody(a: DependencyLaunchBinding, b: DependencyLaunchBindin
   return isDependencyCustodyLaunch(b) && a.kind === b.kind &&
     sameDependencyProtectedReference(a.association, b.association) && sameDependencyProtectedReference(a.origin, b.origin);
 }
+
+/** Strict consumer attempt DATA only; parsing grants no admission or custody. */
+export function parseDependencyConsumerAttempt(value:unknown):DependencyAttempt {
+ function fail():never {throw new DependencyAdmissionError(DependencyAdmissionFailure.InvalidRecord);}
+ const uuidValue=(value:unknown):string=>{if(typeof value!=="string"||!uuid.test(value))fail();return value;};
+ const digestValue=(value:unknown,pattern:RegExp):string=>{if(typeof value!=="string"||!pattern.test(value))fail();return value;};
+ if(!isDependencyCustodyObject(value,"attemptId,epoch,launch")||!positive(value.epoch))fail();
+ const attemptId=uuidValue(value.attemptId),epoch=value.epoch,raw=value.launch;
+ const legacyKeys="bootId,grantDigest,installationId,runtimeSha,startId,unit",custodyKeys="association,bootId,grantDigest,installationId,kind,origin,runtimeSha,startId,unit";
+ if(isDependencyCustodyObject(raw,legacyKeys)||isDependencyCustodyObject(raw,custodyKeys)){
+  const base={installationId:uuidValue(raw.installationId),bootId:uuidValue(raw.bootId),startId:uuidValue(raw.startId),runtimeSha:digestValue(raw.runtimeSha,/^[a-f0-9]{40}$/),grantDigest:digestValue(raw.grantDigest,digest),unit:digestValue(raw.unit,/^subscription-runtime-(?:ordinary|outer)-[a-f0-9-]{36}\.service$/)};
+  if(Object.keys(raw).sort().join(",")===legacyKeys){if(base.unit!==`subscription-runtime-ordinary-${base.startId}.service`)fail();return {attemptId,epoch,launch:base};}
+  if(!isDependencyProtectedReference(raw.association)||!isDependencyProtectedReference(raw.origin))fail();
+  if(raw.kind===DependencyConsumerLaunchKind.ManagedReadonlyLocalV1){if(base.unit!==`subscription-runtime-outer-${base.startId}.service`)fail();return {attemptId,epoch,launch:{...base,kind:DependencyConsumerLaunchKind.ManagedReadonlyLocalV1,association:raw.association,origin:raw.origin}};}
+  if(raw.kind===DependencyConsumerLaunchKind.OrdinaryReadonlySuccessorV1){if(base.unit!==`subscription-runtime-ordinary-${base.startId}.service`)fail();return {attemptId,epoch,launch:{...base,kind:DependencyConsumerLaunchKind.OrdinaryReadonlySuccessorV1,association:raw.association,origin:raw.origin}};}
+  fail();
+ }
+ fail();
+}

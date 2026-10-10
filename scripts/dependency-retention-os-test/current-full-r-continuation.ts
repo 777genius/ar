@@ -11,7 +11,7 @@ import { assertCurrentConfiguredAuth, assertRootScope, readCurrentIndependentCol
 import { FullEntryKind, FullRequestPhase, requestCurrentNextWork, assertCurrentNextWorkDelivered, assertDistinctCurrentEntries } from "./current-full-entry.js";
 import { FullFlowPhase } from "./current-full-flow.js";
 import { runCurrentReadonlyEntry } from "./current-full-r-entry.js";
-import { mountCurrentConfiguredAuth } from "./current-configured-auth-mount.js";
+import { assertPreparedCurrentConfiguredAuth, retainPreparedCurrentAuthCompletion } from "./current-cold-hot-root.js";
 import { startNativeInstallerTrace, NativeInstallerTraceState } from "./native-installer-observations.js";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
@@ -56,7 +56,7 @@ export async function runCurrentFullReadonlyContinuation(roots:CurrentColdHotRoo
   assert(Number.isSafeInteger(maximumMs) && maximumMs>0 && maximumMs<=27*60*1000);
   const deadline=performance.now()+maximumMs,store=new HostedInstallationActivationStore(),closedRestore=currentClosedRestore(roots,restored);
   const remaining=()=>{const ms=Math.floor(deadline-performance.now());assert(ms>0,"TEST shared FULL work budget");return ms;};
-  const auth=mountCurrentConfiguredAuth(roots.jobRoot,roots.accountName);assertCurrentConfiguredAuth(roots);
+  assertPreparedCurrentConfiguredAuth(roots);assertCurrentConfiguredAuth(roots);
   currentClosedRestore(roots,restored);
   json("/run/TEST-full-flow-outbox/cold-policy-request.json",{schemaVersion:1,candidateJobId:roots.candidateJobId,readonlyJobId:roots.readonlyJobId,
     jobRoot:roots.jobRoot,workspace:roots.workspaceIdentity,runtimeSha:roots.sourceSha,runtimeManifestSha256:roots.runtimeManifestSha256,
@@ -83,7 +83,7 @@ export async function runCurrentFullReadonlyContinuation(roots:CurrentColdHotRoo
     const hotRequest=await requestCurrentNextWork(roots,FullRequestPhase.ReadonlyHot);
     progress(FullFlowPhase.ReadonlyHot);remaining();const hot=await runCurrentReadonlyEntry(roots),hotDelivery=await assertCurrentNextWorkDelivered(roots,hotRequest);remaining();
     assert.equal(first.observation.kind,FullEntryKind.Hot);assert.equal(hot.observation.kind,FullEntryKind.Hot);assertDistinctCurrentEntries([first,hot]);
-    progress(FullFlowPhase.FinalClose);revocationAttempted=true;store.revokeManaged(roots.readonlyJobId);store.finishClosed();auth.close(hot.result);
+    progress(FullFlowPhase.FinalClose);revocationAttempted=true;store.revokeManaged(roots.readonlyJobId);store.finishClosed();retainPreparedCurrentAuthCompletion(roots,hot.result);
     traceClosed=true;const installer=trace.finish();assert(installer.state===NativeInstallerTraceState.Measured);
     assert.equal(installer.launchedInstalls,0);assert.equal(installer.completedInstalls,0);assert.equal(installer.excludedPriorStarts,2);
     progress(FullFlowPhase.Observed);

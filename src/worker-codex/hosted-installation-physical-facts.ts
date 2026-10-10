@@ -1,3 +1,4 @@
+import { assertConfiguredAuthAttachmentPhysical } from "../provider-codex/app-server/adapters/hosted-configured-auth-attachment";
 import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-interval";
 import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
@@ -17,6 +18,7 @@ export function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const cliPath = join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js");
   for (const creator of inventory.ordinaryCreators) {
+    if("authAttachment" in creator && creator.authAttachment) assertConfiguredAuthAttachmentPhysical(creator.authAttachment);
     const launch = creator.launch;
     if (launch.cwd !== creator.workspacePath || !(launch.command === cliPath ||
         (launch.command === process.execPath && launch.args[0] === cliPath))) invalid();

@@ -1,3 +1,4 @@
+import { parseHostedReadonlyHostInventory } from "../../../core/host-infrastructure/readonly-host-inventory";
 import { HostedRemovalRetirementMutex, type HostedRemovalRetirementReferences, type HostedRemovalRetirementWitness } from "./hosted-removal-retirement-mutex";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { hostedFdLaunch } from "./hosted-fd-launch";
@@ -419,6 +420,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
     "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators" +
     (revision === 3 || revision === 4 ? ",systemBusInfrastructure" : "") + (revision === 4 ? ",collectorProfile" : "")) };
   if ((revision !== 2 && revision !== 3 && revision !== 4 && revision !== 5) || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
+  if (!modern) parseHostedReadonlyHostInventory(inventory.value);
   const systemBusInfrastructure = readSystemBusInfrastructureField(inventory.value);
   readFdCollectorProfileField(inventory.value);
   const units = rows(inventory.value.units).map(value => {
@@ -448,7 +450,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const owner = units.find(row => row.name === inventory.value.supervisorUnit);
   if (!owner) invalid();
   const creators = rows(inventory.value.ordinaryCreators).map(value => {
-    const row = wire(value, "creatorId,jobId,jobRootDir,workspacePath,launch" +
+    const row = wire(value, (value && typeof value === "object" && "authAttachment" in value ? "authAttachment," : "") + "creatorId,jobId,jobRootDir,workspacePath,launch" +
       (value && typeof value === "object" && "childSlotSha256" in value ? ",childSlotSha256" : ""));
     if (row.childSlotSha256 !== undefined) digestValue(row.childSlotSha256);
     str(row.creatorId); str(row.jobId); canonical(row.jobRootDir); canonical(row.workspacePath);

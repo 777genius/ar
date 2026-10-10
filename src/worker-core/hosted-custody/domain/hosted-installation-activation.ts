@@ -1,3 +1,4 @@
+export { parseHostedInstallation, type HostedInstallation } from "../../../core/host-infrastructure/hosted-installation";
 import { assertOrdinaryReaderFinalSuccessor } from "./ordinary-reader-final-successor";
 import { parseScopedReceipt, parseScopedProviderOnlyReceipt, parseScopedOrdinaryReaderFinalReceipt, type ScopedOrdinaryReaderFinalReceipt, type ScopedTerminationReceipt, type ScopedProviderOnlyReceipt } from "./scoped-termination";
 /** Closed scheduling records, not proof of host authority. Adapters must bind
@@ -13,11 +14,6 @@ export enum HostedActivationPhase {
   LeavingExclusive = "LEAVING_EXCLUSIVE",
 }
 export enum HostedOriginKind { Ordinary = "ordinary" }
-export type HostedInstallation = {
-  readonly schemaVersion: 1; readonly installationId: string; readonly hostId: string;
-  readonly runtimeDirectory: string; readonly runtimeSha: string;
-  readonly runtimeManifestSha256: string; readonly inventorySha256: string;
-};
 export type HostedOrdinaryBirth = {
   readonly schemaVersion: 1; readonly installationId: string; readonly jobId: string;
   readonly jobRootDir: string; readonly workspacePath: string; readonly origin: HostedOriginKind.Ordinary;
@@ -69,13 +65,6 @@ function job(input: Record<string, unknown>): void {
 }
 function unique(rows: readonly Record<string, unknown>[], keys: readonly string[]): void {
   for (const key of keys) if (new Set(rows.map(row => row[key])).size !== rows.length) invalid();
-}
-export function parseHostedInstallation(value: unknown): HostedInstallation {
-  const input = record(value, "schemaVersion,installationId,hostId,runtimeDirectory,runtimeSha,runtimeManifestSha256,inventorySha256");
-  base(input);
-  if (!id(input.hostId) || !path(input.runtimeDirectory) || typeof input.runtimeSha !== "string" ||
-      !/^[a-f0-9]{40}$/.test(input.runtimeSha) || !digest(input.runtimeManifestSha256) || !digest(input.inventorySha256)) invalid();
-  return Object.freeze({ ...input }) as HostedInstallation;
 }
 export function parseHostedOrdinaryBirth(value: unknown): HostedOrdinaryBirth {
   const input = record(value, "schemaVersion,installationId,jobId,jobRootDir,workspacePath,origin");

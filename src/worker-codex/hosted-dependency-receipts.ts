@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyInstallProofKind, DependencyReceiptParseStatus, DependencyReceiptState,
-  DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner, isDependencyConsumerOwner, sameDependencyAttempt,
+  parseDependencyConsumerAttempt, sameDependencyAttempt,
   parseDependencyReceipt, sameDependencyWorkspace, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import type { DependencyCommittedReadyReceipt, DependencyCommittedUnverifiedReceipt, DependencyCommittedAbsentReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
@@ -57,20 +57,19 @@ function assertLocalInstallerCompletion(record: DependencySourceBindingRecord): 
   if (Object.keys(row).sort().join(",") !== "attempt,schemaVersion,startId,unit" || row.schemaVersion !== 1 ||
       typeof row.startId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(row.startId) ||
       row.unit !== `subscription-runtime-installer-${row.startId}.service`) fail();
-  const parsed = parseDependencyOwner({ version: 2, workspace: record.workspace, revision: 1,
-    epoch: (row.attempt as { epoch?: unknown })?.epoch, owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.Fenced, attempt: row.attempt } });
-  if (!isDependencyConsumerOwner(parsed.owner) || parsed.owner.attempt.attemptId !== record.generation) fail();
+  const attempt = parseDependencyConsumerAttempt(row.attempt);
+  if (attempt.attemptId !== record.generation) fail();
   const directory = `${hostedDependencyInstallerRoot}/${row.startId}`, startBytes = readHostedPrivateBytes(`${directory}/start.json`, 65536);
   const completion = readHostedPrivateBytes(`${directory}/creator-completion.json`, 65536), creator = readHostedPrivateBytes(`${directory}/creator.json`, 4096);
   if (!startBytes || !completion || !creator || hash(completion) !== record.installerCompletionSha256) fail();
   const start = JSON.parse(startBytes.toString("utf8")) as Record<string, unknown>;
   if (Object.keys(start).sort().join(",") !== "attempt,closureDigest,inputSha256,installKey,profileSha256,recipe,schemaVersion,startId,unit,workspace" ||
       start.schemaVersion !== 2 || start.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 ||
-      start.startId !== row.startId || start.unit !== row.unit || !sameDependencyAttempt(start.attempt as typeof parsed.owner.attempt, parsed.owner.attempt) ||
+      start.startId !== row.startId || start.unit !== row.unit || !sameDependencyAttempt(start.attempt as typeof attempt, attempt) ||
       !sameDependencyWorkspace(start.workspace as typeof record.workspace, record.workspace) || start.installKey !== record.installKey || start.closureDigest !== record.closureDigest ||
       typeof start.inputSha256 !== "string" || !/^[a-f0-9]{64}$/.test(start.inputSha256) || typeof start.profileSha256 !== "string" || !/^[a-f0-9]{64}$/.test(start.profileSha256) ||
       !completion.equals(encode({ schemaVersion: 1, startId: row.startId, startSha256: hash(startBytes), creatorSha256: hash(creator), status: 0, creatorWaitReturned: true }))) fail();
-  assertHostedDependencyInstallerAttemptDrained(parsed.owner.attempt);
+  assertHostedDependencyInstallerAttemptDrained(attempt);
   if (!readHostedPrivateBytes(`${directory}/start.json`, 65536)?.equals(startBytes) ||
       !readHostedPrivateBytes(`${directory}/creator-completion.json`, 65536)?.equals(completion) ||
       !readHostedPrivateBytes(`${hostedDependencyInstallerRoot}/attempt-${record.generation}.json`, 4096)?.equals(mapping)) fail();

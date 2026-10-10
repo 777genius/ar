@@ -1,3 +1,6 @@
+import { configuredAuthUnderlyingIdentity, observeConfiguredAuthAttachmentData, assertConfiguredAuthAttachmentPhysical } from "../../dist/provider-codex/app-server/adapters/hosted-configured-auth-attachment.js";
+import { readHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { assertHostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 /** TEST-only opaque seed attachment. Never reads, hashes, copies or prints credentials. */
 import assert from "node:assert/strict";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
@@ -87,7 +90,7 @@ function mounts() {
 }
 /** Mount belongs to this TEST issuer's current PID1 namespace. No credential content
  * copy and no retained source FD crosses the actual provider/collector boundary. */
-export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string) {
+export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string, originalArgs: readonly string[]) {
   assertReadonlyHostOperator(); assertConfiguredAccountName(accountName);
   assert(/^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}$/.test(jobRoot));
   const source = `${guestSeedRoot}/${accountName}/auth.json`, target = `${jobRoot}/auth/${accountName}/auth.json`;
@@ -98,6 +101,7 @@ export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string)
   directory(jobRoot + "/auth"); directory(jobRoot + "/auth/" + accountName);
   const fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   const own = fstatSync(fd, { bigint: true }); closeSync(fd);
+  const underlying = configuredAuthUnderlyingIdentity(target);
   assert(own.isFile() && own.size === 0n && own.nlink === 1n);
   assert(!mounts().some(row => row.target === target || row.target.startsWith(target + "/")));
   // Any uncertain mount/remount holds its exact owned target; no automatic retry/unmount.
@@ -107,19 +111,25 @@ export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string)
   const record = attached[0]!; assert(record.options.includes("ro") && record.options.includes("nosuid") && record.options.includes("nodev") && record.options.includes("noexec"));
   ancestry.validate();
   assert.equal(fileIdentity(source), sourceIdentity); assert.equal(fileIdentity(target), sourceIdentity);
+  const profile=observeConfiguredAuthAttachmentData(jobRoot,accountName,underlying,originalArgs);
+  assertConfiguredAuthAttachmentPhysical(profile);
   let closed = false;
   return Object.freeze({
+    profile,
     /** Original branded completion plus current CLOSED/no-live-reader state is
      * required. A bool or caller-authored release receipt is never accepted. */
     close(result: HostedForegroundResult) {
       return withHostedActivationFence(fence => {
-      assertCurrentClosedEntry(fence, jobRoot, result); assertReadonlyHostOperator(); assert(!closed);
+      assertHostedForegroundResult(result); assertCurrentClosedEntry(fence, jobRoot, result); assertReadonlyHostOperator(); assert(!closed);
+      const binding=readHostedDependencyBinding(jobRoot.slice(jobRoot.lastIndexOf("/")+1)); assert(binding && binding.version===2);
+      assertHostedDependencyPhysicalWorkspace(binding); assertConfiguredAuthAttachmentPhysical(profile);
       const current = mounts().filter(row => row.target === target); assert.equal(current.length, 1);
       assert.deepEqual(current[0], record); assert.equal(fileIdentity(target), sourceIdentity);
       command("/usr/bin/umount", ["--", target]);
       assert(!mounts().some(row => row.target === target));
       const after = lstatSync(target, { bigint: true });
       assert(after.isFile() && !after.isSymbolicLink() && after.dev === own.dev && after.ino === own.ino && after.size === 0n && after.nlink === 1n);
+      assert.deepEqual(configuredAuthUnderlyingIdentity(target),underlying);
       unlinkSync(target); closed = true;
       });
     },

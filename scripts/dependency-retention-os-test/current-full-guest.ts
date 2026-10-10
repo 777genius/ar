@@ -1,3 +1,4 @@
+import { closePreparedCurrentConfiguredAuth } from "./current-cold-hot-root.js";
 import { assertOriginalFullBackingPreparation } from "../../dist/worker-codex/hosted-full-backing-interval.js";
 import { HostedReadonlyEpochStore } from "../../dist/worker-codex/hosted-readonly-epoch-store.js";
 import { readHostedDependencyBinding, hostedDependencyOwnerRoot } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
@@ -128,6 +129,7 @@ try {
     // recursive whole-guest drain and queued-job absence before dropping holds.
     createReadonlyPrivateRecord(base+"/current-full-terminal.json",Buffer.from(JSON.stringify({schemaVersion:1,sourceSha:roots.sourceSha,pairSha256:pair.reference.sha256,invocationSealSha256:invocation.reference.sha256,activationGeneration:actual.activation.generation,epochGeneration:epoch.generation,workspace:binding.workspace,sourceClosed:source.reference,idleClosed:idle.reference})+"\n"));
   });
+  closePreparedCurrentConfiguredAuth(roots); // No further job admission after static role release.
   evidence.status=FullGuestStatus.PartialPass;
 } catch(error:unknown) {
   evidence.failure="TEST_actual_full_retention_slice_failed";evidence.failureObservation=observeRegistrationFailure(error);process.exitCode=1;

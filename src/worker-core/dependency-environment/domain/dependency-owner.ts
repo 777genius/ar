@@ -1,7 +1,7 @@
 // Shared provider-neutral parser; the worker public subpath stays compatible.
 export { DependencyGenerationContinuityKind, assertDependencyGenerationBaselineTransition, dependencyGenerationContinuityRevision,
   DependencyOwnerPhase, DependencyOwnerKind, DependencyAdmissionFailure, DependencyAdmissionError,
-  parseDependencyOwner, sameDependencyAttempt, sameDependencyOwnerIdentity, sameDependencyMaintenanceAttempt, isDependencyConsumerOwner,
+  parseDependencyOwner, parseDependencyConsumerAttempt, sameDependencyAttempt, sameDependencyOwnerIdentity, sameDependencyMaintenanceAttempt, isDependencyConsumerOwner,
   isDependencyCustodyLaunch, DependencyConsumerLaunchKind, sameDependencyProtectedReference,
   type DependencyProtectedReference, type DependencyOrdinaryLaunchBinding, type DependencyCustodyLaunchBinding,
   type DependencyLaunchBinding, type DependencyAttempt, type DependencyOwnerRecord,

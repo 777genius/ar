@@ -1,10 +1,11 @@
+import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
 import { managedSystemdRunExecutable } from "./launch.mjs";
 import {h1StagedSubjectData,retainH1StagedCatalogData} from "./dependency-full-h1-staged-tools-TEST.js";
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
+import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readSync, writeSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
 import {performance} from "node:perf_hooks";
@@ -79,17 +80,38 @@ export function fullNativeRestoreConsumer(value:unknown):FullRestoreConsumer {
   if(value===undefined)return FullRestoreConsumer.Ordinary;
   check(value===FullRestoreConsumer.Ordinary || value===FullRestoreConsumer.Readonly);return value;
 }
+export enum FullPositiveAccount {R="account-r",W="account-w"}
+function fullPositiveAccountData(value:unknown):FullPositiveAccount {
+  check(value===FullPositiveAccount.R || value===FullPositiveAccount.W);return value;
+}
+/** DATA join only. Original acquire supplies independently protected inputs. */
+export function fullPositiveOuterReviewData(value:unknown,accountName:FullPositiveAccount,sourceSha:string,nodeSha256:string) {
+  fullPositiveAccountData(accountName);check(sha(sourceSha) && digest(nodeSha256));
+  const input=fullData(value,["accountName","nodeSha256","reviewReference","schemaVersion","sourceSha"]);
+  check(input.schemaVersion===1 && input.accountName===accountName && input.sourceSha===sourceSha && input.nodeSha256===nodeSha256);return input;
+}
 const fullReviewKeys=["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"];
-function fullReviewData(value:unknown) {
+export function fullReviewData(value:unknown) {
   check(value!==null && typeof value==="object" && !types.isProxy(value) && Object.getPrototypeOf(value)===Object.prototype);
+  const version=Object.getOwnPropertyDescriptor(value,"schemaVersion");check(version && Object.hasOwn(version,"value"));
+  if(version.value===2){
+    const review=fullData(value,[...fullReviewKeys,"removalCase","restoreConsumer"]);
+    fullPositiveAccountData(review.accountName);check(review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);
+    if(hasPositiveHostDso(review.hostTools))fullHostToolsData(review);
+    return review;
+  }
+  check(version.value===1);
   const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedSelected=Object.hasOwn(value,"h1StagedSubject");
   const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedSelected?["h1StagedSubject"]:[])]);
   if(removalSelected)fullNativeRemovalCase(review.removalCase);
   if(stagedSelected)check(review.removalCase===FullRemovalCase.ParentCrashH1 && (review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary));
   if(selected)check(review.restoreConsumer===FullRestoreConsumer.Ordinary || review.restoreConsumer===FullRestoreConsumer.Readonly);
+  check(!hasPositiveHostDso(review.hostTools));
   return review;
 }
-enum RootContext {Launcher="Launcher",Parent="Parent"}
+enum RootContext {Launcher="Launcher",Parent="Parent",Installer="Installer"}
+const positiveInstallationStage="/srv/workers/public-intake/"+fullNativeJob+"/full-positive-installation";
+const positiveInstallationReview=positiveInstallationStage+"/review.json";
 function initialRoot(context:RootContext){
   const limits=readFileSync("/proc/self/limits","utf8");check(Buffer.byteLength(limits)<=16384);
   const rows=[...limits.matchAll(/^Max open files\s+([0-9]+)\s+([0-9]+)\s+files$/gm)];
@@ -167,22 +189,114 @@ export function fullH1LibcAliasesData(value:unknown):readonly [string,string] {
   const paths=fullDataArray(value);check(paths[0]<paths[1] && paths.includes(h1LibcPath) && paths.every(path=>/^\/usr\/lib\/x86_64-linux-gnu\/[A-Za-z0-9_.+-]+$/.test(path)));return Object.freeze(paths);
 }
 export function fullH1LibcMetadataMatches(actual:unknown,expected:unknown):void {const a=fullH1LibcMetadataData(actual),e=fullH1LibcMetadataData(expected);for(const key of h1LibcKeys)check(a[key]===e[key]);}
-/** One exceptional original libc object. Ordinary Pins remains nlink===1. */
-class H1LibcPins {
-  private held:{fd:number;parent:number;expected:ReturnType<typeof fullH1LibcMetadataData>;sha256:string;mount:string;aliases:readonly {path:string;parent:number}[]}|undefined;
-  private metadata(fd:number){const stat=fstatSync(fd,{bigint:true});check(stat.isFile());return {dev:String(stat.dev),ino:String(stat.ino),uid:String(stat.uid),gid:String(stat.gid),mode:String(stat.mode),nlink:String(stat.nlink),size:String(stat.size),mtimeNs:String(stat.mtimeNs),ctimeNs:String(stat.ctimeNs)};}
-  hold(pins:Pins,path:string,expectedInput:unknown,expectedSha:string,aliasesInput:unknown):number {check(path===h1LibcPath && digest(expectedSha));const expected=fullH1LibcMetadataData(expectedInput),aliasPaths=fullH1LibcAliasesData(aliasesInput);const aliases=aliasPaths.map(path=>({path,parent:pins.hold(dirname(path),true)}));
-    if(this.held){check(JSON.stringify(expected)===JSON.stringify(this.held.expected) && expectedSha===this.held.sha256 && JSON.stringify(aliasPaths)===JSON.stringify(this.held.aliases.map(entry=>entry.path)));this.validate();return this.held.fd;}
-    const parent=pins.hold(dirname(path),true),fd=openSync(`/proc/self/fd/${parent}/${basename(path)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
-    try{fullH1LibcMetadataMatches(this.metadata(fd),expected);check(hash(readFd(fd))===expectedSha);this.held={fd,parent,expected,sha256:expectedSha,mount:ancestorMountId(fd),aliases};this.validate();return fd;}catch(error){this.held=undefined;closeSync(fd);throw error;}
+const positiveHostLibcSha="3a15d66867d83762c7f2f1e37359cb8f6c5743edb369c65285cb0b1c4f7498bf";
+const positiveHostLibcAlias="/nonexistent/.debug/usr/lib/x86_64-linux-gnu/libc.so.6/a4a7992a8e66555c8141ab2a08a8465ff6e0ea65/elf";
+function hasPositiveHostLibc(value:unknown):boolean {
+  if(value===null || typeof value!=="object")return false;
+  check(!types.isProxy(value));return Object.hasOwn(value,"positiveHostLibc");
+}
+const positiveHostSystemdSharedPath="/usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-255.so";
+const positiveHostSystemdSharedSha="356f170e9e3a9dfb8026448b81d999863794e30f9c7136b4dfdd0b7abbf73116";
+const positiveHostSystemdSharedAlias="/nonexistent/.debug/usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-255.so/7f29ab33e6b88429c49398ab9a4d288d329bf2bd/elf";
+function hasPositiveHostSystemdShared(value:unknown):boolean {
+  if(value===null || typeof value!=="object")return false;
+  check(!types.isProxy(value));return Object.hasOwn(value,"positiveHostSystemdShared");
+}
+function hasPositiveHostDso(value:unknown):boolean{return hasPositiveHostLibc(value)||hasPositiveHostSystemdShared(value);}
+/** Closed second role only; the complete expected tuple comes from protected review. */
+export function fullPositiveHostSystemdSharedData(value:unknown) {
+  const row=fullData(value,["path","sha256","tuple","aliases"]);
+  check(row.path===positiveHostSystemdSharedPath && row.sha256===positiveHostSystemdSharedSha);
+  const tuple=fullH1LibcMetadataData(row.tuple),aliases=fullDataArray(row.aliases);
+  check(tuple.mode===String(0o100644) && aliases[0]===positiveHostSystemdSharedAlias && aliases[1]===positiveHostSystemdSharedPath);
+  return Object.freeze({path:positiveHostSystemdSharedPath,sha256:positiveHostSystemdSharedSha,tuple,aliases:Object.freeze(aliases)});
+}
+/** Closed finite DATA, never an original source grant. */
+export function fullPositiveHostLibcData(value:unknown) {
+  const row=fullData(value,["path","sha256","libcTuple","libcAliases"]);
+  check(row.path===h1LibcPath && row.sha256===positiveHostLibcSha);
+  const libcTuple=fullH1LibcMetadataData(row.libcTuple),libcAliases=fullDataArray(row.libcAliases);
+  check(libcTuple.mode===String(0o100755) && libcAliases[0]===positiveHostLibcAlias && libcAliases[1]===h1LibcPath);
+  return Object.freeze({path:h1LibcPath,sha256:positiveHostLibcSha,libcTuple,libcAliases:Object.freeze(libcAliases)});
+}
+/** Original acquire uses this same closed selection/consumption parser. */
+export function fullHostToolsData(review:Record<string,unknown>) {
+  const libcSelected=hasPositiveHostLibc(review.hostTools),sharedSelected=hasPositiveHostSystemdShared(review.hostTools),exceptional=libcSelected||sharedSelected;
+  if(exceptional){check(review.schemaVersion===2 && review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);fullPositiveAccountData(review.accountName);}
+  const tools=fullData(review.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(review.removalCase===FullRemovalCase.ParentCrashH1?["h1PythonClosure","h1NsenterClosure"]:[]),...(libcSelected?["positiveHostLibc"]:[]),...(sharedSelected?["positiveHostSystemdShared"]:[])]);
+  const positive=libcSelected?fullPositiveHostLibcData(tools.positiveHostLibc):undefined,shared=sharedSelected?fullPositiveHostSystemdSharedData(tools.positiveHostSystemdShared):undefined;
+  if(positive||shared){
+    const input=tools.systemdNspawnClosure;check(Array.isArray(input) && !types.isProxy(input) && Object.getPrototypeOf(input)===Array.prototype);
+    const descriptors:Record<string,PropertyDescriptor>=Object.getOwnPropertyDescriptors(input),length=descriptors.length;
+    check(length && Object.hasOwn(length,"value") && Number.isInteger(length.value) && length.value>0 && length.value<=32 && Reflect.ownKeys(descriptors).length===length.value+1);
+    const rows:{path:string;sha256:string}[]=[];let previous="",consumed=0,sharedConsumed=0;
+    for(let i=0;i<length.value;i++){
+      const cell=descriptors[String(i)];check(cell && Object.hasOwn(cell,"value") && cell.enumerable);
+      const row=fullData(cell.value,["path","sha256"]);check(typeof row.path==="string" && /^\/usr\/lib\/[A-Za-z0-9_.+/-]+$/.test(row.path) && !row.path.split("/").some(part=>part==="." || part==="..") && row.path>previous);
+      previous=row.path;const sha256=requireDigest(row.sha256);
+      if(positive && row.path===h1LibcPath){check(sha256===positive.sha256);consumed++;}
+      if(shared && row.path===positiveHostSystemdSharedPath){check(sha256===shared.sha256);sharedConsumed++;}
+      rows.push(Object.freeze({path:row.path,sha256}));
+    }
+    check(consumed===(positive?1:0) && sharedConsumed===(shared?1:0));tools.systemdNspawnClosure=Object.freeze(rows);
+    if(positive)tools.positiveHostLibc=positive;if(shared)tools.positiveHostSystemdShared=shared;
   }
-  validate(){const entry=this.held;if(!entry)return;fullH1LibcMetadataMatches(this.metadata(entry.fd),entry.expected);check(hash(readFd(entry.fd))===entry.sha256 && ancestorMountId(entry.fd)===entry.mount);
+  return tools;
+}
+enum LibcPurpose {H1="h1",PositiveHost="positive_host",PositiveHostSystemdShared="positive_host_systemd_shared"}
+/** Stable snapshot DATA only. Namespace-local mount IDs stay in original
+ * custody validation; they are not cross-namespace object identities. */
+/** The selected source contracts have one exact reviewed package each. */
+export function fullNativeSourcePackageHash(schemaVersion:unknown):string {
+  if(schemaVersion===1)return "68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29";
+  if(schemaVersion===2)return "8b0480793816c0a3e96d8102c03fb2fdd60396c0d8ec6e819c38d60a97c498ba";
+  return refuse();
+}
+export function fullPositiveHostStableAncestors(ancestors:readonly Readonly<{path:string;identity:string;mount:string}>[]):readonly Readonly<{path:string;identity:string}>[] {
+  return ancestors.map(({path,identity})=>({path,identity}));
+}
+type HeldHostDso={purpose:LibcPurpose;ancestors:readonly {path:string;fd:number;identity:string;mount:string}[];fd:number;parent:number;expected:ReturnType<typeof fullH1LibcMetadataData>;sha256:string;mount:string;aliases:readonly {path:string;parent:number}[]};
+/** One original custodian, with two finite Positive HOST object slots. Ordinary Pins remains nlink===1. */
+class H1LibcPins {
+  private held:HeldHostDso|undefined;private sharedHeld:HeldHostDso|undefined;
+  private metadata(fd:number){const stat=fstatSync(fd,{bigint:true});check(stat.isFile());return {dev:String(stat.dev),ino:String(stat.ino),uid:String(stat.uid),gid:String(stat.gid),mode:String(stat.mode),nlink:String(stat.nlink),size:String(stat.size),mtimeNs:String(stat.mtimeNs),ctimeNs:String(stat.ctimeNs)};}
+  hold(pins:Pins,path:string,expectedInput:unknown,expectedSha:string,aliasesInput:unknown):number {
+    check(path===h1LibcPath && digest(expectedSha));return this.acquire(pins,LibcPurpose.H1,h1LibcPath,fullH1LibcMetadataData(expectedInput),expectedSha,fullH1LibcAliasesData(aliasesInput));
+  }
+  holdPositive(pins:Pins,input:unknown):number {
+    const row=fullPositiveHostLibcData(input);return this.acquire(pins,LibcPurpose.PositiveHost,h1LibcPath,row.libcTuple,row.sha256,row.libcAliases);
+  }
+  holdPositiveSystemdShared(pins:Pins,input:unknown):number {
+    const row=fullPositiveHostSystemdSharedData(input);return this.acquire(pins,LibcPurpose.PositiveHostSystemdShared,positiveHostSystemdSharedPath,row.tuple,row.sha256,row.aliases);
+  }
+  private acquire(pins:Pins,purpose:LibcPurpose,path:string,expected:ReturnType<typeof fullH1LibcMetadataData>,expectedSha:string,aliasPaths:readonly [string,string]):number {
+    const shared=purpose===LibcPurpose.PositiveHostSystemdShared;check(path===(shared?positiveHostSystemdSharedPath:h1LibcPath));
+    check(purpose!==LibcPurpose.H1 || !this.sharedHeld);check(!shared || this.held?.purpose!==LibcPurpose.H1);
+    const aliases=aliasPaths.map(path=>({path,parent:pins.hold(dirname(path),true)})),held=shared?this.sharedHeld:this.held;
+    if(held){check(purpose===held.purpose && JSON.stringify(expected)===JSON.stringify(held.expected) && expectedSha===held.sha256 && JSON.stringify(aliasPaths)===JSON.stringify(held.aliases.map(entry=>entry.path)));this.validate();return held.fd;}
+    const ancestors:{path:string;fd:number;identity:string;mount:string}[]=[];
+    if(purpose!==LibcPurpose.H1){
+      const paths=new Set<string>();for(const alias of aliasPaths){let path=dirname(alias);for(;;){paths.add(path);if(path==="/")break;path=dirname(path);}}
+      const root=pins.hold("/",true),rootDev=fstatSync(root).dev,rootMount=ancestorMountId(root);
+      for(const path of [...paths].sort()){const fd=pins.hold(path,true),stat=fstatSync(fd),mount=ancestorMountId(fd);check(stat.dev===rootDev && mount===rootMount);ancestors.push({path,fd,identity:identity(stat),mount});}
+    }
+    const parent=pins.hold(dirname(path),true),fd=openSync(`/proc/self/fd/${parent}/${basename(path)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    try{fullH1LibcMetadataMatches(this.metadata(fd),expected);check(hash(readFd(fd))===expectedSha);const entry={purpose,ancestors,fd,parent,expected,sha256:expectedSha,mount:ancestorMountId(fd),aliases};if(shared)this.sharedHeld=entry;else this.held=entry;this.validate();return fd;}catch(error){if(shared)this.sharedHeld=undefined;else this.held=undefined;closeSync(fd);throw error;}
+  }
+  validate(){for(const entry of [this.held,this.sharedHeld])if(entry)this.validateEntry(entry);}
+  private validateEntry(entry:HeldHostDso){
+    for(const ancestor of entry.ancestors){check(identity(fstatSync(ancestor.fd))===ancestor.identity && ancestorMountId(ancestor.fd)===ancestor.mount && entry.mount===ancestor.mount && fstatSync(ancestor.fd).dev===fstatSync(entry.fd).dev);}
+    fullH1LibcMetadataMatches(this.metadata(entry.fd),entry.expected);check(hash(readFd(entry.fd))===entry.sha256 && ancestorMountId(entry.fd)===entry.mount);
     for(const alias of entry.aliases){const fresh=openSync(`/proc/self/fd/${alias.parent}/${basename(alias.path)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try{fullH1LibcMetadataMatches(this.metadata(fresh),entry.expected);check(ancestorMountId(fresh)===entry.mount && hash(readFd(fresh))===entry.sha256);fullH1LibcMetadataMatches(this.metadata(entry.fd),entry.expected);}finally{closeSync(fresh);}}
   }
-  descriptors(){return this.held?[this.held.fd]:[];}
-  snapshot(){this.validate();return this.held?{path:h1LibcPath,expected:this.held.expected,sha256:this.held.sha256,aliases:this.held.aliases.map(entry=>entry.path)}:null;}
-  close(){if(this.held){closeSync(this.held.fd);this.held=undefined;}}
+  descriptors(){return [this.held,this.sharedHeld].flatMap(entry=>entry?[entry.fd]:[]);}
+  snapshot(){this.validate();const entry=this.held;if(!entry)return null;
+    const record={path:h1LibcPath,expected:entry.expected,sha256:entry.sha256,aliases:entry.aliases.map(entry=>entry.path)};
+    return entry.purpose===LibcPurpose.H1?record:{...record,role:LibcPurpose.PositiveHost,ancestors:fullPositiveHostStableAncestors(entry.ancestors)};
+  }
+  sharedSnapshot(){const entry=this.sharedHeld;if(!entry)return null;this.validate();return {path:positiveHostSystemdSharedPath,expected:entry.expected,sha256:entry.sha256,aliases:entry.aliases.map(alias=>alias.path),role:LibcPurpose.PositiveHostSystemdShared,ancestors:fullPositiveHostStableAncestors(entry.ancestors)};}
+  close(){if(this.sharedHeld){closeSync(this.sharedHeld.fd);this.sharedHeld=undefined;}if(this.held){closeSync(this.held.fd);this.held=undefined;}}
 }
 /** A catalog is independently reviewed PUBLIC installation data, not path input.
  * It excludes protected control/auth/credentials before any leaf read. */
@@ -192,13 +306,16 @@ export function fullPublicRelative(value:unknown):value is string {
     && /\.(?:js|mjs|cjs|json|node)$/.test(value);
 }
 function acquire(context:RootContext=RootContext.Launcher){
-  initialRoot(context);const pins=new Pins(),h1LibcPins=new H1LibcPins();
+  initialRoot(context);const installing=context===RootContext.Installer;
+  const selectedReview=installing?positiveInstallationReview:reviewPath,selectedReviewRoot=dirname(selectedReview);
+  const pins=new Pins(),h1LibcPins=new H1LibcPins();
   try{
-    pins.hold(reviewRoot,true,0o700);
-    const r=fullReviewData(pins.json(reviewPath,32768));
-    check(r.schemaVersion===1 && r.sourceBaseSha===sourceBase && sha(r.sourceSha) && sha(r.sourceTree));
+    pins.hold(sharedAncestor,true);pins.hold(selectedReviewRoot,true,0o700);
+    const r=fullReviewData(pins.json(selectedReview,32768));
+    if(installing)check(r.schemaVersion===2);
+    check((r.schemaVersion===1 || r.schemaVersion===2) && r.sourceBaseSha===sourceBase && sha(r.sourceSha) && sha(r.sourceTree));
     check(typeof r.machineId==="string" && /^[a-f0-9]{32}$/.test(r.machineId) && typeof r.bootId==="string" && /^[a-f0-9-]{36}$/.test(r.bootId));
-    check(r.accountName==="account-u" && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
+    check(r.accountName===(r.schemaVersion===2?fullPositiveAccountData(r.accountName):"account-u") && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
     for(const key of ["nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256"])check(digest(r[key]));
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
     const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase);
@@ -218,14 +335,14 @@ function acquire(context:RootContext=RootContext.Launcher){
       }
       requireSupportedH1SourceClosure();
     }
-    const sourceSha=r.sourceSha,root=fullNativeInputBase+"/"+sourceSha,source=root+"/source",node=root+"/toolchain/bin/node";
+    const sourceSha=r.sourceSha,root=(installing?positiveInstallationStage+"/input":fullNativeInputBase)+"/"+sourceSha,source=root+"/source",node=root+"/toolchain/bin/node";
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
     pins.hold(fullNativeTmpDir,true,0o700);
-    pins.hold(fullNativeInputBase,true,0o700);
+    pins.hold(installing?positiveInstallationStage+"/input":fullNativeInputBase,true,0o700);
     pins.hold(root,true,0o700);
     const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard","hostedHostPolicy"]);
     for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"],["managed-launcher/hosted-host-policy.mjs","hostedHostPolicy"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
-    const tools=fullData(r.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(removalCase===FullRemovalCase.ParentCrashH1?["h1PythonClosure","h1NsenterClosure"]:[])]);
+    const tools=fullHostToolsData(r);
     for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"],["/usr/bin/lsns","lsns"],["/usr/lib/systemd/systemd","systemdPid1"],[bootstrapNode,"bootstrapNode"]] as const)pins.publicFile(path,requireDigest(tools[key]));
     // HOST execution uses the HOST loader/DSOs. Guest signed package hashes
     // cannot prove this separately selected original installation closure.
@@ -239,7 +356,7 @@ function acquire(context:RootContext=RootContext.Launcher){
       check(typeof row.path==="string" && /^\/usr\/lib\/[A-Za-z0-9_.+/-]+$/.test(row.path) &&
         !row.path.split("/").some(part=>part==="." || part==="..") && row.path>previousMonitorSource);
       previousMonitorSource=row.path;const expected=requireDigest(row.sha256);
-      monitorSources.push({path:row.path,sha256:expected,fd:pins.publicFile(row.path,expected)});
+      monitorSources.push({path:row.path,sha256:expected,fd:row.path===h1LibcPath && tools.positiveHostLibc!==undefined?h1LibcPins.holdPositive(pins,tools.positiveHostLibc):row.path===positiveHostSystemdSharedPath && tools.positiveHostSystemdShared!==undefined?h1LibcPins.holdPositiveSystemdShared(pins,tools.positiveHostSystemdShared):pins.publicFile(row.path,expected)});
     }
     const h1Tools=new Map<string,FullH1Tool>();
     if(removalCase===FullRemovalCase.ParentCrashH1){
@@ -259,12 +376,12 @@ function acquire(context:RootContext=RootContext.Launcher){
     const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!systemdVersion.error && systemdVersion.status===0 && systemdVersion.signal===null && systemdVersion.stdout.split("\n")[0]===r.systemdVersion);
     pins.publicFile(node,requireDigest(r.nodeSha256));pins.hold(node,false,0o755);pins.publicFile(integration+"/managed-launcher/launch.mjs",requireDigest(r.launcherSha256));
-    pins.publicFile(integration+"/managed-launcher/dependency-full-native-TEST.mjs",requireDigest(r.moduleSha256));
+    if(!installing)pins.publicFile(integration+"/managed-launcher/dependency-full-native-TEST.mjs",requireDigest(r.moduleSha256));
     pins.publicFile(source+"/host-integration/managed-launcher/dependency-full-native-TEST.js",requireDigest(r.moduleSha256));
     const parent=source+"/host-integration/managed-launcher/dependency-full-native-parent-TEST.js";pins.publicFile(parent,requireDigest(r.parentSha256));
-    pins.publicFile(source+"/package.json","68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29");
+    pins.publicFile(source+"/package.json",fullNativeSourcePackageHash(r.schemaVersion));
     const head=pins.hold(source+"/.git/HEAD");check(readFd(head).equals(Buffer.from(sourceSha+"\n")));
-    const catalogPath=reviewRoot+"/public-installation.json";pins.publicFile(catalogPath,requireDigest(r.catalogSha256));
+    const catalogPath=selectedReviewRoot+"/public-installation.json";pins.publicFile(catalogPath,requireDigest(r.catalogSha256));
     const catalog=fullData(pins.json(catalogPath,2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
     check(catalog.schemaVersion===1 && catalog.sourceSha===sourceSha && catalog.sourceTree===r.sourceTree && Array.isArray(catalog.files) && catalog.files.length>0 && catalog.files.length<=8192);
     // Complete public runtime closure: unknown regular runtime leaves and all
@@ -286,20 +403,79 @@ function acquire(context:RootContext=RootContext.Launcher){
     let previous="",total=0;const paths=new Set<string>();
     for(const entry of catalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256) && row.path>previous && expected.has(row.path));previous=row.path;
       const fd=pins.publicFile(source+"/"+row.path,row.sha256);total+=fstatSync(fd).size;check(total<=512*1024*1024);paths.add(row.path);}
+    if(r.schemaVersion===2)for(const relative of ["host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/dependency-full-positive-copy-TEST.js"]){check(paths.has(relative));const row=fullData(catalog.files.find((entry:unknown)=>{const data=fullData(entry,["path","sha256"]);return data.path===relative;}),["path","sha256"]);if(!installing)pins.publicFile(integration+"/managed-launcher/"+basename(relative),requireDigest(row.sha256));}
     for(const path of ["scripts/dependency-retention-os-test/current-full-outer.js","scripts/dependency-retention-os-test/current-full-guest.js","dist/worker-codex/codex-goal-cli.js"])check(paths.has(path));
-    for(const [path,key] of [["/run/TEST-full-outer-review/input.json","outerReviewSha256"],["/run/TEST-real-codex-public-review/input.json","publicReviewSha256"]] as const){pins.hold(dirname(path),true,0o700);pins.publicFile(path,requireDigest(r[key]));pins.hold(path,false,0o600);}
-    pins.hold("/srv/worker-state/account-pools/live-codex-auth/account-u",true);
+    for(const [installedPath,key] of [["/run/TEST-full-outer-review/input.json","outerReviewSha256"],["/run/TEST-real-codex-public-review/input.json","publicReviewSha256"]] as const){const path=installing?positiveInstallationStage+(key==="outerReviewSha256"?"/outer-review/input.json":"/public-review/input.json"):installedPath;pins.hold(dirname(path),true,0o700);pins.publicFile(path,requireDigest(r[key]));pins.hold(path,false,0o600);
+      if(r.schemaVersion===2 && key==="outerReviewSha256")fullPositiveOuterReviewData(pins.json(path,4096),fullPositiveAccountData(r.accountName),sourceSha,requireDigest(r.nodeSha256));}
+
+    pins.hold("/srv/worker-state/account-pools/live-codex-auth/"+r.accountName,true);
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);pins.hold(fullNativeOsBase,true,0o700);
     const git=spawnSync("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD^{tree}"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir,GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null"},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!git.error && git.status===0 && git.signal===null && git.stdout.trim()===r.sourceTree);
-    const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName,restoreConsumer,removalCase});
+    const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName,restoreConsumer,removalCase,review:r});
     const namespace=readlinkSync("/proc/self/ns/mnt"),namespaceFd=pins.mountNamespace();
     if(context===RootContext.Parent)check(namespace!==readlinkSync("/proc/1/ns/mnt"));
     const validate=()=>{initialRoot(context);check(readlinkSync("/proc/self/ns/mnt")===namespace && readlinkSync(`/proc/self/fd/${namespaceFd}`)===namespace);pins.validate();h1LibcPins.validate();check(readFileSync("/etc/machine-id","utf8").trim()===tuple.machineId && readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()===tuple.bootId);};
     validate();return {pins,tuple,validate,monitorSources,h1Tools,h1LibcPins};
   }catch{h1LibcPins.close();pins.close();refuse();}
 }
-function fullSourceSnapshot(c:ReturnType<typeof acquire>):string{const ordinary=c.pins.sourceSnapshot(),libc=c.h1LibcPins.snapshot();return libc===null?ordinary:hash(JSON.stringify({ordinary,h1Libc:libc}));}
+/** One no-argument ROOT TEST composition operation. Never submits a job.
+ * Inputs are fixed root-owned public staging; current unknown prefixes refuse.
+ * Source/native/host proof completes before the first materialization effect. */
+export async function installFullPositiveTestAndComposeRequest(){
+  check(process.argv.length===2 && process.argv[0]===bootstrapNode && process.execPath===bootstrapNode && readlinkSync("/proc/self/exe")===bootstrapNode && process.argv[1]===positiveInstallationStage+"/input/"+process.env.TEST_SOURCE_SHA+"/source/host-integration/managed-launcher/dependency-full-positive-install-TEST.js");
+  check(Object.keys(process.env).every(key=>["PATH","LANG","LC_ALL","TEST_SOURCE_SHA"].includes(key)) && process.env.PATH==="/usr/bin:/bin" && process.env.LANG==="C" && process.env.LC_ALL==="C");
+  const c=acquire(RootContext.Installer);const retained:number[]=[];
+  try{
+    check(c.tuple.sourceSha===process.env.TEST_SOURCE_SHA && import.meta.url===pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-native-TEST.js").href && readFileSync("/proc/self/cmdline").equals(Buffer.from([...process.argv,""].join("\u0000"))));
+    const originalExe=openSync("/proc/self/exe",constants.O_RDONLY);retained.push(originalExe);const actualExe=fstatSync(originalExe),selectedExe=fstatSync(c.pins.hold(bootstrapNode));check(actualExe.dev===selectedExe.dev && actualExe.ino===selectedExe.ino);
+    recordAbsent();
+    const unit=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
+    check(!unit.error && (unit.status===0 || unit.status===4) && unit.signal===null && unit.stdout.trim()==="not-found");
+    const destination=fullNativeInputBase+"/"+c.tuple.sourceSha;
+    const absent=(path:string)=>{try{lstatSync(path);refuse();}catch(error){check(error instanceof Error && "code" in error && error.code==="ENOENT");}};
+    for(const path of [destination,reviewRoot,fullNativeBirthRoot,fullNativeLiveRoot,fullNativePublicDownloadBase,dirname(fullNativePublicCapsule),"/run/TEST-full-outer-review","/run/TEST-real-codex-public-review",integration+"/managed-launcher/dependency-full-native-TEST.mjs",integration+"/managed-launcher/dependency-full-h1-staged-tools-TEST.js",integration+"/managed-launcher/dependency-full-positive-copy-TEST.js"])absent(path);
+    const targetParents=[fullNativeInputBase,dirname(reviewRoot),"/run",integration+"/managed-launcher"].map(path=>c.pins.hold(path,true));
+    const deadline=performance.now()+120000;let count=0,total=0;
+    type Copy=FullPositiveCopyRow;
+    function snapshot(path:string,name:string):Copy {
+      check(performance.now()<deadline && ++count<=100000);const stat=lstatSync(path);check(!stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && !(stat.mode&0o022));
+      const directory=stat.isDirectory();check(directory || (stat.isFile() && stat.nlink===1 && stat.size<=128*1024*1024));
+      const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(directory?constants.O_DIRECTORY:0));retained.push(fd);check(identity(fstatSync(fd))===identity(stat));
+      if(!directory){total+=stat.size;check(total<=1024*1024*1024);}
+      const children=directory?readdirSync(`/proc/self/fd/${fd}`).sort().map(child=>{check(/^[A-Za-z0-9_@+.-]+$/.test(child) && child!=="." && child!==".." && !/^(?:auth\.json(?:[.-].*)?|credentials?\.json(?:[.-].*)?|.*\.pem|\.env.*)$/i.test(child));return snapshot(path+"/"+child,child);}):null;
+      return {sourceFd:fd,sourceIdentity:identity(stat),name,mode:stat.mode&0o777,children};
+    }
+    const tree=snapshot(c.tuple.root,c.tuple.sourceSha);
+    const native=snapshot(c.tuple.source+"/host-integration/managed-launcher/dependency-full-native-TEST.js","dependency-full-native-TEST.mjs");
+    const stagedHelper=snapshot(c.tuple.source+"/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","dependency-full-h1-staged-tools-TEST.js");
+    const copyHelper=snapshot(c.tuple.source+"/host-integration/managed-launcher/dependency-full-positive-copy-TEST.js","dependency-full-positive-copy-TEST.js");
+    const catalog=snapshot(positiveInstallationStage+"/public-installation.json","public-installation.json");
+    const outer=snapshot(positiveInstallationStage+"/outer-review","TEST-full-outer-review"),publicReview=snapshot(positiveInstallationStage+"/public-review","TEST-real-codex-public-review");
+    c.validate();recordAbsent();for(const row of [tree,native,stagedHelper,copyHelper,catalog,outer,publicReview])check(identity(fstatSync(row.sourceFd))===row.sourceIdentity);
+    // Only this explicit installer operation loads the copier, from the exact
+    // staged source already retained and catalog-joined by acquire(). Schema1
+    // launcher/parent admission keeps its original runtime import closure.
+    const copyModule=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-positive-copy-TEST.js").href);
+    check(typeof copyModule.copyFullPositiveInstallationRow==="function");c.validate();
+    const copy=(row:Copy,parent:number)=>copyModule.copyFullPositiveInstallationRow(row,parent,deadline);
+    copy(tree,targetParents[0]!);copy(native,targetParents[3]!);copy(stagedHelper,targetParents[3]!);copy(copyHelper,targetParents[3]!);copy(outer,targetParents[2]!);copy(publicReview,targetParents[2]!);
+    mkdirSync(`/proc/self/fd/${targetParents[1]}/dependency-full-native-activation`,{mode:0o700});fsyncSync(targetParents[1]!);
+    const reviewDir=openSync(reviewRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);retained.push(reviewDir);copy(catalog,reviewDir);
+    // Publish the same strict protected FULL review only after complete
+    // original source/tool/native proof; historical ancestry guards stay exact.
+    c.validate();const bytes=Buffer.from(JSON.stringify(c.tuple.review)+"\n");
+    const fd=openSync(`/proc/self/fd/${reviewDir}/review.json`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(reviewDir);
+    // Import the delivered original module; request DATA is produced only by
+    // its complete normal acquire path, never assembled here by the installer.
+    const installed=await import(pathToFileURL(integration+"/managed-launcher/dependency-full-native-TEST.mjs").href);
+    check(typeof installed.fullManagedStartRequest==="function");const request:unknown=installed.fullManagedStartRequest();
+    c.validate();return request;
+  }finally{for(const fd of retained.reverse())closeSync(fd);c.h1LibcPins.close();c.pins.close();}
+}
+function fullSourceSnapshot(c:ReturnType<typeof acquire>):string{const ordinary=c.pins.sourceSnapshot(),libc=c.h1LibcPins.snapshot(),shared=c.h1LibcPins.sharedSnapshot();
+  if(shared){check(libc===null || "role" in libc);return hash(JSON.stringify(libc?{ordinary,positiveHostLibc:libc,positiveHostSystemdShared:shared}:{ordinary,positiveHostSystemdShared:shared}));}
+  return libc===null?ordinary:hash(JSON.stringify("role" in libc?{ordinary,positiveHostLibc:libc}:{ordinary,h1Libc:libc}));}
 function fingerprint(machine:string,argv:readonly string[]){return hash(JSON.stringify([fullNativeJob,machine,argv,1800,180,2048,128,100]));}
 function argvFor(c:ReturnType<typeof acquire>){return fullNativeParentArgv(c.tuple.node,c.tuple.parent,c.tuple.removalCase);}
 function record(c:ReturnType<typeof acquire>,live:boolean){
@@ -335,7 +511,7 @@ export function retainFullNativeLaunch(request:unknown){
       const fd=openSync(`/proc/self/fd/${directory}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(directory);return bytes;
     }
-    return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,restoreConsumer:c.tuple.restoreConsumer,removalCase:c.tuple.removalCase,fingerprint:data.fingerprint,revalidate,
+    return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,accountName:c.tuple.accountName,restoreConsumer:c.tuple.restoreConsumer,removalCase:c.tuple.removalCase,fingerprint:data.fingerprint,revalidate,
       beforeSubmit(){
         revalidate();check(!prepared);const shown=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
         check(!shown.error && (shown.status===0 || shown.status===4) && shown.signal===null && shown.stdout.trim()==="not-found");
@@ -412,7 +588,7 @@ export function fullNativeArguments(request:unknown){
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
       "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind",
-      "BindReadOnlyPaths="+toolchain+":"+toolchain+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
+      "BindReadOnlyPaths="+toolchain+":"+toolchain+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/"+custody.accountName+":/srv/worker-state/account-pools/live-codex-auth/"+custody.accountName+":norbind"];
     const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,...selector,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",...fullNativeParentArgv(custody.node,custody.parent,custody.removalCase)]);
     custody.revalidate();return {args,custody};
   }catch{custody.close();refuse();}
@@ -512,7 +688,7 @@ export function retainCurrentFullParent():FullParentSession {
     check(!observed.error && observed.status===0 && observed.signal===null);const values:Record<string,string>={};
     for(const line of observed.stdout.trimEnd().split("\n")){const n=line.indexOf("=");check(n>0 && !Object.hasOwn(values,line.slice(0,n)));values[line.slice(0,n)]=line.slice(n+1);}
     check(Object.keys(values).sort().join(",")==="ActiveState,ControlGroup,Description,InvocationID,LoadState,MainPID,ProtectSystem,SubState");
-    check(values.ProtectSystem==="strict");assertReadonlyMounts(c.pins,[c.tuple.source,c.tuple.root+"/toolchain",reviewRoot,"/run/TEST-full-outer-review","/run/TEST-real-codex-public-review","/srv/worker-state/account-pools/live-codex-auth/account-u"]);
+    check(values.ProtectSystem==="strict");assertReadonlyMounts(c.pins,[c.tuple.source,c.tuple.root+"/toolchain",reviewRoot,"/run/TEST-full-outer-review","/run/TEST-real-codex-public-review","/srv/worker-state/account-pools/live-codex-auth/"+c.tuple.accountName]);
     check(values.LoadState===FullKernelState.Loaded && (values.ActiveState===FullKernelState.Active || values.ActiveState===FullKernelState.Activating) && values.SubState===FullKernelState.Running && values.MainPID===String(process.pid));
     check(typeof values.ControlGroup==="string");
     check(values.Description==="subscription-job:"+fingerprint(c.tuple.machineId,argvFor(c)) && values.ControlGroup===fullNativeControlGroup);

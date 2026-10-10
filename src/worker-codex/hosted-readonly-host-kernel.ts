@@ -1,3 +1,4 @@
+import { assertConfiguredAuthAttachmentPhysical } from "../provider-codex/app-server/adapters/hosted-configured-auth-attachment";
 import { readHostedOrdinaryReaderParentCompletion } from "./hosted-ordinary-reader-parent-completion";
 import { assertHostedOrdinaryProviderFailureCreator } from "./hosted-ordinary-provider-failure-recovery";
 import { assertHostedManagedProviderFailureCreator } from "./hosted-managed-provider-failure-recovery";
@@ -83,6 +84,7 @@ export class HostedReadonlyHostKernel {
   verifyExclusiveInventory(fence?: HostedActivationFence, cleanup = false): void {
     const inventory = readHostedReadonlyHostInventory();
     this.session();
+    for (const creator of inventory.ordinaryCreators) if("authAttachment" in creator && creator.authAttachment) assertConfiguredAuthAttachmentPhysical(creator.authAttachment);
     if (inventory.collectorProfile) verifyPinnedFdCollectorProfile(inventory.collectorProfile);
     if (inventory.systemBusInfrastructure) verifySystemBusInfrastructure(inventory.systemBusInfrastructure);
     if (inventory.schemaVersion === 5) {

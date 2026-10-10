@@ -5,7 +5,10 @@ integration_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 destination=/opt/subscription-runtime
 fail() { echo "managed launcher installation: $*" >&2; exit 1; }
 qualified_operation=
-if [ "$#" != 0 ]; then
+full_positive_test=
+if [ "$#" = 1 ] && [ "$1" = --full-positive-TEST ]; then
+  full_positive_test=1
+elif [ "$#" != 0 ]; then
   [ "$#" = 2 ] && [ "$1" = --qualified-pair ] || fail 'unsupported installation mode'
   qualified_operation=$2
   [ "${#qualified_operation}" = 36 ] || fail 'invalid original operation identity'
@@ -13,7 +16,7 @@ if [ "$#" != 0 ]; then
 fi
 # Governed installations require the original qualified pair transaction; the
 # bootstrap installer cannot replace their independently measured copied cohort.
-[ -n "$qualified_operation" ] || { [ ! -e /var/lib/subscription-runtime-host-policy/readonly-inventory.json ] &&
+[ -n "$qualified_operation" ] || [ -n "$full_positive_test" ] || { [ ! -e /var/lib/subscription-runtime-host-policy/readonly-inventory.json ] &&
   [ ! -L /var/lib/subscription-runtime-host-policy/readonly-inventory.json ] &&
   [ ! -e /var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json ] &&
   [ ! -L /var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json ] || fail 'governed installation requires qualified pair publication'
@@ -67,6 +70,16 @@ if [ -n "$qualified_operation" ]; then
   check_trusted_path "$bootstrap" file
   [ -x /usr/bin/node ] || fail 'qualified pair requires executable /usr/bin/node'
   exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/node "$bootstrap" install --qualified-pair "$qualified_operation"
+fi
+# One explicit bounded FULL TEST operation; ordinary installation is unchanged.
+if [ -n "$full_positive_test" ]; then
+  case "${TEST_SOURCE_SHA-}" in *[!0-9a-f]*|'') fail 'exact TEST source SHA required' ;; esac
+  [ "${#TEST_SOURCE_SHA}" = 40 ] || fail 'exact TEST source SHA required'
+  full_node=/opt/nodejs/node-v24.21.0-linux-x64/bin/node
+  full_entry=/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1/full-positive-installation/input/$TEST_SOURCE_SHA/source/host-integration/managed-launcher/dependency-full-positive-install-TEST.js
+  check_trusted_path "$full_node" file
+  check_trusted_path "$full_entry" file
+  exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TEST_SOURCE_SHA="$TEST_SOURCE_SHA" "$full_node" "$full_entry"
 fi
 for target_dir in "$destination" "$destination/managed-launcher" "$destination/host-jobs"; do
   check_trusted_path "$target_dir" directory

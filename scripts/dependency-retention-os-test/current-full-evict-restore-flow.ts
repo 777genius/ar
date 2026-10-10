@@ -15,7 +15,7 @@ import { pinReferenceFile } from "../../dist/worker-codex/hosted-dependency-lega
 import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
 import { assertCurrentConfiguredAuth, assertRootScope, readCurrentIndependentColdPolicy, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { assertCurrentClosedEntry } from "./current-closed-entry.js";
-import { mountCurrentConfiguredAuth } from "./current-configured-auth-mount.js";
+import { assertPreparedCurrentConfiguredAuth, retainPreparedCurrentAuthCompletion } from "./current-cold-hot-root.js";
 import { FullEntryKind, FullRequestPhase, runCurrentOrdinaryEntry, requestCurrentNextWork,
   assertCurrentNextWorkDelivered, assertDistinctCurrentEntries } from "./current-full-entry.js";
 import { editCurrentPureLinkedLeaf } from "./current-full-warm-edit.js";
@@ -57,7 +57,7 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
   assert(removalCase===FullH1Case.Positive || (removalCase===FullH1Case.ParentCrash && consumer===RestoreConsumer.Ordinary));
   assertRootScope(roots);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Closed);
   const deadline=performance.now()+27*60*1000,store=new HostedInstallationActivationStore();
-  const auth=mountCurrentConfiguredAuth(roots.jobRoot,roots.accountName);assertCurrentConfiguredAuth(roots);
+  assertPreparedCurrentConfiguredAuth(roots);assertCurrentConfiguredAuth(roots);
   prepareEvictRestoreSentinels(roots);const initialSentinels=captureEvictRestoreSentinels(roots);
   let openTrace:ReturnType<typeof startNativeInstallerTrace>|undefined=startNativeInstallerTrace(roots.candidateJobId,27*60*1000);
   try {
@@ -123,7 +123,7 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
     const preserved=assertEvictRestoreSentinels(roots,sentinels),restoreTrace=openTrace;openTrace=undefined;
     const restoreInstaller=measuredInstall(restoreTrace,1);
     assert.equal(new Set([...initialInstaller.invocationIds,...restoreInstaller.invocationIds]).size,2);
-    progress(EvictRestorePhase.Close);if(consumer===RestoreConsumer.Readonly)store.revokeManaged(roots.readonlyJobId);store.finishClosed();auth.close(restored.result);
+    progress(EvictRestorePhase.Close);if(consumer===RestoreConsumer.Readonly)store.revokeManaged(roots.readonlyJobId);store.finishClosed();retainPreparedCurrentAuthCompletion(roots,restored.result);
     return Object.freeze({qualification:consumer===RestoreConsumer.Readonly ? "native_actual_c_cold_hot_committed_absent_first_r_restore_only" : "native_actual_c_cold_hot_committed_absent_restore_only",consumer,transferOperationId,status:"partial_pass",
       fullPlanQualification:"pending",entries:[cold,hot,restored].map(entry=>entry.observation),warmEdit,
       cases:["EVICT-COMMIT-ABSENT","COMMITTED-TRASH-PROVENANCE-REMOVE","FINAL-GATE-COLD-RESTORE"],

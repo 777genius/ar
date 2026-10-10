@@ -1,4 +1,7 @@
 import { decodeHostedInventoryBytes, parseHostedInventoryV5 } from "../../../core/host-infrastructure/host-inventory";
+import { parseHostedInstallation } from "../../../core/host-infrastructure/hosted-installation";
+import { parseHostedReadonlyHostInventory } from "../../../core/host-infrastructure/readonly-host-inventory";
+import { assertConfiguredAuthAttachmentPhysical } from "./hosted-configured-auth-attachment";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -99,12 +102,40 @@ export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependenc
   const git = lstatSync(`${binding.workspace.canonicalPath}/.git`);
   if (!git.isDirectory() || git.uid !== 0 || (git.mode & 0o022) || git.isSymbolicLink() || realpathSync(`${binding.workspace.canonicalPath}/.git`) !== `${binding.workspace.canonicalPath}/.git` ||
       readdirSync(`${binding.workspace.canonicalPath}/.git`).includes("commondir")) invalid();
-  // All mounts, including same-device bind mounts, veto this finite TEST profile.
+  // An explicitly installed one-shot auth role is the only finite exception.
+  // Profile selection is original protected IO, never an exemption DTO.
+  const inventoryBytes=readHostedActivationBytes("readonly-inventory.json"), installationBytes=readHostedActivationBytes("host-installation.json");
+  let attachment: import("../../../core/host-infrastructure/configured-auth-attachment").HostedConfiguredAuthAttachment | undefined;
+  const decodedInventory=inventoryBytes ? decodeHostedActivationBytes(inventoryBytes) : undefined;
+  const hasAttachment=decodedInventory && typeof decodedInventory==="object" && "ordinaryCreators" in decodedInventory &&
+    Array.isArray(decodedInventory.ordinaryCreators) && decodedInventory.ordinaryCreators.some((c:unknown)=>c && typeof c==="object" && "jobId" in c && c.jobId===binding.jobId && "authAttachment" in c);
+  if(inventoryBytes && hasAttachment) {
+    const inventory=parseHostedReadonlyHostInventory(decodeHostedActivationBytes(inventoryBytes));
+    const creators=inventory.ordinaryCreators.filter(c=>c.jobId===binding.jobId);
+    attachment=creators[0]?.authAttachment;
+    if(attachment) {
+      if(binding.version!==2 || creators.length!==1 || !installationBytes) invalid();
+      const installed=parseHostedInstallation(decodeHostedActivationBytes(installationBytes));
+      if(installed.inventorySha256!==hash(inventoryBytes.toString("utf8")) || installed.installationId!==binding.installationId || installed.runtimeSha!==binding.runtimeSha ||
+        creators[0]!.jobRootDir!==binding.jobRootDir || creators[0]!.workspacePath!==binding.workspace.canonicalPath) invalid();
+      assertConfiguredAuthAttachmentPhysical(attachment);
+    }
+  }
+  let admitted=0;
+  // All other mounts, including same-device binds, still veto this TEST profile.
   for (const line of readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n")) {
     const fields = line.split(" ");
     if (fields.length < 10 || !fields.includes("-")) invalid();
     const point = fields[4]!.replace(/\\([0-7]{3})/g, (_, code: string) => String.fromCharCode(parseInt(code, 8)));
-    if (point === binding.jobRootDir || point.startsWith(`${binding.jobRootDir}/`)) invalid();
+    if (point === binding.jobRootDir || point.startsWith(`${binding.jobRootDir}/`)) {
+      if(!attachment || line!==attachment.targetMount || ++admitted!==1) invalid();
+    }
+  }
+  if(attachment) {
+    if(admitted!==1 || !inventoryBytes || !installationBytes ||
+      !readHostedActivationBytes("readonly-inventory.json")?.equals(inventoryBytes) ||
+      !readHostedActivationBytes("host-installation.json")?.equals(installationBytes)) invalid();
+    assertConfiguredAuthAttachmentPhysical(attachment);
   }
 }
 
