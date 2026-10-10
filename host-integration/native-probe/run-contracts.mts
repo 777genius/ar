@@ -16,7 +16,7 @@ const attempt = randomUUID();
 const log: Array<{ command: readonly string[]; pid: number | null; exit: number | null; signal: string | null; error: string | null; naturalClose: boolean; output: string; stdout: string; stderr: string; stdoutSha256: string; stderrSha256: string; stdoutPath: string; stderrPath: string }> = [];
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 async function run(command: string, args: readonly string[], extra: Readonly<Record<string, string>> = {}, display = true, cwd = workspace): Promise<string> {
-  const child = spawn(command, [...args], { cwd, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", ...extra } });
+  const child = spawn(command, [...args], { cwd, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", TMPDIR: temporary, ...extra } });
   let output = "", error: string | null = null;
   const stdout: Buffer[] = [], stderr: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => { stdout.push(chunk); output += chunk.toString(); if (display) process.stdout.write(chunk); });
@@ -78,7 +78,7 @@ try {
   await mkdir(rawDirectory, { recursive: true });
   for (const name of ["read-request.mjs", "endpoint.mjs", "manager.mjs", "contract.mjs", "storage-policy.mjs"]) await copyFile(join(workspace, "host-integration/host-jobs", name), join(rawDirectory, name));
   const managedDirectory = join(build, "host-integration/managed-launcher"); await mkdir(managedDirectory, { recursive: true });
-  for (const name of ["launch.mjs", "profiles.mjs", "payload-guard.mjs"]) await copyFile(join(workspace, "host-integration/managed-launcher", name), join(managedDirectory, name));
+  for (const name of ["launch.mjs", "profiles.mjs", "payload-guard.mjs", "storage-pressure-guard.mjs"]) await copyFile(join(workspace, "host-integration/managed-launcher", name), join(managedDirectory, name));
   // The staged launcher receives the policy emitted by this same checked source
   // graph, without depending on the workspace's independently built dist.
   await writeFile(join(managedDirectory, "hosted-host-policy.mjs"),
