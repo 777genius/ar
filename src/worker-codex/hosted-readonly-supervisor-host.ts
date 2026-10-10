@@ -1,3 +1,8 @@
+import { preclaimHostedReadonlyDependencyReader } from "./hosted-readonly-dependency-reader-entry";
+import { assertHostedReadonlyDependencyReadyPublication } from "./hosted-readonly-dependency-publication";
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { parseHostedReadonlyDependencyStart, readonlyDependencyStartName } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
+import { readHostedReadonlyDependencyMaterial, readonlyDependencyMaterialDigests } from "./hosted-readonly-dependency-records";
 import { assertExclusiveHostedActivation } from "./hosted-installation-activation";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -105,6 +110,9 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         this.verifyReadonlyMaterial(epoch.identity);
         this.verifyExclusiveInventory();
         this.verifyDescriptorBoundary();
+        if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) {
+          assertHostedReadonlyDependencyReadyPublication(this.store.publicationFence(), epoch);
+        }
         const startId = randomUUID();
         const record = { startId, creatorId: startId, unit: `subscription-runtime-outer-${startId}.service` };
         const launch = this.kernel.runtimeInvocation(record, command, args, cwd);
@@ -115,6 +123,18 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         createReadonlyPrivateRecord(join(readonlySupervisorRoot, `readonly-outer-start-${startId}.json`),
           Buffer.from(JSON.stringify({ schemaVersion: 1, hostId: epoch.hostId, bootId: epoch.bootId,
             jobId: epoch.identity.jobId, generation: epoch.generation, ...record }) + "\n"));
+        if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) {
+          const material = readHostedReadonlyDependencyMaterial(this.store.publicationFence(), epoch.identity);
+          const evidence = parseHostedReadonlyDependencyStart({ version: 1, ...material.evidence.installation,
+            hostId: epoch.hostId, bootId: epoch.bootId, supervisorId: epoch.supervisorId,
+            generation: epoch.generation, ...record, association: material.reference,
+            candidateJobId: material.evidence.candidate.jobId, readonlyJobId: epoch.identity.jobId,
+            jobRootDir: epoch.identity.jobRootDir, workspace: material.evidence.workspace,
+            ...readonlyDependencyMaterialDigests(material.evidence) });
+          createReadonlyPrivateRecord(join(readonlySupervisorRoot, readonlyDependencyStartName(startId)),
+            Buffer.from(JSON.stringify(evidence) + "\n"));
+          preclaimHostedReadonlyDependencyReader(this.store.publicationFence(),startId);
+        }
         this.runtimeGeneration = epoch.generation;
         this.runtimeStartId = startId;
         return submit(launch);

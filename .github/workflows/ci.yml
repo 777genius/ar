@@ -231,7 +231,7 @@ jobs:
           cache: npm
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
-      - name: Qualify every native archive positive and race on disposable TEST identities
+      - name: Qualify archive and custody regressions on disposable TEST identities
         shell: bash
         run: |
           set -euo pipefail
@@ -250,6 +250,7 @@ jobs:
             SR_ARCHIVE_TEST_PRIVILEGE=root \
             "$archive_test_node" node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner
 
   observer-mount-tests:
