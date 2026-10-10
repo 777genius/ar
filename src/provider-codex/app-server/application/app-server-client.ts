@@ -1,3 +1,6 @@
+import type { CodexAppServerClientOptions } from "./app-server-client-options";
+import { nativeWebId } from "@vioxen/subscription-runtime/core";
+import { AppServerNativeWebCapture } from "./app-server-native-web";
 import { appServerThreadToolPolicy } from "./app-server-thread-tool-policy";
 import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
 import { codexProviderHasPublicSources } from "../../codex-provider-egress-policy";
@@ -9,20 +12,13 @@ import { AppServerUsageError } from "../domain/app-server-usage-error";
 import { appServerTurnStartParams } from "./app-server-turn-start-params";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
-import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
-import {
-  CodexModelBackend,
-} from "../../codex-model-backend";
 import type {
-  CodexMaterializedSession,
   CodexReasoningEffort,
   CodexSandboxMode,
   CodexServiceTier,
 } from "../../codex-json-execution-engine";
 import type {
   CodexAppServerChildProcess,
-  CodexAppServerChildProcessSignaler,
-  CodexAppServerProcessFactory,
 } from "./app-server-process-port";
 import {
   appServerGoalObjectiveLimitError,
@@ -32,8 +28,6 @@ import {
   codexAppServerSandboxPolicy,
   codexAppServerThreadRuntimePolicy,
   type AppServerWarning,
-  type CodexAppServerCommandApprovalPolicy,
-  type CodexAppServerNativeToolSurface,
   type CodexAppServerSandboxPolicy,
   type CodexThreadGoal,
   type CodexThreadGoalStatus,
@@ -51,9 +45,6 @@ import {
   type TurnState,
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
-import {
-  type CodexAppServerRolloutBudget,
-} from "../domain/app-server-rollout-budget";
 import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import {
@@ -85,14 +76,11 @@ import { handleAppServerStdout } from "./app-server-stdout-handler";
 import {
   AppServerRateLimitsMonitor,
   isCodexAppServerRateLimitsRejectedError,
-  type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
 import { appServerThreadStartParams } from "./app-server-thread-start-params";
 import { PublicResearchToolSession } from "./public-research-source-tool";
-import type { PublicResearchSourceReader } from "./public-research-source-port";
-import { codexProviderWebSearchMode, CodexWebSearchMode, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
-import { type HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import { codexProviderWebSearchMode, CodexWebSearchMode, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 import { AppServerDynamicToolHandler } from "./app-server-dynamic-tool-handler";
 import { modelUnavailableError } from "./app-server-model-unavailable";
 export {
@@ -121,6 +109,7 @@ export class CodexAppServerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly serverRequestIds = new Set<string>();
   private readonly tokenUsage = new AppServerTokenUsageTracker((warning) => this.warnings.push(warning));
+  private readonly nativeWebCaptures = new Map<string, AppServerNativeWebCapture>();
   private readonly turns = new Map<string, TurnState>();
   private readonly startingTurnThreads = new Set<string>();
   private readonly pendingTurnIdsByThread = new Map<string, string>();
@@ -134,32 +123,7 @@ export class CodexAppServerClient {
   private readonly rateLimitsMonitor: AppServerRateLimitsMonitor | null;
 
   constructor(
-    private readonly options: {
-      readonly codexBinaryPath: string;
-      readonly childBudget?: ChildExecutionBudget;
-      readonly sourceEnv: Readonly<Record<string, string | undefined>>;
-      readonly providerEgressPolicy?: CodexProviderEgressPolicy;
-      readonly publicSourceReader?: PublicResearchSourceReader;
-      readonly hostedPermissionProfiles?: boolean;
-      readonly processFactory: CodexAppServerProcessFactory;
-      readonly signalChildProcess: CodexAppServerChildProcessSignaler;
-      readonly session: CodexMaterializedSession;
-      readonly workspacePath: string;
-      readonly executionProfile: ResolvedCodexExecutionProfile;
-      readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-      readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
-      readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
-      readonly rolloutBudget?: CodexAppServerRolloutBudget;
-      readonly bypassHookTrust?: boolean;
-      readonly timeoutMs: number;
-      readonly startupTimeoutMs: number;
-      readonly reconnectGraceMs: number;
-      readonly maxOutputBytes: number;
-      readonly abortSignal: AbortSignal;
-      readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
-      /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
-      readonly modelBackend?: CodexModelBackend;
-    },
+    private readonly options: CodexAppServerClientOptions,
   ) {
     this.executionLifetime = observeAppServerExecutionLifetime(options.session, error => this.failProtocol(error));
     this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {
@@ -481,10 +445,13 @@ export class CodexAppServerClient {
     readonly turnNumber?: number;
     readonly onTextDelta?: (text: string) => void;
   }): Promise<AppServerAcknowledgedTurnResult> {
+    if (!nativeWebId(input.threadId)) throw new Error("codex_app_server_thread_id_invalid");
     const targetedThreadId = input.threadId;
     const release = this.turnAdmission.acquire(input.threadId);
     const usage = this.tokenUsage.activate(input.threadId);
+    const nativeWeb = new AppServerNativeWebCapture(input.threadId);
     try {
+      this.nativeWebCaptures.set(input.threadId, nativeWeb);
       this.startingTurnThreads.add(input.threadId);
       this.publicResearchTools.beginTurn(input.threadId, input.abortSignal);
       const startedAt = Date.now();
@@ -516,7 +483,10 @@ export class CodexAppServerClient {
           }),
           { ...input, observeResponse: response => {
             const id = nestedString(response.result, ["turn", "id"]);
-            if (!response.error && id) this.publicResearchTools.bindTurn(input.threadId, id);
+            if (!response.error && id) {
+              nativeWeb.bind(id);
+              this.publicResearchTools.bindTurn(input.threadId, id);
+            }
           } },
         );
       } catch (error) {
@@ -541,7 +511,7 @@ export class CodexAppServerClient {
         );
       }
       const turnId = nestedString(response.result, ["turn", "id"]);
-      if (!turnId) {
+      if (!nativeWebId(turnId)) {
         this.clearStartingTurn(input.threadId);
         throw turnFailureError(new AppServerRequestMayHaveReachedProviderError(
           new Error("codex_app_server_turn_id_missing"),
@@ -566,10 +536,13 @@ export class CodexAppServerClient {
       }
       this.startingTurnThreads.delete(input.threadId);
       this.clearIdleTurnState();
-      if (!turn.error) return { ...turn, ...identity };
+      const evidence = nativeWeb.result();
+      const receipt = evidence === undefined ? {} : { nativeWeb: evidence };
+      if (!turn.error) return { ...turn, ...identity, ...receipt };
       return {
         ...turn,
         ...identity,
+        ...receipt,
         usage: turn.usage ?? usage.usage,
         error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
           phase: turn.outputText.length > 0 ? "turn_error_after_output" : "turn_error_before_output",
@@ -579,9 +552,11 @@ export class CodexAppServerClient {
         }),
       };
     } catch (error) {
-      if (usage.usage) throw new AppServerUsageError(error, usage.usage, true);
+      const evidence = nativeWeb.result();
+      if (usage.usage || evidence) throw new AppServerUsageError(error, usage.usage, true, evidence);
       throw error;
     } finally {
+      this.nativeWebCaptures.delete(input.threadId);
       this.publicResearchTools.endTurn(input.threadId);
       this.tokenUsage.deactivate(input.threadId);
       release();
@@ -736,7 +711,14 @@ export class CodexAppServerClient {
       return;
     }
     if (record.method === "item/completed") {
+      const threadId = stringField(params, "threadId");
       const turnId = stringField(params, "turnId");
+      // A terminal TurnState fences input even before capture ownership is known.
+      // Only the response ACK may admit the retained preterminal buffer.
+      const state = turnId ? this.findTurn(turnId) : null;
+      if (threadId && !state?.completed && !state?.error) {
+        this.nativeWebCaptures.get(threadId)?.observe(params, false);
+      }
       const item = readRecord(params?.item);
       if (item?.type === "agentMessage") {
         const text = agentMessageText(item);
@@ -752,11 +734,20 @@ export class CodexAppServerClient {
       return;
     }
     if (record.method === "turn/completed") {
+      const threadId = stringField(params, "threadId");
+      if (threadId) this.nativeWebCaptures.get(threadId)?.observe(params, true);
       const turn = readRecord(params?.turn);
       const turnId = stringField(turn, "id");
       if (turnId) this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
       if (turnId) this.dynamicTools.cancelTurn(turnId);
       const state = this.ensureTurn(turnId);
+      const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
+      // Completion is specific: never seal unrelated captures for an unknown ID.
+      for (const [thread, capture] of this.nativeWebCaptures) {
+        if (turnId && (capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+          this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
+          this.earlyTurnIdsByThread.get(thread) === turnId)) capture.finish();
+      }
       state.completed = true;
       const status = readRecord(turn?.status);
       const statusType = stringField(turn, "status") ??
@@ -783,7 +774,7 @@ export class CodexAppServerClient {
       const error = new Error(
         `codex_app_server_turn_aborted:${reason}:${turnId ?? "unknown"}`,
       );
-      this.failTurnOrAll(turnId, error);
+      this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
       return;
     }
     if (record.method === "error") {
@@ -798,7 +789,7 @@ export class CodexAppServerClient {
         "codex_app_server_error",
         errorPayload,
       );
-      this.failTurnOrAll(turnId, error);
+      this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
     }
   }
 
@@ -921,7 +912,15 @@ export class CodexAppServerClient {
     for (const waiter of waiters) waiter(turn);
   }
 
-  private failTurnOrAll(turnId: string | null | undefined, error: Error): void {
+  private failTurnOrAll(turnId: string | null | undefined, error: Error, threadId?: string | null): void {
+    const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
+    // Seal capture input synchronously, before any failure waiter can settle.
+    // Early/output identities select the owner; only response ACK binds receipts.
+    for (const [thread, capture] of this.nativeWebCaptures) {
+      if (!turnId || thread === threadId || capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+        this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
+        this.earlyTurnIdsByThread.get(thread) === turnId) capture.finish();
+    }
     if (!turnId) {
       for (const thread of this.startingTurnThreads) this.publicResearchTools.endTurn(thread);
       for (const thread of this.pendingTurnIdsByThread.keys()) this.publicResearchTools.endTurn(thread);

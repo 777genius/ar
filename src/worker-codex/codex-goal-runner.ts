@@ -1,4 +1,5 @@
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
+import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
@@ -10,14 +11,15 @@ import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction
   invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
-import { researchProviderAdmissionGuard } from "./research-launch-admission";
+import { researchProviderAdmissionGuard, assertOwnedMimoWorkerConfig } from "./research-launch-admission";
+import { researchMimoWorkerLifecycle } from "./research-mimo-worker-result";
 import { snapshotCodexGoalStorageConfig, withCodexGoalStorage, withCodexGoalCheckpointWriter, type CodexGoalNewStorage } from "./job-storage/codex-goal-storage-admission";
 import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
 import { JobStorageCapabilityUnavailableError, JobStorageUnavailableCapability, type JobStorageWriteLease } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalExecutor, CodexGoalExecutorOptionsInput, CodexGoalRunDeps } from "./job-storage/codex-goal-runner-contracts";
 export type { CodexGoalExecutor, CodexGoalRunDeps } from "./job-storage/codex-goal-runner-contracts";
 import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
-import { ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeTool, ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import { assertChildGoalConfig } from "./child-execution-confinement";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
@@ -47,7 +49,7 @@ import {
   ActiveAttemptInterruptMonitor,
   AccessBoundary,
   InMemoryActiveAttemptRegistry,
-  type NetworkAccessMode,
+  type NetworkAccessMode, type WorkerMode,
   type ProjectAccessScope,
   type SafeExecutionPolicy,
   type SafeExecutionRunResult,
@@ -154,6 +156,7 @@ export type CodexGoalRunConfig = {
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
   readonly networkAccess?: NetworkAccessMode;
+  readonly workerMode?: WorkerMode;
   readonly goalSummary?: string;
   readonly codexGoalObjective?: string;
   readonly effectMode?: TaskEffectMode;
@@ -246,6 +249,7 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
   const appServerProcessFactory = admitHostedReadonlyInputs({
     ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
+    ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   }, toolEntry);
   return await withCodexGoalCheckpointWriter(config, deps, storageLease,
     baseCommit => runCodexGoalAdmitted(config, deps, providerEgressPolicy,
@@ -263,6 +267,7 @@ async function runCodexGoalAdmitted(
   toolEntry: HostedDependencyQualifiedToolEntry | undefined,
   storageLease?: JobStorageWriteLease,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  const ownedMimoLifecycle = researchMimoWorkerLifecycle(appServerProcessFactory);
   const prompt = await readFile(config.promptPath, "utf8");
   storageLease?.assertCurrent();
   const progressPath = codexGoalProgressPath(config);
@@ -283,6 +288,7 @@ async function runCodexGoalAdmitted(
   });
   const observability =
     deps.observability ?? codexGoalRuntimeEventObservability(runtimeEvents);
+  const workerMode = await resolveOpenWorkerLaunch({ config, dependencyToolConfig });
   await runtimeEvents.write("runner_starting", {
     jobId: config.jobId ?? config.taskId,
     executionGeneration,
@@ -290,19 +296,20 @@ async function runCodexGoalAdmitted(
     accountCount: config.accounts.length,
     ...(baseCommit ? { baseCommit } : {}),
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
+    ...openWorkerEvidence(workerMode),
   });
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
     config,
     prompt,
   });
   storageLease?.assertCurrent();
-  if (linkedWorktreeHandoff.enabled) {
+  if (linkedWorktreeHandoff.enabled && !workerMode.launch) {
     await runtimeEvents.write("linked_worktree_handoff_guardrail", {
       accessBoundary: config.accessBoundary ?? "",
       workspaceKind: "linked_git_worktree",
     });
   }
-  if (linkedWorktreeHandoff.commitRequested) {
+  if (linkedWorktreeHandoff.commitRequested && !workerMode.launch) {
     await runtimeEvents.write("linked_worktree_commit_preflight_warning", {
       level: "warning",
       accessBoundary: config.accessBoundary ?? "",
@@ -342,7 +349,7 @@ async function runCodexGoalAdmitted(
       deps.createExecutor ??
       ((options) => new FileBackendCodexSafeExecutor(options))
     )(buildCodexGoalExecutorOptions({
-      config,
+      config, ...(workerMode.launch ? { openWorker: workerMode.launch } : {}),
       ...(baseCommit ? { initialBaseCommit: baseCommit } : {}),
       ...(deps.checkpointPublisher ? { checkpointPublisher: deps.checkpointPublisher } : {}),
       providerEgressPolicy,
@@ -397,6 +404,7 @@ async function runCodexGoalAdmitted(
       },
       systemPrompt: codexGoalRunSystemPrompt(config, {
         linkedWorktreeHandoff: linkedWorktreeHandoff.enabled,
+        ...(workerMode.launch ? { openWorkerInstruction: codexGoalOpenWorkerSystemPrompt(workerMode.launch.commitAllowed) } : {}),
         ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig, toolEntry) } : {}),
       }),
       metadata: {
@@ -404,14 +412,17 @@ async function runCodexGoalAdmitted(
         codexGoalObjective: resolveCodexGoalObjective(config),
       },
     });
-    await resultRecorder.record(await codexRuntimeResultInput({
+    const resultInput = await codexRuntimeResultInput({
       config,
       ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
         ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       result,
       executionGeneration,
+      ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
-    }));
+    });
+    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); return result; }
+    await resultRecorder.record(resultInput);
     await progressHeartbeat.write(progressFromResult(result));
     await runtimeEvents.write("executor_finished", {
       status: result.status,
@@ -421,14 +432,17 @@ async function runCodexGoalAdmitted(
     return result;
   } catch (error) {
     const failure = codexRunnerExceptionFailure(error);
-    await resultRecorder.record(await codexExceptionRuntimeResultInput({
+    const resultInput = await codexExceptionRuntimeResultInput({
       config,
       ...(deps.assertTerminalHandoffPublicationAuthorized ? { publicationAuthority: { assertPublicationAuthorized: deps.assertTerminalHandoffPublicationAuthorized,
         ...(deps.withTerminalHandoffPublicationAuthority ? { withPublicationAuthority: deps.withTerminalHandoffPublicationAuthority } : {}) } } : {}),
       error,
       executionGeneration,
+      ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
-    }));
+    });
+    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); throw error; }
+    await resultRecorder.record(resultInput);
     await progressHeartbeat.write({
       status: "failed",
       reason: failure.reason,
@@ -481,7 +495,12 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   assertVerifiedHostedChildConfig(config);
   assertChildGoalConfig(config);
   const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
-  const executionLifetime = input.executionLifetime ?? (childBudget ? new AppServerExecutionLifetime({ childBudget }) : undefined);
+  const ownedMimoWorker = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && !!researchAdmission;
+  if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
+  const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
+    deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
+    binding: { allocationId: config.jobId ?? config.taskId, incarnationId: randomUUID() },
+  }) : childBudget ? new AppServerExecutionLifetime({ childBudget }) : undefined);
   if (input.executionLifetime && childBudget && input.executionLifetime.childBudget !== childBudget) throw new Error("codex_goal_lifetime_budget_conflict");
   executionLifetime?.assertActive();
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
@@ -515,7 +534,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     ...(executionLifetime ? { executionLifetime } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
-    ...(!childBudget && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
+    ...(!childBudget && !ownedMimoWorker && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
     ...(input.activeAttemptRegistry
       ? { activeAttemptRegistry: input.activeAttemptRegistry }
       : {}),
@@ -592,6 +611,8 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
         ...(publicSourceReader ? { publicSourceReader } : {}),
         capacityAccountId: account.name,
         ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
+        ...(ownedMimoWorker ? { boundedWorkspaceTools: { denyProjectInstructions: true,
+          allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles] } } : {}),
         ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
           refreshConflictRetryMaxMs: 0,
           boundedWorkspaceTools: { allowedTools: childBudget.lifetime.allowedTools, denyProjectInstructions: true } } : {}),
@@ -601,6 +622,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
           ? {}
           : { appServerStartupTimeoutMs: config.appServerStartupTimeoutMs }),
         ...codexGoalHostedExecutionBoundary({ ...config, commandPolicy }),
+        ...(input.openWorker ? { openWorker: input.openWorker } : {}),
         ...(config.model ? { model: config.model } : {}),
         ...(config.reasoningEffort
           ? { reasoningEffort: config.reasoningEffort }
@@ -683,10 +705,10 @@ function assertCodexGoalRunConfig(config: CodexGoalRunConfig): void {
     config.reconnectCooldownMs,
     "codex_goal_reconnect_cooldown_invalid",
   );
-  assertPositiveInteger(
-    config.maxReconnectRetriesPerAccount,
-    "codex_goal_reconnect_retries_invalid",
-  );
+  if (config.maxReconnectRetriesPerAccount !== undefined &&
+      (!Number.isInteger(config.maxReconnectRetriesPerAccount) || config.maxReconnectRetriesPerAccount < 0)) {
+    throw new Error("codex_goal_reconnect_retries_invalid");
+  }
   assertPositiveInteger(
     config.progressHeartbeatMs,
     "codex_goal_progress_heartbeat_invalid",
@@ -698,22 +720,23 @@ function assertPositiveInteger(value: number | undefined, code: string): void {
   if (!Number.isInteger(value) || value <= 0) throw new Error(code);
 }
 
-function codexGoalWorkerSystemPrompt(taskId: string): string {
+function codexGoalWorkerSystemPrompt(taskId: string, tempRoot = "/tmp"): string {
   return [
     "Codex goal runtime artifact rule:",
-    "If the task asks you to write a report, evidence file, or other artifact to a path outside the current workspace and the sandbox denies that write, write the artifact under /tmp instead.",
-    `Use a task-specific directory such as /tmp/${taskId}-artifacts, include the exact fallback path in your final output, and do not mark the goal blocked solely because the external copy could not be performed.`,
+    `If the task asks you to write a report, evidence file, or other artifact to a path outside the current workspace and the sandbox denies that write, write the artifact under ${tempRoot} instead.`,
+    `Use a task-specific directory such as ${tempRoot}/${taskId}-artifacts, include the exact fallback path in your final output, and do not mark the goal blocked solely because the external copy could not be performed.`,
     "Keep source worktrees clean unless the task explicitly requires code or docs changes.",
   ].join(" ");
 }
 
 function codexGoalRunSystemPrompt(
   config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode">,
-  options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string } = {},
+  options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string; readonly openWorkerInstruction?: string } = {},
 ): string {
-  const prompts = [codexGoalWorkerSystemPrompt(config.taskId)];
+  const prompts = [codexGoalWorkerSystemPrompt(config.taskId, options.openWorkerInstruction ? "$TMPDIR" : "/tmp")];
   if (options.dependencyToolInstruction) prompts.push(options.dependencyToolInstruction);
-  if (options.linkedWorktreeHandoff === true) {
+  if (options.openWorkerInstruction) prompts.push(options.openWorkerInstruction);
+  else if (options.linkedWorktreeHandoff === true) {
     prompts.push(codexGoalLinkedWorktreeHandoffSystemPrompt);
   }
   if (config.workerReportMode === "structured-output") {
