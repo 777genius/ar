@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemdInvocation, managedLauncherInvocation } from './launch.mjs';
+import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
@@ -63,6 +63,52 @@ test('job limits are bounded positive integers without extra fields', async () =
     { ...job.limits, cpuPercent: '100' }, { ...job.limits, tasksMax: 1.5 }, { ...job.limits, extra: 1 }]) {
     await assert.rejects(build({ ...job, limits }), /unsupported/);
   }
+});
+test('startup budget controls activation and original lifetime reservation together', async () => {
+  for (const startupSeconds of [undefined, 1, 300, 900]) {
+    const request = startupSeconds === undefined ? job : { ...job, limits: { ...job.limits, startupSeconds } };
+    const expectedSeconds = startupSeconds === undefined ? 300 : startupSeconds;
+    const { args } = await build(request);
+    assert.deepEqual(args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')),
+      [`--property=TimeoutStartSec=${expectedSeconds}`]);
+    assert.ok(args.includes('--property=RuntimeMaxSec=90'));
+    assert.ok(args.includes('--property=TimeoutStopSec=30'));
+    const reservation = originalJobReservation(request);
+    assert.deepEqual(reservation, { workNs: BigInt(expectedSeconds + 90) * 1_000_000_000n,
+      cleanupNs: BigInt(expectedSeconds + 120) * 1_000_000_000n });
+    const now = 1_000_000_000n;
+    const exactEnds = { workEndNs: now + reservation.workNs, cleanupEndNs: now + reservation.cleanupNs };
+    assert.throws(() => assertOriginalReservation(exactEnds, reservation, now, now), /original ends exhausted/);
+    assert.doesNotThrow(() => assertOriginalReservation({ workEndNs: exactEnds.workEndNs + 1n,
+      cleanupEndNs: exactEnds.cleanupEndNs + 1n }, reservation, now, now));
+  }
+  const defaultReservation = originalJobReservation(job);
+  const extended = originalJobReservation({ ...job, limits: { ...job.limits, startupSeconds: 900 } });
+  const now = 1_000_000_000n;
+  const ends = { workEndNs: now + defaultReservation.workNs + 1n, cleanupEndNs: now + defaultReservation.cleanupNs + 1n };
+  assert.throws(() => assertOriginalReservation(ends, extended, now, now), /original ends exhausted/);
+});
+test('inherited startup fields retain the omitted-field activation and reservation defaults', async () => {
+  const limits = Object.assign(Object.create({ startupSeconds: 900 }), job.limits);
+  const request = { ...job, limits };
+  const { args } = await build(request);
+  assert.deepEqual(args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')), ['--property=TimeoutStartSec=300']);
+  assert.deepEqual(originalJobReservation(request), { workNs: 390_000_000_000n, cleanupNs: 420_000_000_000n });
+  const missingRequired = Object.assign(Object.create({ runtimeSeconds: 90 }), job.limits);
+  delete missingRequired.runtimeSeconds;
+  await assert.rejects(build({ ...job, limits: missingRequired }), /unsupported/);
+});
+test('invalid optional startup limits fail before executable trust or storage admission', async () => {
+  for (const startupSeconds of [undefined, null, NaN, Infinity, 1.5, 0, -1, 901, Number.MAX_SAFE_INTEGER + 1, '300', true, [], {}]) {
+    const request = { ...job, limits: { ...job.limits, startupSeconds } };
+    await assert.rejects(build(request, { trust: async () => assert.fail('must validate before trust') },
+      async () => assert.fail('must validate before admission')), /unsupported/);
+    assert.throws(() => originalJobReservation(request), /unsupported/);
+  }
+  const { runtimeSeconds, ...missingRequired } = job.limits;
+  await assert.rejects(build({ ...job, limits: { ...missingRequired, startupSeconds: 900 } }), /unsupported/);
+  await assert.rejects(build({ ...job, limits: { ...job.limits, startupSeconds: 900, TimeoutStartSec: 900 } }), /unsupported/);
+  await assert.rejects(build({ ...provider, limits: { startupSeconds: 900 } }), /unsupported/);
 });
 test('provider bootstrap is constructed internally and trusted before admission', async () => {
   const trusted = [];

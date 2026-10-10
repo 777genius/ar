@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat, rm, realpath,
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { HostJobs, systemCommand } from './manager.mjs';
+import { fingerprint, validateStart, unitFor } from './contract.mjs';
+import { createHash } from 'node:crypto';
 import { hostTransport, sshOutput } from '../../scripts/ops/host-job-transport.mjs';
 import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
@@ -288,6 +290,47 @@ test('managed policy denial prevents launch and cannot prevent persisted reconci
 
 const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
 const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/opt/subscription-runtime/managed-launcher/launch.mjs';
+test('omitted startup budget preserves legacy fingerprint and reconciles the existing binding', async t => {
+  const legacyFingerprint = createHash('sha256').update(JSON.stringify([
+    request.jobId, request.machineId, request.argv, request.runtimeSeconds,
+    request.stopSeconds, request.memoryMiB, request.tasksMax, request.cpuPercent,
+  ])).digest('hex');
+  assert.equal(fingerprint(request), legacyFingerprint);
+  const { manager, calls } = await fixture();
+  t.after(() => rm(manager.stateDir, { recursive: true, force: true }));
+  await manager.save({ jobId: request.jobId, unit: unitFor(request.jobId), manager: 'system',
+    machineId: request.machineId, fingerprint: legacyFingerprint, phase: 'uncertain' });
+  assert.equal((await manager.start(request)).retry, true);
+  assert.equal(calls.filter(isLaunch).length, 0);
+  await assert.rejects(manager.start({ ...request, startupSeconds: 300 }), /already bound/);
+});
+test('explicit startup budget reaches the launcher and permanently binds its duration', async t => {
+  for (const startupSeconds of [1, 300, 900]) {
+    const { manager, calls } = await fixture();
+    t.after(() => rm(manager.stateDir, { recursive: true, force: true }));
+    const explicit = { ...request, startupSeconds };
+    const record = await manager.start(explicit);
+    assert.equal(record.phase, 'started');
+    assert.equal(record.fingerprint, fingerprint(explicit));
+    assert.notEqual(record.fingerprint, fingerprint(request));
+    assert.equal(JSON.parse(calls.filter(isLaunch)[0].args[2]).limits.startupSeconds, startupSeconds);
+    assert.equal((await manager.start(explicit)).retry, true);
+    await assert.rejects(manager.start({ ...explicit, startupSeconds: startupSeconds === 900 ? 899 : startupSeconds + 1 }), /already bound/);
+    await assert.rejects(manager.start(request), /already bound/);
+    assert.equal(calls.filter(isLaunch).length, 1);
+  }
+});
+test('invalid explicit startup budgets fail before host inspection or ledger writes', async t => {
+  const { manager, calls } = await fixture();
+  t.after(() => rm(manager.stateDir, { recursive: true, force: true }));
+  for (const startupSeconds of [undefined, null, NaN, Infinity, 1.5, 0, -1, 901, Number.MAX_SAFE_INTEGER + 1, '300', true, [], {}]) {
+    const invalid = { ...request, startupSeconds };
+    assert.throws(() => validateStart(invalid), /invalid startupSeconds/);
+    await assert.rejects(manager.start(invalid), /invalid startupSeconds/);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(await manager.read(request.jobId), null);
+});
 test('system manager is persisted before launch and used for reconciliation and stop', async () => {
   let manager;
   const calls = [];

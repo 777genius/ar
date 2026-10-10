@@ -86,6 +86,7 @@ const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
 const MANAGED_STARTUP_SECONDS = 300;
+const jobStartupSeconds = limits => Object.hasOwn(limits, 'startupSeconds') ? limits.startupSeconds : MANAGED_STARTUP_SECONDS;
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
 export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
 
@@ -104,8 +105,10 @@ export function parseInvocation(request) {
         !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(request.jobId)) denied();
     const bounds = { runtimeSeconds: 86400, stopSeconds: 300, memoryMiB: 1048576, tasksMax: 65536, cpuPercent: 100000 };
     if (!request.limits || typeof request.limits !== 'object' || Array.isArray(request.limits) ||
-        Object.keys(request.limits).length !== Object.keys(bounds).length || Object.entries(bounds).some(([key, max]) =>
-          !Number.isSafeInteger(request.limits[key]) || request.limits[key] < 1 || request.limits[key] > max)) denied();
+        Object.keys(request.limits).some(key => !Object.hasOwn(bounds, key) && key !== 'startupSeconds') || Object.entries(bounds).some(([key, max]) =>
+          !Object.hasOwn(request.limits, key) || !Number.isSafeInteger(request.limits[key]) || request.limits[key] < 1 || request.limits[key] > max)) denied();
+    if (Object.hasOwn(request.limits, 'startupSeconds') &&
+        (!Number.isSafeInteger(request.limits.startupSeconds) || request.limits.startupSeconds < 1 || request.limits.startupSeconds > 900)) denied();
   } else {
     if (!/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit) ||
         !payload[0].endsWith('/node') || !safePath(payload[1])) denied();
@@ -144,7 +147,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   }
   const properties = [
     'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
-    `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
+    `TimeoutStartSec=${operation === 'job' ? jobStartupSeconds(request.limits) : MANAGED_STARTUP_SECONDS}`,
     ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
       `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
       ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
@@ -216,7 +219,7 @@ export function parseLauncherArguments(args, timeNamespace) {
 export function originalJobReservation(request) {
   const parsed = parseInvocation(request);
   if (parsed.operation !== 'job') denied();
-  const workNs = BigInt(MANAGED_STARTUP_SECONDS + parsed.limits.runtimeSeconds) * 1_000_000_000n;
+  const workNs = BigInt(jobStartupSeconds(parsed.limits) + parsed.limits.runtimeSeconds) * 1_000_000_000n;
   return Object.freeze({ workNs, cleanupNs: workNs + BigInt(parsed.limits.stopSeconds) * 1_000_000_000n });
 }
 

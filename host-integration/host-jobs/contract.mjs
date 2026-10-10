@@ -5,7 +5,7 @@ export const unitFor = (jobId) => {
   return `subscription-job-${createHash('sha256').update(jobId).digest('hex')}.service`;
 };
 export function validateStart(request) {
-  const allowed = ['operation', 'jobId', 'machineId', 'argv', 'runtimeSeconds', 'stopSeconds', 'memoryMiB', 'tasksMax', 'cpuPercent', 'storageLifetime'];
+  const allowed = ['operation', 'jobId', 'machineId', 'argv', 'runtimeSeconds', 'stopSeconds', 'memoryMiB', 'tasksMax', 'cpuPercent', 'startupSeconds', 'storageLifetime'];
   if (!request || typeof request !== 'object' || Array.isArray(request) || Object.keys(request).some(key => !allowed.includes(key))) throw new Error('unsupported start field');
   if (request.operation !== 'start') throw new Error('invalid start operation');
   if (Object.hasOwn(request, 'storageLifetime') && request.storageLifetime !== 'fd-openfile-bind-v1') throw new Error('unsupported storage lifetime intent');
@@ -16,9 +16,12 @@ export function validateStart(request) {
   for (const [key, max] of [['runtimeSeconds', 86400], ['stopSeconds', 300], ['memoryMiB', 1048576], ['tasksMax', 65536], ['cpuPercent', 100000]]) {
     if (!Number.isInteger(request[key]) || request[key] < 1 || request[key] > max) throw new Error(`invalid ${key}`);
   }
+  if (Object.hasOwn(request, 'startupSeconds') &&
+      (!Number.isSafeInteger(request.startupSeconds) || request.startupSeconds < 1 || request.startupSeconds > 900)) throw new Error('invalid startupSeconds');
 }
 export const fingerprint = request => createHash('sha256').update(JSON.stringify([
   request.jobId, request.machineId, request.argv, request.runtimeSeconds,
   request.stopSeconds, request.memoryMiB, request.tasksMax, request.cpuPercent,
+  ...(Object.hasOwn(request, 'startupSeconds') ? [request.startupSeconds] : []),
   ...(Object.hasOwn(request, 'storageLifetime') ? [request.storageLifetime] : []),
 ])).digest('hex');
