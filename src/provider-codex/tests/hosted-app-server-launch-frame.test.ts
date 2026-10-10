@@ -38,3 +38,31 @@ describe("hosted app-server launch frame", () => {
     ).toThrow("hosted_app_server_launch_frame_invalid");
   });
 });
+
+it("maps issued coding material into fixed guest paths and drops unrelated host environment", async () => {
+  const { registerHostedMimoCodingBootstrap } = await import("../hosted-mimo-coding-bootstrap-registry");
+  const { codexMimoApiKeyEnvVarDefault: key } = await import("../codex-model-backend");
+  const bootstrap = { schemaVersion: 1 as const, startId: "12345678-1234-1234-1234-123456789abc", specSha256: "a".repeat(64), workspacePath: "/workspace", configToml: 'approval_policy = "never"\n' };
+  const unregister = registerHostedMimoCodingBootstrap("TEST-capability", () => bootstrap);
+  try {
+    const frame = decodeHostedAppServerLaunchFrame(encodeHostedAppServerLaunchFrame({ schemaVersion: 1, command: "/codex", args: ["app-server"], cwd: "/host/home", env: { [key]: "TEST-capability", HOME: "/host/home", CODEX_HOME: "/host/config", HOST_SECRET: "TEST-shared-secret", PATH: "/usr/bin" } }));
+    expect(frame.cwd).toBe("/workspace");
+    expect(frame.env).toEqual({ [key]: "TEST-capability", PATH: "/usr/bin", HOME: "/home/coding", CODEX_HOME: "/home/coding/.codex", TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp" });
+    expect(frame.coding).toEqual(bootstrap);
+    expect(JSON.stringify(frame)).not.toContain("TEST-shared-secret");
+    expect(() => encodeHostedAppServerLaunchFrame(frame)).toThrow("unissued");
+    expect(() => decodeHostedAppServerLaunchFrame(JSON.stringify({ ...frame, cwd: "/escape" }))).toThrow("coding_frame_invalid");
+  } finally { unregister(); }
+});
+it("requires external sealed root binding for coding bootstrap", async () => {
+  const { decodeHostedMimoCodingExpectedBinding, assertHostedMimoCodingExpectedBinding } = await import("../hosted-mimo-coding-bootstrap");
+  const expected = { schemaVersion: 1 as const, startId: "12345678-1234-1234-1234-123456789abc", specSha256: "a".repeat(64), workspacePath: "/workspace" };
+  const decoded = decodeHostedMimoCodingExpectedBinding(Buffer.from(JSON.stringify(expected)).toString("base64url"));
+  expect(decoded).toEqual(expected);
+  expect(() => assertHostedMimoCodingExpectedBinding({ ...expected, configToml: "" }, decoded)).not.toThrow();
+  for (const change of [{ startId: "12345678-1234-1234-1234-123456789abd" }, { specSha256: "b".repeat(64) }, { workspacePath: "/other" }]) {
+    expect(() => assertHostedMimoCodingExpectedBinding({ ...expected, ...change, configToml: "" }, decoded)).toThrow("mismatch");
+  }
+  expect(() => decodeHostedMimoCodingExpectedBinding("a".repeat(8193))).toThrow();
+  expect(() => decodeHostedMimoCodingExpectedBinding(Buffer.from(JSON.stringify({ ...expected, extra: true })).toString("base64url"))).toThrow();
+});

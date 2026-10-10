@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { buildSystemdInvocation, managedLauncherInvocation } from './launch.mjs';
+import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
@@ -37,7 +37,7 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   assert.equal(invocation.args.includes('--user'), false);
   assert.equal(invocation.args.includes('--service-type=exec'), true);
   assert.deepEqual(invocation.args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')),
-    ['--property=TimeoutStartSec=300']);
+    ['--property=TimeoutStartSec=600']);
   assert.ok(invocation.args.includes('--property=TimeoutStopSec=30'));
   for (const property of ['ProtectSystem=strict', 'RequiresMountsFor=/TEST', 'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
     `CapabilityBoundingSet=${bootstrapCaps}`, 'AmbientCapabilities=', 'PrivateDevices=yes', `InaccessiblePaths=${socketFence}`, 'MemoryMax=256M', 'RuntimeMaxSec=90']) {
@@ -59,6 +59,20 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   assert.ok(command.indexOf('--bounding-set=-all') < command.indexOf(PAYLOAD_GUARD_PATH));
   assert.ok(command.indexOf(PAYLOAD_GUARD_PATH) < command.indexOf(job.payload[0]));
   assert.deepEqual(JSON.parse(managedLauncherInvocation(job).args[2]), job);
+});
+test('fixed startup budget reserves the same bounded time inside original monotonic ends', async () => {
+  const invocation = await build(job);
+  const startup = invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec='));
+  assert.equal(startup, '--property=TimeoutStartSec=600');
+  const second = 1_000_000_000n;
+  const reservation = originalJobReservation(job);
+  assert.deepEqual(reservation, { workNs: 690n * second, cleanupNs: 720n * second });
+  assert.equal(reservation.workNs, (BigInt(startup.split('=')[2]) + BigInt(job.limits.runtimeSeconds)) * second);
+  const anchor = second, now = 2n * second;
+  const ends = { workEndNs: now + reservation.workNs + 1n, cleanupEndNs: now + reservation.cleanupNs + 1n };
+  assert.doesNotThrow(() => assertOriginalReservation(ends, reservation, anchor, now));
+  assert.throws(() => assertOriginalReservation(ends, reservation, anchor, now + 1n), /original ends exhausted/);
+  assert.throws(() => assertOriginalReservation(ends, reservation, anchor, anchor - 1n), /original ends exhausted/);
 });
 test('request denies old argv bridge, unknown operations and arbitrary policy fields', async () => {
   for (const value of [[], ['--property=ProtectSystem=no'], null, { ...job, operation: 'shell' }, { ...job, startupSeconds: 600 }, { ...provider, startupSeconds: 600 },
@@ -85,7 +99,7 @@ test('provider bootstrap is constructed internally and trusted before admission'
   assert.ok(command.indexOf(PAYLOAD_GUARD_PATH) < command.indexOf(provider.payload[0]));
   assert.ok(invocation.args.includes('--pipe'));
   assert.deepEqual(invocation.args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')),
-    ['--property=TimeoutStartSec=300']);
+    ['--property=TimeoutStartSec=600']);
   assert.ok(invocation.args.includes('--property=RuntimeMaxSec=8h'));
   assert.ok(invocation.args.includes('--property=TimeoutStopSec=30s'));
   await assert.rejects(build({ ...provider, payload: ['/usr/bin/sh', '/opt/runtime/hosted-app-server-launcher.js'] }), /unsupported/);

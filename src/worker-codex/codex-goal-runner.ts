@@ -11,7 +11,7 @@ import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction
   invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
-import { researchProviderAdmissionGuard, assertOwnedMimoWorkerConfig } from "./research-launch-admission";
+import { researchProviderAdmissionGuard, assertOwnedMimoWorkerConfig, ownedMimoWorkerStart } from "./research-launch-admission";
 import { researchMimoWorkerLifecycle } from "./research-mimo-worker-result";
 import { snapshotCodexGoalStorageConfig, withCodexGoalStorage, withCodexGoalCheckpointWriter, type CodexGoalNewStorage } from "./job-storage/codex-goal-storage-admission";
 import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
@@ -29,6 +29,7 @@ import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-e
 import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import {
   CodexModelBackend,
+  HostedMimoProfile,
   AppServerExecutionLifetime,
   codexMimoApiKeyEnvVarDefault,
   codexMimoTokenPlanEgressPolicy,
@@ -496,6 +497,8 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   assertChildGoalConfig(config);
   const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
   const ownedMimoWorker = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && !!researchAdmission;
+  const ownedMimoCoding = ownedMimoWorker &&
+    ownedMimoWorkerStart(input.appServerProcessFactory)?.request.hostedProfile === HostedMimoProfile.CodingV1;
   if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
   const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
     deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
@@ -546,6 +549,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     ...(config.sessionHomeProfile === undefined ? {} : { sessionHomeProfile: config.sessionHomeProfile }),
     accountCapacityStore: isMimo
       ? codexAccountCapacityStore(config.authRootDir, {
+          modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
           ...(input.observability ? { observability: input.observability } : {}),
         })
       : migrateLegacyCodexAccountCapacity({
@@ -611,7 +615,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
         ...(publicSourceReader ? { publicSourceReader } : {}),
         capacityAccountId: account.name,
         ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
-        ...(ownedMimoWorker ? { boundedWorkspaceTools: { denyProjectInstructions: true,
+        ...(ownedMimoWorker && !ownedMimoCoding ? { boundedWorkspaceTools: { denyProjectInstructions: true,
           allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles] } } : {}),
         ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
           refreshConflictRetryMaxMs: 0,

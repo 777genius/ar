@@ -85,7 +85,7 @@ const UNSHARE_PATH = '/usr/bin/unshare';
 const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
-const MANAGED_STARTUP_SECONDS = 300;
+const MANAGED_STARTUP_SECONDS = 600;
 // Admission snapshot, not a reservation of memory against concurrent launches.
 const OS_SSH_RESERVE_BYTES = 2n * 1024n ** 3n;
 function readMemoryInfo() {
