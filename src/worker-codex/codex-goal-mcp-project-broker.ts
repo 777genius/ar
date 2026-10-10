@@ -1,4 +1,5 @@
 import { prepareProjectResearchLaunch } from "./research-project-launch-adapter";
+import { recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
 import { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
 export { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
@@ -143,6 +144,7 @@ export type CodexProjectControlBrokerInput = {
   readonly scope: ProjectAccessScope;
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly createManifest?: CodexGoalJobManifestInput;
+  readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
   readonly createOverwrite?: boolean;
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
   readonly admittedInputPatchTarget?: {
@@ -294,6 +296,7 @@ function codexProjectControlPorts(
           registryRootDir: input.registryRootDir,
           manifest: input.createManifest,
           overwrite: input.createOverwrite ?? false,
+          ...(input.protectedBirthPreparation ? { protectedBirthPreparation: input.protectedBirthPreparation } : {}),
         });
         return operationResult(created.jobId);
       },
@@ -397,6 +400,10 @@ function codexProjectControlPorts(
           },
           authorityStore,
         });
+        // Original claim publication owns topology. Permanently invalidate the
+        // exact root before release, so later sibling censuses cannot contend
+        // with this already authorized launch's negative-history rechecks.
+        recordProtectedCodexGoalJobFirstEffect(input.startManifest.jobRootDir);
         nativeStart = await prepareProjectResearchLaunch({ registryRootDir: input.registryRootDir,
           controllerJobId: input.controller.jobId, reservedLaunch: input.startLaunch });
       },

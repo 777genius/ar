@@ -1,4 +1,5 @@
 import { realpath } from "node:fs/promises";
+import { withProtectedCodexGoalJobBirthPublication } from "./protected-job-birth";
 import { dirname, join, resolve } from "node:path";
 import type {
   ProjectAccessScope,
@@ -61,7 +62,9 @@ export async function withProjectAdmissionPublicationLock<T>(input: {
       lock.workspacePath !== registryPath) {
       throw new Error("project_control_registry_real_path_changed");
     }
-    return await input.effect();
+    // Raw first effects share this owner-private try-lock through the final
+    // census and existing claim publication, including every awaited read.
+    return await withProtectedCodexGoalJobBirthPublication(input.effect);
   } finally {
     await locks.release(lock);
   }

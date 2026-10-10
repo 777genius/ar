@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryMaterializedHome } from "./app-server/adapters/hosted-ordinary-writer-extent";
 import type {
   RedactorPort,
   SessionArtifact,
@@ -162,7 +163,6 @@ type WorkerCacheEntry = {
 
 export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterializer {
   readonly mode = "worker-cache" as const;
-  private readonly cacheKeyHash: string;
   private entry: WorkerCacheEntry | null = null;
   private tail: Promise<void> = Promise.resolve();
 
@@ -176,8 +176,6 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       options.providerEgressPolicy?.profileId ?? CodexProviderEgressProfileId.ProviderApi,
     );
     this.options = { ...options, providerEgressPolicy };
-    this.cacheKeyHash = stableHash(providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi
-      ? `${options.cacheKey}:${providerEgressPolicy.profileId}` : options.cacheKey).slice(0, 32);
   }
 
   async materialize(input: {
@@ -233,6 +231,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     const releaseLock = await this.acquireExclusiveUse();
     try {
       if (!this.entry) return;
+      assertHostedOrdinaryMaterializedHome(this.entry.home, this.entry.codexHome);
       if (this.options.preserveOnDispose) {
         if (this.options.scrubAuthOnDispose) {
           await rm(join(this.entry.codexHome, "auth.json"), { force: true });
@@ -256,10 +255,12 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     const sessionHash = sessionArtifactHash(input.session);
 
     const entry = this.entry ?? (await this.createEntry());
+    assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
     if (!entry.initialized) {
       await mkdir(entry.home, { recursive: true, mode: 0o700 });
       await mkdir(entry.codexHome, { recursive: true, mode: 0o700 });
       await this.options.prepareHome?.(entry.codexHome);
+      assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
       await writeCodexJsonHomeSnapshot({
         codexHome: entry.codexHome,
         authJson,
@@ -272,6 +273,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       return entry;
     }
 
+    assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
     await writeCodexJsonConfig({
       codexHome: entry.codexHome,
       ...(this.options.configToml === undefined
@@ -280,6 +282,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     });
 
     if (entry.sessionHash !== sessionHash) {
+      assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
       await writeCodexAuthJson({
         codexHome: entry.codexHome,
         authJson,
@@ -291,7 +294,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
 
   private async createEntry(): Promise<WorkerCacheEntry> {
     const cacheRoot = this.options.rootDir
-      ? join(this.options.rootDir, `codex-${this.cacheKeyHash}`)
+      ? codexWorkerCacheRoot(this.options.rootDir, this.options.cacheKey, this.options.providerEgressPolicy!.profileId)
       : await createCodexRuntimeTempRoot({
           prefix: "subscription-runtime-codex-cache-",
         });
@@ -357,7 +360,7 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
 
     this.slots = Array.from({ length: options.slots }, (_, index) => {
       return new CodexWorkerCacheSessionMaterializer({
-        cacheKey: `${options.cacheKey}:slot:${index + 1}`,
+        cacheKey: codexWorkerCacheSlotKey(options.cacheKey, index),
         ...(options.providerEgressPolicy ? { providerEgressPolicy: options.providerEgressPolicy } : {}),
         ...(options.rootDir ? { rootDir: options.rootDir } : {}),
         ...(options.configToml === undefined
@@ -584,4 +587,15 @@ function onceSync(fn: () => void): () => void {
     called = true;
     fn();
   };
+}
+
+/** Canonical retained-home paths. Planning performs no filesystem effects. */
+export function codexWorkerCacheSlotKey(cacheKey: string, index: number): string {
+  return `${cacheKey}:slot:${index + 1}`;
+}
+function codexWorkerCacheKeyHash(cacheKey: string, profileId: CodexProviderEgressProfileId): string {
+  return stableHash(profileId !== CodexProviderEgressProfileId.ProviderApi ? `${cacheKey}:${profileId}` : cacheKey).slice(0, 32);
+}
+export function codexWorkerCacheRoot(rootDir: string, cacheKey: string, profileId: CodexProviderEgressProfileId): string {
+  return join(rootDir, `codex-${codexWorkerCacheKeyHash(cacheKey, profileId)}`);
 }

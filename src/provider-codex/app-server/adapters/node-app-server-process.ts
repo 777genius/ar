@@ -1,3 +1,4 @@
+import type { HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -102,6 +103,7 @@ export function codexAppServerProcessInvocation(input: {
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
+  readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot;
 }, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
@@ -138,6 +140,7 @@ export function codexAppServerProcessInvocation(input: {
       JSON.stringify({ operation: "provider", jobId, unit: systemdUnit,
         payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
         ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
+        ...(input.ordinaryJobRoot ? { ordinaryJobRoot: input.ordinaryJobRoot } : {}),
       }),
     ],
   };
@@ -160,7 +163,8 @@ export function spawnCodexAppServerProcess(input: {
     return submitHostedOrdinaryProcess(input, (unit, identity, fence) => spawnInvocation(input,
       hostedDependencyProviderInvocation(fence, unit, input) ??
       codexAppServerProcessInvocation({ ...input, env: { ...input.env,
-        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit }),
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit,
+        ...(identity.ordinaryJobRoot ? { ordinaryJobRoot: identity.ordinaryJobRoot } : {}) }),
       (child, release) => releaseHostedOrdinaryProcess(child, release)));
   }
   const invocation = codexAppServerProcessInvocation({

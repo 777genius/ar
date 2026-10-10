@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, isAbsolute, resolve } from "node:path";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { durablePublishJsonFile } from "../../project-control-operation-file-store";
+import { recordProtectedCodexGoalJobFirstEffect } from "../../protected-job-birth";
 
 const originName = ".controller-state-origin.json";
 const locationName = ".controller-state-location.json";
@@ -16,6 +17,7 @@ const rawOrigin = JSON.stringify({ schemaVersion: 2, rawStartObserved: true });
  * A crashed/partial publication stays Unknown; it is never deleted or repaired.
  * Call only after the existing storage/host admission has authorized this root. */
 export function recordRawGoalStateOrigin(jobRootDir: string): void {
+  recordProtectedCodexGoalJobFirstEffect(jobRootDir);
   // Guarded v2 history is Linux-only. Other platforms retain legacy history
   // and cannot use it as fresh physical no-allocation authority.
   if (process.platform !== "linux") return;
@@ -94,6 +96,9 @@ export function recordInventoriedRawGoalStateOrigin(launch: Readonly<{ command: 
   const args = launch.command === cli ? launch.args
     : launch.command === process.execPath && launch.args[0] === cli ? launch.args.slice(1) : undefined;
   if (!args) return; // Legacy/non-CLI inventory acquires no guarded-history proof.
+  // Controlled supervisor inventory also invalidates never-started authority
+  // before bootstrap; it retains its separate public origin history.
+  recordProtectedCodexGoalJobFirstEffect(jobRootDir);
   // These exact inventoried entrypoints keep the controller's restricted tool
   // surface. Other CLI entrypoints cannot acquire controller-root write rights.
   if (args[0] === "controller-supervise" || args[0] === "project-controller-supervise") return;
@@ -101,12 +106,14 @@ export function recordInventoriedRawGoalStateOrigin(launch: Readonly<{ command: 
 }
 
 /** Creation only, before publishing a new manifest. Existing roots prove nothing. */
-export async function initializeControllerStateOrigin(job: CodexGoalJobManifest): Promise<void> {
-  await mkdir(dirname(job.jobRootDir), { recursive: true });
-  try { await mkdir(job.jobRootDir, { mode: 0o700 }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
-    throw error;
+export async function initializeControllerStateOrigin(job: CodexGoalJobManifest, freshJobRoot = false): Promise<void> {
+  if (!freshJobRoot) {
+    await mkdir(dirname(job.jobRootDir), { recursive: true });
+    try { await mkdir(job.jobRootDir, { mode: 0o700 }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+      throw error;
+    }
   }
   const origin = process.platform === "linux" ? guardedIdentity(job) : identity(job);
   await durablePublishJsonFile({ path: join(job.jobRootDir, originName), value: origin });
@@ -121,6 +128,7 @@ export async function initializeControllerStateOrigin(job: CodexGoalJobManifest)
  * Legacy starts may bind a location but cannot manufacture complete history.
  */
 export async function bindControllerStateLocation(job: CodexGoalJobManifest, stateDir: string): Promise<string> {
+  recordProtectedCodexGoalJobFirstEffect(job.jobRootDir);
   await mkdir(stateDir, { recursive: true });
   const canonical = await realpath(stateDir);
   const value = { ...identity(job), stateDir: canonical };

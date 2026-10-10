@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
 import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-reference";
@@ -505,6 +506,7 @@ export function buildNoTmuxShellCommand(command: RunCommand): string {
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
   assertStorageRegistrySupported(command);
+  assertHostedOrdinaryGoalExtent(command.config, [command.registryRootDir], command.registryRootDir);
   return upsertCodexGoalLaunchManifest({
     registryRootDir: command.registryRootDir,
     launch: cliLaunchInput(command),

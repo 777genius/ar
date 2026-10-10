@@ -1,3 +1,4 @@
+import { prepareProtectedCodexGoalJobBirth } from "./protected-job-birth";
 import { projectControlNewChildWorkerMode, projectControlWorkerToolRootRequest } from "./project-control-worker-mode";
 import { WorkerToolRootStatus, type WorkerToolRootOutcome } from "./worker-tool-root";
 import {
@@ -415,6 +416,11 @@ export async function projectControlRefillWorkerView(
     plan: preStartAdmission,
     sourceRevision: sourceRevision.revision,
   });
+  // Attest the fresh root before prompt/admission/aggregate preparation. Only
+  // the exact internal capability reaches final broker manifest publication.
+  const protectedBirthPreparation = await prepareProtectedCodexGoalJobBirth({
+    registryRootDir: controller.registryRootDir, manifest: createManifest,
+  });
   let aggregateArtifactCreatedPaths: readonly string[] = [];
   let aggregateInputPatch:
     | {
@@ -560,6 +566,7 @@ export async function projectControlRefillWorkerView(
       controller: controller.controller,
       scope: controller.scope,
       createManifest,
+      ...(protectedBirthPreparation ? { protectedBirthPreparation } : {}),
       createOverwrite: booleanValue(args.overwrite) ?? false,
       ...(producerInputPatch
         ? {

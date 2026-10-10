@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { nativeWebFromSafeExecutionResult, nativeWebFromManagedError } from "./codex-goal-run-result";
@@ -256,6 +257,7 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config);
   recordRawGoalStateOrigin(config.jobRootDir);
   const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
   try {
@@ -282,6 +284,7 @@ async function runCodexGoalAdmitted(
   toolEntry: HostedDependencyQualifiedToolEntry | undefined,
   storageLease?: JobStorageWriteLease,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  assertHostedOrdinaryGoalExtent(config);
   const ownedMimoLifecycle = researchMimoWorkerLifecycle(appServerProcessFactory);
   const prompt = await readFile(config.promptPath, "utf8");
   storageLease?.assertCurrent();
@@ -335,13 +338,16 @@ async function runCodexGoalAdmitted(
   storageLease?.assertCurrent();
   await progressHeartbeat.write({ status: "starting" });
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config);
   const encryptionKey = await readOrCreateCodexGoalEncryptionKey(
     config.encryptionKeyPath ?? join(config.jobRootDir, "encryption-key.hex"),
   );
   const stateRootDir = config.stateRootDir ?? join(config.jobRootDir, "state");
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config, [stateRootDir]);
   await mkdir(stateRootDir, { recursive: true, mode: 0o700 });
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config);
   const agentTempRoot = await ensureCodexAgentTempRoot({
     sourceEnv: config.sourceEnv,
     sandboxTraverse: config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
@@ -495,6 +501,7 @@ async function runCodexGoalAdmitted(
 
 export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInput): FileBackendCodexSafeExecutorOptions {
   const config = withHostedGoalIdentity(input.config);
+  assertHostedOrdinaryGoalExtent(config);
   assertCodexSessionHomeProfile(config.sessionHomeProfile);
   if (config.sessionHomeProfile?.kind === CodexSessionHomeProfileKind.OneShot) {
     throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.OneShotDisposal);

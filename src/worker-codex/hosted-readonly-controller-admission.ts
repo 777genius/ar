@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { JobStorageCapabilityUnavailableError, JobStorageUnavailableCapability } from "@vioxen/subscription-runtime/worker-core";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import {
@@ -45,6 +46,7 @@ async function admitLaunch(launch: CodexGoalLaunchInput, raw: boolean) {
     ? codexMimoTokenPlanEgressPolicy()
     : codexProviderEgressPolicy(admitted.profileId);
   if (policy.profileId !== admitted.profileId) throw new Error("hosted_mimo_admission_invalid");
+  assertHostedOrdinaryGoalExtent(config);
   if (raw) recordRawGoalStateOrigin(config.jobRootDir);
   const factory = admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy });
   return { policy, processFactory: egressBoundCodexProcessFactory(policy, factory) };

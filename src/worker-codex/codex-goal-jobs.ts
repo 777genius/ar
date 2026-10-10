@@ -3,6 +3,7 @@ import { optionalWorkerMode } from "./project-control-worker-mode";
 import { childConfigFromRecord } from "./child-execution-confinement";
 import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
+import { publishCodexGoalJobWithProtectedBirth, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
 import {
   lstat,
   mkdir,
@@ -239,6 +240,7 @@ export async function createCodexGoalJob(input: {
   readonly cwd?: string;
   readonly now?: Date;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
+  readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
@@ -287,28 +289,34 @@ export async function createCodexGoalJob(input: {
           throw new Error("job_manifest_activity_identity_invalid");
         }
       }
-      if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
-        await initializeControllerStateOrigin(manifest);
-      }
-      const custodyCertification = await bootstrapInitialProjectControlCustody(
-        manifest,
-        input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
-      );
-      try {
-        await mkdir(join(registryRootDir, manifest.jobId), {
-          recursive: true,
-          mode: 0o700,
-        });
-        await custodyCertification?.revalidate();
-        await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-          flag: input.overwrite ? "w" : "wx",
-        });
-        return manifest;
-      } finally {
-        await custodyCertification?.close();
-      }
+      const publishManifest = async (freshJobRoot = false) => {
+        if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
+          await initializeControllerStateOrigin(manifest, freshJobRoot);
+        }
+        const custodyCertification = await bootstrapInitialProjectControlCustody(
+          manifest,
+          input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+        );
+        try {
+          await mkdir(join(registryRootDir, manifest.jobId), {
+            recursive: true,
+            mode: 0o700,
+          });
+          await custodyCertification?.revalidate();
+          await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: input.overwrite ? "w" : "wx",
+          });
+          return manifest;
+        } finally {
+          await custodyCertification?.close();
+        }
+      };
+      return existedBeforeAdmission ? await publishManifest() : await publishCodexGoalJobWithProtectedBirth({
+        job: manifest, manifestInput: input.manifest, manifestPath: path, publish: publishManifest,
+        ...(input.protectedBirthPreparation ? { preparation: input.protectedBirthPreparation } : {}),
+      });
     },
   });
   // A new manifest has no checkpointable identity yet. Its registry mutex

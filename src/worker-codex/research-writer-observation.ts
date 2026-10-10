@@ -1,11 +1,14 @@
-import { join } from "node:path";
+import { lstatSync } from "node:fs";
+import { observeHostedOrdinaryJobWriterAuthority, hostedOrdinaryWriterAuthorityAbsent } from "./hosted-ordinary-writer-authority";
+import { observeProtectedCodexGoalJobBirth } from "./protected-job-birth";
+import { dirname, join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
+import { researchHash, researchJson, researchRead, assertResearchDirectory, researchCustody, researchAuthorityRoot } from "./research-launch-files";
 import { researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
 
@@ -25,7 +28,7 @@ function sameOptionalBytes(left: Buffer | undefined, right: Buffer | undefined):
  * Standalone terminal status has no registered receipt binding and never releases
  * a new project claim merely because an older same-name native start stopped.
  */
-export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+async function observeNativeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
   try {
     assertResearchInitialRoot(true);
     const authority = researchJobAuthority(manifest.jobId), activePath = join(authority, "active.json"), grantPath = join(authority, "grant.json");
@@ -72,7 +75,7 @@ export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobMa
 
 /** Prepare actual terminal closure outside publication coordination. The retained
  * reader checks bytes again, so a successor grant/active slot cannot inherit it. */
-export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
+async function prepareNativeResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
   const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
   try {
     assertResearchInitialRoot(true);
@@ -100,4 +103,39 @@ export async function prepareResearchJobWriterObservation(manifest: CodexGoalJob
     if ((await read()).status !== "released") return unknown;
     return read;
   } catch { return unknown; }
+}
+
+/** Namespace precedence is positive absence, never a failed native parse.
+ * A retained native directory (including malformed/incomplete authority) owns
+ * the answer and cannot inherit an older ordinary or never-started release. */
+function nativeAuthorityAbsent(manifest: CodexGoalJobManifest): boolean {
+  try {
+    assertResearchInitialRoot(true);
+    researchCustody(dirname(researchAuthorityRoot));
+    try { researchCustody(researchAuthorityRoot, true); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return true; }
+    try { lstatSync(researchJobAuthority(manifest.jobId)); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return true; }
+  } catch { return false; }
+}
+async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  if (!nativeAuthorityAbsent(manifest)) return { status: "unknown" };
+  const ordinary = await observeHostedOrdinaryJobWriterAuthority(manifest);
+  if (!nativeAuthorityAbsent(manifest)) return { status: "unknown" };
+  if (ordinary.status !== "unknown") return ordinary;
+  if (!hostedOrdinaryWriterAuthorityAbsent(manifest.jobId)) return { status: "unknown" };
+  const birth = await observeProtectedCodexGoalJobBirth(manifest);
+  return nativeAuthorityAbsent(manifest) && hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ? birth : { status: "unknown" };
+}
+export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  const absent = nativeAuthorityAbsent(manifest);
+  const native = await observeNativeResearchJobWriterAuthority(manifest);
+  return native.status !== "unknown" || !absent ? native : await observeNonNativeWriter(manifest);
+}
+export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
+  const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
+  return async () => {
+    const observation = await native();
+    return observation.status !== "unknown" || !absent ? observation : await observeNonNativeWriter(manifest);
+  };
 }

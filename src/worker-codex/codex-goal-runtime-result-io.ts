@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
@@ -24,6 +25,7 @@ export class AtomicJsonRuntimeResultWriter implements RuntimeResultWriterPort {
     readonly path: string;
     readonly result: RuntimeResultEnvelope;
   }): Promise<void> {
+    assertHostedOrdinaryEffectPaths([input.path]);
     if (this.terminalCheckpointJobRootDir) {
       await new LocalTerminalCheckpointAdmission(this.terminalCheckpointJobRootDir).withWriter(
         () => writeAtomicJson(input.path, input.result),
@@ -222,15 +224,18 @@ function ensureTrailingNewline(value: string): string {
 }
 
 export async function writeAtomicJson(path: string, value: unknown): Promise<void> {
+  assertHostedOrdinaryEffectPaths([path]);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tempPath = join(
     dirname(path),
     `.${Date.now()}-${process.pid}-${randomUUID()}-${basenameForTemp(path)}.tmp`,
   );
+  assertHostedOrdinaryEffectPaths([tempPath, path]);
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
+  assertHostedOrdinaryEffectPaths([tempPath, path]);
   await rename(tempPath, path);
 }
 

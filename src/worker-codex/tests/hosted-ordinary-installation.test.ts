@@ -1,3 +1,4 @@
+import { registerOrdinaryWriterExtentTests } from "./hosted-ordinary-writer-extent-test-support";
 import { registerOrdinaryAccountRotationTests } from "./hosted-ordinary-account-rotation-test-support";
 import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
@@ -36,6 +37,8 @@ const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
 function local(path: string): string {
+  const researchAuthority = "/run/user/subscription-runtime-research-v1";
+  if (path === researchAuthority || path.startsWith(researchAuthority + "/")) return join(fixture.root, "research-authority", path.slice(researchAuthority.length));
   if (path === "/etc/subscription-runtime/host-activation-mode") return join(fixture.root, "host-activation-mode");
   if (path === "/etc/subscription-runtime") return fixture.root;
   if (path === manifestScratch || path.startsWith(manifestScratch + "/")) return join(fixture.root, "manifest-scratch", path.slice(manifestScratch.length));
@@ -937,7 +940,8 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
   });
 });
 
-registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
+registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put, runtimeDirectory });
+registerOrdinaryWriterExtentTests({ fixture, creator, read, put, runtimeDirectory });
 
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
