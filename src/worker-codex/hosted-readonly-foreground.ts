@@ -129,7 +129,6 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
   if (readHostedInstallationActivation().activation.phase !== HostedActivationPhase.Ordinary) {
     return runHostedReadonlyForeground(command, args, cwd, env);
   }
-  env = hostedOrdinaryLaunchEnvironment({ command, args, cwd }, env);
   const store = new HostedInstallationActivationStore();
   const fdProfile = readHostedFdProfile();
   const output = fdProfile ? requireHostedForegroundRequest(args, cwd) : undefined;
@@ -137,6 +136,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
   try {
     if (fdProfile) assertHostedFdFrameEnvironment(env);
     if (isHostedDependencyWorkspace(cwd)) assertDependencyHostFrameEnvironment(env);
+    else env = hostedOrdinaryLaunchEnvironment({ command, args, cwd }, env);
     frame = Buffer.from(JSON.stringify({ schemaVersion: 1, env }));
     if (frame.length > 4 * 1024 * 1024) throw new Error("hosted_custody_launch_frame_invalid");
   } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }

@@ -14,7 +14,7 @@ export type HostedOrdinaryWriterExtent = Readonly<{
   configSha256: string; taskId: string; promptPath: string; modelBackend: CodexModelBackend; registryRootDir: string | null;
   homes: readonly Readonly<{ home: string; codexHome: string }>[]; paths: readonly PathPin[];
 }>;
-const invalid = (): never => { throw new Error("hosted_ordinary_writer_extent_invalid"); };
+function invalid(): never { throw new Error("hosted_ordinary_writer_extent_invalid"); }
 export const ordinaryExtentHash = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 const inside = (root: string, path: string): boolean => path === root || path.startsWith(root === "/" ? "/" : root + "/");
 const canonical = (path: unknown): path is string => typeof path === "string" && isAbsolute(path) && resolve(path) === path;
@@ -117,8 +117,14 @@ export function assertHostedOrdinaryEffectPaths(paths: readonly string[]): void 
   withCurrentOrdinaryExtent(extent => assertHostedOrdinaryWriterPaths(extent, paths));
 }
 function withCurrentOrdinaryExtent(action: (extent: HostedOrdinaryWriterExtent) => void): void {
-  if (process.platform !== "linux" || !/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-/.test(readFileSync("/proc/self/cgroup", "utf8").trim())) return;
+  if (process.platform !== "linux") return;
+  const routed = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-([a-f0-9-]{36})\.service$/.exec(readFileSync("/proc/self/cgroup", "utf8").trim());
+  if (!routed) return;
   withHostedActivationFence(fence => {
+    // Cgroup only selects whether a protected modern seal exists. It grants no
+    // authority; positive guards below still resolve the actual original owner.
+    // Legacy diagnostics/disposal must retain their original revocation behavior.
+    if (!readHostedActivationBytes(`ordinary-starts/${routed[1]}.extent.json`)) return;
     const origin = readHostedOrdinaryProcessOrigin(fence), startId = origin.reservation.startId as string;
     const bytes = readHostedActivationBytes(`ordinary-starts/${startId}.json`);
     if (!bytes) invalid();

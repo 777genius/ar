@@ -219,7 +219,7 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
     preparations.delete(capability); // A failed/uncertain publication is never replayed.
     if (!prepared || prepared.manifestPath !== input.manifestPath ||
         !isDeepStrictEqual(prepared.manifest, manifestInputSnapshot(input.manifestInput)) ||
-        prepared.jobDirectory.path !== input.job.jobRootDir) invalid();
+        prepared.jobDirectory.path !== input.job.jobRootDir) return invalid();
     const { job } = input, records = paths(job.jobRootDir), physical = physicalPaths(prepared.jobDirectory);
     assertResearchDirectory(prepared.jobDirectory);
     assertResearchDirectory(prepared.registryDirectory);

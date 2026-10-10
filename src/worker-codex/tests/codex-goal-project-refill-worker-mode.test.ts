@@ -1,3 +1,4 @@
+import { setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,16 +13,17 @@ import { callToolJson, git } from "./codex-goal-mcp-test-support";
 import { createFixture, createScope } from "./codex-goal-project-refill-fixture";
 
 beforeEach(() => {
+  setupResearchFixture();
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
 });
 afterEach(() => {
-  vi.restoreAllMocks();
+  cleanupResearchFixture();
   vi.unstubAllEnvs();
 });
 
 // Binding tests drive the MCP refill caller; separate worktree and lifecycle suites explain its boundaries.
-describe("binding: public refill worker mode and tool-root lifecycle", () => {
+describe.skipIf(process.platform !== "linux")("binding: public refill worker mode and tool-root lifecycle", () => {
   it.each([undefined, WorkerMode.Open])("bounded refill preview agrees with sync manifest for scope mode %s", async workerMode => {
     const f = await createPublicRefillFixture(workerMode);
     try {
@@ -43,7 +45,7 @@ describe("binding: public refill worker mode and tool-root lifecycle", () => {
       const result = await callToolJson(f.client, "codex_goal_project_refill_worker", {
         ...f.args, executionMode: "sync",
       });
-      expect(result).toMatchObject({ ok: true });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
       const syncManifest = JSON.parse(await readFile(join(f.registryRootDir, "mode-child", "job.json"), "utf8"));
       expect(previewManifest.workerMode).toBe(syncManifest.workerMode);
       if (workerMode === undefined) {
@@ -62,7 +64,7 @@ describe("binding: public refill worker mode and tool-root lifecycle", () => {
     const f = await createPublicRefillFixture(workerMode);
     try {
       const result = await callToolJson(f.client, "codex_goal_project_refill_worker", f.args);
-      expect(result).toMatchObject({ ok: true });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
       const manifest = JSON.parse(await readFile(join(f.registryRootDir, "mode-child", "job.json"), "utf8"));
       if (workerMode === undefined) {
         expect(manifest).not.toHaveProperty("workerMode");
@@ -103,6 +105,7 @@ describe("binding: public refill worker mode and tool-root lifecycle", () => {
 
 async function createPublicRefillFixture(workerMode?: WorkerMode) {
   const f = await createFixture();
+  const authRootDir = join(f.root, "auth");
   const registryRootDir = join(f.root, "worker-jobs", "registry");
   const controllerJobRoot = join(f.root, "worker-jobs", "mode-controller");
   const workspacePath = join(f.root, "worktrees", "mode-child");
@@ -116,6 +119,7 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
     await rm(f.root, { recursive: true, force: true });
   };
   try {
+    await mkdir(authRootDir, { recursive: true, mode: 0o700 });
     const remotePath = join(f.root, "origin.git");
     await git(f.root, ["init", "--bare", remotePath]);
     await git(f.sourceWorkspacePath, ["remote", "add", "origin", remotePath]);
@@ -124,7 +128,7 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
     const created = await callToolJson(client, "codex_goal_create_job", {
       registryRootDir, jobId: "mode-controller", jobRootDir: controllerJobRoot,
       workspacePath: f.sourceWorkspacePath, promptPath: join(controllerJobRoot, "prompt.md"),
-      taskId: "mode-controller", accounts: ["account-a"],
+      taskId: "mode-controller", accounts: ["account-a"], authRootDir,
       accessBoundary: AccessBoundary.ProjectScopedControl,
       projectAccessScope: {
         ...createScope(f), registryRoot: registryRootDir, jobIdPrefixes: ["mode-"],
@@ -133,7 +137,7 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
         ...(workerMode ? { workerMode } : {}),
       },
     });
-    expect(created).toMatchObject({ ok: true });
+    expect(created, JSON.stringify(created)).toMatchObject({ ok: true });
     return {
       root: f.root, registryRootDir, workspacePath, promptPath, client, close,
       args: {
@@ -141,7 +145,7 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
         sourceWorkspacePath: f.sourceWorkspacePath, baseBranch: "main",
         expectedSourceCommit: f.phaseStartSha, newBranch: "test/mode-child",
         workspacePath, promptPath, promptBody: "Run a focused test.\n", taskId: "mode-child",
-        accounts: ["account-a"], startWorker: false, confirmRefill: true,
+        accounts: ["account-a"], authRootDir, startWorker: false, confirmRefill: true,
       },
     };
   } catch (error) {

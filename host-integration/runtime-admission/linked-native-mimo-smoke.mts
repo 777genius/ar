@@ -45,9 +45,9 @@ Prerequisites, prepared through the existing operator installation procedure:
 
 Hosted static verification (after the source candidate is prepared):
   npm run typecheck
-Live launch prerequisite remains unresolved: host-job-cli's existing managed payload enters private namespaces and drops privilege, so it fails the native initial-root operator preflight. Its outer-job-only contract also cannot own these detached native starts.
-Do not weaken that profile or use an unmanaged foreground/background fallback. A separately authorized fixed TEST root-operator service bootstrap must bind this exact runner/config/artifact and retain its own finite deadline plus native-start reconciliation before live execution.
-The bootstrap's fixed argv is the qualified Node, this installed runner, --allow-live, and the exact private config path below; this is invocation data, not a supported current host-job profile.
+Use the installed host-integration/runtime-admission/linked-native-mimo-operator.mts --help for the closed request schema and authorized installation/bootstrap recipe. Independent qualification of this exact artifact, review and live authorization remain prerequisites.
+The fixed TEST root-operator service binds this exact runner/config/artifact and finite service deadlines. Native-start cleanup and reconciliation remain separately owned by this harness and are not certified by outer service completion.
+The existing host-job-cli managed payload enters private namespaces and drops privilege, so it cannot satisfy this native initial-root preflight. Preserve that profile; do not use an unmanaged foreground/background fallback.
 Config fields, all required:
   {"schemaVersion":1,"runtimeDirectory":"/QUALIFIED/CANDIDATE","candidateCommit":"40-or-64-hex-source-commit","expectedArtifactSha256":"64-hex-qualified-artifact","expectedMachineId":"32-hex-inventory-machine-id","testParentDirectory":"/ROOT-OWNED/APPROVED-TEST-PARENT","authRootDir":"/CONFIGURED/ROOT-OWNED/AUTH-ROOT","codexBinaryPath":"/QUALIFIED/CODEX"}
 

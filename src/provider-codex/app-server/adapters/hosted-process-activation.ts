@@ -451,7 +451,7 @@ export function releaseHostedOrdinaryProcess(child: CodexAppServerChildProcess, 
   });
 }
 
-export function assertHostedOrdinaryProviderRelease(child: CodexAppServerChildProcess, fence: HostedActivationFence, pid: number): void {
+export function assertHostedOrdinaryProviderRelease(child: object, fence: HostedActivationFence, pid: number): void {
   assertHostedActivationFence(fence);
   const retained = ordinaryReleases.get(child);
   if (!retained) return;

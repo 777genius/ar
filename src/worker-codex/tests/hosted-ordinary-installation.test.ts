@@ -940,7 +940,7 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
   });
 });
 
-registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put, runtimeDirectory });
+registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
 registerOrdinaryWriterExtentTests({ fixture, creator, read, put, runtimeDirectory });
 
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });

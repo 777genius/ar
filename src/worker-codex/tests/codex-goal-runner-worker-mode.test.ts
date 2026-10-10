@@ -1,7 +1,7 @@
 import { changedFilesFromWorkspace } from "../codex-goal-workspace-changes";
 import { initializeControllerStateOrigin } from "../application/project-control/codex-goal-controller-state-location";
 import { routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
-import "./hosted-test-egress-default-fixture";
+import "./absent-host-readonly-authority-fixture";
 import "./unmanaged-goal-host-fixture";
 import { execFile } from "node:child_process";
 import * as nodeFs from "node:fs";
@@ -9,15 +9,51 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccessBoundary, NetworkAccessMode, WorkerMode } from "@vioxen/subscription-runtime/worker-core";
-import * as hostedHostPolicy from "../../provider-codex/app-server/adapters/hosted-host-policy";
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { createCodexGoalJob, readCodexGoalJob, codexGoalJobToArgs } from "../codex-goal-jobs";
 import { prepareWorkerToolRoot, WorkerToolRootStatus } from "../worker-tool-root";
 import { codexGoalAccountSlots, codexGoalProgressPath, codexGoalRuntimeEventsPath, runCodexGoal, type CodexGoalRunConfig, type CodexGoalRunDeps,
   type CodexGoalExecutor } from "../codex-goal-runner";
 import { createLinkedGitWorktree, readJsonLines } from "./codex-goal-runner-fixtures";
+
+// This suite models an unmanaged machine. Project only fixed host-policy
+// discovery into actual absent TEST paths; keep origin, storage and access
+// decisions real. Finite proc facts describe an unmanaged user namespace and
+// cannot issue an initial-root birth; no installed host private state is read.
+const unmanagedHost = vi.hoisted(() => ({ root: "" }));
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  const local = (path: unknown) => {
+    if (typeof path !== "string") return path;
+    for (const [base, name] of [["/etc/subscription-runtime", "etc"],
+      ["/var/lib/subscription-runtime-host-policy", "policy"], ["/run/user/0", "volatile"]] as const) {
+      if (path === base || path.startsWith(base + "/")) {
+        if (!unmanagedHost.root) throw new Error("TEST unmanaged host fixture not initialized");
+        return unmanagedHost.root + "/absent-" + name + path.slice(base.length);
+      }
+    }
+    return path;
+  };
+  return { ...actual,
+    lstatSync: ((path, ...args) => Reflect.apply(actual.lstatSync, actual, [local(path), ...args])) as typeof actual.lstatSync,
+    readFileSync: ((path, ...args) => {
+      const fact = path === "/proc/self/cgroup" ? "0::/\n"
+        : path === "/proc/self/uid_map" || path === "/proc/self/gid_map" ? "0 100000 65536\n" : undefined;
+      return fact === undefined ? Reflect.apply(actual.readFileSync, actual, [path, ...args])
+        : args[0] === "utf8" ? fact : Buffer.from(fact);
+    }) as typeof actual.readFileSync,
+  };
+});
+beforeEach(() => {
+  unmanagedHost.root = nodeFs.mkdtempSync(join(tmpdir(), "TEST-unmanaged-runner-host-"));
+  vi.stubEnv("SUBSCRIPTION_RUNTIME_SANDBOX_KIND", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  nodeFs.rmSync(unmanagedHost.root, { recursive: true, force: true }); unmanagedHost.root = "";
+});
 
 const execFileAsync = promisify(execFile);
 describe("codex goal runner worker mode", () => {
@@ -45,8 +81,8 @@ describe("codex goal runner worker mode", () => {
       jobId: "TEST-controller", taskId: "TEST-controller", jobRootDir: join(root, "job"),
       workspacePath: join(root, "workspace"), authRootDir: join(root, "auth"),
       promptPath: join(root, "prompt.md"), accounts: codexGoalAccountSlots(["account-a"]),
-      accessBoundary: AccessBoundary.ReadOnly,
-      projectAccessScope: { projectId: "TEST-controller", workspaceRoots: [join(root, "workspace")] },
+      accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
+      projectAccessScope: { projectId: "TEST-controller", workspaceRoots: [join(root, "workspace")], isolatedWorkspaceRoot: join(root, "workspace") },
       sourceEnv: { SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1" },
     };
     try {
@@ -107,14 +143,6 @@ describe("codex goal runner worker mode", () => {
       await writeFile(config.promptPath, "Change the file, run tests, then git commit the changes.\n");
       vi.spyOn(process, "platform", "get").mockReturnValue("linux");
       vi.spyOn(process, "getuid").mockReturnValue(0);
-      vi.spyOn(hostedHostPolicy, "readHostedActivationMode").mockReturnValue(hostedHostPolicy.HostedActivationMode.Disabled);
-      vi.spyOn(hostedHostPolicy, "hasHostedActivationOrigin").mockReturnValue(false);
-      vi.spyOn(hostedHostPolicy, "isHostedContainment").mockReturnValue(false);
-      vi.spyOn(hostedHostPolicy, "assertHostedBaselineIdentity").mockImplementation(() => {});
-      const readFileSync = nodeFs.readFileSync;
-      vi.spyOn(nodeFs, "readFileSync").mockImplementation(((path, ...args) =>
-        path === "/proc/self/cgroup" ? "0::/\n" : Reflect.apply(readFileSync, nodeFs, [path, ...args])
-      ) as typeof nodeFs.readFileSync);
       const createExecutor = vi.fn((options: Parameters<NonNullable<CodexGoalRunDeps["createExecutor"]>>[0]) => {
         expect(options.accounts).toHaveLength(stored.accounts.length);
         for (const account of options.accounts) {

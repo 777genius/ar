@@ -98,15 +98,43 @@ export function registerOrdinaryWriterExtentTests(context: Context): void {
           providerEgressPolicy: codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1) });
         await expect(materializer.materialize({ redactor: new DefaultRedactor(),
           session: sessionArtifactFromCodexAuthJson(codexAuthJsonForAccount("TEST-refresh", "TEST-account")) }))
-          .rejects.toThrow();
+          .rejects.toThrow("hosted_ordinary_writer_extent_invalid");
         expect(prepareHome).toHaveBeenCalledTimes(fault === "home" ? 0 : 1);
         const home = fault === "home" ? outside : extent.homes[0]!.home;
         expect(() => spawnCodexAppServerProcess({ command: "/TEST/codex", args: ["app-server"], cwd: home,
           env: { ...f.sourceEnv, HOME: home, CODEX_HOME: fault === "home" ? outside : codexHome,
-            SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.FullInternetV1 } })).toThrow();
+            SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.FullInternetV1 } }))
+          .toThrow(fault === "home" ? "hosted_activation_evidence_invalid" : "hosted_ordinary_writer_extent_invalid");
         expect(store.read().ordinaryStarts).toHaveLength(1);
         expect(existsSync(join(codexHome, "auth.json"))).toBe(false); expect(existsSync(join(codexHome, "config.toml"))).toBe(false);
         expect(readdirSync(outside)).toEqual([]); expect(context.fixture.spawn).not.toHaveBeenCalled();
+      } finally { f.cleanup(); }
+    });
+    it("materializes both configured account slots within the original lifetime seal", async () => {
+      const f = modernOrdinaryFixture(context);
+      try {
+        const { retained, extent } = reserve(f); enter(retained.start);
+        const materializedHomes: string[] = [];
+        for (const [index, account] of f.config.accounts.entries()) {
+          const cacheKey = codexSessionHomeCacheKey({ profile: f.config.sessionHomeProfile,
+            providerInstanceId: `${f.config.taskId}-${account.name}`,
+            workerId: workerPoolSlotId(codexSafeExecutorId(f.config.workspacePath), index) });
+          const materializer = new CodexWorkerCacheSessionMaterializer({
+            cacheKey: codexWorkerCacheSlotKey(cacheKey, 0), rootDir: join(f.config.jobRootDir, "state/codex-session-cache"),
+            providerEgressPolicy: codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1) });
+          const authJson = codexAuthJsonForAccount(`TEST-refresh-${index}`, `TEST-account-${index}`);
+          try {
+            const home = await materializer.materialize({ redactor: new DefaultRedactor(), session: sessionArtifactFromCodexAuthJson(authJson) });
+            try {
+              expect({ home: home.home, codexHome: home.codexHome }).toEqual(extent.homes[index]);
+              expect(JSON.parse(readFileSync(join(home.codexHome, "auth.json"), "utf8"))).toEqual(JSON.parse(authJson));
+              expect(readFileSync(join(home.codexHome, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
+              materializedHomes.push(home.codexHome);
+            } finally { await home.release(); }
+          } finally { await materializer.dispose(); }
+        }
+        expect(new Set(materializedHomes)).toEqual(new Set(extent.homes.map(home => home.codexHome)));
+        expect(context.fixture.spawn).not.toHaveBeenCalled();
       } finally { f.cleanup(); }
     });
     it("observes pending before heartbeat and keeps an exact-terminal predecessor from releasing its successor", async () => {

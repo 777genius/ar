@@ -127,9 +127,11 @@ it.skipIf(process.platform !== "linux")("preserves protected birth across actual
   const f = await createFixture(), server = createCodexGoalMcpServer();
   const client = new Client({ name: "TEST-protected-refill-birth", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const authRootDir = join(f.root, "auth");
   const registryRootDir = join(f.root, "worker-jobs", "registry"), controllerRoot = join(f.root, "worker-jobs", "TEST-controller");
   const childRoot = join(f.root, "worker-jobs", "TEST-child"), workspacePath = join(f.root, "worktrees", "TEST-child");
   try {
+    mkdirSync(authRootDir, { recursive: true, mode: 0o700 });
     const remote = join(f.root, "origin.git");
     await git(f.root, ["init", "--bare", remote]);
     await git(f.sourceWorkspacePath, ["remote", "add", "origin", remote]);
@@ -137,7 +139,7 @@ it.skipIf(process.platform !== "linux")("preserves protected birth across actual
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     expect(await callToolJson(client, "codex_goal_create_job", {
       registryRootDir, jobId: "TEST-controller", jobRootDir: controllerRoot, taskId: "TEST-controller",
-      workspacePath: f.sourceWorkspacePath, promptPath: join(controllerRoot, "prompt.md"), accounts: ["account-a"],
+      workspacePath: f.sourceWorkspacePath, promptPath: join(controllerRoot, "prompt.md"), accounts: ["account-a"], authRootDir,
       accessBoundary: AccessBoundary.ProjectScopedControl,
       projectAccessScope: { ...createScope(f), registryRoot: registryRootDir, jobIdPrefixes: ["TEST-"],
         tmuxSessionPrefixes: ["TEST-"], allowedBranches: ["main", "test/TEST-*"],
@@ -148,9 +150,9 @@ it.skipIf(process.platform !== "linux")("preserves protected birth across actual
       jobRootDir: childRoot, sourceWorkspacePath: f.sourceWorkspacePath, baseBranch: "main",
       expectedSourceCommit: f.phaseStartSha, newBranch: "test/TEST-child", workspacePath,
       promptPath: join(childRoot, "prompt.md"), promptBody: "TEST fresh controlled preparation.\n",
-      accounts: ["account-a"], startWorker: false, confirmRefill: true, executionMode: "sync",
+      accounts: ["account-a"], authRootDir, startWorker: false, confirmRefill: true, executionMode: "sync",
     });
-    expect(result).toMatchObject({ ok: true, startSkipped: true });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, startSkipped: true });
     expect(await readFile(join(childRoot, "prompt.md"), "utf8")).toBe("TEST fresh controlled preparation.\n");
     expect(await observeProtectedCodexGoalJobBirth(result.manifest as CodexGoalJobManifest)).toEqual({ status: "released" });
   } finally {

@@ -22,7 +22,7 @@ import { researchCustody } from "./research-launch-files";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { readHostedOrdinaryRuntime, readHostedOrdinaryObservationOrigin } from "./hosted-installation-activation";
 
-const invalid = (): never => { throw new Error("hosted_ordinary_writer_extent_invalid"); };
+function invalid(): never { throw new Error("hosted_ordinary_writer_extent_invalid"); }
 const encoded = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");
 type Launch = Readonly<{ command: string; args: readonly string[]; cwd: string }>;
 function launchInputs(launch: Launch, env: Readonly<Record<string, string | undefined>>): ManagedGoalAdmission | undefined {
@@ -32,6 +32,16 @@ function launchInputs(launch: Launch, env: Readonly<Record<string, string | unde
   const flags = parseFlags(args.slice(1));
   if (flag(flags, "--tmux") || option(flags, env, "--tmux-session", []) !== undefined ||
       option(flags, env, "--hosted-lifecycle", []) !== undefined) return undefined;
+  // Legacy inventoried commands may intentionally omit the run configuration.
+  // Only a complete modern launch can publish a seal; leave older owners alone.
+  const requiredInputs: readonly (readonly [string, readonly string[]])[] = [
+    ["--job-root", ["SUBSCRIPTION_RUNTIME_JOB_ROOT"]],
+    ["--task-id", ["SUBSCRIPTION_RUNTIME_TASK_ID", "MEMO_STACK_GOAL_TASK_ID"]],
+    ["--accounts", ["CODEX_ACCOUNTS"]],
+    ["--workspace", ["SUBSCRIPTION_RUNTIME_WORKSPACE_PATH", "MEMO_STACK_GOAL_WORKSPACE_PATH"]],
+    ["--prompt", ["SUBSCRIPTION_RUNTIME_PROMPT_PATH", "MEMO_STACK_GOAL_PROMPT_PATH"]],
+  ];
+  if (requiredInputs.some(([name, envNames]) => !option(flags, env, name, envNames))) return undefined;
   const config = runConfigFromFlags(flags, env, launch.cwd,
     requiredOption(flags, env, "--job-root", ["SUBSCRIPTION_RUNTIME_JOB_ROOT"]),
     requiredOption(flags, env, "--task-id", ["SUBSCRIPTION_RUNTIME_TASK_ID", "MEMO_STACK_GOAL_TASK_ID"]));

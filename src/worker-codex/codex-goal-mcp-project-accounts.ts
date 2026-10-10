@@ -1,3 +1,4 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { listCodexGoalAccountStatuses } from "./codex-goal-ops";
 import { uniqueProjectControlStrings } from "./codex-goal-mcp-project-utils";
 
@@ -73,10 +74,22 @@ export async function projectControlCreateAccountNames(input: {
 
 export async function projectControlRefillAccountNames(input: {
   readonly authRootDir?: string;
+  readonly modelBackend?: CodexModelBackend;
   readonly requestedAccounts: readonly string[];
   readonly allowedAccountIds: readonly string[];
   readonly rotationKey?: string;
 }): Promise<readonly string[]> {
+  if (input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    // MiMo slots are configured names, never OAuth auth.json discoveries.
+    // Reservation capacity and native credential-source admission still apply.
+    const allowed = new Set(input.allowedAccountIds);
+    return rotateProjectControlAccountNames(
+      uniqueProjectControlStrings(input.requestedAccounts).filter((account) =>
+        allowed.size === 0 || allowed.has(account)
+      ),
+      input.rotationKey,
+    );
+  }
   const requestedAccounts = input.requestedAccounts.length
     ? uniqueProjectControlStrings(input.requestedAccounts)
     : await projectControlDefaultAccountNames(input);

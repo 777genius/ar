@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, recordTerminalOutputDecision, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
 import { RunEventProjectionService, RunEventProviderKind, type RunObservationSnapshot } from "@vioxen/subscription-runtime/worker-core";
@@ -96,15 +96,26 @@ async function fixture(options: {
   };
   const summaries: CodexGoalJobSummary[] = [summary];
   const items = [item];
+  // This injected policy fixture explicitly declares released retained owners.
+  // Exact snapshots keep new identities and manifest drift Unknown; native
+  // executor/owner qualification is exercised by the dedicated owner tests.
+  const releasedWriters = new Map<string, CodexGoalJobManifest>();
+  function releaseSyntheticWriter(manifest: CodexGoalJobManifest) {
+    releasedWriters.set(manifest.jobId, structuredClone(manifest));
+  }
+  releaseSyntheticWriter(manifest);
   const deps: CodexProjectAdmissionDeps = {
     listJobs: async () => summaries,
     buildOverviewItems: async () => items,
     readJob: readCodexGoalJob,
+    readWriterWritableRoots: async (current) =>
+      isDeepStrictEqual(releasedWriters.get(current.jobId), current)
+        ? { status: "released" } : { status: "unknown" },
   };
   const input = { registryRootDir, scope: { projectId: "project", jobIdPrefixes: ["project-"] }, deps };
   const gate = codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" });
   const request = { operation: ProjectOperation.StartWorker, workspacePath: requestedWorkspace, ownedPaths: ["new/"] };
-  return { root, workspacePath, manifest, summary, summaries, item, items, handoff, result, resultPath, input, gate, request };
+  return { root, workspacePath, manifest, summary, summaries, item, items, handoff, result, resultPath, input, gate, request, releaseSyntheticWriter };
 }
 
 describe("retained terminal output path-disjoint admission", () => {
@@ -232,6 +243,7 @@ describe("retained terminal output path-disjoint admission", () => {
       f.summaries.push({ ...f.summary, jobId: secondManifest.jobId, manifestPath: join(secondRoot, "job.json") });
       f.items.push({ ...f.item, jobId: secondManifest.jobId });
       await writeFile(join(secondRoot, "job.json"), JSON.stringify(secondManifest));
+      f.releaseSyntheticWriter(secondManifest);
     }
     const paths = [join(f.workspacePath, "held.txt"), join(f.workspacePath, "untracked.txt"), f.resultPath, f.handoff.manifestPath, f.handoff.patchPath, f.summary.manifestPath];
     const before = await Promise.all(paths.map((path) => readFile(path)));
@@ -443,6 +455,8 @@ async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
     workspaceDirty: false, resultExists: false, resultStatus: undefined,
     activeWriterRisk: "none", changedFiles: [] };
   f.items.push(item);
+  // The prepared self remains Unknown to the synthetic owner port. Only its
+  // actual manifest/receipt/artifact shape and held lease establish the target.
   const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
   const request = { operation: ProjectOperation.StartWorker, jobId: manifest.jobId,
     workspacePath: manifest.workspacePath, ownedPaths: ["src/example.ts"] };
@@ -462,6 +476,20 @@ async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
 }
 
 describe("operation-bound retained output admission", () => {
+  it.each(["missing observation port", "unknown owner", "changed owner manifest"] as const)("keeps retained history fenced with %s", async (fault) => {
+    const f = await creationFixture();
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    let deps = f.input.deps;
+    if (fault === "missing observation port") {
+      const { readWriterWritableRoots: _read, ...withoutObservation } = deps;
+      deps = withoutObservation;
+    }
+    if (fault === "unknown owner") deps = { ...deps, readWriterWritableRoots: async () => ({ status: "unknown" }) };
+    if (fault === "changed owner manifest") await writeFile(f.summary.manifestPath,
+      JSON.stringify({ ...f.manifest, promptPath: join(f.manifest.jobRootDir, "changed-prompt.md") }));
+    await expect(codexProjectAdmissionGate({ ...f.input, deps }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
   it.each(["outside scope", "changed scoped identity", "missing parent proof"])("retains the original admission identity across %s mutation races", async (mutation) => {
     const f = await creationFixture();
     await mkdir(join(f.root, "future"));
