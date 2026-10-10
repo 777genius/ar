@@ -1,0 +1,38 @@
+import type { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
+import type { CodexModelBackend } from "../../codex-model-backend";
+import type { CodexMaterializedSession } from "../../codex-json-execution-engine";
+import type { CodexAppServerChildProcessSignaler, CodexAppServerProcessFactory } from "./app-server-process-port";
+import type { CodexAppServerCommandApprovalPolicy, CodexAppServerNativeToolSurface } from "../domain/app-server-types";
+import type { HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import type { CodexAppServerRolloutBudget } from "../domain/app-server-rollout-budget";
+import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
+import type { PublicResearchSourceReader } from "./public-research-source-port";
+import type { CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
+
+export type CodexAppServerClientOptions = {
+  readonly codexBinaryPath: string;
+  readonly childBudget?: ChildExecutionBudget;
+  readonly sourceEnv: Readonly<Record<string, string | undefined>>;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly publicSourceReader?: PublicResearchSourceReader;
+  readonly hostedPermissionProfiles?: boolean;
+  readonly processFactory: CodexAppServerProcessFactory;
+  readonly signalChildProcess: CodexAppServerChildProcessSignaler;
+  readonly session: CodexMaterializedSession;
+  readonly workspacePath: string;
+  readonly executionProfile: ResolvedCodexExecutionProfile;
+  readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
+  readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
+  readonly rolloutBudget?: CodexAppServerRolloutBudget;
+  readonly bypassHookTrust?: boolean;
+  readonly timeoutMs: number;
+  readonly startupTimeoutMs: number;
+  readonly reconnectGraceMs: number;
+  readonly maxOutputBytes: number;
+  readonly abortSignal: AbortSignal;
+  readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
+  readonly modelBackend?: CodexModelBackend;
+};

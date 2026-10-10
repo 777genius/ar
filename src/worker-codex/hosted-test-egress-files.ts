@@ -180,12 +180,12 @@ export async function writeHostedTestEgressGrant(
     const { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } = await import("./hosted-readonly-host-kernel");
     const { pinReferenceFile, referencePath } = await import("./hosted-dependency-legacy-reference-records");
     const { readHostedDependencyEstablishedReceipt, hostedDependencyReceiptHistoryRoot } = await import("./hosted-dependency-receipts");
-    withHostedActivationFence(() => {
+    withHostedActivationFence(fence => {
       const original = readHostedInstallationActivation(), kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       if (original.activation.phase !== HostedActivationPhase.Closed ||
           original.activation.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal)) referenceEnrollmentFailed();
       assertInspectedInstallation(original.installation); assertActivationSession(original.activation,session);
-      assertHostedDependencyQualifiedInventory(); kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
+      assertHostedDependencyQualifiedInventory(); kernel.verifyExclusiveInventory(fence); kernel.verifyDescriptorBoundary();
       const candidate = readHostedDependencyBinding(reference.candidateJobId);
       if (!candidate || candidate.version !== 2 || candidate.jobId === validated.jobId ||
           candidate.installationId !== original.installation.installationId || candidate.runtimeSha !== original.installation.runtimeSha) referenceEnrollmentFailed();
@@ -265,7 +265,7 @@ export async function writeHostedTestEgressGrant(
           assertActivationSession(current.activation,kernel.operatorSession()); assertInspectedInstallation(current.installation);
           assertHostedDependencyPhysicalWorkspace(candidate); assertHostedDependencyPhysicalWorkspace(binding);
           assertHostedDependencyToolProfileFiles(candidate.toolProfile,candidate.jobRootDir);
-          assertHostedDependencyQualifiedInventory(); kernel.verifyExclusiveInventory();
+          assertHostedDependencyQualifiedInventory(); kernel.verifyExclusiveInventory(fence);
           assertReferenceHistoryAbsent();
           absent(`/var/lib/subscription-runtime-host-policy/ordinary-origins/${hostedTestEgressGrantName(validated.jobId)}`);
           for (const suffix of ["reference","reference-start","reference-entry","reference-result","reference-release","comparison"] as const) absent(referencePath(operationId,suffix));

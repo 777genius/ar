@@ -2,20 +2,22 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DefaultRedactor, SessionExecutionUseDisposition, type ManagedRunStorePort, type SessionStorePort, type SessionExecutionUse } from "@vioxen/subscription-runtime/core";
+import { DefaultRedactor, SessionExecutionUseDisposition, type ManagedRunStorePort, type SessionStorePort, type SessionExecutionUse, type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { InMemorySessionStore } from "../../core/testing/fakes";
+import { AppServerUsageError } from "../../provider-codex/app-server/domain/app-server-usage-error";
 import { CodexJsonAgentDriver } from "../../provider-codex/codex-json-agent-driver";
 import { sessionArtifactFromCodexAuthJson } from "../../provider-codex/codex-auth-json-codec";
 import type { CodexExecutionEngine, CodexExecutionWaitingForInputResult } from "../../provider-codex/codex-json-execution-engine";
 import { FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
 import { LocalFileManagedRunStore } from "../file-backend-codex-managed-run-store";
 import { StaticRunner, codexAuthJson, waitUntil } from "./file-backend-codex-worker-test-support";
+const nativeWebEvidence:NativeWebEvidence = {turns:[{threadId:"TEST-thread",acknowledgedTurnId:"TEST-turn",records:[],unknown:false,truncated:false}],truncated:false};
 function barrier() {
   let release!:() => void; const pending = new Promise<void>(resolve => { release = resolve; });
   return {pending,release};
 }
 // Real driver private waiting cache + coordinator/domain ports. This creates NO original-origin/home authority.
-async function fixture(mode:"failed"|"completed"|"waiting",rejectCompletion=false) {
+async function fixture(mode:"failed"|"completed"|"waiting",rejectCompletion=false,nativeWeb?:NativeWebEvidence) {
   const root = await mkdtemp(join(tmpdir(),"managed-use-order-")), events:string[] = [], write = barrier(), persist = barrier(), exported = barrier(), complete = barrier();
   const redactor = new DefaultRedactor(), runner = new StaticRunner({exitCode:0,stdout:"",stderr:""}), clock = {now:() => new Date("2026-10-06T00:00:00Z"),monotonicMs:() => performance.now()};
   const first = sessionArtifactFromCodexAuthJson(codexAuthJson("SYNTHETIC_INITIAL_TOKEN")), next = sessionArtifactFromCodexAuthJson(codexAuthJson("SYNTHETIC_NEXT_TOKEN"));
@@ -23,7 +25,7 @@ async function fixture(mode:"failed"|"completed"|"waiting",rejectCompletion=fals
     request:{id:"request-1",kind:"missing_context",audience:"orchestrator",question:"continue"},
     resumeHandle:{providerId:"codex",runId:"test-run",workspacePath:root}};
   const engine:CodexExecutionEngine = {kind:"test-domain-engine",capabilities:{supportsStructuredOutput:true,supportsJsonEvents:true,supportsThreadResume:true,requiresSchemaFile:false},
-    run:async () => waiting,resume:async () => { if (mode === "failed") throw new Error("synthetic resume failure"); return mode === "waiting" ? waiting : {outputText:"done",warnings:[]}; }};
+    run:async () => waiting,resume:async () => { if (mode === "failed") throw nativeWeb === undefined ? new Error("synthetic resume failure") : new AppServerUsageError(new Error("synthetic resume failure"),undefined,true,nativeWeb); return mode === "waiting" ? waiting : {outputText:"done",warnings:[]}; }};
   let driver:CodexJsonAgentDriver;
   const use:SessionExecutionUse = {complete:async () => { events.push("complete.begin"); await complete.pending;
     if (rejectCompletion) throw new Error("old-use-held"); events.push("complete.done"); return driver.retainsSessionExecutionUse(use) ? SessionExecutionUseDisposition.Retained : SessionExecutionUseDisposition.Discharged; }};
@@ -59,11 +61,11 @@ describe("managed resume exact-use completion ordering", () => {
       expect(f.events).toEqual(["materialized.release","write.begin","write.done","export.begin","export.done","complete.begin","complete.done","recovery"]);
     } finally { await f.cleanup(); }
   });
-  it("does not dispatch recovery when exact old-use completion rejects", async () => {
-    const f = await fixture("failed",true); const pending = f.resume(); void pending.catch(() => {});
+  it.each([false,true])("does not dispatch recovery when exact old-use completion rejects (NativeWeb: %s)", async withNativeWeb => {
+    const f = await fixture("failed",true,withNativeWeb ? nativeWebEvidence : undefined); const pending = f.resume(); void pending.catch(() => {});
     try {
       await waitUntil(() => f.events.includes("write.begin")); f.write.release(); await waitUntil(() => f.events.includes("export.begin")); f.exported.release(); await waitUntil(() => f.events.includes("complete.begin")); f.complete.release();
-      await expect(pending).rejects.toMatchObject({details:{code:"unknown_runtime_failure",sessionFinalization:"pending"}}); expect(f.events).not.toContain("complete.done"); expect(f.events).not.toContain("recovery");
+      await expect(pending).rejects.toMatchObject({details:{code:"unknown_runtime_failure",sessionFinalization:"pending"},...(withNativeWeb ? {nativeWeb:nativeWebEvidence} : {})}); expect(f.events).not.toContain("complete.done"); expect(f.events).not.toContain("recovery");
     } finally { await f.cleanup(); }
   });
   it("holds auth export and use completion until resumed direct session write finishes", async () => {
