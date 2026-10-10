@@ -1,4 +1,6 @@
 import { mkdtemp } from "node:fs/promises";
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { hostedMimoCodingGitReadPaths } from "./hosted-mimo-coding-git";
 import { dirname, join } from "node:path";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
@@ -24,7 +26,7 @@ const consumedStarts = new Set<string>();
 
 /** Fixed public configuration, never supplied by a caller or read from project
  * files. Native activation/network qualification remain separately closed. */
-function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string): string {
+function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string, gitReadPaths: readonly string[]): string {
   const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1);
   return [
     'cli_auth_credentials_store = "file"', 'approval_policy = "never"',
@@ -41,9 +43,29 @@ function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string): st
       envKeyName: codexMimoApiKeyEnvVarDefault }),
     "request_max_retries = 0", "stream_max_retries = 0", "supports_websockets = false",
     codexProviderEgressConfigToml(policy, { namedPermissions: true }),
-    hostedCodexPermissionProfilesToml(policy, [process.execPath, origin.codexBinaryPath]),
+    hostedCodexPermissionProfilesToml(policy, [process.execPath, origin.codexBinaryPath, ...gitReadPaths]),
   ].join("\n") + "\n";
 }
+
+const codingGitHost = {
+  exists(path: string): boolean { try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } },
+  isFile(path: string): boolean { try { return lstatSync(path).isFile() && realpathSync(path) === path; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } },
+  isDirectory(path: string): boolean { return lstatSync(path).isDirectory() && realpathSync(path) === path; },
+  read(path: string): string {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = fstatSync(fd);
+      if (!before.isFile() || before.size > 65536 || realpathSync(path) !== path) throw new Error("mimo_coding_git_binding_invalid");
+      const bytes = Buffer.alloc(before.size);
+      if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length ||
+          readSync(fd, Buffer.alloc(1), 0, 1, bytes.length) !== 0) throw new Error("mimo_coding_git_binding_invalid");
+      const after = fstatSync(fd), current = lstatSync(path);
+      if (bytes.length !== before.size || before.dev !== current.dev || before.ino !== current.ino ||
+          before.ctimeMs !== after.ctimeMs || before.ctimeMs !== current.ctimeMs) throw new Error("mimo_coding_git_binding_invalid");
+      return bytes.toString("utf8");
+    } finally { closeSync(fd); }
+  },
+};
 
 /** Full independent actual-runtime proof is captured before the shared key is
  * opened. The HTTP fast path uses its branded retained-current observation. */
@@ -62,6 +84,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   if (origin.model !== input.model || origin.maxGoalTurns !== input.lifetime.maxGoalTurns ||
       remaining <= 0 || remaining > origin.taskTimeoutMs) throw new Error("hosted_mimo_coding_proxy_binding_invalid");
   assertHostedMimoCodingWorkerOriginCurrent(origin);
+  const gitReadPaths = hostedMimoCodingGitReadPaths(origin.workspacePath, codingGitHost);
   if (consumedStarts.has(origin.digest)) throw new Error("hosted_mimo_coding_proxy_start_consumed");
   consumedStarts.add(origin.digest);
   const bytes = Buffer.from(resolveHostedMimoCodingProxyCredential(origin, input.redactor));
@@ -94,7 +117,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   input.lifetime.signal.addEventListener("abort", abort, { once: true });
   try {
     material.assertCurrent();
-    const configToml = codingConfig(origin, proxy.baseUrl);
+    const configToml = codingConfig(origin, proxy.baseUrl, gitReadPaths);
     input.redactor.registerSecret(proxy.capability, "hosted-mimo-start-proxy");
     unregister = registerHostedMimoCodingBootstrap(proxy.capability, frame => {
       material.assertCurrent();

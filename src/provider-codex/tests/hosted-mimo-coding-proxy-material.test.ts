@@ -1,3 +1,7 @@
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { afterEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ read: vi.fn(), current: vi.fn(), credential: vi.fn(), start: vi.fn() }));
 vi.mock("../hosted-mimo-worker-origin", () => ({ readHostedMimoCodingWorkerOrigin: mocks.read, assertHostedMimoCodingWorkerOriginCurrent: mocks.current }));
@@ -91,4 +95,62 @@ it("sets the fixed guest shell environment without inheriting ambient paths or c
     expect(bootstrap.configToml).not.toContain("TEST-ambient-value-must-not-inherit");
     expect(policy.join("\n")).not.toContain(codexMimoApiKeyEnvVarDefault);
   } finally { await material?.close(); }
+});
+
+
+it("keeps linked-worktree Git discovery available through the inner read-only permission projection", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "TEST-mimo-inner-git-")));
+  const source = join(root, "source"), workspace = join(root, "workspaces/worker");
+  const git = (args: string[]) => execFileSync("git", args, { stdio: "pipe", env: {
+    ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "iliya", GIT_AUTHOR_EMAIL: "iliyazelenkog@gmail.com",
+    GIT_COMMITTER_NAME: "iliya", GIT_COMMITTER_EMAIL: "iliyazelenkog@gmail.com",
+  } });
+  const f = setup("2".repeat(64)); f.origin.workspacePath = workspace;
+  let material: Awaited<ReturnType<typeof createHostedMimoCodingProxyMaterial>> = null;
+  try {
+    mkdirSync(source); mkdirSync(join(root, "workspaces"));
+    git(["init", "--quiet", source]); writeFileSync(join(source, "tracked.txt"), "before\n");
+    git(["-C", source, "add", "tracked.txt"]); git(["-C", source, "commit", "--quiet", "-m", "test: linked worktree fixture"]);
+    git(["-C", source, "worktree", "add", "--quiet", "-b", "TEST-current", workspace]);
+    writeFileSync(join(workspace, "tracked.txt"), "after\n");
+    material = await createHostedMimoCodingProxyMaterial(f.input);
+    const bootstrap = hostedMimoCodingBootstrapForFrame({ command: "/opt/codex", cwd: workspace, env: {
+      CODEX_HOME: "/job/home/mimo-1/codex-home", [codexMimoApiKeyEnvVarDefault]: f.proxy.capability,
+    } })!;
+    const profile = bootstrap.configToml.split("[permissions.hosted-project-write.filesystem]\n")[1]!.split("\n[")[0]!;
+    expect(profile).toContain('":root" = "deny"');
+    const selected = [...profile.matchAll(/^(".*") = "read"$/gm)].map(match => JSON.parse(match[1]!) as string)
+      .filter(path => path.startsWith(source + "/.git/"));
+    const own = join(source, ".git/worktrees/worker");
+    expect(selected).toEqual([...['HEAD', 'index', 'commondir', 'gitdir'].map(leaf => join(own, leaf)),
+      join(source, ".git/objects"), join(source, ".git/refs")]);
+    expect(profile).not.toContain(`${JSON.stringify(join(source, ".git"))} =`);
+    for (const leaf of ["config", "hooks", "worktrees", "worktrees/sibling", "HEAD"]) {
+      expect(profile).not.toContain(`${JSON.stringify(join(source, ".git", leaf))} =`);
+    }
+    expect(profile).not.toMatch(/^".*\/.git\/.*" = "write"$/m);
+    expect(bootstrap.configToml).toContain('".git" = "read"');
+    const projected = join(root, "inner"), projectedWorkspace = join(projected, "workspaces/worker");
+    cpSync(workspace, projectedWorkspace, { recursive: true });
+    writeFileSync(join(projectedWorkspace, ".git"), `gitdir: ${join(projected, "source/.git/worktrees/worker")}\n`);
+    // The previous config exposes no external Git metadata: normal discovery fails.
+    expect(() => git(["-C", projectedWorkspace, "diff", "--check"])).toThrow();
+    for (const path of selected) {
+      const target = join(projected, path.slice(root.length + 1));
+      mkdirSync(target.slice(0, target.lastIndexOf("/")), { recursive: true });
+      cpSync(path, target, { recursive: true });
+    }
+    // Normal discovery reads .git -> own HEAD/commondir -> common objects/refs.
+    expect(git(["-C", projectedWorkspace, "diff", "--check"]).length).toBe(0);
+    expect(git(["-C", projectedWorkspace, "diff"]).toString()).toContain("+after");
+    expect(readFileSync(join(workspace, ".git"), "utf8")).toBe(`gitdir: ${own}\n`);
+    // A changed pointer cannot expand permissions or open the credential.
+    await material?.close(); material = null;
+    writeFileSync(join(workspace, ".git"), `gitdir: ${join(source, ".git/worktrees/sibling")}\n`);
+    const denied = setup("3".repeat(64)); denied.origin.workspacePath = workspace;
+    mocks.credential.mockClear(); mocks.start.mockClear();
+    await expect(createHostedMimoCodingProxyMaterial(denied.input)).rejects.toThrow("mimo_coding_git_binding_invalid");
+    expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+  } finally { await material?.close(); rmSync(root, { recursive: true, force: true }); }
 });
