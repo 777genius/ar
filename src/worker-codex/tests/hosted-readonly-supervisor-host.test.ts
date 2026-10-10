@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { HostedCustodyPhase, HostedCustodyRequirement, HostedCustodyReservationState,
   parseHostedCustodyEpoch, type HostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
@@ -76,8 +76,17 @@ vi.mock("../hosted-dependency-cold-controller", () => {
     revokeOriginalHostedDependencyColdState: unexpectedColdCall,
   } satisfies Record<keyof typeof import("../hosted-dependency-cold-controller"), typeof unexpectedColdCall>;
 });
-vi.mock("../hosted-readonly-host-kernel", async original => ({
-  ...await original<typeof import("../hosted-readonly-host-kernel")>(),
+const kernelSource = vi.hoisted(() => ({ actual: undefined as typeof import("../hosted-readonly-host-kernel") | undefined }));
+function actualKernelSource(): typeof import("../hosted-readonly-host-kernel") {
+  if (!kernelSource.actual) throw new Error("TEST kernel Source delegates not initialized");
+  return kernelSource.actual;
+}
+vi.mock("../hosted-readonly-host-kernel", () => ({
+  get HostedReadonlyRuntimeRole() { return actualKernelSource().HostedReadonlyRuntimeRole; },
+  completionPath: (...args: Parameters<typeof import("../hosted-readonly-host-kernel").completionPath>) => actualKernelSource().completionPath(...args),
+  completionBytes: (...args: Parameters<typeof import("../hosted-readonly-host-kernel").completionBytes>) => actualKernelSource().completionBytes(...args),
+  ordinaryCompletionPath: (...args: Parameters<typeof import("../hosted-readonly-host-kernel").ordinaryCompletionPath>) => actualKernelSource().ordinaryCompletionPath(...args),
+  ordinaryCompletionBytes: (...args: Parameters<typeof import("../hosted-readonly-host-kernel").ordinaryCompletionBytes>) => actualKernelSource().ordinaryCompletionBytes(...args),
   readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()), HostedReadonlyHostKernel: class {
   runtimeInvocation(_record: unknown, command: string, args: readonly string[]) { return { command, args }; }
   verifyRuntimeOwner() {}
@@ -90,6 +99,9 @@ vi.mock("../hosted-readonly-host-kernel", async original => ({
   verifyDescriptorBoundary() { facts.order.push("descriptors"); facts.descriptors(); }
   requestStop(...args: unknown[]) { facts.order.push("stop"); facts.stop(...args); }
 } }));
+beforeAll(async () => {
+  kernelSource.actual = await vi.importActual<typeof import("../hosted-readonly-host-kernel")>("../hosted-readonly-host-kernel");
+});
 beforeEach(() => {
   vi.restoreAllMocks(); vi.resetAllMocks(); facts.locked = false; facts.order = []; facts.activationPhase = "EXCLUSIVE";
   facts.epoch = parseHostedCustodyEpoch({ schemaVersion: 1, hostId: "host", bootId: "boot", supervisorId: "supervisor",
