@@ -167,14 +167,13 @@ function parseResearchDirectory(value: unknown, path: string): ResearchDirectory
   return Object.freeze({ path, device: dir.device as number, inode: dir.inode as number });
 }
 export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRunConfig {
-  // Parsing a frozen operator plan is not executable coding authority. Root
-  // assembly and the independently verified credential proxy remain required.
-  if (request.hostedProfile === HostedMimoProfile.CodingV1) throw new Error("hosted_mimo_coding_activation_closed");
+  // Frozen profile selection is not authority: independent registered grant,
+  // credential proxy and sealed root checks remain required before execution.
   // Match the CLI's fixed temp contract; scratch remains logically jobRoot/tmp.
   const runtimeTempRoot = join(request.jobRootDir, "tmp"), agentTempRoot = join(runtimeTempRoot, "agent");
   return { ...request, accounts: request.accounts.map(name => ({ name })),
     executionEngine: request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? "app-server" : "app-server-goal", modelBackend: request.modelBackend ?? CodexModelBackend.OpenAiChatGpt,
-    ...(request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? { workerReportMode: "structured-output", maxGoalTurns: 8,
+    ...(request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? { workerReportMode: "structured-output", maxGoalTurns: request.hostedProfile === HostedMimoProfile.CodingV1 ? request.maxGoalTurns ?? 64 : 8,
       maxReconnectRetriesPerAccount: 0, safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" as const,
         retryOnCapacity: false, retryOnAccountUnavailable: false, retryOnReconnectRequired: false } } : {}),
     stateRootDir: join(request.jobRootDir, "state"), runtimeHomeRootDir: join(request.jobRootDir, "home"),

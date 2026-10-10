@@ -10,7 +10,7 @@ import { researchHash, researchInvalid, researchPath, researchRead } from "./res
 import { readKernelMountTable } from "./host-scratch-mount";
 import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
 
-import { assertResearchMimoCodingRootActivation, researchMimoCodingCodexHome, researchMimoCodingLauncherArguments, researchMimoCodingPrivateHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
+import { researchMimoCodingCodexHome, researchMimoCodingLauncherArguments, researchMimoCodingPrivateHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
 import { normalizeResearchAssemblyFailure } from "./research-launch-diagnostics";
 
 const now = (): number => Number(process.hrtime.bigint() / 1_000_000n);
@@ -72,7 +72,6 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
   assertResearchProviderRootIdentity();
   if (!Number.isSafeInteger(deadline) || deadline <= now()) researchInvalid();
   const current = researchCurrentStart(jobId), remaining = deadline - now();
-  assertResearchMimoCodingRootActivation(current.spec.request);
   if (remaining <= 0 || remaining > researchProviderSetupAllowanceMs(current.spec.request)) researchInvalid();
   const reservation = readResearchProviderReservation(current.directory, unit);
   if (reservation.specSha256 !== researchHash(current.bytes)) researchInvalid();

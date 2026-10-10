@@ -1,6 +1,6 @@
-# Standalone hosted MiMo worker qualification
+# Legacy standalone hosted MiMo research Worker qualification
 
-For the registered project broker route, see [Registered project MiMo workers](hosted-mimo-project-workers.md). The instructions below qualify the separate standalone path.
+For the registered project broker route, see [Registered project MiMo workers](hosted-mimo-project-workers.md). The instructions below qualify the separate legacy standalone research Worker path with eight turns and bounded file tools. They do not qualify CodingV1 or native shell/build/test capability. Fresh registered project launches use CodingV1/64; qualify the exact deployed Coding artifact separately before enabling it.
 
 This narrow path uses the existing research owner and its runtime/provider services on a shared host with no installed global/managed activation. Controller, Child, ordinary MiMo and unowned contained launches remain closed. It is not a controller activation.
 

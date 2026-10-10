@@ -1,4 +1,4 @@
-# Registered project MiMo workers
+# Registered project MiMo coding workers
 
 Agents select MiMo through the existing `codex_goal_project_refill_worker` or `codex_goal_project_create_job` MCP tools. There is no separate credential argument or provider process to launch manually. The project broker reserves the account, verifies the registered manifest and launch-admission receipt, and submits the owned runtime/provider services.
 
@@ -23,17 +23,17 @@ The controller's `projectAccessScope.allowedAccountIds` must explicitly contain 
 
 The broker must run as the initial root operator on the Linux host with the exact installed runtime and fixed shared MiMo credential prepared by the supported host installation procedure. Namespace-local root, a local macOS MCP process and an unprivileged SSH session cannot submit this native route. Credential bytes are admitted independently at provider launch and delivered through the owned stdin frame. Do not copy them into a project, prompt, environment argument or account auth file.
 
-This registered Worker route is separate from global hosted activation. It does not activate MiMo controllers, child spawning or unowned ordinary MiMo launches. Hosts with conflicting installed global/managed authority continue to reject this research owner route. Only fresh registered launches with current admission authority are supported; unsupported continuation, checkpoint publishing and caller execution overrides fail before launch.
+This registered CodingV1 route is separate from global hosted activation. It does not activate MiMo controllers, child spawning or unowned ordinary MiMo launches. Hosts with conflicting installed global/managed authority continue to reject this research owner route. Only fresh registered launches with current admission authority are supported; unsupported continuation, checkpoint publishing and caller execution overrides fail before launch.
 
 ## Capabilities and completion
 
-The MiMo worker can read, search and edit files within its admitted workspace using bounded MCP tools. Native shell execution, arbitrary command execution, browser/network tools, delegation and project instruction loading are disabled. This means it can produce code changes and reports, but cannot run a build, tests or a shell itself. The orchestrating agent runs those checks through its separately authorized execution tools. The model endpoint remains the fixed MiMo token-plan endpoint.
+Fresh registered MiMo workers use the source-owned CodingV1 profile with exactly 64 goal turns. The independently authenticated origin and sealed process factory enable native shell, unified execution and code editing in the admitted workspace, so the worker can run project builds and tests. Managed public Internet access remains separate from filesystem and credential containment: host-private, loopback, link-local and metadata destinations are denied. The raw shared credential remains in the host-owned proxy, outside the provider process and workspace. Arbitrary MCP servers, apps, hooks, memory, delegation, recursive children and interactive input remain disabled. A caller-selected profile or tool flag does not authorize execution.
 
-Each worker has one account cycle, one attempt, at most eight goal turns, no reconnect/prewarm/continuation, and a finite task deadline. The registry owns the canonical durable handoff sink; callers cannot choose an external sink. Completion reconciles the same runtime/provider attempt and publishes the structured outcome plus the existing handoff artifacts. A partial or failed result remains partial or failed.
+Each worker has one account cycle, one attempt, no reconnect/prewarm/continuation, and a finite task deadline. The registry owns the canonical durable handoff sink; callers cannot choose an external sink. Completion reconciles the same runtime/provider attempt and publishes the structured outcome plus the existing handoff artifacts. A partial or failed result remains partial or failed.
 
 Use the existing project status and stop tools for the same registered job. A submission timeout is uncertain: reconcile its retained attempt before retrying. Never replace its job ID, remove its ownership records or launch an unmanaged replacement to work around uncertainty.
 
-Run qualification only in newly allocated TEST projects, not existing user repositories. A standalone worker proof does not qualify the registered project broker, scope, reservation and finalization path; validate those boundaries separately with the exact deployed revision.
+Deploy this capability only after exact-artifact native sandbox qualification and an uninstrumented real model Coding E2E, including native shell/build/tests, canonical handoff and owned shutdown. A TEST-only instrumented artifact does not qualify a production release. Run qualification only in newly allocated TEST projects, not existing user repositories. A standalone worker proof does not qualify the registered project broker, scope, reservation and finalization path; validate those boundaries separately with the exact deployed revision.
 
 ## Remote agents and the trusted bridge
 
@@ -96,3 +96,7 @@ Preparation validates enabled routing and proof before creating fresh protected 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
 
 Preparation requires the owner identity exactly `iliya` / `iliyazelenkog@gmail.com`. Before privileged Git inspection it validates the complete local `.git` metadata tree, rejects linked/external Git stores and executable transport/include/filter configuration, and uses inert Git environment/flags that disable fsmonitor, hooks and inherited configuration. The source sandbox must be an actual directory represented by tracked files, and must still exist after clone; an empty or ignored-only directory is refused.
+
+## Availability across projects
+
+The capability applies to every enabled project enrolled through the protected preparation/onboarding procedure above. It does not silently enroll projects, widen existing controller scopes or override disabled markers. Install the exact qualified runtime and restricted ingress closure, enroll each project/workstream with its reviewed source and explicit account-q scope, then configure its local route. Agent requests use the ordinary Create/Start/Status/Stop tools; no credential, profile or shell argument is required. Legacy retained research Worker attempts remain compatible with their original eight-turn file-tool policy and are not Coding workers.

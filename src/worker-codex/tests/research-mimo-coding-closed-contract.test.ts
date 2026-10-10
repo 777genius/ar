@@ -7,14 +7,19 @@ const request = { schemaVersion: 1, jobId: "TEST-coding", taskId: "TEST-coding",
 function grant(profile: HostedMimoProfile.Worker | HostedMimoProfile.CodingV1) {
   return parseResearchGrant({ schemaVersion: 1, profileId: CodexProviderEgressProfileId.MimoTokenPlan, hostedProfile: profile, jobId: request.jobId, jobRootDir: request.jobRootDir, workspacePath: request.workspacePath, grantId: "11111111-1111-1111-1111-111111111111", jobDirectory: { path: request.jobRootDir, device: 1, inode: 2 }, workspaceDirectory: { path: request.workspacePath, device: 1, inode: 3 } });
 }
-describe("closed hosted MiMo coding profile", () => {
+describe("hosted MiMo coding profile and authority", () => {
   it("freezes the explicit coding default and finite overrides into request hashes", () => {
     const selected = parseResearchOperatorRequest({ ...request, hostedProfile: HostedMimoProfile.CodingV1 });
     expect(selected.maxGoalTurns).toBe(64);
     const changed = parseResearchOperatorRequest({ ...selected, maxGoalTurns: 256 });
     expect(researchHashRequest(selected)).not.toBe(researchHashRequest(changed));
     expect(Object.isFrozen(selected)).toBe(true);
-    expect(() => researchRunConfig(selected)).toThrow("hosted_mimo_coding_activation_closed");
+    expect(researchRunConfig(selected).maxGoalTurns).toBe(64);
+    expect(researchRunConfig(changed).maxGoalTurns).toBe(256);
+  });
+  it.each([1, 64, 256])("preserves the parsed sealed coding turn bound %s", maxGoalTurns => {
+    const selected = parseResearchOperatorRequest({ ...request, hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns });
+    expect(researchRunConfig(selected).maxGoalTurns).toBe(maxGoalTurns);
   });
   it.each([0, 257, 1.5, "64", null])("rejects invalid coding turn bound %s", maxGoalTurns => {
     expect(() => parseResearchOperatorRequest({ ...request, hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns })).toThrow();
