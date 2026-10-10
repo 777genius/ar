@@ -38,6 +38,34 @@ describe("durable terminal handoff packet", () => {
     ));
   });
 
+  // RED: authority revocation still creates/chmods the requested sink or allows
+  // a packet rename. Check actual files/modes, not merely callback invocation.
+  it("denies revoked publication before sink permission or file effects", async () => {
+    const fixture = await createFixture();
+    const sink = join(fixture.root, "TEST-foreign-source");
+    await mkdir(sink, { mode: 0o755 });
+    await writeFile(join(sink, "TEST-preserved-source.txt"), "TEST original source");
+    await expect(materializeDurableCodexGoalHandoffPacket({ workerJobId: "TEST-worker", taskId: "TEST-task",
+      workspacePath: fixture.workspace, durableRootDir: sink,
+      publicationAuthority: { assertPublicationAuthorized: async () => { throw new Error("TEST-revoked"); } },
+    })).rejects.toThrow("TEST-revoked");
+    expect((await stat(sink)).mode & 0o777).toBe(0o755);
+    expect(await readFile(join(sink, "TEST-preserved-source.txt"), "utf8")).toBe("TEST original source");
+  });
+
+  it("denies authority lost during capture before durable packet publication", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.workspace, "tracked.txt"), "TEST dirty source\n");
+    let authorized = true;
+    await expect(materializeDurableCodexGoalHandoffPacket({ workerJobId: "TEST-worker", taskId: "TEST-task",
+      workspacePath: fixture.workspace, durableRootDir: fixture.durableRoot,
+      publicationAuthority: { assertPublicationAuthorized: async () => { if (!authorized) throw new Error("TEST-revoked"); } },
+      testHooks: { beforePublish: async () => { authorized = false; } },
+    })).rejects.toThrow("TEST-revoked");
+    expect(await readDirectoryNames(fixture.durableRoot)).toEqual([]);
+    expect(await readFile(join(fixture.workspace, "tracked.txt"), "utf8")).toBe("TEST dirty source\n");
+  });
+
   it("preserves mixed index and worktree layers and reconstructs them exactly", async () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.workspace, "mixed.txt"), "staged\n");

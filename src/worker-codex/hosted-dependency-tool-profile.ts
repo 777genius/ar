@@ -263,7 +263,7 @@ function usableSources(inputs:HostedDependencyKeyInputs,workspace:DependencyWork
     const pin=fields.directories.find(value=>value.path===relative);if(!pin || !relative)fail();
     return Object.freeze({canonicalPath:join(workspace.canonicalPath,relative),identity:Object.freeze({dev:pin.dev,ino:pin.ino})});
   });
-  const ancestors=fields.ancestors.map(pin=>Object.freeze({canonicalPath:join(workspace.canonicalPath,pin.path),identity:Object.freeze({dev:pin.dev,ino:pin.ino})}));
+  const ancestors=fields.ancestors.map(pin=>Object.freeze({canonicalPath:pin.path,identity:Object.freeze({dev:pin.dev,ino:pin.ino})}));
   if(roots.length>128 || ancestors.length>128 || roots.some((root,index)=>roots.slice(index+1).some(other=>other.canonicalPath.startsWith(root.canonicalPath+"/"))))fail();
   return {roots:Object.freeze(roots),ancestors:Object.freeze(ancestors)};
 }

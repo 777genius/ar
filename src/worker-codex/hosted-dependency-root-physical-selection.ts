@@ -21,6 +21,7 @@ import { assertHostedDependencyRootDirectoryFacts } from "./hosted-dependency-ro
 import { rootIdentity } from "./hosted-dependency-current-facts";
 import { sameRootDescriptorStat as sameStat } from "./hosted-dependency-root-physical-facts";
 import { assertRootQualificationFacts, assertRootConfigAncestorFacts, parseRootPreparationFacts, parseOrdinaryRootPreparationFacts } from "./hosted-dependency-root-provenance-facts";
+import { freezeFacts } from "./hosted-dependency-immutable-facts";
 const root = "/var/lib/subscription-runtime-host-policy";
 const hash = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const encode = (value:unknown) => Buffer.from(JSON.stringify(value)+"\n");
@@ -63,7 +64,7 @@ export function readOriginalHostedDependencyRootReady(context:CurrentHostedDepen
     committed=receipts.getCommittedReady(binding.workspace,current.revision); if (!encode(current).equals(encode(committed.receipt))) invalid();
   } finally { receipts.close(); }
   if (!sameDependencyAttempt(assertCurrentHostedDependencyAttempt(context,fence,phase).attempt,actual.attempt)) invalid();
-  return committed;
+  return freezeFacts(committed);
 }
 /** Fixed current-origin physical read model. No record/path/profile/FD DTO or
  * callback is accepted. All selected material comes from the actual parent and
@@ -105,11 +106,11 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
   const rechecked=currentPreparationReceipt(context,fence,phase,record);
   if(!sameDependencyAttempt(after.attempt,attempt) || !encode(rechecked).equals(encode(committed)) ||
     !fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536).bytes.equals(selected.bytes) || remaining()<=0)invalid();
-  const common={reference:selected.reference,identity,rootGit};
+  const common={reference:freezeFacts(selected.reference),identity,rootGit};
   if(record.version===2 || record.version===3) {
     if(committed.receipt.state!==DependencyReceiptState.Ready)invalid();
     const ready=readOriginalHostedDependencyRootReady(context,fence,phase);
-    return {...common,admission:DependencyToolReadyReadStatus.Ready as const,record,ready};
+    return {...common,admission:DependencyToolReadyReadStatus.Ready as const,record:freezeFacts(record),ready};
   }
   const latest=readCurrentHostedDependencyRootQualification(fence);
   if((record.version===6 || record.version===7 ? latest.status!==DependencyToolReadyReadStatus.Baseline : latest.status!==DependencyToolReadyReadStatus.Usable) ||
@@ -118,10 +119,10 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
     !encode(latest.receipt).equals(encode(committed.receipt)) || !encode(latest.execution).equals(encode(record.execution)))invalid();
   if(record.version===6 || record.version===7) {
     const baseline=readCurrentHostedDependencyGenerationBaseline(context,fence);if(!baseline)invalid();
-    return {...common,admission:DependencyToolReadyReadStatus.Baseline as const,record,baselineReady:baseline.ready};
+    return {...common,admission:DependencyToolReadyReadStatus.Baseline as const,record:freezeFacts(record),baselineReady:freezeFacts(baseline.ready)};
   }
-  const unverified=readHostedDependencyUsableReceipt(context,fence,phase).receipt;
-  return {...common,admission:DependencyToolReadyReadStatus.Usable as const,record,unverified};
+  const unverified=freezeFacts(readHostedDependencyUsableReceipt(context,fence,phase).receipt);
+  return {...common,admission:DependencyToolReadyReadStatus.Usable as const,record:freezeFacts(record),unverified};
 }
 function currentPreparationReceipt(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,
   phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running,
@@ -131,4 +132,14 @@ function currentPreparationReceipt(context:CurrentHostedDependencyOrigin,fence:H
     const baseline=readCurrentHostedDependencyGenerationBaseline(context,fence);if(!baseline)invalid();return baseline.ready;
   }
   return readHostedDependencyUsableReceipt(context,fence,phase).receipt;
+}
+
+import type { RootPurposeState } from "./hosted-managed-dependency-session-state";
+const currentRootReady=readOriginalHostedDependencyRootReady;
+export function readCurrentHostedDependencyRootCommittedFacts(origin:CurrentHostedDependencyOrigin,fence:HostedActivationFence,state:RootPurposeState,
+  phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running) {
+  const current=state.admission===DependencyToolReadyReadStatus.Ready ? currentRootReady(origin,fence,phase) :
+    state.admission===DependencyToolReadyReadStatus.Baseline ? readCurrentHostedDependencyGenerationBaseline(origin,fence)?.ready : readHostedDependencyUsableReceipt(origin,fence,phase).receipt;
+  const expected=state.admission===DependencyToolReadyReadStatus.Ready ? state.ready : state.admission===DependencyToolReadyReadStatus.Baseline ? state.baselineReady : state.unverified;
+  if(!current || !encode(current).equals(encode(expected)))invalid();return current;
 }

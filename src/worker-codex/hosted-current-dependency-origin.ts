@@ -40,10 +40,10 @@ import { publishOriginalHostedOrdinaryProviderCompletion, assertOriginalHostedOr
 import { HostedInstallationActivationStore } from "./hosted-installation-activation";
 import { readOriginalHostedOrdinaryProviderBirthFacts } from "./hosted-ordinary-dependency-provider-facts";
 import { formHostedDependencyRootScopeFacts } from "./hosted-dependency-root-scope-facts";
-import { readOriginalHostedDependencyRootPreparation, readOriginalHostedDependencyRootReady as currentRootReady } from "./hosted-dependency-root-physical-selection";
+import { readCurrentHostedDependencyRootCommittedFacts as currentRootCommitted, readOriginalHostedDependencyRootPreparation, readOriginalHostedDependencyRootReady as currentRootReady } from "./hosted-dependency-root-physical-selection";
 import { consumeHostedOrdinaryDependencyPreclaim, readHostedOrdinaryDependencyPreclaim, readHostedOrdinaryDependencyReaderEntry } from "./hosted-ordinary-dependency-reader";
 import { copyBoundedHostedByteInput } from "./hosted-bounded-byte-input";
-import { captureManagedSessionArtifactFacts, captureManagedSessionMaterializationInput } from "./hosted-managed-dependency-session-artifact-facts";
+import { captureManagedSessionArtifactFacts, captureManagedSessionMaterializationInput, captureManagedSessionWriteIntent, assertManagedSessionCredentialWritebackFacts, assertManagedSessionDischargedFacts as assertSessionExecutionUseDischarged } from "./hosted-managed-dependency-session-artifact-facts";
 import { formManagedDependencyProviderStartFacts } from "./hosted-managed-provider-start-facts";
 import { formManagedDependencyHomePreparationFacts } from "./hosted-managed-dependency-home-recipe-facts";
 import { assertHostedDependencyRootDirectoryPinFacts as assertDirectory } from "./hosted-dependency-root-physical-facts";
@@ -62,10 +62,11 @@ import { freezeFacts } from "./hosted-dependency-immutable-facts";
 import { OriginalHostedDependencyRootDescriptor as RootDescriptor } from "./hosted-dependency-root-resource-view";
 import { awaitPrivateManagedProviderClose, HostedManagedProviderWaitDeadline } from "./hosted-managed-provider-wait-deadline";
 import { preparePhysicalOriginalHostedDependencySessionHome } from "./hosted-managed-dependency-home-preparation";
-import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
+import { readHostedDependencyRootDirectoryPin, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
 export { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { createHostedManagedDependencySdkView } from "./hosted-managed-dependency-sdk-view";
 import { hostedManagedDependencyProviderInvocation, bindHostedDependencyToolChild, abandonHostedDependencyToolInvocation, assertHostedManagedDependencyToolRelease } from "./hosted-managed-dependency-tool-plan";
+import { sameHostedDependencyStatFacts as sameStat } from "./hosted-dependency-stat-facts";
 import { spawnHostedFdChild, hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { signalHostedSystemdUnit, type CodexAppServerChildProcess } from "../provider-codex/app-server/adapters/node-app-server-process";
@@ -74,7 +75,7 @@ import { createHash } from "node:crypto";
 import { codexProviderEgressEnv, codexProviderEgressPolicy, CodexProviderEgressProfileId } from "../provider-codex/codex-provider-egress-policy";
 import { collectUnitInvocation } from "./hosted-readonly-linux-collector";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, writeFileSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyGenerationContinuityKind, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
@@ -131,7 +132,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
   return collectOriginalHostedDependencySnapshot(rootInternalAccess,fence,scope,rootPurpose,cold);
 }
 export function assertOriginalHostedDependencyRootPurposeDescriptorState(state:RootPurposeState,access:symbol):void {
-  if(access!==rootInternalAccess)invalid();assertRootPurposeDescriptors(state);
+  if(access!==rootInternalAccess)invalid();assertOriginalHostedDependencyRootDescriptorCensus(state,rootInternalAccess);
 }
 export type CurrentHostedDependencyOriginFacts = ReturnType<typeof selectedSnapshot>["facts"];
 /** Fixed process/history identity only; consumers still join actual owner. */
@@ -150,10 +151,12 @@ export function assertCurrentHostedDependencyOrigin(context: CurrentHostedDepend
 }
 /** Classification after preparation uses the SAME original authority and FD
  * associations, rather than falling back to the generic strict descriptor view. */
-export function requiresCurrentHostedDependencyRootPurpose(fence?:HostedActivationFence):boolean {
-  if (!currentEntryOrigin) return classifyCurrentHostedDependencyRootPurpose(fence);
-  if(fence!==undefined) { assertHostedActivationFence(fence); const retained=consumerEntry(currentEntryOrigin); if(!retained?.ordinaryEntry)invalid();const actual=assertCurrentHostedDependencyOrigin(currentEntryOrigin,fence);if(actual.kind!==CurrentHostedDependencyOriginKind.Ordinary)invalid();return true; }
-  return withHostedActivationFence(held=>requiresCurrentHostedDependencyRootPurpose(held));
+export function requiresCurrentHostedDependencyRootPurpose(heldFence?:HostedActivationFence):boolean {
+  if (heldFence !== undefined) assertHostedActivationFence(heldFence);
+  if (!currentEntryOrigin) return classifyCurrentHostedDependencyRootPurpose(heldFence);
+  const classify = (fence:HostedActivationFence) => { const retained = consumerEntry(currentEntryOrigin!); if (!retained?.ordinaryEntry) invalid();
+    const actual = assertCurrentHostedDependencyOrigin(currentEntryOrigin!,fence); if (actual.kind !== CurrentHostedDependencyOriginKind.Ordinary) invalid(); return true; };
+  return heldFence === undefined ? withHostedActivationFence(classify) : classify(heldFence);
 }
 export function readCurrentHostedOrdinaryDependencyReaderEntry(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,phase:DependencyOwnerPhase) {
   const retained = consumerEntry(context); if (!retained?.ordinaryEntry || currentEntryOrigin !== context) invalid();
@@ -200,8 +203,7 @@ function managedProviderBirth(context: CurrentHostedDependencyOrigin, fence: Hos
   if (!match || match[0] !== unit) invalid(); const providerStartId = match[1]!;
   if (actual.facts.kind===CurrentHostedDependencyOriginKind.Ordinary) return readOriginalHostedOrdinaryProviderBirthFacts(context,fence,unit);
   const state=retained.rootPurpose,committed=currentRootCommitted(context,fence,state,DependencyOwnerPhase.Running);
-  const record=state.record;
-  return formManagedDependencyProviderStartFacts(actual,providerStartId,record,committed);
+  return formManagedDependencyProviderStartFacts(actual,providerStartId,state.record,committed);
 }
 export function readCurrentHostedManagedDependencyProviderParent(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence) {
   const state = consumerEntry(context)?.rootPurpose; if (!state) invalid();
@@ -274,7 +276,6 @@ export { finishOriginalHostedDependencyColdInstaller as installCurrentHostedDepe
 export { consumeCurrentHostedDependencyColdHandoff, assertCurrentHostedDependencyConsumedColdHandoff,
   closeCurrentHostedDependencyColdHandoff } from "./hosted-dependency-cold-handoff-view";
 function coldInvalid():never {throw new DependencyAdmissionError(DependencyAdmissionFailure.StaleAttempt);}
-
 /** Fixed provider resources belong solely to the original-origin entry. */
 export function prepareCurrentHostedManagedDependencyProviderTools(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string) {
   const selected = readCurrentHostedManagedDependencyProvider(context,fence,unit), state = consumerEntry(context)?.rootPurpose;
@@ -447,7 +448,6 @@ export function readOriginalHostedOrdinaryProviderTerminal(token:OriginalHostedO
 export function assertCurrentHostedManagedDependencyCapsuleCopy(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string,fd:number):void {
   assertOriginalHostedManagedCapsuleCopy(context,fence,unit,fd,rootInternalAccess);
 }
-
 export { isHostedManagedReadonlyOuterRuntime, isCurrentHostedDependencyManagedReadonlyOrigin } from "./hosted-dependency-current-facts";
 /** Actual latest owner read AFTER the expensive current-origin collection. A factual returned attempt is not an enqueue permit; final frame reasserts. */
 export function assertCurrentHostedDependencyAttempt(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, phase: DependencyOwnerPhase = DependencyOwnerPhase.Running) {
@@ -465,7 +465,6 @@ function resolveRootPurpose(context:RootPurposeFacade,purpose:HostedDependencyRo
   return {origin,state};
 }
 export type HostedDependencyRootPurposeContext = RootPurposeFacade;
-
 export type HostedDependencyRootDescriptor = RootDescriptor;
 export function readOriginalHostedDependencyRootDescriptor(resource: RootDescriptor): number {
   const {origin,material} = RootDescriptor.resolve(resource,rootInternalAccess), state = consumerEntry(origin)?.rootPurpose;
@@ -480,7 +479,6 @@ export function closeOriginalHostedDependencyRootDescriptor(resource: RootDescri
   try { closePhysicalHostedDependencyRootDescriptor(material); material.closed = true; state?.descriptors.delete(resource); }
   catch (error) { contexts.delete(origin); if (currentRootOrigin === origin) currentRootOrigin = undefined; throw error; }
 }
-function assertRootPurposeDescriptors(state:RootPurposeState):void {assertOriginalHostedDependencyRootDescriptorCensus(state,rootInternalAccess);}
 let currentRootOrigin: CurrentHostedDependencyOrigin | undefined;
 const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value)+"\n");
 function currentOwnerForRoot(binding: HostedDependencyBinding) {
@@ -511,13 +509,6 @@ export function captureCurrentHostedDependencyRootPurpose(purpose: HostedDepende
     if (!sameDependencyAttempt(current.attempt,state.record.attempt) || !encode(currentRootReady(origin,fence,DependencyOwnerPhase.ExclusiveMutation)).equals(encode(state.ready))) invalid();
     state.cleanup = new RootPurposeFacade(origin,purpose,rootInternalAccess); return state.cleanup;
   });
-}
-function currentRootCommitted(origin:CurrentHostedDependencyOrigin,fence:HostedActivationFence,state:RootPurposeState,
-  phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running) {
-  const current=state.admission===DependencyToolReadyReadStatus.Ready ? currentRootReady(origin,fence,phase) :
-    state.admission===DependencyToolReadyReadStatus.Baseline ? readCurrentHostedDependencyGenerationBaseline(origin,fence)?.ready : readHostedDependencyUsableReceipt(origin,fence,phase).receipt;
-  const expected=state.admission===DependencyToolReadyReadStatus.Ready ? state.ready : state.admission===DependencyToolReadyReadStatus.Baseline ? state.baselineReady : state.unverified;
-  if(!current || !encode(current).equals(encode(expected)))invalid();return current;
 }
 function rootScope(context: RootPurposeFacade, purpose: HostedDependencyRootPurpose, fence: HostedActivationFence, phase: DependencyOwnerPhase) {
   const {origin,state} = resolveRootPurpose(context,purpose,rootInternalAccess), actual = assertCurrentHostedDependencyAttempt(origin,fence,phase);
@@ -630,6 +621,7 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
         if (result.status === "committed" || result.status === "idempotent_replay") selected.use.lease!.terminal = true; return result;
       } catch (error) { selected.use.credentialUnknown = true; throw error; } },
     release:async input => { input = Object.freeze({...input}); const selected = owned(input.leaseId); assertSessionExecutionUseDischarged(selected);
+      if (selected.use.phase !== ManagedSessionUsePhase.Begun || selected.use.home) assertManagedSessionCredentialWritebackFacts(selected.use);
       try { await release(input); checked(selected); selected.use.lease!.terminal = true; }
       catch (error) { selected.use.credentialUnknown = true; throw error; } },
   });
@@ -638,13 +630,18 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
       if (sessionRuntime(context).runtime !== selected.runtime) invalid();
       if (result) { const captured = captureManagedSessionArtifactFacts(result.artifact); if (result.providerInstanceId !== input.providerInstanceId || result.generationHash !== captured.hash) invalid(); selected.runtime.sessionReads.set(result.artifact,{account:input.providerInstanceId,hash:captured.hash}); } return result; },
     write:async input => { input = Object.freeze({...input}); const selected = sessionRuntime(context), use = selected.runtime.use;
-      if (use) { const ownedUse = owned(); assertSessionExecutionUseDischarged(ownedUse); if (use.account !== input.providerInstanceId || !use.snapshot || use.snapshot.artifact !== input.nextArtifact) invalid(); const captured = captureManagedSessionArtifactFacts(input.nextArtifact); if (captured.hash !== use.snapshot.hash) invalid(); input = {...input,nextArtifact:captured.artifact};
-        if (use.lease && (use.lease.leaseId !== input.leaseId || use.lease.providerInstanceId !== input.providerInstanceId)) invalid(); use.writing = true;
+      if (use) { const ownedUse = use.writePending ? currentSessionExecutionUse(context) : owned();
+        if (ownedUse.use !== use || use.credentialUnknown || use.acquiring || use.writeRetrying || use.writePending && (!use.writing || !use.pendingWrite)) invalid();
+        assertSessionExecutionUseDischarged(ownedUse);
+        const captured = captureManagedSessionWriteIntent(input,use); input = captured.input; use.pendingWrite = captured.intent;
+        if (use.writePending) use.writeRetrying = true; use.writing = true;
       } else { if (selected.state.sessionHome?.leased || selected.state.provider || selected.state.preparingHome) invalid(); selected.runtime.idleWrites++; }
       try { const result = await write(input); const after = sessionRuntime(context);
         if (after.runtime !== selected.runtime || after.runtime.use !== use) invalid();
-        if (use) { if (result.status !== "stale_generation" && result.generationHash !== use.snapshot!.hash) invalid(); delete use.writing; use.writeStatus = result.status; use.writebackKey = input.idempotencyKey; } else selected.runtime.idleWrites--; return result;
-      } catch (error) { if (use) use.credentialUnknown = true; throw error; } },
+        if (use) { if (result.status !== "stale_generation" && result.generationHash !== use.pendingWrite!.hash) invalid(); delete use.writeRetrying;
+          if (result.status === "accepted" || result.status === "idempotent_replay") { delete use.writing; delete use.writePending; } else use.writePending = true;
+          use.writeStatus = result.status; use.writebackKey = input.idempotencyKey; } else selected.runtime.idleWrites--; return result;
+      } catch (error) { if (use) { delete use.writeRetrying; use.writePending = true; } throw error; } },
     delete:async input => { input = Object.freeze({...input}); const selected = sessionRuntime(context);
       if (selected.runtime.use || selected.runtime.idleWrites || selected.state.sessionHome?.leased || selected.state.provider) invalid();
       selected.runtime.idleWrites++; try { await remove(input); if (sessionRuntime(context).runtime !== selected.runtime) invalid(); selected.runtime.idleWrites--; }
@@ -668,11 +665,6 @@ function currentSessionExecutionUse(context:CurrentHostedDependencyOrigin, handl
   if (!retained || !use || use.phase === ManagedSessionUsePhase.Complete || handle !== undefined && use.handle !== handle) invalid();
   const selected = sessionRuntime(context,fence); if (selected.runtime !== retained || selected.runtime.use !== use) invalid(); return {...selected,use};
 }
-function assertSessionExecutionUseDischarged(selected:ReturnType<typeof currentSessionExecutionUse>):void {
-  const {state,use} = selected;
-  if (use.phase === ManagedSessionUsePhase.Begun && !use.home && !state.preparingHome && !state.sessionHome?.leased && !state.provider) return;
-  if (use.phase !== ManagedSessionUsePhase.Released || !use.home || state.sessionHome?.facade !== use.home || state.sessionHome.leased || state.provider || state.preparingHome) invalid();
-}
 async function completeSessionExecutionUse(context:CurrentHostedDependencyOrigin, handle:SessionExecutionUse):Promise<SessionExecutionUseDisposition> {
   const selected = currentSessionExecutionUse(context,handle), {runtime,use} = selected;
   if (use.credentialUnknown || use.acquiring || use.writing || use.lease && !use.lease.terminal) invalid();
@@ -682,7 +674,7 @@ async function completeSessionExecutionUse(context:CurrentHostedDependencyOrigin
     return SessionExecutionUseDisposition.Retained;
   }
   assertSessionExecutionUseDischarged(selected);
-  if (use.phase !== ManagedSessionUsePhase.Begun && !use.lease && (!use.writeStatus && runtime.driver.sessionExecutionNeedsWriteback(handle) !== false)) invalid();
+  if (selected.use.phase !== ManagedSessionUsePhase.Begun || selected.use.home) assertManagedSessionCredentialWritebackFacts(selected.use);
   if (currentSessionExecutionUse(context,handle).use !== use) invalid();
   use.phase = ManagedSessionUsePhase.Complete; runtime.retired = use; delete runtime.use; use.unlock(); return SessionExecutionUseDisposition.Discharged;
 }
@@ -706,10 +698,22 @@ export function materializeCurrentHostedDependencySession(context:CurrentHostedD
       try { await drainCurrentHostedDependencySessionProvider(home); currentSessionExecutionUse(context,use.handle);
         const artifact = sessionArtifactFromCodexAuthJson(snapshotCurrentHostedDependencySessionAuth(home)); use.snapshot = {artifact,hash:captureManagedSessionArtifactFacts(artifact).hash}; return artifact; }
       catch (error) { use.credentialUnknown = true; throw error; } },
-    release:() => use.release ??= (async () => { const before = currentSessionExecutionUse(context,use.handle);
-      if (before.use !== use || use.materialized !== materialized || use.phase !== ManagedSessionUsePhase.Active) invalid();
-      await releaseCurrentHostedDependencySessionHome(home); const after = currentSessionExecutionUse(context,use.handle);
-      if (after.use !== use || after.use.phase !== ManagedSessionUsePhase.Released) invalid(); })(),
+    release:async () => {
+      if (use.release) return await use.release;
+      const before = currentSessionExecutionUse(context,use.handle);
+      if (before.use !== use || use.materialized !== materialized || use.credentialUnknown) invalid();
+      if (use.phase === ManagedSessionUsePhase.Released) { assertSessionExecutionUseDischarged(before); return; }
+      if (use.phase !== ManagedSessionUsePhase.Active) invalid();
+      const pending = (async () => { await releaseCurrentHostedDependencySessionHome(home);
+        const after = currentSessionExecutionUse(context,use.handle); if (after.use !== use || after.use.phase !== ManagedSessionUsePhase.Released) invalid(); })();
+      use.release = pending;
+      try { await pending; } catch (error) {
+        try { const after = currentSessionExecutionUse(context,use.handle);
+          if (after.use === use && use.materialized === materialized && !use.credentialUnknown && (use.phase === ManagedSessionUsePhase.Active || use.phase === ManagedSessionUsePhase.Released) && use.release === pending) delete use.release;
+        } catch { /* Unknown original owner keeps the failed release held. */ }
+        throw error;
+      }
+    },
   });
   use.materialized = materialized; use.phase = ManagedSessionUsePhase.Active; return materialized;
 }
@@ -798,7 +802,7 @@ export async function releaseCurrentHostedDependencySessionHome(home: CurrentHos
     const after = sessionHome(home,fence);
     if (after.home !== held.home || after.state.provider || !sameDependencyAttempt(after.actual.attempt,held.actual.attempt)) invalid();
     const use = after.state.sessionRuntime?.use;
-    if (!use || use.home !== home || use.phase !== ManagedSessionUsePhase.Active) invalid();
+    if (!use || use.home !== home || use.phase !== ManagedSessionUsePhase.Active || !use.snapshot || use.credentialUnknown) invalid();
     after.home.leased = false; use.phase = ManagedSessionUsePhase.Released;
   }),5000);
 }
@@ -953,17 +957,14 @@ export function requestStopCurrentHostedDependencySessionRefresh(home: CurrentHo
   });
   signalCurrentHostedManagedDependencyProviderView(selected.context,selected.facade,"SIGTERM");
 }
-
 /** Fixed actual operator selection only; never returns writer authority. */
 export function assertCurrentHostedDependencyParentWriterIngress(fence:HostedActivationFence,jobId:string):void {
   assertOriginalHostedDependencyParentWriterIngress(fence,jobId,rootInternalAccess);
 }
-
 /** Actual execution admission is distinct from denial-only once-entry enrollment. */
 export function assertCurrentHostedDependencyExecutionAdmission(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):ReturnType<typeof assertCurrentHostedDependencyAttempt> {
   return assertOriginalHostedDependencyExecutionAdmission(context,fence,rootInternalAccess);
 }
-
 /** Request data selects one existing authored leaf; it supplies no writer authority. */
 export function editCurrentHostedDependencyWarmSourceLeaf(context:CurrentHostedDependencyOrigin,request:unknown):Promise<void> {
   return editOriginalHostedDependencyWarmSourceLeaf(context,request,rootInternalAccess);
@@ -979,7 +980,6 @@ export function claimCurrentHostedDependencyMaintenance(fence:HostedActivationFe
 export function assertCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {return assertOriginalHostedDependencyMaintenance(fence,jobId,attempt,rootInternalAccess);}
 export function retireCurrentHostedDependencyEviction(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt):void {retireOriginalHostedDependencyEviction(fence,jobId,attempt,rootInternalAccess);}
 export function releaseCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt):void {releaseOriginalHostedDependencyMaintenance(fence,jobId,attempt,rootInternalAccess);}
-
 /** Fixed physical producer; comparisons cannot register anchors or state. */
 export async function renameCurrentHostedDependencyMaintenanceTree(jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {
   const context=withHostedActivationFence(fence=>{

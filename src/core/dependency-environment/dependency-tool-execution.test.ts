@@ -15,7 +15,8 @@ function fixture() {
       cache:{canonicalPath:"/cache",dev:"1",ino:"5"},node:file(8),helper:file(0),
       readonlyFiles:Array.from({length:7},(_,i)=>file(i)),testFiles:["x.test.ts"],optimizerDependencies:["vite"],
       transformCache:DependencyToolTransformCache.Persisted},
-    capabilities:[DependencyToolOperation.Optimize,DependencyToolOperation.Test],sourceRoots:[],sourceLookupAncestors:[]};
+    capabilities:[DependencyToolOperation.Optimize,DependencyToolOperation.Test],sourceRoots:[],
+    sourceLookupAncestors:[{canonicalPath:"/workspace",identity:{dev:"1",ino:"2"}}]};
 }
 describe("truthful usable tool facts",()=>{
   it("has no Ready or content attestation and retains actual current input identity",()=>{
@@ -33,7 +34,7 @@ describe("truthful usable tool facts",()=>{
     const candidates=[{...fixture(),epoch:2},
       {...fixture(),receipt:{...fixture().receipt,sha256:"0".repeat(64)}},
       {...fixture(),sourceRoots:[{canonicalPath:"/workspace/local",identity:{dev:"1",ino:"7"}}]},
-      {...fixture(),sourceLookupAncestors:[{canonicalPath:"/workspace",identity:{dev:"1",ino:"2"}}]}];
+      {...fixture(),sourceLookupAncestors:[{canonicalPath:"/",identity:{dev:"1",ino:"1"}}]}];
     for(const candidate of candidates)expect(matchesDependencyToolExecution(original,parseDependencyToolUsableExecution(candidate))).toBe(false);
     const legacy={version:1,kind:"n3-authenticated-tool-closure",installationId:id,runtimeSha:"b".repeat(40),
       grantDigest:"c".repeat(64),workspace:fixture().workspace,startId:id,attemptId:id,epoch:1,readyRevision:2,
@@ -52,6 +53,31 @@ describe("truthful usable tool facts",()=>{
     const array=fixture();Object.defineProperty(array.capabilities,"0",{enumerable:true,get(){calls++;return DependencyToolOperation.Optimize;}});
     expect(()=>parseDependencyToolUsableExecution(array)).toThrow();
     expect(calls).toBe(0);
+  });
+  // Old RED: the generic absolute-path codec rejects the genuine capture's
+  // leading '/' pin. These are capture-derived data, never an issued Root use.
+  it("preserves a complete absolute captured lookup chain without rebasing its identities",()=>{
+    const capturedPins=[{path:"/",dev:"1",ino:"1"},{path:"/srv",dev:"1",ino:"8"},
+      {path:"/srv/workers",dev:"2",ino:"9"},{path:"/srv/workers/TEST-lookup",dev:"2",ino:"10"}];
+    const sourceLookupAncestors=capturedPins.map(pin=>({canonicalPath:pin.path,identity:{dev:pin.dev,ino:pin.ino}}));
+    const value={...fixture(),workspace:{canonicalPath:"/srv/workers/TEST-lookup/workspace",dev:"2",ino:"11"},sourceLookupAncestors};
+    const parsed=parseDependencyToolUsableExecution(value);
+    expect(parsed.sourceLookupAncestors).toEqual(sourceLookupAncestors);
+    expect(parsed.sourceLookupAncestors.map(pin=>pin.canonicalPath)).toEqual(["/","/srv","/srv/workers","/srv/workers/TEST-lookup"]);
+    const malformed=[[],sourceLookupAncestors.slice(1),sourceLookupAncestors.slice(0,-1),
+      [...sourceLookupAncestors].reverse(),[...sourceLookupAncestors,sourceLookupAncestors[0]],
+      sourceLookupAncestors.map((pin,index)=>index===1?{...pin,canonicalPath:"/outside"}:pin),
+      sourceLookupAncestors.map((pin,index)=>index===1?{...pin,canonicalPath:"/srv\0"}:pin),
+      sourceLookupAncestors.map((pin,index)=>index===0?{...pin,unknown:true}:pin),
+      sourceLookupAncestors.map((pin,index)=>index===0?{...pin,identity:{dev:"1",ino:"0"}}:pin)];
+    for(const ancestors of malformed)expect(()=>parseDependencyToolUsableExecution({...value,sourceLookupAncestors:ancestors})).toThrow("dependency_tool_execution_invalid");
+  });
+  it("keeps registry workspace identity exact and denies '/' outside lookup ancestry",()=>{
+    expect(parseDependencyToolUsableExecution(fixture()).sourceLookupAncestors).toEqual(fixture().sourceLookupAncestors);
+    expect(()=>parseDependencyToolUsableExecution({...fixture(),sourceLookupAncestors:[{canonicalPath:"/workspace",identity:{dev:"1",ino:"99"}}]})).toThrow();
+    expect(()=>parseDependencyToolUsableExecution({...fixture(),workspace:{...fixture().workspace,canonicalPath:"/"}})).toThrow();
+    expect(()=>parseDependencyToolUsableExecution({...fixture(),sourceRoots:[{canonicalPath:"/",identity:{dev:"1",ino:"1"}}]})).toThrow();
+    expect(()=>parseDependencyToolUsableExecution({...fixture(),profile:{...fixture().profile,cache:{...fixture().profile.cache,canonicalPath:"/"}}})).toThrow();
   });
 });
 

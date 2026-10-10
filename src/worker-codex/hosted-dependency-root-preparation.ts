@@ -76,9 +76,8 @@ export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence)
   if (durableHandoffRoot.mountId !== authoredRoots[0]!.mountId) invalid();
   const generatedRoots = [readHostedDependencyRootDirectoryPin(join(binding.workspace.canonicalPath,"node_modules"))];
   if (generatedRoots[0]!.dev !== receipt.tree.dev || generatedRoots[0]!.ino !== receipt.tree.ino) invalid();
-  const sourceLookupAncestors = inputs.recipe === HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 ? [authoredRoots[0]!] : [...new Set(inputs.capture.ancestorPins.map(pin => pin.path))].sort().map(relative => {
-    const pin = inputs.capture.ancestorPins.find(value => value.path === relative); if (!pin) invalid();
-    const actual = readHostedDependencyRootDirectoryPin(join(binding.workspace.canonicalPath,relative));
+  const sourceLookupAncestors = inputs.recipe === HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 ? [authoredRoots[0]!] : inputs.capture.ancestorPins.map(pin => {
+    const actual = readHostedDependencyRootDirectoryPin(pin.path);
     if (actual.dev !== pin.dev || actual.ino !== pin.ino || actual.mountId !== pin.mountId) invalid(); return actual;
   });
   // The existing source parser checks .git protection and bounded config.
