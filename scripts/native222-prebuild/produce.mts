@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, closeSync, cpSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, statfsSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, cpSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, statfsSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,6 +66,22 @@ run(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'scripts/depende
 run(process.execPath, ['node_modules/typescript/bin/tsc', '--ignoreConfig', '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node', '--typeRoots', `${source}/node_modules/@types`, producerPath]);
 for (const name of ['dist', 'package.json', 'scripts', 'node_modules', 'packages']) cpSync(join(source, name), join(artifact, name), { recursive: true, dereference: false, verbatimSymlinks: true });
 cpSync(toolchain, `${artifact}/toolchain`, { recursive: true, dereference: false, verbatimSymlinks: true });
+// Official Node22.23.3 ships this empty npm config. Omit only its proven
+// empty copy; the complete credential-name exclusion below stays unchanged.
+const npmBuiltinConfigPath = 'toolchain/lib/node_modules/npm/.npmrc';
+const npmBuiltinConfig = `${artifact}/${npmBuiltinConfigPath}`;
+const npmBuiltinConfigFd = openSync(npmBuiltinConfig, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+let npmBuiltinConfigSha256: string;
+try {
+  const st = fstatSync(npmBuiltinConfigFd);
+  requireFact(st.isFile() && st.nlink === 1 && st.size === 0, 'official npm builtin config must be an empty regular single-link file');
+  requireFact(readSync(npmBuiltinConfigFd, Buffer.alloc(1), 0, 1, null) === 0, 'official npm builtin config changed');
+  npmBuiltinConfigSha256 = createHash('sha256').digest('hex');
+  requireFact(npmBuiltinConfigSha256 === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'official npm builtin config digest mismatch');
+  const current = lstatSync(npmBuiltinConfig);
+  requireFact(current.isFile() && !current.isSymbolicLink() && current.dev === st.dev && current.ino === st.ino && current.nlink === 1 && current.size === 0, 'official npm builtin config identity changed');
+  unlinkSync(npmBuiltinConfig);
+} finally { closeSync(npmBuiltinConfigFd); }
 type Leaf = { path: string; mode: number; kind: 'file' | 'symlink'; bytes?: number; sha256?: string; target?: string };
 const leaves: Leaf[] = [];
 let unpackedBytes = 0;
@@ -91,6 +107,7 @@ const result = {
   workflowSha, workflowRef, helperSha, runId, runAttempt, runnerName,
   nodeVersion: process.version, nodeSha256: hash(`${artifact}/toolchain/bin/node`),
   sourceArchiveSha256: hash(sourceArchive), payloadSha256: hash(producerPath),
+  omittedEmptyNpmBuiltinConfig: { path: npmBuiltinConfigPath, bytes: 0, sha256: npmBuiltinConfigSha256 },
   commands: ['npm ci --ignore-scripts', 'npm run build', 'node node_modules/typescript/bin/tsc -p scripts/dependency-retention-test/tsconfig.json', 'external producer strict typecheck with --ignoreConfig'],
   archiveSha256: hash(`${output}/artifact.tar`), archiveBytes, unpackedBytes,
   leavesSha256: hash(`${output}/artifact-leaves.json`), archiveWithinCarrierCap: archiveBytes <= 3 * 1024 ** 3,
