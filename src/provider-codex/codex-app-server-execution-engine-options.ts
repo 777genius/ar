@@ -1,3 +1,9 @@
+import {
+  AgentRuntimeBudgetEnforcement,
+  AgentRuntimeBudgetMetric,
+  AgentRuntimeExecutionMode,
+  AgentRuntimeTurnLimitEnforcement,
+} from "@vioxen/subscription-runtime/core";
 import { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
@@ -79,4 +85,40 @@ export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionE
         (!ownedMimoTurn && options.goalMode !== true) || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
         options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
   return lifetime;
+}
+
+export function appServerEngineCapabilities(
+  options: CodexAppServerExecutionEngineOptions,
+): CodexExecutionEngine["capabilities"] {
+  return {
+    supportsStructuredOutput: true,
+    supportsJsonEvents: true,
+    supportsThreadResume: false,
+    requiresSchemaFile: false,
+    taskExecutionCapabilities: [
+      { mode: AgentRuntimeExecutionMode.SingleRun },
+      ...(options.goalMode
+        ? [{
+            mode: AgentRuntimeExecutionMode.Goal,
+            maxCompletionConditionChars: 4_000,
+          } as const]
+        : []),
+    ],
+    ...(options.goalMode
+      ? {
+          turnLimitEnforcement:
+            AgentRuntimeTurnLimitEnforcement.ProviderNative,
+        }
+      : {}),
+    ...(options.rolloutBudget
+      ? {
+          budgetCapabilities: [
+            {
+              metric: AgentRuntimeBudgetMetric.WeightedTokens,
+              enforcement: AgentRuntimeBudgetEnforcement.ProviderNative,
+            },
+          ],
+        }
+      : {}),
+  };
 }

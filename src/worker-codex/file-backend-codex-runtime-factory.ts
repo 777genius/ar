@@ -1,3 +1,4 @@
+import { openWorkerProfileApplies, openWorkerToolCacheEnvironmentSet } from "./project-control-worker-mode";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory, assertHostedDependencyToolAdmittedFactory, readHostedDependencyToolFactoryEntry } from "./hosted-readonly-admission";
@@ -31,6 +32,7 @@ import {
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
   codexJsonHomeConfigToml,
+  codexChildPath,
   codexMimoApiKeyEnvVarDefault,
   codexMimoDefaultModel,
   codexMimoTokenPlanEgressPolicy,
@@ -39,9 +41,10 @@ import {
   codexHostedDefaultEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
-  hostedCodexExecutableReadPath,
+  hostedCodexExecutableReadClosure,
   hostedCodexResolverReadPaths,
   hostedCodexPermissionProfilesToml,
+  assertHostedOpenWorkerLayout, renderHostedOpenWorkerProfilesToml, requiresHostedProcessAdmission,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
   createPublicResearchSourceReader,
@@ -82,6 +85,13 @@ export type FileBackendCodexWorkerRuntimeParts = {
   readonly ownedWorkspace: StableWorkerWorkspace | null;
   readonly prewarmWorkspace: RuntimeDeps["workspace"];
 };
+
+/** Credential and durable-state roots excluded from every open worker grant. */
+export function openWorkerFactorySecretRoots(options: FileBackendCodexWorkerOptions): readonly string[] {
+  const runtimeHome = options.runtimeHomeRootDir ?? options.stateRootDir;
+  return [...(options.openWorker?.secretRoots ?? []), options.stateRootDir, runtimeHome,
+    join(runtimeHome, "codex-session-cache")];
+}
 
 export function createFileBackendCodexWorkerRuntime(input: {
   readonly options: FileBackendCodexWorkerOptions;
@@ -290,8 +300,17 @@ function createCodexAgentDriver(input: {
   if (dependencyToolConfig && (!hostedGlobalScanGuard || executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_dependency_tool_engine_unsupported");
   }
+  if (options.openWorker) {
+    const profile = openWorkerProfileApplies({ platform: process.platform,
+      rootBaseline: process.getuid?.() === 0 && !requiresHostedProcessAdmission(sourceEnv), contained: hostedGlobalScanGuard,
+      modelBackend, executionEngine, boundedWorkspaceTools: !!options.boundedWorkspaceTools,
+      dependencyTools: !!dependencyToolConfig, projectReadBoundary });
+    if (!profile.applies || hostedGlobalScanGuard) {
+      throw new Error(`hosted_open_worker_factory_conflict:${profile.applies ? "contained" : profile.reason}`);
+    }
+  }
   const executableReadPath = projectReadBoundary
-    ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
+    ? hostedCodexExecutableReadClosure({ codexBinaryPath: options.codexBinaryPath, sourceEnv })?.paths
     : undefined;
   // MiMo's egress domain is fixed by modelBackend, not by the host-trusted
   // `providerEgressPolicy` input (`assertWorkerOptions` rejects the two
@@ -324,6 +343,9 @@ function createCodexAgentDriver(input: {
   const appServerEnv = {
     ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),
   };
+  const openLayout = options.openWorker ? assertHostedOpenWorkerLayout({
+    workspacePath: options.workspacePath!, ...options.openWorker, pathEnv: codexChildPath(appServerEnv),
+    secretRoots: openWorkerFactorySecretRoots(options) }) : undefined;
   const workspaceToolsProfile = options.boundedWorkspaceTools && options.workspacePath
     ? buildCodexWorkspaceToolsProfile({
         workspaceRoot: options.workspacePath,
@@ -463,7 +485,18 @@ function createCodexAgentDriver(input: {
         ? { prepareHome: (codexHome: string) => prepareHostScratchCaches(codexHome, sourceEnv) }
         : {}),
       scrubAuthOnDispose: true,
-      ...(workspaceToolsProfile
+      ...(options.openWorker
+        ? { configToml: codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true, modelBackend, mimoApiKeyEnvVarName,
+            shellEnvironmentSet: { HOME: join(options.openWorker.toolRoot, "home"), TMPDIR: join(options.openWorker.toolRoot, "tmp"),
+              TMP: join(options.openWorker.toolRoot, "tmp"), TEMP: join(options.openWorker.toolRoot, "tmp"),
+              ...openWorkerToolCacheEnvironmentSet(options.openWorker.toolRoot),
+              ...(options.openWorker.commitAllowed
+                ? { GIT_DIR: join(options.openWorker.toolRoot, "git"), GIT_WORK_TREE: options.workspacePath! }
+                : {}) } }) + "\n" +
+            renderHostedOpenWorkerProfilesToml({ strictProfilesToml: hostedCodexPermissionProfilesToml(
+              providerEgressPolicy, executableReadPath, undefined, dependencyToolConfig, resolverReadPaths),
+              workspacePath: options.workspacePath!, ...options.openWorker, denyDirectories: openLayout!.denyDirectories }) }
+        : workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
         : projectReadBoundary
         ? {
@@ -497,7 +530,7 @@ function createCodexAgentDriver(input: {
 
 function projectReadBoundaryConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: readonly string[],
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   privateKeyFilePath?: string,
@@ -511,7 +544,7 @@ function projectReadBoundaryConfigToml(
 
 function hostedGlobalScanConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: readonly string[],
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   dependencyTools?: DependencyToolGuestConfig,

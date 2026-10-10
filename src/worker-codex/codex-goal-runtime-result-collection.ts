@@ -1,3 +1,4 @@
+import { nativeWebFromSafeExecutionResult, nativeWebFromManagedError } from "./codex-goal-run-result";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { actionForRuntimeState } from "@vioxen/subscription-runtime/worker-core";
 import { requireCodexWorkerReport, CodexWorkerReportValidationError } from "./codex-goal-report-schema";
@@ -74,12 +75,15 @@ export async function codexRuntimeResultInput(input: {
   const artifacts = handoff?.artifacts ?? [];
   if (!input.deferHandoff && workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const nativeWeb = nativeWebFromSafeExecutionResult(input.result);
+  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
     ...("failureDetails" in input.result && input.result.failureDetails
       ? { failureDetails: input.result.failureDetails }
       : {}),
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     handoffDetails: { ...terminalCodexGoalHandoffResultDetails(handoff), ...workspaceCollectionDetails(workspace) },
+    ...nativeWebDetails,
   });
   return {
     status,
@@ -133,6 +137,8 @@ export async function codexExceptionRuntimeResultInput(input: {
   const artifacts = handoff?.artifacts ?? [];
   if (!input.deferHandoff && workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const nativeWeb = nativeWebFromManagedError(input.error);
+  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
     failureDetails: {
       errorName: input.error instanceof Error ? input.error.name : "unknown",
@@ -142,6 +148,7 @@ export async function codexExceptionRuntimeResultInput(input: {
     },
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     handoffDetails: { ...terminalCodexGoalHandoffResultDetails(handoff), ...workspaceCollectionDetails(workspace) },
+    ...nativeWebDetails,
   });
   return {
     status: input.deferHandoff && input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && input.error instanceof CodexWorkerReportValidationError
