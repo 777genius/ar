@@ -1,13 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
-import { runGuardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
+import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
 const finalAdmission = async () => ({ layout: deriveManagedJobLayout('/TEST', job.jobId), device: 2n });
+// Existing launch-contract tests simulate a terminal child; physical pressure
+// behavior has its own typed synthetic lifecycle tests.
+const runGuardedPayload = (args, input) => guardedPayload(args, { ...input,
+  pressure: async () => ({ attach() {}, close() {}, reason: null }),
+  launch: (...params) => { input.launch?.(...params); const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', 0, null)); return child; },
+});
 const build = (request, options = {}, admission = admit) => buildSystemdInvocation(request, admission, {
   nodePath: '/TRUSTED/node', trust: async () => {}, executable: async () => {},
   logs: async (root, unit) => [`${root}/logs/${unit}.stdout.log`, `${root}/logs/${unit}.stderr.log`], ...options,
