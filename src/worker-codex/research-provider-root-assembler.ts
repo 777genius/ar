@@ -10,6 +10,7 @@ import { researchHash, researchInvalid, researchPath, researchRead } from "./res
 import { readKernelMountTable } from "./host-scratch-mount";
 import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
 
+import { assertResearchMimoCodingRootActivation, researchMimoCodingCodexHome, researchMimoCodingPrivateHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
 import { normalizeResearchAssemblyFailure } from "./research-launch-diagnostics";
 
 const now = (): number => Number(process.hrtime.bigint() / 1_000_000n);
@@ -71,6 +72,7 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
   assertResearchProviderRootIdentity();
   if (!Number.isSafeInteger(deadline) || deadline <= now()) researchInvalid();
   const current = researchCurrentStart(jobId), remaining = deadline - now();
+  assertResearchMimoCodingRootActivation(current.spec.request);
   if (remaining <= 0 || remaining > researchProviderSetupAllowanceMs(current.spec.request)) researchInvalid();
   const reservation = readResearchProviderReservation(current.directory, unit);
   if (reservation.specSha256 !== researchHash(current.bytes)) researchInvalid();
@@ -107,6 +109,8 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     if (now() >= deadline) researchInvalid();
   };
   assertAuthority(); assertResearchProviderStartMaterial(root); assertAuthority(); finalAuthority();
+  const coding = researchMimoCodingRoot(current.spec.request);
+  if (coding) researchExecutableDigest("/usr/bin/bwrap");
   for (const path of ["/usr/bin/mount", "/usr/bin/bash", "/usr/sbin/pivot_root", "/usr/bin/umount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const check = (): void => { assertAuthority(); root.assertCurrent(); finalAuthority(); };
   const descriptors = new Map<number, Readonly<{ path: string; identity: string }>>([
@@ -184,6 +188,10 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     const temporaryRoots = [["/tmp", "rw,nosuid,nodev,mode=1777,size=256M"], ["/var/tmp", "rw,nosuid,nodev,mode=1777,size=64M"],
       ["/run", "rw,nosuid,nodev,noexec,mode=0755,size=16M"], ["/sys", "ro,nosuid,nodev,noexec,mode=0555,size=1M"], ["/dev", "rw,nosuid,noexec,mode=0755,size=4M"]] as const;
     for (const [path, options] of temporaryRoots) temporary(path, options);
+    if (coding) {
+      temporary(researchMimoCodingPrivateHome.target, researchMimoCodingPrivateHome.options);
+      check(); mkdirSync(join(root.root, researchMimoCodingCodexHome.slice(1)), { mode: 0o700 });
+    }
     // tmpfs overlays precede declared binds. Recreate only the finite sealed
     // anchors they covered (notably the admitted resolver leaves under /run).
     for (const entry of root.bindings.filter(entry => temporaryRoots.some(([path]) => inside(path, entry.target)))) {
