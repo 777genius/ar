@@ -205,11 +205,10 @@ export class AppServerSlotPool {
       ...(this.options.hostedPermissionProfiles === undefined ? {} : {
         hostedPermissionProfiles: this.options.hostedPermissionProfiles,
       }),
-      processFactory: (request) => {
-        const child = this.options.processFactory(request);
+      processFactory: this.options.processFactory,
+      onProcessCreated: (child) => {
         cleanup.child = child;
         child.on("exit", cleanup.onExit);
-        return child;
       },
       signalChildProcess: this.options.signalChildProcess,
       session: input.session,
@@ -320,6 +319,7 @@ export class AppServerSlotPool {
   }
 
   private async cleanupStartupFailure(key: string, startupError: unknown): Promise<void> {
+    this.cleanup.get(key)?.client.executionLifetime?.close(startupError);
     try {
       await this.stopSlot(key);
     } catch (cleanupError) {

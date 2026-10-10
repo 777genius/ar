@@ -206,7 +206,7 @@ describe("single classified origin and coding retained-home receipt", () => {
 });
 
 describe("genuine CodingV1 engine provenance and fixed tool policy", () => {
-  async function prepared() {
+  async function prepared(submit?: Parameters<typeof import("../app-server/adapters/node-app-server-process").admittedResearchCodexProcessFactory>[0]["submit"]) {
     codingRequest();
     const { admittedResearchCodexProcessFactory } = await import("../app-server/adapters/node-app-server-process");
     const { egressBoundCodexProcessFactory } = await import("../app-server/adapters/egress-bound-process");
@@ -216,7 +216,7 @@ describe("genuine CodingV1 engine provenance and fixed tool policy", () => {
     const factory = admittedResearchCodexProcessFactory({ jobId: "test-job", hostedProfile: HostedMimoProfile.CodingV1,
       launcherPath: `${spec.runtimeDirectory}/host-integration/research-provider-launch.mjs`,
       launchValidation: { codexBinaryPath: "/usr/bin/codex", workspacePath: "/TEST/workspace", homeRoot: "/TEST/job/home" },
-      submit: () => { throw new Error("TEST_no_native_effect"); }, signal: () => undefined });
+      submit: submit ?? (() => { throw new Error("TEST_no_native_effect"); }), signal: () => undefined });
     const wrapped = egressBoundCodexProcessFactory(codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1), factory, { namedPermissions: true });
     const executionLifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 30_000, maxGoalTurns: 64,
       binding: { allocationId: "TEST-allocation", incarnationId: "TEST-incarnation" } });
@@ -237,6 +237,36 @@ describe("genuine CodingV1 engine provenance and fixed tool policy", () => {
     for (const changed of [{ cwd: "/TEST/job/home/../secret" }, { cwd: "/TEST/job/home/cache" }, { command: "/TEST/foreign" },
       { env: { CODEX_HOME: "/TEST/job/home/../secret" } }]) expect(() => p.factory({ ...launch, ...changed })).toThrow("hosted_research_launch_denied");
   });
+  it("keeps the genuine branded factory through slot startup and retains child cleanup custody", async () => {
+    const { ControlledPeer } = await import("./app-server/controlled-readiness-peer");
+    const { AppServerSlotPool } = await import("../app-server/application/app-server-slot-pool");
+    const { bindAppServerSessionLifetime } = await import("../app-server/application/app-server-child-lifetime");
+    const { resolveCodexExecutionProfile } = await import("../codex-execution-profile");
+    const { InMemoryManagedRunStore } = await import("../codex-app-server-managed-run-store");
+    const peer = new ControlledPeer(), submit = vi.fn(() => peer);
+    peer.on("request", (request: (typeof peer.requests)[number]) => {
+      if (request.method === "initialize") queueMicrotask(() => peer.reply(request, {}));
+    });
+    const p = await prepared(submit), signal = new AbortController().signal;
+    p.input.executionLifetime.beginInvocation(signal);
+    const session = bindAppServerSessionLifetime({ home: "/TEST/job/home/mimo-TEST", codexHome: "/TEST/job/home/mimo-TEST/codex-home",
+      env: { CODEX_HOME: "/TEST/job/home/mimo-TEST/codex-home" }, release: async () => undefined }, p.input.executionLifetime);
+    const pool = new AppServerSlotPool({ codexBinaryPath: p.input.codexBinaryPath, processFactory: p.wrapped,
+      signalChildProcess: child => { child.kill(); }, runStore: new InMemoryManagedRunStore(),
+      executionProfile: resolveCodexExecutionProfile("stateless-completion"), hostedCodingAuthority: p.authority,
+      nativeToolSurface: HostedMimoProfile.CodingV1, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      hostedPermissionProfiles: true, cleanThreadPrewarm: false, sourceEnv: {}, maxOutputBytes: 4096 });
+    try {
+      const slot = await pool.ensureSlot({ session, workspacePath: p.input.workspacePath, abortSignal: signal });
+      expect(slot.client.executionLifetime).toBe(p.input.executionLifetime);
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(peer.requests.map(request => request.method)).toEqual(["initialize"]);
+      await pool.dispose();
+      expect(peer.ended).toBe(true);
+      expect(peer.listenerCount("exit")).toBe(1); // Only the client's terminal observation remains.
+    } finally { await pool.dispose(); }
+  });
+
   it("preserves canonical command/cwd/home checks for the ordinary Worker adapter", async () => {
     const { admittedResearchCodexProcessFactory } = await import("../app-server/adapters/node-app-server-process");
     const factory = admittedResearchCodexProcessFactory({ jobId: "test-job", launcherPath: "/TEST/launcher",

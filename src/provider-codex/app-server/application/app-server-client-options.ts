@@ -3,7 +3,7 @@ import type { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type { CodexModelBackend } from "../../codex-model-backend";
 import type { CodexMaterializedSession } from "../../codex-json-execution-engine";
-import type { CodexAppServerChildProcessSignaler, CodexAppServerProcessFactory } from "./app-server-process-port";
+import type { CodexAppServerChildProcess, CodexAppServerChildProcessSignaler, CodexAppServerProcessFactory } from "./app-server-process-port";
 import type { CodexAppServerCommandApprovalPolicy, CodexAppServerNativeToolSurface } from "../domain/app-server-types";
 import type { HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
 import type { CodexAppServerRolloutBudget } from "../domain/app-server-rollout-budget";
@@ -19,6 +19,8 @@ export type CodexAppServerClientOptions = {
   readonly publicSourceReader?: PublicResearchSourceReader;
   readonly hostedPermissionProfiles?: boolean;
   readonly processFactory: CodexAppServerProcessFactory;
+  /** Internal cleanup custody observes the child without replacing its admitted factory. */
+  readonly onProcessCreated?: (child: CodexAppServerChildProcess) => void;
   readonly signalChildProcess: CodexAppServerChildProcessSignaler;
   readonly session: CodexMaterializedSession;
   readonly workspacePath: string;

@@ -211,6 +211,7 @@ export class CodexAppServerClient {
       cwd: coding ? this.options.workspacePath : this.options.session.home,
       env,
     });
+    this.options.onProcessCreated?.(this.child);
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
