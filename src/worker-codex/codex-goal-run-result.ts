@@ -1,3 +1,5 @@
+import { parseNativeWebEvidence, type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
+import { ManagedRunNativeWebError } from "./file-backend-codex-managed-run-recovery";
 import {
   isSubscriptionWorkerError,
   normalizeWorkerReport,
@@ -60,12 +62,14 @@ function errorCauseChain(error: unknown): readonly unknown[] {
 export function runtimeResultDetails(input: {
   readonly failureDetails?: Readonly<Record<string, string>>;
   readonly baseCommit?: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly handoffDetails: Readonly<Record<string, string>>;
 }): Readonly<Record<string, string>> | undefined {
   const details = {
-    ...(input.failureDetails ?? {}),
+    ...Object.fromEntries(Object.entries(input.failureDetails ?? {}).filter(([key]) => key !== 'nativeWeb')),
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     ...input.handoffDetails,
+    ...(input.nativeWeb === undefined ? {} : { nativeWeb: JSON.stringify(parseNativeWebEvidence(input.nativeWeb)) }),
   };
   return Object.keys(details).length === 0 ? undefined : details;
 }
@@ -135,4 +139,20 @@ export function workerReportFromSafeExecutionResult(
   if (result.status !== "completed") return undefined;
   if (!("result" in result) || result.result === undefined) return undefined;
   return normalizeWorkerReport(result.result.structuredOutput);
+}
+
+/** Host reads only the managed provider result/error channel, never model output,
+ * workspace JSON, telemetry counts, or failure detail strings. */
+export function nativeWebFromManagedError(error: unknown): NativeWebEvidence | undefined {
+  for (const item of errorCauseChain(error)) {
+    if (item instanceof ManagedRunNativeWebError) return parseNativeWebEvidence(item.nativeWeb);
+  }
+  return undefined;
+}
+export function nativeWebFromSafeExecutionResult(result: SafeExecutionRunResult<FileBackendCodexWorkerResult>): NativeWebEvidence | undefined {
+  // The runner owns this flag. Opaque durable JSON cannot supply ephemeral
+  // provider observations for the Host's current execution generation.
+  if (result.status === 'completed' && result.replayed) return undefined;
+  if ('result' in result && result.result?.nativeWeb !== undefined) return parseNativeWebEvidence(result.result.nativeWeb);
+  return 'error' in result ? nativeWebFromManagedError(result.error) : undefined;
 }

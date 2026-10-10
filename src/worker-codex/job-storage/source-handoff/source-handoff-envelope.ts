@@ -71,13 +71,17 @@ export async function captureEncryptedSourceHandoff(input: {
     input.assertCurrent(); await assertSourceHandoffDirectory(input.destination);
     // Exclusive publication; never overwrite an old/uncertain handoff.
     await link(temporary, finalPath);
+    // Make the single-link publication durable, not the temporary alias.
+    await unlink(temporary);
     const parent = await open(input.destination.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { await parent.sync(); } finally { await parent.close(); }
     return { envelopeSha256: hash.digest("hex"), envelopeBytes: bytesWritten };
   } finally {
     key.fill(0); await file.close();
     // Only the random ciphertext leaf exclusively created by this operation.
-    await unlink(temporary).catch(() => undefined);
+    await unlink(temporary).catch((error: unknown) => {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    });
   }
 }
 async function* plaintext(input: ReadbackInput): AsyncGenerator<Buffer> {

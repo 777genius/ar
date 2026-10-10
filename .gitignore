@@ -3,6 +3,7 @@ coverage
 .DS_Store
 .worktrees/
 dist
+host-integration/managed-launcher/hosted-host-policy.mjs
 .env
 .env.*
 *.log
@@ -25,3 +26,6 @@ rr-*.prompt.md
 .gate-install.exit
 .runtime-registry-root-fix/
 .tmp-*
+
+# Exact standalone codec emission, published only by the pinned build.
+host-integration/managed-launcher/host-inventory-codec.cjs

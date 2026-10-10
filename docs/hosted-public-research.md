@@ -241,22 +241,67 @@ selected home and prepared scratch bindings against the submitted closed plan.
 The control monitor stays attached during that final material walk. An event-loop
 yield after verification observes queued duplicate frames and EOF; then retained
 provider ownership, current authority/cancellation and transport state are checked
-before the synchronous switch to stdout/stdin forwarding. The explicit 300-second setup
-budget matches the provider service TimeoutStartSec; the research-only outer
-app-server startup is 330 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
-10-second handoff bound matches the fixed launcher's bootstrap deadline. Each
-material walk still enforces its original byte/file/time limits; timeout is denial,
-including a retained finite file/artifact deadline observation, never admission.
+before the synchronous switch to stdout/stdin forwarding. The explicit 300-second
+readiness/ownership budget starts just after spawning the systemd submission
+command and has the same duration as the provider service TimeoutStartSec. The
+research-only outer app-server startup budget is
+330 seconds and starts before provider preparation, so it can expire before the
+inner deadline. Readiness does not reset that absolute inner deadline. Each
+artifact walk and each executable byte validation have a finite 30-second budget,
+including initial custody and fresh descriptor/path checks on cache hits. The
+original byte/file limits remain; timeout is denial, including a retained finite
+file/artifact deadline observation, never admission.
 These private helper changes introduce no composition or provider SPI. Genuine
 shared-Host/native-provider qualification remains a separate root-run gate.
+
+The provider-only first exec now enters `unshare --mount --propagation private`
+before the artifact's fixed root assembler runs. PID1 receives no provider
+filesystem-namespace properties; the outer runtime recipe remains unchanged.
+The assembler reads the creator-sealed private plan and holds exact source and
+target descriptors through nonrecursive bind/remount effects. It corroborates
+mounted inode, mount identity, access and inherited safety flags, then rechecks
+the existing grant, closing/shared-policy and cancellation fences immediately
+before each effect. Creator-private cache observations remain creator checks;
+the independent assembler checks their explicit physical source/backing graph.
+The creator's skeleton remains unmounted in its own namespace.
+
+The plan contains one fixed `initial-host-context` observation with boot/machine
+identity and initial Host user/mount/PID/network namespaces. The full-root creator
+captures and re-observes it; the genuine sealed reader authenticates it through
+the existing custody, seal and private WeakMap. The reduced assembler reads only
+its own namespace links, requiring Host user/PID/network identity and a distinct
+private mount namespace without shared propagation. It checks live runtime PID
+lifetime/cgroup, fresh service identity and all existing documents and material;
+the reference never claims current foreign namespace observation. Ordinary
+operator/creator InitialRoot checks and live foreign namespace fences remain.
+Creator submission, READY monitoring, settled ownership and final forwarding
+reject runtime namespace drift before accepted readiness, bootstrap, protocol
+forwarding or account/model effects. Bounded owned setup/mounts, inert raw READY
+and retained recovery records can precede the creator's observation of drift.
+The standalone primitive uses the compiled context guard with an operator TEST
+tuple for mechanics only; it does not qualify sealed authority or the full adapter.
+
+The fixed adapter supplies bounded private tmp, run, sys, device and pts views,
+read-only root/dependencies, selected writable destinations and protected-path
+omissions. Non-filesystem device policy and raw-IO/module syscall denial retain
+the original initial-namespace capability bound and NoNewPrivileges. All
+assembly commands share one monotonic 300-second deadline; readiness and the
+330-second outer startup deadline are unchanged. The subsequent user/PID/root
+transition and capability drop are private Host mechanics, not a new SPI or
+public admission profile. A source/typecheck receipt is insufficient: the
+disposable physical TEST must prove the closed root, private PID/proc view,
+user/group mapping, zero child capabilities, no old-root/FD escape and no creator
+mount mutation before native tooling qualification. No such PASS is inferred
+from this implementation description.
 Pre-submission and transport denials retain a root-private `provider-failure.json`
 with only a closed phase identifier and reserved unit. This observation carries
 no authority and never records raw errors, stderr, paths or credential contents.
 
-The readiness/ownership deadline is 180 seconds; unexpected/oversized output,
+Unexpected/oversized output,
 stream errors, EOF, transport exit and cancellation fail closed. Polling detects
 fences and timeout; a sleep never establishes readiness. The launcher bounds
-bootstrap to ten seconds and the existing 4 MiB frame limit. The direct transport
+bootstrap to 300 seconds after emitting readiness and the existing 4 MiB frame
+limit; the helper's original absolute deadline still bounds the handoff. The direct transport
 also has the requested task timeout plus 30 seconds; uncertain service ownership
 is retained for operator reconciliation. Ordinary/MiMo pass no readiness argument
 and retain their existing protocol. No generic readiness RPC or public API is added.
@@ -525,6 +570,11 @@ TEST build root. Run `check-boundaries.mjs`, `check-boundaries-self-test.mjs`,
 `check-managed-launch-boundary.mjs` individually. The three operator/runtime/
 provider MJS entrypoints also pass `node --check`.
 
+For current reruns in these disposable TEST build roots, pass `--imports-only`
+to the rewriter. Full package builds run it without that flag and also generate
+the installed Host policy helper; that installation output does not belong to
+these partial source-verification trees.
+
 The writer's newly created TMPDIR/TEST_ROOT is
 `/srv/worker-state/jobs/subscription-runtime/research-network-v1/jobs/sr-research-network-writer-20261001-r7/tmp/agent/TEST-research-r7`.
 Build output and all test fixtures are disposable and are not installation or
@@ -737,6 +787,50 @@ Those are supplied reference facts; upstream bytes were not fetched in this
 provider-only sandbox. This is neither Assembly adoption nor migration and
 imposes no GM dependency. Accepted ADR bytes are unchanged. Existing module
 boundaries/import checks remain the authority; there is no universal manager.
+
+The native executable-closure extension was compared with the current CMS at
+GM commit `8fe924d56392f8f567324d2975aa2bb2d5aa499b`, document SHA-256
+`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`.
+Its fixed dependency/private-helper guidance still classifies this mechanism
+as a static typed provider adapter, without an Assembly adoption pin or graph
+node. The earlier classification reference and accepted ADR remain unchanged.
+
+### Native Codex executable closure
+
+For the trusted Linux x64/arm64 npm native layout
+`node_modules/@openai/codex-<platform>/vendor/<matching-musl-target>/bin/codex`,
+the finite closure consists of `codex` and its exact `codex-code-mode-host`
+sibling. The research root, ordinary dependency root and named read/write
+permission profiles use the same closure; registered handoff also protects it
+from durable-sink overlap. No vendor/bin directory or additional sibling is
+granted. The existing singular executable-read API, unrelated standalone
+executables and npm-wrapper package-root behavior are preserved. This does not
+qualify a wrapper's Node/PATH transport or an implementation task's tool effects.
+Codex 0.159.2 requires this sibling for Code Mode; recognized native layouts
+without it are deliberately unsupported, including older package versions.
+
+A recognized native installation with a missing or unsafe helper fails before
+root creation or dispatch, including beneath the existing `/usr` read grant.
+The helper must be a canonical root-owned executable regular file with one
+link and no group/world-writable ancestry. Its bounded descriptor read retains
+a SHA-256 digest; revalidation checks fresh descriptor/path custody and metadata
+before using a cached hash. A changed signature rehashes bytes, and the retained
+root/ordinary launch comparison rejects a changed digest before handoff.
+
+The nearest rejecting tests cover missing/unsafe helper custody, same-inode
+byte mutation and compatibility. A separate hosted-only disposable enclosure
+fixture executes the fixture binary and sibling using actual production-plan
+bindings and rejects accidental exposure of an unrelated sibling. It requires
+root-owned TEST files and `/usr/bin/bwrap`; unavailable prerequisites fail,
+without silently skipping the physical contract. No model/account is used.
+
+Run the physical fixture only on an owned disposable hosted TEST root with
+isolated TMPDIR/cache and root privilege:
+`node node_modules/vitest/vitest.mjs run --config src/worker-codex/tests/fixtures/research-native-codex-enclosure.config.ts`.
+Run the same fixture and the same-inode currentness test against unchanged
+old production source to retain meaningful RED evidence, then against the
+accepted patch for GREEN. Ordinary unit CI runs the custody/profile/currentness
+cases; this explicit physical qualification does not imply a live model turn.
 
 Shared-Host TEST qualification observed 44.3 seconds of fixed namespace setup
 with 3,929 root mount records. This is one bounded observation, not a latency SLO

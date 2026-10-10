@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type {
@@ -14,6 +14,7 @@ import {
   AccessBoundary,
   NetworkAccessMode,
 } from "@vioxen/subscription-runtime/worker-core";
+import { createFixture, createScope, type Fixture } from "./codex-goal-project-refill-fixture";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
 import {
@@ -33,31 +34,14 @@ import {
   callToolJson,
 } from "./codex-goal-mcp-test-support";
 
-type Fixture = {
-  readonly root: string;
-  readonly sourceWorkspacePath: string;
-  readonly phaseStartSha: string;
-};
-
-async function createFixture(): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-worktree-"));
-  const sourceWorkspacePath = join(root, "source");
-  await mkdir(sourceWorkspacePath, { recursive: true });
-  await gitInitRepository(sourceWorkspacePath);
-  await writeFile(join(sourceWorkspacePath, "README.md"), "base\n");
-  await git(sourceWorkspacePath, ["add", "README.md"]);
-  await git(sourceWorkspacePath, ["commit", "-m", "test: base"]);
-  const phaseStartSha = (await gitStdout(
-    sourceWorkspacePath,
-    ["rev-parse", "HEAD"],
-  )).trim();
-  await git(sourceWorkspacePath, [
-    "update-ref",
-    "refs/remotes/origin/main",
-    phaseStartSha,
-  ]);
-  return { root, sourceWorkspacePath, phaseStartSha };
-}
+beforeEach(() => {
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 function createInput(
   fixture: Fixture,
@@ -91,14 +75,6 @@ async function createFastForwardInput(
   };
 }
 
-function createScope(fixture: Fixture): ProjectAccessScope {
-  return {
-    projectId: "test-project",
-    workspaceRoots: [fixture.sourceWorkspacePath],
-    worktreeRoots: [join(fixture.root, "worktrees")],
-  };
-}
-
 function brokerWithCreate(
   createWorktree: (
     input: CodexGoalProjectCreateWorktreeInput,
@@ -111,7 +87,7 @@ function applied(path: string): ProjectControlOperationResult {
   return { status: "applied", resourceId: path };
 }
 
-describe("project refill worktree identity", () => {
+describe("explanatory: project refill worktree identity", () => {
   it("creates a public broker worktree at the pinned remote head without moving the tracking ref", async () => {
     const fixture = await createFixture();
     const remotePath = join(fixture.root, "remote.git");

@@ -1,3 +1,8 @@
+import { parseHostedReadonlyHostInventory, type HostedReadonlyHostInventory as LegacyHostedReadonlyHostInventory } from "@vioxen/subscription-runtime/worker-core";
+import { assertHostedForegroundRequestDescriptors, type HostedForegroundRequest } from "./hosted-foreground-request-custody";
+import { verifyOrdinaryInstallationInventory } from "./hosted-ordinary-installation-census";
+import { type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes, type HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
 import { ScopedTerminationRecords, scopedFenceIdentity } from "./hosted-controller/scoped-termination-records";
 import { assertHostedActivationOperator, observeHostedScopedActorChildren } from "@vioxen/subscription-runtime/provider-codex";
 import { scopedDigest, ScopedActorDischargeMethod, parseScopedActorDischarge, type ScopedActorChain, type ScopedActorDischarge, type ScopedCollectedEvidence, type ScopedIdentityEvidence, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
@@ -6,12 +11,14 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assertHostedProcessDescriptors } from "@vioxen/subscription-runtime/provider-codex";
+import { verifySystemBusInfrastructure, verifyPinnedFdCollectorProfile } from "@vioxen/subscription-runtime/provider-codex";
+import { readSystemBusInfrastructureField, readFdCollectorProfileField, type FdCollectorProfilePin, type SystemBusInfrastructure } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyPhase, HostedCustodyReservationState, type HostedCustodyEpoch, type HostedCustodyReservation, type HostedOrdinaryReservation, type HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
 import { assertReadonlyHostOperator, decodePrivateJson } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedReadonlyEpochStore, readonlyEpochPath } from "./hosted-readonly-epoch-store";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
-import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
+import { TrustedCustodyLaunchRole, hostedFdCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
 import { assertExactUnitGroup, assertNoQueuedStart, assertPopulatedZero, assertTerminalUnit,
   custodyControlGroup, observedJobUnits, parseScopedManagerJobs } from "./hosted-readonly-observations";
 import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectFutureCreatorShow, collectJobs,
@@ -19,20 +26,12 @@ import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectFut
 
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
-export type HostedReadonlyHostInventory = {
-  readonly schemaVersion: 1 | 2;
-  readonly hostId: string;
-  readonly supervisorUnit: string;
-  readonly units: readonly { readonly name: string; readonly controlGroup: string; readonly fragmentSha256: string }[];
-  readonly ordinaryCreators: readonly HostedOrdinaryCreator[];
-  readonly disabledCreators: readonly string[];
-  readonly runtimeLaunch: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
-};
-export type HostedOrdinaryCreator = {
-  readonly creatorId: string; readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
-  readonly childSlotSha256?: string;
-  readonly launch: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
-};
+export type HostedReadonlyHostInventory = LegacyHostedReadonlyHostInventory |
+  (Omit<HostedInventoryV5, "systemBusInfrastructure" | "collectorProfile"> & {
+    readonly systemBusInfrastructure: SystemBusInfrastructure;
+    readonly collectorProfile: FdCollectorProfilePin;
+  });
+export type { HostedOrdinaryCreator } from "@vioxen/subscription-runtime/worker-core";
 const unitPattern = /^[A-Za-z0-9_@.-]+\.(service|scope)$/;
 const pathPattern = /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/;
 const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -42,54 +41,17 @@ const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("h
  * below under the common fence. Unknown scopes/services keep the epoch CLOSED. */
 export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
   assertReadonlyHostOperator();
-  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), 64 * 1024);
+  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
   if (!bytes) invalid();
-  const decoded = decodePrivateJson(bytes);
-  const v2 = !!decoded && typeof decoded === "object" && "schemaVersion" in decoded && decoded.schemaVersion === 2;
-  const value = object(decoded, v2 ? "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,units" :
-    "hostId,runtimeLaunch,schemaVersion,supervisorUnit,units");
-  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2) || typeof value.hostId !== "string" || !/^[a-f0-9]{32}$/.test(value.hostId) ||
-      !unit(value.supervisorUnit) || !Array.isArray(value.units) || value.units.length < 1 || value.units.length > 128) invalid();
-  const units = value.units.map(entry => {
-    const row = object(entry, "controlGroup,fragmentSha256,name");
-    if (!unit(row.name) || !path(row.controlGroup) || row.name.startsWith("subscription-runtime-hosted-") ||
-        typeof row.fragmentSha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.fragmentSha256)) invalid();
-    return Object.freeze({ name: row.name, controlGroup: row.controlGroup, fragmentSha256: row.fragmentSha256 });
-  });
-  if (new Set(units.map(row => row.name)).size !== units.length ||
-      new Set(units.map(row => row.controlGroup)).size !== units.length ||
-      !units.some(row => row.name === value.supervisorUnit)) invalid();
-  const launch = parseLaunch(value.runtimeLaunch);
-  let ordinaryCreators: HostedOrdinaryCreator[] = [], disabledCreators: string[] = [];
-  if (v2) {
-    if (!Array.isArray(value.ordinaryCreators) || value.ordinaryCreators.length > 128 ||
-        !Array.isArray(value.disabledCreators) || value.disabledCreators.length > 128) invalid();
-    ordinaryCreators = value.ordinaryCreators.map(entry => {
-      const hasSlot = !!entry && typeof entry === "object" && "childSlotSha256" in entry;
-      const row = object(entry, hasSlot ? "childSlotSha256,creatorId,jobId,jobRootDir,launch,workspacePath" : "creatorId,jobId,jobRootDir,launch,workspacePath");
-      if (hasSlot && (typeof row.childSlotSha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.childSlotSha256))) invalid();
-      if (!identity(row.creatorId) || !identity(row.jobId) || !path(row.jobRootDir) || !path(row.workspacePath)) invalid();
-      return Object.freeze({ creatorId: row.creatorId, jobId: row.jobId, jobRootDir: row.jobRootDir,
-        workspacePath: row.workspacePath, ...(hasSlot ? { childSlotSha256: row.childSlotSha256 as string } : {}), launch: parseLaunch(row.launch) });
-    });
-    disabledCreators = value.disabledCreators.map(name => {
-      if (typeof name !== "string" || name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name) ||
-          units.some(row => row.name === name)) invalid();
-      return name;
-    });
-    if (new Set(ordinaryCreators.map(row => row.creatorId)).size !== ordinaryCreators.length ||
-        new Set(disabledCreators).size !== disabledCreators.length) invalid();
-    // Multiple finite launch tuples may describe one job, but never conflicting
-    // root/workspace provenance or two identities sharing a mutable job scope.
-    for (const left of ordinaryCreators) for (const right of ordinaryCreators) {
-      if (left !== right && left.jobId === right.jobId && (left.childSlotSha256 || right.childSlotSha256)) invalid();
-      if (left.jobId === right.jobId ? left.jobRootDir !== right.jobRootDir || left.workspacePath !== right.workspacePath :
-          left.jobRootDir === right.jobRootDir || left.workspacePath === right.workspacePath) invalid();
-    }
+  const decoded = decodeHostedInventoryBytes(bytes);
+  if (decoded && typeof decoded === "object" && "schemaVersion" in decoded && decoded.schemaVersion === 5) {
+    const inventory = decoded as HostedInventoryV5;
+    const systemBusInfrastructure = readSystemBusInfrastructureField(inventory as unknown as Record<string, unknown>)!, collectorProfile = readFdCollectorProfileField(inventory as unknown as Record<string, unknown>)!;
+    if (inventory.supervisorUnit === "dbus.service" || !inventory.units.some(u => u.name === "dbus.service" && u.category === "borrowed" &&
+        u.controlGroup === systemBusInfrastructure.service.controlGroup && u.fragmentSha256 === systemBusInfrastructure.service.fragmentSha256)) invalid();
+    return Object.freeze({ ...inventory, systemBusInfrastructure, collectorProfile });
   }
-  return Object.freeze({ schemaVersion: v2 ? 2 : 1, hostId: value.hostId, supervisorUnit: value.supervisorUnit,
-    units: Object.freeze(units), runtimeLaunch: launch,
-    ordinaryCreators: Object.freeze(ordinaryCreators), disabledCreators: Object.freeze(disabledCreators) });
+  return parseHostedReadonlyHostInventory(decoded);
 }
 
 export class HostedReadonlyHostKernel {
@@ -103,6 +65,8 @@ export class HostedReadonlyHostKernel {
     const expected = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
     assertExactUnitGroup(inventory.supervisorUnit, supervisor, expected.controlGroup);
     if (!/^[1-9]\d*$/.test(supervisor.MainPID ?? "")) invalid();
+    if (inventory.schemaVersion === 5 && (bootId !== (inventory as unknown as HostedInventoryV5).bootId ||
+        processBirth(supervisor.MainPID!) !== (inventory as unknown as HostedInventoryV5).supervisor.birth)) invalid();
     const callerGroup = collectSelfCgroup();
     // Initial namespace + real cgroup membership, not an inherited env marker.
     if (callerGroup !== `0::${expected.controlGroup}`) {
@@ -113,10 +77,16 @@ export class HostedReadonlyHostKernel {
     return { hostId, bootId, supervisorId: processBirth(supervisor.MainPID ?? "") };
   }
 
-  verifyExclusiveInventory(): void {
+  verifyExclusiveInventory(fence?: HostedActivationFence, cleanup = false): void {
     const inventory = readHostedReadonlyHostInventory();
     this.session();
-    if (inventory.schemaVersion === 2) this.verifyFutureCreators(inventory);
+    if (inventory.collectorProfile) verifyPinnedFdCollectorProfile(inventory.collectorProfile);
+    if (inventory.systemBusInfrastructure) verifySystemBusInfrastructure(inventory.systemBusInfrastructure);
+    if (inventory.schemaVersion === 5) {
+      if (!fence) invalid();
+      verifyOrdinaryInstallationInventory(inventory as unknown as HostedInventoryV5, fence, cleanup); return;
+    }
+    if (inventory.schemaVersion !== 1) this.verifyFutureCreators(inventory);
     const outer = this.enrolledEpoch()?.outerRuntime;
     const observed = this.systemctl(["list-units", "--all", "--type=service,scope",
       "--state=active,activating,reloading,deactivating,failed", "--no-legend", "--plain", "--no-pager"]);
@@ -167,7 +137,7 @@ export class HostedReadonlyHostKernel {
   operatorSession(): { hostId: string; bootId: string; supervisorId: string } {
     const inventory = readHostedReadonlyHostInventory();
     const supervisor = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
-    if (collectSelfCgroup() !== `0::${supervisor.controlGroup}`) invalid();
+    if (collectSelfCgroup() !== `0::${supervisor.controlGroup}` || inventory.schemaVersion === 5 && collectProcessBirth(String(process.pid)) !== (inventory as unknown as HostedInventoryV5).supervisor.birth) invalid();
     return this.session();
   }
 
@@ -182,7 +152,10 @@ export class HostedReadonlyHostKernel {
     const bootId = collectBootId();
     assertExactUnitGroup(owner.name, supervisor, owner.controlGroup);
     assertExactUnitGroup(start.unit, current, start.controlGroup);
-    if (hostId !== inventory.hostId || bootId !== start.bootId || supervisor.DropInPaths !== "" ||
+    const modern = inventory.schemaVersion === 5 ? inventory as unknown as HostedInventoryV5 : undefined;
+    const expectedDropIns = modern?.units.find(u => u.name === modern.supervisorUnit)!.dropIns;
+    if (expectedDropIns) for (const pin of expectedDropIns) if (hash(readTrustedFragment(pin.path)) !== pin.sha256) invalid();
+    if (hostId !== inventory.hostId || bootId !== start.bootId || supervisor.DropInPaths !== (expectedDropIns?.map(p => p.path).join(" ") ?? "") ||
         !path(supervisor.FragmentPath) || hash(readTrustedFragment(supervisor.FragmentPath)) !== owner.fragmentSha256 ||
         current.DropInPaths !== "" ||
         !/^[1-9]\d*$/.test(current.MainPID ?? "") ||
@@ -218,16 +191,23 @@ export class HostedReadonlyHostKernel {
       "--no-legend", "--no-pager"]);
     for (const line of lines(enabled)) {
       const fields = line.trim().split(/\s+/);
-      if (fields.length < 2 || fields.length > 3 || !inventory.units.some(row => row.name === fields[0])) invalid();
+      if (fields.length < 2 || fields.length > 3 || (!inventory.units.some(row => row.name === fields[0]) &&
+          !(inventory.systemBusInfrastructure && fields[0] === "dbus.socket"))) invalid();
     }
-    if (lines(this.systemctl(["list-units", "--all", "--type=socket,timer",
-      "--state=active,activating,reloading,deactivating", "--no-legend", "--plain", "--no-pager"])).length) invalid();
+    for (const line of lines(this.systemctl(["list-units", "--all", "--type=socket,timer",
+      "--state=active,activating,reloading,deactivating", "--no-legend", "--plain", "--no-pager"]))) {
+      if (!inventory.systemBusInfrastructure || line.trim().split(/\s+/)[0] !== "dbus.socket") invalid();
+    }
     for (const name of observedJobUnits(collectJobs())) {
       if (inventory.disabledCreators.includes(name)) invalid();
     }
   }
 
-  verifyDescriptorBoundary(): void { assertHostedProcessDescriptors(); }
+  verifyDescriptorBoundary(original?: Readonly<{ request: HostedForegroundRequest; fence: HostedActivationFence;
+    command: string; args: readonly string[]; cwd: string }>): void {
+    if (original) assertHostedForegroundRequestDescriptors(original.request, original.fence, original);
+    else assertHostedProcessDescriptors();
+  }
 
   /** A same-boot reservation needs the trusted --wait completion receipt. PID
    * absence or a killed proxy is deliberately insufficient. Failed/ambiguous
@@ -457,12 +437,12 @@ export class HostedReadonlyHostKernel {
     command: string, args: readonly string[], cwd: string): { command: string; args: readonly string[] } {
     assertUnitReservation(record);
     if (!record.unit.startsWith("subscription-runtime-outer-")) invalid();
-    return trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Outer, record.startId, cwd);
+    return hostedFdCustodySystemdLaunch(TrustedCustodyLaunchRole.Outer, record.startId, cwd);
   }
   ordinaryRuntimeInvocation(record: HostedOrdinaryReservation, cwd: string): { command: string; args: readonly string[] } {
     assertOrdinaryReservation(record);
     if (record.unit !== `subscription-runtime-ordinary-${record.startId}.service` || !path(cwd)) invalid();
-    return trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Ordinary, record.startId, cwd);
+    return hostedFdCustodySystemdLaunch(TrustedCustodyLaunchRole.Ordinary, record.startId, cwd);
   }
   private enrolledEpoch(): HostedCustodyEpoch | null {
     if (!readHostedPrivateBytes(readonlyEpochPath, 64 * 1024)) return null;
@@ -498,7 +478,7 @@ function assertUnitReservation(value: Pick<HostedCustodyReservation, "startId" |
   if (!/^[a-f0-9-]{36}$/.test(value.startId) || value.creatorId !== value.startId ||
       ![`subscription-runtime-hosted-${value.startId}.service`, `subscription-runtime-outer-${value.startId}.service`].includes(value.unit)) invalid();
 }
-function readTrustedFragment(input: string): Buffer {
+export function readTrustedFragment(input: string, maximum = 65536): Buffer {
   const file = realpathSync(input);
   if (!path(file)) invalid();
   for (let parent = dirname(file);; parent = dirname(parent)) {
@@ -509,30 +489,16 @@ function readTrustedFragment(input: string): Buffer {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd);
-    if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o022) || before.size > 65536) invalid();
-    const bytes = Buffer.alloc(65537), length = readSync(fd, bytes, 0, bytes.length, 0), after = fstatSync(fd);
-    if (length !== before.size || length > 65536 || before.ctimeMs !== after.ctimeMs || before.size !== after.size) invalid();
+    if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o022) || before.size > maximum) invalid();
+    const bytes = Buffer.alloc(maximum + 1), length = readSync(fd, bytes, 0, bytes.length, 0), after = fstatSync(fd);
+    if (length !== before.size || length > maximum || before.ctimeMs !== after.ctimeMs || before.size !== after.size) invalid();
     return bytes.subarray(0, length);
   } finally { closeSync(fd); }
-}
-function object(value: unknown, keys: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys) invalid();
-  return value as Record<string, unknown>;
 }
 function unit(value: unknown): value is string { return typeof value === "string" && value.length <= 200 && unitPattern.test(value); }
 function path(value: unknown): value is string { return typeof value === "string" && value.length <= 4096 && pathPattern.test(value) && !value.split("/").some(part => part === "." || part === ".."); }
 function lines(value: string): string[] { return value.split("\n").filter(line => line.trim()); }
 function invalid(): never { throw new Error("hosted_custody_kernel_evidence_invalid"); }
-
-function identity(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}$/.test(value);
-}
-function parseLaunch(value: unknown): HostedOrdinaryCreator["launch"] {
-  const launch = object(value, "args,command,cwd");
-  if (!path(launch.command) || !path(launch.cwd) || !Array.isArray(launch.args) || launch.args.length > 128 ||
-      !launch.args.every(arg => typeof arg === "string" && arg.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(arg))) invalid();
-  return Object.freeze({ command: launch.command, cwd: launch.cwd, args: Object.freeze([...launch.args]) as readonly string[] });
-}
 
 function assertOrdinaryReservation(value: HostedOrdinaryReservation): void {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.startId) ||

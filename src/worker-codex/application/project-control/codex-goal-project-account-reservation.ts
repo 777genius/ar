@@ -122,19 +122,27 @@ export async function reserveCodexProjectAccount(input: {
   const sourceConfigSha256 = codexProjectReservationValueSha256(input.launch.config);
   const maxAccountCycles = reservedAttemptBudget(input);
   const leaseMode = input.deps?.leaseMode ?? codexProjectAccountLeaseMode();
-  const reservation = leaseMode === "shared"
-    ? await selectSharedCodexProjectAccount(input, maxAccountCycles)
-    : await reserveExclusiveCodexProjectAccount(input, maxAccountCycles);
-  // Awaited capacity/lease selection must not bless a mutated declared launch.
-  if (codexProjectReservationValueSha256(input.manifest) !== manifestSha256 ||
-      codexProjectReservationValueSha256(input.launch.config) !== sourceConfigSha256) {
-    throw new Error("project_control_reserved_launch_source_changed");
+  let releaseRefusedReservation: (() => Promise<void>) | undefined;
+  try {
+    const reservation = leaseMode === "shared"
+      ? await selectSharedCodexProjectAccount(input, maxAccountCycles)
+      : await reserveExclusiveCodexProjectAccount(input, maxAccountCycles,
+        release => { releaseRefusedReservation = release; });
+    // Awaited capacity/lease selection must not bless a mutated declared launch.
+    if (codexProjectReservationValueSha256(input.manifest) !== manifestSha256 ||
+        codexProjectReservationValueSha256(input.launch.config) !== sourceConfigSha256) {
+      throw new Error("project_control_reserved_launch_source_changed");
+    }
+    reservedLaunchAuthorities.set(reservation.launch, Object.freeze({ manifestSha256, sourceConfigSha256,
+      reservedConfigSha256: codexProjectReservationValueSha256(reservation.launch.config),
+      selectedAccountSha256: codexProjectReservationValueSha256(reservation.launch.config.accounts[0]),
+      accountId: reservation.accountId, maxAccountCycles, fresh: input.continuation === undefined }));
+    return reservation;
+  } catch (error) {
+    try { await releaseRefusedReservation?.(); }
+    catch { /* Keep the original refusal; a retained receipt preserves cleanup uncertainty. */ }
+    throw error;
   }
-  reservedLaunchAuthorities.set(reservation.launch, Object.freeze({ manifestSha256, sourceConfigSha256,
-    reservedConfigSha256: codexProjectReservationValueSha256(reservation.launch.config),
-    selectedAccountSha256: codexProjectReservationValueSha256(reservation.launch.config.accounts[0]),
-    accountId: reservation.accountId, maxAccountCycles, fresh: input.continuation === undefined }));
-  return reservation;
 }
 
 async function reserveExclusiveCodexProjectAccount(
@@ -146,8 +154,10 @@ async function reserveExclusiveCodexProjectAccount(
     readonly deps?: CodexProjectAccountReservationDeps;
   },
   maxAccountCycles: number,
+  retainRefusalCleanup: (release: () => Promise<void>) => void,
 ): Promise<CodexProjectExclusiveAccountReservation> {
-  const now = input.deps?.now ?? new Date();
+  const now = new Date((input.deps?.now ?? new Date()).getTime());
+  const ownerId = input.manifest.jobId;
   const ttlMs = Math.max(
     reservationGraceMs,
     (input.launch.config.taskTimeoutMs ?? 0) + reservationGraceMs,
@@ -156,6 +166,16 @@ async function reserveExclusiveCodexProjectAccount(
     input.deps?.leaseStore ??
     codexProjectAccountLeaseStore(input.launch.config.authRootDir);
   const receiptPath = codexProjectAccountReservationPath(input.manifest);
+  const retainReceipt = (receipt: PersistedCodexProjectAccountReservation): void => {
+    retainRefusalCleanup(async () => {
+      // A changed receipt is not authority to release a successor reservation.
+      const matches = async () => JSON.stringify(await readReservation(receiptPath)) === JSON.stringify(receipt);
+      if (!await matches()) return;
+      await leaseStore.release({ leaseId: receipt.leaseId, ownerId,
+        reason: "reserved_launch_refused", now });
+      if (await matches()) await rm(receiptPath, { force: true });
+    });
+  };
   const existing = await readReservation(receiptPath);
   const eligibleAccountIds = projectEligibleAccountIds(input);
   if (
@@ -164,20 +184,21 @@ async function reserveExclusiveCodexProjectAccount(
   ) {
     const renewed = await leaseStore.renew({
       leaseId: existing.leaseId,
-      ownerId: input.manifest.jobId,
+      ownerId,
       ttlMs,
       now,
     });
     if (renewed.status === "renewed") {
       const receipt = receiptFromLease(renewed.lease);
       await writeReservation(receiptPath, receipt);
+      retainReceipt(receipt);
       return reservationResult(input.launch, receipt, maxAccountCycles);
     }
   }
   if (existing) {
     await leaseStore.release({
       leaseId: existing.leaseId,
-      ownerId: input.manifest.jobId,
+      ownerId,
       reason: "account_excluded_from_continuation",
       now,
     });
@@ -197,7 +218,7 @@ async function reserveExclusiveCodexProjectAccount(
     allowedAccounts: eligibleAccountIds,
     demand: projectAccountDemand(input.launch),
     leaseDemand: null,
-    ownerId: input.manifest.jobId,
+    ownerId,
     leaseTtlMs: ttlMs,
     capacityStore,
     leaseStore,
@@ -217,12 +238,13 @@ async function reserveExclusiveCodexProjectAccount(
   } catch (error) {
     await leaseStore.release({
       leaseId: selection.lease.leaseId,
-      ownerId: input.manifest.jobId,
+      ownerId,
       reason: "reservation_receipt_write_failed",
       now,
     });
     throw error;
   }
+  retainReceipt(receipt);
   return reservationResult(input.launch, receipt, maxAccountCycles);
 }
 

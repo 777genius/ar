@@ -20,10 +20,8 @@ import { defaultCodexGoalAuthRoot } from "./codex-goal-account-roots";
 import { CodexGoalAccountSelectionMode } from "../codex-goal-account-selection-mode";
 import { optionalCodexGoalModelBackend } from "../codex-goal-model-backend";
 import { optionalCodexGoalMimoAccountSlots } from "../codex-goal-mimo-account-slots";
-import {
-  CODEX_GOAL_DEFAULT_TIMEOUT_MS,
-  goalControlModesFromRecord,
-} from "./codex-goal-launch-input";
+import { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
+import { goalControlModesFromRecord } from "./codex-goal-launch-input";
 import type {
   CodexGoalJobCreateInput,
   CodexGoalJobUpdateInput,

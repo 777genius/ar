@@ -3,24 +3,37 @@ import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFi
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/core";
-import { hostedCodexExecutableReadPath } from "../../hosted-codex-permissions";
+import { hostedCodexExecutableReadClosure } from "../../hosted-codex-permissions";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { assertHostedActivationFence, readHostedOrdinaryProcessOrigin, readHostedActivationBytes,
   decodeHostedActivationBytes, type HostedActivationFence } from "./hosted-process-activation";
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
+import { readHostedFdProfile } from "./hosted-fd-observation";
+import { hostedFdSystemdProperties } from "./hosted-fd-prelude";
+import { dependencyToolGuestConfigPath } from "../../../core/dependency-environment/dependency-tool-profile";
+import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
+import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retainHostedDependencyToolInvocation } from "./hosted-dependency-tool-plan";
+
+import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
+export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
  */
 export function hostedDependencyProviderInvocation(fence: HostedActivationFence, unit: string,
   input: { readonly command: string; readonly args: readonly string[]; readonly cwd: string;
-    readonly env: Readonly<Record<string, string>> }): CodexAppServerProcessInvocation | undefined {
+    readonly env: Readonly<Record<string, string>> }, readyReader?: DependencyToolReadyReader): CodexAppServerProcessInvocation | undefined {
   assertHostedActivationFence(fence);
+  const fdProfile = readHostedFdProfile();
   const { start, reservation } = readHostedOrdinaryProcessOrigin(fence);
   const binding = readHostedDependencyBinding(String(start.jobId));
   if (!binding) return undefined;
+  // Refuse the v2 default/injected route before any dependency read or root
+  // construction. Only the worker-branded factory retains the genuine reader.
+  if (binding.version === 2 && !readyReader) invalid();
   readHostedDependencyAttempt(binding, start, String(reservation.startId));
+  if (binding.version === 2 && !fdProfile) invalid();
   if (start.workspacePath !== binding.workspace.canonicalPath || start.jobRootDir !== binding.jobRootDir ||
       !/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   const providerId = unit.slice("subscription-runtime-hosted-".length, -".service".length);
@@ -30,8 +43,8 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   if (provider.unit !== unit || provider.creatorId !== start.creatorId || provider.originSha256 !== start.originSha256 ||
       provider.grantSha256 !== binding.grantDigest || provider.workspacePath !== binding.workspace.canonicalPath) invalid();
 
-  const packageRoot = hostedCodexExecutableReadPath({ codexBinaryPath: input.command, sourceEnv: input.env });
-  if (!packageRoot) invalid();
+  const executableClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: input.command, sourceEnv: input.env });
+  if (!executableClosure) invalid();
   const executable = resolveExecutable(input.command, input.env.PATH);
   const node = trusted(realpathSync(process.execPath));
   const launcher = trusted(fileURLToPath(new URL("./hosted-app-server-launcher.js", import.meta.url)));
@@ -40,9 +53,9 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   // Each provider reservation gets a fresh finite root. Existing roots are
   // unresolved effects, not reusable descriptions or silently cleaned state.
   mkdirSync(root, { mode: 0o700 });
-  const launcherSupport = ["hosted-process-descriptors.js", "hosted-app-server-launch-frame.js"]
+  const launcherSupport = ["hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js"]
     .map(name => trusted(`${dirname(launcher)}/${name}`));
-  const readOnly = new Set<string>(["/usr", packageRoot, executable, node, launcher, ...launcherSupport]);
+  const readOnly = new Set<string>(["/usr", ...executableClosure.paths, executable, node, launcher, ...launcherSupport]);
   for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
     let info;
     try { info = lstatSync(alias); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; throw e; }
@@ -77,12 +90,32 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   const git = `${binding.workspace.canonicalPath}/.git`;
   placeholder(root, git, true);
   mounts.push(`BindReadOnlyPaths=${git}:${git}:norbind`);
+  let toolCache: string | undefined;
+  if (binding.version === 2) {
+    for (const file of binding.toolProfile.readonlyFiles) placeholder(root, file.path, false);
+    placeholder(root, `${binding.workspace.canonicalPath}/node_modules`, true);
+    placeholder(root, binding.toolProfile.cache.canonicalPath, true);
+    // The protected capsule is created exclusively by the plan producer, not
+    // supplied by payload env or the provider launch frame.
+    mkdirSync(join(root, dirname(dependencyToolGuestConfigPath)), { recursive: true, mode: 0o700 });
+  }
   for (const name of ["resolv.conf", "hosts", "nsswitch.conf", "services"]) {
     publicSnapshot(root, `/etc/${name}`);
   }
   publicSnapshot(root, "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
   placeholder(root, "/proc", true); placeholder(root, "/tmp", true); placeholder(root, "/var/tmp", true);
+  try {
+  if (binding.version === 2) {
+    const tools = prepareHostedDependencyToolPlan(fence, unit, binding, root,
+      [binding.workspace.canonicalPath, home, codexHome], mounted, readyReader);
+    if (!tools) invalid();
+    // These are construction data from the actual retained plan, never caller
+    // selected source paths. Release independently verifies each actual mount.
+    for (const source of tools.sourcePaths) placeholder(root, source, true);
+    toolCache = tools.cache; mounts.push(...tools.mounts);
+  }
   syncDirectory(root);
+  if (JSON.stringify(hostedCodexExecutableReadClosure({ codexBinaryPath: input.command, sourceEnv: input.env })) !== JSON.stringify(executableClosure)) invalid();
   // The old launcher profiles hide this backing prefix wholesale. This finite
   // root exposes only the exact admitted job; host policy siblings do not exist.
   const properties = ["Slice=subscription-runtime-hosted.slice", "KillMode=control-group", "SendSIGKILL=yes",
@@ -90,16 +123,20 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     "RestrictSUIDSGID=yes", "AmbientCapabilities=", "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
     "ProtectSystem=strict", "NoNewPrivileges=yes", "MemorySwapMax=0", "LimitCORE=0", "TimeoutStopSec=30s",
     "RuntimeMaxSec=8h", "TasksMax=512", "MemoryMax=4G", "CPUQuota=200%", `RootDirectory=${root}`,
+    ...(fdProfile ? hostedFdSystemdProperties : []),
     "MountAPIVFS=yes", ...mounts,
-    `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}`,
+    `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}${toolCache ? " " + toolCache : ""}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M"];
-  return { command: "/usr/bin/systemd-run", systemdUnit: unit,
+  const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
     args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`, "--service-type=exec",
       "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
       "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
       "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
-      "/usr/bin/tini", "--", node, launcher],
+      "/usr/bin/tini", "--", node, launcher, ...(fdProfile ? ["--fd-ready-v1"] : [])],
     stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...input, command: executable, args: [...input.args] }) };
+  retainHostedDependencyToolInvocation(fence, invocation);
+  return invocation;
+  } catch (error) { abandonHostedDependencyToolPlan(unit); throw error; }
 }
 function resolveExecutable(command: string, path: string | undefined): string {
   for (const candidate of command.startsWith("/") ? [command] : (path ?? "").split(":").filter(Boolean).map(p => `${p}/${command}`)) {

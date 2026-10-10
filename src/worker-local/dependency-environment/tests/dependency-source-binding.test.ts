@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { DependencyInstallProofKind as Proof, DependencyPreservationKind as Preserve, DependencyReceiptState as State,
+import { DependencyUnverifiedReason, DependencyInstallProofKind as Proof, DependencyPreservationKind as Preserve, DependencyReceiptState as State,
   type DependencyProofBinding, type DependencyReceipt, type DependencyWorkspaceIdentity } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyReceiptParseStatus as Parsed, parseDependencyReceipt } from "../../../worker-core/dependency-environment/domain/parse-dependency-receipt";
 import { DependencyTreeObservationStatus as Observed, DependencyTreeObservationFailure as Failure } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
-import type { DependencyCompletedLocalReady, DependencySourceBindingRecord } from "../../../worker-core/dependency-environment/ports/dependency-source-binding";
+import { DependencyLegacyLocalSourceBindingKind, type DependencyLegacyLocalSourceBindingRecord, type DependencyCompletedLocalReady, type DependencySourceBindingRecord } from "../../../worker-core/dependency-environment/ports/dependency-source-binding";
 import { LocalDependencyReceiptStore, DependencyReceiptStorageFailure } from "../../../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { NpmInputCaptureStatus } from "../capture-npm-install-inputs";
 import { captureNpmLocalClosure, NpmLocalPinKind } from "../capture-npm-local-closure";
@@ -277,7 +277,8 @@ describe.skipIf(process.platform !== "linux")("protected source links in fresh T
       try {
         const whole = await observeDependencyDirectoryRoot({ parentPath: f.trash.destinationParent.canonicalPath, name: f.trash.destinationName,
           expectedTree: f.binding.tree, limits, sourceLinkSession: detached });
-        expect(whole.status).toBe(Observed.Complete); if (whole.status === Observed.Complete) expect(whole.digest).toBe(f.binding.manifestDigest);
+        expect(whole.status, whole.status === Observed.Incomplete ? whole.reason : undefined).toBe(Observed.Complete);
+        if (whole.status === Observed.Complete) expect(whole.digest).toBe(f.binding.manifestDigest);
         await writeFile(join(f.workspacePath, "packages/a/package.json"), encode({ name: "a", version: "2.0.0" }));
         const partial = await openCommittedDependencyTrashRemoval({ ...input, commit, maxRemovals: 1 });
         try { await expect(partial.remove()).rejects.toThrow("bounds"); } finally { await partial.close(); }
@@ -309,5 +310,52 @@ describe.skipIf(process.platform !== "linux")("protected source links in fresh T
         expect(await readFile(commit.path)).toEqual(commitBytes);
       } finally { await removal.close(); closeDependencySourceLinkSession(detached); }
     } finally { await renameOperation.close(); if (originalInput.sourceLinkSession) closeDependencySourceLinkSession(originalInput.sourceLinkSession); await f.cleanup(); }
+  });
+});
+
+// Red if protected historical reads open mutable sources, if the separate
+// mapping accepts installed completion fields, or if no verifier grants publish.
+describe.skipIf(process.platform !== "linux")("compared-local mapping is separate history", () => {
+  it("reads only pinned historical bytes after source disappearance and denies substitutions", async () => {
+    const f = await fixture();
+    try {
+      const operationId = randomUUID(), original: DependencyLegacyLocalSourceBindingRecord["original"]["receipt"] = {
+        version: 1, revision: 1, state: State.Unverified, reason: DependencyUnverifiedReason.BaselineMissing,
+        generation: f.binding.generation, workspace: f.binding.workspace, coverageRevision: f.binding.coverageRevision, tree: f.binding.tree };
+      const record: DependencyLegacyLocalSourceBindingRecord = { version: 1,
+        kind: DependencyLegacyLocalSourceBindingKind.LegacyLocalComparedSourceV1, profile: f.record.profile, operationId, candidate: f.binding,
+        original: { receipt: original, reference: f.reference }, referenceOutput: f.reference, closureDigest: f.record.closureDigest,
+        sourceLinks: f.record.sourceLinks, directories: f.record.directories, ancestors: f.record.ancestors };
+      // Shape-valid bytes below are history-reader data, never install or Ready authority.
+      const path = join(f.sourceRoot, `${f.binding.workspace.dev}-${f.binding.workspace.ino}`, `${f.binding.generation}.${operationId}.compared-local.json`);
+      const bytes = encode(record); await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+      const fileIdentity = await identity(path);
+      const reference = { path, identity: { dev: fileIdentity.dev, ino: fileIdentity.ino }, sha256: hash(bytes) };
+      await rm(join(f.workspacePath, "packages"), { recursive: true });
+      expect(() => f.sourceStore.readLegacyLocalCompared({ ...reference, identity: fileIdentity })).toThrow();
+      expect(f.sourceStore.readLegacyLocalCompared(reference)).toEqual(record);
+      expect(f.sourceStore.readInstalledHistory(f.reference)).toEqual(f.record);
+      expect(() => f.sourceStore.readLegacyLocalCompared({ ...reference, sha256: "e".repeat(64) })).toThrow();
+      await rename(path, path + ".held"); await symlink(path + ".held", path);
+      expect(() => f.sourceStore.readLegacyLocalCompared(reference)).toThrow();
+      await rm(path); await writeFile(path, encode({ ...record, installerCompletionSha256: "e".repeat(64) }), { mode: 0o600 });
+      const forgedBytes = await readFile(path);
+      expect(() => f.sourceStore.readLegacyLocalCompared({ path, identity: { dev: String(lstatSync(path, { bigint: true }).dev), ino: String(lstatSync(path, { bigint: true }).ino) }, sha256: hash(forgedBytes) })).toThrow();
+      expect(await readFile(f.reference.path)).toEqual(encode(f.record));
+    } finally { await f.cleanup(); }
+  });
+  it("requires the new protected verifier and preserves all leaves before publication", async () => {
+    const f = await fixture();
+    try {
+      const before = await readdir(join(f.sourceRoot, `${f.binding.workspace.dev}-${f.binding.workspace.ino}`));
+      const original: DependencyLegacyLocalSourceBindingRecord["original"]["receipt"] = { version: 1, revision: 1, generation: f.binding.generation,
+        workspace: f.binding.workspace, coverageRevision: f.binding.coverageRevision, state: State.Unverified, tree: f.binding.tree,
+        reason: DependencyUnverifiedReason.BaselineMissing };
+      expect(reason(() => f.sourceStore.publishLegacyLocalCompared({ capture: f.capture, sourceSession: f.captureSession,
+        candidate: f.binding, operationId: randomUUID(), original: { receipt: original, reference: f.reference }, referenceOutput: f.reference })))
+        .toBe(DependencySourceBindingFailure.OutputProof);
+      expect(await readdir(join(f.sourceRoot, `${f.binding.workspace.dev}-${f.binding.workspace.ino}`))).toEqual(before);
+      expect(await readFile(join(f.workspacePath, "node_modules/a/code.js"), "utf8")).toBe("TEST original source");
+    } finally { await f.cleanup(); }
   });
 });

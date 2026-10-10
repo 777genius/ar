@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readlinkSync, lstatSync } from "node:fs";
-import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchFileDigest } from "./research-launch-files";
+import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchRecord, researchFileDigest, researchByteValidationTimeoutMs,
+  ResearchHostCommandOperation, ResearchHostCommandUnitRole } from "./research-launch-files";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
+import { readKernelMountTable } from "./host-scratch-mount";
 
 export const researchRuntimeUnitPattern = /^subscription-runtime-research-([a-f0-9-]{36})\.service$/;
 export const researchProviderUnitPattern = /^subscription-runtime-research-provider-([a-f0-9-]{36})\.service$/;
@@ -16,10 +18,31 @@ export function researchCommand(command: string, args: readonly string[]): strin
   const timeout = ownedRuntimeStart ? researchProviderSetupTimeoutMs + 30_000
     : command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
     : isSystemdRun ? 60_000 : 15_000;
+  let started: number | undefined;
+  try { started = performance.now(); } catch { /* Observation only. */ }
   const result = spawnSync(command, [...args], { encoding: "utf8", timeout, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.status !== 0) researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
-    ? "host-command-timeout" : "host-command-failed");
+  if (result.error || result.status !== 0) {
+    let operation = ResearchHostCommandOperation.Unknown, unitRole = ResearchHostCommandUnitRole.Unknown, elapsedMs = 0;
+    try {
+      const elapsed = started === undefined ? 0 : performance.now() - started;
+      if (Number.isFinite(elapsed)) elapsedMs = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsed));
+    } catch { /* Observation only. */ }
+    try {
+      const show = command === "/usr/bin/systemctl" && args[0] === "show";
+      operation = show ? ResearchHostCommandOperation.SystemctlShow
+        : command === "/usr/bin/systemctl" && args[0] === "list-jobs" ? ResearchHostCommandOperation.SystemctlListJobs
+        : isSystemdRun ? ResearchHostCommandOperation.SystemdRun : ResearchHostCommandOperation.Unknown;
+      const unit = show ? args[1] : isSystemdRun && args[0] === "--quiet"
+        ? args[1]?.startsWith("--unit=") ? args[1].slice(7)
+          : args[1] === "--wait" && args[2] === "--pipe" && args[3] === "--collect" && args[4]?.startsWith("--unit=") ? args[4].slice(7) : undefined
+        : undefined;
+      unitRole = unit && researchRuntimeUnitPattern.test(unit) ? ResearchHostCommandUnitRole.Runtime
+        : unit && researchProviderUnitPattern.test(unit) ? ResearchHostCommandUnitRole.Provider : ResearchHostCommandUnitRole.Unknown;
+    } catch { /* Diagnostic failure never changes command admission. */ }
+    researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+      ? "host-command-timeout" : "host-command-failed", operation, unitRole, elapsedMs);
+  }
   return result.stdout;
 }
 export function assertResearchInitialRoot(operator = false): void {
@@ -31,6 +54,33 @@ export function assertResearchInitialRoot(operator = false): void {
       if (readlinkSync(`/proc/self/ns/${ns}`) !== readlinkSync(`/proc/1/ns/${ns}`)) researchInvalid();
     }
   } catch { researchInvalid(); }
+}
+/** Self-only bootstrap; a sealed reference is required before provider effects. */
+export function assertResearchProviderRootIdentity(): void {
+  if (process.platform !== "linux" || process.getuid?.() !== 0 || process.geteuid?.() !== 0 ||
+      !/^0\s+0\s+4294967295$/.test(readFileSync("/proc/self/uid_map", "utf8").trim()) ||
+      !/^0\s+0\s+4294967295$/.test(readFileSync("/proc/self/gid_map", "utf8").trim())) researchInvalid();
+}
+export type ResearchInitialHostContext = Readonly<Pick<ResearchProcessIdentity, "bootId" | "machineId" | "namespaces">>;
+export function parseResearchInitialHostContext(value: unknown): ResearchInitialHostContext {
+  const context = researchRecord(value, "bootId,machineId,namespaces"), ns = researchRecord(context.namespaces, "user,mnt,pid,net");
+  if (typeof context.bootId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(context.bootId) ||
+      typeof context.machineId !== "string" || !/^[a-f0-9]{32}$/.test(context.machineId)) researchInvalid();
+  for (const kind of ["user", "mnt", "pid", "net"] as const) {
+    const namespace = ns[kind], match = typeof namespace === "string" ? new RegExp(`^${kind}:\\[([1-9]\\d{0,9})\\]$`).exec(namespace) : null;
+    if (!match || Number(match[1]) > 0xffffffff) researchInvalid();
+  }
+  return Object.freeze({ bootId: context.bootId, machineId: context.machineId,
+    namespaces: Object.freeze({ user: ns.user as string, mnt: ns.mnt as string, pid: ns.pid as string, net: ns.net as string }) });
+}
+/** Mechanics only: a structural context cannot authenticate launch authority. */
+export function assertResearchProviderInitialRoot(value: ResearchInitialHostContext): void {
+  assertResearchProviderRootIdentity();
+  const context = parseResearchInitialHostContext(value), own = researchProcessIdentity();
+  if (own.bootId !== context.bootId || own.machineId !== context.machineId || own.namespaces.mnt === context.namespaces.mnt ||
+      (["user", "pid", "net"] as const).some(kind => own.namespaces[kind] !== context.namespaces[kind]) ||
+      readKernelMountTable().trimEnd().split("\n").some(row => row.split(" - ")[0]!.split(" ").slice(6)
+        .some(field => /^(?:shared|master|propagate_from):/.test(field)))) researchInvalid();
 }
 /** This independent route has no authority once any global/managed authority is
  * installed, including partial installations. Those owners retain their fences. */
@@ -59,7 +109,7 @@ function researchUnifiedControlGroup(text: string): string | null {
   }
   return unified;
 }
-export function researchProcessIdentity(pid = process.pid): ResearchProcessIdentity {
+export function researchProcessLifetime(pid = process.pid): Omit<ResearchProcessIdentity, "namespaces"> {
   if (!Number.isSafeInteger(pid) || pid < 1) researchInvalid();
   const stat = readFileSync(`/proc/${pid}/stat`, "utf8"), end = stat.lastIndexOf(")");
   const fields = stat.slice(end + 2).split(/\s+/), birthTicks = fields[19];
@@ -69,9 +119,13 @@ export function researchProcessIdentity(pid = process.pid): ResearchProcessIdent
   if (!/^[a-f0-9-]{36}$/.test(bootId) || !/^[a-f0-9]{32}$/.test(machineId)) researchInvalid();
   const group = researchUnifiedControlGroup(readFileSync(`/proc/${pid}/cgroup`, "utf8"));
   if (!group) researchInvalid();
+  return Object.freeze({ pid, birthTicks, bootId, machineId, controlGroup: group });
+}
+export function researchProcessIdentity(pid = process.pid): ResearchProcessIdentity {
+  const lifetime = researchProcessLifetime(pid);
   const namespaces = Object.freeze({ user: readlinkSync(`/proc/${pid}/ns/user`), mnt: readlinkSync(`/proc/${pid}/ns/mnt`),
     pid: readlinkSync(`/proc/${pid}/ns/pid`), net: readlinkSync(`/proc/${pid}/ns/net`) });
-  return Object.freeze({ pid, birthTicks, bootId, machineId, controlGroup: group, namespaces });
+  return Object.freeze({ ...lifetime, namespaces });
 }
 export type ResearchServiceIdentity = Readonly<{
   unit: string; mainPid: number; controlGroup: string; invocationId: string; description: string;
@@ -110,7 +164,7 @@ export function assertResearchServiceOwner(processIdentity: ResearchProcessIdent
       service.description !== description) researchInvalid();
 }
 export function researchExecutableDigest(path: string): string {
-  return researchFileDigest(path, { maxBytes: 512 * 1024 * 1024, deadline: performance.now() + 4000,
+  return researchFileDigest(path, { maxBytes: 512 * 1024 * 1024, deadline: performance.now() + researchByteValidationTimeoutMs,
     cache: executableHashes, cacheEntries: 32, executable: true });
 }
 const executableHashes = new Map<string, { signature: string; digest: string }>();

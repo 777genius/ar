@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
+import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-reference";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
-import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
-import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
+import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { assertInProcessRunComposition, hasTrustedRunDeps, assertStorageCommandSerializationSupported, assertStorageRegistrySupported } from "./codex-goal-cli-run-composition";
+import { isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
+import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
+import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
+import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -338,7 +344,7 @@ export async function runCodexGoalCli(
     if (!command.dryRun && !command.printCommand) {
       command = { ...command, ...mapManagedGoalLayout(command) };
     }
-    assertInProcessRunComposition(command, runDeps);
+    assertInProcessRunComposition(command, runDeps, () => cliLaunchInput(command));
     if (command.lifecycle) {
       return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
     }
@@ -366,10 +372,13 @@ export async function runCodexGoalCli(
     const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
     if (outerStatus !== undefined) return outerStatus;
     await upsertRunCommandManifest(command);
+    const reference = await tryRunHostedLegacyReference(command.config);
+    if (reference) { writeJsonOrText(command.format, reference, io); return 0; }
     const result = await runCodexGoal(command.config, runDeps);
     writeJsonOrText(command.format, result, io);
     return result.status === "completed" ? 0 : 1;
   } catch (error) {
+    if (io === defaultIo && unverifiedHostedForegroundSink()) return 70;
     if (isBrokenPipeError(error)) return 0;
     try {
       io.writeStderr(`${error instanceof Error ? error.message : "codex goal failed"}\n`);
@@ -381,29 +390,17 @@ export async function runCodexGoalCli(
   }
 }
 
-function assertInProcessRunComposition(command: RunCommand, deps: CodexGoalRunDeps | undefined): void {
-  const hasStorageData = command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined;
-  if (!hasTrustedRunDeps(deps) && !hasStorageData) return;
-  // Refuse before builders/lifecycle can lose NEW data or trusted ports.
-  if (command.lifecycle || (command.tmuxSession && !(command.dryRun || command.printCommand))) {
-    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
-  }
-  if (command.dryRun || command.printCommand) {
-    assertStorageCommandSerializationSupported(command);
-    return;
-  }
-  assertStorageRegistrySupported(command);
-  if (isHostedGoalLaunch(cliLaunchInput(command)) && !isHostedOrdinaryRuntime()) {
-    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
-  }
-  // Actual routing still verifies private ordinary origin; this adds no authority.
-}
-
-function hasTrustedRunDeps(deps: CodexGoalRunDeps | undefined): boolean {
-  if (deps === undefined) return false;
-  // Empty plain composition is legacy; a prototype may carry inherited authority.
-  return Reflect.ownKeys(deps).length > 0 ||
-    (Object.getPrototypeOf(deps) !== Object.prototype && Object.getPrototypeOf(deps) !== null);
+/** Only suppresses diagnostics; it grants no process or file authority. Actual
+ * admitted inner runtimes retain their already-proved pipe output contract. */
+function unverifiedHostedForegroundSink(): boolean {
+  try {
+    if (!readHostedFdProfile()) return false;
+    if (isHostedOrdinaryRuntime()) {
+      withHostedActivationFence(fence => readHostedOrdinaryRuntime(fence));
+      return false;
+    }
+    return new HostedReadonlySupervisorHost().runtimeRole() !== HostedReadonlyRuntimeRole.Runtime;
+  } catch { return true; }
 }
 
 function isBrokenPipeError(error: unknown): boolean {
@@ -501,12 +498,6 @@ export function buildNoTmuxShellCommand(command: RunCommand): string {
   return buildCodexGoalNoTmuxCommand(cliLaunchInput(command));
 }
 
-function assertStorageCommandSerializationSupported(command: RunCommand): void {
-  if (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined) {
-    throw new Error("codex_goal_cli_storage_preview_unsupported");
-  }
-}
-
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
   assertStorageRegistrySupported(command);
@@ -515,13 +506,6 @@ export async function upsertRunCommandManifest(command: RunCommand) {
     launch: cliLaunchInput(command),
     ...(command.registryMetadata ? { metadata: command.registryMetadata } : {}),
   });
-}
-
-function assertStorageRegistrySupported(command: RunCommand): void {
-  if (command.registryRootDir !== undefined &&
-      (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined)) {
-    throw new Error("codex_goal_cli_storage_registry_unsupported");
-  }
 }
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {

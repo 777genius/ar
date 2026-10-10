@@ -47,6 +47,7 @@ export type CodexGoalInput = {
   readonly projectAccessScope?: CodexGoalRunConfig["projectAccessScope"];
   readonly allowDangerFullAccess?: boolean;
   readonly networkAccess?: CodexGoalRunConfig["networkAccess"];
+  readonly workerMode?: CodexGoalRunConfig["workerMode"];
   readonly allowDuplicateAccountIdentities?: boolean;
   readonly requireGitWorkspace?: boolean;
   readonly prewarmOnStart?: boolean;
