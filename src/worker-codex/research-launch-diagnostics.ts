@@ -169,5 +169,9 @@ export function normalizeResearchAssemblyFailure(error: unknown) {
   }
   stack = stack.slice(0, 8192);
   const frame = /\/dist\/worker-codex\/research-provider-root-assembler\.js:([1-9]\d{0,5}):([1-9]\d{0,5})/.exec(stack);
-  return { ...normalizeResearchLaunchFailure(error), ...(frame ? { assemblyLine: Number(frame[1]), assemblyColumn: Number(frame[2]) } : {}) };
+  const materialFrame = /\/dist\/worker-codex\/research-launch-admission\.js:([1-9]\d{0,5}):([1-9]\d{0,5})/.exec(stack);
+  const material = normalizeResearchMaterialFailure(error);
+  return { legacyCode: material.legacyCode, cause: material.cause, diagnostic: material.diagnostic, materialRole: material.materialRole,
+    ...(frame ? { assemblyLine: Number(frame[1]), assemblyColumn: Number(frame[2]) } : {}),
+    ...(materialFrame ? { materialLine: Number(materialFrame[1]), materialColumn: Number(materialFrame[2]) } : {}) };
 }

@@ -1,3 +1,4 @@
+import { ResearchLaunchCause, ResearchLaunchDiagnostic, ResearchMaterialRole } from "./research-launch-diagnostics";
 /** A finite transport protocol, not a general provider stderr logger. */
 export function createResearchProviderBootstrapDiagnostics(emit: (safeMessage: string) => void) {
   let pending = "";
@@ -15,14 +16,25 @@ export function createResearchProviderBootstrapDiagnostics(emit: (safeMessage: s
         if (value === null || typeof value !== "object" || Array.isArray(value)) return;
         const record = value as Record<string, unknown>;
         const keys = Object.keys(record);
-        if (keys.some(key => !["event", "legacyCode", "cause", "diagnostic", "assemblyLine", "assemblyColumn"].includes(key))) return;
+        if (keys.some(key => !["event", "legacyCode", "cause", "diagnostic", "assemblyLine", "assemblyColumn", "materialRole", "materialLine", "materialColumn"].includes(key))) return;
         if (record.event !== "research_provider_root_assembly_failed" ||
             !(record.legacyCode === "unclassified" || (Number.isInteger(record.legacyCode) && Number(record.legacyCode) >= 0 && Number(record.legacyCode) <= 7)) ||
             typeof record.cause !== "string" || typeof record.diagnostic !== "string") return;
         const location = record.assemblyLine !== undefined || record.assemblyColumn !== undefined;
         if (location && ![record.assemblyLine, record.assemblyColumn].every(n => Number.isInteger(n) && Number(n) >= 1 && Number(n) <= 999999)) return;
-        // Cause/diagnostic text belongs to the producer; never copy it across this boundary.
-        safeMessage = `research_provider_root_assembly_failed legacyCode=${record.legacyCode}${location ? ` assemblyLine=${record.assemblyLine} assemblyColumn=${record.assemblyColumn}` : ""}`;
+        const materialLocation = record.materialLine !== undefined || record.materialColumn !== undefined;
+        if (materialLocation && ![record.materialLine, record.materialColumn].every(n => Number.isInteger(n) && Number(n) >= 1 && Number(n) <= 999999)) return;
+        const role = Object.values(ResearchMaterialRole).find(value => value === record.materialRole);
+        if (record.materialRole !== undefined && role === undefined) return;
+        const cause = Object.values(ResearchLaunchCause).find(value => value === record.cause);
+        const diagnostic = Object.values(ResearchLaunchDiagnostic).find(value => value === record.diagnostic);
+        // Rebuild only closed enum values; arbitrary producer strings never cross.
+        safeMessage = `research_provider_root_assembly_failed legacyCode=${record.legacyCode}` +
+          (location ? ` assemblyLine=${record.assemblyLine} assemblyColumn=${record.assemblyColumn}` : "") +
+          (materialLocation ? ` materialLine=${record.materialLine} materialColumn=${record.materialColumn}` : "") +
+          (role && role !== ResearchMaterialRole.Unknown ? ` materialRole=${role}` : "") +
+          (cause && cause !== ResearchLaunchCause.None ? ` cause=${cause}` : "") +
+          (diagnostic && diagnostic !== ResearchLaunchDiagnostic.Unknown ? ` diagnostic=${diagnostic}` : "");
       } catch { return; }
     }
     if (safeMessage !== undefined && emitted < 8 && safeMessage !== latest) {

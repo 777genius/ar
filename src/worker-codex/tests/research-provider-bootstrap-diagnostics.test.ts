@@ -41,3 +41,20 @@ it("bounds publication writes even when stderr floods valid finite markers", () 
   for (let code = 1; code <= 100; code++) stderr.emit("data", `research_root_transition_failed phase=pivot code=${code}\n`);
   expect(published).toHaveLength(8);
 });
+
+
+it("retains only finite material role, cause and errno with bounded admission source coordinates", () => {
+  const published: string[] = [];
+  const decoder = createResearchProviderBootstrapDiagnostics(message => published.push(message));
+  const marker = { event: "research_provider_root_assembly_failed", legacyCode: "unclassified",
+    cause: "file-deadline", diagnostic: "ENOENT", materialRole: "runtime-artifact", materialLine: 75, materialColumn: 58 };
+  decoder.push(JSON.stringify(marker) + "\n");
+  expect(published).toEqual(["research_provider_root_assembly_failed legacyCode=unclassified materialLine=75 materialColumn=58 materialRole=runtime-artifact cause=file-deadline diagnostic=ENOENT"]);
+  for (const changed of [{ materialRole: "TEST-secret" }, { materialLine: 1000000 }, { materialColumn: undefined }, { materialLine: "75" }]) {
+    decoder.push(JSON.stringify({ ...marker, ...changed }) + "\n");
+  }
+  expect(published).toHaveLength(1);
+  decoder.push(JSON.stringify({ ...marker, cause: "TEST-secret", diagnostic: "TEST-secret", materialRole: "unknown" }) + "\n");
+  expect(published[1]).toBe("research_provider_root_assembly_failed legacyCode=unclassified materialLine=75 materialColumn=58");
+  expect(JSON.stringify(published)).not.toContain("TEST-secret");
+});

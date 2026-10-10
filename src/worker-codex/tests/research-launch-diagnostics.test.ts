@@ -238,11 +238,14 @@ describe("finite startup diagnostics", () => {
 });
 
 it("assembly failure exposes numeric location without message or host path", async () => {
-  const { normalizeResearchAssemblyFailure } = await import("../research-launch-diagnostics");
+  const { annotateResearchMaterialFailure, annotateScratchCapacityFailure, ScratchCapacityVolumeRole, ResearchMaterialRole, normalizeResearchAssemblyFailure } = await import("../research-launch-diagnostics");
   const error = new Error("TEST_SECRET_NEVER_PUBLISH");
-  error.stack = "TEST_SECRET_NEVER_PUBLISH\n at check (/opt/private/dist/worker-codex/research-provider-root-assembler.js:123:9)";
+  error.stack = "TEST_SECRET_NEVER_PUBLISH\n at read (/opt/private/dist/worker-codex/research-launch-admission.js:75:58)\n at check (/opt/private/dist/worker-codex/research-provider-root-assembler.js:123:9)";
+  annotateResearchMaterialFailure(error, ResearchMaterialRole.RuntimeArtifact);
+  annotateScratchCapacityFailure(error, ScratchCapacityVolumeRole.RootControl, 0, 1);
   const result = normalizeResearchAssemblyFailure(error);
-  expect(result).toMatchObject({ assemblyLine: 123, assemblyColumn: 9 });
+  expect(result).toMatchObject({ assemblyLine: 123, assemblyColumn: 9, materialLine: 75, materialColumn: 58, materialRole: ResearchMaterialRole.RuntimeArtifact });
+  expect(result).not.toHaveProperty("scratchCapacity");
   expect(JSON.stringify(result)).not.toContain("TEST_SECRET");
   expect(JSON.stringify(result)).not.toContain("/opt/private");
   let reads = 0;
@@ -250,4 +253,5 @@ it("assembly failure exposes numeric location without message or host path", asy
   Object.defineProperty(foreign, "stack", { get() { reads++; throw new Error("TEST getter"); } });
   expect(normalizeResearchAssemblyFailure(foreign)).not.toHaveProperty("assemblyLine");
   expect(reads).toBe(0);
+  expect(normalizeResearchAssemblyFailure({ materialRole: ResearchMaterialRole.CodexExecutable }).materialRole).toBe(ResearchMaterialRole.Unknown);
 });
