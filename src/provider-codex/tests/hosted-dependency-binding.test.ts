@@ -21,8 +21,12 @@ describe("protected dependency binding closed revisions", () => {
       expect(() => assertHostedDependencyBindingInventoryRevision(v1, revision)).not.toThrow();
       expect(() => assertHostedDependencyBindingInventoryRevision(v2, revision)).toThrow();
     }
-    expect(() => assertHostedDependencyBindingInventoryRevision(v2, 4)).not.toThrow();
-    for (const revision of [1, 5, "4", undefined]) {
+    for (const revision of [4, 5]) {
+      expect(() => assertHostedDependencyBindingInventoryRevision(v1, revision)).not.toThrow();
+      expect(() => assertHostedDependencyBindingInventoryRevision(v2, revision)).not.toThrow();
+    }
+    for (const revision of [1, 6, "4", undefined]) {
+      expect(() => assertHostedDependencyBindingInventoryRevision(v1, revision)).toThrow();
       expect(() => assertHostedDependencyBindingInventoryRevision(v2, revision)).toThrow();
     }
   });

@@ -1,3 +1,9 @@
+import {
+  AgentRuntimeBudgetEnforcement,
+  AgentRuntimeBudgetMetric,
+  AgentRuntimeExecutionMode,
+  AgentRuntimeTurnLimitEnforcement,
+} from "@vioxen/subscription-runtime/core";
 import { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
@@ -11,7 +17,8 @@ import type { CodexAppServerProcessFactory } from "./app-server/application/app-
 import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
-import type { CodexModelBackend } from "./codex-model-backend";
+import { CodexModelBackend } from "./codex-model-backend";
+import { readHostedMimoWorkerOrigin } from "./hosted-mimo-worker-origin";
 import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hosted-controller-dynamic-tools";
@@ -57,11 +64,61 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
 };
 
+function isOwnedMimoContainedTurn(options: CodexAppServerExecutionEngineOptions): boolean {
+  return options.executionLifetime !== undefined && options.goalMode === false &&
+    options.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && options.childBudget === undefined &&
+    options.hostedControllerTools === undefined && options.hostedPermissionProfiles === true &&
+    readHostedMimoWorkerOrigin() !== null;
+}
+
+/** MiMo's wire lacks json_schema; the registered report still validates locally. */
+export function appServerWireOutputSchema(options: CodexAppServerExecutionEngineOptions,
+  schema: Readonly<Record<string, unknown>> | undefined): Readonly<Record<string, unknown>> | undefined {
+  return schema !== undefined && isOwnedMimoContainedTurn(options) ? undefined : schema;
+}
+
 /** Resolve and validate the original bounded execution fence before admission. */
 export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionEngineOptions): AppServerExecutionLifetime | undefined {
   const lifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
+  const ownedMimoTurn = isOwnedMimoContainedTurn(options);
   if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
-        options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
+        (!ownedMimoTurn && options.goalMode !== true) || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
         options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
   return lifetime;
+}
+
+export function appServerEngineCapabilities(
+  options: CodexAppServerExecutionEngineOptions,
+): CodexExecutionEngine["capabilities"] {
+  return {
+    supportsStructuredOutput: true,
+    supportsJsonEvents: true,
+    supportsThreadResume: false,
+    requiresSchemaFile: false,
+    taskExecutionCapabilities: [
+      { mode: AgentRuntimeExecutionMode.SingleRun },
+      ...(options.goalMode
+        ? [{
+            mode: AgentRuntimeExecutionMode.Goal,
+            maxCompletionConditionChars: 4_000,
+          } as const]
+        : []),
+    ],
+    ...(options.goalMode
+      ? {
+          turnLimitEnforcement:
+            AgentRuntimeTurnLimitEnforcement.ProviderNative,
+        }
+      : {}),
+    ...(options.rolloutBudget
+      ? {
+          budgetCapabilities: [
+            {
+              metric: AgentRuntimeBudgetMetric.WeightedTokens,
+              enforcement: AgentRuntimeBudgetEnforcement.ProviderNative,
+            },
+          ],
+        }
+      : {}),
+  };
 }

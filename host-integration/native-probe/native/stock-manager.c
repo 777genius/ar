@@ -13,11 +13,15 @@
 #define MANAGER_PATH "/org/freedesktop/systemd1"
 #define MANAGER_INTERFACE "org.freedesktop.systemd1.Manager"
 #define UNIT_INTERFACE "org.freedesktop.systemd1.Unit"
+#define SLICE_INTERFACE "org.freedesktop.systemd1.Slice"
 struct retained_call {
   struct np_stock_manager *owner;
   enum np_manager_step step;
   sd_bus_message *request, *reply;
   sd_bus_slot *slot;
+#ifdef NP_RETAINED_V2_A1
+  uint64_t facts_event;
+#endif
 };
 struct retained_job { uint32_t id; char path[128], unit[128], outcome[32]; uint64_t event; bool associated; sd_bus_message *original; };
 struct np_stock_manager {
@@ -33,8 +37,20 @@ struct np_stock_manager {
   sd_bus_message *reload_events[2];
   struct np_publication *fragment;
   struct np_resource_pair *pair;
+#ifdef NP_RETAINED_V2_A1
+  uint64_t target_unit_event, slice_unit_event, slice_cpu_event;
+#endif
 };
-static const char *const methods[NP_MANAGER_STEPS] = { "GetUnit", "Subscribe", "StartTransientUnit", "RefUnit", "GetAll", "GetAll", "Reload", "GetAll", "LoadUnit", "RefUnit", "GetAll", "StartUnit", "GetAll", "GetAll" };
+static const char *const methods[NP_MANAGER_STEPS] = {
+  "GetUnit", "Subscribe", "StartTransientUnit", "RefUnit", "GetAll", "GetAll", "Reload", "GetAll",
+#ifdef NP_RETAINED_V2_A1
+  "GetAll",
+#endif
+  "LoadUnit", "RefUnit", "GetAll", "StartUnit", "GetAll", "GetAll",
+#ifdef NP_RETAINED_V2_A1
+  "GetAll",
+#endif
+};
 static int failed(struct np_stock_manager *manager, int error) {
   manager->observation.lost = true; manager->gate->closed = true; errno = error; return -1;
 }
@@ -52,8 +68,15 @@ static int path(char *to, size_t capacity, const char *unit) {
   }
   to[at] = 0; return 0;
 }
+static bool slice_property_step(enum np_manager_step step) {
+  return step == NP_SLICE_CPU_FACTS
+#ifdef NP_RETAINED_V2_A1
+    || step == NP_SLICE_RELOAD_CPU_FACTS || step == NP_SLICE_FINAL_CPU_FACTS
+#endif
+    ;
+}
 static bool property_step(enum np_manager_step step) {
-  return step == NP_SLICE_CPU_FACTS || step == NP_SLICE_FACTS || step == NP_SLICE_RELOAD_FACTS || step == NP_TARGET_PRESTART_FACTS || step == NP_TARGET_FACTS || step == NP_SLICE_FINAL_FACTS;
+  return slice_property_step(step) || step == NP_SLICE_FACTS || step == NP_SLICE_RELOAD_FACTS || step == NP_TARGET_PRESTART_FACTS || step == NP_TARGET_FACTS || step == NP_SLICE_FINAL_FACTS;
 }
 static int association(struct np_stock_manager *manager) {
   if (manager->observation.lost || np_birth_associate_v1(manager->gate->clock, &manager->birth)) return failed(manager, ESTALE);
@@ -98,6 +121,15 @@ static int events(sd_bus_message *message, void *data, sd_bus_error *error) {
   if (!object) return failed(manager, EPROTO);
   if (sd_bus_message_is_signal(message, "org.freedesktop.DBus.Properties", "PropertiesChanged") > 0) {
     if ((strcmp(object, manager->slice_path) && strcmp(object, manager->target_path)) || sd_bus_message_has_signature(message, "sa{sv}as") <= 0) return failed(manager, EPROTO);
+#ifdef NP_RETAINED_V2_A1
+    const char *interface;
+    if (sd_bus_message_read(message, "s", &interface) <= 0) return failed(manager, EPROTO);
+    /* Retain every matching interface mutation, including invalidated-only
+     * properties. A later successful snapshot can supersede an earlier event. */
+    if (!strcmp(object, manager->target_path) && !strcmp(interface, UNIT_INTERFACE)) manager->target_unit_event = manager->observation.events;
+    else if (!strcmp(object, manager->slice_path) && !strcmp(interface, UNIT_INTERFACE)) manager->slice_unit_event = manager->observation.events;
+    else if (!strcmp(object, manager->slice_path) && !strcmp(interface, SLICE_INTERFACE)) manager->slice_cpu_event = manager->observation.events;
+#endif
     return 0;
   }
   if (strcmp(object, MANAGER_PATH)) return failed(manager, EPROTO);
@@ -140,7 +172,13 @@ static int fragment_path(struct np_stock_manager *manager, const char *observed)
   int n = snprintf(actual + used, sizeof actual - used, "/%s", manager->fragment->final_name);
   return n > 0 && (size_t)n < sizeof actual - used && !strcmp(actual, observed) ? 0 : -1;
 }
-static int cpu_facts(sd_bus_message *reply) {
+static int cpu_facts(struct np_stock_manager *manager, sd_bus_message *reply) {
+#ifndef NP_RETAINED_V2_A1
+  (void)manager;
+#endif
+#ifdef NP_RETAINED_V2_A1
+  bool group_seen = false;
+#endif
   bool seen = false;
   if (sd_bus_message_has_signature(reply, "a{sv}") <= 0 || sd_bus_message_enter_container(reply, 'a', "{sv}") <= 0) return -1;
   int entry;
@@ -151,13 +189,25 @@ static int cpu_facts(sd_bus_message *reply) {
       uint64_t weight;
       if (seen || sd_bus_message_enter_container(reply, 'v', "t") <= 0 || sd_bus_message_read(reply, "t", &weight) <= 0 || weight != 100 || sd_bus_message_exit_container(reply) < 0) return -1;
       seen = true;
+#ifdef NP_RETAINED_V2_A1
+    } else if (!strcmp(key, "ControlGroup")) {
+      const char *group;
+      char expected[512];
+      int n = snprintf(expected, sizeof expected, "/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/%s", manager->slice);
+      if (group_seen || n <= 0 || (size_t)n >= sizeof expected || sd_bus_message_enter_container(reply, 'v', "s") <= 0 || sd_bus_message_read(reply, "s", &group) <= 0 || strcmp(group, expected) || sd_bus_message_exit_container(reply) < 0) return -1;
+      group_seen = true;
+#endif
     } else if (sd_bus_message_skip(reply, "v") <= 0) return -1;
     if (sd_bus_message_exit_container(reply) < 0) return -1;
   }
-  return seen && entry == 0 && sd_bus_message_exit_container(reply) >= 0 ? 0 : -1;
+  return seen
+#ifdef NP_RETAINED_V2_A1
+    && group_seen
+#endif
+    && entry == 0 && sd_bus_message_exit_container(reply) >= 0 ? 0 : -1;
 }
 static int facts(struct np_stock_manager *manager, enum np_manager_step step, sd_bus_message *reply) {
-  if (step == NP_SLICE_CPU_FACTS) return cpu_facts(reply);
+  if (slice_property_step(step)) return cpu_facts(manager, reply);
   bool target = step == NP_TARGET_PRESTART_FACTS || step == NP_TARGET_FACTS;
   bool active = step != NP_TARGET_PRESTART_FACTS;
   const char *unit = target ? manager->target : manager->slice;
@@ -229,6 +279,9 @@ static int reply(sd_bus_message *message, void *data, sd_bus_error *error) {
   } else if (property_step(call->step)) { if (facts(manager, call->step, message)) return failed(manager, EPROTO); }
   else if (sd_bus_message_has_signature(message, "") <= 0) return failed(manager, EPROTO);
   row->state = NP_REQUEST_REPLIED;
+#ifdef NP_RETAINED_V2_A1
+  if (property_step(call->step) && !row->late) call->facts_event = manager->observation.events;
+#endif
   if (row->late) { manager->observation.closed = true; manager->gate->closed = true; }
   return 0;
 }
@@ -273,7 +326,7 @@ static int arguments(struct np_stock_manager *manager, enum np_manager_step step
   if (step == NP_SLICE_START) {
     if (sd_bus_message_append(message, "ss", manager->slice, "fail") < 0 || sd_bus_message_open_container(message, 'a', "(sv)") < 0 || sd_bus_message_open_container(message, 'r', "sv") < 0 || sd_bus_message_append(message, "s", "CPUWeight") < 0 || sd_bus_message_open_container(message, 'v', "t") < 0 || sd_bus_message_append(message, "t", UINT64_C(100)) < 0 || sd_bus_message_close_container(message) < 0 || sd_bus_message_close_container(message) < 0 || sd_bus_message_close_container(message) < 0 || sd_bus_message_open_container(message, 'a', "(sa(sv))") < 0 || sd_bus_message_close_container(message) < 0) return -1;
   } else if (step == NP_TARGET_START) { if (sd_bus_message_append(message, "ss", manager->target, "fail") < 0) return -1; }
-  else if (property_step(step)) { if (sd_bus_message_append(message, "s", step == NP_SLICE_CPU_FACTS ? "org.freedesktop.systemd1.Slice" : UNIT_INTERFACE) < 0) return -1; }
+  else if (property_step(step)) { if (sd_bus_message_append(message, "s", slice_property_step(step) ? SLICE_INTERFACE : UNIT_INTERFACE) < 0) return -1; }
   else if (step != NP_SUBSCRIBE && step != NP_RELOAD) { if (sd_bus_message_append(message, "s", step == NP_SLICE_REF ? manager->slice : manager->target) < 0) return -1; }
   return 0;
 }
@@ -331,3 +384,23 @@ void np_manager_release_v1(struct np_stock_manager *manager) {
   sd_bus_message_unref(manager->reload_events[0]); sd_bus_message_unref(manager->reload_events[1]);
   sd_bus_slot_unref(manager->filter); sd_bus_close_unref(manager->bus); np_birth_release_v1(&manager->birth); free(manager->jobs); free(manager->incoming); free(manager);
 }
+
+#ifdef NP_RETAINED_V2_A1
+int np_manager_current_v2(struct np_stock_manager *manager) {
+  uint64_t now;
+  if (!manager) return -1;
+  /* Events consumed between final fact replies remain relevant at entry. The
+   * fixed three snapshots must still cover their own object/interface before
+   * the original association and no-new-event tail can establish currentness. */
+  if (!replied(manager, NP_TARGET_FACTS) || !replied(manager, NP_SLICE_FINAL_FACTS) || !replied(manager, NP_SLICE_FINAL_CPU_FACTS) ||
+      manager->target_unit_event > manager->calls[NP_TARGET_FACTS].facts_event ||
+      manager->slice_unit_event > manager->calls[NP_SLICE_FINAL_FACTS].facts_event ||
+      manager->slice_cpu_event > manager->calls[NP_SLICE_FINAL_CPU_FACTS].facts_event) return failed(manager, ESTALE);
+  if (boundary(manager) || np_clock_sample_v1(manager->gate->clock, &now)) return -1;
+  uint64_t observed_events = manager->observation.events;
+  uint64_t end = now + UINT64_C(1000000);
+  if (end > manager->gate->cutoff) end = manager->gate->cutoff;
+  if (end <= now || np_manager_join_v1(manager, end) || manager->observation.events != observed_events || boundary(manager)) return failed(manager, ESTALE);
+  return 0;
+}
+#endif
