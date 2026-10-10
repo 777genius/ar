@@ -1,10 +1,11 @@
+import { changedFilesFromWorkspace } from "../codex-goal-workspace-changes";
 import { initializeControllerStateOrigin } from "../application/project-control/codex-goal-controller-state-location";
 import { routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import "./hosted-test-egress-default-fixture";
 import "./unmanaged-goal-host-fixture";
 import { execFile } from "node:child_process";
 import * as nodeFs from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -20,6 +21,22 @@ import { createLinkedGitWorktree, readJsonLines } from "./codex-goal-runner-fixt
 
 const execFileAsync = promisify(execFile);
 describe("codex goal runner worker mode", () => {
+  // Native owner-side status must not execute workspace-controlled fsmonitor.
+  it.skipIf(process.platform !== "linux")("collects host workspace changes without executing Git fsmonitor", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "TEST-host-git-status-")));
+    const workspace = join(root, "workspace"), marker = join(root, "escaped"), hook = join(root, "fsmonitor");
+    try {
+      await mkdir(workspace);
+      await execFileAsync("git", ["init", "--quiet", workspace]);
+      await writeFile(hook, "#!/bin/sh\nprintf escaped > '" + marker.replaceAll("'", "'\\''") + "'\n");
+      await chmod(hook, 0o700);
+      await execFileAsync("git", ["-C", workspace, "config", "core.fsmonitor", hook]);
+      await writeFile(join(workspace, "change.txt"), "TEST change\n");
+      expect(await changedFilesFromWorkspace(workspace, true)).toEqual({ changedFiles: ["change.txt"] });
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   // Regression: a forged raw boundary/env must not turn a controller's
   // protected never-started origin into a writable raw job at either entry.
   it.skipIf(process.platform !== "linux").each(["runner", "foreground"] as const)("denies raw %s over a controller origin before runtime writes", async entry => {

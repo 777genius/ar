@@ -92,7 +92,12 @@ vi.mock("node:fs", async original => {
   return { ...real,
     lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
     statSync: (path: string) => Object.assign(real.statSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
-    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
+    fstatSync: (fd: number, options?: { bigint?: boolean }) => {
+      const uid = fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0;
+      return options?.bigint
+        ? Object.assign(real.fstatSync(fd, { bigint: true }), { dev: 2049n, gid: 0n, uid: BigInt(uid) })
+        : Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid });
+    },
     openSync: (path: string, flags: number | string, mode: number) => {
       let selected = path === "/proc/self/mountinfo" ? join(fixture.root, "mountinfo") : local(path);
       if (path === "/proc/self/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });

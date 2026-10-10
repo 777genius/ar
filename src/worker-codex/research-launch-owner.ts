@@ -1,3 +1,4 @@
+import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { trustedResearchRuntimeLaunch } from "./trusted-custody-systemd-launch";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -62,6 +63,8 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
   researchId(jobId);
   const jobDirectory = researchDirectoryIdentity(jobRootDir), workspaceDirectory = researchDirectoryIdentity(workspacePath);
   if (jobRootDir === workspacePath || jobRootDir.startsWith(workspacePath + "/")) researchInvalid();
+  // Per-root arbitration also covers a different jobId targeting this root.
+  recordRawGoalStateOrigin(jobRootDir);
   researchPrivateDirectory(researchAuthorityRoot);
   const job = researchJobAuthority(jobId); researchPrivateDirectory(job);
   if (existsSync(join(job, "active.json"))) researchInvalid();
@@ -201,6 +204,8 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
   if ((request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
   if (grant.jobId !== request.jobId || grant.jobRootDir !== request.jobRootDir || grant.workspacePath !== request.workspacePath) researchInvalid();
   assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
+  // Old grants must not bypass the newer controller creation fence.
+  recordRawGoalStateOrigin(request.jobRootDir);
   const assertProjectBytes = (): void => {
     if (!project) return;
     if (!researchRead(join(job, "grant.json")).equals(grantBytes) || !researchRead(requestPath).equals(requestBytes)) researchInvalid();

@@ -16,19 +16,21 @@ export function changedFilesFromSafeExecutionResult(
 
 export async function changedFilesFromWorkspace(
   workspacePath: string,
+  trustedHost = false,
 ): Promise<{
   readonly changedFiles: readonly string[];
   readonly warning?: string;
 }> {
   try {
-    const { stdout } = await execFileAsync(isHostedDependencyWorkspace(workspacePath) ? "/usr/bin/git" : "git", [
-      ...(isHostedDependencyWorkspace(workspacePath) ? managedDependencyGitFlags : []),
+    const confinedGit = trustedHost || isHostedDependencyWorkspace(workspacePath);
+    const { stdout } = await execFileAsync(confinedGit ? "/usr/bin/git" : "git", [
+      ...(confinedGit ? managedDependencyGitFlags : []),
       "-C",
       workspacePath,
       "status",
       "--porcelain",
       "--untracked-files=all",
-    ], { timeout: gitStatusTimeoutMs, ...(isHostedDependencyWorkspace(workspacePath) ? { env: managedDependencyGitEnvironment() } : {}) });
+    ], { timeout: gitStatusTimeoutMs, ...(confinedGit ? { env: managedDependencyGitEnvironment() } : {}) });
     const changedFiles = stdout
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)

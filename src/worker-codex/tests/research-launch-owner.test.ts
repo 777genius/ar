@@ -87,6 +87,30 @@ describe("authority changes during blocking Host observations", () => {
 });
 
 describe("closed installed research launch owner (real TEST files; proc, mounts and systemd substituted)", () => {
+  it.skipIf(process.platform !== "linux").each(["different-job-grant", "legacy-grant-start"] as const)("denies controller-root reuse by %s before native effects", phase => {
+    const r = request(), origin = join(r.jobRootDir, ".controller-state-origin.json");
+    const grantPath = join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId), "grant.json");
+    let priorGrant: Buffer | undefined;
+    if (phase === "legacy-grant-start") {
+      grantResearchLaunch(r.jobId, r.jobRootDir, r.workspacePath);
+      priorGrant = researchRead(grantPath);
+      // Reconstruct a pre-v2 retained grant: it originally had no origin leaf.
+      unlinkSync(origin);
+    }
+    writeFileSync(origin, JSON.stringify({ schemaVersion: 2, jobId: "TEST-controller", createdAt: "2026-10-10T00:00:00.000Z" }), { flag: "wx", mode: 0o600 });
+    const before = readFileSync(origin);
+    expect(() => phase === "different-job-grant"
+      ? grantResearchLaunch(r.jobId + "-other", r.jobRootDir, r.workspacePath)
+      : startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json"))))
+      .toThrow("controller_origin_raw_launch_denied");
+    expect(readFileSync(origin)).toEqual(before);
+    if (priorGrant) expect(researchRead(grantPath)).toEqual(priorGrant);
+    expect(existsSync(join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId + "-other"), "grant.json"))).toBe(false);
+    expect(existsSync(join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId), "active.json"))).toBe(false);
+    expect(host.calls).toEqual([]); expect(host.pins.size).toBe(0);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+
   it.each([undefined, null, 42, "TEST-FAKE-secret"])("rethrows opaque pin failure %s unchanged", async original => {
     const processes = await import("node:child_process"), sync = processes.spawnSync;
     vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {

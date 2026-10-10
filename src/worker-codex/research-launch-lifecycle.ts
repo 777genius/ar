@@ -43,7 +43,7 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   assertTerminal();
   if (!existsSync(publicationPath)) {
     if (released) researchInvalid();
-    const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath);
+    const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
     if (workspace.warning !== undefined) researchInvalid();
     const reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
       publicationAuthority: { assertPublicationAuthorized: async () => assertTerminal() } });
@@ -263,7 +263,7 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
   } });
   const guard = researchCancellationHandoffGuard(jobId, current.spec.startId);
   await guard();
-  const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath);
+  const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
   if (workspace.warning !== undefined) researchInvalid();
   const preserved = await materializeReconciledTerminalCodexGoalHandoff({
     config: current.spec.request, changedFiles: workspace.changedFiles,
