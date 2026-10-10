@@ -72,6 +72,54 @@ const cases: readonly (readonly [string, number, string])[] = [
   ]
 ];
 
+// Retained synthetic token assignments in the codex session materializer test.
+// The line is read from the retained file so the proof uses the actual bytes;
+// only quoted values at or above the detector threshold (16) are registered.
+const materializerPath = "src/provider-codex/tests/codex-session-materializer.test.ts";
+const materializerLines = readFileSync(materializerPath, "utf8")
+  .split("\n").filter((line) => line.includes("access_token:") && line.includes("refresh_token:"));
+if (materializerLines.length !== 1) throw new Error("expected one retained token assignment line");
+const materializerLine = materializerLines[0]!;
+const materializerLiterals = materializerLine.split("\"").filter((_, i) => i % 2 === 1)
+  .filter((value) => value.length >= 16);
+if (materializerLiterals.length !== 2) throw new Error("expected two registered token literals");
+
+describe("codex session materializer retained token assignments", () => {
+  const safe = (text: string | Buffer, path?: string) =>
+    detectSecretLikeContent(text, path === undefined ? {} : { filePath: path }) === undefined;
+
+  it("accepts only the exact path and unchanged literals, rejecting any extra unregistered assignment", () => {
+    expect(safe(materializerLine, materializerPath)).toBe(true);
+    expect(safe(Buffer.from(materializerLine), materializerPath)).toBe(true);
+    for (const alias of [undefined, "", "tests/codex-session-materializer.test.ts",
+      materializerPath.toUpperCase(), "./" + materializerPath, "/" + materializerPath,
+      "x/../" + materializerPath, materializerPath.replaceAll("/", "\\")]) {
+      expect(safe(materializerLine, alias)).toBe(false);
+    }
+    for (const literal of materializerLiterals) {
+      for (const changed of [literal + "Q", literal.slice(0, -1) + "Q", "Q" + literal.slice(1)]) {
+        expect(safe(materializerLine.replace(literal, changed), materializerPath)).toBe(false);
+      }
+    }
+    const unregistered = 'secret = "' + "generated-negative-".repeat(3) + '";';
+    expect(safe(materializerLine + "\n" + unregistered, materializerPath)).toBe(false);
+    expect(safe(unregistered + "\n" + materializerLine, materializerPath)).toBe(false);
+  });
+
+  it("keeps authoritative token, key and JWT checks rejecting at the allowed path", () => {
+    const authoritative = [
+      "sk-" + "q".repeat(32), "Bearer " + "z".repeat(32),
+      "-----BEGIN " + "PRIVATE KEY-----",
+      Buffer.from('{"alg":"HS256"}').toString("base64url") + "." +
+        Buffer.from('{"sub":"synthetic"}').toString("base64url") + ".c2ln",
+    ];
+    for (const other of authoritative) {
+      expect(safe(materializerLine + "\n" + other, materializerPath)).toBe(false);
+      expect(safe(other + "\n" + materializerLine, materializerPath)).toBe(false);
+    }
+  });
+});
+
 describe("finite proved synthetic locations", () => {
   for (const [index, [filePath, , line]] of cases.entries()) {
     it(`classifies exact location ${index} and continues every policy`, () => {
