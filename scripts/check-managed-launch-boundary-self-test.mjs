@@ -94,7 +94,8 @@ try {
   }
   // The newly reviewed producer/native TEST are sealed individually, not
   // exempted by their directory or native-TEST suffix. Read only SOURCE bytes.
-  for (const basename of ['current-administrative-installation.ts', 'administrative-installation-native-TEST.ts']) {
+  for (const basename of ['current-administrative-installation.ts', 'administrative-installation-native-TEST.ts',
+    'bootstrap-current-positive-public.mts']) {
     const source = await readFile(new URL(`./dependency-retention-os-test/${basename}`, import.meta.url));
     assert.ok(findRawLaunches(source.toString('utf8'), basename).length > 0);
     const name = `scripts/dependency-retention-os-test/${basename}`, path = join(root, name);

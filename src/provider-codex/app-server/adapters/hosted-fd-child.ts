@@ -40,4 +40,13 @@ export function assertHostedFdProcess(child: ChildProcess, unit: string, kind: H
       (command !== undefined && retained.command !== command) ||
       (args !== undefined && JSON.stringify(retained.args) !== JSON.stringify(args))) fail();
 }
+/** Read only the birth retained by the fixed spawn, after its current identity
+ * and exact recipe are reasserted. Descriptor admission remains a later census. */
+export function readHostedFdProcessBirth(child: ChildProcess, unit: string, kind: HostedFdLaunchKind,
+  command: string, args: readonly string[]): string {
+  assertHostedFdProcess(child, unit, kind, command, args);
+  const retained = births.get(child);
+  if (!retained) fail();
+  return retained.birth;
+}
 export function invalidateHostedFdProcess(child: ChildProcess): void { births.delete(child); }

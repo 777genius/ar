@@ -20,6 +20,9 @@ const trustedDependencyCommandDeclaration = 'export const hostedDependencySystem
 // Every byte edit requires fresh review and an explicit seal update. Exact
 // physical paths below confer no directory, basename or general TEST exemption.
 const trustedAdministrativeLaunchSources = new Map([
+  // Reviewed fixed first-Positive ROOT installer transport; edits fail closed.
+  ['scripts/dependency-retention-os-test/bootstrap-current-positive-public.mts',
+    { bytes: 14372, sha256: '738dcda8e4a1489d52ba30fe47bcdbc14b3a633766d13db5d9f923f3f6ae8761' }],
   ['scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts',
     { bytes: 22046, sha256: '803cc575ff7c535505ea4b831d80947930e8ceb68e889cbeaa0f52f7f0caaa11' }],
   ['scripts/dependency-retention-os-test/current-administrative-installation.ts',

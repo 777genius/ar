@@ -543,7 +543,9 @@ jobs:
             node_modules/typescript/package.json node_modules/typescript/bin/tsc node_modules/typescript/lib/_tsc.js \
             > dependency-h1-staged-data-ci-evidence/source-and-compiler.sha256
           node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json 2>&1 | tee dependency-h1-staged-data-ci-evidence/strict-emit.log
+          cp package.json outputs/TEST-h1-staged-data-ci-emit/package.json
           sha256sum \
+            outputs/TEST-h1-staged-data-ci-emit/package.json \
             outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js \
             outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.js \
             outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.js \
@@ -572,8 +574,9 @@ jobs:
           grep -Eq '^ok [0-9]+ - actual owned read expires at post-I/O monotonic check and closes permanently$' "$TAP"
           grep -Eq '^ok [0-9]+ - actual invalid literal alias bytes refuse including equal encoded-size case$' "$TAP"
           grep -Eq '^ok [0-9]+ - unsupported H1 stdlib closure cannot reach private tool callbacks$' "$TAP"
-          grep -Fxq '# tests 24' "$TAP"
-          grep -Fxq '# pass 24' "$TAP"
+          grep -Eq '^ok [0-9]+ - source package contract keeps legacy and binds selected Positive package bytes$' "$TAP"
+          grep -Fxq '# tests 35' "$TAP"
+          grep -Fxq '# pass 35' "$TAP"
           grep -Fxq '# fail 0' "$TAP"
           grep -Fxq '# skipped 0' "$TAP"
           if grep -q ' # SKIP ' "$TAP"; then exit 1; fi

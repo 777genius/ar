@@ -1,5 +1,5 @@
 import { ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
-import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind, type HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
+import { spawnHostedFdProcess, readHostedFdProcessBirth, invalidateHostedFdProcess, HostedFdLaunchKind, type HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { Writable, PassThrough, type Readable } from "node:stream";
@@ -87,7 +87,7 @@ export class HostedFdLaunch {
     this.#physicalChild = child;
     if (!child.pid || !child.stdin) invalid();
     this.#profile = profile; this.#input = child.stdin; this.#output = child.stdout; this.#errorOutput = child.stderr;
-    this.#proxyBirth = observeHostedFdProcess(child.pid).birth;
+    this.#proxyBirth = readHostedFdProcessBirth(child, unit, kind, command, args);
     if (command === hostedDependencySystemdRunExecutable) {
       const at = args.indexOf("--"); if (at < 0) invalid(); this.#serviceArgv = Object.freeze(args.slice(at + 1));
       const roots = args.filter(arg => arg.startsWith("--property=RootDirectory="));
