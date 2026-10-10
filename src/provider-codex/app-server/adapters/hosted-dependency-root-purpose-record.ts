@@ -1,5 +1,6 @@
 import type { DependencyAttempt, DependencyProtectedReference, DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
 import type { HostedDependencyRootGitProfile } from "./hosted-dependency-root-git-profile";
+import type { DependencyToolReadyFacts } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 
 /** Factual signed identity grammar only. JavaScript's $ also matches before a
  * final newline; require the matched bytes to equal the complete identity. */
@@ -27,11 +28,23 @@ export type HostedDependencyManagedGitScope = HostedDependencyRootScope & Readon
   sourceLookupAncestors: readonly HostedDependencyRootDirectoryPin[];
 }>;
 export type HostedDependencyRootPreparationRecord = Readonly<{
-  version: 1; attempt: DependencyAttempt; custodyReference: DependencyProtectedReference;
+  version: 2; attempt: DependencyAttempt; custodyReference: DependencyProtectedReference;
+  providerReady: DependencyToolReadyFacts;
   qualification: DependencyProtectedReference; ready: DependencyProtectedReference; readyRevision: number;
   protectedProfile: DependencyProtectedReference; config: DependencyProtectedReference;
   configAncestors: readonly HostedDependencyRootDirectoryPin[];
   durableHandoffRoot: HostedDependencyRootDirectoryPin; scratchParent: HostedDependencyRootDirectoryPin;
   authoredRoots: readonly HostedDependencyRootDirectoryPin[]; generatedRoots: readonly HostedDependencyRootDirectoryPin[];
   sourceLookupAncestors: readonly HostedDependencyRootDirectoryPin[];
+}>;
+
+/** Fixed actual provider birth readback; factual data is not a registration permit. */
+export type HostedDependencyManagedProviderFacts = Readonly<{
+  version: 1; installationId: string; runtimeSha: string; hostId: string; bootId: string;
+  supervisorId: string; generation: number; unit: string; providerStartId: string; parentStartId: string;
+  logicalJobId: string; executionJobId: string; jobRootDir: string;
+  workspace: DependencyWorkspaceIdentity; attempt: DependencyAttempt;
+  custodyReference: DependencyProtectedReference; originReference: DependencyProtectedReference;
+  ready: DependencyProtectedReference; readyRevision: number; qualification: DependencyProtectedReference;
+  protectedProfile: DependencyProtectedReference;
 }>;
