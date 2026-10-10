@@ -1,5 +1,5 @@
-import { collectCodexGoalStatus, type CodexGoalLaunchInput } from "../codex-goal-ops";
-import { reconcileProjectMimoWorker } from "../project-mimo-worker-launch";
+import { collectCodexGoalStatus, recommendCodexGoalAction, type CodexGoalLaunchInput } from "../codex-goal-ops";
+import { reconcileProjectMimoWorker, observeProjectMimoWorker } from "../project-mimo-worker-launch";
 import { codexGoalStatusInputFromLaunch } from "./codex-goal-status-input";
 import type { CodexGoalObservationContext } from "./codex-goal-observation-context";
 
@@ -10,5 +10,8 @@ export async function collectRegisteredCodexGoalJobStatus(input: {
   readonly observation?: CodexGoalObservationContext;
 }): Promise<Awaited<ReturnType<typeof collectCodexGoalStatus>>> {
   await reconcileProjectMimoWorker(input);
-  return await collectCodexGoalStatus(codexGoalStatusInputFromLaunch(input.launch), input.observation);
+  const status = await collectCodexGoalStatus(codexGoalStatusInputFromLaunch(input.launch), input.observation);
+  const nativeLifecycle = await observeProjectMimoWorker(input);
+  return nativeLifecycle === undefined ? status : { ...status, nativeLifecycle,
+    recommendedAction: recommendCodexGoalAction({ ...status, nativeLifecycle, ...(input.launch.config.accessBoundary === undefined ? {} : { accessBoundary: input.launch.config.accessBoundary }) }) };
 }

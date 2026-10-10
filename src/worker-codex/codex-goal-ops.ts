@@ -137,7 +137,14 @@ export type CodexGoalRecommendedAction =
   | "inspect_failure"
   | "check_log_or_result";
 
+export enum CodexGoalNativeLifecycle {
+  Active = "active",
+  Terminal = "terminal",
+  Uncertain = "uncertain",
+}
+
 export type CodexGoalStatus = {
+  readonly nativeLifecycle?: CodexGoalNativeLifecycle;
   readonly tmuxAlive?: boolean;
   readonly resultPath?: string;
   readonly resultExists?: boolean;
@@ -814,6 +821,7 @@ export async function tailCodexGoalLog(
 }
 
 export function recommendCodexGoalAction(input: {
+  readonly nativeLifecycle?: CodexGoalNativeLifecycle;
   readonly tmuxAlive?: boolean;
   readonly resultStatus?: string;
   readonly resultReason?: string;
@@ -823,6 +831,9 @@ export function recommendCodexGoalAction(input: {
   readonly resultExists?: boolean;
   readonly accessBoundary?: AccessBoundary;
 }): CodexGoalRecommendedAction {
+  if (input.nativeLifecycle === CodexGoalNativeLifecycle.Active) return "wait_for_worker";
+  if (input.nativeLifecycle === CodexGoalNativeLifecycle.Uncertain) return "check_log_or_result";
+  if (input.nativeLifecycle === CodexGoalNativeLifecycle.Terminal && !input.resultExists) return "check_log_or_result";
   if (input.tmuxAlive) return "wait_for_worker";
   if (input.workspaceExists === false) return "inspect_failure";
   if (input.progressStatus === "maintenance_paused") return "start_worker";

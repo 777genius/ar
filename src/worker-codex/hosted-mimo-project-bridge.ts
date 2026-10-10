@@ -7,9 +7,7 @@ import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoPro
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
 import { projectControlRefillWorker, projectControlStartStoredJob, projectControlStopStoredJob } from "./codex-goal-mcp-project-control-tool-handlers";
 import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
-import { reconcileProjectMimoWorker } from "./project-mimo-worker-launch";
-import { collectCodexGoalStatus } from "./codex-goal-ops";
-import { codexGoalStatusInputFromLaunch } from "./codex-goal-mcp-status-input";
+import { collectRegisteredCodexGoalJobStatus } from "./application/codex-goal-registered-job-observation";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 
 export type HostedMimoProjectBinding = Readonly<{
@@ -132,7 +130,6 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
     return unwrap(await projectControlStartStoredJob({ ...args, confirmStart: true }));
   }
   if (request.operation === MimoProjectBridgeOperation.Stop) return unwrap(await projectControlStopStoredJob({ ...args, confirmStop: true }));
-  await reconcileProjectMimoWorker({ registryRootDir: binding.registryRootDir, launch: loaded.launch });
   return { ok: true, projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId,
-    status: await collectCodexGoalStatus(codexGoalStatusInputFromLaunch(loaded.launch)) };
+    status: await collectRegisteredCodexGoalJobStatus({ registryRootDir: binding.registryRootDir, launch: loaded.launch }) };
 }

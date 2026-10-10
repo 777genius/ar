@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { defaultStartupTimeoutMs } from "../provider-codex/app-server/domain/app-server-types";
-import type { CodexGoalLaunchInput } from "./codex-goal-ops";
+import { CodexGoalNativeLifecycle, type CodexGoalLaunchInput } from "./codex-goal-ops";
 import { parseResearchOperatorRequest } from "./research-launch-contract";
 import { authorizeRegisteredResearchHandoff, assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
 import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch } from "./research-launch-owner";
 import { researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
-import { cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, terminalResearchStart } from "./research-launch-lifecycle";
+import { cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, terminalResearchStart, statusResearchLaunch } from "./research-launch-lifecycle";
 import { researchHash, researchJson, researchPublish, researchRead, researchRecord } from "./research-launch-files";
 
 export function isProjectMimoWorkerLaunch(launch: CodexGoalLaunchInput): boolean {
@@ -159,4 +159,29 @@ export async function stopProjectMimoWorker(input: {
   if (typeof details?.handoffPacketPath !== "string" || typeof details.handoffManifestSha256 !== "string" ||
       !/^[a-f0-9]{64}$/.test(details.handoffManifestSha256)) throw new Error("project_control_stop_handoff_evidence_missing");
   return { handoffPacketPath: details.handoffPacketPath, handoffManifestSha256: details.handoffManifestSha256 };
+}
+
+/** Observe only the independently validated retained native attempt. Submission
+ * receipts and missing tmux sessions are never proof of its lifecycle. */
+export async function observeProjectMimoWorker(input: {
+  readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
+}): Promise<CodexGoalNativeLifecycle | undefined> {
+  if (!isProjectMimoWorkerLaunch(input.launch)) return;
+  if (process.platform !== "linux" || process.getuid?.() !== 0) return CodexGoalNativeLifecycle.Uncertain;
+  try {
+    const current = await currentProjectMimoWorker(input);
+    if (!current) {
+      const directory = researchJobAuthority(input.launch.config.jobId ?? input.launch.config.taskId);
+      for (const name of ["project-worker-request.json", "project-worker-attempt.json"]) {
+        try { researchRead(join(directory, name)); return CodexGoalNativeLifecycle.Uncertain; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return CodexGoalNativeLifecycle.Uncertain; }
+      }
+      return;
+    }
+    const observed = statusResearchLaunch(current.spec.request.jobId);
+    if (observed.startId !== current.spec.startId || observed.unit !== current.spec.unit || observed.jobId !== current.spec.request.jobId)
+      return CodexGoalNativeLifecycle.Uncertain;
+    return observed.active || observed.providers.some(provider => provider.active)
+      ? CodexGoalNativeLifecycle.Active : CodexGoalNativeLifecycle.Terminal;
+  } catch { return CodexGoalNativeLifecycle.Uncertain; }
 }

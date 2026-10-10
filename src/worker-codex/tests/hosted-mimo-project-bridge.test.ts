@@ -19,7 +19,7 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
 vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 vi.mock("../codex-goal-mcp-project-control-tool-handlers", () => ({ projectControlRefillWorker: state.refill, projectControlStartStoredJob: state.start, projectControlStopStoredJob: state.stop }));
 vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: state.allowed, jobIdPrefixes: state.jobPrefixes, tmuxSessionPrefixes: state.tmuxPrefixes } }), loadJobLaunch: state.load }));
-vi.mock("../project-mimo-worker-launch", () => ({ reconcileProjectMimoWorker: vi.fn() }));
+vi.mock("../project-mimo-worker-launch", () => ({ reconcileProjectMimoWorker: vi.fn(), observeProjectMimoWorker: vi.fn() }));
 vi.mock("../codex-goal-ops", () => ({ collectCodexGoalStatus: async () => ({ state: "done" }) }));
 vi.mock("../codex-goal-mcp-status-input", () => ({ codexGoalStatusInputFromLaunch: () => ({}) }));
 import { researchCustody } from "../research-launch-files";
