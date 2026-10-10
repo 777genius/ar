@@ -272,6 +272,8 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       return entry;
     }
 
+    // Idempotent on every reuse: a host-side release must never leave a live owner on an unbound target.
+    await this.options.prepareHome?.(entry.codexHome);
     await writeCodexJsonConfig({
       codexHome: entry.codexHome,
       ...(this.options.configToml === undefined
