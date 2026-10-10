@@ -1,3 +1,4 @@
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import type { CodexAppServerNativeToolSurface } from "./app-server-types";
 
 export function codexAppServerToolConfig(input: {
@@ -6,6 +7,8 @@ export function codexAppServerToolConfig(input: {
   readonly goalMode: boolean;
   readonly trustedHooksEnabled: boolean;
 }): Readonly<Record<string, unknown>> {
+  // A caller-selected tool surface is not a root/proxy-bound capability.
+  if (input.nativeToolSurface === HostedMimoProfile.CodingV1) throw new Error("hosted_mimo_coding_activation_closed");
   const nativeToolsDisabled = input.nativeToolSurface === "disabled";
   return {
     features: {

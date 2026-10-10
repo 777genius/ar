@@ -89,7 +89,16 @@ export function readHostedMimoWorkerOrigin(): { readonly homeRoot: string; reado
   keys(spec, "schemaVersion,startId,runtimeDirectory,artifactSha256,grantSha256,request,requestSha256,nodeSha256,codexSha256,unit,jobDirectory,workspaceDirectory" + (registered ? ",registeredHandoff" : ""));
   keys(binding, "schemaVersion,specSha256,process,service");
   const requestKeys = "schemaVersion,jobId,taskId,jobRootDir,workspacePath,promptPath,authRootDir,accounts,codexBinaryPath,model,reasoningEffort,serviceTier,taskTimeoutMs,modelBackend,maxAccountCycles,prewarmOnStart";
-  keys(request, requestKeys + ["projectId", "appServerStartupTimeoutMs", ...(registered ? ["durableHandoffRootDir"] : [])].filter(key => Object.hasOwn(request, key)).map(key => "," + key).join(""));
+  keys(request, requestKeys + ["projectId", "appServerStartupTimeoutMs", "hostedProfile", "maxGoalTurns", ...(registered ? ["durableHandoffRootDir"] : [])].filter(key => Object.hasOwn(request, key)).map(key => "," + key).join(""));
+  const coding = request.hostedProfile === HostedMimoProfile.CodingV1;
+  if (Object.hasOwn(request, "hostedProfile") && !coding ||
+      coding && (!Number.isSafeInteger(request.maxGoalTurns) || (request.maxGoalTurns as number) < 1 || (request.maxGoalTurns as number) > 256) ||
+      !coding && Object.hasOwn(request, "maxGoalTurns")) invalid();
+  if (grant.hostedProfile !== (coding ? HostedMimoProfile.CodingV1 : HostedMimoProfile.Worker)) invalid();
+  // An operator-selected frozen profile alone must never authorize reading the
+  // shared key or exposing native tools. A separately verified root/proxy
+  // binding across the provider process boundary is not installed yet.
+  if (coding) throw new Error("hosted_mimo_coding_activation_closed");
   if (active.schemaVersion !== 1 || active.startId !== match[2] || active.specSha256 !== owner[2] || hash(specBytes) !== owner[2] ||
       spec.schemaVersion !== 1 || spec.startId !== match[2] || spec.unit !== unit ||
       spec.runtimeDirectory !== fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "") ||
