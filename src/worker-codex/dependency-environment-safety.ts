@@ -1,4 +1,5 @@
 import { captureLegacyDependencyWriterInput, assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
+import { lstatSync, unlinkSync } from "node:fs";
 import { lstat, readdir, readlink, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -74,12 +75,30 @@ export async function sanitizeNodeDependencyEnvironment(input: {
     ) {
       continue;
     }
-    assertLegacyDependencyWriterWorkspace(input.workspacePath);
-    assertLegacyDependencyWriterWorkspace(dependencyRoot);
-    await rm(dependencyRoot, {
-      recursive: true,
-      force: false,
-    });
+    if (assertLegacyDependencyWriterWorkspace(input.workspacePath) !== inspection.workspaceRealPath) {
+      throw new Error("dependency_environment_workspace_changed");
+    }
+    const leaf = lstatSync(dependencyRoot, { bigint: true });
+    if (leaf.isSymbolicLink()) {
+      // Classify its actual owning directory, never the external or missing
+      // target. The final no-follow identity check and unlink have no await.
+      const parent = dirname(dependencyRoot);
+      if (assertLegacyDependencyWriterWorkspace(parent) !== parent ||
+          !pathWithin(inspection.workspaceRealPath, parent)) {
+        throw new Error("dependency_environment_root_invalid");
+      }
+      const current = lstatSync(dependencyRoot, { bigint: true });
+      if (!current.isSymbolicLink() || current.dev !== leaf.dev || current.ino !== leaf.ino ||
+          current.mode !== leaf.mode || current.uid !== leaf.uid || current.gid !== leaf.gid ||
+          current.nlink !== leaf.nlink || current.size !== leaf.size ||
+          current.mtimeNs !== leaf.mtimeNs || current.ctimeNs !== leaf.ctimeNs) {
+        throw new Error("dependency_environment_root_changed");
+      }
+      unlinkSync(dependencyRoot);
+    } else {
+      assertLegacyDependencyWriterWorkspace(dependencyRoot);
+      await rm(dependencyRoot, { recursive: true, force: false });
+    }
     removedPaths.push(relative(inspection.workspaceRealPath, dependencyRoot));
   }
   return { removedPaths: removedPaths.sort() };

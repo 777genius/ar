@@ -166,6 +166,8 @@ export type ControlledAgentRun = {
   readonly providerRunId?: string;
   readonly owner?: ControlledAgentProcessOwner;
   readonly capacityAccountId?: string;
+  /** Non-secret opaque identity captured from the admitted session seed. */
+  readonly capacitySessionId?: string;
   readonly capacityDemand?: WorkerRuntimeDemand;
   readonly safeMessage?: string;
   readonly startedAt: string;

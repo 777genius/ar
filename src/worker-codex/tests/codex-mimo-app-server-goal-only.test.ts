@@ -1,12 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
 import {
   AgentRuntimeTool,
   DefaultRedactor,
 } from "@vioxen/subscription-runtime/core";
-import { CodexJsonAgentDriver, CodexModelBackend, codexProviderApiEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
-import { describe, expect, it } from "vitest";
+import { CodexModelBackend, codexProviderApiEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { createFileBackendCodexWorkerRuntime } from "../file-backend-codex-runtime-factory";
 import { assertWorkerOptions, type FileBackendCodexWorkerOptions } from "../file-backend-codex-worker-options";
 import { MemoryWorkerObservability } from "./file-backend-codex-worker-test-support";
@@ -110,35 +110,38 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       });
     }
 
-    // The public nonreusable prewarm result exposes generated config without
-    // starting the engine or evaluating the hosted credential accessor.
-    async function generatedMimoConfig(options: Partial<FileBackendCodexWorkerOptions>) {
-      const root = await mkdtemp(join(tmpdir(), "TEST-mimo-factory-config-"));
-      let starts = 0;
+    // Observe real config before provider startup or hosted credential
+    // resolution. The existing task-start hook deliberately ends this TEST turn.
+    async function observedConfig(options: Partial<FileBackendCodexWorkerOptions>): Promise<string> {
+      const root = await mkdtemp(join(tmpdir(), "TEST-mimo-config-")), temp = join(root,"temp");
+      await mkdir(temp);
+      const spawn = vi.fn(() => { throw new Error("TEST-provider-must-not-start"); });
+      const parts = runtimeFor({...options,stateRootDir:join(root,"state"),workspacePath:root,
+        runtimeHomeRootDir:join(root,"runtime"),
+        sourceEnv:{MIMO_TEST_TOKEN_PLAN_KEY:"TEST-not-a-credential",...options.sourceEnv,TMPDIR:temp},
+        mimoApiKeyEnvVarName:"MIMO_TEST_TOKEN_PLAN_KEY",appServerProcessFactory:spawn});
+      let config: string | undefined;
       try {
-        await mkdir(join(root,"workspace"));
-        const runtime = runtimeFor({ ...options, stateRootDir: join(root,"state"),
-          ...(options.workspacePath === undefined ? {} : {workspacePath:join(root,"workspace")}),
-          runtimeHomeRootDir: join(root,"runtime"),
-          sourceEnv: { ...options.sourceEnv, TMPDIR: root, MIMO_TEST_CONFIG_KEY: "TEST-synthetic-config-key" },
-          mimoApiKeyEnvVarName: "MIMO_TEST_CONFIG_KEY",
-          appServerProcessFactory: () => { starts++; throw new Error("TEST unexpected provider start"); },
-        });
-        const driver = runtime.agentDriver;
-        if (!(driver instanceof CodexJsonAgentDriver)) throw new Error("TEST expected JSON driver");
-        try {
-          const materialized = await driver.prewarmSession({ session: null, redactor: new DefaultRedactor() });
-          expect(materialized).toMatchObject({ mode: "ephemeral", reusable: false });
-          for (const path of [materialized.home,materialized.codexHome]) {
-            const selected = relative(root,path);
-            expect(selected).not.toBe("");
-            expect(isAbsolute(selected) || selected === ".." || selected.startsWith(`..${sep}`)).toBe(false);
-          }
-          return await readFile(join(materialized.codexHome,"config.toml"),"utf8");
-        } finally { await driver.dispose(); }
+        const result = await parts.agentDriver.runTask({session:null,task:{kind:"structured-prompt",prompt:"TEST config only"},
+          workspace:{path:root},runner:parts.runner,redactor:new DefaultRedactor(),abortSignal:new AbortController().signal,
+          onTaskStarted:async () => {
+            const directories = await readdir(temp); expect(directories).toHaveLength(1);
+            const home = join(temp,directories[0]!), codexHome = join(home,"codex-home");
+            for (const path of [home,codexHome]) {
+              const selected = relative(root,path);
+              expect(selected).not.toBe("");
+              expect(isAbsolute(selected) || selected === ".." || selected.startsWith(`..${sep}`)).toBe(false);
+            }
+            config = await readFile(join(codexHome,"config.toml"),"utf8");
+            throw new Error("TEST-config-observed-before-provider");
+          }});
+        expect(result.status).toBe("failed"); expect(spawn).not.toHaveBeenCalled();
+        expect(config).toBeTypeOf("string");
+        if (config === undefined) throw new Error("TEST-config-not-observed");
+        return config;
       } finally {
+        if ("dispose" in parts.agentDriver) await parts.agentDriver.dispose();
         await rm(root,{recursive:true,force:true});
-        expect(starts).toBe(0);
       }
     }
 
@@ -175,8 +178,8 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       expect(runtime.sessionDriver.capabilities.sessionRequirement.kind).toBe("required");
     });
 
-    it("materializes MiMo provider and hosted scan hook in the actual generated config", async () => {
-      const config = await generatedMimoConfig({
+    it("passes MiMo provider and hosted scan hook into the effective driver config", async () => {
+      const config = await observedConfig({
         modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
         executionEngine: "app-server-goal",
         sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
@@ -196,11 +199,10 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       ).not.toThrow();
     });
 
-    it("materializes the MiMo boundedWorkspaceTools path with the generated MCP-only config", async () => {
-      const driverConfig = await generatedMimoConfig({
+    it("builds the MiMo boundedWorkspaceTools path with the generated MCP-only config", async () => {
+      const driverConfig = await observedConfig({
         modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
         executionEngine: "app-server-goal",
-        workspacePath: "/tmp/does-not-need-to-exist-for-construction/workspace",
         boundedWorkspaceTools: {
           allowedTools: [AgentRuntimeTool.ReadFile],
         },

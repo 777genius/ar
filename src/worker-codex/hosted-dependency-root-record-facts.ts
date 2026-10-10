@@ -1,4 +1,5 @@
 import { lstatSync } from "node:fs";
+import { dirname } from "node:path";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { isHostedDependencySignedTaskId, type HostedDependencyRootPreparationRecord, type HostedDependencyRootDirectoryPin } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import type { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
@@ -51,9 +52,21 @@ export function assertHostedDependencyRootDirectoryFacts(record:HostedDependency
       !Array.isArray(record.generatedRoots) || record.generatedRoots.length !== 1 || !Array.isArray(record.sourceLookupAncestors) || record.sourceLookupAncestors.length > 16384 ||
       record.authoredRoots[0]?.canonicalPath !== binding.workspace.canonicalPath || record.authoredRoots[0]?.dev !== binding.workspace.dev ||
       record.authoredRoots[0]?.ino !== binding.workspace.ino || record.generatedRoots[0]?.canonicalPath !== binding.workspace.canonicalPath+"/node_modules") invalid();
-  for (const pin of [...record.authoredRoots,...record.generatedRoots,...record.sourceLookupAncestors]) {
+  for (const pin of [...record.authoredRoots,...record.generatedRoots]) {
     if (pin.canonicalPath !== binding.workspace.canonicalPath && !pin.canonicalPath.startsWith(binding.workspace.canonicalPath+"/")) invalid();
     assertDirectory(pin);
   }
-
+  // Lookup pins are facts about the original workspace ancestry, never source
+  // mountpoints or authored roots. Registry capture retains only the workspace.
+  if (record.sourceLookupAncestors.length === 1 && record.sourceLookupAncestors[0]?.canonicalPath === binding.workspace.canonicalPath) {
+    if (!encode(record.sourceLookupAncestors[0]).equals(encode(record.authoredRoots[0]))) invalid();
+  } else {
+    const paths: string[] = [];
+    for (let parent = dirname(binding.workspace.canonicalPath);; parent = dirname(parent)) {
+      if (paths.length >= 128) invalid(); paths.unshift(parent); if (parent === "/") break;
+    }
+    if (record.sourceLookupAncestors.length !== paths.length ||
+        record.sourceLookupAncestors.some((pin,index) => pin.canonicalPath !== paths[index])) invalid();
+  }
+  for (const pin of record.sourceLookupAncestors) assertDirectory(pin);
 }

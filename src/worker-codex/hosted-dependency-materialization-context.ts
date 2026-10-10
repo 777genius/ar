@@ -128,7 +128,7 @@ export async function beginHostedDependencyInstallation(binding: HostedDependenc
       absenceEvidenceId: createHash("sha256").update(absence ?? fail()).digest("hex") } };
   withHostedActivationFence(fence => {
     if(capturedOrigin)assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess ?? fail());
-    else if(requiresCurrentHostedDependencyRootPurpose())fail();
+    else if(requiresCurrentHostedDependencyRootPurpose(fence))fail();
     assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt,capturedOrigin);
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }

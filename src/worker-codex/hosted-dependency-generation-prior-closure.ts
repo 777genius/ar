@@ -72,8 +72,29 @@ function priorCSourceClosure(context:CurrentHostedDependencyOrigin|undefined,fen
   reference(proof.preclaim,`${root}/dependency-reader-starts/${parentId}.json`);
   const parentCompletion=reference(proof.completion,`${root}/dependency-ordinary-reader-completions/${parentId}.json`);
   const owned=[parent];
-  const candidates=initial.activation.ordinaryStarts.filter(r=>r.unit.startsWith("subscription-runtime-hosted-") && r.creatorId===parent.creatorId &&
+  const later=initial.activation.ordinaryStarts.filter(r=>r.unit.startsWith("subscription-runtime-hosted-") && r.creatorId===parent.creatorId &&
     r.originSha256===parent.originSha256 && r.generation>parent.generation);
+  // Generation orders starts, not membership. Authenticate every original
+  // relation before excluding a later provider belonging to another C epoch.
+  const candidates=later.filter(current=>{
+    const relation=pinReferenceFile(`${root}/dependency-provider-attempts/${current.startId}.json`,4096);
+    pins.push(relation);const r:unknown=JSON.parse(relation.bytes.toString("utf8"));
+    if(!isDependencyCustodyObject(r,"attemptId,epoch,parentStartId,providerStartId,startDigest,unit,version") || r.version!==1 ||
+        r.providerStartId!==current.startId || r.unit!==`subscription-runtime-hosted-${current.startId}.service` || r.unit!==current.unit ||
+        typeof r.parentStartId!=="string" || /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.exec(r.parentStartId)?.[0]!==r.parentStartId ||
+        typeof r.attemptId!=="string" || /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.exec(r.attemptId)?.[0]!==r.attemptId ||
+        typeof r.epoch!=="number" || !Number.isSafeInteger(r.epoch) || r.epoch<1 || !relation.bytes.equals(encode(r)))invalid();
+    const owner=initial.activation.ordinaryStarts.find(row=>row.startId===r.parentStartId);
+    if(!owner || owner.unit!==`subscription-runtime-ordinary-${owner.startId}.service` || owner.creatorId!==current.creatorId ||
+        owner.originSha256!==current.originSha256 || owner.generation>=current.generation)invalid();
+    const birth=pinReferenceFile(`${root}/ordinary-starts/${current.startId}.json`,16384);pins.push(birth);
+    const started=parseHostedOrdinaryStart(JSON.parse(birth.bytes.toString("utf8")));
+    if(r.startDigest!==birth.reference.sha256 || started.unit!==current.unit || started.activationGeneration!==current.generation ||
+        started.creatorId!==current.creatorId || started.originSha256!==current.originSha256)invalid();
+    if(r.parentStartId!==parentId)return false;
+    if(r.attemptId!==proof.attempt.attemptId || r.epoch!==proof.attempt.epoch)invalid();
+    return true;
+  });
   if(candidates.length!==proof.providers.length || candidates.length>128)invalid();
   for(const provider of proof.providers) {
     const member=provider.member,current=candidates.find(r=>r.startId===member.startId);

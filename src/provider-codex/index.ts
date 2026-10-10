@@ -40,3 +40,10 @@ export { withHostedActivationFence, assertHostedActivationFence, assertHostedAct
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
 
 export type { HostedRetainedLifetimeBinding, HostedRetainedLifetimePort, HostedScopedActorBarrierPort } from "./app-server/adapters/hosted-process-activation";
+
+export { CodexSubscriptionConsumerRole, CodexSubscriptionReasoningEffort, parseCodexSubscriptionPreparationRecord } from "./codex-subscription-preparation";
+export type { CodexSubscriptionPreparationRecord, CodexSubscriptionSelectedBinding, CodexSubscriptionPreparedProfile } from "./codex-subscription-preparation";
+export { createHostedSubscriptionPreparationOwner, prepareHostedSubscriptionConsumer, CodexSubscriptionPreparationStatus,
+  CodexSubscriptionPreparationFailure, CodexSubscriptionUnusedReleaseStatus } from "./hosted-subscription-session-materializer";
+export type { CodexSubscriptionPreparationOwner, CodexSubscriptionPreparationInput, CodexSubscriptionPreparationView,
+  CodexSubscriptionPreparedConsumer } from "./hosted-subscription-session-materializer";
