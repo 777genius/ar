@@ -1,3 +1,4 @@
+import { preclaimHostedReadonlyDependencyReader } from "./hosted-readonly-dependency-reader-entry";
 import { assertHostedReadonlyDependencyReadyPublication } from "./hosted-readonly-dependency-publication";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { parseHostedReadonlyDependencyStart, readonlyDependencyStartName } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
@@ -132,6 +133,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
             ...readonlyDependencyMaterialDigests(material.evidence) });
           createReadonlyPrivateRecord(join(readonlySupervisorRoot, readonlyDependencyStartName(startId)),
             Buffer.from(JSON.stringify(evidence) + "\n"));
+          preclaimHostedReadonlyDependencyReader(this.store.publicationFence(),startId);
         }
         this.runtimeGeneration = epoch.generation;
         this.runtimeStartId = startId;
