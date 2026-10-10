@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { X509Certificate } from "node:crypto";
+import type { HostedMimoCodingExpectedBinding } from "../provider-codex/hosted-mimo-coding-bootstrap";
 import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 import { resolvePreparedHostScratchBinds, resolvePreparedHostScratchCacheBinds, type ScratchTempHost } from "./host-scratch-temp";
 import { parseResearchStartSpec, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
@@ -8,7 +9,7 @@ import { researchAuthorityRoot, researchHash, researchId, researchInvalid, resea
 import { assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
 import { readKernelMountTable } from "./host-scratch-mount";
-import { assertResearchMimoCodingRootBindings, researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
+import { assertResearchMimoCodingRootBindings, researchMimoCodingBootstrapBinding, researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
 
 /** Private finite observations only; never execution authority or error payloads. */
 export enum ResearchProviderRootCheck {
@@ -150,7 +151,7 @@ function validateCaBundle(bytes: string): void {
 }
 const rootPlanBrand: unique symbol = Symbol("research-provider-root");
 /** Opaque retained receipt; its DTO fields cannot confer execution authority. */
-export type ResearchProviderRootPlan = Readonly<{ fixedRootDirectory: string; bindings: readonly Binding[]; [rootPlanBrand]: true }>;
+export type ResearchProviderRootPlan = Readonly<{ fixedRootDirectory: string; bindings: readonly Binding[]; codingBootstrap?: HostedMimoCodingExpectedBinding; [rootPlanBrand]: true }>;
 type Retained = { spec: ResearchStartSpec; unit: string; home: string; scratchHost: ScratchTempHost | undefined; host: ResearchProviderRootHost;
   directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string; assemblyDeadline?: number };
 const retained = new WeakMap<ResearchProviderRootPlan, Retained>();
@@ -362,13 +363,14 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
   const workspaceBind = add(join(pins, "workspace"), workspace, ResearchRootMountAccess.ReadWrite);
   if (jobBind && (jobBind.identity[0] !== spec.jobDirectory.device || jobBind.identity[1] !== spec.jobDirectory.inode) ||
       workspaceBind.identity[0] !== spec.workspaceDirectory.device || workspaceBind.identity[1] !== spec.workspaceDirectory.inode) researchInvalid();
-  if (coding ? home !== researchMimoCodingCodexHome : !home.startsWith(join(job, "home") + "/")) researchInvalid();
+  if (!home.startsWith(join(job, "home") + "/")) researchInvalid();
   // Preserve nominal home custody through the captured job; project ancestors remain data.
   const corroborateHome = (candidate: string): void => observeRootFailure(ResearchProviderRootCheck.CorroborateHome, () => {
     const nominal = observe(candidate, 0, true, job), pinned = join(pins, "job", relative(job, candidate)), original = observe(pinned);
     if (!nominal.isDirectory() || !original.isDirectory() || nominal.dev !== original.dev || nominal.ino !== original.ino || !sameBacking(backing(candidate, mounts), backing(pinned, mounts, true))) researchInvalid();
   });
-  if (!coding) corroborateHome(home);
+  // Coding corroborates the host admission home without exposing its contents.
+  corroborateHome(home);
   const scratch = coding ? [] : resolvePreparedHostScratchBinds(job, home, scratchHost);
   const scratchTargets = [join(job, "tmp"), join(home, "plugins/cache"), join(home, "cache/remote_plugin_catalog")];
   if (scratch.length > 3 || new Set(scratch.map(b => b.target)).size !== scratch.length || scratch.some(b => !scratchTargets.includes(b.target))) researchInvalid();
@@ -520,6 +522,7 @@ export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: stri
   const reservation = readResearchProviderReservation(directory, unit);
   if (JSON.stringify(reservation.spec) !== JSON.stringify(spec)) researchInvalid();
   // Capture and deny the complete graph before the first new root effect.
+  const codingBootstrap = researchMimoCodingBootstrapBinding(spec, reservation.specSha256);
   const captured = snapshot(spec, directory, unit, researchPath(home), host, scratchHost);
   const parent = join(directory, "provider-roots"), unitDirectory = join(parent, unit), root = join(unitDirectory, "root");
   const entries = skeletonEntries(root, captured, researchMimoCodingRoot(spec.request));
@@ -552,7 +555,8 @@ export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: stri
   const materializedBytes = JSON.stringify(materialized);
   const record = JSON.stringify({ schemaVersion: 1, unit, specSha256: reservation.specSha256, artifactSha256: spec.artifactSha256, captured, materialized, skeleton, custody }) + "\n";
   host.publish(join(unitDirectory, "plan.json"), JSON.parse(record));
-  const plan: ResearchProviderRootPlan = freezeFacts({ fixedRootDirectory: root, bindings: materialized, [rootPlanBrand]: true as const });
+  const plan: ResearchProviderRootPlan = freezeFacts({ fixedRootDirectory: root, bindings: materialized,
+    ...(codingBootstrap ? { codingBootstrap } : {}), [rootPlanBrand]: true as const });
   retained.set(plan, { spec, unit, home, scratchHost, host, directory, snapshot: serialized, skeleton, custody, record, materialized: materializedBytes });
   assertResearchProviderRoot(plan, spec, unit, home); return plan;
   });
@@ -562,7 +566,8 @@ export function assertResearchProviderRoot(plan: ResearchProviderRootPlan, value
   const state = retained.get(plan), spec = parseResearchStartSpec(value);
   if (!state || state.unit !== unit || state.home !== home || JSON.stringify(state.spec) !== JSON.stringify(spec)) researchInvalid();
   const reservation = readResearchProviderReservation(state.directory, unit);
-  if (JSON.stringify(reservation.spec) !== JSON.stringify(spec)) researchInvalid();
+  if (JSON.stringify(reservation.spec) !== JSON.stringify(spec) ||
+      JSON.stringify(plan.codingBootstrap) !== JSON.stringify(researchMimoCodingBootstrapBinding(spec, reservation.specSha256))) researchInvalid();
   const current = snapshot(spec, state.directory, unit, home, state.host, state.scratchHost);
   for (const file of current.files) {
     const bind = plan.bindings.find(entry => entry.target === file.target);
@@ -594,7 +599,7 @@ export function researchProviderRootSeal(plan: ResearchProviderRootPlan, spec: R
 type PinnedAssemblyBinding = Readonly<{ source: string; target: string; access: ResearchRootMountAccess; file: boolean; fd: number }>;
 export type ResearchProviderAssemblyRoot = Readonly<{
   spec: ResearchStartSpec; root: string; rootFd: number; bindings: readonly PinnedAssemblyBinding[];
-  initialHostContext: ResearchInitialHostContext;
+  initialHostContext: ResearchInitialHostContext; codingBootstrap?: HostedMimoCodingExpectedBinding;
   assertCurrent(): void; close(): void;
 }>;
 const assemblyContexts = new WeakMap<ResearchProviderAssemblyRoot, () => void>();
@@ -627,7 +632,7 @@ export function readResearchProviderAssemblyRoot(jobId: string, unit: string, ho
   if (active.schemaVersion !== 1 || typeof active.startId !== "string" || !/^[a-f0-9-]{36}$/.test(active.startId)) researchInvalid();
   const start = join(directory, active.startId), reservation = readResearchProviderReservation(start, unit), spec = reservation.spec;
   if (spec.request.jobId !== jobId || reservation.specSha256 !== active.specSha256 ||
-      (researchMimoCodingRoot(spec.request) ? home !== researchMimoCodingCodexHome : !home.startsWith(join(spec.request.jobRootDir, "home") + "/"))) researchInvalid();
+      !home.startsWith(join(spec.request.jobRootDir, "home") + "/")) researchInvalid();
   const unitDirectory = join(start, "provider-roots", unit), root = join(unitDirectory, "root"), planPath = join(unitDirectory, "plan.json");
   const bytes = researchRead(planPath);
   if (researchHash(bytes) !== seal) researchInvalid();
@@ -689,7 +694,9 @@ export function readResearchProviderAssemblyRoot(jobId: string, unit: string, ho
       if (JSON.stringify(companion) !== JSON.stringify(closure?.companion ? ["codex-companion", closure.companion] : undefined)) researchInvalid();
     };
     assertCurrent();
-    const receipt = Object.freeze({ spec, root, rootFd, bindings: Object.freeze(pinned), initialHostContext, assertCurrent, close });
+    const codingBootstrap = researchMimoCodingBootstrapBinding(spec, reservation.specSha256);
+    const receipt = Object.freeze({ spec, root, rootFd, bindings: Object.freeze(pinned), initialHostContext,
+      ...(codingBootstrap ? { codingBootstrap } : {}), assertCurrent, close });
     assemblyContexts.set(receipt, () => { assertCurrent(); assertResearchProviderInitialRoot(initialHostContext); });
     return receipt;
   } catch (error) { close(); throw error; }

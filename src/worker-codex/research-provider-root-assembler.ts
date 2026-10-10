@@ -10,7 +10,7 @@ import { researchHash, researchInvalid, researchPath, researchRead } from "./res
 import { readKernelMountTable } from "./host-scratch-mount";
 import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
 
-import { assertResearchMimoCodingRootActivation, researchMimoCodingCodexHome, researchMimoCodingPrivateHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
+import { assertResearchMimoCodingRootActivation, researchMimoCodingCodexHome, researchMimoCodingLauncherArguments, researchMimoCodingPrivateHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
 import { normalizeResearchAssemblyFailure } from "./research-launch-diagnostics";
 
 const now = (): number => Number(process.hrtime.bigint() / 1_000_000n);
@@ -269,11 +269,12 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     check();
     assertAuthority(); finalAuthority();
     const transition = researchProviderRootTransition(root.root);
+    const launcherArguments = researchMimoCodingLauncherArguments(root.codingBootstrap);
     root.close();
     // Only the mounted root FD3 crosses this trusted transition. The glue
     // detaches the old root and closes FD3 before user mapping or payload exec.
     child = spawn(transition.command, [...transition.args, process.execPath,
-      join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"],
+      join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), ...launcherArguments],
     { cwd: "/", env: environment, stdio: ["inherit", "inherit", "inherit", handoffRoot] });
   } finally { try { root.close(); } finally { if (handoffRoot !== undefined) closeSync(handoffRoot); } }
   if (!child) researchInvalid();

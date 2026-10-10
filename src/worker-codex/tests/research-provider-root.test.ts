@@ -144,7 +144,7 @@ function codingCaptured() {
     fs.mkdirSync(local(dirname(path)), { recursive: true, mode: 0o755 });
     fs.writeFileSync(path, path.endsWith("package.json") ? '{"type":"module"}' : 'export {};', { mode: 0o644 });
   }
-  return { ...f, spec, home: researchMimoCodingCodexHome };
+  return { ...f, spec };
 }
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
@@ -160,13 +160,22 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     for (const path of [researchMimoCodingHome, researchMimoCodingCodexHome]) {
       expect(fs.readdirSync(join(plan.fixedRootDirectory, path.slice(1)))).toEqual(path === researchMimoCodingHome ? [".codex"] : []);
     }
+    expect(plan.codingBootstrap).toEqual({ schemaVersion: 1, startId: f.spec.startId,
+      specSha256: researchHash(researchRead(join(f.directory, "spec.json"))), workspacePath: f.spec.request.workspacePath });
+    expect(Object.isFrozen(plan.codingBootstrap)).toBe(true);
     expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  it("rejects a captured Host home for CodingV1 before creating any root", () => {
+  it("rejects a guest home as the Host CodingV1 admission home before creating any root", () => {
     const f = codingCaptured(), observed = observingHost();
-    expect(() => prepareResearchProviderRoot(f.spec, unit, join(f.spec.request.jobRootDir, "home/TEST-a"), undefined, observed.adapter))
+    expect(() => prepareResearchProviderRoot(f.spec, unit, researchMimoCodingCodexHome, undefined, observed.adapter))
       .toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it("rejects a symlink in the Host admission home without exposing it to CodingV1", () => {
+    const f = codingCaptured(), observed = observingHost();
+    fs.rmdirSync(local(f.home)); fs.symlinkSync(f.spec.request.workspacePath, local(f.home));
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
     expectNoRootEffects(f, observed);
   });
   it("rejects a symlink in the finite CodingV1 launcher closure before root effects", () => {
