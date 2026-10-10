@@ -44,6 +44,8 @@ export type FileBackendCodexWorkerRuntimeParts = {
   readonly prewarmWorkspace: RuntimeDeps["workspace"];
 };
 
+export { openWorkerFactorySecretRoots } from "./file-backend-codex-agent-driver-factory";
+
 export function createFileBackendCodexWorkerRuntime(input: {
   readonly options: FileBackendCodexWorkerOptions;
   readonly workerId: string;

@@ -8,8 +8,23 @@
 #define NP_ORIGIN_SECOND UINT64_C(1000000000)
 #define NP_ORIGIN_FILES 128
 #define NP_ORIGIN_PHASE_MAX 16384
+#ifdef NP_RETAINED_V2_A1
+#define NP_ORIGIN_ADMIN "/run/subscription-runtime/native-retained-v2/original"
+#define NP_ORIGIN_INSTALL "/opt/subscription-runtime/native-retained-v2"
+#define NP_ORIGIN_FRAME "NPV2"
+#define NP_ORIGIN_BOOTSTRAP "NPADV201"
+#define NP_ORIGIN_SNAPSHOT "NPV2SN01"
+#define NP_ORIGIN_ENTRY "/retained-v2-entry"
+#define NP_ORIGIN_OPERATOR "/admin/host-integration/native-probe/retained-v2-operator.mjs"
+#else
 #define NP_ORIGIN_ADMIN "/run/subscription-runtime/native-probe/original"
 #define NP_ORIGIN_INSTALL "/opt/subscription-runtime/native-probe"
+#define NP_ORIGIN_FRAME "NPA5"
+#define NP_ORIGIN_BOOTSTRAP "NPADM001"
+#define NP_ORIGIN_SNAPSHOT "NPSNAP01"
+#define NP_ORIGIN_ENTRY "/root-producer-entry"
+#define NP_ORIGIN_OPERATOR "/admin/host-integration/native-probe/root-origin-operator.mjs"
+#endif
 #define NP_ORIGIN_IMAGE NP_ORIGIN_INSTALL "/test-root"
 #define NP_ORIGIN_MANIFEST NP_ORIGIN_INSTALL "/root-installation.json"
 /* Private native build only: none of these types is a DATA/NAPI importer. */

@@ -1,8 +1,8 @@
 import { ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
-import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
+import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind, type HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { Writable, PassThrough } from "node:stream";
+import { Writable, PassThrough, type Readable } from "node:stream";
 import { assertHostedActivationFence, type HostedActivationFence } from "./hosted-process-activation";
 import { assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdManagedGuard, collectHostedFdPeers, hostedFdGroupPids, hostedFdTable, observeHostedFdProcess,
   observeHostedFdUnit, readHostedFdProfile, type HostedFdFact, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
@@ -14,6 +14,7 @@ import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
+export type { HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
 const launches = new WeakMap<object, HostedFdLaunch>();
 // Cleanup identity survives revocation of execution/release permission. Only
 // the completed fixed constructor can associate its actual child with a unit.
@@ -218,6 +219,13 @@ export class HostedFdLaunch {
     return this.#profile.limits.setupTimeoutMs - elapsed;
   }
   remainingSetupMs(): number { return this.#remaining(); }
+  /** Production wait supplier must retain actual close and raw EOF, not just
+   * exit/Stop or serialized kernel metadata. Works for the retained provider. */
+  assertOriginalZeroWaitClosed(): void {
+    if (!this.#closed || !this.#released || this.#outputFailed || this.#signalTerminated || this.#exitStatus !== 0 ||
+        !this.#input.writableFinished || !this.#output || !this.#errorOutput ||
+        !(this.#output as Readable).readableEnded || !(this.#errorOutput as Readable).readableEnded) invalid();
+  }
   /** Called after the real --wait proxy closes all streams, and only after the
    * owner has separately proved its exact unit/cgroup terminal under its fence. */
   foregroundResult(): HostedForegroundResult {
@@ -376,21 +384,21 @@ export class HostedFdLaunch {
   }
 
   static spawn(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
-    unit: string, kind: HostedFdLaunchKind): ChildProcess {
+    unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess {
     if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
     const profile = readHostedFdProfile();
     if (!profile || (command !== profile.node.path && command !== hostedDependencySystemdRunExecutable)) invalid();
     if (command === profile.node.path && !profile.bootstraps.some(pin => pin.path === args[0] &&
         pin.path === "/opt/subscription-runtime/managed-launcher/launch.mjs")) invalid();
     const before = hostedFdTable(process.pid);
-    const child = spawnHostedFdProcess(command, args, options, unit, kind);
+    const child = spawnHostedFdProcess(command, args, options, unit, kind, original);
     child.once("error", () => {}); // A synchronous setup failure must not leave an unhandled spawn error.
     try {
       const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args);
       launches.set(child, launch); cleanupUnits.set(child, unit); Object.freeze(launch); return child;
     } catch (error) {
       invalidateHostedFdProcess(child);
-      child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGTERM");
+      if (!original) { child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGTERM"); }
       // The persisted reservation remains held; killing this exact returned
       // proxy never proves the owned service/cgroup terminal or permits retry.
       throw error;
@@ -402,10 +410,10 @@ export class HostedFdLaunch {
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
   unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground): ChildProcessWithoutNullStreams;
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
-  unit: string, kind: HostedFdLaunchKind): ChildProcess;
+  unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess;
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
-  unit: string, kind: HostedFdLaunchKind): ChildProcess {
-  return HostedFdLaunch.spawn(command, args, options, unit, kind);
+  unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess {
+  return HostedFdLaunch.spawn(command, args, options, unit, kind, original);
 }
 export function hostedFdLaunch(child: object): HostedFdLaunch {
   const launch = launches.get(child);
