@@ -32,7 +32,7 @@ describe("MiMo project refill account selection", () => {
         "account-q": { quarantined: true },
       }));
       await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "test-controller",
         jobRootDir: controllerJobRoot,
@@ -48,10 +48,12 @@ describe("MiMo project refill account selection", () => {
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["test-"],
+          tmuxSessionPrefixes: ["test-"],
           allowedAccountIds: ["account-q"],
           authRoot: authRootDir,
         },
       });
+      expect(controller, JSON.stringify(controller)).toMatchObject({ ok: true });
       const preview = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,
         controllerJobId: "test-controller",
@@ -67,7 +69,7 @@ describe("MiMo project refill account selection", () => {
         startWorker: false,
         executionMode: "sync",
       });
-      expect(preview).toMatchObject({
+      expect(preview, JSON.stringify(preview)).toMatchObject({
         ok: false,
         reason: "confirm_refill_required",
         manifestPreview: {

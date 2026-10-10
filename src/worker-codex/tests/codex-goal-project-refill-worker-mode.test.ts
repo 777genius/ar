@@ -9,7 +9,10 @@ import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import * as boundedOperation from "../codex-goal-mcp-project-control-bounded-operation";
 import * as projectScope from "../codex-goal-mcp-project-scope";
 import * as toolRoots from "../worker-tool-root";
-import { callToolJson, git } from "./codex-goal-mcp-test-support";
+import { readCodexGoalJob } from "../codex-goal-jobs";
+import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
+import { observeResearchJobWriterAuthority } from "../research-writer-observation";
+import { callToolJson, git, gitStdout } from "./codex-goal-mcp-test-support";
 import { createFixture, createScope } from "./codex-goal-project-refill-fixture";
 
 beforeEach(() => {
@@ -120,6 +123,15 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
   };
   try {
     await mkdir(authRootDir, { recursive: true, mode: 0o700 });
+    // The real scoped creation gate requires a declared ownership contract.
+    // Commit its packet/check inputs before binding the source revision.
+    for (const name of ["controller.md", "lane.md", "checks/README.md"]) {
+      await mkdir(join(f.sourceWorkspacePath, name === "checks/README.md" ? "checks" : "."), { recursive: true });
+      await writeFile(join(f.sourceWorkspacePath, name), "TEST admission input.\n");
+    }
+    await git(f.sourceWorkspacePath, ["add", "."]);
+    await git(f.sourceWorkspacePath, ["commit", "-m", "test: prepare scoped refill inputs"]);
+    const phaseStartSha = (await gitStdout(f.sourceWorkspacePath, ["rev-parse", "HEAD"])).trim();
     const remotePath = join(f.root, "origin.git");
     await git(f.root, ["init", "--bare", remotePath]);
     await git(f.sourceWorkspacePath, ["remote", "add", "origin", remotePath]);
@@ -134,18 +146,33 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
         ...createScope(f), registryRoot: registryRootDir, jobIdPrefixes: ["mode-"],
         tmuxSessionPrefixes: ["mode-"], allowedBranches: ["main", "test/mode-*"],
         allowedAccountIds: ["account-a"], allowedGitRemotes: ["origin"],
+        preStartAdmission: { required: true, mode: "serial-builtin" },
         ...(workerMode ? { workerMode } : {}),
       },
     });
     expect(created, JSON.stringify(created)).toMatchObject({ ok: true });
+    const controller = await readCodexGoalJob({ registryRootDir, jobId: "mode-controller" });
+    expect(await observeProtectedCodexGoalJobBirth(controller)).toEqual({ status: "released" });
+    expect(await observeResearchJobWriterAuthority(controller)).toEqual({ status: "released" });
     return {
       root: f.root, registryRootDir, workspacePath, promptPath, client, close,
       args: {
         registryRootDir, controllerJobId: "mode-controller", jobId: "mode-child",
         sourceWorkspacePath: f.sourceWorkspacePath, baseBranch: "main",
-        expectedSourceCommit: f.phaseStartSha, newBranch: "test/mode-child",
+        expectedSourceCommit: phaseStartSha, newBranch: "test/mode-child",
         workspacePath, promptPath, promptBody: "Run a focused test.\n", taskId: "mode-child",
         accounts: ["account-a"], authRootDir, startWorker: false, confirmRefill: true,
+        confirmPreStartAdmission: true,
+        preStartAdmission: { mode: "serial-builtin", contract: {
+          kind: "worker-launch", format: 1, canonicalSha: phaseStartSha, baseSha: phaseStartSha, phaseStartSha,
+          packetRevision: "test-r1", controllerPacket: "controller.md", lanePacket: "lane.md",
+          phaseId: "phase-01", laneId: "lane-a", inputPatchHash: null, reviewKind: "implementation",
+          ownedPaths: ["output.txt"], mandatoryDocs: ["README.md", "controller.md", "lane.md"],
+          mandatoryScripts: [], mandatoryFixtures: [],
+          requiredChecks: [{ id: "diff", cwd: "checks", command: "git diff --check" }],
+          executionPolicy: { mode: "sandbox-only", sandboxRoot: workspacePath,
+            forbiddenRealProjects: [join(f.root, "FORBIDDEN-real-project")] },
+        } },
       },
     };
   } catch (error) {

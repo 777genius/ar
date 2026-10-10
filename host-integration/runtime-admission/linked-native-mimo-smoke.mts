@@ -217,7 +217,7 @@ async function main(configPath: string): Promise<void> {
         packetRevision: "test-r1", controllerPacket: "controller.md", lanePacket: "lane.md", phaseId: "phase-01", laneId: "test-" + jobId.slice(-12).toLowerCase(),
         inputPatchHash: null, reviewKind: "implementation", ownedPaths: ["output.txt"], mandatoryDocs: ["README.md", "controller.md", "lane.md"],
         mandatoryScripts: [], mandatoryFixtures: [], requiredChecks: [{ id: "diff", cwd: "checks", command: "git diff --check" }],
-        executionPolicy: { mode: "sandbox-only", sandboxRoot: root, forbiddenRealProjects: [join(root, "FORBIDDEN-real-project")] } } } });
+        executionPolicy: { mode: "sandbox-only", sandboxRoot: join(worktrees, workspaceId), forbiddenRealProjects: [join(root, "FORBIDDEN-real-project")] } } } });
     phase = "old-linked-refill";
     const oldResponse = await ok("codex_goal_project_refill_worker", refillArgs(oldId, oldId, false, true));
     const old = ownStart(oldId); check(old, "old_linked_start_missing"); observe("old-linked-native-start", { start: old, publicStart: record(oldResponse.start).status });

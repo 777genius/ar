@@ -132,14 +132,14 @@ async function main(): Promise<void> {
     custody(String(current.FragmentPath)); const fragmentSha256 = hash(files.researchRead(String(current.FragmentPath), false));
     check(typeof current.InvocationID === "string" && /^[a-f0-9]{32}$/.test(current.InvocationID), "invocation_unknown");
     const pid = Number(current.MainPID); check(Number.isSafeInteger(pid) && pid >= 0, "pid_unknown");
-    const process = pid > 0 ? host.researchProcessIdentity(pid) : null;
-    if (process) check(process.machineId === machine.machineId && process.bootId === machine.bootId && process.controlGroup === "/system.slice/" + unit && current.ControlGroup === process.controlGroup && JSON.stringify(process.namespaces) === JSON.stringify(machine.namespaces), "operator_process_changed");
-    const identity: Identity = { invocationId: current.InvocationID, fragmentSha256, process: process ? { pid: process.pid, birthTicks: process.birthTicks } : null };
+    const ownerProcess = pid > 0 ? host.researchProcessIdentity(pid) : null;
+    if (ownerProcess) check(ownerProcess.machineId === machine.machineId && ownerProcess.bootId === machine.bootId && ownerProcess.controlGroup === "/system.slice/" + unit && current.ControlGroup === ownerProcess.controlGroup && JSON.stringify(ownerProcess.namespaces) === JSON.stringify(machine.namespaces), "operator_process_changed");
+    const identity: Identity = { invocationId: current.InvocationID, fragmentSha256, process: ownerProcess ? { pid: ownerProcess.pid, birthTicks: ownerProcess.birthTicks } : null };
     const live = current.ActiveState === "active" && current.SubState === "running" && pid > 0;
     const terminal = ["inactive", "failed"].includes(String(current.ActiveState)) && pid === 0 && !queued();
     if (existsSync(bindingPath)) {
       const original = object(files.researchJson(files.researchRead(bindingPath))) as unknown as Identity;
-      check(original.invocationId === identity.invocationId && original.fragmentSha256 === identity.fragmentSha256 && (!process || JSON.stringify(original.process) === JSON.stringify(identity.process)), "original_lifetime_changed");
+      check(original.invocationId === identity.invocationId && original.fragmentSha256 === identity.fragmentSha256 && (!ownerProcess || JSON.stringify(original.process) === JSON.stringify(identity.process)), "original_lifetime_changed");
     } else if (live || terminal) files.researchPublish(bindingPath, identity, true);
     // A pending MainPID-zero service cannot bind a future process lifetime.
     else return { state: OuterState.Unknown, fields: current };

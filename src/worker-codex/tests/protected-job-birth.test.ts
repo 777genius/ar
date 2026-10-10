@@ -2,17 +2,18 @@ import { host, setupResearchFixture, cleanupResearchFixture } from "./research-l
 import { AsyncResource } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { createCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
+import { createCodexGoalJob, readCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import { observeProtectedCodexGoalJobBirth, recordProtectedCodexGoalJobFirstEffect } from "../protected-job-birth";
 import { grantOwnedMimoWorkerLaunch } from "../research-launch-owner";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { createFixture, createScope } from "./codex-goal-project-refill-fixture";
-import { callToolJson, git } from "./codex-goal-mcp-test-support";
+import { callToolJson, git, gitStdout } from "./codex-goal-mcp-test-support";
+import { observeResearchJobWriterAuthority } from "../research-writer-observation";
 import { recordRawGoalStateOrigin } from "../application/project-control/codex-goal-controller-state-location";
 import { withProjectAdmissionPublicationLock } from "../codex-goal-project-workspace-lock";
 
@@ -132,25 +133,48 @@ it.skipIf(process.platform !== "linux")("preserves protected birth across actual
   const childRoot = join(f.root, "worker-jobs", "TEST-child"), workspacePath = join(f.root, "worktrees", "TEST-child");
   try {
     mkdirSync(authRootDir, { recursive: true, mode: 0o700 });
+    // Exercise the same real ownership-bound serial contract as native refill.
+    for (const name of ["controller.md", "lane.md", "checks/README.md"]) {
+      await mkdir(join(f.sourceWorkspacePath, name === "checks/README.md" ? "checks" : "."), { recursive: true });
+      await writeFile(join(f.sourceWorkspacePath, name), "TEST admission input.\n");
+    }
+    await git(f.sourceWorkspacePath, ["add", "."]);
+    await git(f.sourceWorkspacePath, ["commit", "-m", "test: prepare scoped refill inputs"]);
+    const phaseStartSha = (await gitStdout(f.sourceWorkspacePath, ["rev-parse", "HEAD"])).trim();
     const remote = join(f.root, "origin.git");
     await git(f.root, ["init", "--bare", remote]);
     await git(f.sourceWorkspacePath, ["remote", "add", "origin", remote]);
     await git(f.sourceWorkspacePath, ["push", "origin", "HEAD:main"]);
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     expect(await callToolJson(client, "codex_goal_create_job", {
-      registryRootDir, jobId: "TEST-controller", jobRootDir: controllerRoot, taskId: "TEST-controller",
+      registryRootDir, jobId: "test-controller", jobRootDir: controllerRoot, taskId: "test-controller",
       workspacePath: f.sourceWorkspacePath, promptPath: join(controllerRoot, "prompt.md"), accounts: ["account-a"], authRootDir,
       accessBoundary: AccessBoundary.ProjectScopedControl,
-      projectAccessScope: { ...createScope(f), registryRoot: registryRootDir, jobIdPrefixes: ["TEST-"],
-        tmuxSessionPrefixes: ["TEST-"], allowedBranches: ["main", "test/TEST-*"],
-        allowedAccountIds: ["account-a"], allowedGitRemotes: ["origin"] },
+      projectAccessScope: { ...createScope(f), registryRoot: registryRootDir, jobIdPrefixes: ["test-"],
+        tmuxSessionPrefixes: ["test-"], allowedBranches: ["main", "test/test-*"],
+        allowedAccountIds: ["account-a"], allowedGitRemotes: ["origin"],
+        preStartAdmission: { required: true, mode: "serial-builtin" } },
     })).toMatchObject({ ok: true });
+    const controller = await readCodexGoalJob({ registryRootDir, jobId: "test-controller" });
+    expect(await observeProtectedCodexGoalJobBirth(controller)).toEqual({ status: "released" });
+    expect(await observeResearchJobWriterAuthority(controller)).toEqual({ status: "released" });
     const result = await callToolJson(client, "codex_goal_project_refill_worker", {
-      registryRootDir, controllerJobId: "TEST-controller", jobId: "TEST-child", taskId: "TEST-child",
+      registryRootDir, controllerJobId: "test-controller", jobId: "test-child", taskId: "test-child",
       jobRootDir: childRoot, sourceWorkspacePath: f.sourceWorkspacePath, baseBranch: "main",
-      expectedSourceCommit: f.phaseStartSha, newBranch: "test/TEST-child", workspacePath,
+      expectedSourceCommit: phaseStartSha, newBranch: "test/test-child", workspacePath,
       promptPath: join(childRoot, "prompt.md"), promptBody: "TEST fresh controlled preparation.\n",
       accounts: ["account-a"], authRootDir, startWorker: false, confirmRefill: true, executionMode: "sync",
+      confirmPreStartAdmission: true,
+      preStartAdmission: { mode: "serial-builtin", contract: {
+        kind: "worker-launch", format: 1, canonicalSha: phaseStartSha, baseSha: phaseStartSha, phaseStartSha,
+        packetRevision: "test-r1", controllerPacket: "controller.md", lanePacket: "lane.md",
+        phaseId: "phase-01", laneId: "lane-a", inputPatchHash: null, reviewKind: "implementation",
+        ownedPaths: ["output.txt"], mandatoryDocs: ["README.md", "controller.md", "lane.md"],
+        mandatoryScripts: [], mandatoryFixtures: [],
+        requiredChecks: [{ id: "diff", cwd: "checks", command: "git diff --check" }],
+        executionPolicy: { mode: "sandbox-only", sandboxRoot: workspacePath,
+          forbiddenRealProjects: [join(f.root, "FORBIDDEN-real-project")] },
+      } },
     });
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, startSkipped: true });
     expect(await readFile(join(childRoot, "prompt.md"), "utf8")).toBe("TEST fresh controlled preparation.\n");
