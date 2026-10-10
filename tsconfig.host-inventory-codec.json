@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "CommonJS", "moduleResolution": "Node", "ignoreDeprecations": "6.0",
+    "strict": true, "noUncheckedIndexedAccess": true, "skipLibCheck": false,
+    "types": [], "lib": ["ES2022", "DOM"], "rootDir": "src/core/host-infrastructure",
+    "outDir": "dist/host-inventory-codec", "declaration": false, "sourceMap": false
+  },
+  "files": ["src/core/host-infrastructure/host-inventory.ts"]
+}

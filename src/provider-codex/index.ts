@@ -47,3 +47,5 @@ export { createHostedSubscriptionPreparationOwner, prepareHostedSubscriptionCons
   CodexSubscriptionPreparationFailure, CodexSubscriptionUnusedReleaseStatus } from "./hosted-subscription-session-materializer";
 export type { CodexSubscriptionPreparationOwner, CodexSubscriptionPreparationInput, CodexSubscriptionPreparationView,
   CodexSubscriptionPreparedConsumer } from "./hosted-subscription-session-materializer";
+export { OpenWorkerLayoutErrorCode, assertHostedOpenWorkerLayout, renderHostedOpenWorkerProfilesToml, hostedOpenWorkerReadRoots,
+  hostedOpenWorkerExtraDenyDirectories, hostedOpenWorkerForbiddenReadRoots } from "./hosted-open-worker-permissions";

@@ -1,3 +1,5 @@
+import { projectControlNewChildWorkerMode, projectControlWorkerToolRootRequest } from "./project-control-worker-mode";
+import { WorkerToolRootStatus, type WorkerToolRootOutcome } from "./worker-tool-root";
 import {
   lstat,
   mkdir,
@@ -231,6 +233,7 @@ export async function projectControlRefillWorkerView(
     ),
     allowDangerFullAccess: false,
     networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
+    ...projectControlNewChildWorkerMode(controller.scope),
     reasoningEffort: requested.reasoningEffort ?? "high",
     serviceTier: requested.serviceTier ?? "default",
   };
@@ -473,6 +476,7 @@ export async function projectControlRefillWorkerView(
     createWorktreeInput,
   });
   let worktreeCreated = false;
+  let workerToolRoot: WorkerToolRootOutcome | undefined;
   let promptWritten = false;
   let admissionCreatedPaths: readonly string[] = [];
   let worktree!: ProjectControlOperationResult;
@@ -493,9 +497,11 @@ export async function projectControlRefillWorkerView(
       broker: worktreeBroker,
       scope: controller.scope,
       createWorktreeInput,
+      ...projectControlWorkerToolRootRequest(createManifest, controller.scope),
     });
     worktree = worktreeResult.result;
     worktreeCreated = worktreeResult.created;
+    workerToolRoot = worktreeResult.workerToolRoot;
 
     const existingPrompt = await readTextFileIfExists(
       createManifest.promptPath,
@@ -596,6 +602,7 @@ export async function projectControlRefillWorkerView(
       registryRootDir: controller.registryRootDir,
       jobId: createManifest.jobId,
       worktreeCreated,
+      toolRootPrepared: workerToolRoot?.status === WorkerToolRootStatus.Prepared,
       promptWritten,
     });
     if (error instanceof Error && rolledBack.length > 0) {
@@ -726,6 +733,7 @@ export async function projectControlRefillWorkerView(
   return {
     ok: true,
     mode: "project_control_refill_worker",
+    ...(workerToolRoot ? { workerToolRoot } : {}),
     controllerJobId: controller.controller.jobId,
     registryRootDir: controller.registryRootDir,
     auditPath: projectControlAuditPath(controller.controller),
@@ -840,6 +848,7 @@ async function projectControlRefillWorkerBoundedView(
     ),
     allowDangerFullAccess: false,
     networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
+    ...projectControlNewChildWorkerMode(controller.scope),
   };
   const mergeBinding = parseProjectMergeBindingRequest({
     value: args.mergeBinding,
