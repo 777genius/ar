@@ -108,6 +108,27 @@ function codingRequest(): void {
   publish();
 }
 describe("independent CodingV1 metadata proof, without activation", () => {
+  it.each(["before", "after"])("accepts and rechecks hybrid cgroup rows with the legacy row %s unified", order => {
+    codingRequest();
+    const unified = state.files.get("/proc/self/cgroup")!.toString(), legacy = "1:name=systemd:/legacy";
+    state.files.set("/proc/self/cgroup", Buffer.from(order === "before" ? `${legacy}\n${unified}\n` : `${unified}\n${legacy}\n`));
+    const proof = readHostedMimoCodingWorkerOrigin()!;
+    expect(proof).toMatchObject({ jobId: "test-job", unit: spec.unit });
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent(proof)).not.toThrow();
+  });
+  it.each(["missing", "duplicate", "moved"])("rejects a %s unified cgroup row when rechecking coding proof", change => {
+    codingRequest(); const proof = readHostedMimoCodingWorkerOrigin()!;
+    const unified = state.files.get("/proc/self/cgroup")!.toString();
+    state.files.set("/proc/self/cgroup", Buffer.from(change === "missing" ? "1:name=systemd:/legacy" : change === "duplicate" ? `${unified}\n${unified}` : "0::/system.slice/foreign.service"));
+    expect(() => assertHostedMimoCodingWorkerOriginCurrent(proof)).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+  it.each(["missing", "duplicate"])("rejects a %s unified row at initial origin admission", change => {
+    codingRequest();
+    const unified = state.files.get("/proc/self/cgroup")!.toString();
+    state.files.set("/proc/self/cgroup", Buffer.from(change === "missing" ? "1:name=systemd:/legacy" : `${unified}\n${unified}`));
+    expect(() => readHostedMimoCodingWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+  });
+
   it("fully checks material and returns immutable scoped metadata while old reader remains closed", () => {
     codingRequest();
     expect(() => readHostedMimoWorkerOrigin()).toThrow("hosted_mimo_coding_activation_closed");

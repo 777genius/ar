@@ -11,6 +11,11 @@ import { HostedMimoProfile } from "./hosted-mimo-profile";
 const authority = "/run/user/subscription-runtime-research-v1";
 const hash = (bytes: Buffer | string): string => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_mimo_worker_origin_invalid"); }
+function readUnifiedControlGroup(): string {
+  const rows = readFileSync("/proc/self/cgroup", "utf8").trim().split("\n").filter(row => row.startsWith("0::"));
+  if (rows.length !== 1) invalid();
+  return rows[0]!;
+}
 export enum HostedMimoOriginReadFailureCode { Timeout = "timeout", Failed = "failed" }
 export type HostedMimoOriginReadFailure = Readonly<{ operation: "systemctl-show"; code: HostedMimoOriginReadFailureCode; elapsedMs: number }>;
 const originReadFailures = new WeakMap<object, HostedMimoOriginReadFailure>();
@@ -90,9 +95,8 @@ export function assertHostedMimoCodingWorkerOriginCurrent(proof: HostedMimoCodin
 }
 function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; readonly digest: string; readonly directory: string } | null {
   if (process.platform !== "linux") return null;
-  const group = readFileSync("/proc/self/cgroup", "utf8").trim().split("\n").filter(row => row.startsWith("0::"));
-  if (group.length !== 1) invalid();
-  const match = /^0::\/system\.slice\/(subscription-runtime-research-([a-f0-9-]{36})\.service)$/.exec(group[0]!);
+  const group = readUnifiedControlGroup();
+  const match = /^0::\/system\.slice\/(subscription-runtime-research-([a-f0-9-]{36})\.service)$/.exec(group);
   if (!match) return null;
   if (process.getuid?.() !== 0 || process.geteuid?.() !== 0) invalid();
   for (const map of ["uid_map", "gid_map"]) {
@@ -131,7 +135,7 @@ function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; 
   }
   const service = Object.fromEntries(result.stdout.trim().split("\n").map(row => { const index = row.indexOf("="); return [row.slice(0, index), row.slice(index + 1)]; }));
   const owner = /^subscription-runtime-research:([a-f0-9]{64}):([a-f0-9]{64})$/.exec(service.Description ?? "");
-  if (!owner || service.Id !== unit || service.MainPID !== String(process.pid) || service.ControlGroup !== group[0]!.slice(3) ||
+  if (!owner || service.Id !== unit || service.MainPID !== String(process.pid) || service.ControlGroup !== group.slice(3) ||
       service.ActiveState !== "active" || service.SubState !== "running" || service.Transient !== "yes" ||
       service.DropInPaths !== "" || service.KillMode !== "control-group" || service.FragmentPath !== `/run/systemd/transient/${unit}` ||
       !/^[a-f0-9]{32}$/.test(service.InvocationID ?? "")) invalid();
@@ -172,7 +176,7 @@ function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; 
   const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
   if (fields[0] === "Z" || !/^[1-9][0-9]*$/.test(fields[19] ?? "")) invalid();
   equal(binding.process, { pid: process.pid, birthTicks: fields[19], bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
-    machineId: readFileSync("/etc/machine-id", "utf8").trim(), controlGroup: group[0]!.slice(3), namespaces });
+    machineId: readFileSync("/etc/machine-id", "utf8").trim(), controlGroup: group.slice(3), namespaces });
   equal(binding.service, { unit, mainPid: process.pid, controlGroup: service.ControlGroup, invocationId: service.InvocationID,
     description: service.Description, fragmentSha256: hash(bytes(service.FragmentPath!, false)) });
   assertRegisteredOrigin(spec, grant, request, directory);
@@ -198,7 +202,7 @@ function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; 
       try { lstatSync(join(directory, "closing.json")); invalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     };
     assertRetained();
-    if (readFileSync("/proc/self/cgroup", "utf8").trim() !== group[0] ||
+    if (readUnifiedControlGroup() !== group ||
         readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== record(binding.process).bootId ||
         readFileSync("/etc/machine-id", "utf8").trim() !== record(binding.process).machineId) invalid();
     const freshStat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
