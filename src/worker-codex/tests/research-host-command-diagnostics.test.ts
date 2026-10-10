@@ -100,6 +100,46 @@ describe("closed research control-command failure diagnostics", () => {
     expect((failure as Error).cause).toBe("host-command-timeout");
     expect(execute).toHaveBeenCalledTimes(2);
   });
+  it("retries only the timed-out show read with unchanged arguments and a shared finite deadline", () => {
+    const timedOut = { pid: 0, output: [], stderr: "TEST-private", signal: null, status: null, stdout: "TEST-stale",
+      error: Object.assign(new Error("TEST-private"), { code: "ETIMEDOUT" }) } as ReturnType<typeof processes.spawnSync>;
+    const execute = vi.spyOn(processes, "spawnSync").mockReturnValueOnce(timedOut)
+      .mockReturnValueOnce({ status: 0, stdout: "TEST-fresh" } as ReturnType<typeof processes.spawnSync>);
+    vi.spyOn(process.hrtime, "bigint").mockReturnValue(70_000_000_000n).mockReturnValueOnce(0n);
+    const args = ["show", unit, "--no-pager", "--property=Id,MainPID"];
+    expect(researchCommand("/usr/bin/systemctl", args)).toBe("TEST-fresh");
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[0]).toEqual(["/usr/bin/systemctl", args, expect.objectContaining({ timeout: 60_000 })]);
+    expect(execute.mock.calls[1]).toEqual(["/usr/bin/systemctl", args, expect.objectContaining({ timeout: 50_000 })]);
+    expect(execute.mock.calls[0]?.[2]?.env).toEqual(execute.mock.calls[1]?.[2]?.env);
+  });
+  it("stops after two timed-out show reads and retains the last refusal with total elapsed observation", () => {
+    const execute = vi.spyOn(processes, "spawnSync").mockReturnValue({ pid: 0, output: [], stderr: "TEST-private", signal: null,
+      status: null, stdout: "TEST-stale", error: Object.assign(new Error("TEST-private"), { code: "ETIMEDOUT" }) } as ReturnType<typeof processes.spawnSync>);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(120_001);
+    let failure: unknown; try { researchCommand("/usr/bin/systemctl", ["show", unit]); } catch (error) { failure = error; }
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect((failure as Error).cause).toBe("host-command-timeout");
+    expect(researchHostCommandFailure(failure)).toEqual({ operation: Operation.SystemctlShow, unitRole: Role.Runtime, elapsedMs: 120_001 });
+  });
+  it("refuses a successful manager reply received after the original monotonic deadline", () => {
+    const execute = vi.spyOn(processes, "spawnSync").mockReturnValue({ status: 0, stdout: "TEST-late-success" } as ReturnType<typeof processes.spawnSync>);
+    vi.spyOn(process.hrtime, "bigint").mockReturnValueOnce(0n).mockReturnValue(120_001_000_000n);
+    let failure: unknown; try { researchCommand("/usr/bin/systemctl", ["show", unit]); } catch (error) { failure = error; }
+    expect((failure as Error).cause).toBe("host-command-timeout");
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(researchHostCommandFailure(failure)).toMatchObject({ operation: Operation.SystemctlShow, unitRole: Role.Runtime });
+  });
+  it("never retries after its total read deadline or a non-timeout show failure", () => {
+    const execute = vi.spyOn(processes, "spawnSync").mockReturnValue({ pid: 0, output: [], stderr: "", signal: null, status: null, stdout: "",
+      error: Object.assign(new Error("TEST-timeout"), { code: "ETIMEDOUT" }) } as ReturnType<typeof processes.spawnSync>);
+    vi.spyOn(process.hrtime, "bigint").mockReturnValueOnce(0n).mockReturnValueOnce(120_000_000_000n);
+    expect(() => researchCommand("/usr/bin/systemctl", ["show", unit])).toThrow("hosted_research_launch_denied");
+    expect(execute).toHaveBeenCalledTimes(1);
+    execute.mockClear().mockReturnValue({ status: 1, stdout: "" } as ReturnType<typeof processes.spawnSync>);
+    expect(() => researchCommand("/usr/bin/systemctl", ["show", unit])).toThrow("hosted_research_launch_denied");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
   it.each([[3, 0], [NaN, 0], [Infinity, 0], [Number.MAX_VALUE, Number.MAX_SAFE_INTEGER]] as const)(
     "bounds an elapsed observation ending at %s", (ended, elapsedMs) => {
       vi.spyOn(processes, "spawnSync").mockReturnValue({ status: 1, stdout: "" } as ReturnType<typeof processes.spawnSync>);
