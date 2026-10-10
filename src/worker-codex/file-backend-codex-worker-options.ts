@@ -1,3 +1,4 @@
+import type { OpenWorkerLaunch } from "./project-control-worker-mode";
 import { assertOwnedMimoWorkerFactory, ownedMimoWorkerStart } from "./research-launch-admission";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
@@ -45,6 +46,7 @@ export type FileBackendCodexWorkerOptions = {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   /** Brokered project jobs require native filesystem permissions even without the host marker. */
   readonly enforceProjectReadBoundary?: boolean;
+  readonly openWorker?: OpenWorkerLaunch;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   /** Already admitted by the trusted host; never taken from job configuration. */
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;

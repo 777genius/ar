@@ -1,3 +1,4 @@
+import type { NativeWebEvidence } from "./native-web-receipt";
 export type CustodyMode =
   | "no-plaintext-backend"
   | "backend-custody"
@@ -519,6 +520,7 @@ export type ProviderTaskControls = {
 };
 
 export type ProviderTaskTelemetry = {
+  readonly nativeWeb?: NativeWebEvidence;
   readonly providerRunId?: string;
   readonly providerSessionId?: string;
   readonly durationMs?: number;

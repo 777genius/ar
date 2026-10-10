@@ -1,4 +1,5 @@
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
+import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
@@ -46,7 +47,7 @@ import {
   ActiveAttemptInterruptMonitor,
   AccessBoundary,
   InMemoryActiveAttemptRegistry,
-  type NetworkAccessMode,
+  type NetworkAccessMode, type WorkerMode,
   type ProjectAccessScope,
   type SafeExecutionPolicy,
   type SafeExecutionRunResult,
@@ -153,6 +154,7 @@ export type CodexGoalRunConfig = {
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
   readonly networkAccess?: NetworkAccessMode;
+  readonly workerMode?: WorkerMode;
   readonly goalSummary?: string;
   readonly codexGoalObjective?: string;
   readonly effectMode?: TaskEffectMode;
@@ -275,6 +277,7 @@ async function runCodexGoalAdmitted(
   });
   const observability =
     deps.observability ?? codexGoalRuntimeEventObservability(runtimeEvents);
+  const workerMode = await resolveOpenWorkerLaunch({ config, dependencyToolConfig });
   await runtimeEvents.write("runner_starting", {
     jobId: config.jobId ?? config.taskId,
     executionGeneration,
@@ -282,19 +285,20 @@ async function runCodexGoalAdmitted(
     accountCount: config.accounts.length,
     ...(baseCommit ? { baseCommit } : {}),
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
+    ...openWorkerEvidence(workerMode),
   });
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
     config,
     prompt,
   });
   storageLease?.assertCurrent();
-  if (linkedWorktreeHandoff.enabled) {
+  if (linkedWorktreeHandoff.enabled && !workerMode.launch) {
     await runtimeEvents.write("linked_worktree_handoff_guardrail", {
       accessBoundary: config.accessBoundary ?? "",
       workspaceKind: "linked_git_worktree",
     });
   }
-  if (linkedWorktreeHandoff.commitRequested) {
+  if (linkedWorktreeHandoff.commitRequested && !workerMode.launch) {
     await runtimeEvents.write("linked_worktree_commit_preflight_warning", {
       level: "warning",
       accessBoundary: config.accessBoundary ?? "",
@@ -334,7 +338,7 @@ async function runCodexGoalAdmitted(
       deps.createExecutor ??
       ((options) => new FileBackendCodexSafeExecutor(options))
     )(buildCodexGoalExecutorOptions({
-      config,
+      config, ...(workerMode.launch ? { openWorker: workerMode.launch } : {}),
       ...(baseCommit ? { initialBaseCommit: baseCommit } : {}),
       ...(deps.checkpointPublisher ? { checkpointPublisher: deps.checkpointPublisher } : {}),
       providerEgressPolicy,
@@ -389,6 +393,7 @@ async function runCodexGoalAdmitted(
       },
       systemPrompt: codexGoalRunSystemPrompt(config, {
         linkedWorktreeHandoff: linkedWorktreeHandoff.enabled,
+        ...(workerMode.launch ? { openWorkerInstruction: codexGoalOpenWorkerSystemPrompt(workerMode.launch.commitAllowed) } : {}),
         ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig, toolEntry) } : {}),
       }),
       metadata: {
@@ -606,6 +611,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
           ? {}
           : { appServerStartupTimeoutMs: config.appServerStartupTimeoutMs }),
         ...codexGoalHostedExecutionBoundary({ ...config, commandPolicy }),
+        ...(input.openWorker ? { openWorker: input.openWorker } : {}),
         ...(config.model ? { model: config.model } : {}),
         ...(config.reasoningEffort
           ? { reasoningEffort: config.reasoningEffort }
@@ -703,22 +709,23 @@ function assertPositiveInteger(value: number | undefined, code: string): void {
   if (!Number.isInteger(value) || value <= 0) throw new Error(code);
 }
 
-function codexGoalWorkerSystemPrompt(taskId: string): string {
+function codexGoalWorkerSystemPrompt(taskId: string, tempRoot = "/tmp"): string {
   return [
     "Codex goal runtime artifact rule:",
-    "If the task asks you to write a report, evidence file, or other artifact to a path outside the current workspace and the sandbox denies that write, write the artifact under /tmp instead.",
-    `Use a task-specific directory such as /tmp/${taskId}-artifacts, include the exact fallback path in your final output, and do not mark the goal blocked solely because the external copy could not be performed.`,
+    `If the task asks you to write a report, evidence file, or other artifact to a path outside the current workspace and the sandbox denies that write, write the artifact under ${tempRoot} instead.`,
+    `Use a task-specific directory such as ${tempRoot}/${taskId}-artifacts, include the exact fallback path in your final output, and do not mark the goal blocked solely because the external copy could not be performed.`,
     "Keep source worktrees clean unless the task explicitly requires code or docs changes.",
   ].join(" ");
 }
 
 function codexGoalRunSystemPrompt(
   config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode">,
-  options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string } = {},
+  options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string; readonly openWorkerInstruction?: string } = {},
 ): string {
-  const prompts = [codexGoalWorkerSystemPrompt(config.taskId)];
+  const prompts = [codexGoalWorkerSystemPrompt(config.taskId, options.openWorkerInstruction ? "$TMPDIR" : "/tmp")];
   if (options.dependencyToolInstruction) prompts.push(options.dependencyToolInstruction);
-  if (options.linkedWorktreeHandoff === true) {
+  if (options.openWorkerInstruction) prompts.push(options.openWorkerInstruction);
+  else if (options.linkedWorktreeHandoff === true) {
     prompts.push(codexGoalLinkedWorktreeHandoffSystemPrompt);
   }
   if (config.workerReportMode === "structured-output") {

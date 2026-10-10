@@ -13,6 +13,7 @@ import { StorageAccountingResultKind, StorageExposureAccounting, StorageExposure
   type StorageExposureLedger, type StorageExposureRequest, type StorageFilesystem, type StorageGeneration,
   type StorageQuotaProof } from "../../../worker-core/job-storage-exposure/index";
 import { LocalStorageExposureStore as Store, storageExposureFenceName, storageExposureLedgerName } from "../index";
+import { withCompiledTestFixture } from "../../tests/compiled-test-fixture";
 
 const runFile = promisify(execFile), GiB = 1073741824n;
 function amounts(bytes: bigint, inodes = 4096n): StorageAmounts { return { bytes: bytes.toString(), inodes: inodes.toString() }; }
@@ -300,9 +301,11 @@ describe.skipIf(process.platform !== "linux")("durable full-Q storage exposure",
     try {
       await sample.store.close();
       const helper = fileURLToPath(new URL("./fixtures/storage-exposure-crash-process.ts", import.meta.url));
-      await expect(runFile(process.execPath, ["--experimental-strip-types", helper,
-        resolve("dist/store-local-file/job-storage-exposure/index.js"), resolve("dist/worker-core/job-storage-exposure/index.js"),
-        sample.rootPath, JSON.stringify(sample.filesystem)], { timeout: 5000, maxBuffer: 4096 })).rejects.toMatchObject({ code: 23 });
+      await withCompiledTestFixture(helper, sample.testRoot, async compiledHelper => {
+        await expect(runFile(process.execPath, [compiledHelper,
+          resolve("dist/store-local-file/job-storage-exposure/index.js"), resolve("dist/worker-core/job-storage-exposure/index.js"),
+          sample.rootPath, JSON.stringify(sample.filesystem)], { timeout: 5000, maxBuffer: 4096 })).rejects.toMatchObject({ code: 23 });
+      });
       const ledger = await sample.published();
       expect(ledger.claims[0]?.phase).toBe(StorageExposurePhase.Pending);
       expect(storageFullExposure(ledger.claims)).toEqual({ bytes: "8589934592", inodes: "800" });
