@@ -173,7 +173,7 @@ function withCurrentOrdinaryExtent(action: (extent: HostedOrdinaryWriterExtent, 
     const extent = readHostedOrdinaryWriterExtent(fence, startId, bytes, origin.installation as { runtimeSha: unknown; runtimeManifestSha256: unknown; inventorySha256: unknown });
     if (!extent) return; // Unsupported legacy allocations stay Unknown in census.
     const start = decodeHostedActivationBytes(bytes);
-    if (typeof start.jobRootDir !== "string") invalid();
+    if (!start || typeof start !== "object" || !("jobRootDir" in start) || typeof start.jobRootDir !== "string") invalid();
     action(extent, start.jobRootDir);
   });
 }

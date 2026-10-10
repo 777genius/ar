@@ -190,7 +190,8 @@ export function registerOrdinaryWriterExtentTests(context: Context): void {
           await updateCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: manifest.jobId, patch: { description: "TEST changed" } });
           writeFileSync(join(f.config.workspacePath, "tracked.txt"), "TEST dirty\n");
           const handoff = await tryMaterializeTerminalCodexGoalHandoff({ jobId: manifest.jobId, taskId: manifest.taskId,
-            jobRootDir: manifest.jobRootDir, workspacePath: manifest.workspacePath, durableHandoffRootDir: manifest.durableHandoffRootDir });
+            jobRootDir: manifest.jobRootDir, workspacePath: manifest.workspacePath,
+            ...(manifest.durableHandoffRootDir === undefined ? {} : { durableHandoffRootDir: manifest.durableHandoffRootDir }) });
           expect(handoff.errorCode).toBeUndefined(); expect(handoff.packetPath?.startsWith(f.durableHandoffRootDir + "/")).toBe(true);
           expect(readFileSync(join(handoff.packetPath!, "worktree.patch"), "utf8")).toContain("TEST dirty");
           context.fixture.group = "/system.slice/trusted.service"; context.fixture.runtimeUnit = "";

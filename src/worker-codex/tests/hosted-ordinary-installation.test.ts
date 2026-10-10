@@ -138,13 +138,16 @@ vi.mock("node:fs/promises", async original => {
 vi.mock("node:child_process", async original => {
   const real = await original<typeof import("node:child_process")>();
   const { promisify } = await import("node:util");
-  const execute = (command: string, args: readonly string[], options: import("node:child_process").ExecFileOptions,
+  const execute = (command: string, args: readonly string[], options: import("node:child_process").ExecFileOptions | undefined,
     callback: (error: import("node:child_process").ExecFileException | null, stdout: string | Buffer, stderr: string | Buffer) => void) => {
-    const workspace = args.includes("-C") ? args[args.indexOf("-C") + 1] : options.cwd;
-    if (command !== "git" || typeof workspace !== "string" || !workspace.startsWith("/dev/shm/TEST-ordinary-extent-")) throw new Error("unexpected external command");
-    return real.execFile(command, args, options, callback);
+    const workspace = args.includes("-C") ? args[args.indexOf("-C") + 1] : options?.cwd;
+    const currentProcessIdentity = command === "ps" && args.length === 4 && args[0] === "-p" &&
+      args[1] === String(process.pid) && args[2] === "-o" && args[3] === "lstart=";
+    if (!currentProcessIdentity && (command !== "git" || typeof workspace !== "string" ||
+        !workspace.startsWith("/dev/shm/TEST-ordinary-extent-"))) throw new Error("unexpected external command");
+    return real.execFile(command, args, options ?? {}, callback);
   };
-  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options: import("node:child_process").ExecFileOptions) =>
+  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options?: import("node:child_process").ExecFileOptions) =>
     new Promise((resolve, reject) => execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }),
   spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
   if (command !== "/usr/bin/systemctl") throw new Error("unexpected external command");
