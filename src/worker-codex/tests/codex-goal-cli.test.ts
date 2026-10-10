@@ -246,7 +246,7 @@ describe("codex goal cli", () => {
     }
   });
 
-  it("denies registry-aware CLI run when an existing controller owns the scope", async () => {
+  it("denies raw project CLI run even with a caller-supplied broker marker", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-cli-project-scope-"));
     const registryRoot = join(root, "registry");
     const controllerJobRoot = join(root, "jobs", "infinity-context-controller-v1");
@@ -364,8 +364,11 @@ describe("codex goal cli", () => {
       ], brokeredChildIo);
 
       expect(brokeredChildExitCode).toBe(2);
-      expect(brokeredChildIo.stderr).not.toContain("project_control_broker_required");
-      expect(brokeredChildIo.stderr).toContain("ENOENT");
+      expect(brokeredChildIo.stderr).toContain("project_control_broker_required");
+      expect(brokeredChildIo.stderr).toContain("requiredTool=codex_goal_project_start");
+      expect(brokeredChildIo.stderr).not.toContain("ENOENT");
+      await expect(readFile(childJobJson, "utf8")).rejects.toThrow(/ENOENT/);
+      await expect(readFile(join(childJobRoot, ".controller-state-origin.json"), "utf8")).rejects.toThrow(/ENOENT/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

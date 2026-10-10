@@ -516,12 +516,6 @@ export async function upsertRunCommandManifest(command: RunCommand) {
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {
   const jobId = command.config.jobId ?? command.config.taskId;
-  if (
-    command.config.sourceEnv?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START === "1" &&
-    command.config.accessBoundary !== AccessBoundary.ProjectScopedControl
-  ) {
-    return;
-  }
   const denial = command.registryRootDir === undefined
     ? projectControlGenericToolDenial({
         accessBoundary: command.config.accessBoundary,
