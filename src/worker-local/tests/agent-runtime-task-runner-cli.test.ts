@@ -3,12 +3,14 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as hostScratchTemp from "../../worker-codex/host-scratch-temp";
 import {
   runSubscriptionAgentRuntimeTaskCli,
   type AgentRuntimeTaskWorker,
@@ -25,6 +27,53 @@ import {
 } from "./agent-runtime-task-runner-cli-test-support";
 
 describe("subscription runtime agent-runtime-task runner CLI", () => {
+  let phaseExecution: Promise<number> | undefined;
+  let phaseAbort: AbortController | undefined;
+
+  beforeEach(() => {
+    // These fixtures exercise the packaged worker protocol and cwd ownership.
+    // Host cache effects have separate storage-policy tests and must not touch
+    // the machine's installed policy or mounts from this unit suite.
+    vi.spyOn(hostScratchTemp, "prepareHostScratchCaches").mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    const cleanupErrors: unknown[] = [];
+    try {
+      if (vi.isFakeTimers()) await vi.runAllTimersAsync();
+    } catch (error) {
+      cleanupErrors.push(error);
+    } finally {
+      try {
+        vi.useRealTimers();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        phaseAbort?.abort();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await phaseExecution;
+      } catch (error) {
+        cleanupErrors.push(error);
+      } finally {
+        phaseExecution = undefined;
+        phaseAbort = undefined;
+        try {
+          vi.restoreAllMocks();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+    }
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) {
+      throw new AggregateError(cleanupErrors, "CLI test cleanup failed");
+    }
+  });
+
   it("runs a Claude AgentRuntimeTaskRequest through the selected worker", async () => {
     const calls: {
       factory?: AgentRuntimeTaskWorkerFactoryInput;
@@ -182,6 +231,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode, stdout.join("")).toBe(0);
       expect(JSON.parse(stdout.join(""))).toMatchObject({
         protocolVersion: 1,
@@ -243,6 +293,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode, stdout.join("")).toBe(0);
       expect(JSON.parse(stdout.join(""))).toMatchObject({
         protocolVersion: 1,
@@ -262,7 +313,11 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     const codexPath = join(tempDir, "fake-codex.mjs");
     await mkdir(workspaceDir);
     await writeFile(authPath, validCodexAuthJson(), "utf8");
-    await writeFakeCodexBinary(codexPath, { appServerTurnFails: true });
+    const turnFailureMarkerPath = join(tempDir, "turn-failure.txt");
+    await writeFakeCodexBinary(codexPath, {
+      appServerTurnFails: true,
+      appServerTurnFailureMarkerPath: turnFailureMarkerPath,
+    });
 
     try {
       const stdout: string[] = [];
@@ -300,6 +355,8 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
+      await expect(readFile(turnFailureMarkerPath, "utf8")).resolves.toBe("turn/start rejected");
       expect(exitCode).toBe(1);
       const encoded = stdout.join("");
       expect(encoded).not.toContain("fake-codex-exec-ok");
@@ -356,6 +413,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode).toBe(1);
       const encodedResult = stdout.join("");
       expect(encodedResult).not.toContain("forced fallback failure");
@@ -423,6 +481,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         readonly status: string;
         readonly outputText?: string;
       };
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode, stdout.join("")).toBe(0);
       expect(result.status).toBe("completed");
       expect(result.outputText).toContain(`fake-codex-exec-ok:${await realpath(workspaceDir)}:`);
@@ -552,6 +611,8 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
+      const controller = new AbortController();
+      phaseAbort = controller;
       const execution = runSubscriptionAgentRuntimeTaskCli(
         [
           "--provider",
@@ -592,8 +653,10 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
             disposed = true;
           },
         }),
+        { signal: controller.signal },
       );
 
+      phaseExecution = execution;
       await Promise.race([
         startEntered,
         execution.then(() => {
@@ -620,59 +683,82 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
   it("returns a timeout result when worker auth seeding never resolves", async () => {
     const stdout: string[] = [];
     let runCalled = false;
-    let disposed = false;
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          timeoutMs: 5,
-          task: {
-            kind: "structured-prompt",
-            prompt: "never seeds",
+    let disposeCalls = 0;
+    let markSeedEntered!: () => void;
+    const seedEntered = new Promise<void>((resolve) => {
+      markSeedEntered = resolve;
+    });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const controller = new AbortController();
+      phaseAbort = controller;
+      const execution = runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "claude",
+          "--state-root",
+          "/tmp/runtime-state",
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            timeoutMs: 5,
+            task: {
+              kind: "structured-prompt",
+              prompt: "never seeds",
+            },
+          }),
+          env: {
+            CLAUDE_CODE_OAUTH_TOKEN: "token",
+            SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
           },
         }),
-        env: {
-          CLAUDE_CODE_OAUTH_TOKEN: "token",
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async seedClaudeOAuth() {
-          return await new Promise<void>(() => {});
-        },
-        async run() {
-          runCalled = true;
-          return {
-            outputText: "unexpected",
-            warnings: [],
-          };
-        },
-        async dispose() {
-          disposed = true;
-        },
-      }),
-    );
+        () => ({
+          async start() {},
+          async seedClaudeOAuth() {
+            markSeedEntered();
+            return await new Promise<void>(() => {});
+          },
+          async run() {
+            runCalled = true;
+            return {
+              outputText: "unexpected",
+              warnings: [],
+            };
+          },
+          async dispose() {
+            disposeCalls += 1;
+          },
+        }),
+        { signal: controller.signal },
+      );
 
-    expect(exitCode).toBe(1);
-    expect(runCalled).toBe(false);
-    expect(disposed).toBe(true);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "failed",
-      failure: {
-        code: "task_timeout",
-      },
-    });
+      phaseExecution = execution;
+      await Promise.race([
+        seedEntered,
+        execution.then(() => {
+          throw new Error("task finished before worker.seedClaudeOAuth entered");
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(5);
+      const exitCode = await execution;
+
+      expect(exitCode).toBe(1);
+      expect(runCalled).toBe(false);
+      expect(disposeCalls).toBe(1);
+      expect(JSON.parse(stdout.join(""))).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "task_timeout",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("emits event-ndjson timeout results", async () => {
