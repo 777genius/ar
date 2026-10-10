@@ -4,7 +4,9 @@ import { alias } from "./vitest.config";
 export default defineConfig({
   test: {
     include: [
-      "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
+      ...(process.env.CODEX_LEDGER_EPOCH_CRASH_LANE_SOCKET
+        ? ["src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-lane.test.ts"]
+        : ["src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts"]),
     ],
     exclude: [...configDefaults.exclude],
     fileParallelism: false,

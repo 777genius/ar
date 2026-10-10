@@ -1,5 +1,6 @@
+import { appendNativeWebEvidence, type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { ChildLifetimeError, ChildLifetimeFailure } from "@vioxen/subscription-runtime/core";
-import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
+import { AppServerUsageError, usageFromError, nativeWebFromError } from "../domain/app-server-usage-error";
 import type {
   AgentUsage,
   ManagedRunInputRequest,
@@ -122,6 +123,7 @@ export class AppServerGoalRunner {
   }): Promise<{
     readonly status: "completed";
     readonly outputText: string;
+    readonly nativeWeb?: NativeWebEvidence;
     readonly usage?: AgentUsage;
     readonly warnings: readonly AppServerWarning[];
     readonly providerCheckpoint: string;
@@ -292,6 +294,7 @@ export class AppServerGoalRunner {
     readonly resumed?: boolean;
   }): Promise<AppServerRunResult> {
     let outputText = "";
+    let nativeWeb: NativeWebEvidence = { turns: [], truncated: false };
     let turnUsage: AgentUsage | undefined;
     let executionMayHaveStarted = false;
     let goalBaseline = input.resumed ? (await this.options.client.getGoal({
@@ -323,6 +326,7 @@ export class AppServerGoalRunner {
           })
           .catch((error: unknown) => {
             turnUsage = mergeAgentUsage(turnUsage, usageFromError(error));
+            nativeWeb = appendNativeWebEvidence(nativeWeb, nativeWebFromError(error));
             throw turnFailureError(error, {
               phase: "turn_start_rejected",
               turnNumber,
@@ -330,6 +334,7 @@ export class AppServerGoalRunner {
             });
           });
         executionMayHaveStarted = true;
+        nativeWeb = appendNativeWebEvidence(nativeWeb, turn.nativeWeb);
         turnUsage = mergeAgentUsage(turnUsage, turn.usage);
         detailedSinceGoal = mergeAgentUsage(detailedSinceGoal, turn.usage);
         missingUsageSinceGoal ||= turn.usage === undefined;
@@ -390,6 +395,7 @@ export class AppServerGoalRunner {
           return {
             status: "completed",
             outputText,
+            nativeWeb,
             ...usageField(turnUsage),
             warnings: input.warnings,
           };
@@ -406,6 +412,7 @@ export class AppServerGoalRunner {
             threadId: input.threadId,
             goal,
             outputText,
+            nativeWeb,
             workspacePath: input.workspacePath,
             ...usageField(turnUsage),
             warnings: input.warnings,
@@ -420,7 +427,7 @@ export class AppServerGoalRunner {
       }
 
     } catch (error) {
-      throw new AppServerUsageError(error, turnUsage, executionMayHaveStarted);
+      throw new AppServerUsageError(error, turnUsage, executionMayHaveStarted, nativeWeb);
     }
     if (this.options.client.childBudget) {
       const error = new ChildLifetimeError(ChildLifetimeFailure.Turns);
@@ -435,6 +442,7 @@ export class AppServerGoalRunner {
       }),
       turnUsage,
       executionMayHaveStarted,
+      nativeWeb,
     );
   }
 
@@ -444,6 +452,7 @@ export class AppServerGoalRunner {
     readonly threadId: string;
     readonly goal: CodexThreadGoal;
     readonly outputText: string;
+    readonly nativeWeb?: NativeWebEvidence;
     readonly workspacePath: string;
     readonly usage?: AgentUsage;
     readonly warnings: readonly AppServerWarning[];
@@ -451,6 +460,7 @@ export class AppServerGoalRunner {
     readonly status: "waiting_for_input";
     readonly runId: string;
     readonly outputText: string;
+    readonly nativeWeb?: NativeWebEvidence;
     readonly request: ManagedRunInputRequest;
     readonly resumeHandle: ManagedRunResumeHandle;
     readonly usage?: AgentUsage;
@@ -501,6 +511,7 @@ export class AppServerGoalRunner {
     return {
       status: "waiting_for_input",
       runId: input.runId,
+      ...(input.nativeWeb === undefined ? {} : { nativeWeb: input.nativeWeb }),
       outputText: input.outputText.trim() ? input.outputText : request.question,
       request,
       resumeHandle,

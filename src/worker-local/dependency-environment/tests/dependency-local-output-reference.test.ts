@@ -2,16 +2,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import { DependencyInstallProfile } from "../../../worker-core/dependency-environment/domain/dependency-install-key";
 import { DependencyInstallProofKind, DependencyReceiptState, type DependencySourceBindingReference } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
 import { assertDependencyLocalOutputEvidence, assertDependencySourceBindingRecord } from "../../../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import type { DependencyCompletedLocalReady, DependencyLocalOutputEvidence, DependencySourceBindingRecord, DependencySourceBindingRecordV2 } from "../../../worker-core/dependency-environment/ports/dependency-source-binding";
-import { DependencyTreeObservationStatus } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
+import { DependencyTreeObservationFailure, DependencyTreeObservationStatus } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { NpmInputCaptureStatus } from "../capture-npm-install-inputs";
 import { captureNpmLocalClosure, NpmLocalPinKind } from "../capture-npm-local-closure";
 import { assertDependencyLocalOutputBinding, capturedDependencySourceBindingOutputBody, closeDependencySourceLinkSession,
-  dependencySourceLinkProof, LocalDependencySourceBindingStore, openCapturedDependencySourceLinks, readDependencyProtectedReference } from "../dependency-source-binding";
+  dependencySourceLinkProof, LocalDependencySourceBindingStore, openCapturedDependencySourceLinks, readDependencyProtectedReference, readDependencySourceLinkSession } from "../dependency-source-binding";
 import { observeDependencyTree } from "../observe-dependency-tree";
 
 const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");
@@ -37,8 +38,38 @@ async function fixture() {
   if (capture.status !== NpmInputCaptureStatus.Qualified) throw new Error(`TEST capture:${capture.reason}`);
   await mkdir(join(workspace, "node_modules")); await symlink("../packages/a", join(workspace, "node_modules/a"));
   const session = openCapturedDependencySourceLinks(capture);
-  const observed = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", sourceLinkSession: session,
-    limits: { maxEntries: 128, maxTotalBytes: 65536, maxManifestBytes: 65536, maxDurationMs: 30000 } });
+  // Shared tmp ancestors can change between async lstat/open in parallel TEST
+  // files. Retry only pre-publication observations, never recapture inputs.
+  const tree = await identity(join(workspace, "node_modules"));
+  const ownedPaths = [...new Set([root, policy, sourceRoot, ...capture.pins.map(pin => join(workspace, pin.path)),
+    join(workspace, "node_modules"), join(workspace, "node_modules/a")])];
+  const statPin = async (path: string) => {
+    const { dev, ino, mode, uid, gid, size, nlink, blocks, mtimeNs, ctimeNs } = await lstat(path, { bigint: true });
+    return { dev, ino, mode, uid, gid, size, nlink, blocks, mtimeNs, ctimeNs };
+  };
+  const originalPins = await Promise.all(ownedPaths.map(statPin)), deadline = performance.now() + 30000;
+  const remaining = () => {
+    const ms = Math.floor(deadline - performance.now());
+    if (ms <= 0) throw new Error("TEST observation:original budget exhausted");
+    return ms;
+  };
+  const assertOriginal = async () => {
+    remaining();
+    readDependencySourceLinkSession(session, capture.workspace, "node_modules");
+    expect(await Promise.all(ownedPaths.map(statPin))).toEqual(originalPins);
+    remaining();
+  };
+  const observeOriginal = async () => {
+    await assertOriginal();
+    const result = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", sourceLinkSession: session,
+      expectedWorkspace: capture.workspace, expectedTree: { dev: tree.dev, ino: tree.ino },
+      limits: { maxEntries: 128, maxTotalBytes: 65536, maxManifestBytes: 65536, maxDurationMs: remaining() } });
+    await assertOriginal();
+    return result;
+  };
+  let observed = await observeOriginal();
+  for (let attempt = 1; attempt < 3 && observed.status === DependencyTreeObservationStatus.Incomplete &&
+      observed.reason === DependencyTreeObservationFailure.IdentityChanged; attempt++) observed = await observeOriginal();
   if (observed.status !== DependencyTreeObservationStatus.Complete) throw new Error(`TEST observation:${observed.reason}`);
   const generation = randomUUID(), directory = join(policy, generation); await mkdir(directory, { mode: 0o700 });
   const start = await retainedRecord(join(directory, "start.json"), encode({ TEST: "immutable start", generation })),
