@@ -6,7 +6,7 @@ import { AccessBoundary, createAccessPolicyService } from "@vioxen/subscription-
 import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord, researchRegisteredPromptBytes } from "./research-launch-files";
-import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
+import { assertResearchDurableDirectory, researchDurableDirectory, researchDurableDirectories, sameResearchDurableBacking } from "./research-durable-handoff-directory";
 import type { ResearchStartSpec } from "./research-launch-contract";
 import { codexGoalJobManifestPath } from "./codex-goal-jobs";
 import { withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
@@ -115,8 +115,10 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
   catch (error) { if (!preStart || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const sinkMount = existing ?? parentBacking;
   const sinkBacking = join(sinkMount.mountRoot, relative(sinkMount.mountPoint, sink));
-  for (const source of current.protectedSources) {
-    const witness = researchDurableDirectory(source, false);
+  const sources = [...new Set(current.protectedSources)];
+  const sourceWitnesses = researchDurableDirectories(sources.map(path => ({ path, privateLeaf: false })));
+  for (const [index, source] of sources.entries()) {
+    const witness = sourceWitnesses[index]!;
     if (sinkMount.mountDevice === witness.mountDevice && sinkMount.filesystemUuid === witness.filesystemUuid &&
         overlaps(sinkBacking, join(witness.mountRoot, relative(witness.mountPoint, source)))) researchInvalid();
   }
@@ -223,9 +225,10 @@ export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, dire
     if (spec.request.durableHandoffRootDir !== undefined) researchInvalid();
     return;
   }
-  assertResearchDurableDirectory(binding.durableDirectory);
+  const [source, pin] = researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }]);
+  if (digest(source) !== digest(binding.durableDirectory)) researchInvalid();
   const r = researchRecord(JSON.parse(researchRead(join(directory, "durable-pin.json")).toString("utf8")), "schemaVersion,specSha256,pin");
   if (r.schemaVersion !== 1 || r.specSha256 !== researchHash(researchRead(join(directory, "spec.json")))) researchInvalid();
-  const pin = researchDurableDirectory(join(directory, "pins", "durable-handoff"));
-  if (digest(pin) !== digest(r.pin) || !sameResearchDurableBacking(binding.durableDirectory, pin)) researchInvalid();
+
+  if (digest(pin) !== digest(r.pin) || !sameResearchDurableBacking(binding.durableDirectory, pin!)) researchInvalid();
 }
