@@ -7,7 +7,7 @@ import { createHostedMimoCodingProxyMaterial } from "../hosted-mimo-coding-proxy
 import { hostedMimoCodingBootstrapForFrame } from "../hosted-mimo-coding-bootstrap-registry";
 import { codexMimoApiKeyEnvVarDefault } from "../codex-model-backend";
 import { AppServerExecutionLifetime } from "../app-server/application/app-server-child-lifetime";
-afterEach(() => vi.clearAllMocks());
+afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); });
 function setup(digest: string) {
   const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs: 60000, codexBinaryPath: "/opt/codex" };
   const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 50000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
@@ -73,4 +73,22 @@ it("uses the already authenticated classified origin without a second full obser
   const material = await createHostedMimoCodingProxyMaterial({ ...f.input, origin: f.origin as NonNullable<Parameters<typeof createHostedMimoCodingProxyMaterial>[0]["origin"]> });
   try { expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.current).toHaveBeenCalledWith(f.origin); expect(mocks.credential).toHaveBeenCalledWith(f.origin, f.input.redactor); }
   finally { await material?.close(); }
+});
+
+it("sets the fixed guest shell environment without inheriting ambient paths or credentials", async () => {
+  for (const key of ["PATH", "HOME", "CI", "TMPDIR", "CODEX_HOME", codexMimoApiKeyEnvVarDefault]) vi.stubEnv(key, "TEST-ambient-value-must-not-inherit");
+  const f = setup("1".repeat(64)), material = await createHostedMimoCodingProxyMaterial(f.input);
+  try {
+    const bootstrap = hostedMimoCodingBootstrapForFrame({ command: "/opt/codex", cwd: "/workspace", env: {
+      CODEX_HOME: "/job/home/mimo-1/codex-home", [codexMimoApiKeyEnvVarDefault]: f.proxy.capability,
+    } })!;
+    const policy = bootstrap.configToml.split("[shell_environment_policy]\n")[1]!.split("\n[")[0]!.trim().split("\n");
+    expect(policy).toEqual([
+      'inherit = "none"',
+      'include_only = ["PATH", "HOME", "CI", "TMPDIR", "CODEX_HOME"]',
+      'set = { PATH = "/usr/bin:/bin", HOME = "/home/coding", CI = "1", TMPDIR = "/tmp", CODEX_HOME = "/home/coding/.codex" }',
+    ]);
+    expect(bootstrap.configToml).not.toContain("TEST-ambient-value-must-not-inherit");
+    expect(policy.join("\n")).not.toContain(codexMimoApiKeyEnvVarDefault);
+  } finally { await material?.close(); }
 });

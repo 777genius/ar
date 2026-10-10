@@ -10,6 +10,7 @@ import { startMimoCredentialProxy, type MimoCredentialProxy } from "./hosted-mim
 import { codexMimoApiKeyEnvVarDefault, CodexModelBackend, codexModelBackendModelProvidersConfigToml } from "./codex-model-backend";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, codexProviderEgressConfigToml } from "./codex-provider-egress-policy";
 import { hostedCodexPermissionProfilesToml } from "./hosted-codex-permissions";
+import { hostedMimoCodingGuestHome, hostedMimoCodingGuestCodexHome } from "./hosted-mimo-coding-bootstrap";
 
 export type HostedMimoCodingProxyMaterial = Readonly<{
   origin: HostedMimoCodingWorkerOrigin;
@@ -34,6 +35,8 @@ function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string): st
     '[history]', 'persistence = "none"', '[otel]', 'exporter = "none"', 'metrics_exporter = "none"',
     'trace_exporter = "none"', 'log_user_prompt = false',
     '[shell_environment_policy]', 'inherit = "none"', 'include_only = ["PATH", "HOME", "CI", "TMPDIR", "CODEX_HOME"]',
+    // include_only filters inherited values; inherit=none needs explicit public settings for native sandbox discovery.
+    `set = { PATH = "/usr/bin:/bin", HOME = ${JSON.stringify(hostedMimoCodingGuestHome)}, CI = "1", TMPDIR = "/tmp", CODEX_HOME = ${JSON.stringify(hostedMimoCodingGuestCodexHome)} }`,
     codexModelBackendModelProvidersConfigToml({ backend: CodexModelBackend.XiaomiMimoTokenPlan, baseUrl,
       envKeyName: codexMimoApiKeyEnvVarDefault }),
     "request_max_retries = 0", "stream_max_retries = 0", "supports_websockets = false",
