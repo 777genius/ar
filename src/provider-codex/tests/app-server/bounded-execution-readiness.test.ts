@@ -200,6 +200,27 @@ describe("original allocation deadline and actual execution readiness", () => {
     await f.engine.dispose();
   });
 
+  // RED: failed-session cleanup closes the shared lifetime with a generic error,
+  // winning the result race and erasing the actual post-turn GoalAPI failure.
+  it("retains the original GoalAPI failure through cleanup and fences another invocation", async () => {
+    const f = fixture(), result = f.engine.run(f.input).catch((error: unknown) => error);
+    try {
+      await f.peer.initialize(); await f.peer.thread(); await f.peer.activate(); await f.peer.finishTurn();
+      f.peer.fail(await f.peer.next("thread/goal/get"));
+      const error = await result;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected the rejected TEST GoalAPI result");
+      expect(error.message).toBe("codex_app_server_goal_get_failed:TEST failure");
+      expect(f.lifetime.signal.aborted).toBe(true);
+      expect(f.lifetime.signal.reason).toBe(error);
+      await f.engine.dispose();
+      expect(f.peer.ended).toBe(true);
+      await expect(f.engine.run(f.input)).rejects.toBe(error);
+      expect(f.submissions()).toBe(1);
+      expect(f.peer.requests.filter(r => r.method === "turn/start")).toHaveLength(1);
+    } finally { await f.engine.dispose(); }
+  });
+
   it("expires by original monotonic elapsed time while wall time remains unchanged", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     const wall = Date.now(), f = fixture();

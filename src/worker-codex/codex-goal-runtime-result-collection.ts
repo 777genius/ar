@@ -1,3 +1,7 @@
+import { nativeWebFromSafeExecutionResult, nativeWebFromManagedError } from "./codex-goal-run-result";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { actionForRuntimeState } from "@vioxen/subscription-runtime/worker-core";
+import { requireCodexWorkerReport, CodexWorkerReportValidationError } from "./codex-goal-report-schema";
 import type { RuntimeResultEnvelopeInput, SafeExecutionRunResult } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import type { FileBackendCodexWorkerResult } from "./file-backend-codex-worker";
@@ -40,6 +44,7 @@ export async function codexRuntimeResultInput(input: {
   readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly deferHandoff?: boolean;
   readonly publicationAuthority?: TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
@@ -49,13 +54,17 @@ export async function codexRuntimeResultInput(input: {
     ...reportedChangedFiles,
     ...workspace.changedFiles,
   ]);
-  const workerReport = workerReportFromSafeExecutionResult(input.result);
+  const ownedMimoCompleted = input.deferHandoff === true &&
+    input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && input.result.status === "completed";
+  const workerReport = ownedMimoCompleted
+    ? requireCodexWorkerReport("result" in input.result ? input.result.result?.structuredOutput : undefined)
+    : workerReportFromSafeExecutionResult(input.result);
   const reason = "reason" in input.result ? input.result.reason : undefined;
-  const status = runtimeStatusFromSafeExecutionResult({
+  const status = (ownedMimoCompleted ? workerReport?.outcome : undefined) ?? runtimeStatusFromSafeExecutionResult({
     resultStatus: input.result.status,
     changedFilesCount: changedFiles.length,
   });
-  const handoff = workspace.state === WorkspaceChangesCollectionState.Unknown || workspace.changedFiles.length === 0
+  const handoff = input.deferHandoff || workspace.state === WorkspaceChangesCollectionState.Unknown || workspace.changedFiles.length === 0
     ? null
     : await tryMaterializeTerminalCodexGoalHandoff({
         ...input.config,
@@ -64,14 +73,17 @@ export async function codexRuntimeResultInput(input: {
           : { expectedBaseCommit: input.baseCommit }),
       }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
-  if (workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
+  if (!input.deferHandoff && workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const nativeWeb = nativeWebFromSafeExecutionResult(input.result);
+  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
     ...("failureDetails" in input.result && input.result.failureDetails
       ? { failureDetails: input.result.failureDetails }
       : {}),
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     handoffDetails: { ...terminalCodexGoalHandoffResultDetails(handoff), ...workspaceCollectionDetails(workspace) },
+    ...nativeWebDetails,
   });
   return {
     status,
@@ -90,7 +102,7 @@ export async function codexRuntimeResultInput(input: {
         : []),
     ],
     blockers: runtimeBlockersFromSafeExecutionResult(input.result),
-    nextAction: runtimeActionFromSafeExecutionResult({
+    nextAction: ownedMimoCompleted ? actionForRuntimeState({ status, reason, changedFilesCount: changedFiles.length }) : runtimeActionFromSafeExecutionResult({
       status,
       resultStatus: input.result.status,
       reason,
@@ -108,12 +120,13 @@ export async function codexExceptionRuntimeResultInput(input: {
   readonly error: unknown;
   readonly executionGeneration: string;
   readonly baseCommit?: string;
+  readonly deferHandoff?: boolean;
   readonly publicationAuthority?: TerminalHandoffPublicationAuthority;
 }): Promise<RuntimeResultEnvelopeInput> {
   const failure = codexRunnerExceptionFailure(input.error);
   const workspace = await collectWorkspaceChanges(input.config.workspacePath);
   const changedFiles = workspace.changedFiles;
-  const handoff = workspace.state === WorkspaceChangesCollectionState.Unknown || changedFiles.length === 0
+  const handoff = input.deferHandoff || workspace.state === WorkspaceChangesCollectionState.Unknown || changedFiles.length === 0
     ? null
     : await tryMaterializeTerminalCodexGoalHandoff({
         ...input.config,
@@ -122,8 +135,10 @@ export async function codexExceptionRuntimeResultInput(input: {
           : { expectedBaseCommit: input.baseCommit }),
       }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
-  if (workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
+  if (!input.deferHandoff && workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const nativeWeb = nativeWebFromManagedError(input.error);
+  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
     failureDetails: {
       errorName: input.error instanceof Error ? input.error.name : "unknown",
@@ -133,9 +148,11 @@ export async function codexExceptionRuntimeResultInput(input: {
     },
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     handoffDetails: { ...terminalCodexGoalHandoffResultDetails(handoff), ...workspaceCollectionDetails(workspace) },
+    ...nativeWebDetails,
   });
   return {
-    status: changedFiles.length > 0 ? "partial" : "failed",
+    status: input.deferHandoff && input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && input.error instanceof CodexWorkerReportValidationError
+      ? "failed" : changedFiles.length > 0 ? "partial" : "failed",
     provider: "codex",
     runId: input.config.jobId ?? input.config.taskId,
     taskId: input.config.taskId,

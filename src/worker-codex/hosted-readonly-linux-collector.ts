@@ -50,6 +50,16 @@ export function collectUnitShow(name: string): Record<string, string> {
   unit(name);
   return parseUnitShow(name, systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name]));
 }
+/** Fixed original-unit observation. The legacy five-field reader stays exact;
+ * actual Delegate is mandatory and never inferred from an absent property. */
+export function collectNonDelegatedUnitShow(name: string): Record<string, string> {
+  unit(name);
+  const rows = systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID,Delegate", "--", name]).split("\n");
+  const delegates = rows.filter(row => row.startsWith("Delegate="));
+  if (delegates.length !== 1 || !["Delegate=no", "Delegate=false"].includes(delegates[0]!)) invalid();
+  const observed = parseUnitShow(name, rows.filter(row => !row.startsWith("Delegate=")).join("\n"));
+  return { ...observed, Delegate: delegates[0]!.slice("Delegate=".length) };
+}
 export function collectFutureCreatorShow(name: string): string {
   if (name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name)) invalid();
   return systemctl(["show", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
