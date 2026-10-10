@@ -14,6 +14,7 @@ export type HostedOrdinaryWriterExtent = Readonly<{
   configSha256: string; taskId: string; promptPath: string; modelBackend: CodexModelBackend; registryRootDir: string | null;
   homes: readonly Readonly<{ home: string; codexHome: string }>[]; paths: readonly PathPin[];
   publication: Readonly<{ jobId: string; durableHandoffRootDir: string; paths: readonly PathPin[] }> | null;
+  lifecycle: Readonly<{ manifestSha256: string; executionSha256: string }> | null;
 }>;
 function invalid(): never { throw new Error("hosted_ordinary_writer_extent_invalid"); }
 export const ordinaryExtentHash = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
@@ -62,7 +63,8 @@ export function observeOrdinaryWriterPath(path: string, retainParent = false): P
 export function parseHostedOrdinaryWriterExtent(value: unknown): HostedOrdinaryWriterExtent {
   // Existing job-local seals remain readable; they grant no shared publication.
   if (value && typeof value === "object" && !("publication" in value)) value = { ...value, publication: null };
-  keys(value, "schemaVersion,profile,startId,startSha256,runtimeSha,runtimeManifestSha256,inventorySha256,launchSha256,configSha256,taskId,promptPath,modelBackend,registryRootDir,homes,paths,publication");
+  if (value && typeof value === "object" && !("lifecycle" in value)) value = { ...value, lifecycle: null };
+  keys(value, "schemaVersion,profile,startId,startSha256,runtimeSha,runtimeManifestSha256,inventorySha256,launchSha256,configSha256,taskId,promptPath,modelBackend,registryRootDir,homes,paths,publication,lifecycle");
   if (value.schemaVersion !== 1 || value.profile !== HostedOrdinaryWriterProfile.LifetimeV1 ||
       typeof value.startId !== "string" || !/^[a-f0-9-]{36}$/.test(value.startId) ||
       typeof value.runtimeSha !== "string" || !/^[a-f0-9]{40}$/.test(value.runtimeSha) ||
@@ -72,6 +74,10 @@ export function parseHostedOrdinaryWriterExtent(value: unknown): HostedOrdinaryW
       !Array.isArray(value.paths) || value.paths.length === 0) invalid();
   for (const field of ["startSha256", "runtimeManifestSha256", "inventorySha256", "launchSha256", "configSha256"]) hash(value[field]);
   for (const home of value.homes) { keys(home, "home,codexHome"); if (!canonical(home.home) || !canonical(home.codexHome)) invalid(); }
+  if (value.lifecycle !== null) {
+    keys(value.lifecycle, "manifestSha256,executionSha256");
+    hash(value.lifecycle.manifestSha256); hash(value.lifecycle.executionSha256);
+  }
   let publicationPaths: unknown[] = [];
   if (value.publication !== null) {
     keys(value.publication, "jobId,durableHandoffRootDir,paths");

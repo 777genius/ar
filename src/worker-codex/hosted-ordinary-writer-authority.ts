@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { HostedInstallation, HostedOrdinaryStart, ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import { HostedCustodyReservationState, parseHostedOrdinaryStart, parseHostedOrdinaryOrigins, workerPoolSlotId } from "@vioxen/subscription-runtime/worker-core";
@@ -8,7 +8,9 @@ import { CodexModelBackend, CodexProviderEgressProfileId, withHostedActivationFe
 import { currentHostedOrdinaryWriterExtent, assertHostedOrdinaryPublicationPaths, assertHostedOrdinaryWriterPaths, HostedOrdinaryWriterProfile, ordinaryExtentHash, observeOrdinaryWriterPath,
   parseHostedOrdinaryWriterExtent, readHostedOrdinaryWriterExtent } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
-import type { CodexGoalJobManifest } from "./codex-goal-jobs";
+import { codexGoalJobManifestPath, codexGoalJobToArgs, parseStoredCodexGoalJobManifest, type CodexGoalJobManifest } from "./codex-goal-jobs";
+import { goalLaunchInputFromRecord } from "./application/codex-goal-launch-input";
+import { buildCodexGoalForegroundArgv, HostedGoalLifecycleOperation } from "./application/codex-goal-foreground-command";
 import { codexSafeExecutorId } from "./codex-account-identity";
 import { codexSessionHomeCacheKey } from "./codex-session-home-profile";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "./hosted-test-egress-contract";
@@ -28,13 +30,13 @@ import type { TerminalHandoffPublicationAuthority } from "./codex-goal-terminal-
 function invalid(): never { throw new Error("hosted_ordinary_writer_extent_invalid"); }
 const encoded = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");
 type Launch = Readonly<{ command: string; args: readonly string[]; cwd: string }>;
-function launchInputs(launch: Launch, env: Readonly<Record<string, string | undefined>>): ManagedGoalAdmission | undefined {
+function launchInputs(launch: Launch, env: Readonly<Record<string, string | undefined>>): (ManagedGoalAdmission & { lifecycle?: { manifestSha256: string; executionSha256: string } }) | undefined {
   const cli = join(fileURLToPath(new URL("../../", import.meta.url)), "dist/worker-codex/codex-goal-cli.js");
   const args = launch.command === cli ? launch.args : launch.command === process.execPath && launch.args[0] === cli ? launch.args.slice(1) : undefined;
   if (!args || !["run", "continue"].includes(args[0] ?? "") || args.includes("--child-lifetime-json")) return undefined;
   const flags = parseFlags(args.slice(1));
-  if (flag(flags, "--tmux") || option(flags, env, "--tmux-session", []) !== undefined ||
-      option(flags, env, "--hosted-lifecycle", []) !== undefined) return undefined;
+  const lifecycle = option(flags, {}, "--hosted-lifecycle", []);
+  if (flag(flags, "--tmux") || (lifecycle === undefined && option(flags, env, "--tmux-session", []) !== undefined)) return undefined;
   // Legacy inventoried commands may intentionally omit the run configuration.
   // Only a complete modern launch can publish a seal; leave older owners alone.
   const requiredInputs: readonly (readonly [string, readonly string[]])[] = [
@@ -51,7 +53,57 @@ function launchInputs(launch: Launch, env: Readonly<Record<string, string | unde
   if (config.storage || config.childLifetime) return undefined;
   const registryRootDir = option(flags, env, "--registry-root", [
     "SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT", "CODEX_GOAL_REGISTRY_ROOT"]);
-  return mapManagedGoalLayout({ config, ...(registryRootDir ? { registryRootDir: resolvePath(launch.cwd, registryRootDir) } : {}) });
+  const logPath = option(flags, env, "--log", []);
+  const mapped = mapManagedGoalLayout({ config, ...(logPath ? { logPath: resolvePath(launch.cwd, logPath) } : {}),
+    ...(registryRootDir ? { registryRootDir: resolvePath(launch.cwd, registryRootDir) } : {}) });
+  const inputs = { ...mapped, logPath: mapped.logPath ?? join(mapped.config.jobRootDir, `${mapped.config.taskId}.log`) };
+  if (lifecycle !== undefined) {
+    if (!Object.values(HostedGoalLifecycleOperation).includes(lifecycle as HostedGoalLifecycleOperation) || !inputs.registryRootDir ||
+        requiredOption(flags, {}, "--lifecycle-job-id", []) !== (config.jobId ?? config.taskId)) invalid();
+    // The stored loader's pure normalization is the authority input, rather
+    // than trusting the outer argv's copy of a stored execution configuration.
+    const manifestBytes = readLifecycleManifest(codexGoalJobManifestPath({
+      registryRootDir: inputs.registryRootDir, jobId: config.jobId ?? config.taskId }));
+    const manifest = parseStoredCodexGoalJobManifest(decodeHostedActivationBytes(manifestBytes));
+    const stored = storedLifecycleLaunch(manifest, inputs.registryRootDir, launch.cwd);
+    const normalized = mapManagedGoalLayout({ config: { ...stored.config, sourceEnv: env },
+      logPath: stored.logPath, registryRootDir: inputs.registryRootDir });
+    if (manifest.jobId !== (config.jobId ?? config.taskId) || configHash(normalized.config) !== configHash(inputs.config) ||
+        normalized.logPath !== inputs.logPath || option(flags, {}, "--tmux-session", []) !== stored.tmuxSession ||
+        executionHash(normalized.config) !== executionHash(inputs.config)) invalid();
+    return { ...inputs, lifecycle: { manifestSha256: ordinaryExtentHash(manifestBytes), executionSha256: executionHash(inputs.config) } };
+  }
+  return inputs;
+}
+function readLifecycleManifest(path: string): Buffer {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || before.size < 1 || before.size > 1024 * 1024) invalid();
+    const buffer = Buffer.alloc(before.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, buffer.length - length, length);
+      if (!count) break;
+      length += count;
+    }
+    const bytes = buffer.subarray(0, length), after = fstatSync(fd), named = lstatSync(path);
+    if (bytes.length !== before.size || after.size !== before.size || named.size !== before.size ||
+        before.dev !== named.dev || before.ino !== named.ino ||
+        before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs || after.ctimeMs !== named.ctimeMs ||
+        after.mtimeMs !== named.mtimeMs || named.isSymbolicLink()) invalid();
+    return bytes;
+  } finally { closeSync(fd); }
+}
+function storedLifecycleLaunch(manifest: CodexGoalJobManifest, registryRootDir: string, cwd: string) {
+  return goalLaunchInputFromRecord({ ...codexGoalJobToArgs(manifest),
+    durableHandoffRootDir: manifest.durableHandoffRootDir ?? join(registryRootDir, "durable-handoffs") }, cwd);
+}
+/** Existing deterministic nonsecret execution projection, including model,
+ * budgets, policy and checkpoint configuration; never sourceEnv or credentials. */
+function executionHash(config: CodexGoalRunConfig): string {
+  return ordinaryExtentHash(JSON.stringify(buildCodexGoalForegroundArgv({ config, cliCommand: [],
+    cwd: config.workspacePath, logPath: join(config.jobRootDir, `${config.taskId}.log`) })));
 }
 function configuration(config: CodexGoalRunConfig) {
   return { jobId: config.jobId ?? config.taskId, taskId: config.taskId, jobRootDir: config.jobRootDir,
@@ -104,6 +156,7 @@ export function sealHostedOrdinaryWriterExtent(fence: HostedActivationFence,
   const paths = [...new Set([start.jobRootDir, start.workspacePath, binding.stateRootDir,
     binding.runtimeHomeRootDir, binding.runtimeTempRoot, binding.encryptionKeyPath,
     dirname(binding.progressPath), dirname(binding.outputPath), dirname(binding.encryptionKeyPath),
+    ...(inputs.logPath ? [dirname(inputs.logPath)] : []),
     ...(insideJob(binding.durableHandoffRootDir) ? [binding.durableHandoffRootDir] : []),
     ...homes.flatMap(row => [row.home, row.codexHome]), ...scratch.map(row => row.source)])].map(path => observeOrdinaryWriterPath(path, scratch.some(row => row.target === path && row.source !== path)));
   const extent = parseHostedOrdinaryWriterExtent({ schemaVersion: 1, profile: HostedOrdinaryWriterProfile.LifetimeV1,
@@ -111,7 +164,7 @@ export function sealHostedOrdinaryWriterExtent(fence: HostedActivationFence,
     runtimeManifestSha256: installation.runtimeManifestSha256, inventorySha256: installation.inventorySha256,
     launchSha256: ordinaryExtentHash(JSON.stringify(launch)), configSha256: configHash(config),
     taskId: config.taskId, promptPath: config.promptPath, modelBackend: binding.modelBackend,
-    registryRootDir: inputs.registryRootDir ?? null, homes, paths,
+    registryRootDir: inputs.registryRootDir ?? null, homes, paths, lifecycle: inputs.lifecycle ?? null,
     publication: { jobId: binding.jobId, durableHandoffRootDir: binding.durableHandoffRootDir,
       paths: [...new Set([binding.durableHandoffRootDir, ...(inputs.registryRootDir ?
         [inputs.registryRootDir, join(inputs.registryRootDir, binding.jobId), projectControlWorkspaceLockRoot(inputs.registryRootDir)] : [])])].map(path => observeOrdinaryWriterPath(path)) } });
@@ -128,7 +181,8 @@ export function assertHostedOrdinaryLaunchExtent(fence: HostedActivationFence,
   if (env) {
     const inputs = launchInputs(launch, env);
     if (!inputs || configHash(inputs.config) !== extent.configSha256 ||
-        (inputs.registryRootDir ?? null) !== extent.registryRootDir) invalid();
+        (inputs.registryRootDir ?? null) !== extent.registryRootDir ||
+        (extent.lifecycle !== null && JSON.stringify(inputs.lifecycle) !== JSON.stringify(extent.lifecycle))) invalid();
   }
   assertHostedOrdinaryPublicationPaths(extent, extent.publication?.paths.map(pin => pin.path) ?? []);
 }
@@ -142,8 +196,23 @@ export function assertHostedOrdinaryGoalExtent(config: CodexGoalRunConfig, paths
     const extent = readHostedOrdinaryWriterExtent(fence, startId, encoded(origin.start), origin.installation);
     if (!extent) return;
     if (configHash(config) !== extent.configSha256 ||
+        (extent.lifecycle !== null && executionHash(config) !== extent.lifecycle.executionSha256) ||
         (registryRootDir !== undefined && registryRootDir !== extent.registryRootDir)) invalid();
     assertHostedOrdinaryWriterPaths(extent, [...extent.paths.map(pin => pin.path), ...paths]);
+  });
+}
+
+/** Exact start revision is checked by the existing lifecycle boundary before
+ * its first operation. Later owner-authorized metadata updates remain allowed. */
+export function assertHostedOrdinaryLifecycleStart(config: CodexGoalRunConfig, registryRootDir: string): void {
+  if (!isHostedOrdinaryRuntime()) return;
+  withHostedActivationFence(fence => {
+    const origin = readHostedOrdinaryRuntime(fence), extent = readHostedOrdinaryWriterExtent(fence,
+      origin.reservation.startId, encoded(origin.start), origin.installation);
+    if (!extent) return;
+    if (!extent.lifecycle || extent.registryRootDir !== registryRootDir ||
+        executionHash(config) !== extent.lifecycle.executionSha256 || ordinaryExtentHash(readLifecycleManifest(codexGoalJobManifestPath({
+          registryRootDir, jobId: config.jobId ?? config.taskId }))) !== extent.lifecycle.manifestSha256) invalid();
   });
 }
 
@@ -210,6 +279,8 @@ function observeOrdinary(manifest: CodexGoalJobManifest): ProjectAdmissionWriter
       if (!extent || extent.taskId !== manifest.taskId || extent.promptPath !== manifest.promptPath ||
           extent.modelBackend !== (manifest.modelBackend ?? CodexModelBackend.OpenAiChatGpt) ||
           extent.launchSha256 !== ordinaryExtentHash(JSON.stringify(creator.launch))) return { status: "unknown" };
+      if (extent.lifecycle && (!extent.registryRootDir || executionHash(storedLifecycleLaunch(manifest,
+          extent.registryRootDir, creator.launch.cwd).config) !== extent.lifecycle.executionSha256)) return { status: "unknown" };
       sawRuntime = true;
       if (!terminal) assertHostedOrdinaryPublicationPaths(extent, extent.publication?.paths.map(pin => pin.path) ?? []);
       roots.push(...extent.paths.flatMap(pin => pin.roots));
