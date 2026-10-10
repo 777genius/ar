@@ -14,7 +14,9 @@ it("research contract admits protected MiMo source/workspace prefix without weak
 });
 it("existing scratch mount policy hashes protected control paths without requiring shared project roots", () => {
   const uuid = "d0f2cac1-2009-4e9d-a710-e156f417938f", mutation = vi.fn();
-  const host: ScratchTempHost = { uid: 0, realpath: path => path,
+  const host: ScratchTempHost = { uid: 0,
+    mountNamespace: () => "mnt:[4026532000]", managerMountNamespace: () => "mnt:[4026531841]", ownsRunnerNamespace: () => true,
+    realpath: path => path,
     lstat: path => ({ uid: 0, mode: path === "/etc/subscription-runtime/scratch-temp.json" ? 0o100600 : 0o40755,
       dev: 1, ino: 2, isDirectory: () => path !== "/etc/subscription-runtime/scratch-temp.json", isFile: () => path === "/etc/subscription-runtime/scratch-temp.json", isSymbolicLink: () => false }),
     read: () => JSON.stringify({ schemaVersion: 1, root: "/srv/workers", uuid }),
