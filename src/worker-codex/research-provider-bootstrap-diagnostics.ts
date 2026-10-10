@@ -1,4 +1,19 @@
 import { ResearchLaunchCause, ResearchLaunchDiagnostic, ResearchMaterialRole } from "./research-launch-diagnostics";
+/** Exact protected-launcher labels only; never raw stderr or launch authority. */
+enum ResearchAppServerBootstrapFailure {
+  FrameTooLarge = "hosted_app_server_launch_frame_too_large",
+  FrameInvalid = "hosted_app_server_launch_frame_invalid",
+  DescriptorBoundary = "hosted_app_server_descriptor_boundary_invalid",
+  CodingMode = "hosted_app_server_coding_mode_invalid",
+  CodingConfig = "hosted_app_server_coding_config_invalid",
+  ChildSpawn = "hosted_app_server_child_spawn_failed",
+  ChildStdin = "hosted_app_server_child_stdin_failed",
+  LaunchMode = "hosted_app_server_launch_mode_invalid",
+  BootstrapTimeout = "hosted_app_server_research_bootstrap_timeout",
+  ReadyOutput = "hosted_app_server_research_ready_failed",
+  Input = "hosted_app_server_research_input_failed",
+  FrameMissing = "hosted_app_server_launch_frame_missing",
+}
 /** A finite transport protocol, not a general provider stderr logger. */
 export function createResearchProviderBootstrapDiagnostics(emit: (safeMessage: string) => void) {
   let pending = "";
@@ -8,7 +23,10 @@ export function createResearchProviderBootstrapDiagnostics(emit: (safeMessage: s
   const consume = (line: string) => {
     let safeMessage: string | undefined;
     const transition = /^research_root_transition_failed phase=(descriptor-validation|pivot|detach-old-root|namespace-transition) code=([0-9]{1,3})$/.exec(line);
-    if (transition && Number(transition[2]) <= 255) {
+    const launcherFailure = Object.values(ResearchAppServerBootstrapFailure).find(value => value === line);
+    if (launcherFailure !== undefined) {
+      safeMessage = `hosted_app_server_bootstrap_failed code=${launcherFailure}`;
+    } else if (transition && Number(transition[2]) <= 255) {
       safeMessage = `research_root_transition_failed phase=${transition[1]} code=${Number(transition[2])}`;
     } else if (line.startsWith("{")) {
       try {

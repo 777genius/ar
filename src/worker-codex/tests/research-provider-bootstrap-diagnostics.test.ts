@@ -58,3 +58,36 @@ it("retains only finite material role, cause and errno with bounded admission so
   expect(published[1]).toBe("research_provider_root_assembly_failed legacyCode=unclassified materialLine=75 materialColumn=58");
   expect(JSON.stringify(published)).not.toContain("TEST-secret");
 });
+
+
+it("retains a fragmented coding launcher failure when protected stderr closes without a newline", () => {
+  const stderr = new EventEmitter();
+  const published: string[] = [];
+  observeResearchProviderBootstrapDiagnostics(stderr, message => published.push(message));
+  stderr.emit("data", "hosted_app_server_coding_con");
+  stderr.emit("data", "fig_invalid");
+  stderr.emit("close");
+  expect(published).toEqual([
+    "hosted_app_server_bootstrap_failed code=hosted_app_server_coding_config_invalid",
+  ]);
+});
+
+it("accepts exact launcher failures while refusing unclassified or decorated provider text", () => {
+  const published: string[] = [];
+  const decoder = createResearchProviderBootstrapDiagnostics(message => published.push(message));
+  decoder.push("hosted_app_server_launch_frame_invalid\n");
+  for (const line of [
+    "hosted_app_server_TEST-secret",
+    "hosted_app_server_launch_frame_invalid TEST-secret",
+    "TEST-secret hosted_app_server_launch_frame_invalid",
+    "qualification_preflight_invalid",
+    JSON.stringify({ event: "hosted_app_server_launch_frame_invalid", secret: "TEST-secret" }),
+    "x".repeat(4096) + "hosted_app_server_launch_frame_invalid",
+  ]) decoder.push(line + "\n");
+  decoder.push("hosted_app_server_child_spawn_failed"); decoder.finish();
+  expect(published).toEqual([
+    "hosted_app_server_bootstrap_failed code=hosted_app_server_launch_frame_invalid",
+    "hosted_app_server_bootstrap_failed code=hosted_app_server_child_spawn_failed",
+  ]);
+  expect(JSON.stringify(published)).not.toContain("TEST-secret");
+});
