@@ -1,4 +1,4 @@
-import { readdirSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease } from "./research-launch-admission";
 import { parseResearchStartSpec } from "./research-launch-contract";
@@ -9,6 +9,63 @@ import { assertRegisteredResearchHandoffPin } from "./research-registered-handof
 import { materializeReconciledTerminalCodexGoalHandoff } from "./codex-goal-terminal-handoff-materialization";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { changedFilesFromWorkspace } from "./codex-goal-workspace-changes";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { buildRuntimeResultEnvelope, type RuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
+import { readResearchMimoCandidate, assertResearchMimoResultDirectories, publishResearchMimoJobArtifact } from "./research-mimo-worker-result";
+import { terminalCodexGoalHandoffResultDetails } from "./codex-goal-terminal-handoff-materialization";
+import { withResearchJobMutation, withResearchJobMutationAsync } from "./research-job-mutation-lock";
+
+/** Outside initial-root owner only. The original normalized status is retained;
+ * stopping a failed Worker never turns its result into successful work. */
+export async function finalizeOwnedMimoWorker(jobId: string, startId: string, specSha256: string): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
+  return await withResearchJobMutationAsync(jobId, () => finalizeOwnedMimoWorkerUnlocked(jobId, startId, specSha256));
+}
+async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, specSha256: string): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
+  assertResearchInitialRoot(true);
+  let current: ReturnType<typeof researchCurrentStart>, released = false;
+  try { current = researchCurrentStart(jobId); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    current = terminalResearchStart(jobId); released = true;
+  }
+  if (current.spec.startId !== startId || researchHash(current.bytes) !== specSha256 ||
+      current.spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || current.spec.registeredHandoff) researchInvalid();
+  const candidateBytes = researchRead(join(current.directory, "mimo-candidate.json"));
+  const candidate = readResearchMimoCandidate(current), publicationPath = join(current.directory, "mimo-publication.json");
+  const assertTerminal = (): void => {
+    const fresh = released ? terminalResearchStart(jobId) : researchCurrentStart(jobId);
+    if (!fresh.bytes.equals(current.bytes) || !researchRead(join(current.directory, "mimo-candidate.json")).equals(candidateBytes) ||
+        !inactiveResearchUnit(current.spec.unit, researchDescription(jobId, specSha256))) researchInvalid();
+    readResearchMimoCandidate(current); assertResearchMimoResultDirectories(current);
+    for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
+  };
+  if (!released) stopResearchStartForCancellation(jobId, current);
+  assertTerminal();
+  if (!existsSync(publicationPath)) {
+    if (released) researchInvalid();
+    const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath);
+    if (workspace.warning !== undefined) researchInvalid();
+    const reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
+      publicationAuthority: { assertPublicationAuthorized: async () => assertTerminal() } });
+    assertTerminal();
+    const result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reconciled.changedPaths,
+      artifacts: reconciled.artifacts, evidence: candidate.evidence.filter(value => value !== "patch_preserve_unavailable"),
+      details: { ...candidate.details, ...terminalCodexGoalHandoffResultDetails(reconciled.handoff) }, updatedAt: new Date(candidate.updatedAt!) });
+    researchPublish(publicationPath, { schemaVersion: 1, specSha256, candidateSha256: researchHash(candidateBytes), result }, true);
+  }
+  const publication = researchRecord(researchJson(researchRead(publicationPath)), "schemaVersion,specSha256,candidateSha256,result");
+  const result = publication.result as RuntimeResultEnvelope;
+  if (publication.schemaVersion !== 1 || publication.specSha256 !== specSha256 || publication.candidateSha256 !== researchHash(candidateBytes) ||
+      result.status !== candidate.status || result.runId !== jobId || result.taskId !== current.spec.request.taskId) researchInvalid();
+  assertTerminal();
+  if (!released) {
+    publishResearchMimoJobArtifact(current, "latest-result", result);
+    publishResearchMimoJobArtifact(current, "progress", { schemaVersion: 1, taskId: result.taskId,
+      status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 });
+    assertTerminal(); releaseTerminalResearchStart(jobId, current); // Reservation release is always last.
+  }
+  return { jobId, startId, status: result.status };
+}
 
 function inactiveResearchUnit(unit: string, description?: string): boolean {
   const lines = researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager", "--property=Id,LoadState,ActiveState,MainPID,Description"]);
@@ -158,6 +215,9 @@ export function statusResearchLaunch(jobId: string): { jobId: string; startId: s
     grantSha256: current.spec.grantSha256, active: current.active, providers };
 }
 export function cancelResearchLaunch(jobId: string): { jobId: string; startId: string; unit: string; terminal: true } {
+  return withResearchJobMutation(jobId, () => cancelResearchLaunchUnlocked(jobId));
+}
+function cancelResearchLaunchUnlocked(jobId: string): { jobId: string; startId: string; unit: string; terminal: true } {
   assertResearchInitialRoot(true);
   try { researchRead(join(researchJobAuthority(jobId), "active.json")); }
   catch (error) {
@@ -170,11 +230,21 @@ export function cancelResearchLaunch(jobId: string): { jobId: string; startId: s
   // claim. Its separate async adapter must first reconcile the dirty workspace.
   if (current.spec.registeredHandoff) researchInvalid();
   stopResearchStartForCancellation(jobId, current);
+  if (current.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      existsSync(join(current.directory, "mimo-candidate.json"))) {
+    throw new Error("hosted_mimo_worker_finalization_pending");
+  }
   releaseTerminalResearchStart(jobId, current);
   return { jobId, startId: current.spec.startId, unit: current.spec.unit, terminal: true };
 }
 export type RegisteredResearchStartIdentity = Readonly<{ jobId: string; startId: string; specSha256: string; requestSha256: string }>;
 export async function cancelRegisteredResearchLaunch(expected: RegisteredResearchStartIdentity): Promise<{
+  jobId: string; startId: string; unit: string; terminal: true;
+  handoffPacketPath?: string; handoffManifestSha256?: string;
+}> {
+  return await withResearchJobMutationAsync(expected.jobId, () => cancelRegisteredResearchLaunchUnlocked(expected));
+}
+async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResearchStartIdentity): Promise<{
   jobId: string; startId: string; unit: string; terminal: true;
   handoffPacketPath?: string; handoffManifestSha256?: string;
 }> {
@@ -236,5 +306,9 @@ function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof 
   });
   // Only this exact retained terminal start loses its active slot. Pins and all
   // evidence remain until root explicitly unmounts the named TEST pins.
-  unlinkSync(join(current.directory, "..", "..", "active.json"));
+  if (!researchCurrentStart(jobId).bytes.equals(current.bytes)) researchInvalid();
+  const job = researchJobAuthority(jobId);
+  unlinkSync(join(job, "active.json"));
+  const fd = openSync(job, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
 }
