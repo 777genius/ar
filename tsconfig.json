@@ -72,5 +72,5 @@
     },
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "scripts/**/*.mjs", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.mjs", "scripts/package-host-inventory-codec.mts", "vitest.config.ts"]
 }

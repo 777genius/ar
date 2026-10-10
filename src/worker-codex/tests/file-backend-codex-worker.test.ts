@@ -50,6 +50,17 @@ import {
   waitUntil,
 } from "./file-backend-codex-worker-test-support";
 
+const firstAcknowledgedNativeWeb = {
+  truncated: false,
+  turns: [{
+    threadId: "thread-1",
+    acknowledgedTurnId: "turn-1",
+    records: [],
+    unknown: false,
+    truncated: false,
+  }],
+};
+
 describe("FileBackendCodexWorker", () => {
   it.each([false, true])("exposes lifecycle with separate runtime home: %s", async separateHome => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
@@ -791,7 +802,7 @@ describe("FileBackendCodexWorker", () => {
             textDeltas.push(text);
           },
         },
-      )).resolves.toEqual({ outputText: "OK", warnings: [] });
+      )).resolves.toEqual({ outputText: "OK", warnings: [], nativeWeb: firstAcknowledgedNativeWeb });
       expect(textDeltas.join("")).toBe("OK");
       expect(appServer.threadCwds).toContain(callerWorkspace);
       await worker.dispose();
@@ -888,8 +899,8 @@ describe("FileBackendCodexWorker", () => {
           second.run({ prompt: "second" }),
         ]),
       ).resolves.toEqual([
-        { outputText: "OK", warnings: [] },
-        { outputText: "OK", warnings: [] },
+        { outputText: "OK", warnings: [], nativeWeb: firstAcknowledgedNativeWeb },
+        { outputText: "OK", warnings: [], nativeWeb: firstAcknowledgedNativeWeb },
       ]);
       expect(runner.runCount).toBe(1);
       expect([...appServer.prompts].sort()).toEqual(["first", "second"]);
@@ -937,8 +948,8 @@ describe("FileBackendCodexWorker", () => {
           second.run({ prompt: "second" }),
         ]),
       ).resolves.toEqual([
-        { outputText: "OK", warnings: [] },
-        { outputText: "OK", warnings: [] },
+        { outputText: "OK", warnings: [], nativeWeb: firstAcknowledgedNativeWeb },
+        { outputText: "OK", warnings: [], nativeWeb: firstAcknowledgedNativeWeb },
       ]);
 
       expect(new Set(appServer.codexHomes)).toHaveLength(2);
