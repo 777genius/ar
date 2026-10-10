@@ -1,3 +1,4 @@
+import type { OpenWorkerLaunch } from "../project-control-worker-mode";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import type { AppServerExecutionLifetime, CodexAppServerProcessFactory, CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import type { InMemoryActiveAttemptRegistry, JobStorageAdmissionPort, SafeExecutionRunResult, WorkerControlService } from "@vioxen/subscription-runtime/worker-core";
@@ -29,6 +30,7 @@ export type CodexGoalExecutorOptionsInput = {
   readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly openWorker?: OpenWorkerLaunch;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
   readonly executionGeneration?: string;

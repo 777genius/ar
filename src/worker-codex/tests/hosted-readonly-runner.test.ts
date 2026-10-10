@@ -29,7 +29,7 @@ const facts = vi.hoisted(() => ({
   root: "",
   policy: vi.fn(), bytes: vi.fn(), grant: vi.fn(), grantFile: vi.fn(), review: vi.fn(),
   epoch: null as HostedCustodyEpoch | null, activationPhase: "EXCLUSIVE", records: new Map<string, Buffer>(),
-  snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(),
+  snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(), session: vi.fn(),
 }));
 // Real protected mode bytes select strict enrollment. Only their fixed Host
 // paths and root principal are projected; admission still parses the file.
@@ -99,7 +99,8 @@ beforeEach(() => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   facts.root = mkdtempSync(join(tmpdir(), "readonly-mode-TEST-"));
   writeFileSync(join(facts.root, "host-activation-mode"), "required\n", { mode: 0o600 });
-  vi.spyOn(HostedReadonlyHostKernel.prototype, "session").mockReturnValue(session);
+  facts.session.mockReturnValue(session);
+  vi.spyOn(HostedReadonlyHostKernel.prototype, "session").mockImplementation(facts.session);
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyRuntimeOwner").mockImplementation(() => {});
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyExclusiveInventory").mockImplementation(() => {});
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyDescriptorBoundary").mockImplementation(() => {});
@@ -214,6 +215,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
         })),
       });
     } });
+    expect(facts.session).toHaveBeenCalled();
     expect(result.attempts[0]?.failureReason).toBe("quota_limited");
     expect(facts.spawn).toHaveBeenCalledTimes(revoke ? 1 : 2);
     expect(serviceRecords()).toHaveLength(revoke ? 1 : 2);
