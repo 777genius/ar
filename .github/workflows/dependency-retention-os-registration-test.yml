@@ -152,6 +152,7 @@ jobs:
           name: dependency-full-profile-public-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             host-integration/managed-launcher/dependency-full-native-TEST.js
+            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js
             host-integration/managed-launcher/dependency-full-native-parent-TEST.js
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.js
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js
@@ -171,6 +172,7 @@ jobs:
             scripts/dependency-retention-os-test/current-full-backing-interval.node-test.js
             src/worker-codex/hosted-full-backing-proc.js
             host-integration/managed-launcher/launch.mjs
+            host-integration/managed-launcher/hosted-host-policy.mjs
             host-integration/managed-launcher/profiles.mjs
             host-integration/managed-launcher/payload-guard.mjs
             host-integration/host-jobs/storage-policy.mjs

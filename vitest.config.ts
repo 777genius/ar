@@ -41,6 +41,7 @@ export default defineConfig({
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
     ],
     sequence: { sequencer: DurationBalancedSequencer },
+    // Keep each file isolated while bounding process and memory pressure.
     pool: "forks",
     isolate: true,
     fileParallelism: true,

@@ -34,8 +34,9 @@ export async function runOriginalHostedDependencyRemovalEffects(access: symbol):
   });
   try {
     assert(); placement = await openHostedDependencyManifestPlacement(); const bytes = await placement.get(proof.manifestDigest);
+    await placement.close();
     withHostedActivationFence(fence => { placement!.assertCurrent(fence); if(!readOriginalHostedDependencyRemoverAuthority(fence, claim.binding.jobId, access))held(); });
-    await placement.close(); placement = undefined;
+    placement = undefined;
     const sourceLinks = openHostedDependencyReadySourceLinks(header.ready, { workspace: proof.trash.destinationParent, name: proof.trash.destinationName, reference: claim.header });
     if (sourceLinks) state.sourceLinks = sourceLinks;
     const input = { workspace: claim.binding.workspace, trash: proof.trash, manifestCanonicalBytes: bytes, manifestDigest: proof.manifestDigest,

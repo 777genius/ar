@@ -27,6 +27,7 @@ import { assertHostedDependencyToolProfileFiles, trustedFile } from "../provider
 import { observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile, hostedFdGroupPids, assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdInternals, type HostedFdProcess, type HostedFdUnit } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import type { CodexAppServerProcessInvocation } from "../provider-codex/app-server/adapters/node-app-server-process";
+import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
 import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 import { isHostedManagedReadonlyOuterRuntime, assertCurrentHostedDependencyAttempt, readCurrentHostedManagedDependencyProvider,
   prepareCurrentHostedManagedDependencyProviderTools, readCurrentHostedManagedDependencyProviderTools,
@@ -302,6 +303,12 @@ export function assertHostedManagedDependencyToolRelease(child: ChildProcess, fe
 function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   assertHostedActivationFence(fence);
   if (plan.closed) fail();
+  // Recheck the original private qualifier's inputs and physical source walk,
+  // both before and after asynchronous setup's namespace observations. Cached
+  // Ready facts alone cannot detect source members or inner links changing.
+  const qualified = readCurrentHostedDependencyRootQualification(fence);
+  if (qualified.context !== plan.managedOrigin || qualified.phase !== DependencyOwnerPhase.Running ||
+      !encode(qualified.binding).equals(encode(plan.binding)) || !sameDependencyAttempt(qualified.attempt, plan.attempt)) fail();
   const managed = readCurrentHostedManagedDependencyProviderTools(plan.managedOrigin,fence,plan.unit);
   const session = readCurrentHostedDependencyProviderSessionHome(plan.managedOrigin,fence,plan.writable[1]?.path,plan.writable[2]?.path);
   if (session.refresh !== plan.refresh) fail();
@@ -316,7 +323,10 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   // The admitted worker-owned reader opens only established history and closes
   // every temporary descriptor before the FD-table checks below. It is retained
   // with this actual invocation/child, never reconstructed from serialized facts.
-  const ready=managed.admission;
+  const ready=qualified.status===DependencyToolReadyReadStatus.Ready ?
+    {status:DependencyToolReadyReadStatus.Ready,facts:qualified.providerReady} as const :
+    {status:qualified.status,execution:qualified.execution} as const;
+  if(!encode(ready).equals(encode(managed.admission)))fail();
   if(qualification.version===1) {
     const legacy=qualification;
     const expected={workspace:binding.workspace,coverageRevision:hash(encode(binding)),revision:legacy.readyRevision,
@@ -359,17 +369,7 @@ function admissionSourceRoots(admission:Plan["admission"]):readonly DependencyTo
   return provenance.kind===DependencyToolReadyProvenanceKind.RegistryCompleted?[]:provenance.readonlySources;
 }
 function admissionSourceAncestors(binding:HostedDependencyBinding,admission:Plan["admission"]) {
-  if(admission.status===DependencyToolReadyReadStatus.Ready)return localSourceAncestors(binding,admission.facts.provenance);
-  const roots=admission.execution.sourceRoots;
-  return Object.freeze(admission.execution.sourceLookupAncestors.filter(pin=>pin.canonicalPath!==binding.workspace.canonicalPath &&
-    !roots.some(root=>root.canonicalPath===pin.canonicalPath)).map(pin=>{
-      const stat=lstatSync(pin.canonicalPath,{bigint:true});
-      if(!pin.canonicalPath.startsWith(binding.workspace.canonicalPath+"/") || /[\s:%\\"'\x00-\x1f\x7f]/.test(pin.canonicalPath) ||
-        pin.canonicalPath.slice(binding.workspace.canonicalPath.length+1).split("/").some(part=>part===".git" || part==="node_modules") ||
-        !stat.isDirectory() || stat.uid!==0n || (stat.mode&0o022n) || realpathSync(pin.canonicalPath)!==pin.canonicalPath ||
-        String(stat.dev)!==pin.identity.dev || String(stat.ino)!==pin.identity.ino)fail();
-      return Object.freeze({canonicalPath:pin.canonicalPath,dev:pin.identity.dev,ino:pin.identity.ino});
-    }));
+  return localSourceAncestors(binding,admissionSourceRoots(admission));
 }
 /** Current source directory facts only, never generated install provenance. */
 function assertUsableSources(binding:HostedDependencyBinding,roots:readonly DependencyToolSourceRoot[]):void {
@@ -428,15 +428,13 @@ function assertLocalSources(binding: HostedDependencyBinding, provenance: Depend
 
 /** Derive the finite topology only from the same captive source roots. No
  * caller can nominate an ancestor or substitute a mount/identity descriptor. */
-function localSourceAncestors(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]) {
+function localSourceAncestors(binding: HostedDependencyBinding, sources: readonly DependencyToolSourceRoot[]) {
   const paths = new Set<string>();
-  if ((provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared)) {
-    for (const source of provenance.readonlySources) {
-      if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
-      for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
-        if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
-        paths.add(path);
-      }
+  for (const source of sources) {
+    if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
+    for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
+      if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
+      paths.add(path);
     }
   }
   return Object.freeze([...paths].sort().map(canonicalPath => {

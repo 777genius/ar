@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +51,11 @@ try {
   );
   const expectedCapabilities =
     '{"schemaVersion":1,"protocolVersions":[2],"inlineOutputSchema":true,"reasoningEffort":true,"serviceTier":true,"boundedReadOnlyWorkspace":true,"instructionPathDeny":true}\n';
+  const packedRoot = join(tempDir, "node_modules/@vioxen/subscription-runtime");
+  const policy = await readFile(join(packedRoot, "dist/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8");
+  if (await readFile(join(packedRoot, "host-integration/managed-launcher/hosted-host-policy.mjs"), "utf8") !==
+      "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
+      policy.replace(/^\/\/# sourceMappingURL=.*$/m, "")) throw new Error("packed Host policy parity failed");
   const capabilityProbe = spawnSync(
     join(tempDir, "node_modules/.bin/subscription-runtime-run-agent-runtime-task"),
     ["--capabilities-json", "1"],

@@ -28,6 +28,10 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   const invocation = await build(job);
   assert.equal(invocation.command, '/usr/bin/systemd-run');
   assert.equal(invocation.args.includes('--user'), false);
+  assert.equal(invocation.args.includes('--service-type=exec'), true);
+  assert.deepEqual(invocation.args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')),
+    ['--property=TimeoutStartSec=300']);
+  assert.ok(invocation.args.includes('--property=TimeoutStopSec=30'));
   for (const property of ['ProtectSystem=strict', 'RequiresMountsFor=/TEST', 'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
     `CapabilityBoundingSet=${bootstrapCaps}`, 'AmbientCapabilities=', 'PrivateDevices=yes', `InaccessiblePaths=${socketFence}`, 'MemoryMax=256M', 'RuntimeMaxSec=90']) {
     assert.ok(invocation.args.includes(`--property=${property}`), property);
@@ -50,8 +54,8 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   assert.deepEqual(JSON.parse(managedLauncherInvocation(job).args[2]), job);
 });
 test('request denies old argv bridge, unknown operations and arbitrary policy fields', async () => {
-  for (const value of [[], ['--property=ProtectSystem=no'], null, { ...job, operation: 'shell' },
-    ...['cwd', 'mounts', 'workspacePath', 'jobRoot', 'properties', 'args', 'capabilities', 'sockets', 'storageRoot', 'pipe', 'env'].map(key => ({ ...job, [key]: [] }))]) {
+  for (const value of [[], ['--property=ProtectSystem=no'], null, { ...job, operation: 'shell' }, { ...job, startupSeconds: 600 },
+    ...['cwd', 'mounts', 'workspacePath', 'jobRoot', 'properties', 'args', 'capabilities', 'sockets', 'storageRoot', 'pipe', 'env', 'startupSeconds'].map(key => ({ ...job, [key]: [] }))]) {
     await assert.rejects(build(value), /unsupported/);
   }
 });
@@ -73,6 +77,7 @@ test('provider bootstrap is constructed internally and trusted before admission'
   assert.ok(command.indexOf('--bounding-set=-all') < command.indexOf(PAYLOAD_GUARD_PATH));
   assert.ok(command.indexOf(PAYLOAD_GUARD_PATH) < command.indexOf(provider.payload[0]));
   assert.ok(invocation.args.includes('--pipe'));
+  assert.equal(invocation.args.some(arg => arg.startsWith('--property=TimeoutStartSec=')), false);
   await assert.rejects(build({ ...provider, payload: ['/usr/bin/sh', '/opt/runtime/hosted-app-server-launcher.js'] }), /unsupported/);
   let admitted = false;
   await assert.rejects(build(provider, { trust: async () => { throw Error('untrusted'); } }, async () => { admitted = true; }), /untrusted/);

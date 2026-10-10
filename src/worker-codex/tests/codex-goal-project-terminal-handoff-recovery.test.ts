@@ -18,7 +18,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 
 import { materializeCodexGoalHandoffArtifacts } from "../codex-goal-handoff-artifacts";
-import type { CodexGoalJobManifest } from "../codex-goal-jobs";
+import { listCodexGoalJobs, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   terminalHandoffDependencyRecoveryRequested,
   verifyTerminalHandoffRecovery,
@@ -386,7 +386,7 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
           const broker = createCodexProjectControlBroker({
             ...input,
             admissionDeps: {
-              listJobs: async () => [],
+              listJobs: listCodexGoalJobs,
               buildOverviewItems: async () => [],
             },
           });
@@ -488,7 +488,7 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
           const broker = createCodexProjectControlBroker({
             ...input,
             admissionDeps: {
-              listJobs: async () => [],
+              listJobs: listCodexGoalJobs,
               buildOverviewItems: async () => [],
             },
           });

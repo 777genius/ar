@@ -12,17 +12,19 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Portable gates use disposable runners to avoid the shared ARC queue.
+# RUNNER remains an explicit repository/environment override.
 jobs:
   quality:
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run typecheck
@@ -112,6 +114,10 @@ jobs:
               ;;
             ancillary)
               npm run test:before-unit
+              npx --no-install vitest run \
+                src/provider-codex/tests/hosted-subscription-session-materializer.test.ts \
+                src/provider-codex/tests/app-server/codex-subscription-prepared-profile.test.ts \
+                src/worker-codex/tests/codex-subscription-consumer-preparation.test.ts
               npm run test:after-unit
               ;;
             *)
@@ -151,6 +157,42 @@ jobs:
           test "$UNIT_TEST_ANCILLARY_RESULT" = success
           echo "All four unit shards executed successfully; ancillary phases passed."
 
+  archive-root-tests:
+    # Only the fixed disposable TEST command is elevated, on an ephemeral host.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run build:packages
+      - name: Qualify archive and custody regressions on disposable TEST identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_test_root=$(mktemp -d /tmp/sr-archive-ci-TEST-XXXXXX)
+          trap 'sudo -n /bin/rm -rf --one-file-system -- "$archive_test_root"' EXIT
+          # No checkout Git metadata, HOME, credentials or real job data enters
+          # the TEST copy. Fixtures create their own root-owned 0600 permits.
+          cp -a src packages node_modules package.json vitest.config.ts tsconfig.json "$archive_test_root/"
+          mkdir "$archive_test_root/home" "$archive_test_root/temp"
+          archive_test_node=$(command -v node)
+          cd "$archive_test_root"
+          sudo -n /usr/bin/env -i \
+            PATH=/usr/bin:/bin HOME="$archive_test_root/home" \
+            TMPDIR="$archive_test_root/temp" XDG_CONFIG_HOME="$archive_test_root/home" \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            SR_ARCHIVE_TEST_PRIVILEGE=root \
+            "$archive_test_node" node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner
+
   observer-mount-tests:
     # Fresh disposable VM: namespace capabilities on the shared ARC runner are
     # not assumed. Only the fixed TEST helper receives sudo here.
@@ -166,6 +208,39 @@ jobs:
           cache: npm
       - name: Fetch locked TEST dependencies
         run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run build:packages
+      - name: Typecheck scratch preparation and the native TEST helper
+        run: |
+          node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json
+          node node_modules/typescript/bin/tsc -p scripts/test-scratch-mount-propagation.tsconfig.json
+      - name: Require scratch preparation and adjacent research contracts
+        run: |
+          npm run build
+          node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
+            src/worker-codex/tests/host-scratch-temp.test.ts \
+            src/worker-codex/tests/host-scratch-mount.test.ts \
+            src/worker-codex/tests/host-scratch-mount-observation-cost.test.ts \
+            src/worker-codex/tests/research-provider-service.test.ts \
+            src/worker-codex/tests/research-provider-root.test.ts \
+            src/worker-codex/tests/research-launch-diagnostics.test.ts \
+            src/worker-codex/tests/research-launch-diagnostics-privacy.test.ts
+      - name: Require real shared-source leaf isolation in a fresh TEST namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir scratch-mount-evidence
+          sudo -n /usr/bin/env -i PATH=/usr/bin:/bin \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+            /usr/bin/unshare --mount --propagation private \
+            "$(command -v node)" --experimental-strip-types scripts/test-scratch-mount-propagation.mts \
+            | tee scratch-mount-evidence/result.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: scratch-mount-propagation-evidence
+          path: scratch-mount-evidence/result.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Typecheck the focused namespace helper
         run: node node_modules/typescript/bin/tsc -p scripts/test-dependency-observer-mount-namespace.tsconfig.json
       - name: Require actual observer mount negatives and FD-close oracle
@@ -183,7 +258,7 @@ jobs:
           retention-days: 7
 
   package:
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -192,8 +267,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run check:packed-consumer -- --retain-validated-tarball
@@ -450,10 +525,119 @@ jobs:
           path: dependency-h1-staged-data-ci-evidence/
           if-no-files-found: error
 
+  native-probe-source:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Keep JavaScript actions on the host runner. The TEST container receives
+      # only a Git archive via Docker's API, never runner/auth/socket mounts.
+      - name: Run disposable NativeProbe SOURCE container
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          owned=$(mktemp -d "$RUNNER_TEMP/native-probe-source-TEST-XXXXXX")
+          printf 'evidence=%s\n' "$owned" >> "$GITHUB_OUTPUT"
+          name="native-probe-source-TEST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf '%s\n' "$name" > "$owned/container-name.txt"
+          git rev-parse HEAD > "$owned/source-commit.txt"
+          git rev-parse HEAD^{tree} > "$owned/source-tree.txt"
+          git archive --format=tar HEAD > "$owned/source.tar"
+          sha256sum "$owned/source.tar" > "$owned/source-archive.sha256"
+          cat > "$owned/command.sh" <<'TEST_COMMAND'
+          set -euo pipefail
+          umask 077
+          mkdir -p /native-probe-source-workspace/{source,tmp,home,cache}
+          tar -xf /source.tar -C /native-probe-source-workspace/source
+          cd /native-probe-source-workspace/source
+          mkdir -p delivery/a0-native-probe
+          npm ci
+          npm run typecheck:native-probe
+          npm run typecheck:native-probe:root-source
+          npm run test:native-probe
+          TEST_COMMAND
+          timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
+            --user 0:0 --init node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+            /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
+            HOME=/native-probe-source-workspace/home \
+            TMPDIR=/native-probe-source-workspace/tmp \
+            npm_config_cache=/native-probe-source-workspace/cache \
+            SR_NATIVE_PROBE_TMP=/native-probe-source-workspace/tmp \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 15m \
+            /bin/bash /command.sh > "$owned/container-id.txt" 2> "$owned/create.stderr"
+          id=$(cat "$owned/container-id.txt")
+          [[ "$id" =~ ^[a-f0-9]{64}$ ]]
+          printf 'container=%s\n' "$id" >> "$GITHUB_OUTPUT"
+          timeout 30s docker cp "$owned/source.tar" "$id:/source.tar" \
+            > "$owned/input-copy.stdout" 2> "$owned/input-copy.stderr"
+          timeout 30s docker cp "$owned/command.sh" "$id:/command.sh" \
+            >> "$owned/input-copy.stdout" 2>> "$owned/input-copy.stderr"
+          set +e
+          timeout --signal=TERM --kill-after=10s 16m docker start --attach "$id" \
+            > "$owned/container.stdout" 2> "$owned/container.stderr"
+          attach_rc=$?
+          set -e
+          printf '%s\n' "$attach_rc" > "$owned/attach-exit.txt"
+          docker inspect "$id" > "$owned/container-inspect.json"
+          identity=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}' "$id")
+          [[ "$identity" == "$id|/$name|$owner" ]]
+          state=$(docker inspect --format '{{.State.Status}}' "$id")
+          if [[ "$state" != exited ]]; then
+            printf '::error::Owned container %s is %s; retained without cleanup. Evidence: %s\n' "$id" "$state" "$owned"
+            exit 1
+          fi
+          container_rc=$(docker inspect --format '{{.State.ExitCode}}' "$id")
+          printf '%s\n' "$container_rc" > "$owned/container-exit.txt"
+          # Stream tar archives without following container symlinks or exposing
+          # root-owned fixtures to runner-side extraction/upload traversal.
+          timeout 30s docker cp "$id:/native-probe-source-workspace/source/delivery/a0-native-probe" - \
+            > "$owned/source-evidence.tar" 2> "$owned/evidence-copy.stderr"
+          timeout 30s docker cp "$id:/native-probe-source-workspace/tmp" - \
+            > "$owned/remaining-test-tmp.tar" 2> "$owned/tmp-copy.stderr"
+          printf 'exported=true\n' >> "$GITHUB_OUTPUT"
+          # A test failure stays a failure even though its diagnostics exported.
+          if [[ "$container_rc" != 0 ]]; then exit "$container_rc"; fi
+          exit "$attach_rc"
+      - name: Export NativeProbe SOURCE evidence
+        id: native_artifact
+        if: ${{ always() && steps.native.outputs.evidence != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-probe-source-checks
+          path: ${{ steps.native.outputs.evidence }}
+          if-no-files-found: error
+      - name: Remove only exported stopped TEST container
+        if: ${{ always() && steps.native.outputs.container != '' }}
+        shell: bash
+        env:
+          OWNED_CONTAINER: ${{ steps.native.outputs.container }}
+          EVIDENCE_EXPORTED: ${{ steps.native.outputs.exported }}
+          ARTIFACT_RESULT: ${{ steps.native_artifact.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVIDENCE_EXPORTED" != true || "$ARTIFACT_RESULT" != success ]]; then
+            printf '::warning::Retaining owned container %s: evidence export incomplete.\n' "$OWNED_CONTAINER"
+            exit 1
+          fi
+          [[ "$OWNED_CONTAINER" =~ ^[a-f0-9]{64}$ ]]
+          expected="/native-probe-source-TEST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          actual=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}|{{.State.Status}}|{{.State.Running}}' "$OWNED_CONTAINER")
+          if [[ "$actual" != "$OWNED_CONTAINER|$expected|$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT|exited|false" ]]; then
+            printf '::error::Owned container %s custody/stop check failed; retained.\n' "$OWNED_CONTAINER"
+            exit 1
+          fi
+          docker rm "$OWNED_CONTAINER"
+          # Runner-owned files remain available through job end and in artifact.
+
   crash-boundary-shards:
     permissions:
       contents: read
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -469,8 +653,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
-      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
@@ -492,7 +676,7 @@ jobs:
       contents: read
     if: ${{ always() }}
     needs: [crash-boundary-shards]
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
@@ -501,21 +685,25 @@ jobs:
 
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, observer-mount-tests, package, crash-boundary-shards-complete]
-    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - name: Verify all CI gates passed
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           OBSERVER_MOUNT_RESULT: ${{ needs.observer-mount-tests.result }}
+          ARCHIVE_ROOT_TESTS_RESULT: ${{ needs.archive-root-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
+          NATIVE_PROBE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
              [ "$OBSERVER_MOUNT_RESULT" = "success" ] && \
+             [ "$ARCHIVE_ROOT_TESTS_RESULT" = "success" ] && \
              [ "$PACKAGE_RESULT" = "success" ] && \
+             [ "$NATIVE_PROBE_SOURCE_RESULT" = "success" ] && \
              [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
           fi
@@ -523,6 +711,8 @@ jobs:
           echo "quality: $QUALITY_RESULT"
           echo "unit-tests: $UNIT_TESTS_RESULT"
           echo "observer-mount-tests: $OBSERVER_MOUNT_RESULT"
+          echo "archive-root-tests: $ARCHIVE_ROOT_TESTS_RESULT"
           echo "package: $PACKAGE_RESULT"
+          echo "native-probe-source: $NATIVE_PROBE_SOURCE_RESULT"
           echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1

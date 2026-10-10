@@ -1,5 +1,5 @@
 import { managedSystemdRunExecutable } from "./launch.mjs";
-import {h1StagedSubjectData,retainH1StagedCatalogData} from "./dependency-full-h1-staged-tools-TEST.ts";
+import {h1StagedSubjectData,retainH1StagedCatalogData} from "./dependency-full-h1-staged-tools-TEST.js";
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
@@ -621,8 +621,8 @@ export function retainCurrentFullParent():FullParentSession {
       const publicCatalog=fullData(c.pins.json(reviewRoot+"/public-installation.json",2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
       check(Array.isArray(publicCatalog.files));
       for(const entry of publicCatalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256));
-        if(!row.path.startsWith("host-integration/") || ["host-integration/managed-launcher/dependency-full-native-TEST.js","host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
-        if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
+        if(!row.path.startsWith("host-integration/") || ["host-integration/managed-launcher/dependency-full-native-TEST.js","host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/hosted-host-policy.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
+        if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/hosted-host-policy.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
       }
       c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullReviewData(c.pins.json(reviewPath,32768)).nodeSha256));
       const elfFd=c.pins.hold(guestRuntime+"/os-signed-elf-pins.json"),elfBytes=readFd(elfFd);check(elfBytes.length<=256*1024);
