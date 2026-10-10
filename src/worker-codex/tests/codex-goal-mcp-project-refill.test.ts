@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -572,34 +573,23 @@ describe("codex goal MCP server", () => {
     try {
       await mkdir(sourceWorkspacePath, { recursive: true });
       await writeFile(fakeRunnerPath, `
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { runProjectControlOperationFile } from ${JSON.stringify(
+  pathToFileURL(resolve("dist/worker-codex/project-control-operation-lifecycle.js")).href,
+)};
 const index = process.argv.indexOf("--operation-file");
 const operationFilePath = process.argv[index + 1];
-const operation = JSON.parse(await readFile(operationFilePath, "utf8"));
-const now = new Date().toISOString();
-operation.status = "completed";
-operation.runningAt = operation.runningAt ?? now;
-operation.completedAt = now;
-operation.updatedAt = now;
-operation.runner = {
-  hostname: "fake-runner",
-  pid: process.pid,
-  command: process.argv,
-  startedAt: now
-};
-operation.result = {
-  ok: true,
-  mode: "fake_bounded_refill",
-  jobId: operation.targetJobId,
-  executionMode: operation.args.executionMode,
-  sourceRef: operation.args.sourceRef,
-  expectedSourceCommit: operation.args.expectedSourceCommit,
-  newBranch: operation.args.newBranch
-};
-await mkdir(dirname(operation.resultPath), { recursive: true });
-await writeFile(operation.resultPath, JSON.stringify(operation.result, null, 2) + "\\n");
-await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
+await runProjectControlOperationFile({
+  operationFilePath,
+  invokeTool: async (_toolName, args) => ({
+    ok: true,
+    mode: "fake_bounded_refill",
+    jobId: args.jobId,
+    executionMode: args.executionMode,
+    sourceRef: args.sourceRef,
+    expectedSourceCommit: args.expectedSourceCommit,
+    newBranch: args.newBranch
+  })
+});
 `);
       process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH = fakeRunnerPath;
 

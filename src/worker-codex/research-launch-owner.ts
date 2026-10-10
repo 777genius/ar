@@ -7,23 +7,31 @@ import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAut
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand, researchExecutableDigest } from "./research-launch-host";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchDirectoryIdentity,
   researchHash, researchId, researchInvalid, researchJson, researchPath, researchPrivateDirectory, researchPublish, researchRead, researchCustody, researchPromptBytes } from "./research-launch-files";
-import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexProviderEgressProfileId, CodexModelBackend, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { terminalResearchStart } from "./research-launch-lifecycle";
 import { annotateResearchLaunchStage, ResearchLaunchStage } from "./research-launch-diagnostics";
 import { assertRegisteredResearchHandoffCurrent, consumeRegisteredResearchHandoffAuthorization, type RegisteredResearchHandoffAuthorization } from "./research-registered-handoff";
 import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
+import { withResearchJobMutation, withResearchJobMutationAsync } from "./research-job-mutation-lock";
 
 /** Initial-host-root only. The request is closed operator data, never a worker
  * environment, managed/TEST grant, project tag or pre-start observation. */
 export function grantResearchLaunch(jobId: string, jobRootDir: string, workspacePath: string): void {
-  publishResearchGrant(jobId, jobRootDir, workspacePath);
+  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath), true);
+}
+/** Explicit standalone worker authority. Never grants controller or registered execution. */
+export function grantOwnedMimoWorkerLaunch(jobId: string, jobRootDir: string, workspacePath: string): void {
+  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, true), true);
 }
 /** Separate capability-only port; the legacy operator CLI has no free sink arg. */
 export async function grantRegisteredResearchLaunch(authorization: RegisteredResearchHandoffAuthorization): Promise<void> {
   // Consume the unforgeable token before the independent mutex phase; its live
   // registered binding is revalidated inside the grant publication fence.
   const binding = await consumeRegisteredResearchHandoffAuthorization(authorization);
+  await withResearchJobMutationAsync(authorization.request.jobId, () => grantRegisteredResearchLaunchUnlocked(authorization, binding), true);
+}
+async function grantRegisteredResearchLaunchUnlocked(authorization: RegisteredResearchHandoffAuthorization, binding: ResearchRegisteredHandoff): Promise<void> {
   const registry = researchDurableDirectory(binding.registryRootDir);
   await withCodexGoalRegistryMutation({ registryRootDir: binding.registryRootDir, requireExistingRegistryRoot: true, effect: async () => {
     assertResearchDurableDirectory(registry);
@@ -32,7 +40,7 @@ export async function grantRegisteredResearchLaunch(authorization: RegisteredRes
     publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding);
   } });
 }
-function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff): void {
+function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff, mimoWorker = false): void {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   researchId(jobId);
   const jobDirectory = researchDirectoryIdentity(jobRootDir), workspaceDirectory = researchDirectoryIdentity(workspacePath);
@@ -45,9 +53,13 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
   // A unique grant identity makes revoke/regrant different even for the same tuple.
   researchPublish(join(job, "grant.json"), { schemaVersion: 1, jobId, jobRootDir, workspacePath,
     ...(registeredHandoff ? { registeredHandoff } : {}),
-    profileId: CodexProviderEgressProfileId.FullInternetV1, grantId: randomUUID(), jobDirectory, workspaceDirectory });
+    profileId: mimoWorker ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
+    ...(mimoWorker ? { hostedProfile: HostedMimoProfile.Worker } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
 }
 export function revokeResearchLaunch(jobId: string): void {
+  withResearchJobMutation(jobId, () => revokeResearchLaunchUnlocked(jobId));
+}
+function revokeResearchLaunchUnlocked(jobId: string): void {
   assertResearchInitialRoot(true);
   const path = join(researchJobAuthority(jobId), "grant.json");
   const grant = parseResearchGrant(researchJson(researchRead(path)));
@@ -57,6 +69,9 @@ export function revokeResearchLaunch(jobId: string): void {
 /** Exact-grant revocation shares publication's registry mutex. It deliberately
  * does not depend on a receipt/scope which may already have been invalidated. */
 export async function revokeRegisteredResearchLaunch(jobId: string, expectedGrantSha256: string): Promise<void> {
+  await withResearchJobMutationAsync(jobId, () => revokeRegisteredResearchLaunchUnlocked(jobId, expectedGrantSha256));
+}
+async function revokeRegisteredResearchLaunchUnlocked(jobId: string, expectedGrantSha256: string): Promise<void> {
   assertResearchInitialRoot(true);
   const path = join(researchJobAuthority(jobId), "grant.json"), bytes = researchRead(path);
   const grant = parseResearchGrant(researchJson(bytes));
@@ -69,9 +84,20 @@ export async function revokeRegisteredResearchLaunch(jobId: string, expectedGran
   } });
 }
 export function startResearchLaunch(requestPath: string, expectedRequestSha256: string): { jobId: string; unit: string; startId: string; specSha256: string } {
-  return prepareResearchLaunchInternal(requestPath, expectedRequestSha256).submit();
+  const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
+  return withResearchJobMutation(jobId, () => prepareResearchLaunchInternal(requestPath, expectedRequestSha256).submit());
 }
 export async function startRegisteredResearchLaunch(requestPath: string, expectedRequestSha256: string): Promise<ReturnType<typeof startResearchLaunch>> {
+  const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
+  return await withResearchJobMutationAsync(jobId, () => startRegisteredResearchLaunchUnlocked(requestPath, expectedRequestSha256));
+}
+function researchStartMutationJobId(requestPath: string, expectedRequestSha256: string): string {
+  assertResearchInitialRoot(true); assertResearchSharedHost();
+  const bytes = researchRead(researchPath(requestPath));
+  if (researchHash(bytes) !== expectedRequestSha256) researchInvalid();
+  return parseResearchOperatorRequest(researchJson(bytes)).jobId;
+}
+async function startRegisteredResearchLaunchUnlocked(requestPath: string, expectedRequestSha256: string): Promise<ReturnType<typeof startResearchLaunch>> {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   const bytes = researchRead(researchPath(requestPath));
   if (researchHash(bytes) !== expectedRequestSha256) researchInvalid();
@@ -107,6 +133,7 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
       researchHashRequest(request) !== registered.binding.requestSha256 ||
       JSON.stringify(grant.registeredHandoff) !== JSON.stringify(registered.binding))
     : (grant.registeredHandoff !== undefined || request.durableHandoffRootDir !== undefined)) researchInvalid();
+  if ((request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
   if (grant.jobId !== request.jobId || grant.jobRootDir !== request.jobRootDir || grant.workspacePath !== request.workspacePath) researchInvalid();
   assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
   const runtimeDirectory = installedResearchRuntimeDirectory();

@@ -1,3 +1,4 @@
+import type { NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import type { AppServerExecutionLease } from "./app-server-admission";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import type { CodexAppServerJsonRpcResponse } from "../protocol/app-server-json-rpc";
@@ -40,6 +41,7 @@ export type AppServerTurnResult = {
   /** The turn ID from the turn/start ACK, never a notification alias. */
   readonly acknowledgedTurnId?: string;
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly usage: AgentUsage | undefined;
   readonly usagePoisoned: boolean;
   readonly completed: boolean;

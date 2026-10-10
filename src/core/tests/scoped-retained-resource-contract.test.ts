@@ -5,9 +5,9 @@ import {
   RetainedResourceDisposition as Disposition, RetainedServiceObservation as ServiceObservation,
   RetainedManagerActive, RetainedManagerSubstate, RetainedManagerLoad, RetainedRetirementStep as Step,
   RetainedKernelRemoval, RetainedTaskHold, RetainedPidfdSemantics, RetainedJobResult,
-  parseScopedRetainedRecord, parseScopedRetainedRecordBytes, retainedResourceBytes,
+  parseScopedRetainedRecord, parseScopedRetainedRecordBytes, parseScopedRetainedPublicationEvents, parseScopedRetainedPublicationEventsBytes, retainedResourceBytes,
   retainedResourceDigest as digest, retainedResourceLocator, retainedResourceNames,
-  type ScopedRetainedRecord, type ScopedRetainedTarget, type RetainedRecordData,
+  type ScopedRetainedRecord, type ScopedRetainedTarget, type RetainedRecordData, type ScopedRetainedPublicationEvents,
 } from "../scoped-retained-resource-contract";
 import { RetainedChainState, RetainedValidationMode as Mode, validateScopedRetainedChain, type RetainedChainExpectation } from "../scoped-retained-resource-validation";
 import {
@@ -18,12 +18,25 @@ import {
 
 type Mutable<T> = T extends readonly (infer V)[] ? Mutable<V>[] : T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
 type Edit = (record: Mutable<ScopedRetainedRecord>) => void;
+type EventEdit = (events: Mutable<ScopedRetainedPublicationEvents>, record: ScopedRetainedRecord) => void;
+// Explicit synthetic observations for a DATA-only contract. These counters are
+// test facts; they do not mint an original native observation or release tail.
+const stamp = (atEpochMs: number, generation: number, phase: number) => ({ sequence: atEpochMs * 65536 + generation * 8 + phase, atEpochMs });
+const project = (record: ScopedRetainedRecord): Mutable<ScopedRetainedPublicationEvents> => ({
+  recordDigest: digest(record), producerId: record.publication.producerId, generation: record.publication.generation,
+  admitted: { ...record.publication.admitted }, durable: stamp(record.publication.admitted.atEpochMs + 1, record.publication.generation, 1),
+  readback: stamp(record.publication.admitted.atEpochMs + 2, record.publication.generation, 2),
+  heldReread: record.kind === Kind.ActorAdmission ? stamp(record.publication.admitted.atEpochMs + 3, record.publication.generation, 3) : null,
+  finalValidated: stamp(record.publication.admitted.atEpochMs + (record.kind === Kind.ActorAdmission ? 4 : 3), record.publication.generation, 4),
+});
+const selectedEvents = (events: readonly ScopedRetainedPublicationEvents[], records: readonly ScopedRetainedRecord[]) =>
+  events.filter(e => records.some(r => digest(r) === e.recordDigest));
 const H = (digit: string): string => digit.repeat(64);
 const U = (digit: string): string => `${digit.repeat(8)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(12)}`;
 const I = (digit: string): string => digit.repeat(32);
 interface FixtureOptions {
   role?: Role; keyed?: boolean; runtimeProviders?: boolean; twoProviders?: boolean; preparation?: Preparation; payloadGateCreated?: boolean;
-  neverCreated?: boolean; noReservations?: boolean; actualStart?: number; allowance?: number; edit?: Edit;
+  neverCreated?: boolean; noReservations?: boolean; actualStart?: number; allowance?: number; edit?: Edit; eventEdit?: EventEdit; admissionBase?: number;
 }
 
 /** Explicit TEST-only normalized data. No files, actors, manager/kernel calls or
@@ -37,14 +50,14 @@ function fixture(options: FixtureOptions = {}) {
   const cleanupTime = (at: number): number => options.actualStart === undefined ? at : options.actualStart + Math.floor((at - 5000) / 10);
   const add = <K extends Kind>(kind: K, data: RetainedRecordData[K], at: number): ScopedRetainedRecord<K> => {
     const record = { schemaVersion: 2, kind, targetDigest, data: JSON.parse(JSON.stringify(data)), publication: {
-      producerId: "TEST-producer", generation: ++generation, admittedAtEpochMs: at, durableAtEpochMs: at + 1, finalValidatedAtEpochMs: at + 2,
+      producerId: "TEST-producer", generation: ++generation, admitted: stamp(at, generation, 0),
     } } as Mutable<ScopedRetainedRecord>;
     if (options.actualStart !== undefined && ![Kind.Target, Kind.Reservation, Kind.ResourceObligation, Kind.ResourceBinding,
       Kind.Correlation, Kind.ActorAdmission, Kind.ServiceAdmission, Kind.PayloadGate].includes(kind)) {
       const shift = (value: unknown): void => {
         if (!value || typeof value !== "object") return;
         for (const [key, entry] of Object.entries(value)) {
-          if (key.endsWith("AtEpochMs") && typeof entry === "number" && entry >= 5000 && key !== "startedAtEpochMs")
+          if ((key.endsWith("AtEpochMs") || key === "atEpochMs") && typeof entry === "number" && entry >= 5000 && key !== "startedAtEpochMs")
             (value as Record<string, unknown>)[key] = cleanupTime(entry);
           else shift(entry);
         }
@@ -52,6 +65,7 @@ function fixture(options: FixtureOptions = {}) {
       shift(record);
     }
     options.edit?.(record);
+    record.publication.admitted = stamp(record.publication.admitted.atEpochMs, record.publication.generation, 0);
     if (record.kind === Kind.Target) targetDigest = digest(record.data);
     record.targetDigest = targetDigest;
     records.push(record as ScopedRetainedRecord);
@@ -104,7 +118,7 @@ function fixture(options: FixtureOptions = {}) {
   const state = options.preparation ?? (options.neverCreated ? Preparation.Reserved : Preparation.PayloadReleased);
   const rank = Object.values(Preparation).indexOf(state);
   const admissions = reservations.map((r, index) => {
-    const a = t.allocations[index]!, base = 500 + index * 1000, creator = a.role === Role.Provider ? "200:20" : `${100 + index * 10}:10`, submitter = `${101 + index * 10}:11`;
+    const a = t.allocations[index]!, base = (options.admissionBase ?? 500) + index * 1000, creator = a.role === Role.Provider ? "200:20" : `${100 + index * 10}:10`, submitter = `${101 + index * 10}:11`;
     // Actual creator group is independent of the retained parent resource.
     const creatorGroup = a.role === Role.Provider ? `${names.controlGroup}/${t.allocations[0]!.unit}` : "/TEST-root-owner.service";
     const correlation = rank < 2 ? null : add(Kind.Correlation, { reservationDigest: digest(r), bindingDigest: digest(binding), startDigest: r.data.startDigest,
@@ -122,7 +136,6 @@ function fixture(options: FixtureOptions = {}) {
         { role: ActorRole.ManagerSubmitter, pidBirth: submitter, controlGroup: creatorGroup, parentPidBirth: creator },
       ] }, custodyProducerId: "TEST-producer", hold: RetainedTaskHold.AllTasks, pidfdSemantics: RetainedPidfdSemantics.WholeThreadGroupExit,
       holdDigest: H("a"), pidfdCustodyDigest: H("b"), tasks: [{ actorPidBirth: creator, taskBirths: [creator] }, { actorPidBirth: submitter, taskBirths: [submitter] }],
-      finalHeldRereadAtEpochMs: base + 101,
     }, base + 100) : null;
     const service = rank < 4 ? null : add(Kind.ServiceAdmission, { correlationDigest: digest(correlation), actorAdmissionDigest: digest(actor), acceptedAtEpochMs: base + 200,
       unit: a.unit, invocationId: I(String(index + 1)), invocationAnchor: { invocationId: I(String(index + 1)), kernel: { device: 29, inode: 8000 + index } },
@@ -182,10 +195,133 @@ function fixture(options: FixtureOptions = {}) {
     ordinaryTerminalDigests: terminals.map(digest),
   }, 13000);
   const expected: RetainedChainExpectation = { targetDigest, originalAuthorityDigest, attemptDigest, reservationDigests: reservations.map(digest), obligationDigests: [digest(obligation)], payloadGateDigests: admissions.flatMap(a => a.gate ? [digest(a.gate)] : []) };
-  return { records, expected };
+  const publicationEvents = records.map(record => {
+    const events = project(record);
+    options.eventEdit?.(events, record);
+    return events;
+  });
+  return { records, publicationEvents, expected };
 }
-const read = (f: ReturnType<typeof fixture>, mode = Mode.ReadOnlyHistoricalData, now = 99000) => validateScopedRetainedChain(f.records, f.expected, mode, now);
+const read = (f: ReturnType<typeof fixture>, mode = Mode.ReadOnlyHistoricalData, now = 99000) => validateScopedRetainedChain(f.records, f.publicationEvents, f.expected, mode, now);
 const fails = (edit: Edit, predicate: string, options: FixtureOptions = {}) => expect(() => read(fixture({ ...options, edit }))).toThrow(predicate);
+const failsEvents = (eventEdit: EventEdit, predicate: string, options: FixtureOptions = {}) => expect(() => read(fixture({ ...options, eventEdit }))).toThrow(predicate);
+
+describe("retained v2 causal publication DATA", () => {
+  // Red predicate: truthful delayed D/R/H/F would require changing an already
+  // published BODY or predicting its future completion inside canonical bytes.
+  it("keeps one BODY and digest across distinct explicit delayed completions", () => {
+    const f = fixture({ admissionBase: 900 });
+    const actor = f.records.find(r => r.kind === Kind.ActorAdmission)!;
+    const bytes = retainedResourceBytes(actor), bodyDigest = digest(actor);
+    expect(actor.publication.admitted.atEpochMs).toBe(1000);
+    for (const [d, r, h, final] of [[1040, 1042, 1044, 1045], [1041, 1043, 1046, 1049]]) {
+      const projections = structuredClone(f.publicationEvents);
+      const e = projections.find(e => e.recordDigest === bodyDigest)!;
+      e.durable = stamp(d!, e.generation, 1); e.readback = stamp(r!, e.generation, 2);
+      e.heldReread = stamp(h!, e.generation, 3); e.finalValidated = stamp(final!, e.generation, 4);
+      expect(read({ ...f, publicationEvents: projections }).state).toBe(RetainedChainState.CompleteData);
+      expect(parseScopedRetainedRecordBytes(bytes)).toEqual(actor);
+      expect(retainedResourceBytes(actor)).toBe(bytes);
+      expect(digest(actor)).toBe(bodyDigest);
+    }
+  });
+  it("orders actual same-millisecond completions by distinct original sequences", () => {
+    const f = fixture({ eventEdit: (e, record) => {
+      const at = record.publication.admitted.atEpochMs;
+      e.durable = stamp(at, e.generation, 1); e.readback = stamp(at, e.generation, 2);
+      if (e.heldReread) e.heldReread = stamp(at, e.generation, 3);
+      e.finalValidated = stamp(at, e.generation, 4);
+    } });
+    expect(read(f).state).toBe(RetainedChainState.CompleteData);
+  });
+  it("rejects the old future-bearing BODY and ActorAdmission shapes explicitly", () => {
+    const actor = fixture().records.find(r => r.kind === Kind.ActorAdmission)!;
+    expect(() => parseScopedRetainedRecord({ ...actor, publication: { producerId: actor.publication.producerId,
+      generation: actor.publication.generation, admittedAtEpochMs: 1000, durableAtEpochMs: 1040, finalValidatedAtEpochMs: 1045,
+    } })).toThrow("fields");
+    expect(() => parseScopedRetainedRecord({ ...actor, data: { ...actor.data, finalHeldRereadAtEpochMs: 1044 } })).toThrow("fields");
+  });
+
+  // Red predicate: accepting a malformed or caller-mutable event map lets its
+  // digest binding or causal observations change after the DATA boundary.
+  it("parses closed canonical detached immutable publication event DATA", () => {
+    const raw = fixture().publicationEvents.find(e => e.heldReread !== null)!;
+    const bytes = retainedResourceBytes(raw), parsed = parseScopedRetainedPublicationEventsBytes(bytes);
+    raw.durable.atEpochMs++;
+    expect(retainedResourceBytes(parsed)).toBe(bytes);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed.admitted)).toBe(true);
+    expect(Object.isFrozen(parsed.heldReread)).toBe(true);
+    expect(() => parseScopedRetainedPublicationEvents({ ...parsed, nativeHandle: "TEST-forbidden" })).toThrow("fields");
+    expect(() => parseScopedRetainedPublicationEvents({ ...parsed, durable: { ...parsed.durable, extra: true } })).toThrow("fields");
+    expect(() => parseScopedRetainedPublicationEvents({ ...parsed, durable: { ...parsed.durable, sequence: 0 } })).toThrow("integer");
+    expect(() => parseScopedRetainedPublicationEvents({ ...parsed, durable: { ...parsed.durable, atEpochMs: 0 } })).toThrow("integer");
+    expect(() => parseScopedRetainedPublicationEvents({ ...parsed, durable: { ...parsed.durable, sequence: Number.MAX_SAFE_INTEGER + 1 } })).toThrow();
+    expect(() => parseScopedRetainedPublicationEvents({ get recordDigest() { throw new Error("must not execute"); } })).toThrow("json_object");
+    expect(() => parseScopedRetainedPublicationEventsBytes(bytes.replace('"generation":', '"generation":1,"generation":'))).toThrow("noncanonical_bytes");
+    expect(() => parseScopedRetainedPublicationEventsBytes(bytes.trimEnd())).toThrow("noncanonical_bytes");
+  });
+  it("requires explicit events and checks the whole bounded map before missing completion", () => {
+    const f = fixture(), first = f.publicationEvents[0]!;
+    expect(read({ ...f, publicationEvents: [] })).toMatchObject({ state: RetainedChainState.Incomplete });
+    expect(read({ ...f, publicationEvents: f.publicationEvents.slice(1) })).toEqual({
+      state: RetainedChainState.Incomplete, missing: [`publication_events:${first.recordDigest}`],
+    });
+    expect(() => validateScopedRetainedChain(f.records, undefined as unknown as readonly unknown[], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("publication_event_bound");
+    expect(() => validateScopedRetainedChain(f.records, [...f.publicationEvents.slice(1), { ...first, extra: true }], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("fields");
+    expect(() => read({ ...f, publicationEvents: Array.from({ length: 4097 }, () => first) })).toThrow("publication_event_bound");
+    expect(() => read({ ...f, publicationEvents: [...f.publicationEvents, first] })).toThrow("duplicate_publication_events");
+    expect(() => read({ ...f, publicationEvents: [...f.publicationEvents, { ...first, recordDigest: H("f") }] })).toThrow("foreign_publication_events");
+    const records = f.records.filter(r => digest(r) !== first.recordDigest);
+    expect(() => read({ ...f, records })).toThrow("foreign_publication_events");
+  });
+  it.each(["producer", "generation", "admitted", "digest"])("rejects a foreign %s event binding", field => {
+    const f = fixture();
+    const e = f.publicationEvents[0]!;
+    if (field === "producer") e.producerId = "TEST-foreign";
+    if (field === "generation") e.generation++;
+    if (field === "admitted") e.admitted.sequence++;
+    if (field === "digest") e.recordDigest = H("f");
+    expect(() => read(f)).toThrow(field === "digest" ? "foreign_publication_events" : "publication_event_binding");
+  });
+
+  // Red predicate: completion before its prerequisite, counter reuse, missing
+  // actor reread, or future observations could otherwise admit causal fiction.
+  it.each(["durable", "readback", "heldReread", "finalValidated"] as const)("rejects predating or duplicate %s observation", field => {
+    for (const change of ["epoch", "sequence"] as const) {
+      failsEvents((e, r) => {
+        if (r.kind !== Kind.ActorAdmission) return;
+        const previous = field === "durable" ? e.admitted : field === "readback" ? e.durable : field === "heldReread" ? e.readback : e.heldReread!;
+        e[field]![change === "epoch" ? "atEpochMs" : "sequence"] = previous[change === "epoch" ? "atEpochMs" : "sequence"] - (change === "epoch" ? 1 : 0);
+      }, "publication_event_order");
+    }
+  });
+  it("requires H exactly for ActorAdmission and rejects counters reused across bodies", () => {
+    failsEvents((e, r) => { if (r.kind === Kind.ActorAdmission) e.heldReread = null; }, "publication_event_hold");
+    failsEvents((e, r) => { if (r.kind === Kind.Reservation) e.heldReread = stamp(e.readback.atEpochMs, e.generation, 3); }, "publication_event_hold");
+    const f = fixture({ runtimeProviders: true });
+    const reservations = f.records.filter(r => r.kind === Kind.Reservation);
+    const e = f.publicationEvents.find(e => e.recordDigest === digest(reservations[0]))!;
+    e.finalValidated.sequence = reservations[1]!.publication.admitted.sequence;
+    expect(() => read(f)).toThrow("publication_event_sequence");
+  });
+  it("rejects reversed global clock observations and completion past observation time", () => {
+    const f = fixture(), e = f.publicationEvents.find(e => e.heldReread !== null)!;
+    const lastSequence = Math.max(...f.publicationEvents.map(e => e.finalValidated.sequence));
+    [e.durable, e.readback, e.heldReread!, e.finalValidated].forEach((stamp, index) => { stamp.sequence = lastSequence + index + 1; });
+    expect(() => read(f)).toThrow("publication_event_clock");
+    failsEvents((e, r) => { if (r.kind === Kind.OrdinaryTerminal) e.finalValidated = stamp(99001, e.generation, 4); }, "future_publication");
+  });
+  it("rejects recorded enqueue release before completed ActorAdmission", () => {
+    const f = fixture({ admissionBase: 900, preparation: Preparation.EnqueueReleased, eventEdit: (e, r) => {
+      if (r.kind === Kind.ActorAdmission) {
+        e.durable = stamp(1040, e.generation, 1); e.readback = stamp(1042, e.generation, 2);
+        e.heldReread = stamp(1044, e.generation, 3); e.finalValidated = stamp(1051, e.generation, 4);
+      }
+    } });
+    expect(() => read(f)).toThrow("enqueue_gate_time");
+  });
+});
 
 describe("retained v2 bounded source/data contracts", () => {
   it("reads a complete durable chain after disposal and expiry, including SAME pinned inode with nlink 2", () => {
@@ -208,7 +344,7 @@ describe("retained v2 bounded source/data contracts", () => {
   it("accepts a closed never-created obligation; partial creation remains resource debt", () => {
     expect(read(fixture({ neverCreated: true })).state).toBe(RetainedChainState.CompleteData);
     fails(r => { if (r.kind === Kind.ResourceObligation) r.data.lifecycle = Lifecycle.CreationStarted; }, "uncreated_resource_debt", { neverCreated: true });
-    fails(r => { if (r.kind === Kind.ResourceUncreated) { r.data.closedAtEpochMs = 6400; r.publication.admittedAtEpochMs = 6450; r.publication.durableAtEpochMs = 6451; r.publication.finalValidatedAtEpochMs = 6452; } }, "uncreated_resource_debt", { neverCreated: true });
+    fails(r => { if (r.kind === Kind.ResourceUncreated) { r.data.closedAtEpochMs = 6400; r.publication.admitted.atEpochMs = 6450; } }, "uncreated_resource_debt", { neverCreated: true });
   });
   it("accepts optional slice already-retired observation only with no invented stop job", () => {
     const f = fixture({ edit: r => {
@@ -279,7 +415,7 @@ describe("retained v2 bounded source/data contracts", () => {
   it("rejects overlapping provider admissions claiming the same cgroup object", () => {
     fails(r => {
       if (r.kind === Kind.ServiceAdmission && r.data.unit.includes(U("2"))) {
-        r.publication.admittedAtEpochMs = 2800; r.publication.durableAtEpochMs = 2801; r.publication.finalValidatedAtEpochMs = 2802;
+        r.publication.admitted.atEpochMs = 2800;
       }
       if (r.kind === Kind.ServiceAdmission && r.data.unit.includes(U("3"))) r.data.kernel.inode = 9001;
     }, "cgroup_identity", { runtimeProviders: true, twoProviders: true, preparation: Preparation.ServiceAdmitted });
@@ -327,6 +463,7 @@ describe("retained v2 bounded source/data contracts", () => {
   it("keeps a missing original created gate record incomplete even before service admission", () => {
     const f = fixture({ preparation: Preparation.ResourceBound, payloadGateCreated: true });
     f.records = f.records.filter(r => r.kind !== Kind.PayloadGate);
+    f.publicationEvents = selectedEvents(f.publicationEvents, f.records);
     expect(read(f).state).toBe(RetainedChainState.Incomplete);
   });
   it("rejects hidden partial payload debt and invented never-created gate closure", () => {
@@ -343,6 +480,7 @@ describe("retained v2 bounded source/data contracts", () => {
       if (r.kind === Kind.EmptyProof) r.data.dispositions[0]!.payloadGateClosure = null;
     } });
     f.records = f.records.filter(r => r.kind !== Kind.PayloadGate);
+    f.publicationEvents = selectedEvents(f.publicationEvents, f.records);
     expect(read(f).state).toBe(RetainedChainState.Incomplete);
   });
   it.each(["payloadGateDigest", "originalGateDigest", "payloadCustodyDigest"] as const)("rejects a foreign final payload closure %s", field => {
@@ -371,29 +509,43 @@ describe("retained v2 bounded source/data contracts", () => {
     fails(r => { if (r.kind === Kind.ServiceAdmission) r.data.closedPayloadGateDigest = H("f"); }, "payload_gate_admission");
     fails(r => { if (r.kind === Kind.ServiceAdmission) r.data.payloadCustodyDigest = H("f"); }, "payload_gate_admission");
     fails(r => { if (r.kind === Kind.PayloadGate) {
-      r.publication.admittedAtEpochMs = 750; r.publication.durableAtEpochMs = 751; r.publication.finalValidatedAtEpochMs = 752;
+      r.publication.admitted.atEpochMs = 750;
     } }, "payload_gate_admission");
-    fails(r => { if (r.kind === Kind.PayloadGate) r.publication.finalValidatedAtEpochMs = 10000; }, "publication_authority_time");
+    failsEvents((e, r) => { if (r.kind === Kind.PayloadGate) e.finalValidated = stamp(10000, e.generation, 4); }, "publication_authority_time");
     fails(() => {}, "payload_gate_missing", { preparation: Preparation.ServiceAdmitted, payloadGateCreated: false });
   });
   it("never discovers a sibling/replacement through a shared creator or omits a companion/partial reservation", () => {
     const f = fixture({ runtimeProviders: true });
     const omitted = f.records.filter(r => r.kind !== Kind.Reservation || r.data.reservationId !== U("4"));
-    expect(validateScopedRetainedChain(omitted, f.expected, Mode.ReadOnlyHistoricalData, 99000).state).toBe(RetainedChainState.Incomplete);
+    expect(validateScopedRetainedChain(omitted, selectedEvents(f.publicationEvents, omitted), f.expected, Mode.ReadOnlyHistoricalData, 99000).state).toBe(RetainedChainState.Incomplete);
     fails(r => { if (r.kind === Kind.Closure) r.data.reservationDigests.pop(); }, "closure_reservations", { runtimeProviders: true });
     fails(r => { if (r.kind === Kind.Closure) r.data.preparations.pop(); }, "preparation_completeness", { runtimeProviders: true, preparation: Preparation.Reserved });
     fails(r => { if (r.kind === Kind.EmptyProof) r.data.dispositions.pop(); }, "discharge_completeness", { preparation: Preparation.Reserved });
     const foreign = structuredClone(f.records[1]!) as Mutable<ScopedRetainedRecord>; foreign.targetDigest = H("f"); foreign.publication.generation = 201;
-    expect(() => validateScopedRetainedChain([...f.records, foreign], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("foreign_target");
+    expect(() => validateScopedRetainedChain([...f.records, foreign], [...f.publicationEvents, project(foreign)], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("foreign_target");
     const relabeled = structuredClone(f.records.find(r => r.kind === Kind.Reservation)!) as Mutable<ScopedRetainedRecord>; relabeled.publication.generation = 200;
-    expect(() => validateScopedRetainedChain([...f.records, relabeled], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("foreign_inventory");
+    relabeled.publication.admitted = stamp(relabeled.publication.admitted.atEpochMs, 200, 0);
+    expect(() => validateScopedRetainedChain([...f.records, relabeled], [...f.publicationEvents, project(relabeled)], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("foreign_inventory");
+  });
+  // Red predicate: an unrelated missing completion returns Incomplete before
+  // rejecting a well-bound Reservation outside the authoritative inventory.
+  it("rejects undeclared inventory even with an unrelated missing completion", () => {
+    const f = fixture({ runtimeProviders: true });
+    const foreign = structuredClone(f.records.find(r => r.kind === Kind.Reservation)!) as Mutable<ScopedRetainedRecord>;
+    foreign.publication.generation = 200;
+    foreign.publication.admitted = stamp(foreign.publication.admitted.atEpochMs, 200, 0);
+    const obligation = f.records.find(r => r.kind === Kind.ResourceObligation)!;
+    f.records.push(foreign);
+    f.publicationEvents.push(project(foreign));
+    f.publicationEvents = f.publicationEvents.filter(e => e.recordDigest !== digest(obligation));
+    expect(() => read(f)).toThrow("foreign_inventory");
   });
   it("enforces both admission gates and the closed all-task graph", () => {
     fails(r => { if (r.kind === Kind.Closure) r.data.preparations[0]!.enqueueReleasedAtEpochMs = 601; }, "enqueue_gate_time");
     fails(r => { if (r.kind === Kind.Closure) r.data.preparations[0]!.payloadReleasedAtEpochMs = 801; }, "payload_gate_time");
     fails(r => { if (r.kind === Kind.Closure) r.data.preparations[0]!.enqueueReleasedAtEpochMs = 5600; }, "enqueue_gate_time");
     fails(r => { if (r.kind === Kind.ActorAdmission) r.data.tasks[1]!.actorPidBirth = "999:99"; }, "task_graph");
-    fails(r => { if (r.kind === Kind.ActorAdmission) r.data.finalHeldRereadAtEpochMs = 599; }, "held_actor_binding");
+    failsEvents((e, r) => { if (r.kind === Kind.ActorAdmission) e.heldReread = stamp(599, e.generation, 3); }, "publication_event_order");
     fails(r => { if (r.kind === Kind.ActorAdmission) r.data.originalGateDigest = H("f"); }, "held_actor_binding");
     fails(r => { if (r.kind === Kind.EmptyProof) r.data.dispositions[0]!.serviceObservation = null; }, "historical_service", { preparation: Preparation.EnqueueReleased });
   });
@@ -457,7 +609,7 @@ describe("retained v2 bounded source/data contracts", () => {
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.queueAfter.jobs.push({ jobId: 40, unit: "TEST-foreign.service" }); }, "retirement_queue_reobservation");
   });
   it("allows ENODEV/path absence only AFTER durable empty proof and intent with matching original pins and independent manager facts", () => {
-    fails(r => { if (r.kind === Kind.RetirementIntent) r.publication.admittedAtEpochMs = 7001; }, "publication_order");
+    fails(r => { if (r.kind === Kind.RetirementIntent) r.publication.admitted.atEpochMs = 7001; }, "publication_order");
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.effects[0]!.submittedAtEpochMs = 8001; }, "retirement_effect_order");
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.effects.reverse(); }, "retirement_effect_order");
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.resources[0]!.slice.originalInvocationId = I("f"); }, "manager_retirement_identity");
@@ -473,6 +625,7 @@ describe("retained v2 bounded source/data contracts", () => {
     Kind.RetirementPublication, Kind.FinalReceipt, Kind.OrdinaryTerminal, Kind.KeyedTerminal])("missing %s remains incomplete at the owning historical reader", kind => {
     const f = fixture({ keyed: true });
     f.records = f.records.filter(r => r.kind !== kind);
+    f.publicationEvents = selectedEvents(f.publicationEvents, f.records);
     expect(read(f).state).toBe(RetainedChainState.Incomplete);
   });
   it("does not accept missing original obligations, final references or keyed CAS companions", () => {
@@ -486,9 +639,9 @@ describe("retained v2 bounded source/data contracts", () => {
     expect(() => read(f, Mode.LiveData, 20001)).toThrow("expired_live_data");
     expect(() => read(f, Mode.LiveData, 11000)).toThrow("future_publication");
     for (const kind of [Kind.EmptyProof, Kind.RetirementIntent, Kind.RetirementFacts, Kind.RetirementPublication, Kind.FinalReceipt, Kind.OrdinaryTerminal, Kind.KeyedTerminal]) {
-      fails(r => { if (r.kind === kind) { r.publication.durableAtEpochMs = 20000; r.publication.finalValidatedAtEpochMs = 20000; } }, "publication_authority_time", { keyed: true });
+      failsEvents((e, r) => { if (r.kind === kind) { e.durable = stamp(20000, e.generation, 1); e.readback = stamp(20000, e.generation, 2); if (e.heldReread) e.heldReread = stamp(20000, e.generation, 3); e.finalValidated = stamp(20000, e.generation, 4); } }, "publication_authority_time", { keyed: true });
     }
-    fails(r => { if (r.kind === Kind.ServiceAdmission) r.publication.finalValidatedAtEpochMs = 10000; }, "publication_authority_time");
+    failsEvents((e, r) => { if (r.kind === Kind.ServiceAdmission) e.finalValidated = stamp(10000, e.generation, 4); }, "publication_authority_time");
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.effects[1]!.completedAtEpochMs = 20000; }, "retirement_effect_order");
   });
   it("pins original deadline, allowance, N, attempt identifier and join binding without renewal", () => {
@@ -523,7 +676,7 @@ describe("retained v2 bounded source/data contracts", () => {
     expect(target.data).not.toHaveProperty("cleanupAttempt");
     expect(target.data.originalCleanupAuthority).not.toHaveProperty("startedAtEpochMs");
     prefix.forEach(r => expect(parseScopedRetainedRecordBytes(retainedResourceBytes(r))).toEqual(r));
-    expect(validateScopedRetainedChain(prefix, { ...preparation.expected, attemptDigest: null }, Mode.LiveData, 2900))
+    expect(validateScopedRetainedChain(prefix, selectedEvents(preparation.publicationEvents, prefix), { ...preparation.expected, attemptDigest: null }, Mode.LiveData, 2900))
       .toEqual({ state: RetainedChainState.Incomplete, missing: [Kind.Closure] });
     const originalNames = retainedResourceNames(retainedResourceLocator(target.data));
     for (const actualStart of [3000, 4000]) {
@@ -558,16 +711,17 @@ describe("retained v2 bounded source/data contracts", () => {
   it("rejects duplicate or forked first closures and a later plausible attempt against the once-pinned digest", () => {
     const f = fixture({ actualStart: 3000, allowance: 1000 });
     const closure = f.records.find((r): r is ScopedRetainedRecord<Kind.Closure> => r.kind === Kind.Closure)!;
-    expect(() => validateScopedRetainedChain([...f.records, closure], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("duplicate_records");
+    expect(() => validateScopedRetainedChain([...f.records, closure], f.publicationEvents, f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("duplicate_records");
     const fork = structuredClone(closure) as Mutable<typeof closure>;
     fork.publication.generation = 100;
+    fork.publication.admitted = stamp(fork.publication.admitted.atEpochMs, 100, 0);
     fork.data.cleanupAttempt.startedAtEpochMs++;
     fork.data.cleanupAttempt.endEpochMs++;
     fork.data.attemptDigest = digest(fork.data.cleanupAttempt);
-    expect(() => validateScopedRetainedChain([...f.records, fork], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("duplicate_stage");
+    expect(() => validateScopedRetainedChain([...f.records, fork], [...f.publicationEvents, project(fork)], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("duplicate_stage");
     const later = fixture({ actualStart: 4000, allowance: 1000 });
-    expect(() => validateScopedRetainedChain(later.records, f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("original_attempt");
-    expect(() => validateScopedRetainedChain(f.records, { ...f.expected, attemptDigest: null }, Mode.ReadOnlyHistoricalData, 99000)).toThrow("original_attempt");
+    expect(() => validateScopedRetainedChain(later.records, later.publicationEvents, f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("original_attempt");
+    expect(() => validateScopedRetainedChain(f.records, f.publicationEvents, { ...f.expected, attemptDigest: null }, Mode.ReadOnlyHistoricalData, 99000)).toThrow("original_attempt");
   });
   it("rejects every publication at effective early expiry, keeps missing successors incomplete after disposal", () => {
     const options = { actualStart: 3000, allowance: 1000, keyed: true, runtimeProviders: true, twoProviders: true };
@@ -576,14 +730,15 @@ describe("retained v2 bounded source/data contracts", () => {
     expect(read(f, Mode.ReadOnlyHistoricalData, 99000).state).toBe(RetainedChainState.CompleteData);
     for (const kind of [Kind.Closure, Kind.ResourceUncreated, Kind.EmptyProof, Kind.RetirementIntent, Kind.RetirementFacts,
       Kind.RetirementPublication, Kind.FinalReceipt, Kind.OrdinaryTerminal, Kind.KeyedTerminal]) {
-      fails(r => { if (r.kind === kind) { r.publication.durableAtEpochMs = 4000; r.publication.finalValidatedAtEpochMs = 4000; } },
+      failsEvents((e, r) => { if (r.kind === kind) { e.durable = stamp(4000, e.generation, 1); e.readback = stamp(4000, e.generation, 2); if (e.heldReread) e.heldReread = stamp(4000, e.generation, 3); e.finalValidated = stamp(4000, e.generation, 4); } },
         "publication_authority_time", { ...options, ...(kind === Kind.ResourceUncreated ? { neverCreated: true, preparation: Preparation.Reserved } : {}) });
     }
     for (const kind of [Kind.RetirementPublication, Kind.FinalReceipt, Kind.OrdinaryTerminal, Kind.KeyedTerminal]) {
-      const missing = { ...f, records: f.records.filter(r => r.kind !== kind) };
+      const records = f.records.filter(r => r.kind !== kind);
+      const missing = { ...f, records, publicationEvents: selectedEvents(f.publicationEvents, records) };
       expect(read(missing).state).toBe(RetainedChainState.Incomplete);
     }
-    fails(r => { if (r.kind === Kind.ResourceBinding) { r.publication.admittedAtEpochMs = 3001; r.publication.durableAtEpochMs = 3002; r.publication.finalValidatedAtEpochMs = 3003; } },
+    fails(r => { if (r.kind === Kind.ResourceBinding) { r.publication.admitted.atEpochMs = 3001; } },
       "publication_authority_time", options);
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.effects[1]!.completedAtEpochMs = 4000; }, "retirement_effect_order", options);
   });

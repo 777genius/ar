@@ -1,6 +1,9 @@
+import { safeNativeWebFromError } from "./app-server/domain/app-server-usage-error";
+import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
+import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained } from "./hosted-mimo-worker-origin";
 import { join } from "node:path";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   AgentRuntimeExecutionMode,
   assertProviderTaskSystemPrompt,
@@ -61,6 +64,11 @@ import {
 } from "./codex-provider-egress-policy";
 
 type CodexJsonAgentDriverBaseOptions = {
+  /** Trusted owned-worker storage port. It grants no credential authority. */
+  readonly mimoHomeLifecycle?: {
+    prepareHome(codexHome: string): Promise<void>;
+    retainHome(codexHome: string): Promise<void>;
+  };
   readonly assertProviderAdmission?: () => void;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly model?: string;
@@ -230,6 +238,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
 
     let materialized: CodexMaterializedSession | null = null;
     let engineEntered = false;
+    const returned = new AppServerReturnedEvidence();
     const outputAbortController = new AbortController();
     const outputAbortSignal = AbortSignal.any([
       input.abortSignal,
@@ -323,11 +332,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
           : await this.runLogicalThread({
               engineInput,
               logicalThread: input.logicalThread,
+              returned,
             });
       const result =
         logicalThreadResult === undefined
           ? await this.engine.run(engineInput)
           : logicalThreadResult;
+      returned.capture(result);
       this.executionLifetime?.assertActive(outputAbortSignal);
       textDeltaRedactor?.flush();
       if (result.status === "waiting_for_input") {
@@ -346,6 +357,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
             durationMs: Date.now() - startedAt,
             finishReason: "waiting_for_input",
             ...(result.usage === undefined ? {} : { usage: result.usage }),
+            ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
           },
           warnings: result.warnings,
         };
@@ -370,21 +382,25 @@ export class CodexJsonAgentDriver implements AgentDriver {
           durationMs: Date.now() - startedAt,
           finishReason: "completed",
           ...(result.usage === undefined ? {} : { usage: result.usage }),
+          ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
         },
         warnings: [...result.warnings, ...snapshot.warnings],
       };
     } catch (error) {
+      error = returned.retain(error);
       textDeltaRedactor?.discard();
       const outputFailure =
         !input.abortSignal.aborted && outputAbortController.signal.aborted
           ? outputAbortController.signal.reason
           : error;
       const failure = codexExecutionFailure(outputFailure, input.redactor);
+      const nativeWeb = safeNativeWebFromError(error, input.redactor);
       return {
         ...failure,
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(nativeWeb === undefined ? {} : { nativeWeb }),
           ...(usageFromError(error)
             ? { usage: usageFromError(error)! }
             : {}),
@@ -420,7 +436,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
           redactor: input.redactor,
         });
     const egressPolicy = codexMimoTokenPlanEgressPolicy();
-    const tempRoot = await createCodexRuntimeTempRoot({
+    const workerOrigin = hosted ? readHostedMimoWorkerOrigin() : null;
+    const tempRoot = workerOrigin
+      ? await mkdtemp(join(workerOrigin.homeRoot, "mimo-"))
+      : await createCodexRuntimeTempRoot({
       prefix: "subscription-runtime-codex-mimo-",
       ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
     });
@@ -429,6 +448,11 @@ export class CodexJsonAgentDriver implements AgentDriver {
     const localSession: CodexMaterializedSession = {
       home, codexHome, env: {},
       release: once(async () => {
+        if (workerOrigin && this.options.mimoHomeLifecycle) {
+          await this.options.mimoHomeLifecycle.retainHome(codexHome);
+          assertHostedMimoWorkerHomeRetained(codexHome);
+          return; // The outside owner reconciles service namespaces and retained storage.
+        }
         if (this.executionLifetime) {
           // Bounded custody ends only after removal succeeds. The ordinary
           // helper may tolerate cleanup failures after scrubbing credentials.
@@ -445,6 +469,8 @@ export class CodexJsonAgentDriver implements AgentDriver {
       await mkdir(home, { recursive: true, mode: 0o700 });
       this.executionLifetime?.assertActive();
       await mkdir(codexHome, { recursive: true, mode: 0o700 });
+      this.executionLifetime?.assertActive();
+      if (workerOrigin) await this.options.mimoHomeLifecycle?.prepareHome(codexHome);
       this.executionLifetime?.assertActive();
       await writeFile(
         join(codexHome, "config.toml"),
@@ -471,6 +497,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
           enumerable: true,
           get: () => {
             this.executionLifetime?.assertActive();
+            this.options.assertProviderAdmission?.();
             const credential = resolveAuthorizedHostedMimoCredential(input.redactor);
             this.executionLifetime?.assertActive();
             return credential;
@@ -494,6 +521,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   private async runLogicalThread(input: {
     readonly engineInput: Parameters<CodexExecutionEngine["run"]>[0];
     readonly logicalThread: ProviderLogicalThreadExecution;
+    readonly returned: AppServerReturnedEvidence;
   }) {
     if (!this.engine.runLogicalThread) {
       throw new Error("codex_logical_thread_unsupported");
@@ -510,6 +538,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         ? {}
         : { previousCheckpoint: input.logicalThread.previousCheckpoint }),
     });
+    input.returned.capture(result);
     await input.logicalThread.onCheckpoint({
       checkpoint: result.providerCheckpoint,
       outcome: result.outcome,
@@ -598,6 +627,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
             durationMs: Date.now() - startedAt,
             finishReason: "waiting_for_input",
             ...(result.usage === undefined ? {} : { usage: result.usage }),
+            ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
           },
           warnings: result.warnings,
         };
@@ -623,6 +653,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
           durationMs: Date.now() - startedAt,
           finishReason: "completed",
           ...(result.usage === undefined ? {} : { usage: result.usage }),
+          ...(result.nativeWeb === undefined ? {} : { nativeWeb: result.nativeWeb }),
         },
         warnings: [...result.warnings, ...snapshot.warnings],
       };
@@ -630,11 +661,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
       this.managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
       const failure = codexExecutionFailure(error, input.redactor);
+      const nativeWeb = safeNativeWebFromError(error, input.redactor);
       return {
         ...failure,
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(nativeWeb === undefined ? {} : { nativeWeb }),
           ...(usageFromError(error)
             ? { usage: usageFromError(error)! }
             : {}),
@@ -816,7 +849,8 @@ export class CodexJsonAgentDriver implements AgentDriver {
     // their configuration/home before its disposal succeeds.
     await this.engine.dispose?.();
     if (this.materializations.size || this.pendingReleases.size || (this.executionLifetime && this.activeRuns.size)) throw new Error("codex_driver_materialization_pending");
-    if (this.executionLifetime && (!this.executionLifetime.childBudget ||
+    if (!(this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && this.options.mimoHomeLifecycle && readHostedMimoWorkerOrigin()) &&
+        this.executionLifetime && (!this.executionLifetime.childBudget ||
         (this.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") &&
         ([...this.retainedSessions].some(session => !this.unusedSessions.has(session)) || this.managedRunSessions.size)) {
       // This slice has no accepted controller cleanup binding. Local transport

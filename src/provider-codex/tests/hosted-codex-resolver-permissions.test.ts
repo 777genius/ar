@@ -66,7 +66,7 @@ describe("hosted resolver leaf admission", () => {
     expect(config).not.toContain('"/run/systemd/resolve" = "read"');
     expect(config).not.toContain('"/run/systemd/resolve/resolv.conf" = "read"');
     expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
-    expect(config.match(/"\/etc\/subscription-runtime\/secrets" = "deny"/g)).toHaveLength(2);
+    expect(config.match(/"\/etc\/subscription-runtime" = "deny"/g)).toHaveLength(2);
   });
   it("rejects a private symlink before observing its target", () => {
     resolverFixture();

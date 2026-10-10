@@ -1,3 +1,7 @@
+import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
+import { hostedFdLaunch } from "./hosted-fd-launch";
+import type { ChildProcess } from "node:child_process";
+import { decodeHostedInventoryBytes, parseHostedOrdinaryOwnedIdentity, parseHostedInventoryV5, type HostedInventoryV5 } from "../../../core/host-infrastructure/host-inventory";
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
@@ -25,7 +29,7 @@ export function isHostedActivationFenceBusy(error: unknown): boolean {
   return !!error && typeof error === "object" && acquisitionBusy.has(error);
 }
 // Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
+const recordName = /^(?:readonly-dependency-bindings\/[0-9]{1,20}-[0-9]{1,20}\.json|readonly-dependency-starts\/[a-f0-9-]{36}\.json|dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
@@ -44,7 +48,9 @@ export function assertHostedActivationOperator(): void {
 export function readHostedActivationBytes(name: string): Buffer | null {
   assertHostedActivationOperator();
   if (!recordName.test(name)) invalid();
-  return readActivationPath(join(root, name));
+  const bytes = readActivationPath(join(root, name));
+  if (bytes && name === "readonly-inventory.json") decodeHostedInventoryBytes(bytes);
+  return bytes;
 }
 function readActivationPath(path: string, privateFile = true): Buffer | null {
   const parent = dirname(path);
@@ -207,6 +213,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
   const origin = origins.find(row => row.jobId === start.jobId);
   if (!origin || origin.birthSha256 !== start.originSha256) invalid();
   same(start, origin, "jobId,jobRootDir,workspacePath");
+  assertHostedOrdinaryDependencyNotAdopted(fence, canonical(start.workspacePath));
   const jobName = sha256(str(start.jobId)) + ".json";
   const birth = requiredWire("ordinary-origins/" + jobName, "schemaVersion,installationId,jobId,jobRootDir,workspacePath,origin");
   jobFields(birth.value); same(start, birth.value, "installationId,jobId,jobRootDir,workspacePath");
@@ -316,24 +323,27 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   if (!inventoryBytes) invalid();
   const decoded = decodeHostedActivationBytes(inventoryBytes);
   const revision = decoded && typeof decoded === "object" && "schemaVersion" in decoded ? decoded.schemaVersion : undefined;
-  const inventory = { bytes: inventoryBytes, value: wire(decoded,
+  const modern = revision === 5 ? parseHostedInventoryV5(decoded) : undefined;
+  const inventory = { bytes: inventoryBytes, value: modern ? modern as unknown as Wire : wire(decoded,
     "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators" +
     (revision === 3 || revision === 4 ? ",systemBusInfrastructure" : "") + (revision === 4 ? ",collectorProfile" : "")) };
-  if ((revision !== 2 && revision !== 3 && revision !== 4) || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
+  if ((revision !== 2 && revision !== 3 && revision !== 4 && revision !== 5) || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
   const systemBusInfrastructure = readSystemBusInfrastructureField(inventory.value);
   readFdCollectorProfileField(inventory.value);
   const units = rows(inventory.value.units).map(value => {
-    const row = wire(value, "name,controlGroup,fragmentSha256"); str(row.name, /^[A-Za-z0-9_@.-]+\.(service|scope)$/);
-    if (str(row.name).startsWith("subscription-runtime-hosted-")) invalid();
-    canonical(row.controlGroup); digestValue(row.fragmentSha256); return row;
+    const row = modern ? { name: (value as Wire).name, controlGroup: (value as Wire).controlGroup, fragmentSha256: (value as Wire).fragmentSha256 } : wire(value, "name,controlGroup,fragmentSha256"); str(row.name, /^[A-Za-z0-9_@.-]+\.(service|scope)$/);
+    if (!modern && str(row.name).startsWith("subscription-runtime-hosted-")) invalid();
+    canonical(row.controlGroup);
+    if (!(modern && str(row.name).endsWith(".scope") && row.fragmentSha256 === null)) digestValue(row.fragmentSha256);
+    return row;
   });
-  if (!units.length || units.length > 128) invalid();
+  if (!units.length || units.length > (modern ? 1024 : 128)) invalid();
   distinct(units.map(row => row.name)); distinct(units.map(row => row.controlGroup));
   if (systemBusInfrastructure && (inventory.value.supervisorUnit === "dbus.service" ||
       !units.some(row => row.name === "dbus.service" && row.controlGroup === systemBusInfrastructure.service.controlGroup &&
         row.fragmentSha256 === systemBusInfrastructure.service.fragmentSha256))) invalid();
   const disabled = rows(inventory.value.disabledCreators);
-  if (disabled.length > 128) invalid(); distinct(disabled);
+  if (disabled.length > (modern ? 512 : 128)) invalid(); distinct(disabled);
   for (const name of disabled) {
     if (str(name, /^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/).length > 200 || units.some(row => row.name === name) ||
         (systemBusInfrastructure && name === "dbus.socket")) invalid();
@@ -357,7 +367,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
     return row;
   });
   distinct(creators.map(row => row.creatorId));
-  if (creators.length > 128) invalid();
+  if (creators.length > (modern ? 1 : 128)) invalid();
   for (const left of creators) for (const right of creators) {
     if (left !== right && left.jobId === right.jobId && (left.childSlotSha256 || right.childSlotSha256)) invalid();
     if (left.jobId === right.jobId ? left.jobRootDir !== right.jobRootDir || left.workspacePath !== right.workspacePath :
@@ -377,7 +387,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
       if (at < 1 || key in value) invalid(); value[key] = line.slice(at + 1);
     }
     wire(value, "Id,FragmentPath,DropInPaths,ControlGroup,MainPID");
-    if (value.Id !== name || value.DropInPaths !== "") invalid(); return value;
+    if (value.Id !== name || (!modern || name !== modern.supervisorUnit) && value.DropInPaths !== "") invalid(); return value;
   };
   const supervisor = show(str(owner.name)), current = show(str(start.unit));
   const fragment = readActivationPath(canonical(supervisor.FragmentPath), false);
@@ -387,6 +397,24 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   if (readFileSync("/etc/machine-id", "utf8").trim() !== activation.hostId ||
       readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== activation.bootId ||
       pidBirth(str(supervisor.MainPID)) !== activation.supervisorId) invalid();
+  if (modern) {
+    const ownerFacts = modern.units.find(u => u.name === modern.supervisorUnit)!;
+    if (modern.bootId !== activation.bootId || modern.supervisor.birth !== activation.supervisorId || Date.now() >= modern.supervisor.workEndEpochMs ||
+        supervisor.FragmentPath !== ownerFacts.fragmentPath || supervisor.DropInPaths !== ownerFacts.dropIns.map(p => p.path).join(" ")) invalid();
+    for (const pin of ownerFacts.dropIns) {
+      const bytes = readActivationPath(pin.path, false); if (!bytes || sha256(bytes) !== pin.sha256) invalid();
+    }
+    const row = rows(activation.ordinaryStarts).find(v => (v as Wire).unit === start.unit) as Wire | undefined;
+    if (!row) invalid();
+    const identityBytes = readHostedActivationBytes(`ordinary-starts/${str(row.startId)}.identity.json`);
+    if (!identityBytes || identityBytes.length > 4096) invalid();
+    const identity = parseHostedOrdinaryOwnedIdentity(decodeHostedActivationBytes(identityBytes)), node = lstatSync(`/sys/fs/cgroup${canonical(start.controlGroup)}`);
+    if (identity.installationId !== installation.installationId || identity.startId !== row.startId || identity.unit !== start.unit || identity.bootId !== activation.bootId ||
+        identity.startSha256 !== sha256(requiredWire(`ordinary-starts/${str(row.startId)}.json`, startKeys).bytes) || identity.supervisorBirth !== modern.supervisor.birth ||
+        identity.creatorBirth !== start.creatorPidBirth || identity.mainPidBirth !== pidBirth(str(current.MainPID)) || identity.controlGroup !== start.controlGroup || identity.dev !== String(node.dev) || identity.ino !== String(node.ino) || !node.isDirectory() || node.isSymbolicLink() || node.uid !== 0) invalid();
+    const invocation = spawnSync("/usr/bin/systemctl", ["show", "--property=InvocationID", "--", str(start.unit)], { encoding: "utf8", timeout: 5000 });
+    if (invocation.error || invocation.status !== 0 || invocation.stdout.trim() !== `InvocationID=${identity.invocationId}`) invalid();
+  }
   const creatorPid = str(start.creatorPidBirth).split(":")[0]!;
   if (pidBirth(creatorPid) !== start.creatorPidBirth ||
       readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
@@ -505,11 +533,29 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
         if (!retained?.equals(bytes) || JSON.stringify(row) !== JSON.stringify(reservation)) invalid();
         if (dependency) readHostedDependencyAttempt(dependency, fresh.start, parentId);
         if (companion && companion.identity.deadlineEpochMs <= Date.now()) invalid();
+        const inventoryBytes = readHostedActivationBytes("readonly-inventory.json")!;
+        const inventory = decodeHostedInventoryBytes(inventoryBytes);
+        if ((inventory as Wire).schemaVersion === 5) {
+          const v5 = parseHostedInventoryV5(inventory), guard = hostedFdLaunch(child as unknown as ChildProcess);
+          if (guard.unit !== unit || !child.pid || failedOrdinaryWaits.has(child) || Date.now() >= v5.supervisor.workEndEpochMs) invalid();
+          const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,InvocationID,ControlGroup,MainPID,Delegate", "--", unit], { encoding: "utf8", timeout: Math.min(5000, v5.supervisor.workEndEpochMs - Date.now()) });
+          if (result.error || result.status !== 0) invalid();
+          const facts = Object.fromEntries(result.stdout.trim().split("\n").map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+          const group = unitGroup(unit), node = lstatSync(`/sys/fs/cgroup${group}`);
+          if (facts.Id !== unit || facts.ControlGroup !== group || facts.Delegate !== "no" || !/^[a-f0-9]{32}$/.test(facts.InvocationID ?? "") || !node.isDirectory() || node.uid !== 0) invalid();
+          createActivationRecord(`ordinary-starts/${startId}.identity.json`, Buffer.from(JSON.stringify({ schemaVersion: 1,
+            installationId: activation.installationId, startId, startSha256: sha256(bytes), parentStartId: parentId, unit, bootId: activation.bootId,
+            supervisorBirth: v5.supervisor.birth, creatorBirth: pidBirth(String(process.pid)), invocationId: facts.InvocationID,
+            controlGroup: group, dev: String(node.dev), ino: String(node.ino), mainPidBirth: pidBirth(facts.MainPID!),
+            workEndEpochMs: v5.supervisor.workEndEpochMs, cleanupEndEpochMs: v5.supervisor.cleanupEndEpochMs }) + "\n"));
+        }
       } });
       if (companion) retainHostedScopedSubmitter(fence, companion, child);
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));
-      child.on("exit", (code, signal) => {
+      const schema5Wait = (decodeHostedInventoryBytes(readHostedActivationBytes("readonly-inventory.json")!) as Wire).schemaVersion === 5;
+      const retainTerminal = (code: number | null, signal: string | null) => {
+        const release = ordinaryReleases.get(child);
         ordinaryReleases.delete(child);
         if (code !== 0 || signal !== null || failedOrdinaryWaits.has(child)) return;
         try {
@@ -520,11 +566,17 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
             if (!retained?.equals(bytes) || JSON.stringify(row) !== JSON.stringify(reservation) ||
                 current.installationId !== activation.installationId || current.bootId !== activation.bootId ||
                 current.supervisorId !== activation.supervisorId) invalid();
+            if (schema5Wait) {
+              if (!release?.released) invalid();
+              hostedFdLaunch(child as unknown as ChildProcess).assertOriginalZeroWaitClosed();
+            }
             createActivationRecord(`ordinary-completed/${startId}.json`, Buffer.from(JSON.stringify({ schemaVersion: 1,
               startId, startSha256: sha256(bytes), waitStatus: 0 }) + "\n"));
           });
         } catch { invalidateHostedOrdinaryWait(child); } // Ambiguity retains the reservation; no synthetic completion.
-      });
+      };
+      if (schema5Wait) (child as unknown as ChildProcess).once("close", retainTerminal);
+      else child.on("exit", retainTerminal);
       return child;
     } catch (error) {
       if (!childBound) publishOrdinaryActivation(fence, { ...next, generation: generation + 1, phase: "CLOSED" });
