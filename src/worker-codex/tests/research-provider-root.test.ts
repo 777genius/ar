@@ -531,7 +531,7 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(launch.args).toContain("--property=DevicePolicy=closed");
     expect(launch.args).toContain("--property=SystemCallFilter=~@raw-io @module");
     expect(launch.args).toContain("--property=NoNewPrivileges=yes");
-    expect(launch.args).toContain("--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP");
+    expect(launch.args).toContain("--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE");
     const namespaceProperties = /^(?:RootDirectory|RootImage|BindPaths|BindReadOnlyPaths|TemporaryFileSystem|MountFlags|MountAPIVFS|ProtectSystem|PrivateDevices|ProtectControlGroups|ProtectKernelModules|ReadWritePaths|ReadOnlyPaths|InaccessiblePaths|PrivateTmp|PrivateMounts)=/;
     expect(launch.args.filter(arg => arg.startsWith("--property=")).some(arg => namespaceProperties.test(arg.slice("--property=".length)))).toBe(false);
     expect(launch.args.slice(-5, -2)).toEqual([f.spec.request.jobId, unit, f.home]);

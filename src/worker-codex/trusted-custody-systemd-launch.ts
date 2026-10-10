@@ -174,6 +174,9 @@ export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha25
     ...properties.map(p => `--property=${p}`), "--", process.execPath,
     join(spec.runtimeDirectory, "host-integration", "research-runtime-launch.mjs"), request.jobId, spec.startId] };
 }
+/** Trusted assembly needs PID1 cold-root witnesses. The fixed root transition
+ * drops every capability before tini and any provider or workspace code. */
+export const researchProviderAssemblyCapabilityBoundingSet = "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE";
 export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: string, selectedCodexHome: string,
   rootPlan: ResearchProviderRootPlan): { command: string; args: string[] } {
   const spec = parseResearchStartSpec(value), { request } = spec;
@@ -189,7 +192,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",
     "SystemCallFilter=~@raw-io @module", "RestrictSUIDSGID=yes", "AmbientCapabilities=",
-    "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes"];
+    researchProviderAssemblyCapabilityBoundingSet, "NoNewPrivileges=yes"];
   return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`,
     `--description=subscription-runtime-research-provider:${spec.startId}:${unit}`, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
     ...properties.map(p => `--property=${p}`), "--", "/usr/bin/unshare", "--mount", "--propagation", "private", process.execPath,
