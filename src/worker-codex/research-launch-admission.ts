@@ -14,6 +14,7 @@ import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSh
 import { researchProviderUnits, signalResearchProvider } from "./research-launch-lifecycle";
 import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
+import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
@@ -38,8 +39,8 @@ export function readResearchStartBinding(directory: string): ResearchStartBindin
 }
 /** Mutable authority and pinned identities remain current even while the
  * confined launcher is inert. This never traverses executable/artifact bytes. */
-function assertResearchStartAuthority(spec: ResearchStartSpec): void {
-  assertResearchInitialRoot(); assertResearchSharedHost();
+function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () => void = assertResearchInitialRoot): void {
+  assertRoot(); assertResearchSharedHost();
   researchCustody(spec.request.authRootDir);
   const grantBytes = researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json"));
   const grant = parseResearchGrant(researchJson(grantBytes));
@@ -67,9 +68,15 @@ function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
   assertDigest(ResearchMaterialRole.CodexExecutable, () => researchExecutableDigest(spec.request.codexBinaryPath), spec.codexSha256);
 }
 export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
-  assertResearchStartAuthority(spec);
+  assertResearchStartMaterialInternal(spec, assertResearchInitialRoot);
+}
+function assertResearchStartMaterialInternal(spec: ResearchStartSpec, assertRoot: () => void): void {
+  assertResearchStartAuthority(spec, assertRoot);
   assertResearchMaterialBytes(spec);
-  assertResearchStartAuthority(spec);
+  assertResearchStartAuthority(spec, assertRoot);
+}
+export function assertResearchProviderStartMaterial(root: ResearchProviderAssemblyRoot): void {
+  assertResearchStartMaterialInternal(root.spec, () => assertResearchProviderAssemblyContext(root));
 }
 /** Blocking Host observations can overlap a separate operator's revoke/cancel.
  * Recheck only mutable documents and pinned identities at the effect boundary. */
@@ -79,11 +86,20 @@ function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<
       (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
       researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== initial.spec.grantSha256) researchInvalid();
 }
-function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
+export function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
+  assertResearchCurrentAuthorityInternal(jobId, initial, bindingBytes, allowClosing, assertResearchInitialRoot);
+}
+function assertResearchCurrentAuthorityInternal(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes: Buffer | undefined,
+  allowClosing: boolean, assertRoot: () => void): void {
   assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
-  assertResearchStartAuthority(initial.spec);
+  assertResearchStartAuthority(initial.spec, assertRoot);
   // No blocking observations follow the final mutable authority read.
   assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
+}
+export function assertResearchProviderCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>,
+  root: ResearchProviderAssemblyRoot, bindingBytes?: Buffer): void {
+  if (root.spec.request.jobId !== jobId || JSON.stringify(root.spec) !== JSON.stringify(initial.spec)) researchInvalid();
+  assertResearchCurrentAuthorityInternal(jobId, initial, bindingBytes, false, () => assertResearchProviderAssemblyContext(root));
 }
 /** Capture real MainPID/birth/boot/InvocationID only from the new individually
  * owned service. The explicit initial-root operator staged its closed spec. */
