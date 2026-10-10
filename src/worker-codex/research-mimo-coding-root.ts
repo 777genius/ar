@@ -14,6 +14,7 @@ export const researchMimoCodingPrivateHome = Object.freeze({
 });
 const bootstrapNames = Object.freeze([
   "hosted-app-server-launcher.js", "hosted-process-descriptors.js",
+  "hosted-blocking-output.js", "managed-provider-scratch-environment.js",
   "hosted-fd-prelude.js", "hosted-app-server-launch-frame-decoder.js",
 ]);
 

@@ -57,8 +57,10 @@ describe("closed MiMo coding root recipe", () => {
   });
   it("exposes only the finite launcher files instead of an installed runtime directory", () => {
     const paths = researchMimoCodingBootstrapPaths("/TEST/runtime");
-    expect(paths).toHaveLength(6);
-    expect(new Set(paths).size).toBe(6);
+    expect(paths).toHaveLength(8);
+    expect(new Set(paths).size).toBe(8);
+    expect(paths.some(path => path.endsWith("/hosted-blocking-output.js"))).toBe(true);
+    expect(paths.some(path => path.endsWith("/managed-provider-scratch-environment.js"))).toBe(true);
     expect(paths.some(path => path.endsWith("/hosted-app-server-launch-frame-decoder.js"))).toBe(true);
     expect(paths.some(path => path.endsWith("/hosted-mimo-coding-bootstrap.js"))).toBe(true);
     expect(paths.some(path => /(?:credential|registry|launch-frame\.js)/.test(path))).toBe(false);

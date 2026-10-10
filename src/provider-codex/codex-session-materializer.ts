@@ -5,6 +5,7 @@ import type {
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { managedScratchToolEnvironmentKeys } from "./app-server/adapters/managed-provider-scratch-environment";
 import {
   codexAuthJsonFromArtifact,
   sessionArtifactFromCodexAuthJson,
@@ -494,7 +495,7 @@ export function codexJsonHomeConfigToml(input?: {
   const modelBackend = input?.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const shellEnvKeys = [
     "PATH", "HOME", "CI", "CODEX_HOME",
-    ...(input?.namedPermissions ? ["TMPDIR", "TMP", "TEMP"] : []),
+    ...(input?.namedPermissions ? ["TMPDIR", "TMP", "TEMP", ...managedScratchToolEnvironmentKeys] : []),
     "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER",
     "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL",
     "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL",

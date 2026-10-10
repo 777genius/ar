@@ -1,5 +1,7 @@
 import { mkdirSync, writeFileSync, lstatSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { setInheritedStdioBlocking } from "./hosted-blocking-output";
+import { managedProviderScratchLaunch } from "./managed-provider-scratch-environment";
 import { assertHostedProcessDescriptors, assertHostedFdPreludeDescriptors } from "./hosted-process-descriptors";
 import { announceHostedFdPrelude } from "./hosted-fd-prelude";
 import type { HostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
@@ -64,9 +66,14 @@ function onInput(chunk: Buffer): void {
     } catch { fail("hosted_app_server_coding_config_invalid"); }
   }
 
-  const child = spawn(frame.command, frame.args, {
+  let launch: ReturnType<typeof managedProviderScratchLaunch>;
+  try { launch = managedProviderScratchLaunch(frame.env, frame.args); }
+  catch { fail("hosted_provider_scratch_boundary_invalid"); }
+  try { setInheritedStdioBlocking(); }
+  catch { fail("hosted_app_server_blocking_output_failed"); }
+  const child = spawn(frame.command, launch.args, {
     cwd: frame.cwd,
-    env: frame.env,
+    env: launch.environment,
     stdio: ["pipe", "inherit", "inherit"],
   });
   child.on("error", () => fail("hosted_app_server_child_spawn_failed"));

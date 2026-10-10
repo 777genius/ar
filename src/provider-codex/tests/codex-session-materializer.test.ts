@@ -4,7 +4,26 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { sessionArtifactFromCodexAuthJson } from "../codex-auth-json-codec";
-import { CodexWorkerCacheSessionPoolMaterializer } from "../codex-session-materializer";
+import { CodexWorkerCacheSessionPoolMaterializer, codexJsonHomeConfigToml } from "../codex-session-materializer";
+
+describe("hosted native tool cache environment", () => {
+  it("passes finite tool cache defaults to native tools only for named permissions", () => {
+    const keys = (namedPermissions: boolean): string[] => {
+      const text = codexJsonHomeConfigToml({ namedPermissions });
+      const match = /^include_only = (\[[^\n]+\])$/m.exec(text);
+      expect(match).not.toBeNull();
+      return JSON.parse(match![1]!) as string[];
+    };
+    const hosted = keys(true), legacy = keys(false);
+    for (const key of ["GOTMPDIR", "XDG_CACHE_HOME", "npm_config_cache", "COREPACK_HOME", "YARN_CACHE_FOLDER",
+      "PIP_CACHE_DIR", "UV_CACHE_DIR", "GOCACHE", "GOMODCACHE"]) {
+      expect(hosted).toContain(key); expect(legacy).not.toContain(key);
+    }
+    for (const key of ["OPENAI_API_KEY", "GITHUB_TOKEN", "SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH", "RUSTUP_HOME", "CARGO_HOME"]) {
+      expect(hosted).not.toContain(key);
+    }
+  });
+});
 
 const input = () => ({
   session: sessionArtifactFromCodexAuthJson(JSON.stringify({
