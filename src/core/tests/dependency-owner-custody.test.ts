@@ -58,6 +58,18 @@ describe("closed dependency owner custody wire", () => {
     for (const value of values) expect(() => parseDependencyOwner(value)).toThrow("dependency_admission:invalid_record");
     expect(evaluated).toBe(0);
   });
+  it.each(["/TEST/sk-AAAAAAAAAAAAAAAA", "/TEST/Bearer token", "/TEST/line\nbreak", "/TEST/delete\x7f"])(
+    "rejects unsafe v3 workspace %j while preserving v1/v2 syntax", canonicalPath => {
+      const workspace = { ...base.workspace, canonicalPath };
+      for (const version of [1, 2] as const) {
+        const legacy = { ...base, version, workspace, owner: null };
+        expect(parseDependencyOwner(legacy)).toEqual(legacy);
+      }
+      for (const owner of [null, record.owner]) {
+        expect(() => parseDependencyOwner({ ...record, workspace, owner })).toThrow("dependency_admission:invalid_record");
+      }
+    },
+  );
   it("bounds the complete v3 wire before persistence", () => {
     const large = { ...association, path: "/" + "x".repeat(4000) };
     const value = { ...record, workspace: { ...base.workspace, canonicalPath: "/" + "w".repeat(4000) },
