@@ -3,7 +3,10 @@ import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation 
 const chunks: Buffer[] = [];
 let size = 0;
 try {
-  if (process.argv[2] === "--onboard" && process.argv.length === 4) {
+  if (process.argv[2] === "--prepare-project" && process.argv.length === 4) {
+    const { prepareHostedMimoProject } = await import("./hosted-mimo-project-bridge-prepare");
+    process.stdout.write(JSON.stringify(await prepareHostedMimoProject(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--onboard" && process.argv.length === 4) {
     process.stdout.write(JSON.stringify(await onboardHostedMimoProject(process.argv[3]!)) + "\n");
   } else if (process.argv[2] === "--execute-owned" && process.argv.length === 4) {
     if (!await executeHostedMimoProjectBridgeOperation(process.argv[3]!)) process.exitCode = 1;
