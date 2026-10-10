@@ -165,10 +165,10 @@ const contains = (parent: string, child: string): boolean => parent === "/" || c
 const overlaps = (a: string, b: string): boolean => contains(a, b) || contains(b, a);
 const sameBacking = (a: Backing, b: Backing): boolean => a.device === b.device && a.path === b.path;
 const backingOverlap = (a: Backing, b: Backing): boolean => a.device === b.device && overlaps(a.path, b.path);
-export function researchProviderProtectedPaths(authRoot: string): string[] {
+export function researchProviderProtectedPaths(authRoot?: string): string[] {
   return ["/run/systemd/private", "/run/systemd/journal", "/dev/log", "/run/dbus", "/run/user",
     "/var/lib/subscription-runtime-host-policy", researchAuthorityRoot, "/run/docker.sock", "/run/containerd/containerd.sock",
-    "/run/podman/podman.sock", "/etc/subscription-runtime/secrets", authRoot];
+    "/run/podman/podman.sock", "/etc/subscription-runtime/secrets", ...(authRoot === undefined ? [] : [authRoot])];
 }
 function mountTable(host: ResearchProviderRootHost): Mount[] {
   return observeRootFailure(ResearchProviderRootCheck.MountTable, () => {
@@ -221,6 +221,30 @@ function backing(path: string, mounts: Mount[], intentionalAlias = false): Backi
 function nativeDevice(info: Info): string {
   const device = BigInt(info.dev), major = (device >> 8n & 0xfffn) | (device >> 32n & 0xfffff000n), minor = (device & 0xffn) | (device >> 12n & 0xffffff00n);
   return `${major}:${minor}`;
+}
+/** Negative initial-host check only: no writable input may expose a protected
+ * physical base. Owner pins below /run/user are deliberately not a new census. */
+export function assertResearchWritableInputsSafe(jobRootDir: string, workspacePath: string, authRootDir?: string): void {
+  if (process.platform !== "linux") researchInvalid();
+  researchPath(jobRootDir); researchPath(workspacePath);
+  if (authRootDir !== undefined) researchPath(authRootDir);
+  const namespace = nativeHost.link("/proc/self/ns/mnt"), mounts = mountTable(nativeHost);
+  const protectedPaths = ["/etc", ...researchProviderProtectedPaths(authRootDir)];
+  const protectedBackings = protectedPaths.map(path => backing(path, mounts));
+  const roots = [jobRootDir, workspacePath];
+  const paths = [...new Set([...roots, ...mounts.filter(mount => roots.some(root =>
+    mount.point !== root && contains(root, mount.point))).map(mount => mount.point)])];
+  // Descendant aliases are observed for exclusion, never admitted as RW scope.
+  const observe = (): string => JSON.stringify(paths.map(path => {
+    const nominal = roots.includes(path), info = nativeHost.info(path), physical = backing(path, mounts, !nominal);
+    if (info.isSymbolicLink() || (nominal && !info.isDirectory()) || nativeHost.canonical(path) !== path ||
+        nativeDevice(info) !== physical.device || protectedPaths.some(protectedPath => overlaps(path, protectedPath)) ||
+        protectedBackings.some(protectedBacking => backingOverlap(physical, protectedBacking))) researchInvalid();
+    return [path, leafSignature(info), physical];
+  }));
+  const identities = observe();
+  if (observe() !== identities || JSON.stringify(mountTable(nativeHost)) !== JSON.stringify(mounts) ||
+      nativeHost.link("/proc/self/ns/mnt") !== namespace) researchInvalid();
 }
 function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home: string,
   host: ResearchProviderRootHost, scratchHost?: ScratchTempHost): Snapshot {

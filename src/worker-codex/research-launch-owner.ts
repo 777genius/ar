@@ -1,3 +1,4 @@
+import { assertResearchWritableInputsSafe } from "./research-provider-root";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { trustedResearchRuntimeLaunch } from "./trusted-custody-systemd-launch";
 import { randomUUID } from "node:crypto";
@@ -63,6 +64,8 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
   researchId(jobId);
   const jobDirectory = researchDirectoryIdentity(jobRootDir), workspaceDirectory = researchDirectoryIdentity(workspacePath);
   if (jobRootDir === workspacePath || jobRootDir.startsWith(workspacePath + "/")) researchInvalid();
+  assertResearchWritableInputsSafe(jobRootDir, workspacePath);
+  assertResearchDirectory(jobDirectory); assertResearchDirectory(workspaceDirectory);
   // Per-root arbitration also covers a different jobId targeting this root.
   recordRawGoalStateOrigin(jobRootDir);
   researchPrivateDirectory(researchAuthorityRoot);
@@ -204,6 +207,8 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
   if ((request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
   if (grant.jobId !== request.jobId || grant.jobRootDir !== request.jobRootDir || grant.workspacePath !== request.workspacePath) researchInvalid();
   assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
+  assertResearchWritableInputsSafe(request.jobRootDir, request.workspacePath, request.authRootDir);
+  assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
   // Old grants must not bypass the newer controller creation fence.
   recordRawGoalStateOrigin(request.jobRootDir);
   const assertProjectBytes = (): void => {
@@ -218,6 +223,9 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
   researchPromptBytes(researchDirectoryIdentity(request.jobRootDir), request.promptPath);
   // Auth roots are trust inputs, not provider-readable writable workspaces.
   researchCustody(request.authRootDir);
+  // Material hashing and custody reads must not leave a stale mount observation.
+  assertResearchWritableInputsSafe(request.jobRootDir, request.workspacePath, request.authRootDir);
+  assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
   const startId = randomUUID(), unit = `subscription-runtime-research-${startId}.service`;
   researchPrivateDirectory(join(job, "starts"));
   const directory = join(job, "starts", startId); researchPrivateDirectory(directory);
