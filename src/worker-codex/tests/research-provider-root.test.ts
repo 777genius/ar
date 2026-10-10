@@ -15,6 +15,7 @@ import { researchDurableDirectory } from "../research-durable-handoff-directory"
 import * as scratchAdapter from "../host-scratch-temp";
 import { CodexModelBackend, codexMimoDefaultModel } from "../../provider-codex/codex-model-backend";
 import { HostedMimoProfile } from "../../provider-codex/hosted-mimo-profile";
+import { researchMimoCodingPublicMaterials } from "../research-mimo-coding-public-materials";
 import { researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome } from "../research-mimo-coding-root";
 
 beforeEach(setupResearchFixture);
@@ -166,6 +167,42 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
+  it("captures only fixed CodingV1 policy bytes despite Host and project config", () => {
+    const f = codingCaptured(), observed = observingHost();
+    fs.mkdirSync(local("/etc/codex"), { recursive: true, mode: 0o755 });
+    fs.writeFileSync("/etc/codex/requirements.toml", "TEST_HOST_POLICY_NEVER_IMPORT", { mode: 0o644 });
+    fs.mkdirSync(local(join(f.spec.request.workspacePath, ".codex")), { mode: 0o755 });
+    fs.writeFileSync(join(f.spec.request.workspacePath, ".codex/config.toml"),
+      'model_catalog_json = "/TEST/foreign-models.json"\n[mcp_servers.TEST]\ncommand = "/TEST/foreign"\n', { mode: 0o644 });
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    for (const file of researchMimoCodingPublicMaterials) {
+      const bind = plan.bindings.find(bind => bind.target === file.target)!;
+      expect(bind.source).toBe(join(f.directory, "provider-roots", unit, file.name));
+      expect(bind.access).toBe(ResearchRootMountAccess.ReadOnly); expect(bind.file).toBe(true);
+      expect(fs.readFileSync(bind.source, "utf8")).toBe(file.bytes);
+      expect(fs.lstatSync(bind.source).mode & 0o7777).toBe(0o444);
+      expect(fs.lstatSync(bind.source).nlink).toBe(1);
+      expect(fs.readFileSync(join(plan.fixedRootDirectory, file.target.slice(1)), "utf8")).toBe("");
+    }
+    expect(fs.lstatSync(join(plan.fixedRootDirectory, "etc/codex")).mode & 0o7777).toBe(0o755);
+    expect(plan.bindings.some(bind => bind.source === "/etc/codex" || bind.source.startsWith("/etc/codex/"))).toBe(false);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each(researchMimoCodingPublicMaterials.flatMap(file => ["bytes", "symlink", "writable", "mount"].map(fault => ({ file, fault }))))(
+    "rejects changed CodingV1 $file.name $fault before a retained root can be used", ({ file, fault }) => {
+      const f = codingCaptured(), observed = observingHost();
+      const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+      const bind = plan.bindings.find(bind => bind.target === file.target)!;
+      if (fault === "bytes") {
+        fs.chmodSync(local(bind.source), 0o644); fs.writeFileSync(bind.source, "X".repeat(Buffer.byteLength(file.bytes))); fs.chmodSync(local(bind.source), 0o444);
+      }
+      if (fault === "symlink") { fs.unlinkSync(bind.source); fs.symlinkSync(f.spec.request.promptPath, local(bind.source)); }
+      if (fault === "writable") fs.chmodSync(local(bind.source), 0o644);
+      if (fault === "mount") observed.extraMounts.push(`900 1 8:1 /TEST-foreign ${bind.source} rw - ext4 /dev/TEST rw`);
+      expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+      expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    });
   it("rejects a guest home as the Host CodingV1 admission home before creating any root", () => {
     const f = codingCaptured(), observed = observingHost();
     expect(() => prepareResearchProviderRoot(f.spec, unit, researchMimoCodingCodexHome, undefined, observed.adapter))

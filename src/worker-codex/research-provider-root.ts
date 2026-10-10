@@ -9,6 +9,7 @@ import { researchAuthorityRoot, researchHash, researchId, researchInvalid, resea
 import { assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
 import { readKernelMountTable } from "./host-scratch-mount";
+import { researchMimoCodingPublicMaterials } from "./research-mimo-coding-public-materials";
 import { assertResearchMimoCodingRootBindings, researchMimoCodingBootstrapBinding, researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
 
 /** Private finite observations only; never execution authority or error payloads. */
@@ -60,7 +61,7 @@ function observeRootFailure<T>(check: ResearchProviderRootCheck, operation: () =
 }
 
 export enum ResearchRootMountAccess { ReadOnly = "read-only", ReadWrite = "read-write" }
-export enum ResearchRootReadRole { Dns = "dns", ScratchPolicy = "scratch-policy", PublicText = "public-text", CaBundle = "ca-bundle" }
+export enum ResearchRootReadRole { Dns = "dns", ScratchPolicy = "scratch-policy", PublicText = "public-text", CaBundle = "ca-bundle", CodingPolicy = "coding-policy" }
 const publicTextNames = ["passwd", "group", "nsswitch.conf", "hosts", "resolv.conf", "gai.conf", "host.conf"] as const;
 const resolverConfNames = ["resolv.conf", "stub-resolv.conf"] as const;
 const resolverSockets = [{ name: "io.systemd.Resolve", mode: 0o666 }, { name: "io.systemd.Resolve.Monitor", mode: 0o600 }] as const;
@@ -92,6 +93,7 @@ const nativeHost: ResearchProviderRootHost = {
     if (role === ResearchRootReadRole.ScratchPolicy ? path !== "/etc/subscription-runtime/scratch-temp.json" :
         role === ResearchRootReadRole.PublicText ? !publicTextNames.some(name => path === "/etc/" + name || publicSnapshotPath(path, "public-" + name + ".snapshot")) :
         role === ResearchRootReadRole.CaBundle ? path !== caPath && !publicSnapshotPath(path, "public-ca-certificates.crt.snapshot") :
+        role === ResearchRootReadRole.CodingPolicy ? !researchMimoCodingPublicMaterials.some(file => publicSnapshotPath(path, file.name)) :
         role !== ResearchRootReadRole.Dns) researchInvalid();
     const maxBytes = role === ResearchRootReadRole.ScratchPolicy ? 8 * 1024 * 1024 : role === ResearchRootReadRole.CaBundle ? 1024 * 1024 : 65536;
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -342,6 +344,7 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     if (!bindings.some(b => b.source === destination)) researchInvalid();
   } else capturePublic(resolver, "public-resolv.conf.snapshot");
   if (coding) {
+    files.push(...researchMimoCodingPublicMaterials.map(file => ({ ...file, role: ResearchRootReadRole.CodingPolicy })));
     for (const path of researchMimoCodingBootstrapPaths(spec.runtimeDirectory)) {
       const entry = add(path, path, ResearchRootMountAccess.ReadOnly);
       if (!entry.file) researchInvalid();
@@ -480,6 +483,7 @@ function skeletonEntries(root: string, snapshot: Snapshot, coding = false): Map<
   for (const path of ["/run", "/proc", "/sys", "/dev", "/root", "/tmp", "/var/tmp"]) add(path, "directory");
   if (coding) { add(researchMimoCodingHome, "directory"); add(researchMimoCodingCodexHome, "directory"); }
   for (const bind of snapshot.bindings) add(bind.target, bind.file ? "file" : "directory");
+  for (const file of snapshot.files) add(file.target, "file");
   for (const [path, target] of snapshot.aliases) add(path, target.slice(1));
   for (const [path, link] of snapshot.fileLinks) add(path, link);
   if (entries.size > 512) researchInvalid();
@@ -543,14 +547,21 @@ export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: stri
   for (const [path, kind] of [...entries].sort(([a], [b]) => a.length - b.length || a.localeCompare(b))) {
     if (kind === "directory") host.mkdir(path, 0o755); else if (kind === "file") host.file(path); else host.symlink(kind, path);
   }
-  const materialized = captured.bindings.map(bind => {
-    const file = captured.files.find(file => file.target === bind.target);
-    if (!file) return bind;
+  const materializeFile = (file: PublicFile) => {
     const source = join(unitDirectory, file.name);
     host.snapshot(source, file.bytes); const info = host.info(source);
     if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || info.gid !== 0 || info.nlink !== 1 || (info.mode & 0o7777) !== 0o444) researchInvalid();
-    return { ...bind, source, identity: [info.dev, info.ino] as const, backing: backing(source, mountTable(host)) };
+    return { source, identity: [info.dev, info.ino] as const, backing: backing(source, mountTable(host)) };
+  };
+  const materialized = captured.bindings.map(bind => {
+    const file = captured.files.find(file => file.target === bind.target);
+    return file ? { ...bind, ...materializeFile(file) } : bind;
   });
+  // Generated policy has no Host source to observe or bind. Only these fixed
+  // bytes are published in the already-checked private root custody directory.
+  for (const file of captured.files.filter(file => file.role === ResearchRootReadRole.CodingPolicy)) {
+    materialized.push({ ...materializeFile(file), target: file.target, access: ResearchRootMountAccess.ReadOnly, file: true });
+  }
   const skeleton = skeletonIdentity(entries, host), custody = rootCustody(unitDirectory, host), serialized = JSON.stringify(captured);
   const materializedBytes = JSON.stringify(materialized);
   const record = JSON.stringify({ schemaVersion: 1, unit, specSha256: reservation.specSha256, artifactSha256: spec.artifactSha256, captured, materialized, skeleton, custody }) + "\n";
@@ -648,7 +659,7 @@ export function readResearchProviderAssemblyRoot(jobId: string, unit: string, ho
   if (contexts.length !== 1 || !Array.isArray(contexts[0]) || contexts[0].length !== 2) researchInvalid();
   const initialHostContext = parseResearchInitialHostContext(contexts[0][1]);
   const bindings = record.materialized as Binding[];
-  if (!bindings.length || bindings.length > 64 || bindings.length !== captured.bindings.length ||
+  if (!bindings.length || bindings.length > 64 || bindings.length !== captured.bindings.length + captured.files.filter(file => file.role === ResearchRootReadRole.CodingPolicy).length ||
       new Set(bindings.map(bind => bind.target)).size !== bindings.length ||
       rootCustody(unitDirectory, nativeHost) !== record.custody || skeletonIdentity(skeletonEntries(root, captured, researchMimoCodingRoot(spec.request)), nativeHost) !== record.skeleton) researchInvalid();
   const names = ["plan.json", "root", ...captured.files.map(file => file.name)].sort().join(",");
