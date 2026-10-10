@@ -12,10 +12,19 @@ assert(typeof report.numTotalTests === 'number' && Number.isSafeInteger(report.n
 assert.equal(report.numPassedTests, report.numTotalTests);
 assert.equal(report.numFailedTests, 0);
 assert.equal(report.numPendingTests, 0);
-assert(Array.isArray(report.testResults) && report.testResults.length === 1);
-const file: unknown = report.testResults[0];
-assert(object(file));
-assert.equal(file.name, resolve('src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts'));
-assert(Array.isArray(file.assertionResults) && file.assertionResults.length === report.numTotalTests);
-assert(file.assertionResults.every((test: unknown) => object(test) && test.status === 'passed'));
+const expectedFiles = new Set([
+  resolve('src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts'),
+  resolve('src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts'),
+]);
+assert(Array.isArray(report.testResults) && report.testResults.length === expectedFiles.size);
+let completedTests = 0;
+for (const file of report.testResults as unknown[]) {
+  assert(object(file));
+  assert(typeof file.name === 'string' && expectedFiles.delete(file.name));
+  assert(Array.isArray(file.assertionResults) && file.assertionResults.length > 0);
+  assert(file.assertionResults.every((test: unknown) => object(test) && test.status === 'passed'));
+  completedTests += file.assertionResults.length;
+}
+assert.equal(expectedFiles.size, 0);
+assert.equal(completedTests, report.numTotalTests);
 console.log(JSON.stringify({ scope: 'native-root-archive-TEST', completedTests: report.numTotalTests }));

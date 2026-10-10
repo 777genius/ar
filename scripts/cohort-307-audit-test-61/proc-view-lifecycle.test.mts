@@ -1,0 +1,574 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const artifact = dirname(fileURLToPath(import.meta.url));
+const FixtureFailure = {
+  Unknown: 'Unknown',
+  OutputDecode: 'OutputDecode',
+  DriverSetup: 'DriverSetup',
+  BaselineCapture: 'BaselineCapture',
+  BaselineReaders: 'BaselineReaders',
+  BaselineCollect: 'BaselineCollect',
+  BaselineClose: 'BaselineClose',
+  MutationSetup: 'MutationSetup',
+  AbaSpawn: 'AbaSpawn',
+  AbaHeader: 'AbaHeader',
+  AbaWindow: 'AbaWindow',
+  AbaRestore: 'AbaRestore',
+  AbaResult: 'AbaResult',
+  AbaCleanup: 'AbaCleanup',
+  RenameSpawn: 'RenameSpawn',
+  RenameHeader: 'RenameHeader',
+  RenameWindow: 'RenameWindow',
+  RenameRestore: 'RenameRestore',
+  RenameResult: 'RenameResult',
+  RenameCleanup: 'RenameCleanup',
+  PhysicalSpawn: 'PhysicalSpawn',
+  PhysicalHeader: 'PhysicalHeader',
+  PhysicalWindow: 'PhysicalWindow',
+  PhysicalRestore: 'PhysicalRestore',
+  PhysicalResult: 'PhysicalResult',
+  PhysicalCleanup: 'PhysicalCleanup',
+  FdBoundary: 'FdBoundary',
+  IoBoundary: 'IoBoundary',
+  HeapBoundary: 'HeapBoundary',
+  DriverCleanup: 'DriverCleanup',
+  SupervisorSetup: 'SupervisorSetup',
+  SupervisorReaders: 'SupervisorReaders',
+  SupervisorRootPins: 'SupervisorRootPins',
+  SupervisorTableBounds: 'SupervisorTableBounds',
+  SupervisorAuditorSpawn: 'SupervisorAuditorSpawn',
+  SupervisorAuditorReady: 'SupervisorAuditorReady',
+  SupervisorAuditorResult: 'SupervisorAuditorResult',
+  SupervisorCleanup: 'SupervisorCleanup',
+  AuditorSetup: 'AuditorSetup',
+  AuditorCapture: 'AuditorCapture',
+  AuditorCollect: 'AuditorCollect',
+  AuditorFacts: 'AuditorFacts',
+  AuditorCleanup: 'AuditorCleanup',
+} as const;
+type FixtureFailure = (typeof FixtureFailure)[keyof typeof FixtureFailure];
+
+const failureScript = String.raw`
+import sys
+stage='Unknown';first_failure=None
+failure_codes=('Unknown', 'OutputDecode', 'DriverSetup', 'BaselineCapture', 'BaselineReaders', 'BaselineCollect', 'BaselineClose', 'MutationSetup', 'AbaSpawn', 'AbaHeader', 'AbaWindow', 'AbaRestore', 'AbaResult', 'AbaCleanup', 'RenameSpawn', 'RenameHeader', 'RenameWindow', 'RenameRestore', 'RenameResult', 'RenameCleanup', 'PhysicalSpawn', 'PhysicalHeader', 'PhysicalWindow', 'PhysicalRestore', 'PhysicalResult', 'PhysicalCleanup', 'FdBoundary', 'IoBoundary', 'HeapBoundary', 'DriverCleanup', 'SupervisorSetup', 'SupervisorReaders', 'SupervisorRootPins', 'SupervisorTableBounds', 'SupervisorAuditorSpawn', 'SupervisorAuditorReady', 'SupervisorAuditorResult', 'SupervisorCleanup', 'AuditorSetup', 'AuditorCapture', 'AuditorCollect', 'AuditorFacts', 'AuditorCleanup')
+def adopt_failure(raw,prefixes):
+    global first_failure
+    if first_failure is not None:return
+    selected=[code for code in failure_codes if code=='Unknown' or any(code.startswith(prefix) for prefix in prefixes)]
+    first_failure=next((code for code in selected if raw==('VIEW_FIXTURE_FAILURE='+code+'\n').encode()),'Unknown')
+def closed_failure(_kind,_error,_trace):
+    code=first_failure or stage
+    if code not in failure_codes:code='Unknown'
+    print('VIEW_FIXTURE_FAILURE='+code,file=sys.stderr)
+sys.excepthook=closed_failure
+`;
+
+const baselineFactKeys = ['budgetComplete', 'memberCountExact', 'membersJoined', 'fdMatched', 'mapMatched', 'ioWithinBound', 'legacyWouldExceed', 'baselineSelfFdMissing'] as const;
+const baselineIssueCodes = ['None', 'Deadline', 'ByteLimit', 'EntryLimit', 'FdLimit', 'TextLimit', 'LineLimit', 'ProcessIdentityDrift', 'FdMembershipDrift', 'TaskMembershipDrift', 'MountDrift', 'MountJoinUnknown', 'UnclassifiedSelfOrigin', 'ReferenceObjectMismatch', 'ENOENT', 'Unknown'] as const;
+const lifecycleResultKeys = ['sharedViewBounded', 'descendantReplacementUnknown', 'sameInodeDistinctRootReported', 'lateAbaPublicationUnknown', 'lateRenamePublicationUnknown', 'independentViewJoined', 'lowFdRefused', 'globalIoSticky', 'heapCapAndRollback'] as const;
+function closedRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+const readerScript = String.raw`
+import ctypes,mmap,os,sys,threading
+private=int(sys.argv[2]);lib=ctypes.CDLL(None,use_errno=True)
+assert not private or lib.unshare(0x00020000)==0
+f=open(sys.argv[1],'rb');m=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ)
+jail=sys.argv[3]
+if jail:os.chroot(jail);os.chdir('/')
+event=threading.Event();threads=[threading.Thread(target=event.wait) for _ in range(int(sys.argv[4]))]
+for thread in threads:thread.start()
+print(os.getpid(),flush=True);sys.stdin.buffer.read(1);event.set()
+for thread in threads:thread.join()
+`;
+const auditorScript = String.raw`
+import base64,json,os,runpy,sys
+spec=json.loads(base64.b64decode(sys.argv[1]));p=runpy.run_path(spec['payload']);r=spec['root'];budget=p['Budget'](35)
+parent=None;proc=None;self_fd=None;items=[];table=None
+stage='AuditorSetup'
+try:
+    stage='AuditorCapture'
+    parent=p['DirectoryChain'](r,budget);proc=p['DirectoryChain']('/proc',budget)
+    self_fd=os.open('self',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC,dir_fd=proc.fd)
+    table,_=p['mount_table'](self_fd,budget);rows=[]
+    for index,name in enumerate(('w','w2')):
+        path=r+'/'+name;st=os.stat(path+'/node_modules');rows.append({'index':index,'name':name,'workspace':path,'dependencies':path+'/node_modules','historicalDev':str(st.st_dev),'historicalIno':str(st.st_ino)})
+    items=p['capture_cohort'](rows,parent,table,budget);ticks=p['birth'](self_fd,budget)
+    facts={'proc':proc,'ownPid':os.getpid(),'ownBirth':ticks,'ownTasks':{os.getpid():ticks},'mounts':table}
+    print('READY',flush=True)
+    stage='AuditorCollect'
+    observed=p['proc_observation'](facts,items,budget)
+    stage='AuditorFacts'
+    def observations(pid):return [row for row in observed['observations'] if row['pid']==pid]
+    def kinds(pid):return {row['kind'] for row in observed['matches'] if row['pid']==pid and row['bucket']=='ExternalCurrentReference' and row['join']=='Joined'}
+    shared=observations(spec['shared']);stable=observations(spec['stable'])
+    direct_errors=[row for row in budget.errors if row.get('pid')==spec['shared']]
+    sibling_kinds={row['kind'] for row in observed['matches'] if row['pid']==spec['shared'] and row['cohortIndex']==0 and row['scope']=='Dependencies'}
+    direct_failure=bool(direct_errors) and all(row['phase']=='ProcessView' and row['reason']=='ReferenceObjectMismatch' for row in direct_errors) and not any(row['reason']=='MountDrift' for row in budget.errors) and {'Fd','Map'}<=sibling_kinds and any(row['pid']==1 and row['kind']=='DirectMountBinding' and row['cohortIndex']==0 and row['scope']=='Dependencies' for row in observed['matches'])
+    plain=observations(spec['plain']);bound=observations(spec['bound'])
+    print(json.dumps({'directFailure':direct_failure,'affectedUnknown':len(shared)==33 and all(row['join']=='Unknown' for row in shared),'stableJoined':len(stable)==33 and all(row['join']=='Joined' for row in stable) and {'Fd','Map'}<=kinds(spec['stable']),'distinctReported':spec['sameRootDifferentMount'] and observed['namespaceRootViewsObserved']==4 and len(plain)==len(bound)==1 and plain[0]['join']==bound[0]['join']=='Joined' and {'Fd','Map'}<=kinds(spec['plain']) and {'Fd','Map'}<=kinds(spec['bound'])}))
+except BaseException:
+    first_failure=first_failure or stage
+    raise
+finally:
+    stage='AuditorCleanup'
+    p['close_cohort'](items,budget)
+    if table is not None:budget.release_mounts(table)
+    if self_fd is not None:os.close(self_fd)
+    if proc is not None:proc.close()
+    if parent is not None:parent.close()
+`;
+const supervisorScript = String.raw`
+import base64,ctypes,hashlib,json,os,runpy,select,subprocess,sys
+spec=json.loads(base64.b64decode(sys.argv[1]));r=spec['root'];p=runpy.run_path(spec['payload']);budget=p['Budget'](35)
+lib=ctypes.CDLL(None,use_errno=True);lib.mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_void_p];lib.umount2.argtypes=[ctypes.c_char_p,ctypes.c_int]
+children=[];audit=None;proc_mounted=False;extra_mounted=False;descendant_mounted=False
+
+def reader(path,private=False,jail='',threads=0):
+    child=subprocess.Popen([sys.executable,'-B','-c',spec['reader'],path,str(int(private)),jail,str(threads)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    children.append(child);assert select.select([child.stdout],[],[],5)[0];return int(child.stdout.readline(32))
+stage='SupervisorSetup'
+try:
+    assert lib.mount(b'proc',b'/proc',b'proc',0,None)==0;proc_mounted=True
+    stage='SupervisorReaders'
+    shared=reader(r+'/w/node_modules/dep',threads=32)
+    stable=reader(r+'/w2/node_modules/dep',private=True,threads=32)
+    assert lib.mount(os.fsencode(r+'/w/node_modules/descendant'),os.fsencode(r+'/descendant-alias'),None,4096,None)==0;descendant_mounted=True
+    assert lib.mount(os.fsencode(spec['source']),os.fsencode(r+'/extra-parent/extra'),None,4096,None)==0;extra_mounted=True
+    plain=reader(r+'/w2/node_modules/dep',jail=r+'/jail');bound=reader(r+'/w2/node_modules/dep',jail=r+'/jail-bind')
+    stage='SupervisorRootPins'
+    roots=[]
+    for pid in (plain,bound):
+        fd=os.open('/proc/'+str(pid)+'/root',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        try:roots.append((p['object_pin'](os.fstat(fd)),p['mount_id'](fd,budget)))
+        finally:os.close(fd)
+    spec.update({'shared':shared,'stable':stable,'plain':plain,'bound':bound,'sameRootDifferentMount':roots[0][0]==roots[1][0] and roots[0][1]!=roots[1][1]})
+    stage='SupervisorTableBounds'
+    with open('/proc/self/mountinfo','rb') as file:table_text=file.read(8*1024**2+1)
+    table_bytes=len(table_text);table_hash=hashlib.sha256(table_text).hexdigest()
+    with open('/proc/'+str(stable)+'/mountinfo','rb') as file:stable_table_bytes=len(file.read(8*1024**2+1))
+    assert max(table_bytes,stable_table_bytes)<8*1024**2
+    stage='SupervisorAuditorSpawn'
+    audit=subprocess.Popen([sys.executable,'-B','-c',spec['auditor'],base64.b64encode(json.dumps(spec).encode()).decode()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    stage='SupervisorAuditorReady'
+    assert select.select([audit.stdout],[],[],5)[0] and audit.stdout.readline(32)==b'READY\n'
+    print(json.dumps({'auditor':audit.pid,'shared':shared,'stable':stable,'tableBytes':table_bytes,'stableTableBytes':stable_table_bytes,'mainTableHash':table_hash}),flush=True)
+    stage='SupervisorAuditorResult'
+    output,error=audit.communicate(timeout=40)
+    if audit.returncode!=0 or error:adopt_failure(error,('Auditor',))
+    assert audit.returncode==0 and not error and len(output)<4096
+    print(output.decode().strip(),flush=True)
+except BaseException:
+    if audit is not None and audit.poll() is not None:
+        try:
+            _output,error=audit.communicate(timeout=5);adopt_failure(error,('Auditor',))
+        except BaseException:pass
+    first_failure=first_failure or stage
+    raise
+finally:
+    stage='SupervisorCleanup'
+    if audit is not None and audit.poll() is None:audit.kill();audit.communicate(timeout=5)
+    for child in children:
+        if child.poll() is None:child.kill()
+        child.communicate(timeout=5)
+    if extra_mounted:
+        target=r+'/extra-parent-renamed/extra' if os.path.exists(r+'/extra-parent-renamed') else r+'/extra-parent/extra'
+        assert lib.umount2(os.fsencode(target),0)==0
+    if descendant_mounted:assert lib.umount2(os.fsencode(r+'/descendant-alias'),0)==0
+    if proc_mounted:assert lib.umount2(b'/proc',0)==0
+`;
+const driverScript = String.raw`
+import base64,ctypes,hashlib,json,os,resource,runpy,select,subprocess,sys,time
+spec=json.loads(base64.b64decode('__SPEC__'));p=runpy.run_path(spec['payload']);r=spec['root']
+lib=ctypes.CDLL(None,use_errno=True);mounted=[];children=[];groups=[];items=[];parent=None;proc=None;self_fd=None;table=None
+lib.mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_void_p]
+lib.umount2.argtypes=[ctypes.c_char_p,ctypes.c_int]
+def mount(source,target,kind=None,flags=4096):
+    if lib.mount(os.fsencode(source),os.fsencode(target),None if kind is None else os.fsencode(kind),flags,None):raise OSError(ctypes.get_errno())
+    mounted.append(target)
+def unmount(target):
+    if lib.umount2(os.fsencode(target),0):raise OSError(ctypes.get_errno())
+    mounted.remove(target)
+def reader(path,private=False,jail='',threads=0):
+    child=subprocess.Popen([sys.executable,'-B','-c',spec['reader'],path,str(int(private)),jail,str(threads)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    children.append(child)
+    assert select.select([child.stdout],[],[],5)[0]
+    return int(child.stdout.readline(32))
+def refused(call,reason):
+    try:call()
+    except p['Refusal'] as error:return str(error)==reason
+    return False
+stage='DriverSetup'
+try:
+    assert lib.umount2(b'/proc',2)==0
+    mount('proc','/proc','proc',0)
+    source=r+'/'+('/'.join(['s'*180]*8));targets=r+'/'+('/'.join(['t'*180]*8));os.makedirs(source);os.makedirs(targets);spec['source']=source
+    for i in range(2048):
+        target=targets+'/'+str(i);os.mkdir(target);mount(source,target)
+    for name in ('w','w2'):
+        os.makedirs(r+'/'+name+'/node_modules');open(r+'/'+name+'/node_modules/dep','wb').write(b'TEST')
+    stage='BaselineCapture'
+    budget=p['Budget'](35);parent=p['DirectoryChain'](r,budget);proc=p['DirectoryChain']('/proc',budget)
+    self_fd=os.open('self',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC,dir_fd=proc.fd)
+    table,_=p['mount_table'](self_fd,budget)
+    rows=[]
+    for index,name in enumerate(('w','w2')):
+        path=r+'/'+name;st=os.stat(path+'/node_modules');rows.append({'index':index,'name':name,'workspace':path,'dependencies':path+'/node_modules','historicalDev':str(st.st_dev),'historicalIno':str(st.st_ino)})
+    items=p['capture_cohort'](rows,parent,table,budget)
+    stage='BaselineReaders'
+    shared=reader(r+'/w/node_modules/dep',threads=32);independent=reader(r+'/w2/node_modules/dep',private=True)
+    facts={'proc':proc,'ownPid':os.getpid(),'ownBirth':p['birth'](self_fd,budget),'ownTasks':{os.getpid():p['birth'](self_fd,budget)},'mounts':table}
+    length_fd=os.open('mountinfo',os.O_RDONLY,dir_fd=self_fd)
+    try:
+        table_bytes=0
+        while True:
+            chunk=os.read(length_fd,65536)
+            if not chunk:break
+            table_bytes+=len(chunk)
+    finally:os.close(length_fd)
+    stage='BaselineCollect'
+    before_read=budget.mount_io;first=p['proc_observation'](facts,items,budget);charged=budget.mount_io-before_read
+    shared_rows=[row for row in first['matches'] if row['pid']==shared and row['bucket']=='ExternalCurrentReference']
+    shared_obs=[row for row in first['observations'] if row['pid']==shared]
+    reuse=not budget.incomplete and len(shared_obs)==33 and all(row['join']=='Joined' for row in shared_obs) and {'Fd','Map'}<=set(row['kind'] for row in shared_rows) and charged<6*table_bytes and 4*table_bytes*len(shared_obs)>64*1024**2
+    baseline={'facts':{'budgetComplete':not budget.incomplete,'memberCountExact':len(shared_obs)==33,'membersJoined':all(row['join']=='Joined' for row in shared_obs),'fdMatched':any(row['kind']=='Fd' for row in shared_rows),'mapMatched':any(row['kind']=='Map' for row in shared_rows),'ioWithinBound':charged<6*table_bytes,'legacyWouldExceed':4*table_bytes*len(shared_obs)>64*1024**2,'baselineSelfFdMissing':any(row['phase']=='FdEntry' and row['reason']=='ENOENT' and row.get('pid')==facts['ownPid'] for row in budget.errors)},'firstIssue':next((code for code in ('None', 'Deadline', 'ByteLimit', 'EntryLimit', 'FdLimit', 'TextLimit', 'LineLimit', 'ProcessIdentityDrift', 'FdMembershipDrift', 'TaskMembershipDrift', 'MountDrift', 'MountJoinUnknown', 'UnclassifiedSelfOrigin', 'ReferenceObjectMismatch', 'ENOENT', 'Unknown') if code==budget.errors[0]['reason']),'Unknown') if budget.errors else 'None'}
+    stage='BaselineClose'
+    for child in children:
+        if child.poll() is None:child.kill()
+        child.communicate(timeout=5)
+    children=[]
+    p['close_cohort'](items,budget);items=[];budget.release_mounts(table);table=None;parent.close();parent=None;proc.close();proc=None;os.close(self_fd);self_fd=None
+    stage='MutationSetup'
+    os.mkdir(r+'/jail');os.mkdir(r+'/jail-bind');mount(r+'/jail',r+'/jail-bind');os.mkdir(r+'/extra-parent');os.mkdir(r+'/extra-parent/extra');os.mkdir(r+'/aba');os.mkdir(r+'/descendant-alias');os.mkdir(r+'/w/node_modules/descendant')
+    def observe(mode):
+        global stage,first_failure
+        phases={'aba':('AbaSpawn','AbaHeader','AbaWindow','AbaRestore','AbaResult','AbaCleanup'),'rename':('RenameSpawn','RenameHeader','RenameWindow','RenameRestore','RenameResult','RenameCleanup'),'physical':('PhysicalSpawn','PhysicalHeader','PhysicalWindow','PhysicalRestore','PhysicalResult','PhysicalCleanup')}[mode]
+        stage=phases[0]
+        request=dict(spec);request['mode']=mode
+        supervisor=subprocess.Popen(['/usr/bin/unshare','--pid','--fork','--kill-child=SIGKILL',sys.executable,'-B','-c',spec['supervisor'],base64.b64encode(json.dumps(request).encode()).decode()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        mutated=False;restored=mode!='physical'
+        try:
+            stage=phases[1]
+            assert select.select([supervisor.stdout],[],[],10)[0]
+            header=json.loads(supervisor.stdout.readline(4096));auditor=header['auditor'];stable_pid=header['stable'];shared_pid=header['shared'];length=header['tableBytes'];stable_length=header['stableTableBytes']
+            main_fd=stable_fd=None;first_main_end=first_stable_end=0;main_rewound=main_final_end=False
+            stage=phases[2]
+            deadline=time.monotonic()+30
+            while time.monotonic()<deadline and supervisor.poll() is None:
+                active_shared=False
+                try:
+                    with os.scandir('/proc/'+str(auditor)+'/fd') as entries:
+                        for entry in entries:
+                            target=os.readlink(entry.path)
+                            if target=='/proc/1/task/1/mountinfo':main_fd=entry.name
+                            if target=='/proc/'+str(stable_pid)+'/task/'+str(stable_pid)+'/mountinfo':stable_fd=entry.name
+                            if target=='/proc/'+str(shared_pid)+'/task/'+str(shared_pid):active_shared=True
+                    if main_fd is None or stable_fd is None:continue
+                    positions=[]
+                    for name in (main_fd,stable_fd):
+                        with open('/proc/'+str(auditor)+'/fdinfo/'+name,'rb') as info:data=info.read(8193)
+                        assert len(data)<=8192
+                        values=[line[5:] for line in data.splitlines() if line.startswith(b'pos:\t')]
+                        assert len(values)==1 and values[0].isdigit();positions.append(int(values[0]))
+                    main_pos,stable_pos=positions
+                except (FileNotFoundError,ProcessLookupError):continue
+                if mode=='physical' and mutated:
+                    if stable_pos>0:
+                        stage=phases[3]
+                        os.rmdir(r+'/w/node_modules/descendant');os.rename(r+'/w/node_modules/descendant-parked',r+'/w/node_modules/descendant')
+                        with open('/proc/1/mountinfo','rb') as file:restored_text=file.read(8*1024**2+1)
+                        restored=len(restored_text)==length and hashlib.sha256(restored_text).hexdigest()==header['mainTableHash'];break
+                    continue
+                if not first_main_end and main_pos>=length:first_main_end=main_pos
+                if not first_stable_end and stable_pos>=stable_length:first_stable_end=stable_pos
+                if mode=='physical':
+                    ready=bool(first_main_end and stable_pos==0 and active_shared)
+                else:
+                    if first_main_end and first_stable_end and main_pos<first_main_end-65536:main_rewound=True
+                    if main_rewound and main_pos>=first_main_end:main_final_end=True
+                    ready=bool(main_rewound and 0<main_pos<first_main_end-65536) if mode=='rename' else bool(main_final_end and 0<stable_pos<first_stable_end-65536)
+                if ready:
+                    if mode=='aba':mount(source,r+'/aba');unmount(r+'/aba')
+                    elif mode=='rename':os.rename(r+'/extra-parent',r+'/extra-parent-renamed')
+                    else:os.rename(r+'/w/node_modules/descendant',r+'/w/node_modules/descendant-parked');os.mkdir(r+'/w/node_modules/descendant')
+                    mutated=True
+                    if mode!='physical':break
+            stage=phases[4]
+            output,error=supervisor.communicate(timeout=45)
+            if supervisor.returncode!=0 or error:adopt_failure(error,('Supervisor','Auditor'))
+            assert supervisor.returncode==0 and not error and len(output)<4096
+            observed=json.loads(output)
+            return mutated and restored and observed['affectedUnknown'] and (mode!='physical' or observed['directFailure']),observed['stableJoined'],observed['distinctReported']
+        except BaseException:
+            if supervisor.poll() is not None:
+                try:
+                    _output,error=supervisor.communicate(timeout=5);adopt_failure(error,('Supervisor','Auditor'))
+                except BaseException:pass
+            first_failure=first_failure or stage
+            raise
+        finally:
+            stage=phases[5]
+            if supervisor.poll() is None:supervisor.kill();supervisor.communicate(timeout=5)
+            if os.path.exists(r+'/extra-parent-renamed'):os.rename(r+'/extra-parent-renamed',r+'/extra-parent')
+            if os.path.exists(r+'/w/node_modules/descendant-parked'):
+                os.rmdir(r+'/w/node_modules/descendant');os.rename(r+'/w/node_modules/descendant-parked',r+'/w/node_modules/descendant')
+    aba,aba_stable,aba_roots=observe('aba')
+    renamed,rename_stable,rename_roots=observe('rename')
+    physical,physical_stable,physical_roots=observe('physical')
+    stage='FdBoundary'
+    fd_budget=p['Budget'](35);fd_directory=os.open('/proc/self/fd',p['O_DIR']);known_file=os.open(r+'/w/node_modules/dep',os.O_RDONLY);pipe_read,pipe_write=os.pipe();inventory=None
+    try:
+        inventory=p['FdInventory'](fd_directory,fd_budget);names=inventory.names(1024)
+        assert {str(number) for number in (fd_directory,known_file,pipe_read,pipe_write,inventory.fd)}<=set(names)
+        assert fd_budget.owned[inventory.fd]==p['object_pin'](os.fstat(inventory.fd))
+        for name in names:os.readlink(name,dir_fd=fd_directory);os.stat(name,dir_fd=fd_directory)
+        inventory.verify(names,1024)
+    finally:
+        if inventory is not None:inventory.close()
+        for number in (pipe_write,pipe_read,known_file,fd_directory):os.close(number)
+    child=subprocess.Popen([sys.executable,'-B','-c',"import sys;f=open(sys.argv[1],'rb');print(f.fileno(),flush=True);sys.stdin.buffer.read(1);f.close();print('CLOSED',flush=True);sys.stdin.buffer.read(1)",r+'/w2/node_modules/dep'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    children.append(child);target_fds=None;inventory=None
+    try:
+        assert select.select([child.stdout],[],[],5)[0];known_external=int(child.stdout.readline(32))
+        target_fds=os.open('/proc/'+str(child.pid)+'/fd',p['O_DIR']);inventory=p['FdInventory'](target_fds,fd_budget);names=inventory.names(1024)
+        assert str(known_external) in names
+        child.stdin.write(b'X');child.stdin.flush()
+        assert select.select([child.stdout],[],[],5)[0] and child.stdout.readline(32)==b'CLOSED\n'
+        assert refused(lambda:inventory.verify(names,1024),'FdMembershipDrift')
+    finally:
+        if inventory is not None:inventory.close()
+        if target_fds is not None:os.close(target_fds)
+        if child.poll() is None:child.kill()
+        child.communicate(timeout=5);children.remove(child)
+    budget=p['Budget'](35);task=os.open('/proc/1',p['O_DIR']);root_fd=os.open('root',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC,dir_fd=task)
+    original_limit=resource.getrlimit(resource.RLIMIT_NOFILE);census=os.open('/proc/self/fd',p['O_DIR'])
+    try:open_count=len(os.listdir(census))
+    finally:os.close(census)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE,(open_count+2,original_limit[1]))
+        low_fd=refused(lambda:p['MountView'](task,p['identity'](task,budget),root_fd,budget),'FdLimit')
+    finally:resource.setrlimit(resource.RLIMIT_NOFILE,original_limit);os.close(root_fd);os.close(task)
+    # Real bounded reads exhaust the production-sized cumulative limit, with no injected budget state.
+    stage='IoBoundary'
+    line=b'1 1 0:1 / / rw - tmpfs tmpfs '+b'x'*8100+b'\n';path=r+'/finite-table'
+    with open(path,'wb') as output:output.write(line*1024)
+    fd=os.open(path,os.O_RDONLY);io_budget=p['Budget'](35)
+    try:
+        io_failed=False
+        for _ in range(130):
+            if refused(lambda:p['mount_digest_fd'](fd,io_budget),'ByteLimit'):io_failed=True;break
+        os.lseek(fd,0,os.SEEK_SET)
+        sticky=io_failed and refused(lambda:list(p['mount_lines'](fd,io_budget)),'ByteLimit') and os.lseek(fd,0,os.SEEK_CUR)==0
+    finally:os.close(fd)
+    stage='HeapBoundary'
+    os.mkdir(r+'/heap');heap_path=r+'/heap/mountinfo'
+    with open(heap_path,'wb') as output:
+        for index in range(230000):output.write((str(index+1)+' 1 0:1 / / rw - x x rw\n').encode())
+    heap_budget=p['Budget'](35);heap_fd=os.open(r+'/heap',p['O_DIR']);held=last=None
+    try:
+        held,_=p['mount_table'](heap_fd,heap_budget)
+        heap_failed=refused(lambda:p['mount_table'](heap_fd,heap_budget),'ByteLimit')
+        heap_budget.release_mounts(held);held=None
+        last,_=p['mount_table'](heap_fd,heap_budget)
+        heap_recovered=heap_failed and len(last)==230000
+    finally:
+        if held is not None:heap_budget.release_mounts(held)
+        if last is not None:heap_budget.release_mounts(last)
+        os.close(heap_fd)
+    print(json.dumps({'result':{'sharedViewBounded':reuse,'descendantReplacementUnknown':physical,'sameInodeDistinctRootReported':physical_roots,'lateAbaPublicationUnknown':aba,'lateRenamePublicationUnknown':renamed,'independentViewJoined':aba_stable and rename_stable and physical_stable,'lowFdRefused':low_fd,'globalIoSticky':sticky,'heapCapAndRollback':heap_recovered},'baseline':baseline}))
+except BaseException:
+    first_failure=first_failure or stage
+    raise
+finally:
+    stage='DriverCleanup'
+    for child in children:
+        if child.poll() is None:child.kill()
+        child.communicate(timeout=5)
+    for group in groups:group.close()
+    if items:p['close_cohort'](items,budget)
+    if table is not None:budget.release_mounts(table)
+    if parent is not None:parent.close()
+    if proc is not None:proc.close()
+    if self_fd is not None:os.close(self_fd)
+    for target in reversed(mounted):
+        if lib.umount2(os.fsencode(target),0):raise OSError(ctypes.get_errno())
+`;
+test('finite joined mount views preserve actual member publication and allocation faults', { timeout: 120_000 }, (t) => {
+  assert.equal(process.platform, 'linux'); assert.equal(process.getuid?.(), 0);
+  const root = mkdtempSync(join(tmpdir(), 'TEST-view-lifecycle-'));
+  try {
+    const encoded = Buffer.from(JSON.stringify({ root, payload: join(artifact, 'audit-payload.py'),
+      reader: readerScript, auditor: failureScript + auditorScript, supervisor: failureScript + supervisorScript })).toString('base64');
+    let result: unknown;
+    let envelope: unknown;
+    let failure: FixtureFailure = FixtureFailure.Unknown;
+    try {
+      const output = execFileSync('/usr/bin/unshare', ['--mount', '--pid', '--fork', '--kill-child=SIGKILL', '--propagation', 'private',
+        '/usr/bin/python3', '-B', '-c', (failureScript + driverScript).replace('__SPEC__', encoded)],
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 110_000, maxBuffer: 4096 });
+      failure = FixtureFailure.OutputDecode;
+      envelope = JSON.parse(output);
+    } catch (error: unknown) {
+      if (failure !== FixtureFailure.OutputDecode && typeof error === 'object' && error !== null && 'stderr' in error) {
+        const captured = typeof error.stderr === 'string' ? error.stderr : Buffer.isBuffer(error.stderr) ? error.stderr.toString('utf8') : '';
+        failure = Object.values(FixtureFailure).find(code => captured === `VIEW_FIXTURE_FAILURE=${code}\n`) ?? FixtureFailure.Unknown;
+      }
+      throw new Error(`Finite mount view lifecycle fixture failed: ${failure}`);
+    }
+    if (!closedRecord(envelope, ['result', 'baseline'])) throw new Error('Finite mount view fixture result shape invalid');
+    const checks = envelope.result;
+    const baseline = envelope.baseline;
+    if (!closedRecord(checks, lifecycleResultKeys) || !lifecycleResultKeys.every(key => typeof checks[key] === 'boolean')
+      || !closedRecord(baseline, ['facts', 'firstIssue'])) throw new Error('Finite mount view fixture result shape invalid');
+    const facts = baseline.facts;
+    if (!closedRecord(facts, baselineFactKeys) || !baselineFactKeys.every(key => typeof facts[key] === 'boolean')
+      || !baselineIssueCodes.some(code => code === baseline.firstIssue)) throw new Error('Finite mount view baseline shape invalid');
+    result = checks;
+    if (checks.sharedViewBounded === false) t.diagnostic('Baseline invariant facts: ' + JSON.stringify({ facts, firstIssue: baseline.firstIssue }));
+    assert.deepEqual(result, { sharedViewBounded: true, descendantReplacementUnknown: true, sameInodeDistinctRootReported: true,
+      lateAbaPublicationUnknown: true, lateRenamePublicationUnknown: true, independentViewJoined: true,
+      lowFdRefused: true, globalIoSticky: true, heapCapAndRollback: true });
+  } finally {
+    try { rmSync(root, { recursive: true, force: true }); }
+    catch { throw new Error('Finite mount view lifecycle fixture cleanup failed'); }
+  }
+});
+
+
+// Red on changed longest-prefix/tie semantics or unreleased partial index reservations.
+const lookupBoundaryScript = String.raw`
+import ctypes, json, os, runpy, sys
+p=runpy.run_path(sys.argv[1]);r=sys.argv[2];B=p['Budget'];R=p['Refusal']
+def refused(call,reason):
+    try:call()
+    except R as error:return str(error)==reason
+    return False
+cases=[
+    (['/','/a','/a/b'],'/a/b/file',2,'/r2/file'),
+    (['/','/a'],'/ab/file',0,'/r0/ab/file'),
+    (['/','/a','/a.'],'/a/b',1,'/r1/b'),
+    (['/','/a','/a/x'],'/a/y/file',1,'/r1/y/file'),
+    (['/','///','/a'],'/a/f',1,'/r1/f'),
+    (['/','/a//','/a/'],'/a/',1,'/r1'),
+    (['/','/a/'],'/a',0,'/r0/a'),
+    (['/','/a/'],'/a/file',1,'/r1/file'),
+    (['/','/a','/a/'],'/a/file',2,'/r2/file'),
+    (['/','/a/','/a/'],'/a/file',None,'MountJoinUnknown'),
+    (['/','/a//'],'/a///file',1,'/r1/file'),
+    (['/','///'],'/',1,'/r1'),
+    (['/','/é'],'/é/f',1,'/r1/f'),
+    (['/','/a','/a'],'/a/f',None,'MountJoinUnknown'),
+    (['/a'],'/else',None,'MountJoinUnknown'),
+    (['/'],'/a/../b',None,'PathShape'),
+    (['/'],'relative',None,'PathShape'),
+]
+for points,path,wanted,physical in cases:
+    b=B(35);rows=p['MountRows']([{'id':7,'point':point,'root':'/r'+str(i)} for i,point in enumerate(points)])
+    rows.index=p['MountLookup'](rows,b)
+    try:
+        if wanted is None:assert refused(lambda:p['filesystem_path'](path,rows),physical)
+        else:
+            row,actual=p['filesystem_path'](path,rows);assert row is rows[wanted] and actual==physical
+    finally:rows.index.close()
+    assert b.view_heap==0
+# Genuine stacked equal-prefix mount aliases must remain ambiguous.
+lib=ctypes.CDLL(None,use_errno=True);lib.mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_char_p];lib.umount2.argtypes=[ctypes.c_char_p,ctypes.c_int]
+os.mkdir(r+'/source');os.mkdir(r+'/tie');mounted=0;table=None;b=B(35);parent=os.open('/proc/self',os.O_RDONLY|os.O_DIRECTORY)
+try:
+    for i in range(2):
+        assert lib.mount(os.fsencode(r+'/source'),os.fsencode(r+'/tie'),None,4096,None)==0;mounted+=1
+    table,_=p['mount_table'](parent,b)
+    assert refused(lambda:p['filesystem_path'](r+'/tie/child',table),'MountJoinUnknown')
+finally:
+    if table is not None:b.release_mounts(table)
+    os.close(parent)
+    while mounted:
+        assert lib.umount2(os.fsencode(r+'/tie'),0)==0;mounted-=1
+# A real deep mount spelling is interpreted repeatedly, but each object join is fresh.
+# Original substring allocation exhausts the unchanged64MiB budget on these4096 refs.
+import mmap
+os.mkdir(r+'/deep-source');open(r+'/deep-source/dep','wb').write(b'TEST')
+alias=r+'/'+('/'.join(['d'*31]*32));os.makedirs(alias)
+b=B(35);table=None;root_fd=None;known=None;mapped=None;parent=os.open('/proc/self',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC);deep_mounted=False
+try:
+    assert lib.mount(os.fsencode(r+'/deep-source'),os.fsencode(alias),None,4096,None)==0;deep_mounted=True
+    table,_=p['mount_table'](parent,b)
+    root_fd=os.open(r+'/deep-source',p['O_DIR']);known=os.open(alias+'/dep',os.O_RDONLY)
+    mapped=mmap.mmap(known,0,access=mmap.ACCESS_READ);raw=os.readlink('/proc/self/fd/'+str(known))
+    assert raw==alias+'/dep' and len(raw)>1024
+    target=p['object_pin'](os.fstat(known));st=os.fstat(root_fd)
+    source_mount,source_physical=p['filesystem_path'](r+'/deep-source',table)
+    assert source_mount['dev']==(os.major(st.st_dev),os.minor(st.st_dev))
+    item={'status':'ObservedRoot','fd':root_fd,'pin':p['pin'](st),'physical':source_physical,'dev':source_mount['dev']}
+    map_target=None
+    for line in p['lines_at'](parent,'maps',b):
+        fields=line.split(None,5)
+        if len(fields)==6 and os.fsdecode(fields[5])==raw:
+            major,minor=(int(value,16) for value in fields[3].split(b':'))
+            map_target=(os.makedev(major,minor),int(fields[4]));break
+    assert map_target==target
+    for query in range(4096):
+        actual=target if query%2==0 else map_target
+        matches,issues=p['classify_path'](raw,actual,table,[item],b,table)
+        assert not issues and len(matches)==1 and matches[0][1:] == ('NamespacePathAndObject','Dependencies')
+    os.rename(r+'/deep-source/dep',r+'/deep-source/old-dep');open(r+'/deep-source/dep','wb').write(b'NEW')
+    for actual in (target,map_target):
+        matches,issues=p['classify_path'](raw,actual,table,[item],b,table)
+        assert not matches and len(issues)==1 and isinstance(issues[0],R) and str(issues[0])=='ReferenceObjectMismatch'
+finally:
+    if mapped is not None:mapped.close()
+    if known is not None:os.close(known)
+    if root_fd is not None:os.close(root_fd)
+    if table is not None:b.release_mounts(table)
+    os.close(parent)
+    if deep_mounted:assert lib.umount2(os.fsencode(alias),0)==0
+assert b.view_heap==0 and not b.owned and not b.mount_indexes and not b.mount_allocations
+# Real native DIR buffers coexist with a valid table, forcing index heap failure.
+# No budget counters, cap mutation or injected production hooks.
+os.mkdir(r+'/table');directory=os.open(r+'/table',p['O_DIR']);held=[];parsed=None;b=B(35)
+with open(r+'/table/mountinfo','wb') as output:
+    for i in range(10000):output.write((str(i+1)+' 1 0:1 / /point'+str(i)+' rw - x x rw\n').encode())
+try:
+    for i in range(59):held.append(p['FdInventory'](directory,b))
+    before=b.view_heap
+    assert refused(lambda:p['mount_table'](directory,b),'ByteLimit')
+    assert b.view_heap==before and not b.mount_allocations and not b.mount_indexes
+    for inventory in reversed(held):inventory.close()
+    held=[]
+    parsed,_=p['mount_table'](directory,b)
+    assert len(parsed)==10000
+    row,physical=p['filesystem_path']('/point9999/file',parsed)
+    assert row['id']==10000 and physical=='/file'
+finally:
+    if parsed is not None:b.release_mounts(parsed)
+    for inventory in reversed(held):inventory.close()
+    os.close(directory)
+assert b.view_heap==0 and not b.owned and not b.mount_indexes and not b.mount_allocations
+print(json.dumps({'literalSemantics':True,'nativeStackRefused':True,'indexCapRollback':True,'deepFreshJoins':True}))
+`;
+test('mount lookup preserves literal aliases and native capacity rollback', { timeout: 60_000 }, () => {
+  assert.equal(process.platform, 'linux'); assert.equal(process.getuid?.(), 0);
+  const root = mkdtempSync(join(tmpdir(), 'TEST-mount-lookup-'));
+  try {
+    let result: unknown;
+    try {
+      const output = execFileSync('/usr/bin/unshare', ['--mount', '--propagation', 'private',
+        '/usr/bin/python3', '-B', '-c', lookupBoundaryScript, join(artifact, 'audit-payload.py'), root],
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 55_000, maxBuffer: 4096 });
+      result = JSON.parse(output);
+    } catch { throw new Error('Native mount lookup boundary failed'); }
+    assert.deepEqual(result, { literalSemantics: true, nativeStackRefused: true, indexCapRollback: true, deepFreshJoins: true });
+  } finally {
+    try { rmSync(root, { recursive: true, force: true }); }
+    catch { throw new Error('Native mount lookup cleanup failed'); }
+  }
+});

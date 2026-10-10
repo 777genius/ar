@@ -10,9 +10,12 @@ import { dependencyToolCachePath, dependencyToolGuestConfig, dependencyToolPins,
   type DependencyToolGuestConfig, type DependencyToolProfile, type DependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
 import { assertHostedDependencyToolProfileFiles as assertProfileFiles } from "./hosted-dependency-tool-profile-files";
 export { createHostedDependencyToolProfile } from "./hosted-dependency-tool-profile-files";
-import { assertHostedActivationFence, readHostedOrdinaryProcessOrigin, readHostedActivationBytes, decodeHostedActivationBytes,
+import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readHostedDependencyAttempt, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
+  readRetainedHostedDependencyAttemptFacts, invalidateCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime,
+  type CurrentHostedDependencyOrigin, type CurrentHostedDependencyOriginFacts } from "./hosted-current-dependency-origin";
+import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, captureDependencyLocalRootOnlySourceExposure, assertDependencySourceExposureCurrent,
   closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { dependencySourceLinkProof, openCapturedDependencySourceLinks, closeDependencySourceLinkSession,
@@ -39,13 +42,19 @@ type QualificationPin = ReturnType<typeof readQualification>;
 export type HostedDependencyQualifiedToolEntry = Readonly<{ startId: string }>;
 type EntryState = {
   binding: HostedDependencyBinding; attempt: DependencyAttempt; inputs: HostedDependencyKeyInputs; receipt: Ready;
-  origin: ReturnType<typeof readHostedOrdinaryProcessOrigin>; startBytes: Buffer; qualification: QualificationPin;
+  context: CurrentHostedDependencyOrigin; startName: string; startBytes: Buffer; qualification: QualificationPin;
   readonlySources: readonly DependencyToolSourceRoot[]; exposure?: DependencySourceExposure;
   coldReference?: ReturnType<typeof readHostedDependencyCommittedReady>["reference"];
   placement: Awaited<ReturnType<typeof openHostedDependencyManifestPlacement>>;
   phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running; closed: boolean;
 };
 const entries = new WeakMap<HostedDependencyQualifiedToolEntry, EntryState>();
+let currentQualifiedEntry: HostedDependencyQualifiedToolEntry | undefined;
+function selectedStart(facts: CurrentHostedDependencyOriginFacts) {
+  return facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ?
+    {name:facts.originReference.path.slice(policyRoot.length+1),bytes:encode(facts.start)} :
+    {name:`ordinary-starts/${facts.ordinary.reservation.startId}.json`,bytes:encode(facts.ordinary.start)};
+}
 // Exact supported registry distributions, sourced from the reviewed root lock.
 // This is additional qualification, never a substitute for the full byte proof.
 const toolDistributionIntegrity = Object.freeze({
@@ -68,16 +77,16 @@ export function hostedDependencyToolProfile(binding: HostedDependencyBinding): D
 /** N3-only current byte qualification, not generic Ready hot attestation.
  * All awaits are bracketed by actual ExclusiveMutation owner/fence checks.
  */
-export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt, coldHandoff?: HostedDependencyColdHandoff): Promise<HostedDependencyQualifiedToolEntry | undefined> {
+export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt, coldHandoff?: HostedDependencyColdHandoff, capturedOrigin?: CurrentHostedDependencyOrigin): Promise<HostedDependencyQualifiedToolEntry | undefined> {
   const profile = hostedDependencyToolProfile(binding); if (!profile) return;
+  const context = capturedOrigin ?? withHostedActivationFence(fence => readCurrentHostedDependencyOrigin(fence));
   const assertExclusive = () => withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence);
-    if (!sameDependencyAttempt(readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation), attempt) ||
-        !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding))) fail();
-    return origin;
+    const actual = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    if (!sameDependencyAttempt(actual.attempt,attempt) || !encode(actual.binding).equals(encode(binding))) fail(); return actual.facts;
   });
-  const origin = assertExclusive(), startBytes = readHostedActivationBytes(`ordinary-starts/${attempt.launch.startId}.json`);
-  if (!startBytes || !encode(origin.start).equals(startBytes)) fail();
+  const origin = assertExclusive(), selected = selectedStart(origin), startName = selected.name;
+  const startBytes = readHostedActivationBytes(startName);
+  if (!startBytes || !selected.bytes.equals(startBytes)) fail();
   assertProfileFiles(profile, binding.jobRootDir);
   const before = await readHostedDependencyKeyInputs(binding); assertExclusive();
   const receipt = readHostedDependencyReceipt(binding);
@@ -143,9 +152,9 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
     readyRevision: receipt.revision, installKey: receipt.installKey, tree: observed.tree, manifestDigest: observed.digest, profile,
     measurement: { entries: observed.entries.length, bytes: observed.totalBytes, durationMs: Number(observed.measurement.observedScanDurationMs) } });
   withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence);
-    if (!sameDependencyAttempt(readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation), attempt) ||
-        !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) || !encode(readHostedDependencyReceipt(binding)).equals(encode(receipt))) fail();
+    const current = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    if (!sameDependencyAttempt(current.attempt,attempt) || !encode(current.binding).equals(encode(binding)) ||
+        !encode(readHostedDependencyReceipt(binding)).equals(encode(receipt))) fail();
     assertHostedDependencyKeyInputsCurrent(binding, before); placement.assertCurrent(fence);
     if (coldHandoff) assertHostedDependencyConsumedColdHandoff(coldHandoff, fence);
     if (coldReference && !encode(readHostedDependencyCommittedReady(binding, receipt.revision).reference).equals(encode(coldReference))) fail(DependencyAdmissionFailure.StaleAttempt);
@@ -156,8 +165,8 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
       binding.workspace, observed.tree, Math.floor(deadline - performance.now()));
     else if (nodeModulesExposure) assertDependencySourceExposureCurrent(nodeModulesExposure, Math.floor(deadline - performance.now()));
     assertProfileFiles(profile, binding.jobRootDir);
-    const current = lstatSync(`${binding.workspace.canonicalPath}/node_modules`, { bigint: true });
-    if (!current.isDirectory() || String(current.dev) !== observed.tree.dev || String(current.ino) !== observed.tree.ino) fail();
+    const currentTree = lstatSync(`${binding.workspace.canonicalPath}/node_modules`, { bigint: true });
+    if (!currentTree.isDirectory() || String(currentTree.dev) !== observed.tree.dev || String(currentTree.ino) !== observed.tree.ino) fail();
     // Fixed actual start ID only. Collision is held evidence, never adoption.
     const path = join(policyRoot, dependencyToolQualificationRecordName(attempt.launch.startId));
     const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -168,8 +177,9 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   const pin = readQualification(attempt);
   if (!encode(pin.qualification).equals(encode(qualification))) fail();
   const entry = Object.freeze({ startId: attempt.launch.startId });
-  entries.set(entry, { binding, attempt, inputs: before, receipt, origin, startBytes, qualification: pin,
+  entries.set(entry, { binding, attempt, inputs: before, receipt, context, startName, startBytes, qualification: pin,
     readonlySources, placement, ...(coldReference ? { coldReference } : {}), ...(exposure ? { exposure } : {}), phase: DependencyOwnerPhase.ExclusiveMutation, closed: false });
+  currentQualifiedEntry = entry;
   exposure = undefined; // The one private entry now owns the logical baseline.
   return entry;
   } finally {
@@ -238,9 +248,10 @@ function entryState(entry: HostedDependencyQualifiedToolEntry): EntryState {
 }
 function currentEntry(state: EntryState, phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running): DependencyToolReadyFacts {
   const { binding, attempt, inputs, receipt } = state;
+  const actual = readRetainedHostedDependencyAttemptFacts(state.context,phase);
   if (!encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) ||
-      !readHostedActivationBytes(`ordinary-starts/${attempt.launch.startId}.json`)?.equals(state.startBytes) ||
-      !sameDependencyAttempt(readHostedDependencyAttempt(binding, state.origin.start, attempt.launch.startId, phase), attempt) ||
+      !readHostedActivationBytes(state.startName)?.equals(state.startBytes) ||
+      !sameDependencyAttempt(actual.attempt,attempt) || !encode(actual.binding).equals(encode(binding)) ||
       !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) fail(DependencyAdmissionFailure.StaleAttempt);
   assertHostedDependencyKeyInputsCurrent(binding, inputs);
   if (state.coldReference && !encode(readHostedDependencyCommittedReady(binding, receipt.revision).reference).equals(encode(state.coldReference))) fail(DependencyAdmissionFailure.StaleAttempt);
@@ -269,8 +280,8 @@ function currentEntry(state: EntryState, phase: DependencyOwnerPhase.ExclusiveMu
 export function assertHostedDependencyQualifiedToolEntry(entry: HostedDependencyQualifiedToolEntry, fence: HostedActivationFence,
   phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running): void {
   const state = entryState(entry); assertHostedActivationFence(fence);
-  const origin = readHostedOrdinaryProcessOrigin(fence);
-  if (state.phase !== phase || origin.reservation.startId !== state.attempt.launch.startId || !encode(origin.start).equals(state.startBytes)) fail(DependencyAdmissionFailure.StaleAttempt);
+  const actual = assertCurrentHostedDependencyAttempt(state.context,fence,phase);
+  if (state.phase !== phase || !sameDependencyAttempt(actual.attempt,state.attempt) || !selectedStart(actual.facts).bytes.equals(state.startBytes)) fail(DependencyAdmissionFailure.StaleAttempt);
   state.placement.assertCurrent(fence);
   currentEntry(state, phase);
 }
@@ -282,8 +293,8 @@ export function readHostedDependencyQualifiedToolEntry(entry: HostedDependencyQu
 /** Only genuine Running CAS/readback changes the private logical phase. */
 export function markHostedDependencyQualifiedToolEntryRunning(entry: HostedDependencyQualifiedToolEntry, fence: HostedActivationFence): void {
   const state = entryState(entry); assertHostedActivationFence(fence);
-  const origin = readHostedOrdinaryProcessOrigin(fence);
-  if (state.phase !== DependencyOwnerPhase.ExclusiveMutation || origin.reservation.startId !== state.attempt.launch.startId || !encode(origin.start).equals(state.startBytes)) fail(DependencyAdmissionFailure.StaleAttempt);
+  const actual = assertCurrentHostedDependencyAttempt(state.context,fence,DependencyOwnerPhase.Running);
+  if (state.phase !== DependencyOwnerPhase.ExclusiveMutation || !sameDependencyAttempt(actual.attempt,state.attempt) || !selectedStart(actual.facts).bytes.equals(state.startBytes)) fail(DependencyAdmissionFailure.StaleAttempt);
   state.placement.assertCurrent(fence);
   currentEntry(state, DependencyOwnerPhase.Running); state.phase = DependencyOwnerPhase.Running;
 }
@@ -292,7 +303,11 @@ export function markHostedDependencyQualifiedToolEntryRunning(entry: HostedDepen
 export function invalidateHostedDependencyQualifiedToolEntry(entry: HostedDependencyQualifiedToolEntry | undefined): void {
   if (!entry) return;
   const state = entries.get(entry); if (!state || state.closed) return;
-  state.closed = true; if (state.exposure) closeDependencySourceExposure(state.exposure);
+  state.closed = true; if (currentQualifiedEntry === entry) currentQualifiedEntry = undefined;
+  // Revocation of the genuine qualifier also revokes every facade of its SAME
+  // origin. A legal Ready retirement does not pass through this invalidator.
+  invalidateCurrentHostedDependencyOrigin(state.context);
+  if (state.exposure) closeDependencySourceExposure(state.exposure);
 }
 
 /** Resolve config only from a protected qualification plus the genuine Running
@@ -300,13 +315,18 @@ export function invalidateHostedDependencyQualifiedToolEntry(entry: HostedDepend
  */
 export function readAdmittedHostedDependencyToolConfig(workspacePath: string | undefined,
   entry?: HostedDependencyQualifiedToolEntry): DependencyToolGuestConfig | undefined {
-  if (!isHostedOrdinaryRuntime() || workspacePath === undefined) return undefined;
+  if ((!isHostedOrdinaryRuntime() && !isHostedManagedReadonlyOuterRuntime()) || workspacePath === undefined) return undefined;
   return withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence), binding = readHostedDependencyBinding(String(origin.start.jobId));
-    if (!binding) return undefined;
+    if (!entry) {
+      const context = readCurrentHostedDependencyOrigin(fence), facts = assertCurrentHostedDependencyOrigin(context,fence);
+      if (facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) fail();
+      if (!readHostedDependencyBinding(String(facts.ordinary.start.jobId))) return undefined;
+    }
+    const context = entry ? entryState(entry).context : readCurrentHostedDependencyOrigin(fence);
+    const actual = assertCurrentHostedDependencyAttempt(context,fence), binding = actual.binding;
     const profile = hostedDependencyToolProfile(binding); if (!profile) return undefined;
     if (workspacePath !== binding.workspace.canonicalPath) fail();
-    const attempt = readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId));
+    const attempt = actual.attempt;
     const q = readQualification(attempt).qualification;
     if (entry) assertHostedDependencyQualifiedToolEntry(entry, fence, DependencyOwnerPhase.Running);
     assertQualification(q, binding, attempt, entry); assertProfileFiles(profile, binding.jobRootDir);
@@ -367,3 +387,17 @@ function assertInstalledPins(workspace: string, profile: DependencyToolProfile, 
   }
 }
 function fail(reason = DependencyAdmissionFailure.Unsupported): never { throw new DependencyAdmissionError(reason); }
+
+/** B root-purpose preparation reads only this actual completed qualifier, before
+ * Running. No path/config/entry setter or caller-shaped scope can register it. */
+export function readCurrentHostedDependencyRootQualification(fence: HostedActivationFence): Readonly<{
+  context: CurrentHostedDependencyOrigin; binding: HostedDependencyBinding; attempt: DependencyAttempt;
+  inputs: HostedDependencyKeyInputs; receipt: Ready; readonlySources: readonly DependencyToolSourceRoot[];
+  providerReady: DependencyToolReadyFacts; phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running;
+}> {
+  if (!currentQualifiedEntry) fail(DependencyAdmissionFailure.StaleAttempt);
+  const state = entryState(currentQualifiedEntry);
+  assertHostedDependencyQualifiedToolEntry(currentQualifiedEntry,fence,state.phase);
+  return Object.freeze({context:state.context,binding:state.binding,attempt:state.attempt,inputs:state.inputs,receipt:state.receipt,
+    readonlySources:state.readonlySources,providerReady:currentEntry(state,state.phase),phase:state.phase});
+}

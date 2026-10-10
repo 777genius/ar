@@ -1,6 +1,6 @@
 // Source for storage-pressure-guard.mjs; regenerate with the project-pinned tsc.
-import { constants, fstatSync, writeSync } from 'node:fs';
-import { lstat, open, realpath, statfs } from 'node:fs/promises';
+import { writeSync } from 'node:fs';
+import { lstat, realpath, stat, statfs } from 'node:fs/promises';
 
 export enum ScratchPressureReason {
   Bytes = 'scratch_bytes', Inodes = 'scratch_inodes', Unknown = 'scratch_observation_unknown',
@@ -16,25 +16,39 @@ export type Schedule = (callback: () => void, delay: number) => Timer;
 export type ScratchGuard = { attach(child: Child): void; close(): void; readonly reason: ScratchPressureReason | null };
 const schedule: Schedule = (callback, delay) => { const timer = setTimeout(callback, delay); return { cancel: () => clearTimeout(timer) }; };
 
-// Retain only the admitted job filesystem. '/' inside a native/private
-// namespace is not a trustworthy observation of the host root filesystem.
+// The trusted guard owns one payload. Its kernel cwd reference pins the exact
+// admitted directory without adding a directory FD to the governed FD table.
+// runGuardedPayload captures and passes the payload's workspace cwd explicitly.
+let retainedCwd = false;
 export async function retainScratchProbe(directory: string, device: bigint, uid: bigint): Promise<ScratchProbe> {
-  const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  if (retainedCwd) throw new ScratchPressureError(ScratchPressureReason.Unknown);
+  retainedCwd = true;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    // Relinquish the admitted inode even if its pathname was removed/replaced.
+    process.chdir('/'); retainedCwd = false;
+  };
   try {
-    const held = await handle.stat({ bigint: true });
+    const held = await lstat(directory, { bigint: true });
+    if (!held.isDirectory() || held.isSymbolicLink() || held.dev !== device || held.uid !== uid ||
+        (held.mode & 0o022n) !== 0n || await realpath(directory) !== directory) throw new ScratchPressureError(ScratchPressureReason.Unknown);
+    process.chdir(directory);
     const identity = async (): Promise<void> => {
-      const named = await lstat(directory, { bigint: true }), current = fstatSync(handle.fd, { bigint: true });
-      if (!named.isDirectory() || named.isSymbolicLink() || named.dev !== device || named.uid !== uid ||
+      if (closed) throw new ScratchPressureError(ScratchPressureReason.Unknown);
+      const named = await lstat(directory, { bigint: true }), current = await stat('.', { bigint: true });
+      if (closed || !named.isDirectory() || named.isSymbolicLink() || named.dev !== device || named.uid !== uid ||
           (named.mode & 0o022n) !== 0n || named.ino !== held.ino || current.ino !== held.ino ||
-          current.dev !== device || await realpath(directory) !== directory) throw new ScratchPressureError(ScratchPressureReason.Unknown);
+          current.dev !== device || await realpath(directory) !== directory || closed) throw new ScratchPressureError(ScratchPressureReason.Unknown);
     };
     await identity();
     return { sample: async () => {
       await identity();
-      const capacity = await statfs(`/proc/self/fd/${handle.fd}`, { bigint: true });
+      const capacity = await statfs('.', { bigint: true });
       await identity(); return capacity;
-    }, close: () => handle.close() };
-  } catch (error) { await handle.close(); throw error; }
+    }, close };
+  } catch (error) { await close(); throw error; }
 }
 
 export async function prepareScratchPressureGuard(input: {

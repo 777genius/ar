@@ -1,3 +1,4 @@
+import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -44,8 +45,8 @@ export function assertHostedDependencyToolParentFrame(fence: HostedActivationFen
       start.workspacePath !== binding.workspace.canonicalPath || start.grantSha256 !== binding.grantDigest) fail();
   const inventoryBytes = readHostedActivationBytes("readonly-inventory.json"), installationBytes = readHostedActivationBytes("host-installation.json");
   if (!inventoryBytes || !installationBytes) fail();
-  const inventory = decodeHostedActivationBytes(inventoryBytes) as Record<string, unknown>, installation = decodeHostedActivationBytes(installationBytes) as Record<string, unknown>;
-  if (inventory.schemaVersion !== 4 || installation.inventorySha256 !== hash(inventoryBytes) || !Array.isArray(inventory.ordinaryCreators)) fail();
+  const inventory = decodeHostedInventoryBytes(inventoryBytes) as Record<string, unknown>, installation = decodeHostedActivationBytes(installationBytes) as Record<string, unknown>;
+  if ((inventory.schemaVersion !== 4 && inventory.schemaVersion !== 5) || installation.inventorySha256 !== hash(inventoryBytes) || !Array.isArray(inventory.ordinaryCreators)) fail();
   const rows = inventory.ordinaryCreators.filter(value => !!value && typeof value === "object" && value.creatorId === start.creatorId);
   if (rows.length !== 1) fail();
   const launch = rows[0].launch as { command: unknown; cwd: unknown; args: unknown };

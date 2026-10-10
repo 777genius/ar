@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { setInheritedStdioBlocking } from "./hosted-blocking-output";
 import { managedProviderScratchLaunch } from "./managed-provider-scratch-environment";
 import { assertHostedProcessDescriptors, assertHostedFdPreludeDescriptors } from "./hosted-process-descriptors";
 import { announceHostedFdPrelude } from "./hosted-fd-prelude";
@@ -52,6 +53,8 @@ function onInput(chunk: Buffer): void {
   let launch: ReturnType<typeof managedProviderScratchLaunch>;
   try { launch = managedProviderScratchLaunch(frame.env, frame.args); }
   catch { fail("hosted_provider_scratch_boundary_invalid"); }
+  try { setInheritedStdioBlocking(); }
+  catch { fail("hosted_app_server_blocking_output_failed"); }
   const child = spawn(frame.command, launch.args, {
     cwd: frame.cwd,
     env: launch.environment,

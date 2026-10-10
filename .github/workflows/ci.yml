@@ -351,6 +351,14 @@ jobs:
           git rev-parse HEAD^{tree} > "$owned/source-tree.txt"
           git archive --format=tar HEAD > "$owned/source.tar"
           sha256sum "$owned/source.tar" > "$owned/source-archive.sha256"
+          # Fixed disposable TEST profile; preserves upstream denials except
+          # size88 clone3 needed for actual pidfd births. No host policy change.
+          profile=host-integration/native-probe/ci-source-seccomp.json
+          printf '%s  %s\n' '5589a5a9c0c4a09dc755d8d8af511905b513f94e2d15bb0b7d6cdd89b710e087' "$profile" | sha256sum --check --strict
+          cp "$profile" "$owned/ci-source-seccomp.json"
+          sha256sum "$owned/ci-source-seccomp.json" > "$owned/seccomp-profile.sha256"
+          docker version --format '{{json .}}' > "$owned/docker-version.json"
+          uname -srvm > "$owned/runner-kernel.txt"
           cat > "$owned/command.sh" <<'TEST_COMMAND'
           set -euo pipefail
           umask 077
@@ -372,6 +380,7 @@ jobs:
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json
           node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
@@ -381,6 +390,7 @@ jobs:
           node --experimental-strip-types scripts/require-archive-root-result.mts
           TEST_COMMAND
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
+            --security-opt "seccomp=$owned/ci-source-seccomp.json" \
             --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
             node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
             /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \

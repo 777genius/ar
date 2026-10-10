@@ -6,7 +6,19 @@
  * admission with these final clock/connection and finite-dispatch checks.
  * This module alone supplies no Source or original-owner authority. */
 struct np_stock_manager;
-enum np_manager_step { NP_TARGET_ABSENT, NP_SUBSCRIBE, NP_SLICE_START, NP_SLICE_REF, NP_SLICE_FACTS, NP_SLICE_CPU_FACTS, NP_RELOAD, NP_SLICE_RELOAD_FACTS, NP_TARGET_LOAD, NP_TARGET_REF, NP_TARGET_PRESTART_FACTS, NP_TARGET_START, NP_TARGET_FACTS, NP_SLICE_FINAL_FACTS, NP_MANAGER_STEPS };
+enum np_manager_step {
+  NP_TARGET_ABSENT, NP_SUBSCRIBE, NP_SLICE_START, NP_SLICE_REF,
+  NP_SLICE_FACTS, NP_SLICE_CPU_FACTS, NP_RELOAD, NP_SLICE_RELOAD_FACTS,
+#ifdef NP_RETAINED_V2_A1
+  NP_SLICE_RELOAD_CPU_FACTS,
+#endif
+  NP_TARGET_LOAD, NP_TARGET_REF, NP_TARGET_PRESTART_FACTS, NP_TARGET_START,
+  NP_TARGET_FACTS, NP_SLICE_FINAL_FACTS,
+#ifdef NP_RETAINED_V2_A1
+  NP_SLICE_FINAL_CPU_FACTS,
+#endif
+  NP_MANAGER_STEPS
+};
 enum np_request_state { NP_REQUEST_UNSENT, NP_REQUEST_DISPATCHED, NP_REQUEST_REPLIED, NP_REQUEST_FAILED, NP_REQUEST_UNCERTAIN };
 struct np_request_observation {
   enum np_request_state state;
@@ -26,4 +38,15 @@ int np_manager_join_v1(struct np_stock_manager *, uint64_t original_observation_
 void np_manager_close_v1(struct np_stock_manager *);
 void np_manager_snapshot_v1(const struct np_stock_manager *, struct np_manager_observation *);
 void np_manager_release_v1(struct np_stock_manager *);
+#ifdef NP_RETAINED_V2_A1
+/* Observational private tail: no new request or replay of a control effect. */
+int np_manager_current_v2(struct np_stock_manager *);
+#ifdef NP_RETAINED_V2_B1A
+struct np_actor_manager;
+struct np_root_origin;struct np_managed_original;
+int np_manager_reference_v2(struct np_stock_manager *,enum np_manager_step,struct np_root_origin *,struct np_managed_original *,const char[65]);
+int np_manager_actor_observer_v2(struct np_stock_manager *,const char original_reservation_body[65]);
+int np_manager_actor_observer_bind_v2(struct np_stock_manager *,const struct np_actor_manager *);
+#endif
+#endif
 #endif

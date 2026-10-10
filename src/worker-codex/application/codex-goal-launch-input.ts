@@ -1,3 +1,5 @@
+import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
+import { optionalWorkerMode } from "../project-control-worker-mode";
 import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
@@ -38,7 +40,8 @@ import {
   type CodexGoalRunConfig,
 } from "../codex-goal-runner";
 
-export const CODEX_GOAL_DEFAULT_TIMEOUT_MS = 72 * 60 * 60 * 1000;
+import { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
+export { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -46,11 +49,25 @@ const defaultAuthRoot = defaultCodexGoalAuthRoot;
 const defaultTimeoutMs = CODEX_GOAL_DEFAULT_TIMEOUT_MS;
 
 export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLaunchInput> {
-  const cwd = resolvePath(process.cwd(), args.cwd ?? process.cwd());
-  const fileConfig = args.configPath
-    ? await readGoalConfigFile(resolvePath(cwd, args.configPath))
+  // Capture the caller's closed pair before config-file IO can yield control.
+  const argumentStorage = parseCodexGoalStorageData(args);
+  const argumentSnapshot = { ...args, ...argumentStorage };
+  const cwd = resolvePath(process.cwd(), argumentSnapshot.cwd ?? process.cwd());
+  const fileConfig = argumentSnapshot.configPath
+    ? await readGoalConfigFile(resolvePath(cwd, argumentSnapshot.configPath))
     : {};
-  const merged = mergeDefined(fileConfig, args);
+  // Validate each explicit source before merging; partial/malformed NEW data
+  // must not disappear behind an override and silently become a legacy run.
+  parseCodexGoalStorageData(fileConfig);
+  const merged = mergeDefined(fileConfig, argumentSnapshot);
+  return goalLaunchInputFromRecord(merged, cwd);
+}
+
+/** Stored manifests have no config-file transport. Keep their planning pure,
+ * sharing every resolved default with the asynchronous public loader. */
+export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): CodexGoalLaunchInput {
+  const storageData = parseCodexGoalStorageData(merged);
+  assertCodexGoalStorageTransportSupported(merged);
   const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);
   const durableHandoffRootDir = stringValue(merged.durableHandoffRootDir);
   const taskId = requiredRawString(merged.taskId, "taskId");
@@ -72,6 +89,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     merged.projectAccessScope,
   );
   const networkAccess = optionalCodexGoalNetworkAccess(merged.networkAccess);
+  const workerMode = optionalWorkerMode(merged.workerMode);
   const taskTimeoutMs = positiveIntegerValue(merged.taskTimeoutMs, "taskTimeoutMs") ??
     defaultTimeoutMs;
   const appServerStartupTimeoutMs = positiveIntegerValue(
@@ -88,7 +106,10 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     "maxAccountCycles",
   ) ?? 5;
   const config: CodexGoalRunConfig = {
+    ...storageData,
     ...childConfigFromRecord(merged),
+    ...(storageData.storage ? { runtimeHomeRootDir: join(jobRootDir, "home"),
+      durableHandoffRootDir: join(jobRootDir, "durable-handoffs") } : {}),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
     ...(durableHandoffRootDir === undefined
@@ -111,12 +132,12 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     outputPath: resolvePath(
       cwd,
       stringValue(merged.outputPath) ??
-        join(jobRootDir, `${taskId}.latest-result.json`),
+        join(storageData.storage ? join(jobRootDir, "output") : jobRootDir, `${taskId}.latest-result.json`),
     ),
     progressPath: resolvePath(
       cwd,
       stringValue(merged.progressPath) ??
-        codexGoalProgressPath({ jobRootDir, taskId }),
+        (storageData.storage ? join(jobRootDir, "output", `${taskId}.progress.json`) : codexGoalProgressPath({ jobRootDir, taskId })),
     ),
     model: stringValue(merged.model) ?? CODEX_WORKER_DEFAULT_MODEL,
     reasoningEffort:
@@ -133,6 +154,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     ...(projectAccessScope === undefined ? {} : { projectAccessScope }),
     allowDangerFullAccess: booleanValue(merged.allowDangerFullAccess) ?? false,
     ...(networkAccess === undefined ? {} : { networkAccess }),
+    ...(workerMode === undefined ? {} : { workerMode }),
     taskTimeoutMs,
     ...(appServerStartupTimeoutMs === undefined
       ? {}
@@ -148,7 +170,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       ? {}
       : { workerReportMode: workerReportModeValue(merged.workerReportMode) }),
   };
-  const stateRootDir = stringValue(merged.stateRootDir);
+  const stateRootDir = stringValue(merged.stateRootDir) ?? (storageData.storage ? join(jobRootDir, "state") : undefined);
   const finalConfig = stateRootDir
     ? { ...config, stateRootDir: resolvePath(cwd, stateRootDir) }
     : config;

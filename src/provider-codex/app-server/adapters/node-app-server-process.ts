@@ -3,6 +3,7 @@ import type { DependencyToolReadyReader } from "../../../core/dependency-environ
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type {
   CodexAppServerChildProcess,
@@ -12,7 +13,7 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
 import { readHostedFdProfile } from "./hosted-fd-observation";
-import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
+import { spawnHostedFdChild, hostedFdLaunch, hostedFdCleanupUnit, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
 import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
@@ -84,6 +85,27 @@ export function signalHostedSystemdUnit(
       (finalActiveResult.status === 3 || finalActiveResult.status === 4)
     ? "stopping"
     : "bounded";
+}
+
+/** Research units own their mount namespace (MountFlags=private); their scratch binds stay there. */
+export function isResearchUnitCgroup(cgroup: string): boolean {
+  return /\/subscription-runtime-research-/.test(cgroup);
+}
+
+/** True when the provider of a run is a separate `subscription-runtime-hosted-*` unit created
+ * from PID 1's mount namespace. Unlike `isHostedContainment`, research units are excluded:
+ * their scratch binds live in the unit's own namespace and must stay. */
+export function hostedProviderRunsInSeparateUnit(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform,
+  readCgroup: () => string = () => readFileSync("/proc/self/cgroup", "utf8"),
+): boolean {
+  if (platform !== "linux") return false;
+  const cgroup = readCgroup();
+  if (isResearchUnitCgroup(cgroup)) return false;
+  return env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(cgroup);
 }
 
 export type CodexAppServerProcessInvocation = {
@@ -216,7 +238,7 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
-        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+        invocation.systemdUnit, HostedFdLaunchKind.Provider);
       bindHostedDependencyToolChild(invocation, child);
     } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
@@ -300,11 +322,12 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
+  const fdUnit = hostedFdCleanupUnit(child);
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }
   try {
-    const systemdUnit = hostedSystemdUnits.get(child);
+    const systemdUnit = fdUnit ?? hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {
       signalHostedSystemdUnit(systemdUnit, signal);
       // Never kill only the systemd-run proxy: the bounded service would leak.

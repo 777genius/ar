@@ -34,7 +34,7 @@ const input = () => ({
 });
 
 describe("worker-cache home preparation", () => {
-  it("prepares the existing home before auth/config writes and preserves the prepared cache across reuse", async () => {
+  it("prepares the home before auth/config writes, re-prepares on every reuse and preserves the prepared cache", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-prepare-home-test-"));
     let preparationCount = 0;
     const materializer = new CodexWorkerCacheSessionPoolMaterializer({
@@ -45,7 +45,7 @@ describe("worker-cache home preparation", () => {
       prepareHome: async (codexHome) => {
         preparationCount += 1;
         expect((await stat(codexHome)).isDirectory()).toBe(true);
-        expect(await readdir(codexHome)).toEqual([]);
+        if (preparationCount === 1) expect(await readdir(codexHome)).toEqual([]);
         await mkdir(join(codexHome, "plugins", "cache"), { recursive: true });
         await writeFile(join(codexHome, "plugins", "cache", "prepared"), "synthetic-cache");
       },
@@ -63,7 +63,8 @@ describe("worker-cache home preparation", () => {
       const reused = await materializer.materialize(input());
       try {
         expect(reused.codexHome).toBe(firstHome);
-        expect(preparationCount).toBe(1);
+        // Preparation is idempotent and runs again on every reuse (resume after a host-side release).
+        expect(preparationCount).toBe(2);
         expect(await readFile(join(reused.codexHome, "plugins", "cache", "prepared"), "utf8"))
           .toBe("synthetic-cache");
       } finally {

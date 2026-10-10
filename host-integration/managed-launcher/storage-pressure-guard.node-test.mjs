@@ -2,7 +2,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { prepareScratchPressureGuard, ScratchPressureError, ScratchPressureReason } from './storage-pressure-guard.mjs';
+import { mkdtemp, mkdir, lstat, realpath, rename, rm } from 'node:fs/promises';
+import { fstatSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { prepareScratchPressureGuard, retainScratchProbe, ScratchPressureError, ScratchPressureReason } from './storage-pressure-guard.mjs';
 // Existing JavaScript adapter; the new guard and test fixtures remain strict.
 // @ts-expect-error Legacy adapter has no declaration file.
 import { runGuardedPayload } from './payload-guard.mjs';
@@ -158,4 +162,66 @@ test('payload lifecycle actually installs the guard on only its admitted scratch
     assert.deepEqual(f.child.signals, ['SIGTERM']);
     assert.deepEqual(f.outside.signals, []);
     f.child.emit('exit');
+});
+// This fails with an FD-backed probe: the admitted inode is retained as cwd,
+// while the payload still starts in its explicit workspace. Replacing the named
+// directory must fail closed even though the retained directory remains alive.
+test('real retained probe keeps exact inode custody without changing payload cwd', async () => {
+    const previous = process.cwd(), root = await realpath(await mkdtemp(join(tmpdir(), 'scratch-pressure-cwd-')));
+    const directory = join(root, 'job'), workspace = join(directory, 'workspace');
+    await mkdir(workspace, { recursive: true, mode: 0o700 });
+    const metadata = await lstat(directory, { bigint: true }), child = new OwnChild(), clock = new Clock();
+    let probe;
+    try {
+        const result = await runGuardedPayload(['/usr/bin/owned-synthetic'], { cwd: workspace, jobId: 'owned', owner: async () => metadata.uid,
+            admit: async () => ({ layout: { jobRoot: directory }, device: metadata.dev }),
+            fstat: () => ({ isFile: () => false, isFIFO: () => true }),
+            pressure: async () => {
+                probe = await retainScratchProbe(directory, metadata.dev, metadata.uid);
+                assert.equal(process.cwd(), directory);
+                await assert.rejects(retainScratchProbe(directory, metadata.dev, metadata.uid), ScratchPressureError);
+                return prepareScratchPressureGuard({ directory, device: metadata.dev, uid: metadata.uid, minimumBytes: 0n, minimumInodes: 0n,
+                    probe, schedule: clock.schedule, report: () => { } });
+            },
+            launch: (_command, _args, options) => {
+                assert.equal(options.cwd, workspace);
+                assert.equal(process.cwd(), directory);
+                return child;
+            } });
+        assert.equal(result, child);
+        await probe.sample();
+        if (process.platform === 'linux') {
+            for (const name of readdirSync('/proc/self/fd')) {
+                const fd = Number(name);
+                if (fd <= 2)
+                    continue;
+                try {
+                    assert.equal(fstatSync(fd).isDirectory(), false, `unexpected retained directory FD ${fd}`);
+                }
+                catch (error) {
+                    if (error.code !== 'EBADF')
+                        throw error;
+                }
+            }
+        }
+        await rename(directory, join(root, 'retained-job'));
+        await mkdir(directory, { mode: 0o700 });
+        await assert.rejects(probe.sample(), ScratchPressureError);
+        child.emit('exit');
+        await probe.close();
+        assert.equal(process.cwd(), '/');
+        await assert.rejects(probe.sample(), ScratchPressureError);
+        assert.deepEqual(child.signals, []);
+        await assert.rejects(prepareScratchPressureGuard({ directory, device: metadata.dev, uid: metadata.uid,
+            minimumBytes: 1n << 128n, minimumInodes: 0n }), (error) => error instanceof ScratchPressureError && error.reason === ScratchPressureReason.Bytes);
+        assert.equal(process.cwd(), '/');
+        const next = await retainScratchProbe(directory, metadata.dev, metadata.uid);
+        await next.close();
+    }
+    finally {
+        child.emit('exit');
+        await probe?.close();
+        process.chdir(previous);
+        await rm(root, { recursive: true, force: true });
+    }
 });

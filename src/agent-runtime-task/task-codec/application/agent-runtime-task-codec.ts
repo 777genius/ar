@@ -1,3 +1,4 @@
+import { parseNativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import {
   AgentRuntimeExecutionMode,
   AgentRuntimeTaskEventType,
@@ -758,7 +759,11 @@ function parseFailure(value: unknown, path: string): ProviderFailure {
 
 function parseTelemetry(value: unknown): ProviderTaskTelemetry {
   const input = objectAt(value, "telemetry");
+  let nativeWeb: ProviderTaskTelemetry["nativeWeb"];
+  try { nativeWeb = input.nativeWeb === undefined ? undefined : parseNativeWebEvidence(input.nativeWeb); }
+  catch { throw protocolError("agent_runtime_task_result_invalid", "telemetry.nativeWeb must contain finite validated transport observations"); }
   return {
+    ...(nativeWeb === undefined ? {} : { nativeWeb }),
     ...optionalStringField(input, "providerRunId", "telemetry.providerRunId"),
     ...optionalStringField(
       input,

@@ -4,6 +4,20 @@ set -eu
 integration_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 destination=/opt/subscription-runtime
 fail() { echo "managed launcher installation: $*" >&2; exit 1; }
+qualified_operation=
+if [ "$#" != 0 ]; then
+  [ "$#" = 2 ] && [ "$1" = --qualified-pair ] || fail 'unsupported installation mode'
+  qualified_operation=$2
+  [ "${#qualified_operation}" = 36 ] || fail 'invalid original operation identity'
+  case "$qualified_operation" in *[!a-f0-9-]*) fail 'invalid original operation identity';; esac
+fi
+# Governed installations require the original qualified pair transaction; the
+# bootstrap installer cannot replace their independently measured copied cohort.
+[ -n "$qualified_operation" ] || { [ ! -e /var/lib/subscription-runtime-host-policy/readonly-inventory.json ] &&
+  [ ! -L /var/lib/subscription-runtime-host-policy/readonly-inventory.json ] &&
+  [ ! -e /var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json ] &&
+  [ ! -L /var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json ] || fail 'governed installation requires qualified pair publication'
+}
 # Tini must be available before any installed state is changed. Check its full
 # ancestry with the same ownership, symlink and write rules as runtime trust.
 tini=/usr/bin/tini
@@ -28,6 +42,8 @@ check_trusted_path() {
       [ ! -L "$trusted_path" ] || fail "untrusted path: symlink: $trusted_path"
       if [ "$trusted_kind" = file ]; then
         [ -f "$trusted_path" ] || fail "trusted source must be a regular file: $trusted_path"
+        trusted_links=$(stat -c %h "$trusted_path") || fail 'cannot inspect file links'
+        [ "$trusted_links" = 1 ] || fail "trusted source must have one link: $trusted_path"
       else
         [ -d "$trusted_path" ] || fail "trusted ancestor must be a directory: $trusted_path"
       fi
@@ -42,16 +58,31 @@ check_trusted_path() {
     trusted_kind=directory
   done
 }
+if [ -n "$qualified_operation" ]; then
+  # The fixed issuer owns qualification, publication and supervisor birth in
+  # this one process. Its packet must match this actual protected Node tuple.
+  runtime_dir=$(CDPATH= cd -- "$integration_dir/.." && pwd)
+  bootstrap="$runtime_dir/dist/worker-codex/hosted-ordinary-installation-bootstrap.js"
+  check_trusted_path /usr/bin/node file
+  check_trusted_path "$bootstrap" file
+  [ -x /usr/bin/node ] || fail 'qualified pair requires executable /usr/bin/node'
+  exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/node "$bootstrap" install --qualified-pair "$qualified_operation"
+fi
 for target_dir in "$destination" "$destination/managed-launcher" "$destination/host-jobs"; do
   check_trusted_path "$target_dir" directory
 done
-for source_file in managed-launcher/launch.mjs managed-launcher/payload-guard.mjs managed-launcher/storage-pressure-guard.mjs managed-launcher/profiles.mjs managed-launcher/hosted-host-policy.mjs host-jobs/storage-policy.mjs; do
+for source_file in managed-launcher/host-inventory-codec.cjs managed-launcher/launch.mjs managed-launcher/payload-guard.mjs managed-launcher/storage-pressure-guard.mjs managed-launcher/profiles.mjs managed-launcher/hosted-host-policy.mjs host-jobs/storage-policy.mjs; do
   check_trusted_path "$integration_dir/$source_file" file
   if [ -e "$destination/$source_file" ] || [ -L "$destination/$source_file" ]; then
     check_trusted_path "$destination/$source_file" file
   fi
 done
+codec="$destination/managed-launcher/host-inventory-codec.cjs"
+if [ -e "$codec" ]; then
+  cmp -s "$integration_dir/managed-launcher/host-inventory-codec.cjs" "$codec" || fail 'conflicting installed inventory codec'
+fi
 install -d -o root -g root -m 0755 "$destination" "$destination/managed-launcher" "$destination/host-jobs"
+install -o root -g root -m 0644 "$integration_dir/managed-launcher/host-inventory-codec.cjs" "$destination/managed-launcher/host-inventory-codec.cjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/launch.mjs" "$destination/managed-launcher/launch.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/hosted-host-policy.mjs" "$destination/managed-launcher/hosted-host-policy.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/payload-guard.mjs" "$destination/managed-launcher/payload-guard.mjs"

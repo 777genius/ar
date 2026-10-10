@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
+import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { FileBackendCodexSeedWriteback } from "../file-backend-codex-seed-writeback";
 import { FileBackendCodexWorker } from "../file-backend-codex-worker";
 import { FakeAppServerFactory, codexAuthJsonAt, waitUntil } from "./file-backend-codex-worker-test-support";
@@ -190,18 +191,41 @@ describe("source-bound Codex refresh writeback", () => {
 
   it("fences two independent processes publishing from the same seeded generation", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-process-writeback-cas-"));
+    const run = promisify(execFile);
+    const writers = ["first", "second"] as const;
+    const outcomes: Promise<PromiseSettledResult<Awaited<ReturnType<typeof run>>>>[] = [];
+    const redactor = new DefaultRedactor();
+    for (const secret of [seed, refreshed, relogin, "synthetic-source", "synthetic-provider-refresh", "synthetic-relogin", "access-token"]) {
+      redactor.registerSecret(secret, "synthetic-auth");
+    }
+    const diagnostic = (index: number, result: Awaited<(typeof outcomes)[number]>) => {
+      const detail: Record<string, unknown> = result.status === "rejected" &&
+        typeof result.reason === "object" && result.reason !== null ? result.reason : {};
+      const text = (value: unknown) => typeof value === "string" ? redactor.redact(value).slice(-4096) : "";
+      return { writer: writers[index], status: result.status,
+        code: typeof detail.code === "number" ? detail.code : text(detail.code),
+        signal: text(detail.signal), killed: detail.killed === true,
+        stdout: text(result.status === "fulfilled" ? result.value.stdout : detail.stdout),
+        stderr: text(result.status === "fulfilled" ? result.value.stderr : detail.stderr) };
+    };
     try {
       await writeFile(join(root, "auth.json"), seed, { mode: 0o600 });
-      const run = promisify(execFile);
-      const children = ["first", "second"].map(id => run(process.execPath, [
-        fileURLToPath(new URL("../../../node_modules/vitest/vitest.mjs", import.meta.url)),
-        "run", fileURLToPath(import.meta.url), "-t", "publishes from an isolated writer process",
-      ], { env: { ...process.env, SR_SYNTHETIC_WRITEBACK_ROOT: root, SR_SYNTHETIC_WRITER: id }, timeout: 30_000 }));
-      // Attach rejection handlers immediately while waiting for both barriers.
-      const done = Promise.allSettled(children);
-      await waitUntil(async () => {
+      for (const id of writers) {
+        const child = run(process.execPath, [
+          fileURLToPath(new URL("../../../node_modules/vitest/vitest.mjs", import.meta.url)),
+          "run", fileURLToPath(import.meta.url), "-t", "publishes from an isolated writer process",
+        ], { env: { ...process.env, SR_SYNTHETIC_WRITEBACK_ROOT: root, SR_SYNTHETIC_WRITER: id }, timeout: 30_000 });
+        // Handle each rejection before starting another real writer process.
+        outcomes.push(Promise.allSettled([child]).then(results => results[0]!));
+      }
+      const done = Promise.all(outcomes);
+      const earlyExit = Promise.race(outcomes.map((outcome, index) => outcome.then(result => {
+        throw new Error(`writer exited before go: ${JSON.stringify(diagnostic(index, result))}`);
+      })));
+      // Keep child failure outside waitUntil, which catches polling exceptions.
+      await Promise.race([earlyExit, waitUntil(async () => {
         await readFile(join(root, "ready-first")); await readFile(join(root, "ready-second")); return true;
-      }, 20_000);
+      }, 20_000)]);
       await writeFile(join(root, "go"), "synthetic barrier");
       expect((await done).map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
       const accepted = await Promise.all(["first", "second"].map(id => readFile(join(root, `result-${id}`), "utf8")));
@@ -210,7 +234,14 @@ describe("source-bound Codex refresh writeback", () => {
       const latest = await custody.read(seed);
       expect([refreshed, relogin].some(bytes => bytes === latest)).toBe(true);
       expect(await readFile(join(root, "auth.json"), "utf8") === seed).toBe(true);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } catch (error) {
+      const results = await Promise.all(outcomes);
+      throw new Error(`independent writer failure: ${JSON.stringify(results.map((result, index) => diagnostic(index, result)))}`, { cause: error });
+    } finally {
+      // Preserve the fixture until both existing 30s-bounded CLI calls settle.
+      await Promise.all(outcomes);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

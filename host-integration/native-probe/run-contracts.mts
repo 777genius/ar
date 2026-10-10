@@ -9,6 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 const workspace = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const compiler = join(workspace, "node_modules/typescript/bin/tsc");
 const config = join(workspace, "host-integration/native-probe/tsconfig.json");
+const codecConfig = join(workspace, "tsconfig.host-inventory-codec.json");
 const evidence = resolve(process.env.SR_NATIVE_PROBE_EVIDENCE ?? join(workspace, "delivery/a0-native-probe"));
 await mkdir(evidence, { recursive: true });
 const attempt = randomUUID();
@@ -53,7 +54,8 @@ async function ownerJoined(): Promise<boolean> {
 let inputs: readonly CheckedInput[] = [], inputsStable = false, passed = false;
 let ownerFixture = false, originalOwnerJoined = false, originalOwnerSettled = false;
 try {
-  const graph = await run(process.execPath, [compiler, "--listFilesOnly", "-p", config], {}, false);
+  const graph = (await run(process.execPath, [compiler, "--listFilesOnly", "-p", config], {}, false)).trim() + "\n" +
+    (await run(process.execPath, [compiler, "--listFilesOnly", "-p", codecConfig], {}, false)).trim();
   inputs = await checkInputs(workspace, graph);
   await run(process.execPath, [compiler, "--noEmit", "--skipLibCheck", "false", "-p", config]);
   const build = join(temporary, "dist"), client = join(temporary, "contract-client");
@@ -83,7 +85,7 @@ try {
     "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
     (await readFile(join(build, "src/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8"))
       .replace(/^\/\/# sourceMappingURL=.*$/m, ""));
-  for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
+  for (const name of ["hosted-native-probe/research-operator-ingress.js", "core/research-operator-request.js", "hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
     const destination = join(rawDirectory, "native-probe", name); await mkdir(resolve(destination, ".."), { recursive: true }); await copyFile(join(build, "src", name), destination);
   }
   // This separate emitted TEST closure binds the actual C client to our
@@ -120,14 +122,83 @@ try {
   const candidate = join(evidence,`${attempt}-root-producer-source-candidate`);
   await mkdir(candidate,{mode:0o700});
   for(const [from,name] of [[producer,"root-producer-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(candidate,name!));
+  // A1 gets a distinct binary/profile/artifact tuple. No A0 proof qualifies
+  // these new resource effects; this is a Source candidate only.
+  const retainedEntry=join(temporary,"retained-v2-entry");
+  const retainedSources=[...producerSources,...["resources.c","stock-manager.c","retained-v2.c","retained-v2-publication.c"].map(file=>join(native,file))];
+  await run("/usr/bin/cc",[...associated,"-DNP_RETAINED_V2_A1",...retainedSources,join(native,"retained-v2-entry.c"),"-Wl,-l:libsystemd.so.0","-o",retainedEntry]);
+  const retainedCandidate=join(evidence,`${attempt}-retained-v2-source-candidate`);await mkdir(retainedCandidate,{mode:0o700});
+  for(const [from,name] of [[retainedEntry,"retained-v2-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(retainedCandidate,name!));
+  await writeFile(join(retainedCandidate,"expected-helper-policy.json"),'{"kind":"NativeRetainedV2ExpectedLeafV1","postExec":"np_helper_filter_v1","preExec":"np_helper_preexec_filter_v1","source":false,"work":false}\n',{flag:"wx",mode:0o644});
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/retained-v2-refusal-contracts.test.mjs")],{NP_RETAINED_V2_ENTRY:retainedEntry});
+  const retainedAdmin=join(retainedCandidate,"admin");
+  await mkdir(join(retainedAdmin,"host-integration/native-probe"),{recursive:true});await mkdir(join(retainedAdmin,"src/core"),{recursive:true});
+  for(const name of ["retained-v2-operator.mjs","install-root-producer.mjs","retained-v2-profile.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(retainedAdmin,"host-integration/native-probe",name));
+  for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(retainedAdmin,"src/core",name));
+  await copyFile(join(build,"package.json"),join(retainedAdmin,"package.json"));
+  await writeFile(join(retainedCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2A1",closed:true,source:false,work:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
+  // B1a is a separate effect-closed actor tuple. No old permit or A1 resource
+  // evidence qualifies these new fork/scope/freezer effects.
+  const actorEntry=join(temporary,"retained-v2-actor-entry"),actorTest=join(temporary,"retained-v2-actor-test");
+  const actorSources=[...retainedSources,...["retained-v2-actors.c","retained-v2-actor-manager.c","retained-v2-actor-census.c","original-birth-interlock.c"].map(file=>join(native,file))];
+  const actorFlags=[...associated,"-DNP_RETAINED_V2_A1","-DNP_RETAINED_V2_B1A"];
+  await run("/usr/bin/cc",[...actorFlags,...actorSources,join(native,"retained-v2-actor-entry.c"),"-Wl,-l:libsystemd.so.0","-o",actorEntry]);
+  await run("/usr/bin/cc",[...actorFlags,...actorSources,join(native,"retained-v2-actor-test.c"),"-Wl,-l:libsystemd.so.0","-o",actorTest]);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/retained-v2-actor-contracts.test.mjs")],{NP_RETAINED_V2_ACTOR_ENTRY:actorEntry,NP_RETAINED_V2_ACTOR_TEST:actorTest});
+  const actorCandidate=join(evidence,`${attempt}-retained-v2-b1a-source-candidate`);await mkdir(actorCandidate,{mode:0o700});
+  for(const [from,name] of [[actorEntry,"retained-v2-actor-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(actorCandidate,name!));
+  await copyFile(join(retainedCandidate,"expected-helper-policy.json"),join(actorCandidate,"expected-helper-policy.json"));
+  const actorAdmin=join(actorCandidate,"admin");await mkdir(join(actorAdmin,"host-integration/native-probe"),{recursive:true});await mkdir(join(actorAdmin,"src/core"),{recursive:true});
+  for(const name of ["retained-v2-actor-operator.mjs","retained-v2-operator.mjs","install-root-producer.mjs","retained-v2-profile.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(actorAdmin,"host-integration/native-probe",name));
+  for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(actorAdmin,"src/core",name));
+  await copyFile(join(build,"package.json"),join(actorAdmin,"package.json"));
+  await writeFile(join(actorCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2B1a",closed:true,source:false,work:false,actorAdmission:false,enqueue:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
+  await writeFile(join(actorCandidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(actorCandidate)},null,2)+"\n",{flag:"wx"});
   const admin = join(candidate,"admin");await mkdir(admin,{recursive:true});
   // Preserve the compiler's import layout; each actual emitted leaf is in the
   // retained candidate inventory and the checked source input graph.
   async function copyTree(from:string,to:string):Promise<void>{await mkdir(to,{recursive:true});for(const name of await readdir(from)){const path=join(from,name),s=await lstat(path);if(s.isDirectory())await copyTree(path,join(to,name));else if(s.isFile())await copyFile(path,join(to,name));else throw new Error("nonregular emitted admin input");}}
   await copyTree(join(build,"src"),join(admin,"src"));
   await mkdir(join(admin,"host-integration/native-probe"),{recursive:true});
-  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
+  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs","retained-v2-profile.mjs","assemble-newtest.mjs","newtest-bootstrap.mjs","newtest-guest.mjs","newtest-cgroup.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
   await copyFile(join(build,"package.json"),join(admin,"package.json"));
+  // Retain an independently executable fixed NEWTEST v1 closure. These
+  // binaries are never run by Source CI and cannot select production paths.
+  const physical = join(candidate,"physical");await mkdir(physical,{mode:0o755});
+  const fixedPhysical = "/opt/native-newtest/artifact/physical";
+  const fixedScript = fixedPhysical + "/host-integration/native-probe/original-owner-helper.mjs";
+  const fixedAddon = fixedPhysical + "/original-owner.node";
+  const physicalPins = [`-DNP_OWNER_NODE=${JSON.stringify("/opt/subscription-runtime/runtime/node")}`,`-DNP_OWNER_SCRIPT=${JSON.stringify(fixedScript)}`,`-DNP_OWNER_ADDON=${JSON.stringify(fixedAddon)}`];
+  await run("/usr/bin/cc",[...strictC,...ownerSources,join(native,"original-owner-entry.c"),...physicalPins,"-o",join(physical,"original-owner")]);
+  await run("/usr/bin/cc",[...strictC,"-shared","-fPIC",...ownerSources,join(native,"original-owner-addon.c"),"-o",join(physical,"original-owner.node")]);
+  await run("/usr/bin/cc",[...strictC,...ownerSources,join(native,"original-owner-entry.c"),"-DNP_OWNER_REFUSAL_FIXTURE",...physicalPins,`-DNP_OWNER_TEST_SCRIPT=${JSON.stringify(fixedPhysical+"/host-integration/native-probe/original-owner-contracts.test.mjs")}`,"-o",join(physical,"original-owner-refusal-fixture")]);
+  await chmod(join(physical,"original-owner"),0o755);await chmod(join(physical,"original-owner.node"),0o644);await chmod(join(physical,"original-owner-refusal-fixture"),0o755);
+  await copyTree(join(build,"src"),join(physical,"src"));
+  await mkdir(join(physical,"host-integration/native-probe"),{recursive:true,mode:0o755});
+  for(const name of ["original-owner-helper.mjs","original-owner-contracts.test.mjs","root-producer-contracts.test.mjs","install-root-producer.mjs","retained-v2-profile.mjs","root-origin-operator.mjs","retained-v2-operator.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(physical,"host-integration/native-probe",name));
+  await copyFile(join(build,"package.json"),join(physical,"package.json"));
+  // Fixed installer inputs and emitted ingress closure retain normal layout.
+  const source = join(candidate,"runtime-source");await mkdir(source,{mode:0o755});
+  for(const [directory,names] of [["host-jobs",["install","contract.mjs","manager.mjs","read-request.mjs","endpoint.mjs","storage-policy.mjs","ssh-endpoint","ssh-ingress-shell"]],["managed-launcher",["install","install-policy","install-policy.mjs","launch.mjs","profiles.mjs","payload-guard.mjs"]],["native-probe",["installed-data-package.json"]]] as const){
+    const target=join(source,"host-integration",directory);await mkdir(target,{recursive:true,mode:0o755});
+    for(const name of names)await copyFile(join(workspace,"host-integration",directory,name),join(target,name));
+  }
+  // Compile the installer's standalone CommonJS codec from this checked graph,
+  // never from the workspace's independently generated installation artifact.
+  const codecBuild = join(temporary,"host-inventory-codec");
+  await run(process.execPath,[compiler,"-p",codecConfig,"--outDir",codecBuild]);
+  const codecBytes = await readFile(join(codecBuild,"host-inventory.js"));
+  // Same standalone-closure criterion as scripts/package-host-inventory-codec.mts.
+  if(/\brequire\s*\(|\bimport\s*(?:\(|[^\n]*\bfrom\b)/.test(codecBytes.toString("utf8")))throw new Error("host_inventory_codec_runtime_import");
+  const candidateCodec = join(source,"host-integration/managed-launcher/host-inventory-codec.cjs");
+  await writeFile(candidateCodec,codecBytes,{flag:"wx"});
+  await copyFile(join(managedDirectory,"hosted-host-policy.mjs"),join(source,"host-integration/managed-launcher/hosted-host-policy.mjs"));
+  await copyTree(join(build,"src"),join(source,"dist"));
+  // Fixture JS is readable by the actual sealed/helper and managed identities;
+  // actual content remains separately hashed in the candidate census.
+  async function readableTree(path:string):Promise<void>{const metadata=await lstat(path);if(metadata.isDirectory()){await chmod(path,0o755);for(const name of await readdir(path))await readableTree(join(path,name));}else if(metadata.isFile())await chmod(path,(metadata.mode&0o111)?0o755:0o644);else throw new Error("foreign physical fixture input");}
+  await readableTree(physical);await readableTree(source);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/newtest-contracts.test.mjs"),join(build,"host-integration/native-probe/managed-original-ends-contracts.test.mjs")],{NP_HOST_INVENTORY_CODEC:candidateCodec});
   await writeFile(join(candidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(candidate)},null,2)+"\n",{flag:"wx"});
   ownerFixture = process.env.SR_NATIVE_PROBE_ORIGINAL_OWNER_FIXTURE === "65532-seal-admitted";
   if (ownerFixture) {
