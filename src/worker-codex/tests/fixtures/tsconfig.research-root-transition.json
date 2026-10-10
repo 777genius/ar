@@ -1,0 +1,5 @@
+{
+  "extends": "../../../../tsconfig.json",
+  "compilerOptions": { "skipLibCheck": false, "types": ["node"], "noEmit": true },
+  "include": ["../research-provider-root-transition.native.mts"]
+}
