@@ -96,7 +96,7 @@ export function hostTransport({ host, machineId, socketDir, run = command }) {
   }
   const transport = {
     async request(request) {
-      if (!['start', 'status', 'stop'].includes(request.operation)) throw new Error('invalid operation');
+      if (!(request.kind === 'ResearchOperator' ? ['start', 'status', 'cancel', 'revoke'] : ['start', 'status', 'stop']).includes(request.operation)) throw new Error('invalid operation');
       if (request.machineId !== machineId) throw new Error('machine identity mismatch');
       const release = await new Promise(resolve => { queue.push({ start: request.operation === 'start', resolve }); drain(); });
       let unlock;

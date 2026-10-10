@@ -8,7 +8,7 @@ import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executo
 import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
 import { codexAuthJsonForAccount, StaticRunner } from "./file-backend-codex-worker-test-support";
 import { HostedInstallationActivationStore } from "../hosted-installation-activation";
-import { assertHostedNetworkLaunch } from "./hosted-network-launch-assertions";
+import { assertHostedNetworkLaunch, assertRevokedGrantCollectionUnavailable } from "./hosted-network-launch-assertions";
 
 // Reuse the installation suite's live fixture and lifecycle hooks. Only test
 // registration moves; production admission and account rotation remain real.
@@ -78,7 +78,7 @@ it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-del
   expect(frames.every(frame => frame.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE ===
     selectedProfile)).toBe(true);
   assertHostedNetworkLaunch(frames, selectedProfile, fakes);
-  if (mode.includes("-grant-")) expect(result.status).not.toBe("completed");
+  if (mode.includes("-grant-")) assertRevokedGrantCollectionUnavailable(config, result);
   else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
 });
 }

@@ -1,4 +1,4 @@
-import { type ChildProcess, type SpawnOptions } from "node:child_process";
+import { ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind, type HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -15,7 +15,10 @@ import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
 export type { HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
-const launches = new WeakMap<ChildProcess, HostedFdLaunch>();
+const launches = new WeakMap<object, HostedFdLaunch>();
+// Cleanup identity survives revocation of execution/release permission. Only
+// the completed fixed constructor can associate its actual child with a unit.
+const cleanupUnits = new WeakMap<object, string>();
 export enum HostedForegroundArtifactKind { Stdout = "hosted_foreground_stdout", Stderr = "hosted_foreground_stderr" }
 export type HostedForegroundResult = Readonly<{ exitCode: number; unit: string; startId: string;
   artifacts: readonly Readonly<{ kind: HostedForegroundArtifactKind; path: string; dev: string; ino: string; byteLength: number; sha256: string }>[] }>;
@@ -368,7 +371,7 @@ export class HostedFdLaunch {
     child.once("error", () => {}); // A synchronous setup failure must not leave an unhandled spawn error.
     try {
       const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args);
-      launches.set(child, launch); return child;
+      launches.set(child, launch); cleanupUnits.set(child, unit); return child;
     } catch (error) {
       invalidateHostedFdProcess(child);
       if (!original) { child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGTERM"); }
@@ -381,12 +384,22 @@ export class HostedFdLaunch {
 
 /** Only this fixed three-channel constructor can register a launch. */
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
+  unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground): ChildProcessWithoutNullStreams;
+export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
+  unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess;
+export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
   unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess {
   return HostedFdLaunch.spawn(command, args, options, unit, kind, original);
 }
-export function hostedFdLaunch(child: ChildProcess): HostedFdLaunch {
+export function hostedFdLaunch(child: object): HostedFdLaunch {
   const launch = launches.get(child);
-  if (!launch) invalid(); return launch;
+  if (!launch) invalid();
+  if (!(child instanceof ChildProcess) || launch.child !== child) invalid();
+  return launch;
+}
+/** Cleanup only: this lookup never authenticates execution or service drain. */
+export function hostedFdCleanupUnit(child: object): string | undefined {
+  return cleanupUnits.get(child);
 }
 export function hostedFdInvocationUnit(args: readonly string[]): string {
   const units = args.filter(arg => arg.startsWith("--unit="));

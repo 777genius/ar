@@ -1,3 +1,4 @@
+import { buildTar, tarPathFields } from "./codex-goal-handoff-untracked-tar";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
@@ -30,6 +31,13 @@ import {
   uniqueSortedHandoffPaths,
 } from "./codex-goal-handoff-artifact-guards";
 import { withLiteralGitPathspecs } from "./git-literal-pathspecs";
+import { resolveManagedDependencyGitContext, assertManagedDependencyGitContext,
+  assertManagedDependencyGitAuthoredPath, runManagedDependencyGitBuffer, isManagedDependencySignedTaskId,
+  type HostedDependencyRootPurposeContext } from "./managed-dependency-git";
+import * as syncFs from "node:fs";
+import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose,
+  HostedDependencyRootDescriptorRecipe, openCurrentHostedDependencyRootDescriptor } from "./hosted-dependency-root-purpose";
 
 const execFileAsync = promisify(execFile);
 const maxGitBytes = 32 * 1024 * 1024;
@@ -120,6 +128,7 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   readonly taskId: string;
   readonly workspacePath: string;
   readonly durableRootDir: string;
+  readonly managedContext?: HostedDependencyRootPurposeContext;
   readonly expectedBaseCommit?: string;
   readonly expectedHeadCommit?: string;
   /** Trusted runtime adapter only; never part of serialized job configuration. */
@@ -130,11 +139,18 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
     readonly afterExistingPacketRead?: (attempt: number) => Promise<void>;
   };
 }): Promise<MaterializedDurableCodexGoalHandoffPacket | null> {
+  const managedContext = resolveManagedDependencyGitContext(input.workspacePath, input.managedContext);
+  if (managedContext !== undefined) {
+    const scope = assertManagedDependencyGitContext(managedContext);
+    if (input.testHooks !== undefined || input.workerJobId !== scope.logicalJobId || input.taskId !== scope.logicalTaskId ||
+        input.durableRootDir !== scope.durableHandoffRoot.canonicalPath) throw new Error("handoff_protected_scope_mismatch");
+  }
   assertSafeHandoffId(input.workerJobId, "worker_job_id");
-  assertSafeHandoffId(input.taskId, "task_id");
+  if (managedContext === undefined) assertSafeHandoffId(input.taskId, "task_id");
+  else if (!isManagedDependencySignedTaskId(input.taskId)) throw new Error("task_id_invalid");
   const workspacePath = await canonicalDirectory(input.workspacePath, "handoff_workspace");
   await input.publicationAuthority?.assertPublicationAuthorized([input.durableRootDir]);
-  await mkdir(input.durableRootDir, { recursive: true, mode: 0o700 });
+  if (managedContext === undefined) await mkdir(input.durableRootDir, { recursive: true, mode: 0o700 });
   const durableRootDir = await canonicalDirectory(
     input.durableRootDir,
     "handoff_durable_root",
@@ -143,25 +159,28 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
     throw new Error("handoff_durable_root_inside_workspace");
   }
   await input.publicationAuthority?.assertPublicationAuthorized([durableRootDir]);
-  await chmod(durableRootDir, 0o700);
+  if (managedContext === undefined) await chmod(durableRootDir, 0o700);
+  else assertManagedDependencyGitContext(managedContext);
 
   for (let attempt = 1; attempt <= captureAttempts; attempt += 1) {
-    const before = await captureWorkspaceIdentity(workspacePath);
+    const before = await captureWorkspaceIdentity(workspacePath, managedContext);
     if (input.expectedHeadCommit && input.expectedHeadCommit !== before.head) {
       throw new Error("handoff_head_commit_mismatch");
     }
     const captured = await capturePacketFiles({
       workspacePath,
+      ...(managedContext === undefined ? {} : { managedContext }),
       identity: before,
       workerJobId: input.workerJobId,
       taskId: input.taskId,
       base: input.expectedBaseCommit ?? before.head,
     });
     await input.testHooks?.afterCapture?.(attempt);
-    const after = await captureWorkspaceIdentity(workspacePath);
+    const after = await captureWorkspaceIdentity(workspacePath, managedContext);
     const afterContentSha256 = sameIdentity(before, after)
       ? (await capturePacketFiles({
           workspacePath,
+          ...(managedContext === undefined ? {} : { managedContext }),
           identity: after,
           workerJobId: input.workerJobId,
           taskId: input.taskId,
@@ -175,10 +194,11 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
       throw new Error("handoff_workspace_changed_during_materialization");
     }
     await input.testHooks?.beforePublish?.(attempt);
-    const publishCheck = await captureWorkspaceIdentity(workspacePath);
+    const publishCheck = await captureWorkspaceIdentity(workspacePath, managedContext);
     const publishContentSha256 = sameIdentity(after, publishCheck)
       ? (await capturePacketFiles({
           workspacePath,
+          ...(managedContext === undefined ? {} : { managedContext }),
           identity: publishCheck,
           workerJobId: input.workerJobId,
           taskId: input.taskId,
@@ -194,14 +214,16 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
     try {
       return await publishPacket({
         durableRootDir,
+        ...(managedContext === undefined ? {} : { managedContext }),
         taskId: input.taskId,
         captured,
         ...(input.publicationAuthority ? { publicationAuthority: input.publicationAuthority } : {}),
         verifyWorkspaceStable: async () => {
-          const finalIdentity = await captureWorkspaceIdentity(workspacePath);
+          const finalIdentity = await captureWorkspaceIdentity(workspacePath, managedContext);
           const finalContentSha256 = sameIdentity(publishCheck, finalIdentity)
             ? (await capturePacketFiles({
                 workspacePath,
+                ...(managedContext === undefined ? {} : { managedContext }),
                 identity: finalIdentity,
                 workerJobId: input.workerJobId,
                 taskId: input.taskId,
@@ -245,20 +267,22 @@ type WorkspaceIdentity = {
   readonly changedPaths: readonly string[];
 };
 
-async function captureWorkspaceIdentity(workspacePath: string): Promise<WorkspaceIdentity> {
+async function captureWorkspaceIdentity(workspacePath: string, managedContext?: HostedDependencyRootPurposeContext): Promise<WorkspaceIdentity> {
+  const fixedGitBuffer = (cwd: string, args: readonly string[]) => gitBuffer(cwd, args, managedContext);
+  const fixedGitOptionalText = (cwd: string, args: readonly string[]) => gitOptionalText(cwd, args, managedContext);
   const [head, headTree, status, indexPatch, worktreePatch, headPatch,
     staged, unstaged, untracked, branch, mergeBase] = await Promise.all([
-    gitBuffer(workspacePath, ["rev-parse", "--verify", "HEAD"]),
-    gitBuffer(workspacePath, ["rev-parse", "--verify", "HEAD^{tree}"]),
-    gitBuffer(workspacePath, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
-    gitBuffer(workspacePath, ["diff", "--cached", "--binary", "--no-ext-diff", "--no-renames", "HEAD", "--"]),
-    gitBuffer(workspacePath, ["diff", "--binary", "--no-ext-diff", "--no-renames", "--"]),
-    gitBuffer(workspacePath, ["diff", "--binary", "--no-ext-diff", "--no-renames", "HEAD", "--"]),
-    gitBuffer(workspacePath, ["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD", "--"]),
-    gitBuffer(workspacePath, ["diff", "--name-only", "-z", "--no-renames", "--"]),
-    gitBuffer(workspacePath, ["ls-files", "--others", "--exclude-standard", "-z"]),
-    gitOptionalText(workspacePath, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
-    gitOptionalText(workspacePath, ["merge-base", "HEAD", "origin/main"]),
+    fixedGitBuffer(workspacePath, ["rev-parse", "--verify", "HEAD"]),
+    fixedGitBuffer(workspacePath, ["rev-parse", "--verify", "HEAD^{tree}"]),
+    fixedGitBuffer(workspacePath, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
+    fixedGitBuffer(workspacePath, ["diff", "--cached", "--binary", "--no-ext-diff", "--no-renames", "HEAD", "--"]),
+    fixedGitBuffer(workspacePath, ["diff", "--binary", "--no-ext-diff", "--no-renames", "--"]),
+    fixedGitBuffer(workspacePath, ["diff", "--binary", "--no-ext-diff", "--no-renames", "HEAD", "--"]),
+    fixedGitBuffer(workspacePath, ["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD", "--"]),
+    fixedGitBuffer(workspacePath, ["diff", "--name-only", "-z", "--no-renames", "--"]),
+    fixedGitBuffer(workspacePath, ["ls-files", "--others", "--exclude-standard", "-z"]),
+    fixedGitOptionalText(workspacePath, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
+    fixedGitOptionalText(workspacePath, ["merge-base", "HEAD", "origin/main"]),
   ]);
   // Opposing index/worktree changes can cancel in a HEAD-relative diff.
   const trackedPaths = [...nullPaths(staged), ...nullPaths(unstaged)]
@@ -288,6 +312,7 @@ async function captureWorkspaceIdentity(workspacePath: string): Promise<Workspac
 
 async function capturePacketFiles(input: {
   readonly workspacePath: string;
+  readonly managedContext?: HostedDependencyRootPurposeContext;
   readonly identity: WorkspaceIdentity;
   readonly workerJobId: string;
   readonly taskId: string;
@@ -304,7 +329,7 @@ async function capturePacketFiles(input: {
   const safeUntracked: { path: string; bytes: Buffer; mode: number }[] = [];
   let totalBytes = 0;
   for (const path of input.identity.untrackedPaths) {
-    const classified = await readUntrackedPath(input.workspacePath, path);
+    const classified = await readUntrackedPath(input.workspacePath, path, input.managedContext);
     if (classified.quarantine) {
       quarantine.push(classified.quarantine);
       continue;
@@ -326,9 +351,9 @@ async function capturePacketFiles(input: {
     safeUntracked.push({ path, ...file });
   }
   for (const path of input.identity.trackedPaths) {
-    const classified = await classifyTrackedPath(input.workspacePath, path);
+    const classified = await classifyTrackedPath(input.workspacePath, path, input.managedContext);
     if (classified) quarantine.push(classified);
-    await assertTrackedLayersSecretSafe(input.workspacePath, path);
+    await assertTrackedLayersSecretSafe(input.workspacePath, path, input.managedContext);
   }
 
   safeUntracked.sort((left, right) => left.path.localeCompare(right.path));
@@ -406,10 +431,11 @@ async function capturePacketFiles(input: {
   };
 }
 
-async function readUntrackedPath(workspacePath: string, path: string): Promise<{
+async function readUntrackedPath(workspacePath: string, path: string, managedContext?: HostedDependencyRootPurposeContext): Promise<{
   readonly file?: { readonly bytes: Buffer; readonly mode: number };
   readonly quarantine?: QuarantineEntry;
 }> {
+  if (managedContext !== undefined) assertManagedDependencyGitAuthoredPath(managedContext, path);
   if (path.split("/").includes(".git")) {
     return { quarantine: { path, reason: "nested_repository" } };
   }
@@ -433,13 +459,18 @@ async function readUntrackedPath(workspacePath: string, path: string): Promise<{
   }
   if (!item.isFile()) return { quarantine: { path, reason: "special" } };
   if (item.size > maxFileBytes) throw new Error("handoff_file_byte_limit_exceeded");
+  if (managedContext !== undefined) return { file: {
+    bytes: readManagedPacketSourceFile(managedContext, absolute, item), mode: item.mode & 0o777,
+  } };
   const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = await handle.stat();
     if (!opened.isFile() || opened.size !== item.size || opened.ino !== item.ino) {
       throw new Error("handoff_changed_file_unstable");
     }
+    if (managedContext !== undefined) assertManagedDependencyGitContext(managedContext);
     const bytes = await handle.readFile();
+    if (managedContext !== undefined) assertManagedDependencyGitContext(managedContext);
     const confirmed = await handle.stat();
     if (confirmed.size !== opened.size || confirmed.mtimeMs !== opened.mtimeMs) {
       throw new Error("handoff_changed_file_unstable");
@@ -472,13 +503,17 @@ async function hasNestedRepositoryBoundary(
 async function classifyTrackedPath(
   workspacePath: string,
   path: string,
+  managedContext?: HostedDependencyRootPurposeContext,
 ): Promise<QuarantineEntry | undefined> {
+  if (managedContext !== undefined) assertManagedDependencyGitAuthoredPath(managedContext, path);
   const absolute = resolve(workspacePath, path);
   try {
     const item = await lstat(absolute);
     if (item.isSymbolicLink()) return { path, reason: "symlink" };
     if (!item.isFile()) return { path, reason: "special" };
-    const bytes = await readFile(absolute);
+    if (managedContext !== undefined) assertManagedDependencyGitContext(managedContext);
+    const bytes = managedContext === undefined ? await readFile(absolute) : readManagedPacketSourceFile(managedContext, absolute, item);
+    if (managedContext !== undefined) assertManagedDependencyGitContext(managedContext);
     assertSecretSafe(path, bytes);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -486,28 +521,57 @@ async function classifyTrackedPath(
   return undefined;
 }
 
+function readManagedPacketSourceFile(context: HostedDependencyRootPurposeContext, path: string,
+  expected: Awaited<ReturnType<typeof lstat>>): Buffer {
+  assertManagedDependencyGitAuthoredPath(context, path);
+  return withHostedActivationFence(fence => {
+    const scope = assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+    if (!expected.isFile() || !Number.isSafeInteger(expected.size) || expected.size < 0 || expected.size > maxFileBytes ||
+        !handoffPathInside(scope.workspace.canonicalPath, path) || syncFs.realpathSync(path) !== path) throw new Error("handoff_file_byte_limit_exceeded");
+    const resource = openCurrentHostedDependencyRootDescriptor(context, fence, HostedDependencyRootDescriptorRecipe.AuthoredFileV1, path);
+    const fd = resource.fd;
+    try {
+      const before = syncFs.fstatSync(fd);
+      if (!before.isFile() || before.nlink !== 1 || before.dev !== expected.dev || before.ino !== expected.ino ||
+          before.size !== expected.size || before.mtimeMs !== expected.mtimeMs) throw new Error("handoff_changed_file_unstable");
+      assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+      const bytes = Buffer.alloc(before.size); let offset = 0;
+      while (offset < bytes.length) { const count = syncFs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (count === 0) throw new Error("handoff_changed_file_unstable"); offset += count; }
+      const overflow = Buffer.alloc(1);
+      if (syncFs.readSync(fd, overflow, 0, 1, offset) !== 0) throw new Error("handoff_file_byte_limit_exceeded");
+      const after = syncFs.fstatSync(fd), named = syncFs.lstatSync(path);
+      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || named.dev !== after.dev || named.ino !== after.ino ||
+          named.size !== after.size || named.mtimeMs !== after.mtimeMs || named.nlink !== 1) throw new Error("handoff_changed_file_unstable");
+      assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence); return bytes;
+    } finally { resource.close(); }
+  });
+}
+
 async function assertTrackedLayersSecretSafe(
   workspacePath: string,
   path: string,
+  managedContext?: HostedDependencyRootPurposeContext,
 ): Promise<void> {
+  if (managedContext !== undefined) assertManagedDependencyGitAuthoredPath(managedContext, path);
   const indexEntries = parseIndexEntries(await gitBuffer(workspacePath, [
     "ls-files", "--stage", "-z", "--", path,
-  ]));
+  ], managedContext));
   for (const entry of indexEntries) {
     if (entry.mode === "160000") continue;
     assertSecretSafe(path, await gitBuffer(workspacePath, [
       "cat-file", "blob", entry.objectId,
-    ]));
+    ], managedContext));
   }
 
   const headEntries = parseTreeEntries(await gitBuffer(workspacePath, [
     "ls-tree", "-z", "HEAD", "--", path,
-  ]));
+  ], managedContext));
   for (const entry of headEntries) {
     if (entry.objectKind !== "blob") continue;
     assertSecretSafe(path, await gitBuffer(workspacePath, [
       "cat-file", "blob", entry.objectId,
-    ]));
+    ], managedContext));
   }
 }
 
@@ -568,12 +632,19 @@ function assertHandoffMetadataSecretSafe(
 
 async function publishPacket(input: {
   readonly durableRootDir: string;
+  readonly managedContext?: HostedDependencyRootPurposeContext;
   readonly taskId: string;
   readonly captured: Awaited<ReturnType<typeof capturePacketFiles>>;
   readonly verifyWorkspaceStable: () => Promise<void>;
   readonly afterExistingPacketRead?: () => Promise<void>;
   readonly publicationAuthority?: { readonly assertPublicationAuthorized: (paths?: readonly string[]) => Promise<void> };
 }): Promise<MaterializedDurableCodexGoalHandoffPacket> {
+  if (input.managedContext !== undefined) {
+    await input.verifyWorkspaceStable();
+    await input.publicationAuthority?.assertPublicationAuthorized([input.durableRootDir]);
+    assertManagedDependencyGitContext(input.managedContext);
+    return publishProtectedPacket(input.managedContext, input);
+  }
   const packetName = `${input.taskId}.${input.captured.generation}.packet`;
   const packetPath = join(input.durableRootDir, packetName);
   const existing = await readExistingPacket(
@@ -638,6 +709,94 @@ type ExistingPacket = {
   readonly manifest: DurableCodexGoalHandoffPacketManifest;
   readonly manifestBytes: Buffer;
 };
+
+/** Fixed synchronous publication under the genuine current fence. No caller
+ * directory, arbitrary descriptor or recursive cleanup becomes a root effect. */
+function publishProtectedPacket(context: HostedDependencyRootPurposeContext, input: {
+  readonly durableRootDir: string; readonly taskId: string;
+  readonly captured: Awaited<ReturnType<typeof capturePacketFiles>>;
+}): MaterializedDurableCodexGoalHandoffPacket {
+  return withHostedActivationFence(fence => {
+    const scope = assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+    const rootPath = scope.durableHandoffRoot.canonicalPath;
+    if (input.durableRootDir !== rootPath || input.taskId !== scope.logicalTaskId ||
+        input.captured.manifest.workerJobId !== scope.logicalJobId || !/^[a-f0-9]{64}$/.test(input.captured.generation)) throw new Error("handoff_protected_scope_mismatch");
+    const allowed = new Set(["status.porcelain-v2.z", "index.patch", "worktree.patch", "head-relative.patch",
+      "untracked.tar", "untracked.paths.z", "quarantine.json", "manifest.json"]);
+    const paths = new Set<string>(); let total = 0;
+    for (const file of input.captured.files) {
+      if (!allowed.has(file.path) || paths.has(file.path) || file.bytes.length > maxGitBytes) throw new Error("handoff_packet_verification_failed");
+      paths.add(file.path); total += file.bytes.length;
+    }
+    if (paths.size < 7 || !paths.has("manifest.json") || total > 256 * 1024 * 1024) throw new Error("handoff_total_byte_limit_exceeded");
+    const assertDirectory = (path: string): void => {
+      const stat = syncFs.lstatSync(path, { bigint: true });
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0n || stat.gid !== 0n ||
+          (stat.mode & 0o7777n) !== 0o700n || stat.dev.toString() !== scope.durableHandoffRoot.dev || syncFs.realpathSync(path) !== path ||
+          path === rootPath && stat.ino.toString() !== scope.durableHandoffRoot.ino) throw new Error("handoff_packet_existing_path_unsafe");
+    };
+    const read = (path: string): Buffer => {
+      const resource = openCurrentHostedDependencyRootDescriptor(context, fence, HostedDependencyRootDescriptorRecipe.DurableFileV1, path);
+      const fd = resource.fd;
+      try {
+        const before = syncFs.fstatSync(fd, { bigint: true });
+        if (!before.isFile() || before.nlink !== 1n || before.uid !== 0n || before.gid !== 0n ||
+            (before.mode & 0o7777n) !== 0o600n || before.dev.toString() !== scope.durableHandoffRoot.dev ||
+            before.size > BigInt(maxGitBytes)) throw new Error("handoff_packet_verification_failed");
+        assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+        const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
+        while (offset < bytes.length) {
+          const count = syncFs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+          if (count === 0) throw new Error("handoff_packet_verification_failed"); offset += count;
+        }
+        const overflow = Buffer.alloc(1);
+        if (syncFs.readSync(fd, overflow, 0, 1, offset) !== 0) throw new Error("handoff_packet_verification_failed");
+        const after = syncFs.fstatSync(fd, { bigint: true }), named = syncFs.lstatSync(path, { bigint: true });
+        if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs ||
+            named.dev !== after.dev || named.ino !== after.ino || named.size !== after.size || named.mtimeNs !== after.mtimeNs) throw new Error("handoff_packet_verification_failed");
+        assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+        return bytes;
+      } finally { resource.close(); }
+    };
+    assertDirectory(rootPath);
+    const packetName = `${input.taskId}.${input.captured.generation}.packet`, packetPath = join(rootPath, packetName);
+    const verify = (path: string): ExistingPacket => {
+      assertDirectory(path);
+      const entries = syncFs.readdirSync(path);
+      if (entries.length !== paths.size || entries.some(entry => !paths.has(entry))) throw new Error("handoff_packet_verification_failed");
+      const manifestBytes = read(join(path, "manifest.json"));
+      const manifest = JSON.parse(manifestBytes.toString("utf8")) as DurableCodexGoalHandoffPacketManifest;
+      if (manifest.schema !== CODEX_GOAL_DURABLE_HANDOFF_PACKET_SCHEMA || manifest.schemaVersion !== 1 ||
+          manifest.workerJobId !== scope.logicalJobId || manifest.taskId !== scope.logicalTaskId ||
+          packetContentSha256(manifest) !== input.captured.contentSha256) throw new Error("handoff_packet_existing_manifest_mismatch");
+      for (const file of input.captured.files) if (file.path !== "manifest.json" && !read(join(path, file.path)).equals(file.bytes)) throw new Error("handoff_packet_verification_failed");
+      assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+      return { manifest, manifestBytes };
+    };
+    try { syncFs.lstatSync(packetPath); return packetResult(packetPath, input.captured, verify(packetPath)); }
+    catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error; }
+    const temporaryPath = join(rootPath, `.${packetName}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
+    assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+    syncFs.mkdirSync(temporaryPath, { mode: 0o700 }); assertDirectory(temporaryPath);
+    // Failed/uncertain publications retain their exact owned output evidence.
+    for (const file of input.captured.files) {
+      assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+      const fd = syncFs.openSync(join(temporaryPath, file.path), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try { syncFs.writeFileSync(fd, file.bytes); syncFs.fsyncSync(fd); } finally { syncFs.closeSync(fd); }
+    }
+    verify(temporaryPath);
+    const directory = openCurrentHostedDependencyRootDescriptor(context, fence, HostedDependencyRootDescriptorRecipe.DirectoryV1, temporaryPath);
+    try { syncFs.fsyncSync(directory.fd); } finally { directory.close(); }
+    assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
+    try { syncFs.lstatSync(packetPath); throw new Error("handoff_packet_existing_path_unsafe"); }
+    catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error; }
+    syncFs.renameSync(temporaryPath, packetPath);
+    const root = openCurrentHostedDependencyRootDescriptor(context, fence, HostedDependencyRootDescriptorRecipe.DirectoryV1, rootPath);
+    try { syncFs.fsyncSync(root.fd); } finally { root.close(); }
+    const published = verify(packetPath);
+    return packetResult(packetPath, input.captured, published);
+  });
+}
 
 async function readExistingPacket(
   path: string,
@@ -780,7 +939,9 @@ function nullPaths(bytes: Buffer): string[] {
   return bytes.toString("utf8").split("\0").filter(Boolean);
 }
 
-async function gitBuffer(cwd: string, args: readonly string[]): Promise<Buffer> {
+async function gitBuffer(cwd: string, args: readonly string[], managedContext?: HostedDependencyRootPurposeContext): Promise<Buffer> {
+  const context = resolveManagedDependencyGitContext(cwd, managedContext);
+  if (context !== undefined) return (await runManagedDependencyGitBuffer(context, args, { maxBufferBytes: maxGitBytes })).stdout;
   const { stdout } = await execFileAsync("git", withLiteralGitPathspecs([
     "--no-replace-objects", "-c", "core.quotepath=false", "-c", "core.fileMode=true", ...args,
   ]), {
@@ -793,12 +954,15 @@ async function gitBuffer(cwd: string, args: readonly string[]): Promise<Buffer> 
   return stdout;
 }
 
-async function gitOptionalBuffer(cwd: string, args: readonly string[]): Promise<Buffer | undefined> {
-  try { return await gitBuffer(cwd, args); } catch { return undefined; }
+async function gitOptionalBuffer(cwd: string, args: readonly string[], managedContext?: HostedDependencyRootPurposeContext): Promise<Buffer | undefined> {
+  try { return await gitBuffer(cwd, args, managedContext); } catch (error) {
+    if (managedContext === undefined || error && typeof error === "object" && "code" in error && error.code === 1 && "signal" in error && error.signal === null) return undefined;
+    throw error;
+  }
 }
 
-async function gitOptionalText(cwd: string, args: readonly string[]): Promise<string | undefined> {
-  const value = await gitOptionalBuffer(cwd, args);
+async function gitOptionalText(cwd: string, args: readonly string[], managedContext?: HostedDependencyRootPurposeContext): Promise<string | undefined> {
+  const value = await gitOptionalBuffer(cwd, args, managedContext);
   const text = value?.toString("utf8").trim();
   return text || undefined;
 }
@@ -807,51 +971,4 @@ async function canonicalDirectory(path: string, label: string): Promise<string> 
   const item = await lstat(path);
   if (!item.isDirectory() || item.isSymbolicLink()) throw new Error(`${label}_unsafe`);
   return await realpath(path);
-}
-
-function buildTar(files: readonly { path: string; bytes: Buffer; mode: number }[]): Buffer {
-  const blocks: Buffer[] = [];
-  for (const file of files) {
-    const fields = tarPathFields(file.path);
-    if (!fields) throw new Error("handoff_archive_path_unrepresentable");
-    const header = Buffer.alloc(512);
-    fields.name.copy(header, 0);
-    fields.prefix?.copy(header, 345);
-    tarOctal(header, 100, 8, file.mode & 0o777);
-    tarOctal(header, 108, 8, 0);
-    tarOctal(header, 116, 8, 0);
-    tarOctal(header, 124, 12, file.bytes.length);
-    tarOctal(header, 136, 12, 0);
-    header.fill(0x20, 148, 156);
-    header[156] = 0x30;
-    Buffer.from("ustar\0").copy(header, 257);
-    Buffer.from("00").copy(header, 263);
-    tarOctal(header, 148, 8, header.reduce((sum, byte) => sum + byte, 0));
-    blocks.push(header, file.bytes, Buffer.alloc((512 - file.bytes.length % 512) % 512));
-  }
-  blocks.push(Buffer.alloc(1024));
-  return Buffer.concat(blocks);
-}
-
-function tarPathFields(path: string): {
-  readonly name: Buffer;
-  readonly prefix?: Buffer;
-} | undefined {
-  const name = Buffer.from(path);
-  if (name.byteLength <= 100) return { name };
-  for (let separator = path.lastIndexOf("/"); separator > 0;
-    separator = path.lastIndexOf("/", separator - 1)) {
-    const prefix = Buffer.from(path.slice(0, separator));
-    const suffix = Buffer.from(path.slice(separator + 1));
-    if (prefix.byteLength <= 155 && suffix.byteLength <= 100) {
-      return { name: suffix, prefix };
-    }
-  }
-  return undefined;
-}
-
-function tarOctal(buffer: Buffer, offset: number, length: number, value: number): void {
-  const text = value.toString(8).padStart(length - 1, "0");
-  buffer.write(text, offset, length - 1, "ascii");
-  buffer[offset + length - 1] = 0;
 }

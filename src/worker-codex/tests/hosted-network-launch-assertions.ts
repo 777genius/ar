@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { expect } from "vitest";
 import { codexProviderEgressCliConfigArgs, codexProviderEgressPolicy, codexProviderHasPublicSources,
   CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import type { RuntimeResultEnvelope, SafeExecutionRunResult } from "@vioxen/subscription-runtime/worker-core";
+import type { FileBackendCodexWorkerResult } from "../file-backend-codex-worker";
 import type { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
 import { hostedCredentialDenyDirectories } from "../../provider-codex/hosted-codex-permissions";
 import { admitHostedTestEgress } from "../hosted-test-egress-admission";
@@ -43,4 +45,22 @@ export function assertHostedNetworkLaunch(frames: readonly { env: Record<string,
       config: { web_search: "live" }, dynamicTools: [{ name: "public_source_read" }],
     });
   }
+}
+
+// Red: revoked grant collection replaces the failed run with a new exception,
+// or records an empty array as proof of a pristine workspace.
+export function assertRevokedGrantCollectionUnavailable(config: { readonly jobRootDir: string; readonly taskId: string },
+  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>): void {
+  expect(result.status).not.toBe("completed");
+  const output: RuntimeResultEnvelope = JSON.parse(readFileSync(join(config.jobRootDir, `${config.taskId}.latest-result.json`), "utf8"));
+  expect(output.status).toBe("failed");
+  expect(output.reason).toBe("reason" in result ? result.reason : undefined);
+  expect(output.evidence).toContain(`safe_execution_status:${result.status}`);
+  expect(output.evidence).toContain(`attempt_count:${result.attempts.length}`);
+  expect(output.evidence).toContain("workspace_changed_files_unavailable");
+  expect(output.evidence).toContain("patch_preserve_unavailable");
+  expect(output.details).toMatchObject({ workspaceChangedFilesState: "unknown",
+    workspaceChangedFilesCollection: "unavailable", handoffArtifactError: "workspace_changed_files_unavailable" });
+  expect(output.details?.handoffPacketPath).toBeUndefined();
+  expect(output.artifacts).toBeUndefined();
 }

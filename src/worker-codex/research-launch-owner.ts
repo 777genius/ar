@@ -86,6 +86,18 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
 export function revokeResearchLaunch(jobId: string): void {
   withResearchJobMutation(jobId, () => revokeResearchLaunchUnlocked(jobId));
 }
+/** Idempotent enrolled standalone revocation cannot revoke a replacement grant. */
+export function revokeEnrolledResearchLaunch(jobId: string, expectedGrantSha256: string): void {
+  withResearchJobMutation(jobId, () => {
+    assertResearchInitialRoot(true);
+    if (!/^[a-f0-9]{64}$/.test(expectedGrantSha256)) researchInvalid();
+    const path = join(researchJobAuthority(jobId), "grant.json");
+    if (!existsSync(path)) return;
+    const bytes = researchRead(path), grant = parseResearchGrant(researchJson(bytes));
+    if (grant.registeredHandoff || grant.projectLaunchBinding || researchHash(bytes) !== expectedGrantSha256) researchInvalid();
+    unlinkSync(path); // Retain active ownership for verified cancellation.
+  });
+}
 function revokeResearchLaunchUnlocked(jobId: string): void {
   assertResearchInitialRoot(true);
   const path = join(researchJobAuthority(jobId), "grant.json");
@@ -128,6 +140,14 @@ export async function revokeProjectResearchLaunch(jobId: string, expectedGrantSh
 export function startResearchLaunch(requestPath: string, expectedRequestSha256: string): { jobId: string; unit: string; startId: string; specSha256: string } {
   const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
   return withResearchJobMutation(jobId, () => prepareResearchLaunchInternal(requestPath, expectedRequestSha256).submit());
+}
+/** Enrollment's exact grant is rechecked inside the original submission fence. */
+export function startEnrolledResearchLaunch(requestPath: string, expectedRequestSha256: string, expectedGrantSha256: string): ReturnType<typeof startResearchLaunch> {
+  const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
+  return withResearchJobMutation(jobId, () => {
+    if (researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== expectedGrantSha256) researchInvalid();
+    return prepareResearchLaunchInternal(requestPath, expectedRequestSha256).submit();
+  });
 }
 export async function startRegisteredResearchLaunch(requestPath: string, expectedRequestSha256: string): Promise<ReturnType<typeof startResearchLaunch>> {
   const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
