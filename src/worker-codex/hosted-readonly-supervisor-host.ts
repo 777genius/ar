@@ -50,7 +50,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
   readEpoch(): HostedCustodyEpoch { return this.store.readEpoch(); }
   publishEpoch(epoch: HostedCustodyEpoch): void { this.store.publishEpoch(epoch); }
   session() { return this.kernel.session(); }
-  verifyExclusiveInventory(): void { this.kernel.verifyExclusiveInventory(); }
+  verifyExclusiveInventory(): void { this.kernel.verifyExclusiveInventory(this.store.publicationFence()); }
   runtimeRole() { return this.kernel.runtimeRole(); }
   verifyRuntimeOwner(): void { assertExclusiveHostedActivation(this.readEpoch()); this.kernel.verifyRuntimeOwner(); }
   verifyDescriptorBoundary(): void { this.kernel.verifyDescriptorBoundary(); }
