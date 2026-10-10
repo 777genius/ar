@@ -17,6 +17,16 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
   scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
   scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
 export const host = fixture;
+/** The fixture reuses the test PID for binding. Moving the caller to the outside
+ * operator must retain the numeric MainPID's already-bound runtime identity. */
+export function enterResearchOperatorScope(unit: string): void {
+  const service = fixture.units.get(unit), group = "/system.slice/" + unit;
+  if (!service || service.pid !== process.pid || !service.active || fixture.group !== group ||
+      (fixture.processGroups.has(service.pid) && fixture.processGroups.get(service.pid) !== group))
+    throw new Error("Expected a live bound TEST runtime before entering operator scope");
+  fixture.processGroups.set(service.pid, group);
+  fixture.group = "/user.slice/TEST-operator.scope";
+}
 const nativeFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 let ownedRoot: { path: string; device: number; inode: number } | undefined;
 /** Optional physical backing exists only after this module allocates a TEST root.
@@ -99,8 +109,16 @@ vi.mock("node:fs", async original => {
       if (path === "/etc/machine-id") return "b".repeat(32);
       return real.readFileSync(typeof path === "string" ? local(path) : path, opts);
     },
-    readlinkSync: (path: string) => path.startsWith("/proc/") ? (fixture.processNamespaces.get(Number(path.split("/")[2]))?.[path.split("/").at(-1) as "user"] ??
-      (fixture.namespaceRoot && path.startsWith("/proc/self") ? "TEST-namespace" : "TEST-host")) : real.readlinkSync(local(path)),
+    readlinkSync: (path: string) => {
+      if (!path.startsWith("/proc/")) return real.readlinkSync(local(path));
+      const parts = path.split("/"), pid = parts[2] === "self" ? process.pid : Number(parts[2]);
+      const ids = { user: 4026531837, mnt: 4026531841, pid: 4026531836, net: 4026531840 } as const;
+      const kind = parts.at(-1) as keyof typeof ids, selected = fixture.processNamespaces.get(pid)?.[kind];
+      if (selected !== undefined) return selected;
+      // Canonical labelled TEST identities, not physical namespace evidence.
+      if (parts[3] === "ns" && kind in ids) return `${kind}:[${ids[kind] + (fixture.namespaceRoot && pid === process.pid ? 1000 : 0)}]`;
+      return "TEST-host";
+    },
     realpathSync: (path: string) => { if (fixture.scratchNodes.has(path)) return path; const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target.startsWith(join(fixture.root, "system") + "/") ? target.slice(join(fixture.root, "system").length) : target === local(path) ? path : target; },
     readdirSync: (path: string, opts: Parameters<typeof real.readdirSync>[1]) => real.readdirSync(local(path), opts),
     mkdirSync: (path: string, opts: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), opts),
@@ -108,6 +126,7 @@ vi.mock("node:fs", async original => {
     writeFileSync: (path: string | number, bytes: Parameters<typeof real.writeFileSync>[1], options: Parameters<typeof real.writeFileSync>[2]) => real.writeFileSync(typeof path === "string" ? local(path) : path, bytes, options),
     renameSync: (from: string, to: string) => real.renameSync(local(from), local(to)),
     unlinkSync: (path: string) => real.unlinkSync(local(path)),
+    rmdirSync: (path: string) => real.rmdirSync(local(path)),
   };
 });
 vi.mock("node:fs/promises", async original => {

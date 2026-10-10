@@ -1,3 +1,4 @@
+import { projectControlWorkerModeRepairAllowed } from "./project-control-worker-mode";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
@@ -34,6 +35,7 @@ const PROJECT_CONTROL_SCOPE_REPAIR_IMMUTABLE_FIELDS = [
   "isolatedWorkspaceRoot",
   "workspaceRoots",
   "commitIdentity",
+  "workerMode",
   "worktreeRoots",
   "registryRoot",
   "authRoot",
@@ -78,6 +80,7 @@ export function assertProjectControlScopeRepairAllowed(input: {
   readonly proposed: ProjectAccessScope;
 }): void {
   for (const field of PROJECT_CONTROL_SCOPE_REPAIR_IMMUTABLE_FIELDS) {
+    if (field === "workerMode" && projectControlWorkerModeRepairAllowed(input.existing.workerMode, input.proposed.workerMode)) continue;
     if (
       field === "allowedAccountIds" &&
       projectControlAllowedAccountIdsAppendAllowed({
