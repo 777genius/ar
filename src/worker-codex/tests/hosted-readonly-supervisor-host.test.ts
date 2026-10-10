@@ -51,6 +51,11 @@ vi.mock("../hosted-readonly-custody", async original => ({
   createReadonlyPrivateRecord: (...args: unknown[]) => facts.birth(...args),
 }));
 vi.mock("../hosted-readonly-epoch-store", () => ({ HostedReadonlyEpochStore: class {
+  // Simulated scheduling port only; no genuine fence or Native authority.
+  publicationFence(): undefined {
+    if (!facts.locked) throw new Error("hosted_custody_common_fence_required");
+    return undefined;
+  }
   serialized<T>(action: () => T): T {
     if (facts.locked) throw new Error("concurrent start");
     facts.locked = true;
