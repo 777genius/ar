@@ -9,7 +9,7 @@ const association = reference("association"), origin = reference("actual-start")
 const ordinary = { installationId: id, bootId: id, runtimeSha: "b".repeat(40), grantDigest: "c".repeat(64), startId: id,
   unit: "subscription-runtime-ordinary-" + id + ".service" };
 const managed = { ...ordinary, kind: LaunchKind.ManagedReadonlyLocalV1, association, origin,
-  unit: "subscription-runtime-hosted-" + id + ".service" };
+  unit: "subscription-runtime-outer-" + id + ".service" };
 const base = { workspace: { canonicalPath: "/TEST/workspace", dev: "1", ino: "3" }, revision: 1, epoch: 1 };
 const attempt = { attemptId: id, epoch: 1, launch: managed };
 const record = { ...base, version: 3, custodyBinding: association, owner: { kind: Kind.Consumer, phase: Phase.ExclusiveMutation, attempt } };
@@ -29,7 +29,7 @@ describe("closed dependency owner custody wire", () => {
     const successor = { ...record, custodyBinding: transfer,
       owner: { ...record.owner, attempt: { ...attempt, launch: { ...managed, kind: LaunchKind.OrdinaryReadonlySuccessorV1, unit: ordinary.unit } } } };
     expect(parseDependencyOwner(successor)).toEqual(successor);
-    const invalidLaunches = [ { ...managed, kind: "other" }, { ...managed, unit: ordinary.unit },
+    const invalidLaunches = [ { ...managed, unit: "subscription-runtime-hosted-" + id + ".service" }, { ...managed, kind: "other" }, { ...managed, unit: ordinary.unit },
       { ...managed, startId: "00000000-0000-4000-8000-000000000002" }, { ...managed, origin: true },
       { ...managed, origin: { ...origin, authority: true } }, { ...managed, association: transfer },
       { ...managed, kind: LaunchKind.OrdinaryReadonlySuccessorV1, unit: ordinary.unit } ];
@@ -58,6 +58,18 @@ describe("closed dependency owner custody wire", () => {
     for (const value of values) expect(() => parseDependencyOwner(value)).toThrow("dependency_admission:invalid_record");
     expect(evaluated).toBe(0);
   });
+  it.each(["/TEST/sk-AAAAAAAAAAAAAAAA", "/TEST/Bearer token", "/TEST/line\nbreak", "/TEST/delete\x7f"])(
+    "rejects unsafe v3 workspace %j while preserving v1/v2 syntax", canonicalPath => {
+      const workspace = { ...base.workspace, canonicalPath };
+      for (const version of [1, 2] as const) {
+        const legacy = { ...base, version, workspace, owner: null };
+        expect(parseDependencyOwner(legacy)).toEqual(legacy);
+      }
+      for (const owner of [null, record.owner]) {
+        expect(() => parseDependencyOwner({ ...record, workspace, owner })).toThrow("dependency_admission:invalid_record");
+      }
+    },
+  );
   it("bounds the complete v3 wire before persistence", () => {
     const large = { ...association, path: "/" + "x".repeat(4000) };
     const value = { ...record, workspace: { ...base.workspace, canonicalPath: "/" + "w".repeat(4000) },

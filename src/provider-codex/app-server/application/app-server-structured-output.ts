@@ -37,5 +37,5 @@ export async function parseCodexAppServerStructuredOutput(input: {
 
 export async function parseAppServerOutputWithUsage(input: Parameters<typeof parseCodexAppServerStructuredOutput>[0]): Promise<CodexExecutionResult> {
   try { return await parseCodexAppServerStructuredOutput(input); }
-  catch (error) { throw new AppServerUsageError(error, input.result.usage, true); }
+  catch (error) { throw new AppServerUsageError(error, input.result.usage, true, input.result.nativeWeb); }
 }

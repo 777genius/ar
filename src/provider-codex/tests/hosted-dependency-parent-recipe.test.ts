@@ -7,6 +7,18 @@ describe("N3 fixed initial-host writer configuration", () => {
   it.each(["read-only", "workspace-write"])("accepts safe default roots for named mode %s", mode => {
     expect(() => assertHostedDependencyParentRecipe([...args, "--provider-sandbox-mode", mode], job, workspace)).not.toThrow();
   });
+  // Regression: a signed task containing @ must keep its exact fixed writer
+  // leaves; expanding identity through rewriting or a partial match is unsafe.
+  it("uses the exact signed task grammar for fixed writer names", () => {
+    const selected = (task: string) => { const current = [...args]; current[3] = task;
+      current[current.length-1] = `${job}/${task}.latest-result.json`; return current; };
+    for (const task of ["task@1", "a".repeat(128)]) {
+      expect(() => assertHostedDependencyParentRecipe(selected(task),job,workspace)).not.toThrow();
+    }
+    for (const task of ["a".repeat(129),"task@1\n","task@1\r","../task","task/leaf","task\0leaf"]) {
+      expect(() => assertHostedDependencyParentRecipe(selected(task),job,workspace)).toThrow();
+    }
+  });
   it("rejects root writes into the qualified tree or private cache before the payload", () => {
     for (const flag of ["--state-root", "--durable-handoff-root", "--progress", "--output", "--registry-root", "--log"]) {
       const base = flag === "--output" ? args.slice(0, -2) : args;

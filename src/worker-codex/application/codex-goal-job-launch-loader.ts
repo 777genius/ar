@@ -33,7 +33,7 @@ export async function loadJobLaunch(
     launch: await goalLaunchInput({
       ...codexGoalJobToArgs(manifest),
       durableHandoffRootDir: manifest.durableHandoffRootDir ??
-        join(registryRootDir, "durable-handoffs"),
+        join(manifest.storage ? manifest.jobRootDir : registryRootDir, "durable-handoffs"),
     }),
   };
 }
