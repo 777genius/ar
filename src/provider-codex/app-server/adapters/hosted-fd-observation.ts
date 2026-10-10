@@ -1,3 +1,4 @@
+import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -66,10 +67,10 @@ function readInstalledFdInventory(remaining?: SystemdObservationRemaining) {
   const inventoryBytes = readHostedActivationBytes("readonly-inventory.json");
   observationTimeout(5000, remaining);
   if (!inventoryBytes) invalid();
-  const inventory = decodeHostedActivationBytes(inventoryBytes) as Record<string, unknown>;
+  const inventory = decodeHostedInventoryBytes(inventoryBytes) as Record<string, unknown>;
   const pin = readFdCollectorProfileField(inventory);
   if (!pin) return undefined;
-  if (Object.keys(inventory).sort().join(",") !==
+  if (inventory.schemaVersion !== 5 && Object.keys(inventory).sort().join(",") !==
       "collectorProfile,disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units") invalid();
   observationTimeout(5000, remaining);
   const installationBytes = readHostedActivationBytes("host-installation.json");

@@ -4,9 +4,10 @@ import {
   RetainedRecordKind as Kind, RetainedResourceDisposition as Disposition, RetainedResourceLifecycle as Lifecycle,
   RetainedServiceObservation as ServiceObservation,
   RetainedRetirementStep as Step, RetainedTargetKind as TargetKind, RetainedTopology as Topology,
-  parseScopedRetainedRecord, retainedResourceCanonicalJson, retainedResourceDigest as digest,
+  parseScopedRetainedRecord, parseScopedRetainedPublicationEvents, retainedResourceCanonicalJson, retainedResourceDigest as digest,
   retainedResourceInvalid as invalid, retainedResourceLocator, retainedResourceNames,
   type ScopedRetainedRecord, type ScopedRetainedTarget, type RetainedRecordData,
+  type ScopedRetainedPublicationEvents, type ScopedRetainedEventStamp,
 } from "./scoped-retained-resource-contract";
 
 export enum RetainedValidationMode { LiveData = "live_data", ReadOnlyHistoricalData = "read_only_historical_data" }
@@ -80,12 +81,15 @@ function validateTarget(t: ScopedRetainedTarget): void {
  * ignores present time/resources but checks every original admitted/publication time.
  * CompleteData is a structural relationship result, never an accepted runtime proof. */
 export function validateScopedRetainedChain(
-  values: readonly unknown[], expected: RetainedChainExpectation,
+  values: readonly unknown[], publicationEventValues: readonly unknown[], expected: RetainedChainExpectation,
   mode: RetainedValidationMode, nowEpochMs: number,
 ): RetainedChainValidation {
   requireData(Object.values(RetainedValidationMode).includes(mode) && Number.isSafeInteger(nowEpochMs) && nowEpochMs >= 1, "validation_mode");
   requireData(Array.isArray(values) && values.length <= RETAINED_RESOURCE_LIMITS.records, "record_bound");
-  retainedResourceCanonicalJson(values);
+  requireData(Array.isArray(publicationEventValues) && publicationEventValues.length <= RETAINED_RESOURCE_LIMITS.records, "publication_event_bound");
+  // Both finite inventories share the existing byte budget: one sidecar per
+  // completed BODY does not double record capacity or ignore sidecar bytes.
+  retainedResourceCanonicalJson({ records: values, publicationEvents: publicationEventValues });
   retainedResourceCanonicalJson(expected);
   requireData(expected !== null && typeof expected === "object", "expectation");
   requireData(Object.keys(expected).sort().join(",") === "attemptDigest,obligationDigests,originalAuthorityDigest,payloadGateDigests,reservationDigests,targetDigest" &&
@@ -102,6 +106,39 @@ export function validateScopedRetainedChain(
   requireData(byDigest.size === records.length, "duplicate_records");
   unique(records.map(r => r.publication.generation), "publication_generation");
   requireData(records.every(r => r.targetDigest === expected.targetDigest), "foreign_target");
+  // Known present inventory membership is decidable without completion or
+  // any required successor. Missing DATA must not mask an undeclared BODY.
+  for (const kind of [Kind.Reservation, Kind.ResourceObligation, Kind.PayloadGate] as const) {
+    const inventory = kind === Kind.Reservation ? expected.reservationDigests : kind === Kind.ResourceObligation ? expected.obligationDigests : expected.payloadGateDigests;
+    requireData(records.filter(r => r.kind === kind).every(r => inventory.includes(digest(r))), "foreign_inventory");
+  }
+  // Parse and check the ENTIRE projection before a missing successor can yield
+  // Incomplete. Every stamp belongs to one original producer lifetime; neither
+  // counters nor epochs are reconstructed from BODY, now, or disk copies.
+  const eventRows = publicationEventValues.map(parseScopedRetainedPublicationEvents);
+  const eventsByDigest = new Map(eventRows.map(e => [e.recordDigest, e]));
+  requireData(eventsByDigest.size === eventRows.length, "duplicate_publication_events");
+  const observed: ScopedRetainedEventStamp[] = records.map(r => r.publication.admitted);
+  for (const e of eventRows) {
+    const r = byDigest.get(e.recordDigest);
+    requireData(r !== undefined, "foreign_publication_events");
+    requireData(e.producerId === r!.publication.producerId && e.generation === r!.publication.generation &&
+      same(e.admitted, r!.publication.admitted), "publication_event_binding");
+    requireData((e.heldReread !== null) === (r!.kind === Kind.ActorAdmission), "publication_event_hold");
+    const stamps = [e.admitted, e.durable, e.readback, ...(e.heldReread ? [e.heldReread] : []), e.finalValidated];
+    requireData(stamps.every((stamp, index) => index === 0 ||
+      (stamp.sequence > stamps[index - 1]!.sequence && stamp.atEpochMs >= stamps[index - 1]!.atEpochMs)), "publication_event_order");
+    observed.push(...stamps.slice(1));
+  }
+  unique(observed.map(stamp => stamp.sequence), "publication_event_sequence");
+  observed.sort((a, b) => a.sequence - b.sequence);
+  requireData(observed.every((stamp, index) => index === 0 || stamp.atEpochMs >= observed[index - 1]!.atEpochMs), "publication_event_clock");
+  requireData(observed.every(stamp => stamp.atEpochMs <= nowEpochMs), "future_publication");
+  const events = (record: ScopedRetainedRecord): ScopedRetainedPublicationEvents => {
+    const e = eventsByDigest.get(digest(record));
+    if (!e) throw new Missing(`publication_events:${digest(record)}`);
+    return e;
+  };
   const used = new Set<string>();
   const get = <K extends Kind>(reference: string, kind: K): RecordOf<K> => {
     const record = byDigest.get(reference);
@@ -117,7 +154,8 @@ export function validateScopedRetainedChain(
   };
   const after = (next: ScopedRetainedRecord, previous: ScopedRetainedRecord): void => {
     requireData(next.publication.generation > previous.publication.generation &&
-      next.publication.admittedAtEpochMs >= previous.publication.finalValidatedAtEpochMs, "publication_order");
+      next.publication.admitted.sequence > events(previous).finalValidated.sequence &&
+      next.publication.admitted.atEpochMs >= events(previous).finalValidated.atEpochMs, "publication_order");
   };
   try {
     const targetRecord = one(Kind.Target), t = targetRecord.data, authority = t.originalCleanupAuthority;
@@ -139,19 +177,24 @@ export function validateScopedRetainedChain(
     for (const r of records) {
       const p = r.publication;
       const workRecord = [Kind.Target, Kind.Reservation, Kind.ResourceObligation, Kind.ResourceBinding, Kind.Correlation, Kind.ActorAdmission, Kind.ServiceAdmission, Kind.PayloadGate].includes(r.kind);
-      requireData(p.producerId === t.installation.producerId && p.admittedAtEpochMs <= p.durableAtEpochMs &&
-        p.durableAtEpochMs <= p.finalValidatedAtEpochMs &&
-        (workRecord ? p.finalValidatedAtEpochMs < t.workEndEpochMs && (!attempt || p.finalValidatedAtEpochMs <= attempt.startedAtEpochMs) :
-          !attempt || (p.finalValidatedAtEpochMs < attempt.endEpochMs && p.admittedAtEpochMs >= attempt.startedAtEpochMs)), "publication_authority_time");
-      requireData(p.finalValidatedAtEpochMs <= nowEpochMs, "future_publication");
+      const e = eventsByDigest.get(digest(r));
+      // Check admission even if completion is missing; missing DATA never
+      // turns an out-of-budget or foreign BODY into acceptable pending work.
+      requireData(p.producerId === t.installation.producerId &&
+        (workRecord ? p.admitted.atEpochMs < t.workEndEpochMs && (!attempt || p.admitted.atEpochMs <= attempt.startedAtEpochMs) :
+          !attempt || (p.admitted.atEpochMs >= attempt.startedAtEpochMs && p.admitted.atEpochMs < attempt.endEpochMs)) &&
+        (!e || (workRecord ? e.finalValidated.atEpochMs < t.workEndEpochMs && (!attempt || e.finalValidated.atEpochMs <= attempt.startedAtEpochMs) :
+          !attempt || e.finalValidated.atEpochMs < attempt.endEpochMs)), "publication_authority_time");
       if ("originalAuthorityDigest" in r.data) requireData(r.data.originalAuthorityDigest === originalAuthorityDigest, "original_authority");
       if (attempt && "attemptDigest" in r.data) requireData(r.data.attemptDigest === attemptDigest, "renewed_attempt");
+    }
+    const missingEvents = records.filter(r => !eventsByDigest.has(digest(r))).map(r => `publication_events:${digest(r)}`);
+    if (missingEvents.length) return Object.freeze({ state: RetainedChainState.Incomplete, missing: Object.freeze(missingEvents) });
+    for (const r of records) {
       if (r !== targetRecord) after(r, targetRecord);
     }
     for (const kind of [Kind.Reservation, Kind.ResourceObligation, Kind.PayloadGate] as const) {
       const inventory = kind === Kind.Reservation ? expected.reservationDigests : kind === Kind.ResourceObligation ? expected.obligationDigests : expected.payloadGateDigests;
-      const present = records.filter(r => r.kind === kind).map(digest);
-      requireData(present.every(d => inventory.includes(d)), "foreign_inventory");
       for (const d of inventory) get(d, kind);
     }
     const obligations = expected.obligationDigests.map(d => get(d, Kind.ResourceObligation));
@@ -180,7 +223,7 @@ export function validateScopedRetainedChain(
     exactSet(c.obligationDigests, expected.obligationDigests, "closure_resources");
     exactSet(c.preparations.map(p => p.reservationDigest), expected.reservationDigests, "preparation_completeness");
     exactSet(c.preparations.flatMap(p => p.payloadGateDigest === null ? [] : [p.payloadGateDigest]), expected.payloadGateDigests, "closure_payload_gates");
-    requireData(c.admissionClosedAtEpochMs === attempt!.startedAtEpochMs && c.admissionClosedAtEpochMs <= closure.publication.admittedAtEpochMs, "closure_time");
+    requireData(c.admissionClosedAtEpochMs === attempt!.startedAtEpochMs && c.admissionClosedAtEpochMs <= closure.publication.admitted.atEpochMs, "closure_time");
     [...reservations, ...obligations].forEach(r => after(closure, r));
     const bindings = new Map<string, RecordOf<Kind.ResourceBinding>>();
     const actors = new Map<string, RecordOf<Kind.ActorAdmission>>();
@@ -193,9 +236,9 @@ export function validateScopedRetainedChain(
       requireData(b.data.installationAssociationDigest === o.data.installationAssociationDigest && b.data.identity.sliceUnit === names.sliceUnit &&
         b.data.identity.controlGroup === names.controlGroup && b.data.retentionTarget.unit === names.targetUnit &&
         same(b.data.retentionTarget.requires, [names.sliceUnit]) && same(b.data.retentionTarget.after, [names.sliceUnit]) &&
-        b.data.creationStartedAtEpochMs >= o.publication.finalValidatedAtEpochMs &&
+        b.data.creationStartedAtEpochMs >= events(o).finalValidated.atEpochMs &&
         b.data.pinnedBeforeAdmissionAtEpochMs >= b.data.creationStartedAtEpochMs &&
-        b.data.pinnedBeforeAdmissionAtEpochMs <= b.publication.admittedAtEpochMs, "retained_binding");
+        b.data.pinnedBeforeAdmissionAtEpochMs <= b.publication.admitted.atEpochMs, "retained_binding");
     }
     for (const p of c.preparations) {
       const r = get(p.reservationDigest, Kind.Reservation), a = t.allocations.find(a => a.allocationDigest === r.data.allocationDigest)!;
@@ -212,8 +255,8 @@ export function validateScopedRetainedChain(
         after(gate, r); after(gate, b); after(closure, gate);
         requireData(g.reservationDigest === p.reservationDigest && g.bindingDigest === digest(b) &&
           g.originalEnqueueGateDigest === r.data.originalGateDigest && g.originalGateDigest !== r.data.originalGateDigest && g.custodyProducerId === t.installation.producerId &&
-          g.createdAtEpochMs >= Math.max(r.publication.finalValidatedAtEpochMs, b.publication.finalValidatedAtEpochMs) &&
-          g.createdAtEpochMs <= gate.publication.admittedAtEpochMs, "payload_gate_binding");
+          g.createdAtEpochMs >= Math.max(events(r).finalValidated.atEpochMs, events(b).finalValidated.atEpochMs) &&
+          g.createdAtEpochMs <= gate.publication.admitted.atEpochMs, "payload_gate_binding");
         payloadGates.set(p.reservationDigest, gate);
       }
       if (rank < 2) continue;
@@ -228,13 +271,12 @@ export function validateScopedRetainedChain(
         chain.submitterDigest === digest(actor.data.submitter) && chain.actors[0]!.pidBirth === corr.data.creatorPidBirth &&
         chain.actors[0]!.controlGroup === corr.data.creatorControlGroup && actor.data.submitter.pidBirth === chain.actors[1]!.pidBirth &&
         actor.data.submitter.controlGroup === chain.actors[1]!.controlGroup && actor.data.custodyProducerId === t.installation.producerId &&
-        actor.data.finalHeldRereadAtEpochMs >= actor.publication.durableAtEpochMs &&
-        actor.data.finalHeldRereadAtEpochMs <= actor.publication.finalValidatedAtEpochMs, "held_actor_binding");
+        events(actor).heldReread !== null, "held_actor_binding");
       exactSet(actor.data.tasks.map(task => task.actorPidBirth), chain.actors.map(task => task.pidBirth), "task_graph");
       const taskBirths = actor.data.tasks.flatMap(task => [...task.taskBirths]); unique(taskBirths.map(b => b.split(":")[0]), "task_graph");
       requireData(taskBirths.length <= 64 && actor.data.tasks.every(task => task.taskBirths.includes(task.actorPidBirth)), "task_graph");
       actors.set(p.reservationDigest, actor);
-      if (p.enqueueReleasedAtEpochMs !== null) requireData(p.enqueueReleasedAtEpochMs >= actor.publication.finalValidatedAtEpochMs &&
+      if (p.enqueueReleasedAtEpochMs !== null) requireData(p.enqueueReleasedAtEpochMs >= events(actor).finalValidated.atEpochMs &&
         p.enqueueReleasedAtEpochMs < c.admissionClosedAtEpochMs && p.enqueueReleasedAtEpochMs < t.workEndEpochMs, "enqueue_gate_time");
       if (p.serviceAdmissionDigest === null) continue;
       const service = get(p.serviceAdmissionDigest, Kind.ServiceAdmission), s = service.data;
@@ -244,23 +286,23 @@ export function validateScopedRetainedChain(
       after(service, gate!);
       requireData(s.closedPayloadGateDigest === gate!.data.originalGateDigest &&
         s.payloadCustodyDigest === gate!.data.payloadCustodyDigest &&
-        gate!.publication.finalValidatedAtEpochMs <= s.acceptedAtEpochMs, "payload_gate_admission");
+        events(gate!).finalValidated.atEpochMs <= s.acceptedAtEpochMs, "payload_gate_admission");
       requireData(s.kernel.device === b!.data.identity.kernel.device, "cgroup_filesystem");
       requireData(!same(s.kernel, b!.data.identity.kernel), "cgroup_identity");
       // Only overlapping observations establish simultaneous service objects.
       // Collected historical services may have legitimately reused an inode.
-      for (const other of services.values()) if (service.publication.admittedAtEpochMs <= other.publication.finalValidatedAtEpochMs &&
-          other.publication.admittedAtEpochMs <= service.publication.finalValidatedAtEpochMs) {
+      for (const other of services.values()) if (service.publication.admitted.atEpochMs <= events(other).finalValidated.atEpochMs &&
+          other.publication.admitted.atEpochMs <= events(service).finalValidated.atEpochMs) {
         requireData(s.controlGroup === other.data.controlGroup || !same(s.kernel, other.data.kernel), "cgroup_identity");
       }
       requireData(s.correlationDigest === digest(corr) && s.actorAdmissionDigest === digest(actor) && s.unit === a.unit &&
         s.controlGroup === corr.data.intendedControlGroup && s.invocationAnchor.invocationId === s.invocationId &&
-        s.acceptedAtEpochMs >= p.enqueueReleasedAtEpochMs! && s.acceptedAtEpochMs <= service.publication.admittedAtEpochMs &&
+        s.acceptedAtEpochMs >= p.enqueueReleasedAtEpochMs! && s.acceptedAtEpochMs <= service.publication.admitted.atEpochMs &&
         s.leafProfileDigest === a.leafProfileDigest && s.effectiveFilterPolicyDigest === a.effectiveFilterPolicyDigest, "service_leaf_binding");
       exactSet(s.effectiveFilterAttachments, a.requiredFilterDigests, "leaf_filters"); unique(s.payloadAncestry.map(v => v.pidBirth.split(":")[0]), "payload_ancestry");
       requireData(s.payloadAncestry[0]!.pidBirth === s.mainPidBirth && s.payloadAncestry[0]!.parentPidBirth === null &&
         s.payloadAncestry.every((v, i) => v.controlGroup === s.controlGroup && (i === 0 || s.payloadAncestry.slice(0, i).some(parent => parent.pidBirth === v.parentPidBirth))), "payload_ancestry");
-      if (p.payloadReleasedAtEpochMs !== null) requireData(p.payloadReleasedAtEpochMs >= service.publication.finalValidatedAtEpochMs &&
+      if (p.payloadReleasedAtEpochMs !== null) requireData(p.payloadReleasedAtEpochMs >= events(service).finalValidated.atEpochMs &&
         p.payloadReleasedAtEpochMs < c.admissionClosedAtEpochMs && p.payloadReleasedAtEpochMs < t.workEndEpochMs, "payload_gate_time");
       services.set(p.reservationDigest, service);
     }
@@ -281,19 +323,19 @@ export function validateScopedRetainedChain(
     exactSet(e.dispositions.map(d => d.reservationDigest), expected.reservationDigests, "discharge_completeness");
     for (const d of e.dispositions) {
       const r = get(d.reservationDigest, Kind.Reservation), actor = actors.get(d.reservationDigest), service = services.get(d.reservationDigest);
-      requireData(d.originalGateDigest === r.data.originalGateDigest && d.closedAtEpochMs >= closure.publication.finalValidatedAtEpochMs &&
-        d.closedAtEpochMs <= empty.publication.admittedAtEpochMs, "original_gate_closure");
+      requireData(d.originalGateDigest === r.data.originalGateDigest && d.closedAtEpochMs >= events(closure).finalValidated.atEpochMs &&
+        d.closedAtEpochMs <= empty.publication.admitted.atEpochMs, "original_gate_closure");
       const gate = payloadGates.get(d.reservationDigest), gateClosure = d.payloadGateClosure;
       requireData((gate !== undefined) === (gateClosure !== null), "payload_gate_closure_missing");
       if (gate && gateClosure) requireData(gateClosure.payloadGateDigest === digest(gate) &&
         gateClosure.originalGateDigest === gate.data.originalGateDigest && gateClosure.payloadCustodyDigest === gate.data.payloadCustodyDigest &&
-        gateClosure.closedAtEpochMs >= closure.publication.finalValidatedAtEpochMs &&
+        gateClosure.closedAtEpochMs >= events(closure).finalValidated.atEpochMs &&
         gateClosure.closedAtEpochMs <= e.queueBefore.observedAtEpochMs &&
-        gateClosure.closedAtEpochMs <= empty.publication.admittedAtEpochMs, "payload_gate_closure");
+        gateClosure.closedAtEpochMs <= empty.publication.admitted.atEpochMs, "payload_gate_closure");
       if (actor) {
         requireData(d.discharge !== null && d.dischargedAtEpochMs !== null &&
           d.dischargedAtEpochMs >= Math.max(...e.dispositions.flatMap(d => [d.closedAtEpochMs, d.payloadGateClosure?.closedAtEpochMs ?? d.closedAtEpochMs])) &&
-          d.dischargedAtEpochMs <= empty.publication.admittedAtEpochMs, "actor_discharge_missing");
+          d.dischargedAtEpochMs <= empty.publication.admitted.atEpochMs, "actor_discharge_missing");
         const discharge = d.discharge!;
         requireData(discharge.chainDigest === digest(actor.data.chain) && discharge.actors.length === actor.data.chain.actors.length, "actor_discharge_incomplete");
         discharge.actors.forEach((entry, index) => {
@@ -313,9 +355,9 @@ export function validateScopedRetainedChain(
       requireData(q.managerDigest === t.installation.managerDigest && q.observedAtEpochMs >= min && q.observedAtEpochMs <= max &&
         q.jobs.every(j => !relevantUnits.includes(j.unit)), "queue_not_empty");
     };
-    checkQueue(e.queueBefore, Math.max(closure.publication.finalValidatedAtEpochMs,
-      ...e.dispositions.flatMap(d => [d.dischargedAtEpochMs ?? d.closedAtEpochMs, d.payloadGateClosure?.closedAtEpochMs ?? d.closedAtEpochMs])), empty.publication.admittedAtEpochMs);
-    checkQueue(e.queueAfter, e.queueBefore.observedAtEpochMs, empty.publication.admittedAtEpochMs);
+    checkQueue(e.queueBefore, Math.max(events(closure).finalValidated.atEpochMs,
+      ...e.dispositions.flatMap(d => [d.dischargedAtEpochMs ?? d.closedAtEpochMs, d.payloadGateClosure?.closedAtEpochMs ?? d.closedAtEpochMs])), empty.publication.admitted.atEpochMs);
+    checkQueue(e.queueAfter, e.queueBefore.observedAtEpochMs, empty.publication.admitted.atEpochMs);
     exactSet(e.resources.map(r => r.obligationDigest), expected.obligationDigests, "empty_resource_completeness");
     const retained: RecordOf<Kind.ResourceBinding>[] = [];
     for (const r of e.resources) {
@@ -324,7 +366,7 @@ export function validateScopedRetainedChain(
         const u = get(r.uncreatedDigest, Kind.ResourceUncreated); after(u, closure); after(empty, u);
         requireData(o.data.lifecycle === Lifecycle.Declared && !bindings.has(r.obligationDigest) && u.data.obligationDigest === r.obligationDigest &&
           u.data.closureDigest === digest(closure) && u.data.creationGateDigest === o.data.creationGateDigest &&
-          u.data.closedAtEpochMs >= closure.publication.finalValidatedAtEpochMs && u.data.closedAtEpochMs <= u.publication.admittedAtEpochMs &&
+          u.data.closedAtEpochMs >= events(closure).finalValidated.atEpochMs && u.data.closedAtEpochMs <= u.publication.admitted.atEpochMs &&
           u.data.closedAtEpochMs <= e.queueBefore.observedAtEpochMs, "uncreated_resource_debt");
         continue;
       }
@@ -359,7 +401,7 @@ export function validateScopedRetainedChain(
     });
     const facts = one(Kind.RetirementFacts), f = facts.data; after(facts, intent);
     requireData(f.emptyProofDigest === digest(empty) && f.intentDigest === digest(intent) && f.effects.length === i.steps.length, "retirement_facts_chain");
-    let completedAt = intent.publication.finalValidatedAtEpochMs;
+    let completedAt = events(intent).finalValidated.atEpochMs;
     const jobs: number[] = [];
     f.effects.forEach((effect, index) => {
       const { acceptedJobId, submittedAtEpochMs, completedAtEpochMs, result: _result, sliceIdentityBefore,
@@ -370,7 +412,7 @@ export function validateScopedRetainedChain(
         targetInvocationIdBefore === (effect.step === Step.StopTarget ? b.data.retentionTarget.invocationId : null) &&
         targetDependencyDigestBefore === (effect.step === Step.StopTarget ? digest(b.data.retentionTarget) : null), "retirement_pre_effect_identity");
       requireData(same(step, i.steps[index]) && observedBeforeAtEpochMs >= completedAt && submittedAtEpochMs >= observedBeforeAtEpochMs && completedAtEpochMs >= submittedAtEpochMs &&
-        completedAtEpochMs <= facts.publication.admittedAtEpochMs && (acceptedJobId === null) === (effect.step === Step.SliceAlreadyRetired), "retirement_effect_order");
+        completedAtEpochMs <= facts.publication.admitted.atEpochMs && (acceptedJobId === null) === (effect.step === Step.SliceAlreadyRetired), "retirement_effect_order");
       if (acceptedJobId !== null) jobs.push(acceptedJobId); completedAt = completedAtEpochMs;
     });
     unique(jobs, "retirement_job_identity");
@@ -384,13 +426,13 @@ export function validateScopedRetainedChain(
         [r.slice, b.data.identity.sliceUnit, b.data.identity.invocationId],
       ] as const) requireData(observed.unit === unit && observed.originalInvocationId === invocationId &&
         observed.observedAtEpochMs >= (observed === r.target ? targetEffect.completedAtEpochMs : sliceEffect.completedAtEpochMs) &&
-        observed.observedAtEpochMs <= facts.publication.admittedAtEpochMs, "manager_retirement_identity");
+        observed.observedAtEpochMs <= facts.publication.admitted.atEpochMs, "manager_retirement_identity");
       requireData(r.target.observedAtEpochMs <= sliceEffect.observedBeforeAtEpochMs, "target_retired_before_slice_effect");
       requireData(same(k.pinnedDirectory, b.data.identity.kernel) && k.directoryCustodyDigest === b.data.directoryCustodyDigest &&
         k.eventsCustodyDigest === b.data.eventsCustodyDigest && k.exactAbsentPath === b.data.identity.controlGroup &&
-        k.observedAtEpochMs >= Math.max(r.target.observedAtEpochMs, r.slice.observedAtEpochMs) && k.observedAtEpochMs <= facts.publication.admittedAtEpochMs, "pinned_retirement_identity");
+        k.observedAtEpochMs >= Math.max(r.target.observedAtEpochMs, r.slice.observedAtEpochMs) && k.observedAtEpochMs <= facts.publication.admitted.atEpochMs, "pinned_retirement_identity");
     }
-    checkQueue(f.queueAfter, completedAt, facts.publication.admittedAtEpochMs);
+    checkQueue(f.queueAfter, completedAt, facts.publication.admitted.atEpochMs);
     requireData(f.queueAfter.jobs.every(j => !jobs.includes(j.jobId)) && f.resources.every(r =>
       f.queueAfter.observedAtEpochMs >= Math.max(r.kernel.observedAtEpochMs, r.target.observedAtEpochMs, r.slice.observedAtEpochMs)), "retirement_queue_reobservation");
     const publication = one(Kind.RetirementPublication); after(publication, facts);

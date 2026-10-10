@@ -52,6 +52,17 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+const firstAcknowledgedNativeWeb = {
+  truncated: false,
+  turns: [{
+    threadId: "thread-1",
+    acknowledgedTurnId: "turn-1",
+    records: [],
+    unknown: false,
+    truncated: false,
+  }],
+};
+
 describe("CommandPolicyRunner", () => {
   it("replaces provider-rejected wording with broker guidance", () => {
     const details = {
@@ -303,6 +314,7 @@ describe("CommandPolicyRunner", () => {
       await expect(pool.run({ prompt: "review" })).resolves.toEqual({
         outputText: "OK",
         warnings: [],
+        nativeWeb: firstAcknowledgedNativeWeb,
       });
 
       const accountId = workers[0]!.capacity().details?.quotaGroup;

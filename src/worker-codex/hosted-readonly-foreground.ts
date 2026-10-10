@@ -1,3 +1,8 @@
+import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
+import { ordinaryInstallationRemainingMs, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
+import { collectProcessBirth } from "./hosted-readonly-linux-collector";
+import { readFileSync, readlinkSync } from "node:fs";
+import type { HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
 import { watchChildDeadline } from "./child-deadline-watch";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { readHostedChildSlot } from "./hosted-child-slot-files";
@@ -12,7 +17,7 @@ import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hoste
 import { hostedFdLaunch, hostedFdInvocationUnit, spawnHostedFdChild, HostedFdLaunchKind, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { announceHostedFdPrelude, assertHostedFdFrameEnvironment } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
-import { closeHostedForegroundRequest, hostedForegroundExitCode, publishHostedForegroundResult, requireHostedForegroundRequest } from "./hosted-foreground-result";
+import { closeHostedForegroundRequest, recheckHostedForegroundRequest, hostedForegroundExitCode, publishHostedForegroundResult, requireHostedForegroundRequest } from "./hosted-foreground-result";
 
 /** Opted TEST frames are request data, not authority to load code into the
  * initial-host launcher/CLI or redirect its pre-admission Git/registry reads. */
@@ -134,23 +139,44 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     if (frame.length > 4 * 1024 * 1024) throw new Error("hosted_custody_launch_frame_invalid");
   } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   let child: ChildProcess;
-  try { child = store.runOrdinaryRuntimeLaunch(command, args, cwd, launch => {
-    if (fdProfile) return spawnHostedFdChild(launch.command, launch.args, { cwd }, hostedFdInvocationUnit(launch.args), HostedFdLaunchKind.Foreground);
+  const inventory = readHostedReadonlyHostInventory();
+  try { child = store.runOrdinaryRuntimeLaunch(command, args, cwd, (launch, fence, original) => {
+    if (output) recheckHostedForegroundRequest(output, fence);
+    if (fdProfile) return spawnHostedFdChild(launch.command, launch.args, { cwd }, hostedFdInvocationUnit(launch.args), HostedFdLaunchKind.Foreground, original);
     const child = spawn(launch.command, [...launch.args], { cwd, env, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(frame);
     return child;
-  }); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
+  }, output); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   return new Promise<number | HostedForegroundResult>(resolve => {
     let failed = false;
+    const supervisor = inventory.schemaVersion === 5 ? (inventory as unknown as HostedInventoryV5).supervisor : undefined;
+    let proxyBirth: string | undefined;
+    try { if (supervisor && child.pid) proxyBirth = collectProcessBirth(String(child.pid)); } catch { failed = true; }
     const close = () => { try { if (!store.requestOrdinaryDependencyCleanup() && !store.requestOrdinaryChildCleanup()) store.closeOrdinaryRuntimeLaunch(); } catch { failed = true; } };
+    const stopProxy = (signal: NodeJS.Signals) => {
+      if (!supervisor) { child.kill(signal); return; }
+      try {
+        if (!proxyBirth || !child.pid || child.exitCode !== null || child.signalCode !== null || collectProcessBirth(String(child.pid)) !== proxyBirth) return;
+        const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
+        if (stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[1] !== String(process.pid) || readlinkSync(`/proc/${child.pid}/exe`) !== trustedCustodySystemdRunExecutable) return;
+        ordinaryInstallationRemainingMs(supervisor, true); child.kill(signal);
+      } catch { failed = true; /* Original expired/unknown custody stays HELD. */ }
+    };
     const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
     const handlers = signals.map(signal => {
-      const handler = () => { failed = true; close(); child.kill(signal); };
+      const handler = () => { failed = true; close(); stopProxy(signal); };
       process.on(signal, handler); return handler;
     });
     let stopWatch = () => {};
-    const detach = () => { if (output) closeHostedForegroundRequest(output); stopWatch(); signals.forEach((signal, index) => process.off(signal, handlers[index]!)); };
-    child.stdin!.on("error", () => { failed = true; close(); child.kill("SIGTERM"); });
+    let originalTimer: ReturnType<typeof setTimeout> | undefined;
+    if (inventory.schemaVersion === 5) {
+      try {
+        originalTimer = setTimeout(() => { failed = true; hostedFdLaunch(child).invalidate(); close(); stopProxy("SIGTERM"); },
+          ordinaryInstallationRemainingMs((inventory as unknown as HostedInventoryV5).supervisor));
+      } catch { failed = true; close(); }
+    }
+    const detach = () => { if (originalTimer) clearTimeout(originalTimer); if (output) closeHostedForegroundRequest(output); stopWatch(); signals.forEach((signal, index) => process.off(signal, handlers[index]!)); };
+    child.stdin!.on("error", () => { failed = true; close(); stopProxy("SIGTERM"); });
     child.once("error", () => { failed = true; close(); detach(); resolve(70); });
     child.once(fdProfile ? "close" : "exit", (code, signal) => {
       let result: HostedForegroundResult | undefined;
@@ -178,13 +204,16 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     });
     const budget = store.ordinaryChildBudget();
     if (budget) stopWatch = watchChildDeadline(budget, () => {
-      failed = true; close(); child.kill("SIGTERM");
+      failed = true; close(); stopProxy("SIGTERM");
     });
     if (fdProfile) {
       const guard = hostedFdLaunch(child);
       void guard.observe().then(() => retryHostedFenceAcquisition(() =>
-        store.releaseOrdinaryRuntimeFrame((fence, revalidate) => guard.release(fence, frame, true, revalidate)), guard.remainingSetupMs()))
-        .catch(() => { failed = true; guard.invalidate(); close(); child.kill("SIGTERM"); });
+        store.releaseOrdinaryRuntimeFrame((fence, revalidate) => {
+          if (output) recheckHostedForegroundRequest(output, fence);
+          guard.release(fence, frame, true, () => { revalidate(); if (output) recheckHostedForegroundRequest(output, fence); });
+        }), guard.remainingSetupMs()))
+        .catch(() => { failed = true; guard.invalidate(); close(); stopProxy("SIGTERM"); });
     }
   });
 }

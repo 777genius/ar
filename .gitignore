@@ -26,3 +26,6 @@ rr-*.prompt.md
 .gate-install.exit
 .runtime-registry-root-fix/
 .tmp-*
+
+# Exact standalone codec emission, published only by the pinned build.
+host-integration/managed-launcher/host-inventory-codec.cjs

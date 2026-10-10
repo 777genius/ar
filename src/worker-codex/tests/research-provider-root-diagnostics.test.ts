@@ -68,10 +68,12 @@ describe("private identity-bound root diagnostics", () => {
     const getter = vi.fn(() => { throw new Error("TEST-private-accessor"); });
     Object.defineProperties(error, { stack: { get: getter }, cause: { get: getter } });
     const unexpected = (): never => { throw new Error("TEST-unexpected-root-port-operation"); };
+    const info = vi.fn((path: string) => { if (path === "/usr") throw error; return unexpected(); });
     const rootHost: roots.ResearchProviderRootHost = {
-      info: path => { if (path === "/usr") throw error; return unexpected(); },
+      info,
       read: path => fs.readFileSync(path, "utf8"),
-      canonical: unexpected, link: unexpected, entries: unexpected,
+      // Initial Host context is captured before the /usr file observation.
+      canonical: unexpected, link: path => fs.readlinkSync(path), entries: unexpected,
       mkdir: unexpected, symlink: unexpected, file: unexpected,
       regular: unexpected, snapshot: unexpected, publish: unexpected, record: unexpected,
     };
@@ -87,6 +89,7 @@ describe("private identity-bound root diagnostics", () => {
     catch (failure) { observed = failure; }
     expect(getter).not.toHaveBeenCalled();
     expect(observed === error).toBe(true);
+    expect(info.mock.calls).toEqual([["/usr"]]);
     expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
       schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:observe",
     });
@@ -129,15 +132,20 @@ describe("private synchronous root timing", () => {
     const frozen = Object.freeze(Error("TEST-private-error")), proxy = new Proxy(frozen, { get: getter });
     for (const error of [frozen, proxy, "TEST-private-primitive", undefined]) {
       let observed: unknown, outer: readonly roots.ResearchProviderRootTiming[] = [], inner: readonly roots.ResearchProviderRootTiming[] = [];
-      const rootHost: roots.ResearchProviderRootHost = { info: () => { throw error; }, read: path => fs.readFileSync(path, "utf8"),
-        canonical: getter, link: getter, entries: getter, mkdir: getter, symlink: getter, file: getter, regular: getter, snapshot: getter, publish: getter, record: getter };
+      const info = vi.fn((_path: string): never => { throw error; });
+      const rootHost: roots.ResearchProviderRootHost = { info, read: path => fs.readFileSync(path, "utf8"),
+        canonical: getter, link: path => fs.readlinkSync(path), entries: getter, mkdir: getter, symlink: getter, file: getter, regular: getter, snapshot: getter, publish: getter, record: getter };
       try { roots.captureResearchProviderRootTiming(() => {
         try { roots.captureResearchProviderRootTiming(() => roots.prepareResearchProviderRoot(current.spec, current.provider, current.home, undefined, rootHost),
           value => { inner = value; throw Error("TEST-private-observer"); }); } catch { /* Exercise parent restoration. */ }
         return roots.prepareResearchProviderRoot(current.spec, current.provider, current.home, undefined, rootHost);
       }, value => { outer = value; throw Error("TEST-private-observer"); }); } catch (failure) { observed = failure; }
       expect(observed === error).toBe(true);
-      for (const rows of [inner, outer]) expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Prepare)?.count).toBe(1);
+      expect(info.mock.calls).toEqual([["/usr"], ["/usr"]]);
+      for (const rows of [inner, outer]) {
+        expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Prepare)?.count).toBe(1);
+        expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Observe)?.count).toBe(1);
+      }
     }
     expect(getter).not.toHaveBeenCalled();
     expect(roots.captureResearchProviderRootTiming(() => 7, () => { throw Error("TEST-observer"); })).toBe(7);
