@@ -1,12 +1,9 @@
+import { registerOrdinaryAccountRotationTests } from "./hosted-ordinary-account-rotation-test-support";
 import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
 import { registerManifestPlacementInstallationTests } from "./hosted-manifest-placement-installation-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
-import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
-import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
-import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
-import { codexAuthJsonForAccount, StaticRunner } from "./file-backend-codex-worker-test-support";
 import * as egressFiles from "../hosted-test-egress-files";
 import { PassThrough } from "node:stream";
 import { runHostedRuntimeForeground, runHostedOrdinaryBootstrap, routeHostedRuntimeCommand } from "../hosted-readonly-foreground";
@@ -22,7 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
-import { assertDefaultInternetEngine, assertHostedNetworkLaunch } from "./hosted-network-launch-assertions";
+import { assertDefaultInternetEngine } from "./hosted-network-launch-assertions";
 import { HostedCustodyReservationState, parseHostedActivation, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlyEpochStore } from "../hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
@@ -34,7 +31,7 @@ import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedO
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
-  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", stops: [] as string[], onStop: undefined as (() => void) | undefined }));
+  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
@@ -97,9 +94,9 @@ vi.mock("node:fs", async original => {
     statfsSync: (path: string, options?: { bigint?: boolean }) => path === "/proc/self/fd"
       ? real.statfsSync(path, options?.bigint ? { bigint: true } : undefined)
       : { type: options?.bigint ? 0xef53n : 0xef53 },
-    lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
+    lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
-      { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
+      { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
@@ -109,12 +106,11 @@ vi.mock("node:fs", async original => {
     },
   };
 });
-// Only the scratch namespace is projected; blob contents and retained FD I/O
-// remain actual private TEST files. No operator/fence result is replaced here.
+// Project scratch and explicit capture ancestry into actual private TEST files; no operator/fence result is replaced.
 vi.mock("node:fs/promises", async original => {
   const real = await original<typeof import("node:fs/promises")>();
-  const projected = (path: Parameters<typeof real.open>[0]) =>
-    typeof path === "string" && (path === manifestScratch || path.startsWith(manifestScratch + "/")) ? local(path) : path;
+  const captureProjection = await import("./hosted-materialization-capture-test-projection");
+  const projected = (path: Parameters<typeof real.open>[0]) => captureProjection.projectCapturePath(path,fixture,local,manifestScratch);
   return { ...real,
     realpath: async (path: Parameters<typeof real.realpath>[0], options?: Parameters<typeof real.realpath>[1]) => {
       const physical = projected(path), actual = await real.realpath(physical, options);
@@ -124,7 +120,11 @@ vi.mock("node:fs/promises", async original => {
       return physical === actual ? path : actual;
     },
     lstat: (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => real.lstat(projected(path), options),
-    open: (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => real.open(projected(path), flags, mode),
+    open: async (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => {
+      const handle = await real.open(projected(path), flags, mode);
+      captureProjection.retainCapturePath(handle.fd,path,fixture);
+      return handle;
+    },
   };
 });
 vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpected external command"); },
@@ -157,7 +157,7 @@ beforeEach(() => {
   writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
   fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  fixture.spawn.mockReset();
+  fixture.spawn.mockReset(); fixture.captureAncestry = false; fixture.captureDirectories.clear();
   const child = Object.assign(new EventEmitter(), { stdin: Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() }),
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true) });
   fixture.child = child; fixture.spawn.mockReturnValue(child);
@@ -932,67 +932,7 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
   });
 });
 
-it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-deleted", "research-grant-mutated"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
-  const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "jobs/ordinary-job"),
-    workspacePath: join(fixture.root, "jobs/ordinary-job/workspace"), promptPath: join(fixture.root, "prompt"),
-    authRootDir: join(fixture.root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
-    maxAccountCycles: 1, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
-  mkdirSync(config.jobRootDir, { recursive: true, mode: 0o700 }); mkdirSync(config.workspacePath); writeFileSync(config.promptPath, "Offline rotation");
-  const bound = { ...creator(), jobRootDir: config.jobRootDir, workspacePath: config.workspacePath,
-    launch: { ...creator().launch, cwd: config.workspacePath } };
-  put("readonly-inventory.json", { ...read("readonly-inventory.json"), ordinaryCreators: [bound] });
-  const grant = `grants/${hash(config.jobId)}.json`;
-  const selectedProfile = mode.startsWith("research") ? CodexProviderEgressProfileId.PublicResearchV1 : mode === "internet" ? CodexProviderEgressProfileId.FullInternetV1 : CodexProviderEgressProfileId.TestNpmQualification;
-  if (mode !== "internet") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath, profileId: selectedProfile });
-  const store = new HostedInstallationActivationStore(); store.install(); store.enrollOrdinary(bound.creatorId); store.resumeOrdinary();
-  const prepared = store.serialized(fence => store.reserveOrdinaryRuntime(fence, bound.launch.command, bound.launch.args, bound.launch.cwd));
-  fixture.runtimeUnit = prepared.start.unit; fixture.group = prepared.start.controlGroup;
-  const fakes = [new FakeAppServerFactory({ emitTopLevelErrorOnTurn: "You've hit your usage limit",
-    onRequest: request => { if (request.method === "turn/start" && mode.endsWith("grant-deleted")) rmSync(join(fixture.root, grant));
-      if (request.method === "turn/start" && mode.endsWith("grant-mutated")) {
-        // Same valid semantic grant, different bytes: fallback must still refuse.
-        writeFileSync(join(fixture.root, grant), readFileSync(join(fixture.root, grant), "utf8") + "\n", { mode: 0o600 });
-      } } }), new FakeAppServerFactory()];
-  const frames: { env: Record<string, string>; args: string[] }[] = [];
-  fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
-    expect(command).toBe(process.execPath);
-    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
-    expect(options.cwd).toBe(options.env.HOME);
-    expect(options.cwd).not.toBe(config.workspacePath);
-    expect(store.read().ordinaryStarts).toHaveLength(frames.length + 2);
-    expect(() => withHostedActivationFence(() => {})).toThrow();
-    const request = JSON.parse(args[2]!);
-    expect(request).toEqual({ operation: "provider", jobId: config.jobId,
-      unit: store.read().ordinaryStarts[frames.length + 1]!.unit,
-      payload: [process.execPath, expect.stringMatching(/\/hosted-app-server-launcher\.js$/)] });
-    expect(request.readonlyPaths).toBeUndefined();
-    const child = fakes[frames.length]!.create({ ...options, args });
-    const write = child.stdin.write; let bootstrap = true;
-    child.stdin.write = chunk => {
-      if (bootstrap) { frames.push(JSON.parse(String(chunk))); bootstrap = false; return true; }
-      return write(chunk);
-    };
-    return child;
-  });
-  fixture.onStop = () => { for (const fake of fakes) for (const child of fake.processes) child.kill(); };
-  const clock = { now: () => new Date("2026-05-31T00:05:00.000Z"), monotonicMs: () => performance.now() };
-  const result = await runCodexGoal(config, {
-    createExecutor: options => new FileBackendCodexSafeExecutor({
-    ...options, requireGitWorkspace: false, prewarmOnStart: false, clock,
-    accounts: options.accounts.map((account, index) => ({
-      codexAuthJson: codexAuthJsonForAccount(`synthetic-refresh-${index}`, `synthetic-account-${index}`),
-      worker: { ...account.worker, clock, warmupPrompt: false, runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }) },
-    })),
-  }) });
-  expect(fixture.spawn).toHaveBeenCalledTimes(mode.includes("-grant-") ? 1 : 2);
-  expect(result.attempts[0]?.failureReason, result.attempts[0]?.failureMessage).toBe("quota_limited");
-  expect(frames.every(frame => frame.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE ===
-    selectedProfile)).toBe(true);
-  assertHostedNetworkLaunch(frames, selectedProfile, fakes);
-  if (mode.includes("-grant-")) expect(result.status).not.toBe("completed");
-  else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
-});
+registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
 
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
