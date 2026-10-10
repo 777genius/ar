@@ -1,12 +1,13 @@
+import { parseDependencyLegacyComparisonRecord } from "../worker-core/dependency-environment/domain/dependency-legacy-comparison";
 import type { DependencyCommittedReadyReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
 import { createHash } from "node:crypto";
 import { DependencyCustodyEvidenceKind, sameDependencyProtectedReference, sameDependencyWorkspace,
   type DependencyReadonlyAdoptionEvidence, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
-import { DependencyInstallProofKind, DependencyReceiptState, parseHostedInstallation, type HostedCustodyIdentity } from "@vioxen/subscription-runtime/worker-core";
+import { DependencyInstallProofKind, parseHostedInstallation, type HostedCustodyIdentity } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyBinding, hostedDependencyBindingName, assertHostedDependencyPhysicalWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedReadonlyDependencyAssociation, type HostedReadonlyDependencyAssociation } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
-import { readHostedDependencyCommittedReady, readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
+import { readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
 import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { parseHostedReadonlyPolicy, readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -56,10 +57,15 @@ export function readHostedReadonlyDependencyMaterial(fence: HostedActivationFenc
       hash(review.bytes) !== identity.reviewSha256 || hash(stage.bytes) !== identity.stageSha256) invalid();
   // Authenticate the original compared-local chain through its real committed
   // receipt. Cold/current output selection is added by B2, never synthesized.
-  const receipt = readHostedDependencyEstablishedReceipt(binding);
-  if (!receipt || receipt.state !== DependencyReceiptState.Ready || receipt.provenance.kind !== DependencyInstallProofKind.LegacyCompared) invalid();
-  const committed = readHostedDependencyCommittedReady(binding,receipt.revision);
-  if (!Buffer.from(JSON.stringify(committed.receipt) + "\n").equals(Buffer.from(JSON.stringify(receipt) + "\n"))) invalid();
+  // Adoption is immutable HISTORY, not a requirement that current output still
+  // be this original compared generation after cold install or legal retirement.
+  const comparisonPath = a.candidate.comparison.path;
+  if (!new RegExp("^" + root + "/dependency-transactions/[a-f0-9-]{36}\\.comparison\\.json$").test(comparisonPath)) invalid();
+  const originalComparison = reference(a.candidate.comparison,comparisonPath,65536);
+  const originalRecord = parseDependencyLegacyComparisonRecord(JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(originalComparison.bytes)));
+  if (originalRecord.version !== 2 || comparisonPath !== `${root}/dependency-transactions/${originalRecord.operationId}.comparison.json`) invalid();
+  const committed = readHostedDependencyCommittedReady(binding,originalRecord.original.receipt.revision+1), receipt = committed.receipt;
+  if (receipt.provenance.kind !== DependencyInstallProofKind.LegacyCompared) invalid();
   const compared = assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
   if (compared.version !== 2) invalid();
   reference(a.candidate.comparison, `${root}/dependency-transactions/${compared.operationId}.comparison.json`);

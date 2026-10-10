@@ -6,13 +6,15 @@ import {
   isHandoffNodeError as isNodeError,
 } from "./codex-goal-handoff-artifact-guards";
 import { withLiteralGitPathspecs } from "./git-literal-pathspecs";
+import { resolveManagedDependencyGitContext, runManagedDependencyGitWithEnvironment,
+  type HandoffGitSelection } from "./managed-dependency-git";
 
 const execFileAsync = promisify(execFile);
 
 export async function assertHandoffGitHeadUnchanged(
   workspacePath: string,
   expectedHead: string,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<void> {
   const currentHead = await handoffGitText(
     workspacePath,
@@ -29,7 +31,7 @@ export async function handoffGitNullPaths(
   cwd: string,
   args: readonly string[],
   env?: NodeJS.ProcessEnv,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<readonly string[]> {
   const output = await handoffGitOutput(
     cwd,
@@ -45,7 +47,7 @@ export async function handoffGitText(
   cwd: string,
   args: readonly string[],
   env?: NodeJS.ProcessEnv,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<string> {
   return (
     await handoffGitOutput(cwd, args, 1024 * 1024, env, gitBinaryPath)
@@ -57,10 +59,21 @@ export async function handoffGitOutput(
   args: readonly string[],
   maxBuffer: number,
   env?: NodeJS.ProcessEnv,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<string> {
+  const context = resolveManagedDependencyGitContext(cwd, gitBinaryPath);
+  if (context !== undefined) {
+    try { return (await runManagedDependencyGitWithEnvironment(context, args, env, maxBuffer)).stdout.toString("utf8"); }
+    catch (error) {
+      // Preserve Git's useful no-index diff result while keeping the original
+      // byte-limit guard. Buffer outputs never escape as an error payload.
+      if (error && typeof error === "object" && "code" in error && error.code === 1 &&
+          "stdout" in error && Buffer.isBuffer(error.stdout) && args[0] === "diff" && args.includes("--no-index")) return error.stdout.toString("utf8");
+      throw error;
+    }
+  }
   const { stdout } = await execFileAsync(
-    gitBinaryPath ?? "git",
+    typeof gitBinaryPath === "string" ? gitBinaryPath : "git",
     withLiteralGitPathspecs([
       "--no-replace-objects",
       "-c",
@@ -84,7 +97,7 @@ export async function handoffGitDiffNoIndex(
   cwd: string,
   path: string,
   maxBuffer: number,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<string> {
   try {
     return await handoffGitOutput(

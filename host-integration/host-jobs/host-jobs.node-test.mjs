@@ -558,7 +558,7 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
       await writeFile(join(dir, 'managed-launcher', name), 'synthetic fixture\n');
     }
     await mkdir(join(dir, 'native-probe')); await writeFile(join(dir, 'native-probe/installed-data-package.json'), '{"type":"module"}\n');
-    for (const probe of ['hosted-native-probe/mimo-project-ingress.js', 'worker-codex/hosted-mimo-project-bridge-contract.js', 'hosted-native-probe/ingress.js', 'hosted-native-probe/protocol.js', 'hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js', 'worker-core/hosted-custody/domain/native-probe.js', 'core/scoped-retained-resource-contract.js', 'core/scoped-termination-contract.js']) {
+    for (const probe of ['hosted-native-probe/research-operator-ingress.js', 'core/research-operator-request.js', 'hosted-native-probe/mimo-project-ingress.js', 'worker-codex/hosted-mimo-project-bridge-contract.js', 'hosted-native-probe/ingress.js', 'hosted-native-probe/protocol.js', 'hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js', 'worker-core/hosted-custody/domain/native-probe.js', 'core/scoped-retained-resource-contract.js', 'core/scoped-termination-contract.js']) {
       const path = join(dir, 'dist', probe); await mkdir(dirname(path), { recursive: true }); await writeFile(path, '// disposable emitted fixture\n');
     }
     for (const name of ['contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell']) {
@@ -573,7 +573,7 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
     await writeFile(key, 'ssh-ed25519 AAAA synthetic-key\n');
     const invoke = () => promisify(execFile)('/bin/sh', [join(scripts, 'install'), '--ssh-public-key', key], { env: { PATH: `${bin}:/usr/bin:/bin` } });
     await invoke();
-    for (const probe of ['hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js']) {
+    for (const probe of ['hosted-native-probe/research-operator-ingress.js', 'core/research-operator-request.js', 'hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js']) {
       assert.deepEqual(await readFile(join(target, 'native-probe', probe)), await readFile(join(dir, 'dist', probe)));
     }
     const expectedAccount = await readFile(account, 'utf8');
@@ -602,7 +602,7 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
 
 test('Node installer accepts both layouts and rejects untrusted paths before writes', async () => {
   const source = await readFile(new URL('./install', import.meta.url), 'utf8');
-  const stagedFiles = ['../dist/hosted-native-probe/mimo-project-ingress.js', '../dist/worker-codex/hosted-mimo-project-bridge-contract.js', '../dist/hosted-native-probe/ingress.js', '../dist/hosted-native-probe/protocol.js', '../dist/hosted-native-probe/original-owner-client.js', '../dist/hosted-native-probe/original-owner-adapter.js', '../dist/worker-core/hosted-custody/ports/native-probe.js', '../dist/worker-core/hosted-custody/application/native-probe.js', '../dist/worker-core/hosted-custody/domain/native-probe.js', '../dist/core/scoped-retained-resource-contract.js', '../dist/core/scoped-termination-contract.js', 'contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell', '../native-probe/installed-data-package.json', '../managed-launcher/install', '../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs'];
+  const stagedFiles = ['../dist/hosted-native-probe/research-operator-ingress.js', '../dist/core/research-operator-request.js', '../dist/hosted-native-probe/mimo-project-ingress.js', '../dist/worker-codex/hosted-mimo-project-bridge-contract.js', '../dist/hosted-native-probe/ingress.js', '../dist/hosted-native-probe/protocol.js', '../dist/hosted-native-probe/original-owner-client.js', '../dist/hosted-native-probe/original-owner-adapter.js', '../dist/worker-core/hosted-custody/ports/native-probe.js', '../dist/worker-core/hosted-custody/application/native-probe.js', '../dist/worker-core/hosted-custody/domain/native-probe.js', '../dist/core/scoped-retained-resource-contract.js', '../dist/core/scoped-termination-contract.js', 'contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell', '../native-probe/installed-data-package.json', '../managed-launcher/install', '../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs'];
   const scenarios = ['system', 'fixed', 'untrusted-source', 'untrusted-fixed', 'writable-ancestor',
     ...stagedFiles.flatMap(file => [`writable-staged:${file}`, `symlink-staged:${file}`]),
     ...stagedFiles.filter(file => !file.startsWith('../')).flatMap(file => [`writable-destination:${file}`, `symlink-destination:${file}`])];
@@ -811,4 +811,29 @@ test('lock waiter tolerates unpublished owner and never parses partial temporary
   await rmdir(lock);
   const release = await hostLock(directory, 'fake-host');
   await release();
+});
+
+// Both independently typed ingress kinds share transport but never operations.
+test('restricted transport retains disjoint MiMo, research operator and outer-job operation sets', async () => {
+  for (const [kind, accepted, rejected] of [
+    ['MimoProject', ['create', 'start', 'status', 'stop'], ['cancel', 'revoke']],
+    ['ResearchOperator', ['start', 'status', 'cancel', 'revoke'], ['create', 'stop']],
+    [undefined, ['start', 'status', 'stop'], ['create', 'cancel', 'revoke']],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'host-merged-ingress-'));
+    const calls = [];
+    const transport = hostTransport({ host: 'fake-merged-' + (kind ?? 'outer'), machineId: request.machineId, socketDir: directory,
+      run: async (args, stdin) => { calls.push({ args, stdin }); return stdin ? '{"ok":true,"result":{"accepted":true}}' : ''; } });
+    try {
+      for (const operation of accepted) {
+        const value = { ...(kind ? { kind } : {}), operation, machineId: request.machineId, jobId: 'TEST-merged-ingress' };
+        assert.deepEqual(await transport.request(value), { accepted: true });
+        assert.deepEqual(JSON.parse(calls.at(-1).stdin), value);
+        assert.equal(calls.at(-1).args.at(-1), 'sr-transport@fake-merged-' + (kind ?? 'outer'));
+      }
+      const before = calls.length;
+      for (const operation of rejected) await assert.rejects(transport.request({ ...(kind ? { kind } : {}), operation, machineId: request.machineId, jobId: 'TEST-merged-ingress' }), /invalid operation/);
+      assert.equal(calls.length, before);
+    } finally { await rm(directory, { recursive: true }); }
+  }
 });

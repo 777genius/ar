@@ -15,7 +15,7 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
 import { readHostedFdProfile } from "./hosted-fd-observation";
-import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
+import { spawnHostedFdChild, hostedFdLaunch, hostedFdCleanupUnit, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
 import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
@@ -219,7 +219,7 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
-        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+        invocation.systemdUnit, HostedFdLaunchKind.Provider);
       bindHostedDependencyToolChild(invocation, child);
     } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
@@ -336,11 +336,12 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
+  const fdUnit = hostedFdCleanupUnit(child);
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }
   try {
-    const systemdUnit = hostedSystemdUnits.get(child);
+    const systemdUnit = fdUnit ?? hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {
       signalHostedSystemdUnit(systemdUnit, signal);
       // Never kill only the systemd-run proxy: the bounded service would leak.

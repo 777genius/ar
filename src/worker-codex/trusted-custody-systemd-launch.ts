@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { parseResearchStartSpec, researchProviderSetupTimeoutMs, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { researchInvalid, researchName, researchPath, researchHash, researchRecord, researchCustody } from "./research-launch-files";
+import type { ResearchOperatorBinding } from "./research-operator-binding";
 import { researchProviderRootSeal, type ResearchProviderRootPlan } from "./research-provider-root";
 import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
@@ -228,4 +229,19 @@ export function trustedMimoProjectOperationLaunch(value: Readonly<{
     ...["KillMode=control-group", "Restart=no", "Delegate=no", "SendSIGKILL=yes",
       "RuntimeMaxSec=" + Math.ceil((data.operationTimeoutMs as number) / 1000), "TimeoutStopSec=30", "UMask=0077", "NoNewPrivileges=yes"].map(p => "--property=" + p),
     "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", node, entry, "--execute-owned", requestPath] };
+}
+
+/** Fixed initial-root operator service; provider launch remains independently contained. */
+export function trustedResearchOperatorLaunch(binding: ResearchOperatorBinding, ownerSha256: string) {
+  if (!/^[a-f0-9]{64}$/.test(ownerSha256)) throw new Error("research_operator_owner_invalid");
+  const digest = researchHash(binding.jobId + ":" + ownerSha256);
+  const unit = `subscription-runtime-research-operator-${digest}.service`;
+  const description = `subscription-runtime research operator ${digest}`;
+  const entry = join(binding.runtimeDirectory, "dist/worker-codex/research-operator-ingress-cli.js");
+  researchCustody(entry); researchCustody(binding.node);
+  return { unit, description, command: "/usr/bin/systemd-run", args: ["--quiet", "--unit=" + unit, "--description=" + description,
+    "--service-type=exec", "--expand-environment=no", "--working-directory=/",
+    ...["KillMode=control-group", "Restart=no", "Delegate=no", "SendSIGKILL=yes", "RuntimeMaxSec=600", "TimeoutStopSec=30", "MemoryMax=1G", "MemorySwapMax=0", "CPUQuota=100%", "TasksMax=128", "UMask=0077", "NoNewPrivileges=yes"].map(p => "--property=" + p),
+    "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", binding.node, entry,
+    "--execute-owned", binding.jobId, ownerSha256] };
 }

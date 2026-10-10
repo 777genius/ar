@@ -98,7 +98,7 @@ async function runHostedReadonlyCompletion(command: string, args: readonly strin
     if (fdProfile) {
       const guard = hostedFdLaunch(child);
       void guard.observe().then(() => retryHostedFenceAcquisition(() =>
-        host.releaseRuntimeFrame((fence, revalidate) => guard.release(fence, frame, true, revalidate)), guard.remainingSetupMs()))
+        host.releaseRuntimeFrame(frame,(fence, revalidate) => guard.release(fence, frame, true, revalidate)), guard.remainingSetupMs()))
         .catch(() => { failed = true; guard.invalidate(); close(); child.kill("SIGTERM"); });
     }
   });

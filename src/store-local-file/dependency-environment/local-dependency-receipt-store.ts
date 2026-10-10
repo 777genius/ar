@@ -63,15 +63,12 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     if (realpathSync(input.rootPath) !== input.rootPath) fail(Failure.UnsafeRoot);
     const root = openSync(input.rootPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
-      const stat = fstatSync(root, { bigint: true });
-      const named = lstatSync(input.rootPath, { bigint: true });
-      // Directory entries may change during a legitimate concurrent publication.
-      // Authenticate root custody separately from immutable receipt bytes.
-      if (!stat.isDirectory() || !named.isDirectory() || !privateMode(stat, 0o700n) || !privateMode(named, 0o700n) ||
-        !sameDependencyTree(identity(stat), identity(named))) fail(Failure.UnsafeRoot);
+      const stat = fstatSync(root, { bigint: true }), observed = lstatSync(input.rootPath, { bigint: true });
+      // Governed publishers change directory size/times, not its custody identity.
+      if (!stat.isDirectory() || !observed.isDirectory() || !privateMode(stat, 0o700n) || !privateMode(observed, 0o700n) ||
+        !sameDependencyTree(identity(stat), identity(observed))) fail(Failure.UnsafeRoot);
       const store = new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier, input.legacyComparisonVerifier, input.generationReceiptVerifier);
-      store.assertRoot();
-      return store;
+      store.assertRoot(); return store;
     } catch (error) { closeSync(root); throw error; }
   }
 

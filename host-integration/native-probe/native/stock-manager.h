@@ -41,5 +41,12 @@ void np_manager_release_v1(struct np_stock_manager *);
 #ifdef NP_RETAINED_V2_A1
 /* Observational private tail: no new request or replay of a control effect. */
 int np_manager_current_v2(struct np_stock_manager *);
+#ifdef NP_RETAINED_V2_B1A
+struct np_actor_manager;
+struct np_root_origin;struct np_managed_original;
+int np_manager_reference_v2(struct np_stock_manager *,enum np_manager_step,struct np_root_origin *,struct np_managed_original *,const char[65]);
+int np_manager_actor_observer_v2(struct np_stock_manager *,const char original_reservation_body[65]);
+int np_manager_actor_observer_bind_v2(struct np_stock_manager *,const struct np_actor_manager *);
+#endif
 #endif
 #endif

@@ -1,7 +1,7 @@
 import { closeSync, constants, existsSync, fsyncSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease } from "./research-launch-admission";
-import { parseResearchStartSpec } from "./research-launch-contract";
+import { parseResearchGrant, parseResearchStartSpec } from "./research-launch-contract";
 import { assertResearchInitialRoot, assertResearchServiceOwner, researchCommand, researchDescription,
   researchControlGroup, researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
 import { researchHash, researchInvalid, researchJson, researchRead, researchRecord, researchPublish } from "./research-launch-files";
@@ -245,6 +245,24 @@ export function statusResearchLaunch(jobId: string): { jobId: string; startId: s
 }
 export function cancelResearchLaunch(jobId: string): { jobId: string; startId: string; unit: string; terminal: true } {
   return withResearchJobMutation(jobId, () => cancelResearchLaunchUnlocked(jobId));
+}
+/** Exact enrolled ownership, grant revocation and cancellation share one fence. */
+export function cancelEnrolledResearchLaunch(jobId: string, grantSha256: string, requestSha256: string) {
+  return withResearchJobMutation(jobId, () => {
+    assertResearchInitialRoot(true);
+    if (![grantSha256, requestSha256].every(hash => /^[a-f0-9]{64}$/.test(hash))) researchInvalid();
+    const directory = researchJobAuthority(jobId);
+    const current = existsSync(join(directory, "active.json")) ? researchCurrentStart(jobId)
+      : existsSync(join(directory, "last-terminal.json")) ? terminalResearchStart(jobId) : undefined;
+    if (current && (current.spec.grantSha256 !== grantSha256 || current.spec.requestSha256 !== requestSha256)) researchInvalid();
+    const path = join(directory, "grant.json");
+    if (existsSync(path)) {
+      const bytes = researchRead(path), grant = parseResearchGrant(researchJson(bytes));
+      if (grant.registeredHandoff || researchHash(bytes) !== grantSha256) researchInvalid();
+      unlinkSync(path);
+    }
+    return current ? cancelResearchLaunchUnlocked(jobId) : { jobId, revoked: true as const };
+  });
 }
 function cancelResearchLaunchUnlocked(jobId: string): { jobId: string; startId: string; unit: string; terminal: true } {
   assertResearchInitialRoot(true);
