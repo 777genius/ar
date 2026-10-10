@@ -24,6 +24,13 @@ it("keeps key out of bootstrap, zeroes key bytes, binds executable/workspace and
     const frame = { command: "/opt/codex", cwd: "/workspace", env: { CODEX_HOME: "/job/home/mimo-1/codex-home", [codexMimoApiKeyEnvVarDefault]: f.proxy.capability } };
     const bootstrap = hostedMimoCodingBootstrapForFrame(frame)!;
     expect(bootstrap.specSha256).toBe(f.origin.digest); expect(bootstrap.configToml).toContain(f.proxy.baseUrl);
+    expect(bootstrap.configToml).toContain('[features.network_proxy]\nenabled = true\ndomains = { "*" = "allow" }');
+    expect(bootstrap.configToml.match(/allow_local_binding = false/g)).toHaveLength(3);
+    expect(bootstrap.configToml.match(/allow_upstream_proxy = false/g)).toHaveLength(3);
+    expect(bootstrap.configToml).toContain('credential_broker = false');
+    expect(bootstrap.configToml).toContain('request_max_retries = 0');
+    expect(bootstrap.configToml).toContain('stream_max_retries = 0');
+    expect(bootstrap.configToml).toContain('supports_websockets = false');
     expect(JSON.stringify(bootstrap)).not.toContain("TEST-real-key"); expect(JSON.stringify(bootstrap)).not.toContain(f.proxy.capability);
     expect(() => hostedMimoCodingBootstrapForFrame({ ...frame, command: "/bin/sh" })).toThrow("frame_invalid");
     await expect(createHostedMimoCodingProxyMaterial(f.input)).rejects.toThrow("start_consumed");

@@ -8,7 +8,7 @@ import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCur
 import { resolveHostedMimoCodingProxyCredential } from "./hosted-mimo-credential-source";
 import { startMimoCredentialProxy, type MimoCredentialProxy } from "./hosted-mimo-credential-proxy";
 import { codexMimoApiKeyEnvVarDefault, CodexModelBackend, codexModelBackendModelProvidersConfigToml } from "./codex-model-backend";
-import { codexMimoTokenPlanEgressPolicy, codexProviderEgressConfigToml } from "./codex-provider-egress-policy";
+import { codexProviderEgressPolicy, CodexProviderEgressProfileId, codexProviderEgressConfigToml } from "./codex-provider-egress-policy";
 import { hostedCodexPermissionProfilesToml } from "./hosted-codex-permissions";
 
 export type HostedMimoCodingProxyMaterial = Readonly<{
@@ -24,7 +24,7 @@ const consumedStarts = new Set<string>();
 /** Fixed public configuration, never supplied by a caller or read from project
  * files. Native activation/network qualification remain separately closed. */
 function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string): string {
-  const policy = codexMimoTokenPlanEgressPolicy();
+  const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1);
   return [
     'cli_auth_credentials_store = "file"', 'approval_policy = "never"',
     'default_permissions = "hosted-project-write"', 'web_search = "disabled"',
