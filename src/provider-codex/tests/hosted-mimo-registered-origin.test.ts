@@ -181,3 +181,112 @@ describe("single classified origin and coding retained-home receipt", () => {
     expect(() => assertHostedMimoCodingWorkerHomeRetained(classified.origin, path)).toThrow("hosted_mimo_worker_origin_invalid");
   });
 });
+
+describe("genuine CodingV1 engine provenance and fixed tool policy", () => {
+  async function prepared() {
+    codingRequest();
+    const { admittedResearchCodexProcessFactory } = await import("../app-server/adapters/node-app-server-process");
+    const { egressBoundCodexProcessFactory } = await import("../app-server/adapters/egress-bound-process");
+    const { codexProviderEgressPolicy } = await import("../codex-provider-egress-policy");
+    const { AppServerExecutionLifetime } = await import("../app-server/application/app-server-child-lifetime");
+    const { prepareHostedMimoCodingEngineAuthority } = await import("../hosted-mimo-coding-engine-authority");
+    const factory = admittedResearchCodexProcessFactory({ jobId: "test-job", hostedProfile: HostedMimoProfile.CodingV1,
+      launcherPath: `${spec.runtimeDirectory}/host-integration/research-provider-launch.mjs`,
+      launchValidation: { codexBinaryPath: "/usr/bin/codex", workspacePath: "/TEST/workspace", homeRoot: "/TEST/job/home" },
+      submit: () => { throw new Error("TEST_no_native_effect"); }, signal: () => undefined });
+    const wrapped = egressBoundCodexProcessFactory(codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1), factory, { namedPermissions: true });
+    const executionLifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 30_000, maxGoalTurns: 64,
+      binding: { allocationId: "TEST-allocation", incarnationId: "TEST-incarnation" } });
+    const input = { processFactory: wrapped, executionLifetime, workspacePath: "/TEST/workspace", model: codexMimoDefaultModel, codexBinaryPath: "/usr/bin/codex" };
+    return { factory, wrapped, input, authority: prepareHostedMimoCodingEngineAuthority(input), prepareHostedMimoCodingEngineAuthority };
+  }
+  it("requires constructor and specific managed-egress provenance, not arbitrary callbacks or copied authority", async () => {
+    const p = await prepared();
+    const { assertHostedMimoCodingEngineAuthority } = await import("../hosted-mimo-coding-engine-authority");
+    expect(() => assertHostedMimoCodingEngineAuthority(p.authority, p.input)).not.toThrow();
+    expect(() => assertHostedMimoCodingEngineAuthority({ ...p.authority })).toThrow("authority_invalid");
+    expect(() => p.prepareHostedMimoCodingEngineAuthority({ ...p.input, processFactory: () => { throw new Error("TEST"); } })).toThrow("authority_invalid");
+    for (const changed of [{ workspacePath: "/TEST/foreign" }, { model: "foreign" }, { codexBinaryPath: "/TEST/foreign-codex" }]) {
+      expect(() => p.prepareHostedMimoCodingEngineAuthority({ ...p.input, ...changed })).toThrow("authority_invalid");
+    }
+    const launch = { command: "/usr/bin/codex", args: [], cwd: "/TEST/workspace", env: { CODEX_HOME: "/TEST/job/home/mimo-TEST/codex-home" } };
+    expect(() => p.factory(launch)).toThrow("TEST_no_native_effect");
+    for (const changed of [{ cwd: "/TEST/job/home/../secret" }, { cwd: "/TEST/job/home/cache" }, { command: "/TEST/foreign" },
+      { env: { CODEX_HOME: "/TEST/job/home/../secret" } }]) expect(() => p.factory({ ...launch, ...changed })).toThrow("hosted_research_launch_denied");
+  });
+  it("preserves canonical command/cwd/home checks for the ordinary Worker adapter", async () => {
+    const { admittedResearchCodexProcessFactory } = await import("../app-server/adapters/node-app-server-process");
+    const factory = admittedResearchCodexProcessFactory({ jobId: "test-job", launcherPath: "/TEST/launcher",
+      launchValidation: { codexBinaryPath: "/usr/bin/codex", workspacePath: "/TEST/workspace", homeRoot: "/TEST/job/home" },
+      submit: () => { throw new Error("TEST_no_native_effect"); }, signal: () => undefined });
+    const launch = { command: "/usr/bin/codex", args: [], cwd: "/TEST/job/home/mimo-TEST", env: { CODEX_HOME: "/TEST/job/home/mimo-TEST/codex-home" } };
+    expect(() => factory(launch)).toThrow("TEST_no_native_effect");
+    for (const changed of [{ cwd: "/TEST/job/home/../secret" }, { command: "/TEST/foreign" }, { env: { CODEX_HOME: "/TEST/job/home/../secret" } }]) {
+      expect(() => factory({ ...launch, ...changed })).toThrow("hosted_research_launch_denied");
+    }
+  });
+  it("snapshots profile and launch values before checking the exact coding binding", async () => {
+    codingRequest(); const { admittedResearchCodexProcessFactory } = await import("../app-server/adapters/node-app-server-process");
+    let profileReads = 0;
+    expect(() => admittedResearchCodexProcessFactory({ jobId: "test-job", launcherPath: "/TEST/foreign-launcher",
+      get hostedProfile() { profileReads++; return profileReads === 1 ? HostedMimoProfile.CodingV1 : undefined; },
+      launchValidation: { codexBinaryPath: "/usr/bin/codex", workspacePath: "/TEST/workspace", homeRoot: "/TEST/job/home" },
+      submit: () => { throw new Error("TEST_no_effect"); }, signal: () => undefined } as Parameters<typeof admittedResearchCodexProcessFactory>[0])).toThrow("coding_factory_invalid");
+    expect(profileReads).toBe(1);
+    const p = await prepared(); let cwdReads = 0;
+    expect(() => p.factory({ command: "/usr/bin/codex", args: [],
+      get cwd() { cwdReads++; return cwdReads === 1 ? "/TEST/workspace" : "/TEST/foreign"; },
+      env: { CODEX_HOME: "/TEST/job/home/mimo-TEST/codex-home" } })).toThrow("TEST_no_native_effect");
+    expect(cwdReads).toBe(1);
+    let workspaceReads = 0;
+    const authority = p.prepareHostedMimoCodingEngineAuthority({ ...p.input,
+      get workspacePath() { workspaceReads++; return workspaceReads === 1 ? "/TEST/workspace" : "/TEST/foreign"; } });
+    expect(workspaceReads).toBe(1);
+    const { assertHostedMimoCodingEngineAuthority } = await import("../hosted-mimo-coding-engine-authority");
+    expect(() => assertHostedMimoCodingEngineAuthority(authority, { workspacePath: "/TEST/workspace" })).not.toThrow();
+    expect(() => assertHostedMimoCodingEngineAuthority(authority, { workspacePath: "/TEST/foreign" })).toThrow("authority_invalid");
+  });
+  it("captures named-permissions before the caller can mutate the egress options", async () => {
+    const { egressBoundCodexProcessFactory } = await import("../app-server/adapters/egress-bound-process");
+    const { codexProviderEgressPolicy, codexProviderEgressCliConfigArgs } = await import("../codex-provider-egress-policy");
+    const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1);
+    const options = { namedPermissions: true }; let observed: readonly string[] = [];
+    const factory = egressBoundCodexProcessFactory(policy, launch => { observed = launch.args; throw new Error("TEST_no_effect"); }, options);
+    options.namedPermissions = false;
+    expect(() => factory({ command: "/usr/bin/codex", args: [], cwd: "/TEST/workspace", env: {} })).toThrow("TEST_no_effect");
+    expect(observed).toEqual(codexProviderEgressCliConfigArgs(policy, { namedPermissions: true }));
+  });
+  it("spawns exactly the checked client factory when caller options use a swapping getter", async () => {
+    const p = await prepared();
+    const { CodexAppServerClient } = await import("../app-server/application/app-server-client");
+    const { resolveCodexExecutionProfile } = await import("../codex-execution-profile");
+    let reads = 0; const forged = vi.fn(() => { throw new Error("TEST_forged_factory_must_not_run"); });
+    const client = new CodexAppServerClient({ codexBinaryPath: "/usr/bin/codex", sourceEnv: {},
+      get processFactory() { reads++; return reads === 1 ? p.wrapped : forged; },
+      signalChildProcess: () => undefined, workspacePath: "/TEST/workspace",
+      session: { home: "/TEST/job/home/mimo-TEST", codexHome: "/TEST/job/home/mimo-TEST/codex-home",
+        env: { CODEX_HOME: "/TEST/job/home/mimo-TEST/codex-home" }, release: async () => undefined },
+      executionProfile: resolveCodexExecutionProfile("stateless-completion"), modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      hostedCodingAuthority: p.authority, nativeToolSurface: HostedMimoProfile.CodingV1, hostedPermissionProfiles: true,
+      timeoutMs: 1000, startupTimeoutMs: 1000, reconnectGraceMs: 100, maxOutputBytes: 4096, abortSignal: new AbortController().signal });
+    await expect(client.start()).rejects.toThrow("TEST_no_native_effect");
+    expect(reads).toBe(1); expect(forged).not.toHaveBeenCalled();
+  });
+  it("admits fixed coding only with exact live authority and rejects fallback, prewarm, goals and forged options", async () => {
+    const p = await prepared();
+    const { assertHostedAppServerEngineOptions } = await import("../codex-app-server-hosted-admission");
+    const { appServerWireOutputSchema, resolveAppServerEngineLifetime } = await import("../codex-app-server-execution-engine-options");
+    const options = { codexBinaryPath: p.input.codexBinaryPath, processFactory: p.wrapped, executionLifetime: p.input.executionLifetime,
+      hostedCodingAuthority: p.authority, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, nativeToolSurface: HostedMimoProfile.CodingV1,
+      goalMode: false, hostedPermissionProfiles: true, cleanThreadPrewarm: false, maxGoalTurns: 64 } as const;
+    expect(() => assertHostedAppServerEngineOptions(options)).not.toThrow();
+    expect(resolveAppServerEngineLifetime(options)).toBe(p.input.executionLifetime);
+    expect(appServerWireOutputSchema(options, { type: "object" })).toBeUndefined();
+    for (const change of [{ cleanThreadPrewarm: true }, { goalMode: true }, { maxGoalTurns: 63 }, { bypassHookTrust: true },
+      { nativeToolSurface: "disabled" as const }, { hostedCodingAuthority: undefined }, { processFactory: undefined }]) {
+      expect(() => assertHostedAppServerEngineOptions({ ...options, ...change } as typeof options)).toThrow();
+    }
+    state.closing = true;
+    expect(() => assertHostedAppServerEngineOptions(options)).toThrow("origin_invalid");
+  });
+});

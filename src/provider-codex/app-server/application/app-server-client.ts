@@ -1,3 +1,5 @@
+import { assertHostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import type { CodexAppServerClientOptions } from "./app-server-client-options";
 import { nativeWebId } from "@vioxen/subscription-runtime/core";
 import { AppServerNativeWebCapture } from "./app-server-native-web";
@@ -125,6 +127,8 @@ export class CodexAppServerClient {
   constructor(
     private readonly options: CodexAppServerClientOptions,
   ) {
+    this.options = Object.freeze({ ...options });
+    options = this.options;
     this.executionLifetime = observeAppServerExecutionLifetime(options.session, error => this.failProtocol(error));
     this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {
       isTerminal: () => this.terminalError !== null,
@@ -198,10 +202,13 @@ export class CodexAppServerClient {
     const hostJobId = (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
     if (hostJobId !== undefined) env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID = hostJobId;
     this.assertExecutionActive(this.options.abortSignal);
+    const coding = this.options.nativeToolSurface === HostedMimoProfile.CodingV1;
+    if (coding || this.options.hostedCodingAuthority !== undefined) assertHostedMimoCodingEngineAuthority(this.options.hostedCodingAuthority,
+      { processFactory: this.options.processFactory, codexBinaryPath: this.options.codexBinaryPath, workspacePath: this.options.workspacePath });
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: codexAppServerProcessArgs(this.options),
-      cwd: this.options.session.home,
+      cwd: coding ? this.options.workspacePath : this.options.session.home,
       env,
     });
     this.child.stdout.setEncoding("utf8");

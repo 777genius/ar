@@ -7,8 +7,13 @@ export function codexAppServerToolConfig(input: {
   readonly goalMode: boolean;
   readonly trustedHooksEnabled: boolean;
 }): Readonly<Record<string, unknown>> {
-  // A caller-selected tool surface is not a root/proxy-bound capability.
-  if (input.nativeToolSurface === HostedMimoProfile.CodingV1) throw new Error("hosted_mimo_coding_activation_closed");
+  // Pure rendering only: engine and thread boundaries own admission.
+  if (input.nativeToolSurface === HostedMimoProfile.CodingV1) {
+    if (input.goalMode || input.trustedHooksEnabled) throw new Error("hosted_mimo_coding_engine_profile_invalid");
+    return { features: { apps: false, hooks: false, memories: false, multi_agent: false, shell_snapshot: false,
+      skill_mcp_dependency_install: false, shell_tool: true, unified_exec: true, goals: false, default_mode_request_user_input: false },
+      tools: { view_image: false, experimental_request_user_input: { enabled: false } } };
+  }
   const nativeToolsDisabled = input.nativeToolSurface === "disabled";
   return {
     features: {

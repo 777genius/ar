@@ -1,3 +1,4 @@
+import type { HostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
 import type { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type { CodexModelBackend } from "../../codex-model-backend";
@@ -23,6 +24,7 @@ export type CodexAppServerClientOptions = {
   readonly workspacePath: string;
   readonly executionProfile: ResolvedCodexExecutionProfile;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
+  readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
   readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;

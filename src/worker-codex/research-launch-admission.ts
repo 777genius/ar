@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId,
+import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile,
   type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
@@ -193,7 +193,11 @@ export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexP
 }
 export function admitResearchProcessFactory(identity: HostedTestEgressIdentity): CodexAppServerProcessFactory {
   const captured = captureResearchRuntime(identity);
-  const spawn = admittedResearchCodexProcessFactory({ jobId: identity.jobId,
+  const factory = admittedResearchCodexProcessFactory({ jobId: identity.jobId,
+    ...(captured.spec.request.hostedProfile === HostedMimoProfile.CodingV1
+      ? { hostedProfile: HostedMimoProfile.CodingV1 } : {}),
+    launchValidation: { codexBinaryPath: captured.spec.request.codexBinaryPath,
+      workspacePath: identity.workspacePath, homeRoot: join(identity.jobRootDir, "home") },
     launcherPath: join(captured.spec.runtimeDirectory, "host-integration", "research-provider-launch.mjs"),
     submit: (unit, effect) => {
       captured.assertCurrent();
@@ -209,14 +213,6 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
     },
     signal: (unit, signal) => signalResearchProvider(captured.directory, unit, signal),
   });
-  const factory: CodexAppServerProcessFactory = launch => {
-    const cwd = researchPath(launch.cwd), home = researchPath(launch.env.CODEX_HOME);
-    const runtimeHome = join(identity.jobRootDir, "home");
-    if (launch.command !== captured.spec.request.codexBinaryPath ||
-        (cwd !== identity.workspacePath && !cwd.startsWith(runtimeHome + "/")) ||
-        !home.startsWith(runtimeHome + "/")) researchInvalid();
-    return spawn(launch);
-  };
   factoryGuards.set(factory, captured.assertCurrent);
   if (captured.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) mimoWorkerFactories.set(factory, captured.spec);
   return factory;

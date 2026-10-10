@@ -51,7 +51,7 @@ function equal(left: unknown, right: unknown): void { if (JSON.stringify(left) !
  * a callback nor a grant alone can authorize the fixed shared credential. */
 export type HostedMimoCodingWorkerOrigin = Readonly<{
   homeRoot: string; digest: string; directory: string; jobId: string; startId: string; unit: string;
-  codexBinaryPath: string; workspacePath: string; workspaceDevice: number; workspaceInode: number; model: string;
+  runtimeDirectory: string; codexBinaryPath: string; workspacePath: string; workspaceDevice: number; workspaceInode: number; model: string;
   taskTimeoutMs: number; maxGoalTurns: number;
 }>;
 type HostedMimoWorkerOrigin = Readonly<{ homeRoot: string; digest: string; directory: string }>;
@@ -163,7 +163,7 @@ function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; 
   if (workspace.path !== request.workspacePath || !Number.isSafeInteger(workspace.device) || (workspace.device as number) < 0 ||
       !Number.isSafeInteger(workspace.inode) || (workspace.inode as number) < 1) invalid();
   const proof: HostedMimoCodingWorkerOrigin = Object.freeze({ homeRoot, digest: owner[2]!, directory,
-    jobId: String(request.jobId), startId: match[2]!, unit, codexBinaryPath: absolutePath(request.codexBinaryPath), workspacePath: absolutePath(request.workspacePath),
+    jobId: String(request.jobId), startId: match[2]!, unit, runtimeDirectory: absolutePath(spec.runtimeDirectory), codexBinaryPath: absolutePath(request.codexBinaryPath), workspacePath: absolutePath(request.workspacePath),
     workspaceDevice: workspace.device as number, workspaceInode: workspace.inode as number,
     model: String(request.model), taskTimeoutMs: request.taskTimeoutMs as number, maxGoalTurns: request.maxGoalTurns as number });
   const deadline = performance.now() + proof.taskTimeoutMs;

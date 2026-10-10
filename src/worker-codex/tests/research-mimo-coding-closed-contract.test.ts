@@ -1,3 +1,4 @@
+import { assertHostedAppServerEngineOptions } from "../../provider-codex/codex-app-server-hosted-admission";
 import { describe, expect, it } from "vitest";
 import { CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { assertResearchMimoProfileMatch, parseResearchOperatorRequest, parseResearchGrant, researchRunConfig, researchHashRequest } from "../research-launch-contract";
@@ -31,7 +32,10 @@ describe("closed hosted MiMo coding profile", () => {
     expect(() => assertResearchMimoProfileMatch(parseResearchOperatorRequest(request), grant(HostedMimoProfile.CodingV1))).toThrow();
   });
   it("does not activate native shell from a caller-selected profile", () => {
-    expect(() => codexAppServerToolConfig({ nativeToolSurface: HostedMimoProfile.CodingV1, fastMode: false, goalMode: false, trustedHooksEnabled: false })).toThrow("hosted_mimo_coding_activation_closed");
+    expect(() => assertHostedAppServerEngineOptions({ codexBinaryPath: "/TEST/codex", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      nativeToolSurface: HostedMimoProfile.CodingV1 })).toThrow("hosted_mimo_coding_engine_authority_invalid");
+    expect(codexAppServerToolConfig({ nativeToolSurface: HostedMimoProfile.CodingV1, fastMode: false, goalMode: false, trustedHooksEnabled: false }))
+      .toMatchObject({ features: { shell_tool: true, unified_exec: true, hooks: false, goals: false, apps: false, memories: false, multi_agent: false } });
     const worker = parseResearchOperatorRequest(request);
     expect(worker).not.toHaveProperty("hostedProfile");
     expect(researchRunConfig(worker).maxGoalTurns).toBe(8);

@@ -1,3 +1,4 @@
+import type { HostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { EventEmitter } from "node:events";
 import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError, stopAppServerProcess } from "./app-server-process-stopper";
@@ -101,7 +102,8 @@ export class AppServerSlotPool {
       readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-      readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
+  readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
       readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
@@ -216,6 +218,7 @@ export class AppServerSlotPool {
       ...(this.options.commandApprovalPolicy === undefined
         ? {}
         : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+      ...(this.options.hostedCodingAuthority === undefined ? {} : { hostedCodingAuthority: this.options.hostedCodingAuthority }),
       ...(this.options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: this.options.nativeToolSurface }),
