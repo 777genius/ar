@@ -14,4 +14,9 @@ int np_managed_stop_v1(struct np_root_origin *, struct np_managed_original *);
 int np_managed_connections_settle_v1(struct np_root_origin *, struct np_managed_original *);
 int np_managed_live_v1(struct np_root_origin *, struct np_managed_original *);
 bool np_managed_shared_unknown_v1(struct np_managed_original *);
+#ifdef NP_RETAINED_V2_B1A
+int np_managed_retained_open_v2(struct np_root_origin *,struct np_managed_original **,const struct np_birth *);
+int np_managed_retained_ref_v2(struct np_root_origin *,struct np_managed_original *,unsigned,const char original_digest[65],uint64_t original_cookies[2]);
+int np_managed_retained_current_v2(struct np_root_origin *,struct np_managed_original *);
+#endif
 #endif

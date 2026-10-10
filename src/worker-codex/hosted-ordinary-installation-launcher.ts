@@ -12,7 +12,7 @@ import { assertOriginalOrdinaryInstallationClosed, assertOriginalOrdinaryInstall
 export type { OrdinaryInstallationOperation } from "./hosted-ordinary-installation-owned";
 
 const destination = "/opt/subscription-runtime";
-const names = ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs"] as const;
+const names = ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs", "managed-launcher/storage-pressure-guard.mjs"] as const;
 const codecName = "managed-launcher/host-inventory-codec.cjs";
 const profilePath = "/var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json";
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
