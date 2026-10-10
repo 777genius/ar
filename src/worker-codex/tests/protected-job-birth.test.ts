@@ -129,8 +129,8 @@ it.skipIf(process.platform !== "linux")("preserves protected birth across actual
   const client = new Client({ name: "TEST-protected-refill-birth", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const authRootDir = join(f.root, "auth");
-  const registryRootDir = join(f.root, "worker-jobs", "registry"), controllerRoot = join(f.root, "worker-jobs", "TEST-controller");
-  const childRoot = join(f.root, "worker-jobs", "TEST-child"), workspacePath = join(f.root, "worktrees", "TEST-child");
+  const registryRootDir = join(f.root, "worker-jobs", "registry"), controllerRoot = join(f.root, "worker-jobs", "test-controller");
+  const childRoot = join(f.root, "worker-jobs", "test-child"), workspacePath = join(f.root, "worktrees", "test-child");
   try {
     mkdirSync(authRootDir, { recursive: true, mode: 0o700 });
     // Exercise the same real ownership-bound serial contract as native refill.
