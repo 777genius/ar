@@ -102,7 +102,7 @@ for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-polic
   fi
 done
 # Exact emitted canonical-ingress closure. Build first; never install TS as JS.
-probe_files='hosted-native-probe/ingress.js hosted-native-probe/protocol.js hosted-native-probe/original-owner-client.js hosted-native-probe/original-owner-adapter.js worker-core/hosted-custody/ports/native-probe.js worker-core/hosted-custody/application/native-probe.js worker-core/hosted-custody/domain/native-probe.js core/scoped-retained-resource-contract.js core/scoped-termination-contract.js'
+probe_files='hosted-native-probe/research-operator-ingress.js core/research-operator-request.js hosted-native-probe/ingress.js hosted-native-probe/protocol.js hosted-native-probe/original-owner-client.js hosted-native-probe/original-owner-adapter.js worker-core/hosted-custody/ports/native-probe.js worker-core/hosted-custody/application/native-probe.js worker-core/hosted-custody/domain/native-probe.js core/scoped-retained-resource-contract.js core/scoped-termination-contract.js'
 for probe_file in $probe_files; do
   staged_source="$source_dir/../../dist/$probe_file"
   [ -f "$staged_source" ] && [ ! -L "$staged_source" ] || fail "staged source must be an existing regular nonsymlink file: $staged_source"
