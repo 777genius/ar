@@ -12,7 +12,11 @@ export function sshOutput(code, output) {
 function command(args, stdin = '') {
   return new Promise((resolve, reject) => {
     const child = spawn('/usr/bin/ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    const deadline = performance.now() + 25000;
+    // PAM can spend 25s activating logind before the forced endpoint starts.
+    // Give a request time to reach that endpoint; connection-only checks stay
+    // short. A deadline still makes the outcome uncertain and never replays it.
+    const timeoutMs = stdin === '' ? 25000 : 45000;
+    const deadline = performance.now() + timeoutMs;
     let output = '', exited = false, code = null, signal = null;
     let stdoutEnded = false, stdinFinished = false, closed = false, done = false;
     let failure;
@@ -43,7 +47,7 @@ function command(args, stdin = '') {
       failure ??= new Error('ssh command deadline exceeded');
       if (!exited) child.kill('SIGKILL');
       finish();
-    }, 25000);
+    }, timeoutMs);
     child.stdout.on('data', chunk => {
       if (done || failure) return;
       output += chunk;
