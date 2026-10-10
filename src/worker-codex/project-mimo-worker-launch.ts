@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { defaultStartupTimeoutMs } from "../provider-codex/app-server/domain/app-server-types";
 import { CodexGoalNativeLifecycle, type CodexGoalLaunchInput } from "./codex-goal-ops";
 import { parseResearchOperatorRequest } from "./research-launch-contract";
@@ -25,6 +25,7 @@ export async function launchProjectMimoWorker(input: {
     jobId: c.jobId ?? c.taskId, taskId: c.taskId, jobRootDir: c.jobRootDir,
     workspacePath: c.workspacePath, promptPath: c.promptPath, authRootDir: c.authRootDir,
     accounts: c.accounts.map(account => account.name), codexBinaryPath: c.codexBinaryPath,
+    hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64,
     modelBackend: c.modelBackend, model: c.model ?? codexMimoDefaultModel,
     reasoningEffort: c.reasoningEffort ?? "medium", serviceTier: c.serviceTier ?? "default",
     taskTimeoutMs: c.taskTimeoutMs, projectId: c.projectAccessScope?.projectId,

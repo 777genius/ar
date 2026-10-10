@@ -22,7 +22,7 @@ export function grantResearchLaunch(jobId: string, jobRootDir: string, workspace
 }
 /** Explicit standalone worker authority. Never grants controller or registered execution. */
 export function grantOwnedMimoWorkerLaunch(jobId: string, jobRootDir: string, workspacePath: string): void {
-  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, true), true);
+  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, HostedMimoProfile.Worker), true);
 }
 /** Separate capability-only port; the legacy operator CLI has no free sink arg. */
 export async function grantRegisteredResearchLaunch(authorization: RegisteredResearchHandoffAuthorization): Promise<void> {
@@ -38,10 +38,10 @@ async function grantRegisteredResearchLaunchUnlocked(authorization: RegisteredRe
     await assertRegisteredResearchHandoffCurrent(binding, authorization.request);
     const { request } = authorization;
     publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding,
-      request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan);
+      request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? request.hostedProfile ?? HostedMimoProfile.Worker : undefined);
   } });
 }
-function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff, mimoWorker = false): void {
+function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff, mimoProfile?: HostedMimoProfile.Worker | HostedMimoProfile.CodingV1): void {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   researchId(jobId);
   const jobDirectory = researchDirectoryIdentity(jobRootDir), workspaceDirectory = researchDirectoryIdentity(workspacePath);
@@ -54,8 +54,8 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
   // A unique grant identity makes revoke/regrant different even for the same tuple.
   researchPublish(join(job, "grant.json"), { schemaVersion: 1, jobId, jobRootDir, workspacePath,
     ...(registeredHandoff ? { registeredHandoff } : {}),
-    profileId: mimoWorker ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
-    ...(mimoWorker ? { hostedProfile: HostedMimoProfile.Worker } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
+    profileId: mimoProfile ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
+    ...(mimoProfile ? { hostedProfile: mimoProfile } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
 }
 export function revokeResearchLaunch(jobId: string): void {
   withResearchJobMutation(jobId, () => revokeResearchLaunchUnlocked(jobId));

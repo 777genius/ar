@@ -15,7 +15,7 @@ import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revisio
 import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
-import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { assertFreshRegisteredResearchProfile, assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 
@@ -170,6 +170,7 @@ export async function authorizeRegisteredResearchHandoff(input: {
     const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
     const reserved = { manifest: loaded.manifest, sourceLaunch: loaded.launch, reservedLaunch: input.reservedLaunch };
     const authority = assertCodexProjectReservedLaunchAuthority(reserved);
+    assertFreshRegisteredResearchProfile(request);
     const execution = researchRegisteredExecutionFromReservation(authority, input.reservedLaunch);
     const current = await currentRegisteredHandoff(registryRootDir, controllerJobId, request, true, execution,
       () => { consumeCodexProjectReservedLaunchAuthority(reserved); });

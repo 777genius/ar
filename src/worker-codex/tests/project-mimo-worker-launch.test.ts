@@ -43,6 +43,7 @@ describe("registered project MiMo dispatch", () => {
     const request = JSON.parse(state.files.get("/TEST-authority/project-worker-request.json")!.toString());
     expect(request.durableHandoffRootDir).toBe("/TEST-registry/durable-handoffs");
     expect(request).not.toHaveProperty("env");
+    expect(request).toMatchObject({ hostedProfile: "mimo-coding-v1", maxGoalTurns: 64 });
     expect(JSON.parse(state.files.get("/TEST-authority/project-worker-attempt.json")!.toString())).toMatchObject({
       startId: "TEST-start", specSha256: "a".repeat(64), registryRootDir: "/TEST-registry" });
   });

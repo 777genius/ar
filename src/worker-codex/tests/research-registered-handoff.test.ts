@@ -1,7 +1,7 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture, enterResearchOperatorScope } from "./research-launch-fixture";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import * as workspaceChanges from "../codex-goal-workspace-changes";
 import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,12 +10,12 @@ import { join } from "node:path";
 import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope, buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
-import { bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard, researchJobAuthority } from "../research-launch-admission";
 import { cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
 import { researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
-import { parseResearchOperatorRequest, researchRunConfig } from "../research-launch-contract";
+import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
 
 const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false, mimo: false, registry: "/TEST-project/registry" }));
@@ -79,7 +79,7 @@ async function reserved() {
   return { ...loaded, reservedLaunch: reservation.launch };
 }
 const authorize = async () => authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller",
-  request: selected(), reservedLaunch: (await reserved()).reservedLaunch });
+  request: state.mimo ? parseResearchOperatorRequest({ ...selected(), hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 }) : selected(), reservedLaunch: (await reserved()).reservedLaunch });
 async function grantAndRequest() {
   const authorization = await authorize();
   await grantRegisteredResearchLaunch(authorization);
@@ -429,7 +429,18 @@ async function registeredMimoCandidate(dirty = false) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
-  await initializeRegisteredFixture(); await grantAndRequest();
+  await initializeRegisteredFixture(); const coding = await grantAndRequest();
+  // Explicit retained pre-CodingV1 fixture: the current-authority path must
+  // still settle old Worker attempts; fresh authorization cannot mint one.
+  const { hostedProfile: _profile, maxGoalTurns: _turns, ...base } = coding;
+  const legacy = parseResearchOperatorRequest(base);
+  const grantPath = join(researchJobAuthority(legacy.jobId), "grant.json");
+  const grant = JSON.parse(researchRead(grantPath).toString());
+  expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
+  grant.hostedProfile = HostedMimoProfile.Worker;
+  grant.registeredHandoff.requestSha256 = researchHashRequest(legacy);
+  researchPublish(grantPath, grant);
+  writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(legacy) + "\n", { mode: 0o600 });
   const started = await start(), current = researchCurrentStart(started.jobId);
   host.group = `/system.slice/${started.unit}`; await bindRegisteredResearchRuntime(started.jobId, started.startId);
   if (dirty) {
@@ -490,5 +501,24 @@ describe.skipIf(process.platform !== "linux")("registered MiMo terminal publicat
     const result = JSON.parse(readFileSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`), "utf8"));
     expect(result).toMatchObject({ status: "partial", nextAction: "continue", evidence: ["TEST report retained"] });
     expect(existsSync(local(join(current.directory, "../../active.json")))).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("fresh registered fixed coding policy", () => {
+  it.each([undefined, 63, 65])("rejects a new MiMo Worker or noncanonical budget %s before granting", async turns => {
+    state.mimo = true; await initializeRegisteredFixture();
+    const r = turns === undefined ? selected() : parseResearchOperatorRequest({ ...selected(), hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: turns });
+    await expect(authorizeRegisteredResearchHandoff({ registryRootDir: registry, controllerJobId: "TEST-controller", request: r,
+      reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow("hosted_research_registered_execution_unsupported");
+    expect(existsSync(local(join(researchJobAuthority(r.jobId), "grant.json")))).toBe(false);
+  });
+  it("seals CodingV1/64 in its grant while native activation stays closed", async () => {
+    state.mimo = true; await initializeRegisteredFixture();
+    const r = await grantAndRequest();
+    expect(r).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 });
+    const grant = JSON.parse(researchRead(join(researchJobAuthority(r.jobId), "grant.json")).toString());
+    expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
+    expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
+    expect(() => researchRunConfig(r)).toThrow("hosted_mimo_coding_activation_closed");
   });
 });
