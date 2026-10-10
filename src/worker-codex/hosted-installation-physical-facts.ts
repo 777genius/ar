@@ -1,4 +1,5 @@
 import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-interval";
+import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +13,7 @@ function invalid():never {throw new Error("hosted_activation_evidence_invalid");
 // callback or publication authority is created or registered by this module.
 export function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion" | "installationId"> {
   const inventory = readHostedReadonlyHostInventory();
-  if (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) invalid();
+  if (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4 && inventory.schemaVersion !== 5) invalid();
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const cliPath = join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js");
   for (const creator of inventory.ordinaryCreators) {
@@ -22,8 +23,9 @@ export function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion
   }
   const stage = readOriginalHostedDependencyBackingStage();
   if (stage.runtimeDirectory !== runtimeDirectory) invalid();
-  const inventoryBytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), 64 * 1024);
+  const inventoryBytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
   if (!inventoryBytes) invalid();
+  decodeHostedInventoryBytes(inventoryBytes);
   return { hostId: inventory.hostId, runtimeDirectory, runtimeSha: stage.runtimeSha,
     runtimeManifestSha256: stage.runtimeManifestSha256, inventorySha256: digest(inventoryBytes) };
 }

@@ -1,5 +1,5 @@
 import type { DependencyWorkspaceIdentity } from "./dependency-workspace";
-import { DependencyConsumerLaunchKind, isDependencyCustodyObject, isDependencyProtectedReference, sameDependencyProtectedReference,
+import { DependencyConsumerLaunchKind, isDependencyCustodyObject, isDependencyCustodyWorkspace, isDependencyProtectedReference, sameDependencyProtectedReference,
   type DependencyProtectedReference } from "./dependency-custody-evidence";
 
 import { parseDependencyGenerationContinuity, type DependencyGenerationContinuity } from "./dependency-generation-baseline";
@@ -109,7 +109,7 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
     if (activity.lastRelease !== null && (activity.lastEntry === null ||
         activity.lastRelease.epoch > activity.lastEntry.epoch)) invalid();
   }
-  if (protectedRecord && (!isDependencyCustodyObject(value.workspace, "canonicalPath,dev,ino") ||
+  if (protectedRecord && (!isDependencyCustodyWorkspace(value.workspace) ||
       (hasActivity && !isDependencyCustodyObject(value.activity, "lastEntry,lastRelease")))) invalid();
   const workspace = value.workspace;
   if (!object(workspace, "canonicalPath,dev,ino") || typeof workspace.canonicalPath !== "string" ||

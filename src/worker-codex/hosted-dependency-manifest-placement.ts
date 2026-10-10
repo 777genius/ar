@@ -1,3 +1,4 @@
+import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync,
   realpathSync } from "node:fs";
@@ -125,7 +126,7 @@ function outsideGrants(scratch: Pin, installation: HostedInstallation): void {
 function installationFacts(installation: HostedInstallation): void {
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const stage = readHostedPrivateBytes("/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json", 4096);
-  const inventoryBytes = readHostedPrivateBytes(join(policyRoot, "readonly-inventory.json"), 64 * 1024);
+  const inventoryBytes = readHostedPrivateBytes(join(policyRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
   if (!stage || !inventoryBytes) fail();
   let value: ReturnType<typeof readOriginalHostedDependencyBackingStage>;
   try { value = readOriginalHostedDependencyBackingStage(); } catch { fail(); }
@@ -134,7 +135,7 @@ function installationFacts(installation: HostedInstallation): void {
   const inventory = readHostedReadonlyHostInventory();
   if (value.runtimeDirectory !== runtimeDirectory || installation.runtimeDirectory !== runtimeDirectory ||
     value.runtimeSha !== installation.runtimeSha || value.runtimeManifestSha256 !== installation.runtimeManifestSha256 ||
-    inventory.hostId !== installation.hostId || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) || hash(inventoryBytes) !== installation.inventorySha256) fail();
+    inventory.hostId !== installation.hostId || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4 && inventory.schemaVersion !== 5) || hash(inventoryBytes) !== installation.inventorySha256) fail();
   const jobPrefix = join(policyRoot, "dependency-test-jobs/jobs");
   for (const c of inventory.ordinaryCreators) {
     if (!/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(c.jobId) || c.jobRootDir !== join(jobPrefix, c.jobId) || c.workspacePath !== c.jobRootDir + "/workspace" ||

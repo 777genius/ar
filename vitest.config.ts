@@ -39,6 +39,7 @@ export default defineConfig({
       ...configDefaults.exclude,
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
+      "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-lane.test.ts",
     ],
     sequence: { sequencer: DurationBalancedSequencer },
     // Keep each file isolated while bounding process and memory pressure.

@@ -1,18 +1,22 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fstatSync, readdirSync, readlinkSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
   DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis,
   type DependencyCapturedTreeObservation } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { observeDependencyDirectoryRoot, observeDependencyTree, captureDependencySourceExposure, captureDependencyPhysicalTreeExposure,
   assertDependencySourceExposureCurrent, closeDependencySourceExposure, type DependencySourceExposure } from "../observe-dependency-tree";
 import { observeDependencyPinnedFile } from "../observe-dependency-pinned-file";
+
+// Only the race barrier is intercepted; metadata and operations use the real FS.
+vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof import("node:fs/promises")>() }));
 
 const run = promisify(execFile);
 const limits = { maxEntries: 64, maxTotalBytes: 4096, maxManifestBytes: 16384, maxDurationMs: 10000 };
@@ -204,6 +208,107 @@ describe.skipIf(process.platform !== "linux")("dependency full-tree inventory", 
       expect(await observeDependencyTree({ workspacePath: join(f.path, "alias"), treeName: "node_modules", limits }))
         .toEqual({ status: Status.Incomplete, reason: Failure.UnsafeNamespace });
     } finally { await f.cleanup(); }
+  });
+
+  // RED on the old initial comparator: real sibling creation after lstat
+  // changes ancestor nlink/mtime/ctime without changing the selected tree.
+  it.each(["unrelated-output", "replacement", "mode"] as const)("checks ancestor identity across genuine IO with %s", async change => {
+    const f = await fixture(), held = f.path + ".held";
+    try {
+      const before = complete(await f.observe()), ancestor = await lstat(f.path, { bigint: true });
+      const actualLstat = fs.lstat;
+      let mutated = false;
+      // Use the existing mutable TEST module projection that the observer imports.
+      // Only scheduling is controlled: every returned Stat and all IO are real.
+      const gate = vi.spyOn(fs, "lstat").mockImplementation(async (path, options) => {
+        const actual = await actualLstat(path, options);
+        if (!mutated && Buffer.isBuffer(path) && path.toString().startsWith("/proc/self/fd/") &&
+            path.toString().endsWith("/" + basename(f.path))) {
+          mutated = true;
+          if (change === "unrelated-output") await mkdir(join(f.path, "TEST-unrelated-output"));
+          if (change === "replacement") {
+            await rename(f.path, held); await mkdir(f.path, { mode: 0o700 });
+            await rename(join(held, "node_modules"), f.tree);
+          }
+          if (change === "mode") await chmod(f.path, 0o755);
+        }
+        return actual;
+      });
+      try {
+        const observed = await f.observe();
+        expect(mutated).toBe(true);
+        const current = await actualLstat(f.path, { bigint: true });
+        if (change === "unrelated-output") {
+          expect([current.dev, current.ino, current.mode]).toEqual([ancestor.dev, ancestor.ino, ancestor.mode]);
+          expect(current.nlink).toBeGreaterThan(ancestor.nlink);
+          expect((await actualLstat(join(f.path, "TEST-unrelated-output"))).isDirectory()).toBe(true);
+          const completeAfter = complete(observed);
+          expect(completeAfter.tree).toEqual(before.tree);
+          expect(completeAfter.canonicalBytes).toEqual(before.canonicalBytes);
+          expect(completeAfter.digest).toBe(before.digest);
+        } else {
+          expect(observed).toEqual({ status: Status.Incomplete, reason: Failure.IdentityChanged });
+          if (change === "replacement") expect(current.ino).not.toBe(ancestor.ino);
+          else expect(current.mode).not.toBe(ancestor.mode);
+        }
+        expect(await readFile(f.file, "utf8")).toBe("abc");
+      } finally { gate.mockRestore(); }
+    } finally { await f.cleanup(); await rm(held, { recursive: true, force: true }); }
+  });
+
+  // RED before the fix: unrelated output creation changes ancestor nlink/ctime
+  // between lstat and open, incorrectly rejecting an unchanged dependency tree.
+  it("permits unrelated private ancestor output created during directory retention", async () => {
+    const f = await fixture(), baseline = complete(await f.observe()), nativeOpen = fs.open;
+    const before = await lstat(f.path, { bigint: true });
+    let changed = false;
+    const barrier = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (!changed && await realpath(args[0]) === f.path) {
+        changed = true;
+        await mkdir(join(f.path, "parallel-output"));
+      }
+      return nativeOpen(...args);
+    });
+    try {
+      const observed = complete(await f.observe()), after = await lstat(f.path, { bigint: true });
+      expect(changed).toBe(true);
+      expect(after.ino).toBe(before.ino);
+      expect(after.nlink).toBe(before.nlink + 1n);
+      expect(observed.tree).toEqual(baseline.tree);
+      expect(observed.digest).toBe(baseline.digest);
+      expect(observed.canonicalBytes).toEqual(baseline.canonicalBytes);
+      expect(await readFile(f.file, "utf8")).toBe("abc");
+    } finally { barrier.mockRestore(); await f.cleanup(); }
+  });
+
+  // RED if the ancestor correction also accepts identity/mode substitutions or
+  // relaxes full target metadata at the same lstat/open boundary.
+  it.each([
+    ["ancestor", "inode"], ["ancestor", "mode"],
+    ["target", "inode"], ["target", "mode"], ["target", "membership"],
+  ] as const)("rejects %s %s substitution during directory retention", async (scope, change) => {
+    const f = await fixture(), selected = scope === "ancestor" ? f.path : f.tree, held = selected + ".held", nativeOpen = fs.open;
+    let changed = false;
+    const barrier = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (!changed && await realpath(args[0]) === selected) {
+        changed = true;
+        if (change === "inode") {
+          await rename(selected, held); await mkdir(selected);
+          if (scope === "ancestor") await rename(join(held, "node_modules"), f.tree);
+        } else if (change === "mode") await chmod(selected, scope === "ancestor" ? 0o720 : 0o700);
+        else await mkdir(join(selected, "parallel-output"));
+      }
+      return nativeOpen(...args);
+    });
+    try {
+      const observed = await f.observe();
+      expect(changed).toBe(true);
+      expect(observed.status).toBe(Status.Incomplete);
+      if (observed.status !== Status.Incomplete) throw new Error("TEST substituted directory accepted");
+      expect([Failure.IdentityChanged, Failure.AllocationChanged]).toContain(observed.reason);
+      const preserved = scope === "target" && change === "inode" ? join(held, "pkg/index.js") : f.file;
+      expect(await readFile(preserved, "utf8")).toBe("abc");
+    } finally { barrier.mockRestore(); await f.cleanup(); await rm(held, { recursive: true, force: true }); }
   });
 
   it("pins exact file bytes and refuses an alias or exceeded file bound", async () => {
