@@ -323,9 +323,11 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   // The admitted worker-owned reader opens only established history and closes
   // every temporary descriptor before the FD-table checks below. It is retained
   // with this actual invocation/child, never reconstructed from serialized facts.
-  const ready=qualified.status===DependencyToolReadyReadStatus.Ready ?
-    {status:DependencyToolReadyReadStatus.Ready,facts:qualified.providerReady} as const :
-    {status:qualified.status,execution:qualified.execution} as const;
+  const ready:Plan["admission"]=qualified.status===DependencyToolReadyReadStatus.Ready ?
+    {status:DependencyToolReadyReadStatus.Ready,facts:qualified.providerReady} :
+    qualified.status===DependencyToolReadyReadStatus.Baseline ?
+    {status:qualified.status,execution:qualified.execution} :
+    {status:qualified.status,execution:qualified.execution};
   if(!encode(ready).equals(encode(managed.admission)))fail();
   if(qualification.version===1) {
     const legacy=qualification;
