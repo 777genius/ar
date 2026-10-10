@@ -87,6 +87,8 @@ vi.mock("../hosted-readonly-custody", async original => ({
 // inventory/session facts are synthetic. No runtime authority can be injected.
 vi.mock("../hosted-readonly-epoch-store", () => ({
   HostedReadonlyEpochStore: class {
+    // Simulated kernel port only; no real fence or Native authority.
+    publicationFence(): undefined { return undefined; }
     serialized<T>(action: () => T): T { return action(); }
     readEpoch() { return parseHostedCustodyEpoch(facts.epoch); }
     publishEpoch(epoch: HostedCustodyEpoch) { facts.epoch = parseHostedCustodyEpoch(epoch); }
