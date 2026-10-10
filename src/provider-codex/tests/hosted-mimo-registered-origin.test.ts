@@ -1,14 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readHostedMimoWorkerOrigin, readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, readHostedMimoWorkerProfileOrigin, assertHostedMimoCodingWorkerHomeRetained } from "../hosted-mimo-worker-origin";
+import { hostedMimoOriginReadFailure, HostedMimoOriginReadFailureCode, readHostedMimoWorkerOrigin, readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, readHostedMimoWorkerProfileOrigin, assertHostedMimoCodingWorkerHomeRetained } from "../hosted-mimo-worker-origin";
 import { CodexModelBackend, codexMimoDefaultModel } from "../codex-model-backend";
 import { CodexProviderEgressProfileId } from "../codex-provider-egress-policy";
 import { HostedMimoProfile } from "../hosted-mimo-profile";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), descriptors: new Map<number, string>(), next: 10,
   service: "", pinInode: 21, pinMode: 0o700, materialCalls: 0, materialInvalid: false, workspaceInode: 21, closing: false, lateEffect: undefined as undefined | (() => void) }));
 vi.mock("../hosted-mimo-worker-material", () => ({ assertHostedMimoWorkerMaterial: () => { state.materialCalls++; if (state.materialInvalid) throw new Error("TEST_material_invalid"); } }));
-vi.mock("node:child_process", () => ({ spawnSync: () => ({ status: 0, stdout: state.service }) }));
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn(() => ({ status: 0, stdout: state.service })) }));
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string, encoding?: string) => { const data = state.files.get(path); if (!data) throw Object.assign(new Error(), { code: "ENOENT" }); return encoding ? data.toString() : data; },
   readlinkSync: (path: string) => `ns-${path.split("/").at(-1)}`,
@@ -43,6 +44,7 @@ function publish(): void {
       fragmentSha256: digest("unit") } });
 }
 beforeEach(() => {
+  vi.mocked(spawnSync).mockReset().mockImplementation(() => ({ status: 0, stdout: state.service }) as ReturnType<typeof spawnSync>);
   state.files.clear(); state.pinInode = 21; state.pinMode = 0o700; state.materialCalls = 0; state.materialInvalid = false; state.workspaceInode = 21; state.closing = false; state.lateEffect = undefined;
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
@@ -288,5 +290,48 @@ describe("genuine CodingV1 engine provenance and fixed tool policy", () => {
     }
     state.closing = true;
     expect(() => assertHostedAppServerEngineOptions(options)).toThrow("origin_invalid");
+  });
+});
+
+describe("bounded origin manager read", () => {
+  it("recovers only ETIMEDOUT with unchanged identity query and fresh authority", () => {
+    vi.mocked(spawnSync).mockImplementationOnce(() => ({ error: Object.assign(new Error("private"), { code: "ETIMEDOUT" }), status: null, pid: 0, output: [], stdout: "", stderr: "", signal: null }) as ReturnType<typeof spawnSync>);
+    expect(readHostedMimoWorkerOrigin()).not.toBeNull();
+    expect(spawnSync).toHaveBeenCalledTimes(2);
+    const [first, second] = vi.mocked(spawnSync).mock.calls;
+    expect(first?.slice(0, 2)).toEqual(second?.slice(0, 2));
+    expect(first?.[2]).toEqual(second?.[2]);
+    expect(first?.[2]).toMatchObject({ timeout: 60_000 });
+  });
+  it("rejects changed authority after a timeout recovery", () => {
+    vi.mocked(spawnSync).mockImplementationOnce(() => ({ error: Object.assign(new Error(), { code: "ETIMEDOUT" }), status: null, pid: 0, output: [], stdout: "", stderr: "", signal: null }) as ReturnType<typeof spawnSync>)
+      .mockImplementationOnce(() => { state.files.set(`${job}/active.json`, Buffer.from("{}")); return { status: 0, stdout: state.service } as ReturnType<typeof spawnSync>; });
+    expect(() => readHostedMimoWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+    expect(spawnSync).toHaveBeenCalledTimes(2);
+  });
+  it("retains only authenticated finite read failure diagnostics", () => {
+    vi.mocked(spawnSync).mockImplementation(() => ({ error: Object.assign(new Error("private"), { code: "ETIMEDOUT" }), status: null, pid: 0, output: [], stdout: "secret", stderr: "secret", signal: null }) as ReturnType<typeof spawnSync>);
+    let failure: unknown; try { readHostedMimoWorkerOrigin(); } catch (error) { failure = error; }
+    expect(hostedMimoOriginReadFailure(failure)).toEqual({ operation: "systemctl-show", code: HostedMimoOriginReadFailureCode.Timeout, elapsedMs: expect.any(Number) });
+    expect(hostedMimoOriginReadFailure({ ...failure as object })).toBeUndefined();
+    expect(hostedMimoOriginReadFailure(new Error("hosted_mimo_worker_origin_invalid"))).toBeUndefined();
+  });
+  it("never retries a failed manager exit", () => {
+    vi.mocked(spawnSync).mockImplementationOnce(() => ({ status: 1, stdout: "private" }) as ReturnType<typeof spawnSync>);
+    expect(() => readHostedMimoWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+    expect(spawnSync).toHaveBeenCalledTimes(1);
+  });
+  it("allows at most two timed-out reads", () => {
+    vi.mocked(spawnSync).mockImplementation(() => ({ error: Object.assign(new Error(), { code: "ETIMEDOUT" }), status: null, pid: 0, output: [], stdout: "", stderr: "", signal: null }) as ReturnType<typeof spawnSync>);
+    expect(() => readHostedMimoWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+    expect(spawnSync).toHaveBeenCalledTimes(2);
+  });
+  it("clamps the retry to the remaining budget and rejects a late successful reply", () => {
+    const clock = vi.spyOn(process.hrtime, "bigint").mockReturnValueOnce(0n).mockReturnValueOnce(90_000_000_000n).mockReturnValueOnce(120_000_000_000n);
+    try {
+      vi.mocked(spawnSync).mockImplementationOnce(() => ({ error: Object.assign(new Error(), { code: "ETIMEDOUT" }), status: null, pid: 0, output: [], stdout: "", stderr: "", signal: null }) as ReturnType<typeof spawnSync>);
+      expect(() => readHostedMimoWorkerOrigin()).toThrow("hosted_mimo_worker_origin_invalid");
+      expect(vi.mocked(spawnSync).mock.calls[1]?.[2]).toMatchObject({ timeout: 30_000 });
+    } finally { clock.mockRestore(); }
   });
 });

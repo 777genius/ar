@@ -11,6 +11,12 @@ import { HostedMimoProfile } from "./hosted-mimo-profile";
 const authority = "/run/user/subscription-runtime-research-v1";
 const hash = (bytes: Buffer | string): string => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_mimo_worker_origin_invalid"); }
+export enum HostedMimoOriginReadFailureCode { Timeout = "timeout", Failed = "failed" }
+export type HostedMimoOriginReadFailure = Readonly<{ operation: "systemctl-show"; code: HostedMimoOriginReadFailureCode; elapsedMs: number }>;
+const originReadFailures = new WeakMap<object, HostedMimoOriginReadFailure>();
+export function hostedMimoOriginReadFailure(error: unknown): HostedMimoOriginReadFailure | undefined {
+  return error && typeof error === "object" ? originReadFailures.get(error) : undefined;
+}
 type Wire = Record<string, unknown>;
 function record(value: unknown): Wire {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
@@ -102,10 +108,27 @@ function readOrigin(allowCodingMetadata: boolean): { readonly homeRoot: string; 
     try { lstatSync(path); invalid(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   const unit = match[1]!;
-  const result = spawnSync("/usr/bin/systemctl", ["show", unit, "--no-pager",
-    "--property=Id,MainPID,ControlGroup,InvocationID,Description,ActiveState,SubState,Transient,FragmentPath,DropInPaths,KillMode"],
-  { encoding: "utf8", timeout: 30_000, maxBuffer: 65536, env: { PATH: "/usr/bin:/bin", LANG: "C" } });
-  if (result.error || result.status !== 0) invalid();
+  // Only the idempotent identity read may retry a manager timeout. Discard
+  // timed-out replies and retain all independent proof checks below.
+  const args = ["show", unit, "--no-pager",
+    "--property=Id,MainPID,ControlGroup,InvocationID,Description,ActiveState,SubState,Transient,FragmentPath,DropInPaths,KillMode"];
+  const readStarted = process.hrtime.bigint(), readDeadline = readStarted + 120_000_000_000n;
+  const execute = (timeout: number) => spawnSync("/usr/bin/systemctl", args,
+    { encoding: "utf8", timeout, maxBuffer: 65536, env: { PATH: "/usr/bin:/bin", LANG: "C" } });
+  let result = execute(60_000);
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    const remaining = Number((readDeadline - process.hrtime.bigint()) / 1_000_000n);
+    if (remaining > 0) result = execute(Math.min(60_000, remaining));
+  }
+  const readFinished = process.hrtime.bigint();
+  if (readFinished >= readDeadline || result.error || result.status !== 0) {
+    const error = new Error("hosted_mimo_worker_origin_invalid");
+    originReadFailures.set(error, Object.freeze({ operation: "systemctl-show",
+      code: readFinished >= readDeadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+        ? HostedMimoOriginReadFailureCode.Timeout : HostedMimoOriginReadFailureCode.Failed,
+      elapsedMs: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Number(readFinished - readStarted) / 1_000_000)) }));
+    throw error;
+  }
   const service = Object.fromEntries(result.stdout.trim().split("\n").map(row => { const index = row.indexOf("="); return [row.slice(0, index), row.slice(index + 1)]; }));
   const owner = /^subscription-runtime-research:([a-f0-9]{64}):([a-f0-9]{64})$/.exec(service.Description ?? "");
   if (!owner || service.Id !== unit || service.MainPID !== String(process.pid) || service.ControlGroup !== group[0]!.slice(3) ||
