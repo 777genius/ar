@@ -10,6 +10,9 @@ import { materializeDurableCodexGoalHandoffPacket } from
   "./codex-goal-durable-handoff-packet";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { sanitizeNodeDependencyEnvironment } from "./dependency-environment-safety";
+import { resolveManagedDependencyGitContext, assertManagedDependencyGitContext,
+  type HostedDependencyRootPurposeContext } from "./managed-dependency-git";
+import { readHostedDependencyRootFile, HostedDependencyRootFileRecipe } from "./hosted-dependency-root-file-reader";
 
 export type TerminalCodexGoalHandoffMaterialization = {
   readonly artifacts: readonly RuntimeResultArtifact[];
@@ -48,11 +51,14 @@ export async function materializeReconciledTerminalCodexGoalHandoff(input: {
   readonly changedPaths: readonly string[];
   readonly baseCommit: string | undefined;
 }> {
-  const currentHeadCommit = await readLocalGitHeadCommit(input.config.workspacePath);
+  const managedContext = resolveManagedDependencyGitContext(input.config.workspacePath, input.config.managedContext);
+  if (managedContext !== undefined) assertTerminalScope(input.config, managedContext);
+  const currentHeadCommit = await readLocalGitHeadCommit(input.config.workspacePath, managedContext);
   const handoff = input.changedFiles.length === 0
     ? null
     : await tryMaterializeTerminalCodexGoalHandoff({
         ...input.config,
+        ...(managedContext === undefined ? {} : { managedContext }),
         ...(currentHeadCommit === undefined
           ? {}
           : { expectedHeadCommit: currentHeadCommit }),
@@ -77,6 +83,7 @@ export type TerminalHandoffPublicationAuthority = {
   readonly withPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
 };
 export async function tryMaterializeTerminalCodexGoalHandoff(input: {
+  readonly managedContext?: HostedDependencyRootPurposeContext;
   readonly jobId?: string;
   readonly jobRootDir: string;
   readonly durableHandoffRootDir?: string;
@@ -86,20 +93,25 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   readonly expectedHeadCommit?: string;
 }, trusted?: TerminalHandoffPublicationAuthority): Promise<TerminalCodexGoalHandoffMaterialization> {
   const effect = async (): Promise<TerminalCodexGoalHandoffMaterialization> => {
+  let managedContext: HostedDependencyRootPurposeContext | undefined;
   try {
     await trusted?.assertPublicationAuthorized();
+    managedContext = resolveManagedDependencyGitContext(input.workspacePath, input.managedContext);
+    if (managedContext !== undefined) assertTerminalScope(input, managedContext);
     // Dependency bootstrap may create worktree-local links to a shared cache.
     // They are execution infrastructure, never authored output. Remove only
     // dependency roots proven unsafe by the bounded dependency scanner before
     // freezing the terminal workspace. All other symlinks still fail closed in
     // handoff materialization.
-    await sanitizeNodeDependencyEnvironment({
-      workspacePath: input.workspacePath,
-    });
+    if (managedContext === undefined) await sanitizeNodeDependencyEnvironment({ workspacePath: input.workspacePath });
+    // Protected packet output is nonmutating: removedPaths stays empty. It
+    // neither scans generated NM nor retires a Ready baseline for serialization.
+    else sanitizeManagedTerminalOutput(managedContext);
     const expectedBaseCommit = input.expectedBaseCommit ??
-      await recordedRunStartBaseCommit(input.jobRootDir, input.taskId);
+      await recordedRunStartBaseCommit(input.jobRootDir, input.taskId, managedContext);
     const materialized = await materializeDurableCodexGoalHandoffPacket({
-      workerJobId: input.jobId ?? input.taskId,
+      workerJobId: input.jobId ?? (managedContext === undefined ? input.taskId : assertManagedDependencyGitContext(managedContext).logicalJobId),
+      ...(managedContext === undefined ? {} : { managedContext }),
       taskId: input.taskId,
       workspacePath: input.workspacePath,
       durableRootDir: resolveDurableHandoffRoot(
@@ -135,7 +147,7 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   } catch (error) {
     const errorCode = safeHandoffMaterializationErrorCode(error);
     const continuationFingerprint = errorCode === "handoff_raw_secret_rejected"
-      ? await tryCaptureContinuationFingerprint(input)
+      ? await tryCaptureContinuationFingerprint({ ...input, ...(managedContext === undefined ? {} : { managedContext }) })
       : undefined;
     return {
       artifacts: [],
@@ -155,12 +167,13 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
 async function recordedRunStartBaseCommit(
   jobRootDir: string,
   taskId: string,
+  managedContext?: HostedDependencyRootPurposeContext,
 ): Promise<string | undefined> {
   try {
-    const lines = (await readFile(
+    const lines = (managedContext === undefined ? await readFile(
       join(jobRootDir, `${taskId}.events.jsonl`),
       "utf8",
-    )).split(/\r?\n/);
+    ) : readHostedDependencyRootFile(managedContext, { recipe: HostedDependencyRootFileRecipe.TaskEventsV1 }).toString("utf8")).split(/\r?\n/);
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line) as {
@@ -232,10 +245,12 @@ export function terminalCodexGoalHandoffEvidence(
 
 async function tryCaptureContinuationFingerprint(input: {
   readonly workspacePath: string;
+  readonly managedContext?: HostedDependencyRootPurposeContext;
   readonly expectedBaseCommit?: string;
 }): Promise<CodexGoalContinuationWorkspaceFingerprint | undefined> {
   try {
-    return (await captureCodexGoalContinuationWorkspaceFingerprint(input)) ??
+    return (await captureCodexGoalContinuationWorkspaceFingerprint({ ...input,
+      ...(input.managedContext === undefined ? {} : { gitBinaryPath: input.managedContext }) })) ??
       undefined;
   } catch {
     return undefined;
@@ -248,4 +263,19 @@ function safeHandoffMaterializationErrorCode(error: unknown): string {
   return /^handoff_[a-z0-9_]+$/.test(code)
     ? code
     : "handoff_artifact_materialization_failed";
+}
+
+function assertTerminalScope(input: { readonly jobId?: string; readonly jobRootDir: string;
+  readonly workspacePath: string; readonly taskId: string; readonly durableHandoffRootDir?: string },
+  context: HostedDependencyRootPurposeContext): void {
+  const scope = assertManagedDependencyGitContext(context, input.workspacePath);
+  if (input.jobRootDir !== scope.jobRootDir || input.taskId !== scope.logicalTaskId ||
+      input.jobId !== undefined && input.jobId !== scope.logicalJobId ||
+      input.durableHandoffRootDir !== undefined && input.durableHandoffRootDir !== scope.durableHandoffRoot.canonicalPath)
+    throw new Error("handoff_protected_scope_mismatch");
+}
+
+function sanitizeManagedTerminalOutput(context: HostedDependencyRootPurposeContext): Readonly<{ removedPaths: readonly string[] }> {
+  assertManagedDependencyGitContext(context);
+  return Object.freeze({ removedPaths: Object.freeze([]) });
 }

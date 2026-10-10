@@ -1,5 +1,5 @@
+import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
 import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
-import { nativeWebFromSafeExecutionResult, nativeWebFromManagedError } from "./codex-goal-run-result";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
@@ -21,7 +21,7 @@ export type { CodexGoalExecutor, CodexGoalRunDeps } from "./job-storage/codex-go
 import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
 import { AgentRuntimeTool, ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import { assertChildGoalConfig } from "./child-execution-confinement";
-import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt, requireCodexWorkerReport, CodexWorkerReportValidationError } from "./codex-goal-report-schema";
+import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
@@ -45,7 +45,6 @@ import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
   ActiveAttemptInterruptMonitor,
-  actionForRuntimeState,
   AccessBoundary,
   InMemoryActiveAttemptRegistry,
   type NetworkAccessMode, type WorkerMode,
@@ -55,19 +54,8 @@ import {
   type TaskEffectMode,
   WorkerControlService,
   type RuntimeRecommendedAction,
-  type RuntimeResultEnvelopeInput,
-  type RuntimeResultStatus,
-  type WorkerReport,
 } from "@vioxen/subscription-runtime/worker-core";
-import {
-  codexRunnerExceptionFailure,
-  runtimeActionFromSafeExecutionResult,
-  runtimeBlockersFromSafeExecutionResult,
-  runtimeEvidenceFromSafeExecutionResult,
-  runtimeResultDetails,
-  runtimeStatusFromSafeExecutionResult,
-  workerReportFromSafeExecutionResult,
-} from "./codex-goal-run-result";
+import { codexRunnerExceptionFailure } from "./codex-goal-run-result";
 import type {
   CodexAppServerProcessFactory,
   CodexReasoningEffort,
@@ -101,20 +89,9 @@ import { createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, 
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
-  assertDirtyTerminalHandoffAvailable,
-  terminalCodexGoalHandoffEvidence,
-  terminalCodexGoalHandoffResultDetails,
-  tryMaterializeTerminalCodexGoalHandoff,
-} from "./codex-goal-terminal-handoff-materialization";
-import {
   codexGoalRuntimeEventObservability,
   createCodexGoalRuntimeEventWriter,
 } from "./codex-goal-runtime-events";
-import {
-  changedFilesFromSafeExecutionResult,
-  changedFilesFromWorkspace,
-  uniqueStrings,
-} from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
 import { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
 export { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
@@ -834,139 +811,5 @@ function createCodexGoalProgressHeartbeat(input: {
       if (timer) clearInterval(timer);
       await writes;
     },
-  };
-}
-
-async function codexRuntimeResultInput(input: {
-  readonly config: CodexGoalRunConfig;
-  readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
-  readonly executionGeneration: string;
-  readonly baseCommit?: string;
-  readonly deferHandoff?: boolean;
-  readonly publicationAuthority?: import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationAuthority;
-}): Promise<RuntimeResultEnvelopeInput> {
-  const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
-  const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
-  const changedFiles = uniqueStrings([
-    ...reportedChangedFiles,
-    ...workspace.changedFiles,
-  ]);
-  const ownedMimoCompleted = input.deferHandoff === true &&
-    input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && input.result.status === "completed";
-  const workerReport = ownedMimoCompleted
-    ? requireCodexWorkerReport("result" in input.result ? input.result.result?.structuredOutput : undefined)
-    : workerReportFromSafeExecutionResult(input.result);
-  const reason = "reason" in input.result ? input.result.reason : undefined;
-  const status = (ownedMimoCompleted ? workerReport?.outcome : undefined) ?? runtimeStatusFromSafeExecutionResult({
-    resultStatus: input.result.status,
-    changedFilesCount: changedFiles.length,
-  });
-  const handoff = input.deferHandoff || workspace.changedFiles.length === 0
-    ? null
-    : await tryMaterializeTerminalCodexGoalHandoff({
-        ...input.config,
-        ...(input.baseCommit === undefined
-          ? {}
-          : { expectedBaseCommit: input.baseCommit }),
-      }, input.publicationAuthority);
-  const artifacts = handoff?.artifacts ?? [];
-  if (!input.deferHandoff) assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
-  const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
-  const nativeWeb = nativeWebFromSafeExecutionResult(input.result);
-  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
-  const details = runtimeResultDetails({
-    ...("failureDetails" in input.result && input.result.failureDetails
-      ? { failureDetails: input.result.failureDetails }
-      : {}),
-    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
-    handoffDetails: terminalCodexGoalHandoffResultDetails(handoff),
-    ...nativeWebDetails,
-  });
-  return {
-    status,
-    provider: "codex",
-    runId: input.config.jobId ?? input.config.taskId,
-    taskId: input.config.taskId,
-    reason,
-    changedFiles: exactChangedFiles,
-    evidence: [
-      ...runtimeEvidenceFromSafeExecutionResult(input.result),
-      ...(workspace.warning ? [workspace.warning] : []),
-      ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
-      ...terminalCodexGoalHandoffEvidence(handoff),
-      ...(changedFiles.length > 0 && artifacts.length === 0
-        ? ["patch_preserve_unavailable"]
-        : []),
-    ],
-    blockers: runtimeBlockersFromSafeExecutionResult(input.result),
-    nextAction: ownedMimoCompleted ? actionForRuntimeState({ status, reason, changedFilesCount: changedFiles.length }) : runtimeActionFromSafeExecutionResult({
-      status,
-      resultStatus: input.result.status,
-      reason,
-      changedFilesCount: changedFiles.length,
-    }),
-    ...(workerReport === undefined ? {} : { workerReport }),
-    ...(artifacts.length === 0 ? {} : { artifacts }),
-    details: { ...(details ?? {}), executionGeneration: input.executionGeneration,
-      attemptNumber: String(input.result.attempts.at(-1)?.attemptNumber ?? 0) },
-  };
-}
-
-async function codexExceptionRuntimeResultInput(input: {
-  readonly config: CodexGoalRunConfig;
-  readonly error: unknown;
-  readonly executionGeneration: string;
-  readonly baseCommit?: string;
-  readonly deferHandoff?: boolean;
-  readonly publicationAuthority?: import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationAuthority;
-}): Promise<RuntimeResultEnvelopeInput> {
-  const failure = codexRunnerExceptionFailure(input.error);
-  const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
-  const changedFiles = workspace.changedFiles;
-  const handoff = input.deferHandoff || changedFiles.length === 0
-    ? null
-    : await tryMaterializeTerminalCodexGoalHandoff({
-        ...input.config,
-        ...(input.baseCommit === undefined
-          ? {}
-          : { expectedBaseCommit: input.baseCommit }),
-      }, input.publicationAuthority);
-  const artifacts = handoff?.artifacts ?? [];
-  if (!input.deferHandoff) assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
-  const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
-  const nativeWeb = nativeWebFromManagedError(input.error);
-  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
-  const details = runtimeResultDetails({
-    failureDetails: {
-      errorName: input.error instanceof Error ? input.error.name : "unknown",
-      ...(failure.errorCode === undefined
-        ? {}
-        : { errorCode: failure.errorCode }),
-    },
-    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
-    handoffDetails: terminalCodexGoalHandoffResultDetails(handoff),
-    ...nativeWebDetails,
-  });
-  return {
-    status: input.deferHandoff && input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && input.error instanceof CodexWorkerReportValidationError
-      ? "failed" : changedFiles.length > 0 ? "partial" : "failed",
-    provider: "codex",
-    runId: input.config.jobId ?? input.config.taskId,
-    taskId: input.config.taskId,
-    reason: failure.reason,
-    changedFiles: exactChangedFiles,
-    evidence: [
-      failure.evidence,
-      ...(workspace.warning ? [workspace.warning] : []),
-      ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
-      ...terminalCodexGoalHandoffEvidence(handoff),
-      ...(changedFiles.length > 0 && artifacts.length === 0
-        ? ["patch_preserve_unavailable"]
-        : []),
-    ],
-    blockers: [failure.reason],
-    nextAction: changedFiles.length > 0 ? "preserve_patch" : "recover",
-    ...(artifacts.length === 0 ? {} : { artifacts }),
-    details: { ...(details ?? {}), executionGeneration: input.executionGeneration },
   };
 }
