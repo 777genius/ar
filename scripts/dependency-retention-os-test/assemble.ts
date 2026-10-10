@@ -150,7 +150,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
     // Real reviewed launcher artifacts and their finite static import closure.
     // These bytes are never replaced by a TEST launcher or generated alias.
     for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs",
-      "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs"]) {
+      "managed-launcher/profiles.mjs", "managed-launcher/hosted-host-policy.mjs", "host-jobs/storage-policy.mjs"]) {
       directory(root + "/opt/subscription-runtime/" + dirname(path), 0o755);
       cpSync(source + "/host-integration/" + path, root + "/opt/subscription-runtime/" + path, { dereference: false });
       command("/usr/bin/chown", ["0:0", root + "/opt/subscription-runtime/" + path]);

@@ -66,6 +66,7 @@ export async function startProjectControllerControlledRun(input: {
   };
 }> {
   const capacityAccountId = stringValue(input.providerInput.account?.name);
+  const capacitySessionId = stringValue(input.providerInput.account?.capacitySessionId);
   const owner = projectControllerProcessOwner(input.deps.runtimeVersion);
   const result = await startControlledAgentRun({
     controllerJobId: input.controllerJobId,
@@ -85,6 +86,7 @@ export async function startProjectControllerControlledRun(input: {
     ...(capacityAccountId === undefined ? {} : {
       capacity: {
         accountId: capacityAccountId,
+        ...(capacitySessionId === undefined ? {} : { sessionId: capacitySessionId }),
         demand: projectControllerCapacityDemand(input.launch.config),
       },
     }),

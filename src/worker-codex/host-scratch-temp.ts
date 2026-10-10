@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { inspectVisibleScratchMount, type ScratchMount } from "./host-scratch-mount.js";
+import { annotateScratchCapacityFailure, annotateScratchMountInspectionFailure, ResearchLaunchCause, ScratchCapacityVolumeRole } from "./research-launch-diagnostics.js";
 
 const CONFIG_PATH = "/etc/subscription-runtime/scratch-temp.json";
 type Info = { uid: number; mode: number; dev: number; ino: number; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 type Mount = ScratchMount;
 type Policy = { root: string; uuid: string; legacyTemps: Record<string, unknown> };
+type ScratchFamily = "runtime-tmp" | "runtime-caches";
+type ScratchTargetCause = ResearchLaunchCause.ScratchTmp | ResearchLaunchCause.ScratchCache;
 export interface ScratchTempHost {
   lstat(path: string): Info;
   realpath(path: string): string;
@@ -19,6 +22,8 @@ export interface ScratchTempHost {
   removeLock(path: string): void;
   entries(path: string): readonly string[];
   bind(source: string, target: string): void;
+  makePrivate(target: string): void;
+  unmount(target: string): void;
   uid: number;
 }
 const systemHost: ScratchTempHost = {
@@ -32,8 +37,17 @@ const systemHost: ScratchTempHost = {
   removeLock: rmdirSync,
   entries: readdirSync,
   bind: (source, target) => { execFileSync("mount", ["--bind", source, target]); },
+  makePrivate: (target) => { execFileSync("mount", ["--make-private", target]); },
+  unmount: (target) => { execFileSync("umount", [target]); },
   uid: process.getuid?.() ?? 0,
 };
+function inspectMount(path: string, cause: ResearchLaunchCause.ScratchRoot | ScratchTargetCause, host: ScratchTempHost): Mount | undefined {
+  try { return host.inspectMount(path); }
+  catch (error) { throw annotateScratchMountInspectionFailure(error, cause); }
+}
+function targetCause(family: ScratchFamily): ScratchTargetCause {
+  return family === "runtime-tmp" ? ResearchLaunchCause.ScratchTmp : ResearchLaunchCause.ScratchCache;
+}
 function readPolicy(host: ScratchTempHost): Policy | undefined {
   const info = optionalInfo(CONFIG_PATH, host);
   if (!info) return undefined;
@@ -44,12 +58,16 @@ function readPolicy(host: ScratchTempHost): Policy | undefined {
   const { schemaVersion, root, uuid, legacyTemps = {} } = config as Record<string, unknown>;
   if (schemaVersion !== 1 || typeof root !== "string" || !isAbsolute(root) || root === "/" || resolve(root) !== root || typeof uuid !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(uuid) || !legacyTemps || typeof legacyTemps !== "object" || Array.isArray(legacyTemps)) throw new Error("Invalid scratch schema, root, UUID or legacy map");
   assertAncestors(root, host);
-  const mount = host.inspectMount(root);
+  const mount = inspectMount(root, ResearchLaunchCause.ScratchRoot, host);
   if (mount?.target !== root || mount.uuid?.toLowerCase() !== uuid.toLowerCase() || mount.fsroot !== "/") throw new Error("Scratch mount target, UUID or filesystem root mismatch");
   for (const volume of ["/", root]) {
     const { bavail, bsize } = host.statfs(volume);
     const available = bavail * bsize;
-    if (!Number.isFinite(available) || bavail < 0 || bsize <= 0 || available < 5 * 1024 ** 3) throw new Error(`Scratch launch requires at least 5 GiB available on ${volume}`);
+    if (!Number.isFinite(available) || bavail < 0 || bsize <= 0 || available < 5 * 1024 ** 3) {
+      throw annotateScratchCapacityFailure(new Error(`Scratch launch requires at least 5 GiB available on ${volume}`),
+        volume === "/" ? ScratchCapacityVolumeRole.RootControl : ScratchCapacityVolumeRole.ScratchPayload,
+        available, 5 * 1024 ** 3);
+    }
   }
   return { root, uuid, legacyTemps: legacyTemps as Record<string, unknown> };
 }
@@ -104,7 +122,7 @@ export function resolvePreparedHostScratchBinds(jobRootDir: string, codexHome: s
     [join(codexHome, "cache/remote_plugin_catalog"), "runtime-caches", join(codexHome, "cache/remote_plugin_catalog")],
   ] as const) {
     assertDirectory(dirname(target), host);
-    const prepared = preparedTarget(policy, target, sourceLayout(policy, hashInput, family, host), host);
+    const prepared = preparedTarget(policy, target, sourceLayout(policy, hashInput, family, host), targetCause(family), host);
     if (prepared === undefined) throw new Error("Selected scratch target is not prepared");
     if (prepared) {
       // A replaced source can leave a valid-looking old bind behind. Require the
@@ -124,9 +142,9 @@ export function resolvePreparedHostScratchCacheBinds(codexHome: string, host: Sc
   const binds: { source: string; target: string }[] = [];
   for (const suffix of ["plugins/cache", "cache/remote_plugin_catalog"]) {
     const target = join(codexHome, suffix);
-    if (!host.inspectMount(target)) continue;
+    if (!inspectMount(target, ResearchLaunchCause.ScratchCache, host)) continue;
     assertDirectory(dirname(target), host);
-    const prepared = preparedTarget(policy, target, sourceLayout(policy, target, "runtime-caches", host), host);
+    const prepared = preparedTarget(policy, target, sourceLayout(policy, target, "runtime-caches", host), ResearchLaunchCause.ScratchCache, host);
     if (!prepared) throw new Error("Observed scratch cache mount changed");
     assertPreparedSourceIdentity(prepared, host);
     binds.push(prepared);
@@ -140,10 +158,10 @@ function assertPreparedSourceIdentity(prepared: { source: string; target: string
 function matchesScratchMount(policy: Policy, target: string, fsroot: string, mount: Mount | undefined): boolean {
   return mount?.target === target && mount.uuid?.toLowerCase() === policy.uuid.toLowerCase() && mount.fsroot === fsroot;
 }
-function preparedTarget(policy: Policy, target: string, layout: { source: string; fsroot: string }, host: ScratchTempHost): { source: string; target: string } | null | undefined {
+function preparedTarget(policy: Policy, target: string, layout: { source: string; fsroot: string }, cause: ScratchTargetCause, host: ScratchTempHost): { source: string; target: string } | null | undefined {
   const info = optionalInfo(target, host);
   if (info) assertDirectory(target, host);
-  const mount = host.inspectMount(target);
+  const mount = inspectMount(target, cause, host);
   if (mount) {
     if (!matchesScratchMount(policy, target, layout.fsroot, mount)) throw new Error("Unknown mount at scratch target");
     assertPrivateSource(layout.source, host);
@@ -157,11 +175,11 @@ function preparedTarget(policy: Policy, target: string, layout: { source: string
   }
   return undefined;
 }
-function bindTarget(policy: Policy, target: string, family: string, host: ScratchTempHost, hashInput = target): void {
+function bindTarget(policy: Policy, target: string, family: ScratchFamily, host: ScratchTempHost, hashInput = target): void {
   assertCanonical(target);
   const layout = sourceLayout(policy, hashInput, family, host);
   const checkExisting = () => {
-    const prepared = preparedTarget(policy, target, layout, host);
+    const prepared = preparedTarget(policy, target, layout, targetCause(family), host);
     if (prepared !== undefined) {
       if (prepared) assertPreparedSourceIdentity(prepared, host);
       return true;
@@ -182,9 +200,28 @@ function bindTarget(policy: Policy, target: string, family: string, host: Scratc
     if (!optionalInfo(target, host)) host.mkdir(target, 0o701);
     assertDirectory(target, host);
     host.chmod(target, 0o701);
+    const sourceIdentity = host.lstat(layout.source);
     host.bind(layout.source, target);
-    if (!matchesScratchMount(policy, target, layout.fsroot, host.inspectMount(target))) throw new Error("Scratch bind mount verification failed");
-    assertPreparedSourceIdentity({ source: layout.source, target }, host);
+    // A throwing bind has an uncertain outcome and grants no rollback authority.
+    const created = inspectMount(target, targetCause(family), host);
+    const createdId = created?.mountId;
+    if (!matchesScratchMount(policy, target, layout.fsroot, created) || createdId === undefined || !Number.isSafeInteger(createdId) || createdId <= 0) throw new Error("Scratch bind mount verification failed");
+    const ownedMount = () => {
+      const current = inspectMount(target, targetCause(family), host);
+      const source = host.lstat(layout.source), mounted = host.lstat(target);
+      return matchesScratchMount(policy, target, layout.fsroot, current) && current?.mountId === createdId &&
+        source.dev === sourceIdentity.dev && source.ino === sourceIdentity.ino && mounted.dev === sourceIdentity.dev && mounted.ino === sourceIdentity.ino ? current : undefined;
+    };
+    try {
+      if (!ownedMount()) throw new Error("Prepared scratch source identity changed");
+      // Nonrecursive leaf isolation cannot undo copies from the initial shared-parent insertion.
+      host.makePrivate(target);
+      if (ownedMount()?.isPrivate !== true) throw new Error("Scratch private mount verification failed");
+    } catch (error) {
+      try { if (ownedMount()) host.unmount(target); }
+      catch (rollbackError) { throw new AggregateError([error, rollbackError], "Scratch bind preparation failed; rollback retained mount"); }
+      throw error;
+    }
   } finally { host.removeLock(lock); }
 }
 function optionalInfo(path: string, host: ScratchTempHost): Info | undefined {

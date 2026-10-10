@@ -12,7 +12,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   ConsumedOutputLedgerWriterPort,
@@ -54,6 +54,11 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     private readonly evidenceRoots?: readonly string[],
   ) {}
 
+  private get ordinaryPortableMode(): boolean {
+    return !localProjectControlEvidenceCustodySupported &&
+      this.custodyRoot === undefined && this.evidenceRoots === undefined;
+  }
+
   async assertCanRecord(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
@@ -66,7 +71,9 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     let existing: string;
     try {
-      existing = await readFile(ledgerPath, "utf8");
+      existing = this.ordinaryPortableMode ? await readFile(ledgerPath, "utf8")
+        : Buffer.from((await new LocalProjectControlEvidenceCustody()
+        .readImmutableFile(ledgerPath, 16 * 1024 * 1024)).bytes).toString("utf8");
     } catch (error) {
       if (isNodeErrorCode(error, "ENOENT")) return;
       throw error;
@@ -95,7 +102,7 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
       });
       await this.mutationLocks.assertHeld(mutationLease);
       await assertLedgerRootActive(input.ledgerRoot);
-      receipt = await this.recordLocked(input);
+      receipt = await this.recordLocked(input, mutationLease);
       await this.mutationLocks.assertHeld(mutationLease);
     } catch (error) {
       operationError = error;
@@ -114,7 +121,7 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
   private async recordLocked(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
-  }): Promise<TerminalOutputDecisionReceipt> {
+  }, mutationLease: ConsumedOutputLedgerMutationLease): Promise<TerminalOutputDecisionReceipt> {
     // Revalidate immediately before publication so a path swap after the
     // preflight cannot publish a ledger record bound to out-of-scope evidence.
     await assertTerminalEvidenceInCanonicalRoots(
@@ -122,31 +129,40 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
       this.evidenceRoots,
     );
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
-    await mkdir(dirname(ledgerPath), { recursive: true });
-    const contents = `${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`;
-    const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
-    let removeTemp = true;
+    // Custody-bound and Linux writes retain canonical root/items descriptors.
+    // Recheck the native guard after staging/fsync, at the publication boundary.
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "after_temp_fsync") return;
+      await assertTerminalEvidenceInCanonicalRoots(input.decision, this.evidenceRoots);
+      await assertLedgerRootActive(input.ledgerRoot);
+      await this.mutationLocks.assertHeld(mutationLease);
+    });
     try {
-      try {
-        await writeFile(tmpPath, contents, { flag: "wx" });
-      } catch (error) {
-        // A failed partial write belongs to us; an existing temporary file does not.
-        if (isNodeErrorCode(error, "EEXIST")) removeTemp = false;
-        throw error;
+      const existing = this.ordinaryPortableMode ? await readFile(ledgerPath, "utf8")
+        : Buffer.from((await custody.readImmutableFile(ledgerPath, 16 * 1024 * 1024)).bytes).toString("utf8");
+      if (!sameTerminalDecision(existing, input.decision)) {
+        throw new Error("consumed_output_ledger_terminal_conflict");
       }
-      try {
-        await link(tmpPath, ledgerPath);
+      return { ledgerPath, decision: input.decision, idempotentReplay: true };
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
+    }
+    const contents = Buffer.from(`${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`);
+    try {
+      if (this.ordinaryPortableMode) {
+        await publishExactBytes(ledgerPath, contents);
         return { ledgerPath, decision: input.decision, idempotentReplay: false };
-      } catch (error) {
-        if (!isNodeErrorCode(error, "EEXIST")) throw error;
-        const existing = await readFile(ledgerPath, "utf8");
-        if (!sameTerminalDecision(existing, input.decision)) {
-          throw new Error("consumed_output_ledger_terminal_conflict");
-        }
-        return { ledgerPath, decision: input.decision, idempotentReplay: true };
       }
-    } finally {
-      if (removeTemp) await unlink(tmpPath).catch(() => undefined);
+      const result = await custody.publishImmutableBytes({
+        root: input.ledgerRoot, directories: ["items"], fileName: basename(ledgerPath),
+        bytes: contents, expectedSha256: sha256Bytes(contents),
+      });
+      return { ledgerPath, decision: input.decision, idempotentReplay: !result.created };
+    } catch (error) {
+      if (error instanceof Error && ["evidence_custody_immutable_conflict", "integrated_output_ledger_preparation_conflict"].includes(error.message)) {
+        throw new Error("consumed_output_ledger_terminal_conflict", { cause: error });
+      }
+      throw error;
     }
   }
 }
