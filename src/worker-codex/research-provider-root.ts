@@ -1,3 +1,4 @@
+import { researchMimoCodingGitReadPaths } from "./research-mimo-coding-git";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { X509Certificate } from "node:crypto";
@@ -61,7 +62,7 @@ function observeRootFailure<T>(check: ResearchProviderRootCheck, operation: () =
 }
 
 export enum ResearchRootMountAccess { ReadOnly = "read-only", ReadWrite = "read-write" }
-export enum ResearchRootReadRole { Dns = "dns", ScratchPolicy = "scratch-policy", PublicText = "public-text", CaBundle = "ca-bundle", CodingPolicy = "coding-policy" }
+export enum ResearchRootReadRole { Dns = "dns", ScratchPolicy = "scratch-policy", PublicText = "public-text", CaBundle = "ca-bundle", CodingPolicy = "coding-policy", GitMetadata = "git-metadata" }
 const publicTextNames = ["passwd", "group", "nsswitch.conf", "hosts", "resolv.conf", "gai.conf", "host.conf"] as const;
 const resolverConfNames = ["resolv.conf", "stub-resolv.conf"] as const;
 const resolverSockets = [{ name: "io.systemd.Resolve", mode: 0o666 }, { name: "io.systemd.Resolve.Monitor", mode: 0o600 }] as const;
@@ -94,6 +95,7 @@ const nativeHost: ResearchProviderRootHost = {
         role === ResearchRootReadRole.PublicText ? !publicTextNames.some(name => path === "/etc/" + name || publicSnapshotPath(path, "public-" + name + ".snapshot")) :
         role === ResearchRootReadRole.CaBundle ? path !== caPath && !publicSnapshotPath(path, "public-ca-certificates.crt.snapshot") :
         role === ResearchRootReadRole.CodingPolicy ? !researchMimoCodingPublicMaterials.some(file => publicSnapshotPath(path, file.name)) :
+        role === ResearchRootReadRole.GitMetadata ? !/^\/srv\/workers\/mimo-projects\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+\/(?:workspaces\/[a-zA-Z0-9_-]+\/\.git|source\/\.git\/worktrees\/[a-zA-Z0-9_-]+\/(?:commondir|gitdir))$/.test(path) :
         role !== ResearchRootReadRole.Dns) researchInvalid();
     const maxBytes = role === ResearchRootReadRole.ScratchPolicy ? 8 * 1024 * 1024 : role === ResearchRootReadRole.CaBundle ? 1024 * 1024 : 65536;
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -364,6 +366,19 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
   const { jobRootDir: job, workspacePath: workspace, authRootDir } = spec.request;
   const pins = join(directory, "pins"), jobBind = coding ? undefined : add(join(pins, "job"), job, ResearchRootMountAccess.ReadWrite);
   const workspaceBind = add(join(pins, "workspace"), workspace, ResearchRootMountAccess.ReadWrite);
+  const codingGitPaths = coding ? researchMimoCodingGitReadPaths(workspace, {
+    exists: path => { try { host.info(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } },
+    read: path => {
+      const info = observe(path);
+      if (!info.isFile() || info.size > 65536) researchInvalid();
+      const bytes = host.regular(path, info, ResearchRootReadRole.GitMetadata);
+      observations.push(["coding-git-metadata", path, researchHash(bytes)]);
+      return bytes;
+    },
+    isFile: path => { try { return host.info(path).isFile(); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } },
+    isDirectory: path => observe(path).isDirectory(),
+  }) : [];
+  for (const path of codingGitPaths) add(path, path, ResearchRootMountAccess.ReadOnly);
   if (jobBind && (jobBind.identity[0] !== spec.jobDirectory.device || jobBind.identity[1] !== spec.jobDirectory.inode) ||
       workspaceBind.identity[0] !== spec.workspaceDirectory.device || workspaceBind.identity[1] !== spec.workspaceDirectory.inode) researchInvalid();
   if (!home.startsWith(join(job, "home") + "/")) researchInvalid();
@@ -459,7 +474,7 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     return false;
   });
   if (coding) assertResearchMimoCodingRootBindings({ workspace, workspaceSource: join(pins, "workspace"), bindings: unique,
-    readonlyTargets: ["/usr", ...aliases.map(([path]) => path), "/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/hosts",
+    readonlyTargets: [...codingGitPaths, "/usr", ...aliases.map(([path]) => path), "/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/hosts",
       "/etc/gai.conf", "/etc/host.conf", "/etc/resolv.conf", caPath, ...resolverConfNames.map(name => join("/run/systemd/resolve", name)),
       ...researchMimoCodingBootstrapPaths(spec.runtimeDirectory), process.execPath, spec.request.codexBinaryPath, ...(executableClosure?.paths ?? [])] });
   return { omittedCaches, bindings: unique, aliases: layout, fileLinks, observations, files };

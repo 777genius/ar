@@ -1,5 +1,5 @@
 import { mkdtemp } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
 import type { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
@@ -36,7 +36,7 @@ function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string): st
     'trace_exporter = "none"', 'log_user_prompt = false',
     '[shell_environment_policy]', 'inherit = "none"', 'include_only = ["PATH", "HOME", "CI", "TMPDIR", "CODEX_HOME"]',
     // include_only filters inherited values; inherit=none needs explicit public settings for native sandbox discovery.
-    `set = { PATH = "/usr/bin:/bin", HOME = ${JSON.stringify(hostedMimoCodingGuestHome)}, CI = "1", TMPDIR = "/tmp", CODEX_HOME = ${JSON.stringify(hostedMimoCodingGuestCodexHome)} }`,
+    `set = { PATH = ${JSON.stringify(`${dirname(process.execPath)}:/usr/bin:/bin`)}, HOME = ${JSON.stringify(hostedMimoCodingGuestHome)}, CI = "1", TMPDIR = "/tmp", CODEX_HOME = ${JSON.stringify(hostedMimoCodingGuestCodexHome)} }`,
     codexModelBackendModelProvidersConfigToml({ backend: CodexModelBackend.XiaomiMimoTokenPlan, baseUrl,
       envKeyName: codexMimoApiKeyEnvVarDefault }),
     "request_max_retries = 0", "stream_max_retries = 0", "supports_websockets = false",

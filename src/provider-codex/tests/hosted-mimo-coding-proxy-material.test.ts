@@ -86,7 +86,7 @@ it("sets the fixed guest shell environment without inheriting ambient paths or c
     expect(policy).toEqual([
       'inherit = "none"',
       'include_only = ["PATH", "HOME", "CI", "TMPDIR", "CODEX_HOME"]',
-      'set = { PATH = "/usr/bin:/bin", HOME = "/home/coding", CI = "1", TMPDIR = "/tmp", CODEX_HOME = "/home/coding/.codex" }',
+      `set = { PATH = ${JSON.stringify(`${process.execPath.slice(0, process.execPath.lastIndexOf("/"))}:/usr/bin:/bin`)}, HOME = "/home/coding", CI = "1", TMPDIR = "/tmp", CODEX_HOME = "/home/coding/.codex" }`,
     ]);
     expect(bootstrap.configToml).not.toContain("TEST-ambient-value-must-not-inherit");
     expect(policy.join("\n")).not.toContain(codexMimoApiKeyEnvVarDefault);
