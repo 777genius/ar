@@ -1,9 +1,10 @@
-import { computeSessionGenerationHash } from "@vioxen/subscription-runtime/core";
+import { readTaskGoalObjective, readTaskManagedRunId } from "./codex-task-metadata";
+import { snapshotSessionUpdate } from "./codex-session-update-snapshot";
+import { SessionExecutionUseDisposition } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { join } from "node:path";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import {
-  AgentRuntimeExecutionMode,
   assertProviderTaskSystemPrompt,
   type AgentDriver,
   type AgentCapabilities,
@@ -13,7 +14,6 @@ import {
   type ProviderTask,
   type ProviderTaskResult,
   type RedactorPort,
-  type RuntimeWarning,
   type SessionArtifact,
   type SessionExecutionUse,
   type WorkspaceHandle,
@@ -106,6 +106,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
   readonly #pendingReleases = new Map<CodexMaterializedSession, Promise<void>>();
   readonly #materializations = new Set<Promise<CodexMaterializedSession>>();
   readonly #activeRuns = new Set<Promise<ProviderTaskResult>>();
+  readonly #activeManagedResumes = new Set<string>();
+  readonly #managedRunFinalizations = new Map<string,{readonly session:CodexMaterializedSession;result?:Extract<ProviderTaskResult,{status:"failed"}>;pending?:Promise<Extract<ProviderTaskResult,{status:"failed"}>>;completion?:Promise<void>}>();
+  readonly #terminalSessions = new Map<SessionExecutionUse,{readonly session:CodexMaterializedSession;readonly previous:SessionArtifact;readonly redactor:RedactorPort;readonly original:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>;result?:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>;pending?:Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>>;released?:true}>();
   #disposed = false;
   #sessionExecutionOutcome: {readonly use:SessionExecutionUse;readonly needsWriteback:boolean}|undefined;
   #resourcesDisposed = false;
@@ -244,7 +247,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     ]);
     let textDeltaRedactor: ReturnType<typeof createCodexTextDeltaRedactor> | undefined;
     try {
-      if (this.#executionLifetime && this.#disposed) throw new Error("codex_driver_disposed");
+      if (this.#disposed) throw new Error("codex_driver_disposed");
       if (input.sessionExecutionUse && input.task.controls?.model !== undefined && input.task.controls.model !== this.#model) throw new Error("codex_managed_model_mismatch");
       this.#executionLifetime?.enterMaterialization(outputAbortSignal);
       if (input.logicalThread && this.#executionLifetime) throw new Error("child_continuation_denied");
@@ -358,31 +361,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
           warnings: result.warnings,
         };
       }
-      const snapshotPending: Promise<Awaited<ReturnType<typeof snapshotSessionUpdate>>> = input.session
-        ? snapshotSessionUpdate({ materialized, previousSession: input.session, redactor: input.redactor,
-            ...(this.#executionLifetime ? { executionLifetime: this.#executionLifetime } : {}) })
-        : Promise.resolve({ warnings: [] as const });
-      const snapshot = this.#executionLifetime
-        ? await this.#executionLifetime.wait(snapshotPending, outputAbortSignal)
-        : await snapshotPending;
-
-      this.#executionLifetime?.assertActive(outputAbortSignal);
-      if (materialized.sessionExecutionUse && input.session) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,
-        needsWriteback:!!snapshot.sessionUpdate && computeSessionGenerationHash({artifact:snapshot.sessionUpdate}) !== computeSessionGenerationHash({artifact:input.session})};
-      return {
-        status: "completed",
-        outputText: result.outputText,
-        structuredOutput: result.structuredOutput,
-        ...(snapshot.sessionUpdate
-          ? { sessionUpdate: snapshot.sessionUpdate }
-          : {}),
-        telemetry: {
-          durationMs: Date.now() - startedAt,
-          finishReason: "completed",
-          ...(result.usage === undefined ? {} : { usage: result.usage }),
-        },
-        warnings: [...result.warnings, ...snapshot.warnings],
-      };
+      return await this.#finishTaskSession(materialized,input.session,input.redactor,{
+        status:"completed",outputText:result.outputText,structuredOutput:result.structuredOutput,
+        telemetry:{durationMs:Date.now()-startedAt,finishReason:"completed",...(result.usage === undefined ? {} : {usage:result.usage})},warnings:result.warnings,
+      },outputAbortSignal);
     } catch (error) {
       textDeltaRedactor?.discard();
       const outputFailure =
@@ -390,21 +372,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
           ? outputAbortController.signal.reason
           : error;
       const failure = codexExecutionFailure(outputFailure, input.redactor);
-      return {
-        ...failure,
-        telemetry: {
-          durationMs: Date.now() - startedAt,
-          finishReason: finishReasonForFailure(failure.failure.code),
-          ...(usageFromError(error)
-            ? { usage: usageFromError(error)! }
-            : {}),
-        },
-      };
+      const result:Extract<ProviderTaskResult,{status:"failed"}> = {...failure,telemetry:{durationMs:Date.now()-startedAt,
+        finishReason:finishReasonForFailure(failure.failure.code),...(usageFromError(error) ? {usage:usageFromError(error)!} : {})}};
+      return materialized?.sessionExecutionUse ? await this.#finishTaskSession(materialized,input.session,input.redactor,result) : result;
     } finally {
       if (materialized) {
         if (materialized.sessionExecutionUse) {
-          if (this.#sessionExecutionOutcome?.use !== materialized.sessionExecutionUse) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,needsWriteback:false};
-          await materialized.release();
+          if (!this.#terminalSessions.has(materialized.sessionExecutionUse) && this.#sessionExecutionOutcome?.use === materialized.sessionExecutionUse) await materialized.release();
         }
         else if (this.#executionLifetime) {
           if (engineEntered) this.#retainedSessions.add(materialized);
@@ -543,6 +517,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
   }): Promise<ProviderTaskResult> {
+    if (this.#disposed || this.#activeManagedResumes.has(input.runId) || this.#managedRunFinalizations.has(input.runId)) throw new Error("codex_managed_run_finalization_pending");
+    this.#activeManagedResumes.add(input.runId);
+    try { return await this.#resumeManagedRunInvocation(input); }
+    finally { this.#activeManagedResumes.delete(input.runId); }
+  }
+
+  async #resumeManagedRunInvocation(input:Parameters<CodexJsonAgentDriver["resumeManagedRun"]>[0]):Promise<ProviderTaskResult> {
     this.#options.assertProviderAdmission?.();
     if (this.#executionLifetime) throw new Error("child_continuation_denied");
     if (!this.#engine.resume) {
@@ -618,51 +599,111 @@ export class CodexJsonAgentDriver implements AgentDriver {
         };
       }
 
-      this.#managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
-      const snapshot = input.session
-        ? await snapshotSessionUpdate({
-            materialized,
-            previousSession: input.session,
-            redactor: input.redactor,
-          })
-        : { warnings: [] as const };
-      if (materialized.sessionExecutionUse && input.session) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,
-        needsWriteback:!!snapshot.sessionUpdate && computeSessionGenerationHash({artifact:snapshot.sessionUpdate}) !== computeSessionGenerationHash({artifact:input.session})};
-      return {
-        status: "completed",
-        outputText: result.outputText,
-        structuredOutput: result.structuredOutput,
-        ...(snapshot.sessionUpdate
-          ? { sessionUpdate: snapshot.sessionUpdate }
-          : {}),
-        telemetry: {
-          durationMs: Date.now() - startedAt,
-          finishReason: "completed",
-          ...(result.usage === undefined ? {} : { usage: result.usage }),
-        },
-        warnings: [...result.warnings, ...snapshot.warnings],
-      };
+      const terminal = this.#finishTaskSession(materialized,input.session,input.redactor,{
+        status:"completed",outputText:result.outputText,structuredOutput:result.structuredOutput,
+        telemetry:{durationMs:Date.now()-startedAt,finishReason:"completed",...(result.usage === undefined ? {} : {usage:result.usage})},warnings:result.warnings,
+      });
+      this.#managedRunSessions.delete(input.runId); return await terminal;
     } catch (error) {
-      this.#managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
-      const failure = codexExecutionFailure(error, input.redactor);
-      return {
-        ...failure,
-        telemetry: {
-          durationMs: Date.now() - startedAt,
-          finishReason: finishReasonForFailure(failure.failure.code),
-          ...(usageFromError(error)
-            ? { usage: usageFromError(error)! }
-            : {}),
-        },
-      };
+      const failure = codexExecutionFailure(error,input.redactor);
+      const result:Extract<ProviderTaskResult,{status:"failed"}> = {...failure,telemetry:{durationMs:Date.now()-startedAt,
+        finishReason:finishReasonForFailure(failure.failure.code),...(usageFromError(error) ? {usage:usageFromError(error)!} : {})}};
+      const terminal = materialized.sessionExecutionUse ? this.#finishTaskSession(materialized,input.session,input.redactor,result) : Promise.resolve(result);
+      this.#managedRunSessions.delete(input.runId); return await terminal;
     } finally {
       if (ownsMaterialized) {
-        if (materialized.sessionExecutionUse && this.#sessionExecutionOutcome?.use !== materialized.sessionExecutionUse) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,needsWriteback:false};
-        await materialized.release();
+        if (!materialized.sessionExecutionUse) await materialized.release();
       }
     }
+  }
+
+  async #finishTaskSession(session:CodexMaterializedSession,previous:SessionArtifact|null,redactor:RedactorPort,result:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>,abortSignal?:AbortSignal):Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>> {
+    const use = session.sessionExecutionUse;
+    if (!use) {
+      const pending:Promise<Awaited<ReturnType<typeof snapshotSessionUpdate>>> = previous ? snapshotSessionUpdate({materialized:session,previousSession:previous,redactor,...(this.#executionLifetime ? {executionLifetime:this.#executionLifetime} : {})}) : Promise.resolve({captured:false,warnings:[]});
+      const snapshot = this.#executionLifetime ? await this.#executionLifetime.wait(pending,abortSignal) : await pending;
+      this.#executionLifetime?.assertActive(abortSignal);
+      return {...result,...("sessionUpdate" in snapshot && snapshot.sessionUpdate ? {sessionUpdate:snapshot.sessionUpdate} : {}),warnings:[...result.warnings,...snapshot.warnings]};
+    }
+    if (!previous || this.#terminalSessions.has(use)) throw new Error("codex_terminal_session_changed");
+    const original = Object.freeze({...result,...(result.status === "failed" ? {failure:Object.freeze({...result.failure,...(result.failure.details ? {details:Object.freeze({...result.failure.details})} : {})})} : {}),warnings:Object.freeze(result.warnings.map(warning => Object.freeze({...warning})))});
+    this.#terminalSessions.set(use,{session,previous,redactor,original});
+    try { return await this.finalizeTaskSession(use); }
+    catch { return {...original,warnings:[...original.warnings,{code:"codex_session_finalization_pending",safeMessage:"Original task session finalization remains pending."}]}; }
+  }
+
+  async finalizeTaskSession(use:SessionExecutionUse):Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>> {
+    const held = this.#terminalSessions.get(use);
+    if (!held || held.session.sessionExecutionUse !== use) throw new Error("codex_terminal_session_missing");
+    if (held.pending) return await held.pending;
+    const pending = (async () => {
+      if (!held.result) {
+        const snapshot = await snapshotSessionUpdate({materialized:held.session,previousSession:held.previous,redactor:held.redactor});
+        if (!snapshot.captured) throw new Error("codex_session_finalization_unresolved");
+        held.result = Object.freeze({...held.original,...(snapshot.sessionUpdate ? {sessionUpdate:snapshot.sessionUpdate} : {}),warnings:[...held.original.warnings,...snapshot.warnings]});
+        this.#sessionExecutionOutcome = {use,needsWriteback:!!snapshot.sessionUpdate};
+      }
+      if (!held.released) { await held.session.release(); held.released = true; }
+      if (this.#terminalSessions.get(use) !== held) throw new Error("codex_terminal_session_changed");
+      return held.result;
+    })();
+    held.pending = pending;
+    try { return await pending; } finally { if (held.pending === pending) delete held.pending; }
+  }
+
+  async retireTaskSession(use:SessionExecutionUse):Promise<void> {
+    const held = this.#terminalSessions.get(use);
+    if (!held?.result || !held.released || held.pending) throw new Error("codex_session_finalization_pending");
+    if (await use.complete() !== SessionExecutionUseDisposition.Discharged) throw new Error("codex_session_finalization_pending");
+    if (this.#terminalSessions.get(use) !== held) throw new Error("codex_terminal_session_changed");
+    this.#terminalSessions.delete(use);
+  }
+
+  retainedManagedRunIds():readonly string[] {
+    if (this.#activeRuns.size || this.#activeManagedResumes.size) throw new Error("codex_driver_execution_pending");
+    return [...new Set([...this.#managedRunSessions].filter(([,session]) => session.sessionExecutionUse).map(([runId]) => runId).concat([...this.#managedRunFinalizations.keys()]))];
+  }
+
+  /** Ends only an original private retained entry; never enters the execution engine. */
+  async cancelManagedRun(input:{readonly runId:string;readonly session:SessionArtifact|null;readonly redactor:RedactorPort}):Promise<Extract<ProviderTaskResult,{status:"failed"}>> {
+    const {runId,session,redactor} = input;
+    if (this.#activeManagedResumes.has(runId) || this.#activeRuns.size) throw new Error("codex_driver_execution_pending");
+    let held = this.#managedRunFinalizations.get(runId);
+    if (!held) {
+      const materialized = this.#managedRunSessions.get(runId);
+      if (!materialized?.sessionExecutionUse) throw new Error("codex_managed_run_session_missing");
+      held = {session:materialized}; this.#managedRunFinalizations.set(runId,held); this.#managedRunSessions.delete(runId);
+    }
+    if (held.result) return held.result;
+    if (held.pending) return await held.pending;
+    const original = held;
+    const pending = (async () => {
+      const materialized = original.session;
+      if (materialized.sessionExecutionUse && (!session || materialized.sessionHash !== sessionArtifactHash(session))) throw new Error("codex_managed_run_session_mismatch");
+      const snapshot = session ? await snapshotSessionUpdate({materialized,previousSession:session,redactor}) : {captured:false,warnings:[]};
+      if (materialized.sessionExecutionUse && !snapshot.captured) throw new Error("codex_session_finalization_unresolved");
+      if (materialized.sessionExecutionUse) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,needsWriteback:!!snapshot.sessionUpdate};
+      await materialized.release();
+      if (this.#managedRunFinalizations.get(runId) !== original) throw new Error("codex_managed_run_finalization_changed");
+      const result:Extract<ProviderTaskResult,{status:"failed"}> = {status:"failed",failure:{code:"task_cancelled",retryable:false,reconnectRequired:false,safeMessage:"Managed Codex run was cancelled."},
+        ...("sessionUpdate" in snapshot && snapshot.sessionUpdate ? {sessionUpdate:snapshot.sessionUpdate} : {}),warnings:snapshot.warnings};
+      original.result = result; return result;
+    })();
+    original.pending = pending;
+    try { return await pending; } finally { if (original.pending === pending) delete original.pending; }
+  }
+
+  async completeManagedRunCancellation(runId:string):Promise<void> {
+    const held = this.#managedRunFinalizations.get(runId);
+    if (!held?.result || held.pending) throw new Error("codex_managed_run_finalization_pending");
+    if (held.completion) return await held.completion;
+    const pending = (async () => { await held.session.sessionExecutionUse?.complete();
+      if (this.#managedRunFinalizations.get(runId) !== held) throw new Error("codex_managed_run_finalization_changed");
+      this.#managedRunFinalizations.delete(runId); })();
+    held.completion = pending;
+    try { await pending; } finally { if (held.completion === pending) delete held.completion; }
   }
 
   sessionExecutionNeedsWriteback(use:SessionExecutionUse):boolean|undefined {
@@ -839,6 +880,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   }
 
   async #disposeResources(): Promise<void> {
+    if (this.#terminalSessions.size || this.#managedRunFinalizations.size || [...this.#managedRunSessions.values(),...this.#retainedSessions].some(session => session.sessionExecutionUse)) throw new Error("codex_driver_owned_finalization_pending");
     if (!this.#executionLifetime) return await this.#disposeOrdinary();
     // The engine owns startup flights and failed process cleanup. Never erase
     // their configuration/home before its disposal succeeds.
@@ -856,8 +898,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
       this.#retainedSessions.delete(session);
       this.#unusedSessions.delete(session);
       for (const [key, value] of this.#managedRunSessions) if (value === session) this.#managedRunSessions.delete(key);
-      if (session.sessionExecutionUse) this.#sessionExecutionOutcome = {use:session.sessionExecutionUse,needsWriteback:false};
-      await session.sessionExecutionUse?.complete();
+
     }
     await this.#sessionMaterializer.dispose?.();
     this.#resourcesDisposed = true;
@@ -868,7 +909,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     this.#managedRunSessions.clear();
     const results = await Promise.allSettled([
       ...managedSessions.map((session) =>
-        Promise.resolve().then(async () => { await session.release(); if (session.sessionExecutionUse) this.#sessionExecutionOutcome = {use:session.sessionExecutionUse,needsWriteback:false}; await session.sessionExecutionUse?.complete(); }),
+        Promise.resolve().then(() => session.release()),
       ),
       Promise.resolve().then(() => this.#engine.dispose?.()),
       Promise.resolve().then(() => this.#sessionMaterializer.dispose?.()),
@@ -912,64 +953,7 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
   };
 }
 
-async function snapshotSessionUpdate(input: {
-  readonly executionLifetime?: AppServerExecutionLifetime;
-  readonly materialized: Awaited<
-    ReturnType<CodexSessionMaterializer["materialize"]>
-  >;
-  readonly previousSession: SessionArtifact;
-  readonly redactor: RedactorPort;
-}): Promise<{
-  readonly sessionUpdate?: SessionArtifact;
-  readonly warnings: readonly RuntimeWarning[];
-}> {
-  if (!input.materialized.snapshotSession) {
-    return { warnings: [] };
-  }
 
-  try {
-    input.executionLifetime?.assertActive();
-    const snapshot = await input.materialized.snapshotSession();
-    input.executionLifetime?.assertActive();
-    if (!snapshot) {
-      return { warnings: [] };
-    }
-    input.redactor.registerSecret(snapshot.bytes, "codex-session-snapshot");
-    if (
-      sessionArtifactHash(snapshot) === sessionArtifactHash(input.previousSession)
-    ) {
-      return { warnings: [] };
-    }
-    return { sessionUpdate: snapshot, warnings: [] };
-  } catch {
-    return {
-      warnings: [
-        {
-          code: "codex_session_snapshot_failed",
-          safeMessage:
-            "Codex session snapshot could not be captured after task execution.",
-        },
-      ],
-    };
-  }
-}
-
-function readTaskGoalObjective(task: ProviderTask): string | null {
-  if (task.execution?.mode === AgentRuntimeExecutionMode.Goal) {
-    return task.execution.completionCondition;
-  }
-  const value = task.metadata?.codexGoalObjective;
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-function readTaskManagedRunId(task: ProviderTask): string | null {
-  const value = task.metadata?.codexManagedRunId ?? task.metadata?.runId;
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
 
 function finishReasonForFailure(
   code: ProviderFailure["code"],

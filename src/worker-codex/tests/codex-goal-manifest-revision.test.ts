@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -33,6 +33,18 @@ async function fixture() {
 }
 
 describe("controller manifest revision serialization", () => {
+  // RED: an authority-only existing-root lock recreates a lost registry and
+  // runs its effect, permitting fallback publication on a replacement root.
+  it("does not recreate a lost registry in the trusted existing-root mode", async () => {
+    const input = await fixture();
+    await rm(input.registryRootDir, { recursive: true });
+    let invoked = false;
+    await expect(withCodexGoalRegistryMutation({ registryRootDir: input.registryRootDir,
+      requireExistingRegistryRoot: true, effect: async () => { invoked = true; },
+    })).rejects.toMatchObject({ code: "ENOENT" });
+    expect(invoked).toBe(false);
+    await expect(lstat(input.registryRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("rejects exact byte revision drift before invoking a writer", async () => {
     const input = await fixture();
     const expectedManifestSha256 = await codexGoalManifestRevision(input.manifestPath);

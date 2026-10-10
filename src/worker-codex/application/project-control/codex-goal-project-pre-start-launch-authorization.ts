@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import {
   ProjectAuthorityMode, initializeProjectAuthorityPreState,
@@ -8,6 +9,7 @@ import {
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import {
   assertProjectPreStartAdmissionLaunchBinding,
+  readLaunchAuthorizedWorkerLaunchAttestation,
   type ProjectPreStartAdmissionLaunchWorkspaceMode,
 } from "./codex-goal-project-pre-start-admission";
 import {
@@ -109,6 +111,41 @@ async function validatedReceipt(input: {
   return await readReceipt(input.manifest.projectPreStartAdmission!.receiptPath);
 }
 
+/** Trusted registered launch adapters consume a current authorized receipt;
+ * they cannot replace admission by supplying a receipt-shaped object. */
+export async function readAuthorizedProjectPreStartLaunchReceipt(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly scope: ProjectAccessScope;
+}): Promise<{ readonly receipt: JsonObject; readonly receiptSha256: string }> {
+  if (!input.manifest.projectPreStartAdmission) {
+    throw new Error("project_control_pre_start_admission_required");
+  }
+  const attestation = await readLaunchAuthorizedWorkerLaunchAttestation(input);
+  const snapshot = await readCurrentAuthorizedProjectPreStartLaunchReceipt(input.manifest);
+  if (snapshot.receiptSha256 !== attestation.receiptSha256) {
+    throw new Error("project_control_pre_start_attestation_changed_during_read");
+  }
+  return snapshot;
+}
+
+/** After launch the workspace is expected to change. This narrow lifetime
+ * reader preserves the immutable manifest/authorization binding without
+ * pretending that the original clean-workspace admission can be rerun. Trusted
+ * callers also retain/compare the full receipt, contract, scope and directory. */
+export async function readCurrentAuthorizedProjectPreStartLaunchReceipt(manifest: CodexGoalJobManifest): Promise<{ readonly receipt: JsonObject; readonly receiptSha256: string }> {
+  const descriptor = manifest.projectPreStartAdmission;
+  if (!descriptor) throw new Error("project_control_pre_start_admission_required");
+  const snapshot = await readReceiptSnapshot(descriptor.receiptPath), { receipt } = snapshot;
+  if (receipt.status !== "launch_authorized" ||
+      receipt.jobId !== manifest.jobId ||
+      receipt.manifestSha256 !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex") ||
+      !Number.isSafeInteger(receipt.launchAuthorizationCount) ||
+      (receipt.launchAuthorizationCount as number) < 1) {
+    throw new Error("project_control_pre_start_launch_authorization_required");
+  }
+  return snapshot;
+}
+
 export async function rollbackProjectPreStartAdmissionLaunch(
   authorization: ProjectPreStartAdmissionLaunchAuthorization,
 ): Promise<void> {
@@ -154,6 +191,9 @@ export async function withProjectPreStartAdmissionLaunchAuthorization<T>(
 }
 
 async function readReceipt(path: string): Promise<JsonObject> {
+  return (await readReceiptSnapshot(path)).receipt;
+}
+async function readReceiptSnapshot(path: string): Promise<{ readonly receipt: JsonObject; readonly receiptSha256: string }> {
   try {
     const body = await readFile(path);
     if (body.byteLength > MAX_RECEIPT_BYTES) {
@@ -163,7 +203,7 @@ async function readReceipt(path: string): Promise<JsonObject> {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       throw new Error("not_object");
     }
-    return value as JsonObject;
+    return { receipt: value as JsonObject, receiptSha256: createHash("sha256").update(body).digest("hex") };
   } catch {
     throw new Error("project_control_pre_start_receipt_invalid");
   }

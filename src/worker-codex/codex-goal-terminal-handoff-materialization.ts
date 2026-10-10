@@ -44,6 +44,7 @@ export function assertDirtyTerminalHandoffAvailable(
 export async function materializeReconciledTerminalCodexGoalHandoff(input: {
   readonly config: Parameters<typeof tryMaterializeTerminalCodexGoalHandoff>[0];
   readonly changedFiles: readonly string[];
+  readonly publicationAuthority?: TerminalHandoffPublicationAuthority;
 }): Promise<{
   readonly handoff: TerminalCodexGoalHandoffMaterialization | null;
   readonly artifacts: readonly RuntimeResultArtifact[];
@@ -61,7 +62,7 @@ export async function materializeReconciledTerminalCodexGoalHandoff(input: {
         ...(currentHeadCommit === undefined
           ? {}
           : { expectedHeadCommit: currentHeadCommit }),
-      });
+      }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(input.changedFiles, handoff, artifacts);
   return {
@@ -72,6 +73,15 @@ export async function materializeReconciledTerminalCodexGoalHandoff(input: {
   };
 }
 
+/** Trusted runtime adapter dependencies; never part of serialized run config. */
+export type TerminalHandoffPublicationDependencies = {
+  readonly assertTerminalHandoffPublicationAuthorized?: () => Promise<void>;
+  readonly withTerminalHandoffPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
+};
+export type TerminalHandoffPublicationAuthority = {
+  readonly assertPublicationAuthorized: () => Promise<void>;
+  readonly withPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
+};
 export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   readonly managedContext?: HostedDependencyRootPurposeContext;
   readonly jobId?: string;
@@ -81,9 +91,11 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   readonly workspacePath: string;
   readonly expectedBaseCommit?: string;
   readonly expectedHeadCommit?: string;
-}): Promise<TerminalCodexGoalHandoffMaterialization> {
+}, trusted?: TerminalHandoffPublicationAuthority): Promise<TerminalCodexGoalHandoffMaterialization> {
+  const effect = async (): Promise<TerminalCodexGoalHandoffMaterialization> => {
   let managedContext: HostedDependencyRootPurposeContext | undefined;
   try {
+    await trusted?.assertPublicationAuthorized();
     managedContext = resolveManagedDependencyGitContext(input.workspacePath, input.managedContext);
     if (managedContext !== undefined) assertTerminalScope(input, managedContext);
     // Dependency bootstrap may create worktree-local links to a shared cache.
@@ -106,6 +118,7 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
         input.durableHandoffRootDir,
         input.jobRootDir,
       ),
+      ...(trusted ? { publicationAuthority: trusted } : {}),
       ...(expectedBaseCommit === undefined
         ? {}
         : { expectedBaseCommit }),
@@ -147,6 +160,8 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
         : {}),
     };
   }
+  };
+  return trusted?.withPublicationAuthority ? await trusted.withPublicationAuthority(effect) : await effect();
 }
 
 async function recordedRunStartBaseCommit(
