@@ -57,6 +57,7 @@ Exact bounded admin-bootstrap invocation, using the qualified Node and exact req
   /usr/bin/timeout --foreground --kill-after=5s 180s /QUALIFIED/NODE /QUALIFIED/CANDIDATE/host-integration/runtime-admission/linked-native-mimo-operator.mts start /ROOT-PRIVATE/TEST/request.json REQUEST_SHA256
 Use the same paths, operation UUID and digest with status or stop. A repeated start only inspects the existing record; it never resubmits.
 No nohup/disown/setsid/background shell or direct harness fallback. Long work runs only in the owned fixed service (60-second start-job deadline including queueing, 30-second activation, 45-minute active-runtime limit, 120-second stop; no restart).
+The queue deadline uses one exclusive root-owned unit-specific /run/systemd/system/UNIT.service.d/00-queue-deadline.conf, loaded before submission is queued; no daemon-reload or global policy change. All attempts and that drop-in are retained.
 
 Outer service completion/stop does not prove detached native cleanup. The harness report retains every planned job, exact start and unsettled public exchange. This operator reports that evidence location and always retains native reconciliation separately; preserve unknowns, pins and evidence. Never retry an uncertain launch with a new UUID as recovery.
 `;
@@ -96,6 +97,22 @@ async function main(): Promise<void> {
   const unit = "subscription-runtime-test-operator-" + request.operationId + ".service", description = "subscription-runtime-test-operator:" + requestSha256;
   const stagedConfig = join(directory, "config.json"), stdout = join(directory, "stdout.jsonl"), stderr = join(directory, "stderr.jsonl");
   const fixedArgv = [process.execPath, runner, "--allow-live", stagedConfig];
+  const queueDeadlineDirectory = "/run/systemd/system/" + unit + ".d", queueDeadlinePath = join(queueDeadlineDirectory, "00-queue-deadline.conf");
+  const queueDeadlineBytes = Buffer.from("[Unit]\nJobTimeoutSec=60\n");
+  const queueDeadlineIdentity = (): Json => {
+    custody(queueDeadlineDirectory, true);
+    const identity = (path: string): Json => {
+      const stat = lstatSync(path);
+      return { device: stat.dev, inode: stat.ino, mode: stat.mode, links: stat.nlink, size: stat.size, changedAt: stat.ctimeMs, modifiedAt: stat.mtimeMs };
+    };
+    const directory = identity(queueDeadlineDirectory), file = identity(queueDeadlinePath);
+    const directoryStat = lstatSync(queueDeadlineDirectory), fileStat = lstatSync(queueDeadlinePath);
+    check(directoryStat.isDirectory() && directoryStat.gid === 0 && (directoryStat.mode & 0o7777) === 0o700 &&
+      fileStat.isFile() && fileStat.gid === 0 && (fileStat.mode & 0o7777) === 0o600 &&
+      readdirSync(queueDeadlineDirectory).join() === basename(queueDeadlinePath) && privateBytes(queueDeadlinePath).equals(queueDeadlineBytes) &&
+      JSON.stringify(directory) === JSON.stringify(identity(queueDeadlineDirectory)) && JSON.stringify(file) === JSON.stringify(identity(queueDeadlinePath)), "queue_deadline_changed");
+    return { path: queueDeadlinePath, sha256: hash(queueDeadlineBytes), directory, file };
+  };
   const show = (): Json => {
     const output = host.researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager", "--property=Id,LoadState,ActiveState,SubState,MainPID,InvocationID,ControlGroup,Description,Transient,FragmentPath,DropInPaths,KillMode,Restart,User,Group,ExecStart,RuntimeMaxUSec,TimeoutStartUSec,TimeoutStopUSec,JobTimeoutUSec,Slice,TasksMax,MemoryMax,CPUQuotaPerSecUSec,LimitCORE,UMask"]);
     return Object.fromEntries(output.trim().split("\n").map(line => { const index = line.indexOf("="); check(index > 0, "unit_observation_invalid"); return [line.slice(0, index), line.slice(index + 1)]; }));
@@ -105,17 +122,28 @@ async function main(): Promise<void> {
   let spec: Json;
   if (operation === Operation.Start && !existsSync(directory)) {
     host.assertResearchSharedHost(); check(readdirSync(request.testParentDirectory).length === 0, "TEST_parent_not_empty");
-    check(show().LoadState === "not-found" && !queued(), "unowned_unit_collision");
+    const absent = show();
+    check(absent.LoadState === "not-found" && absent.DropInPaths === "" && !queued(), "unowned_unit_collision");
+    custody(dirname(queueDeadlineDirectory));
     mkdirSync(directory, { mode: 0o700 }); // Exclusive operation birth; a crash is retained, never replayed.
     createBytes(join(directory, "request.json"), requestBytes); createBytes(stagedConfig, configBytes);
     createBytes(stdout, Buffer.alloc(0)); createBytes(stderr, Buffer.alloc(0));
-    spec = { schemaVersion: 1, requestSha256, request, unit, description, nodePath: process.execPath, runner, stagedConfig, parentIdentity, createdAt: new Date().toISOString() };
+    mkdirSync(queueDeadlineDirectory, { mode: 0o700 }); // Exclusive fixed unit drop-in; a partial birth is retained.
+    createBytes(queueDeadlinePath, queueDeadlineBytes);
+    for (const path of [queueDeadlineDirectory, dirname(queueDeadlineDirectory)]) {
+      const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+    }
+    spec = { schemaVersion: 1, requestSha256, request, unit, description, nodePath: process.execPath, runner, stagedConfig, parentIdentity, queueDeadline: queueDeadlineIdentity(), createdAt: new Date().toISOString() };
     files.researchPublish(specPath, spec, true);
     // A durable unknown precedes submission. Losing transport never authorizes replay.
     files.researchPublish(join(directory, "submission.json"), { phase: "uncertain", requestSha256 }, true);
+    // v255.4 loads this fixed drop-in before bus_unit_queue_job; its transient
+    // JobTimeoutUSec setter rejects the equivalent D-Bus property before queuing.
+    check(JSON.stringify(spec.queueDeadline) === JSON.stringify(queueDeadlineIdentity()), "queue_deadline_changed");
     try {
       host.researchCommand("/usr/bin/systemd-run", ["--quiet", `--unit=${unit}`, `--description=${description}`, `--working-directory=${request.testParentDirectory}`, "--service-type=exec", "--expand-environment=no",
-        ...["User=root", "Group=root", "Slice=system.slice", "KillMode=control-group", "Restart=no", "RuntimeMaxSec=2700", "JobTimeoutSec=60", "TimeoutStartSec=30", "TimeoutStopSec=120", "TasksMax=128", "MemoryMax=1G", "CPUQuota=100%", "LimitCORE=0", "UMask=0077", `StandardOutput=append:${stdout}`, `StandardError=append:${stderr}`].map(item => "--property=" + item), "--", ...fixedArgv]);
+        ...["User=root", "Group=root", "Slice=system.slice", "KillMode=control-group", "Restart=no", "RuntimeMaxSec=2700", "TimeoutStartSec=30", "TimeoutStopSec=120", "TasksMax=128", "MemoryMax=1G", "CPUQuota=100%", "LimitCORE=0", "UMask=0077", `StandardOutput=append:${stdout}`, `StandardError=append:${stderr}`].map(item => "--property=" + item), "--", ...fixedArgv]);
       files.researchPublish(join(directory, "submission.json"), { phase: "submitted", requestSha256 });
     } catch { /* Inspect the original unit below; no replacement is launched. */ }
   } else {
@@ -125,8 +153,12 @@ async function main(): Promise<void> {
   check(hash(privateBytes(stagedConfig)) === request.configSha256 && hash(privateBytes(join(directory, "request.json"))) === requestSha256, "staged_input_changed");
   const observation = (): { state: OuterState; fields: Json; identity?: Identity } => {
     const current = show(); check(current.Id === unit, "unit_id_changed");
+    // Earlier attempts lack this new birth metadata. Inspect only, without
+    // creating a drop-in, resubmitting, stopping, or rewriting their record.
+    if (spec.queueDeadline === undefined) return { state: OuterState.Unknown, fields: current };
+    check(JSON.stringify(spec.queueDeadline) === JSON.stringify(queueDeadlineIdentity()), "queue_deadline_changed");
     if (current.LoadState === "not-found") return { state: existsSync(bindingPath) && !queued() ? OuterState.Terminal : OuterState.Unknown, fields: current };
-    check(current.Transient === "yes" && current.Description === description && current.DropInPaths === "" && current.FragmentPath === "/run/systemd/transient/" + unit && current.KillMode === "control-group" && current.Restart === "no" && current.User === "root" && current.Group === "root" && current.RuntimeMaxUSec === "45min" && current.TimeoutStartUSec === "30s" && current.TimeoutStopUSec === "2min" && current.JobTimeoutUSec === "1min" && current.Slice === "system.slice" && current.TasksMax === "128" && current.MemoryMax === "1073741824" && current.CPUQuotaPerSecUSec === "1s" && current.LimitCORE === "0" && current.UMask === "0077", "unit_properties_changed");
+    check(current.Transient === "yes" && current.Description === description && current.DropInPaths === queueDeadlinePath && current.FragmentPath === "/run/systemd/transient/" + unit && current.KillMode === "control-group" && current.Restart === "no" && current.User === "root" && current.Group === "root" && current.RuntimeMaxUSec === "45min" && current.TimeoutStartUSec === "30s" && current.TimeoutStopUSec === "2min" && current.JobTimeoutUSec === "1min" && current.Slice === "system.slice" && current.TasksMax === "128" && current.MemoryMax === "1073741824" && current.CPUQuotaPerSecUSec === "1s" && current.LimitCORE === "0" && current.UMask === "0077", "unit_properties_changed");
     const exec = String(current.ExecStart), prefix = "{ path=" + process.execPath + " ; argv[]=" + fixedArgv.join(" ") + " ; ignore_errors=no ;";
     check(exec.startsWith(prefix) && exec.split("{").length === 2 && exec.split("}").length === 2 && exec.endsWith("}"), "unit_command_changed");
     custody(String(current.FragmentPath)); const fragmentSha256 = hash(files.researchRead(String(current.FragmentPath), false));
@@ -161,6 +193,7 @@ async function main(): Promise<void> {
   }
   const result = { operation, operationId: request.operationId, requestSha256, directory, outer, reportPath, harness,
     nativeReconciliationRequired: true, retainedForReconciliation: true, nativeCleanupConclusion: "not-certified-by-outer-service" };
-  files.researchPublish(join(directory, "last-observation.json"), result); process.stdout.write(JSON.stringify(result) + "\n");
+  if (spec.queueDeadline !== undefined) files.researchPublish(join(directory, "last-observation.json"), result);
+  process.stdout.write(JSON.stringify(result) + "\n");
   if (outer.state === OuterState.Unknown) process.exitCode = 1;
 }
