@@ -2,6 +2,7 @@
 import { cliGoalPaths, cliInspectionPaths, parseMcpResources, parseMcpResource,
   type McpResourcesCommand, type McpResourceCommand } from "./codex-goal-cli-storage";
 import { resolveCodexGoalJobRegistryRoot } from "./codex-goal-jobs";
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { enterScratchPrivateMountNamespace, isScratchHelpInvocation } from "./scratch-mount-namespace";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
@@ -10,7 +11,7 @@ import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
 import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
-import { assertInProcessRunComposition, hasTrustedRunDeps, assertStorageCommandSerializationSupported, assertStorageRegistrySupported } from "./codex-goal-cli-run-composition";
+import { assertInProcessStorageOwner, assertInProcessRunComposition, hasTrustedRunDeps, assertStorageCommandSerializationSupported, assertStorageRegistrySupported } from "./codex-goal-cli-run-composition";
 import { isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
@@ -365,11 +366,15 @@ export async function runCodexGoalCli(
       return 0;
     }
     await assertRunCommandProjectControlAllowed(command);
-    const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
-    if (outerStatus !== undefined) return outerStatus;
-    await upsertRunCommandManifest(command);
-    const reference = await tryRunHostedLegacyReference(command.config);
-    if (reference) { writeJsonOrText(command.format, reference, io); return 0; }
+    if (command.config.storage) {
+      assertInProcessStorageOwner(cliLaunchInput(command));
+    } else {
+      const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
+      if (outerStatus !== undefined) return outerStatus;
+      await upsertRunCommandManifest(command);
+      const reference = await tryRunHostedLegacyReference(command.config);
+      if (reference) { writeJsonOrText(command.format, reference, io); return 0; }
+    }
     const result = await runCodexGoal(command.config, runDeps);
     writeJsonOrText(command.format, result, io);
     return result.status === "completed" ? 0 : 1;
@@ -497,6 +502,7 @@ export function buildNoTmuxShellCommand(command: RunCommand): string {
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
   assertStorageRegistrySupported(command);
+  assertHostedOrdinaryGoalExtent(command.config, [], command.registryRootDir);
   return upsertCodexGoalLaunchManifest({
     registryRootDir: command.registryRootDir,
     launch: cliLaunchInput(command),
@@ -506,12 +512,6 @@ export async function upsertRunCommandManifest(command: RunCommand) {
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {
   const jobId = command.config.jobId ?? command.config.taskId;
-  if (
-    command.config.sourceEnv?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START === "1" &&
-    command.config.accessBoundary !== AccessBoundary.ProjectScopedControl
-  ) {
-    return;
-  }
   const denial = command.registryRootDir === undefined
     ? projectControlGenericToolDenial({
         accessBoundary: command.config.accessBoundary,

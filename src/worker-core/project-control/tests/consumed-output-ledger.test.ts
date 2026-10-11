@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ProjectDebtReason,
+  ProjectDebtScope,
   consumedDebt,
   consumedOutputRecordFor,
   consumedOutputRecordFromJson,
@@ -679,6 +680,7 @@ describe("consumed output ledger", () => {
     expect(ledger.debt).toEqual([
       expect.objectContaining({
         reason: ProjectDebtReason.UnreadableRoot,
+        scope: ProjectDebtScope.ControlState,
         subject: ledgerPath,
         severity: "blocking",
         evidence: [

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,7 +36,18 @@ vi.mock("node:fs", async original => {
     openSync: (path: string, flags: number, permissions?: number) => {
       check(path); return fs.openSync(local(path), flags, permissions);
     },
-    fstatSync: (fd: number) => {
+    mkdirSync: (path: string, options: Parameters<typeof fs.mkdirSync>[1]) =>
+      fs.mkdirSync(path === "/TEST" || path.startsWith("/TEST/") ? local(path) : path, options),
+    realpathSync: (path: string) => {
+      if (path !== "/TEST" && !path.startsWith("/TEST/")) return fs.realpathSync(path);
+      const physical = local(path), actual = fs.realpathSync(physical);
+      return physical === actual ? path : actual;
+    },
+    fstatSync: (fd: number, options?: { bigint?: boolean }) => {
+      if (options?.bigint) {
+        const stat = fs.fstatSync(fd, { bigint: true });
+        return Object.assign(stat, { uid: 0n, ctimeMs: stat.ctimeMs + (f.drift ? 1n : 0n) });
+      }
       const stat = fs.fstatSync(fd);
       return Object.assign(stat, { uid: 0, ctimeMs: stat.ctimeMs + (f.drift ? 1 : 0) });
     },
@@ -54,7 +65,7 @@ const input = { cwd: identity.workspacePath, command: "/TEST/codex", args: ["app
   env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId } };
 const name = createHash("sha256").update(identity.jobId).digest("hex") + ".json";
 beforeEach(() => {
-  f.root = mkdtempSync(join(tmpdir(), "host-optional-TEST-"));
+  f.root = realpathSync(mkdtempSync(join(tmpdir(), "host-optional-TEST-")));
   f.group = "0::/user.slice/TEST.service\n"; f.denyPrivate = false; f.privateReads = 0; f.drift = false;
   f.spawn.mockReset(); f.spawn.mockReturnValue({ stdin: { write: vi.fn() } });
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");

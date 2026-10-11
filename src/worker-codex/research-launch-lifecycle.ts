@@ -1,6 +1,6 @@
 import { closeSync, constants, existsSync, fsyncSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease } from "./research-launch-admission";
+import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease, prepareResearchRegisteredHandoffAuthority } from "./research-launch-admission";
 import { parseResearchGrant, parseResearchStartSpec } from "./research-launch-contract";
 import { assertResearchInitialRoot, assertResearchServiceOwner, researchCommand, researchDescription,
   researchControlGroup, researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
@@ -31,8 +31,10 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   if (current.spec.startId !== startId || researchHash(current.bytes) !== specSha256 ||
       current.spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) researchInvalid();
   const registered = current.spec.registeredHandoff;
+  let assertRegisteredBytes: (() => void) | undefined;
   if (registered) {
-    await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    if (!released) await prepareResearchRegisteredHandoffAuthority(jobId, startId, assertResearchInitialRoot, true);
+    assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
     assertRegisteredResearchHandoffPin(current.spec, current.directory);
   }
   const candidateBytes = researchRead(join(current.directory, "mimo-candidate.json"));
@@ -44,6 +46,7 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
     readResearchMimoCandidate(current); assertResearchMimoResultDirectories(current);
     assertRegisteredResearchHandoffPin(current.spec, current.directory);
     for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
+    assertRegisteredBytes?.();
   };
   if (!released) {
     if (registered) await withCodexGoalRegistryMutation({ registryRootDir: registered.registryRootDir,
@@ -55,14 +58,14 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   }
   assertTerminal();
   const guard = async (): Promise<void> => {
-    if (registered) await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    if (registered) assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
     assertTerminal();
   };
   const publicationLease = registered && !released ? researchHandoffPublicationLease(jobId, startId) : undefined;
   const publishTerminal = async (): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> => {
   if (!existsSync(publicationPath)) {
     if (released) researchInvalid();
-    const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath);
+    const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
     if (workspace.warning !== undefined) researchInvalid();
     const reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
       publicationAuthority: { assertPublicationAuthorized: guard } });
@@ -84,10 +87,12 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   if (!released) {
     const publish = async (): Promise<void> => {
       await guard();
+      assertRegisteredBytes?.();
       publishResearchMimoJobArtifact(current, "latest-result", result);
+      assertRegisteredBytes?.();
       publishResearchMimoJobArtifact(current, "progress", { schemaVersion: 1, taskId: result.taskId,
         status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 });
-      assertTerminal(); releaseTerminalResearchStart(jobId, current); // Reservation release is always last.
+      assertTerminal(); releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
     };
     await publish();
   }
@@ -136,6 +141,7 @@ export function readResearchProviderReservation(directory: string, unit: string)
   return { spec, specSha256: researchHash(specBytes), description: record.description as string };
 }
 export enum ResearchProviderSubmissionState { Pending = "pending", Settled = "settled" }
+export const researchProviderReservationLimit = 256;
 export function researchProviderUnits(directory: string): string[] {
   const names = readdirSync(join(directory, "providers"));
   if (names.length > 1024) researchInvalid();
@@ -258,7 +264,7 @@ export function cancelEnrolledResearchLaunch(jobId: string, grantSha256: string,
     const path = join(directory, "grant.json");
     if (existsSync(path)) {
       const bytes = researchRead(path), grant = parseResearchGrant(researchJson(bytes));
-      if (grant.registeredHandoff || researchHash(bytes) !== grantSha256) researchInvalid();
+      if (grant.registeredHandoff || grant.projectLaunchBinding || researchHash(bytes) !== grantSha256) researchInvalid();
       unlinkSync(path);
     }
     return current ? cancelResearchLaunchUnlocked(jobId) : { jobId, revoked: true as const };
@@ -311,9 +317,12 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
       existsSync(join(current.directory, "mimo-candidate.json"))) {
     throw new Error("hosted_mimo_worker_finalization_pending");
   }
+  // Containment above remains possible for a revoked receipt. Publication
+  // requires a fresh process-local reader after the exact owner is stopped.
+  await prepareResearchRegisteredHandoffAuthority(jobId, current.spec.startId, assertResearchInitialRoot, true);
   const guard = researchCancellationHandoffGuard(jobId, current.spec.startId);
   await guard();
-  const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath);
+  const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
   if (workspace.warning !== undefined) researchInvalid();
   const preserved = await materializeReconciledTerminalCodexGoalHandoff({
     config: current.spec.request, changedFiles: workspace.changedFiles,
@@ -325,7 +334,8 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
   for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
   await withCodexGoalRegistryMutation({ registryRootDir: current.spec.registeredHandoff.registryRootDir, requireExistingRegistryRoot: true, effect: async () => {
     await guard();
-    releaseTerminalResearchStart(jobId, current);
+    const assertAuthorityBytes = await assertRegisteredResearchHandoffCurrent(current.spec.registeredHandoff!, current.spec.request);
+    releaseTerminalResearchStart(jobId, current, assertAuthorityBytes);
   } });
   return { jobId, startId: current.spec.startId, unit: current.spec.unit, terminal: true,
     ...(preserved.handoff?.packetPath ? { handoffPacketPath: preserved.handoff.packetPath,
@@ -350,9 +360,10 @@ function stopResearchStartForCancellation(jobId: string, current: ReturnType<typ
   if (uncertain) researchInvalid();
   for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
 }
-function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof researchCurrentStart>): void {
+function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof researchCurrentStart>, assertAuthorityBytes: () => void = () => {}): void {
   if (!researchCurrentStart(jobId).bytes.equals(current.bytes)) researchInvalid();
   assertRegisteredResearchHandoffPin(current.spec, current.directory);
+  assertAuthorityBytes();
   researchPublish(join(researchJobAuthority(jobId), "last-terminal.json"), {
     schemaVersion: 1, startId: current.spec.startId, specSha256: researchHash(current.bytes),
   });
@@ -360,6 +371,7 @@ function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof 
   // evidence remain until root explicitly unmounts the named TEST pins.
   if (!researchCurrentStart(jobId).bytes.equals(current.bytes)) researchInvalid();
   const job = researchJobAuthority(jobId);
+  assertAuthorityBytes();
   unlinkSync(join(job, "active.json"));
   const fd = openSync(job, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }

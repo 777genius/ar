@@ -1,3 +1,4 @@
+import type { HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { join } from "node:path";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, type HostedMimoCodingWorkerOrigin } from "../../hosted-mimo-worker-origin";
@@ -129,6 +130,7 @@ export function codexAppServerProcessInvocation(input: {
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
   readonly storageContext?: OriginalProviderStorageContext;
+  readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot;
 }, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
@@ -169,6 +171,7 @@ export function codexAppServerProcessInvocation(input: {
         payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
         ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
         ...(storageContext ? { storageContext } : {}),
+        ...(input.ordinaryJobRoot ? { ordinaryJobRoot: input.ordinaryJobRoot } : {}),
       }),
     ],
   };
@@ -195,7 +198,8 @@ export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppSe
     return submitHostedOrdinaryProcess(ordinaryInput, (unit, identity, fence) => spawnInvocation(ordinaryInput,
       hostedDependencyProviderInvocation(fence, unit, ordinaryInput) ??
       codexAppServerProcessInvocation({ ...ordinaryInput, env: { ...ordinaryInput.env,
-        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit }),
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit,
+        ...(identity.ordinaryJobRoot ? { ordinaryJobRoot: identity.ordinaryJobRoot } : {}) }),
       (child, release) => releaseHostedOrdinaryProcess(child, release)));
   }
   const invocation = codexAppServerProcessInvocation({

@@ -21,6 +21,7 @@ import {
 import {
   codexAccountIdentityFromAuthJson,
   hashText,
+  codexSafeExecutorId,
   type CodexAccountIdentity,
 } from "./codex-account-identity";
 import {
@@ -207,7 +208,7 @@ export class FileBackendCodexSafeExecutor {
     }
     this.executorId =
       options.executorId ??
-      `file-backend-codex-safe:${hashText(options.workspacePath).slice(0, 12)}`;
+      codexSafeExecutorId(options.workspacePath);
     const observability =
       options.observability ??
       options.accounts.find((account) => account.worker.observability)?.worker
@@ -289,6 +290,7 @@ export class FileBackendCodexSafeExecutor {
               account.worker.providerInstanceId,
             authJsonPath: account.codexAuthJsonPath,
             codexBinaryPath: account.worker.codexBinaryPath,
+            ...(account.worker.sourceEnv ? { sourceEnv: account.worker.sourceEnv } : {}),
             timeoutMs: account.worker.appServerStartupTimeoutMs ?? 30_000,
           });
         },

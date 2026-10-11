@@ -1,10 +1,37 @@
-import test from 'node:test';
+import test, { after, mock } from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { buildSystemdInvocation, managedLauncherInvocation, parseInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+// Argument tests model a host with no enrollment, independently of the worker
+// running them. Keep the real policy reader and real ENOENT from absent files.
+const policyFixture = fs.mkdtempSync(join(tmpdir(), 'TEST-managed-launcher-policy-'));
+const actualLstat = fs.lstatSync, actualReadFile = fs.readFileSync;
+const policyPath = path => {
+  if (typeof path !== 'string') return path;
+  for (const [prefix, name] of [['/etc/subscription-runtime', 'etc'],
+    ['/var/lib/subscription-runtime-host-policy', 'private']]) {
+    if (path === prefix || path.startsWith(prefix + '/')) return join(policyFixture, name) + path.slice(prefix.length);
+  }
+  return path;
+};
+const policyStatMock = mock.method(fs, 'lstatSync', (path, ...options) => actualLstat(policyPath(path), ...options));
+const cgroupMock = mock.method(fs, 'readFileSync', (path, options) => {
+  if (path !== '/proc/self/cgroup') return actualReadFile(path, options);
+  const bytes = Buffer.from('0::/\n'), encoding = typeof options === 'string' ? options : options?.encoding;
+  return encoding ? bytes.toString(encoding) : bytes;
+});
+syncBuiltinESMExports();
+after(() => {
+  policyStatMock.mock.restore(); cgroupMock.mock.restore(); syncBuiltinESMExports();
+  fs.rmSync(policyFixture, { recursive: true, force: true });
+});
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);

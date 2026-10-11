@@ -10,6 +10,7 @@ import { materializeDurableCodexGoalHandoffPacket } from
   "./codex-goal-durable-handoff-packet";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { sanitizeNodeDependencyEnvironment } from "./dependency-environment-safety";
+import { hostedOrdinaryHandoffPublicationAuthority } from "./hosted-ordinary-writer-authority";
 import { resolveManagedDependencyGitContext, assertManagedDependencyGitContext,
   type HostedDependencyRootPurposeContext } from "./managed-dependency-git";
 import { readHostedDependencyRootFile, HostedDependencyRootFileRecipe } from "./hosted-dependency-root-file-reader";
@@ -79,7 +80,7 @@ export type TerminalHandoffPublicationDependencies = {
   readonly withTerminalHandoffPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
 };
 export type TerminalHandoffPublicationAuthority = {
-  readonly assertPublicationAuthorized: () => Promise<void>;
+  readonly assertPublicationAuthorized: (paths?: readonly string[]) => Promise<void>;
   readonly withPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
 };
 export async function tryMaterializeTerminalCodexGoalHandoff(input: {
@@ -92,10 +93,14 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   readonly expectedBaseCommit?: string;
   readonly expectedHeadCommit?: string;
 }, trusted?: TerminalHandoffPublicationAuthority): Promise<TerminalCodexGoalHandoffMaterialization> {
+  const ordinary = hostedOrdinaryHandoffPublicationAuthority(input);
+  const publication = ordinary ? {
+    assertPublicationAuthorized: async (paths?: readonly string[]) => { await ordinary.assertPublicationAuthorized(paths); await trusted?.assertPublicationAuthorized(paths); },
+  } : trusted;
   const effect = async (): Promise<TerminalCodexGoalHandoffMaterialization> => {
   let managedContext: HostedDependencyRootPurposeContext | undefined;
   try {
-    await trusted?.assertPublicationAuthorized();
+    await publication?.assertPublicationAuthorized();
     managedContext = resolveManagedDependencyGitContext(input.workspacePath, input.managedContext);
     if (managedContext !== undefined) assertTerminalScope(input, managedContext);
     // Dependency bootstrap may create worktree-local links to a shared cache.
@@ -118,7 +123,7 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
         input.durableHandoffRootDir,
         input.jobRootDir,
       ),
-      ...(trusted ? { publicationAuthority: trusted } : {}),
+      ...(publication ? { publicationAuthority: publication } : {}),
       ...(expectedBaseCommit === undefined
         ? {}
         : { expectedBaseCommit }),
@@ -161,7 +166,8 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
     };
   }
   };
-  return trusted?.withPublicationAuthority ? await trusted.withPublicationAuthority(effect) : await effect();
+  const ordinaryEffect = () => ordinary?.withPublicationAuthority ? ordinary.withPublicationAuthority(effect) : effect();
+  return trusted?.withPublicationAuthority ? await trusted.withPublicationAuthority(ordinaryEffect) : await ordinaryEffect();
 }
 
 async function recordedRunStartBaseCommit(
