@@ -385,7 +385,9 @@ function acquire(context:RootContext=RootContext.Launcher){
     if(!installing)pins.publicFile(integration+"/managed-launcher/dependency-full-native-TEST.mjs",requireDigest(r.moduleSha256));
     pins.publicFile(source+"/host-integration/managed-launcher/dependency-full-native-TEST.js",requireDigest(r.moduleSha256));
     const parent=source+"/host-integration/managed-launcher/dependency-full-native-parent-TEST.js";pins.publicFile(parent,requireDigest(r.parentSha256));
-    pins.publicFile(source+"/package.json",fullNativeSourcePackageHash(r.schemaVersion));
+    // The staged H1 route consumes this exact current source package. The
+    // legacy HOST schema1 contract retains its earlier package commitment.
+    pins.publicFile(source+"/package.json",fullNativeSourcePackageHash(h1Subject?2:r.schemaVersion));
     const head=pins.hold(source+"/.git/HEAD");check(readFd(head).equals(Buffer.from(sourceSha+"\n")));
     const catalogPath=selectedReviewRoot+"/public-installation.json";pins.publicFile(catalogPath,requireDigest(r.catalogSha256));
     const catalog=fullData(pins.json(catalogPath,2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
