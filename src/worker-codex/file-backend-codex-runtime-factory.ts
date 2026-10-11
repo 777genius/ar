@@ -63,6 +63,7 @@ import { CommandPolicyRunner } from "./command-policy-runner";
 import { codexAppServerCommandApprovalPolicy } from "./file-backend-codex-command-policy";
 import { LocalFileManagedRunStore } from "./file-backend-codex-managed-run-store";
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput } from "./file-backend-codex-worker-options";
 import { buildCodexWorkspaceToolsProfile } from "./workspace-tools/codex-workspace-tools-profile";
 import {
   codexSessionHomeCacheKey,
@@ -89,20 +90,21 @@ export type FileBackendCodexWorkerRuntimeParts = {
 };
 
 /** Credential and durable-state roots excluded from every open worker grant. */
-export function openWorkerFactorySecretRoots(options: FileBackendCodexWorkerOptions): readonly string[] {
+export function openWorkerFactorySecretRoots(input: FileBackendCodexWorkerInput): readonly string[] {
+  const options = resolveFileBackendCodexWorkerOptions(input);
   const runtimeHome = options.runtimeHomeRootDir ?? options.stateRootDir;
   return [...(options.openWorker?.secretRoots ?? []), options.stateRootDir, runtimeHome,
     join(runtimeHome, "codex-session-cache")];
 }
 
 export function createFileBackendCodexWorkerRuntime(input: {
-  readonly options: FileBackendCodexWorkerOptions;
+  readonly options: FileBackendCodexWorkerInput;
   readonly workerId: string;
   readonly observability: ObservabilityPort;
   readonly redactor: RedactorPort;
   readonly clock: ClockPort;
 }): FileBackendCodexWorkerRuntimeParts {
-  const { options } = input;
+  const options = resolveFileBackendCodexWorkerOptions(input.options);
   // A v2 caller cannot construct adapters through a substituted public process
   // factory. Actual protected ordinary origin, not options, selects this gate.
   assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);

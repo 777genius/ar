@@ -1,4 +1,5 @@
-import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { ChildExecutionBudget, deriveRuntimeStorageRoots } from "@vioxen/subscription-runtime/core";
+import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput } from "./file-backend-codex-worker-options";
 import { assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { assertChildExecutor } from "./child-execution-confinement";
 import { readFile } from "node:fs/promises";
@@ -85,6 +86,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly storageRootDir?: string;
   readonly assertProviderAdmission?: () => void;
   readonly childBudget?: ChildExecutionBudget;
   readonly executionLifetime?: AppServerExecutionLifetime;
@@ -134,6 +136,38 @@ export type FileBackendCodexSafeExecutorOptions = {
   readonly clock?: { now(): Date };
 };
 
+type WorkerInputWithoutWorkspace<T> = T extends unknown ? Omit<T, "workspace" | "workspacePath"> : never;
+export type FileBackendCodexSafeExecutorAccountInput = Omit<FileBackendCodexSafeExecutorAccount, "worker"> & {
+  readonly worker: WorkerInputWithoutWorkspace<FileBackendCodexWorkerInput>;
+};
+type InheritedStorageSafeExecutorAccountInput = Omit<FileBackendCodexSafeExecutorAccount, "worker"> & {
+  readonly worker: Omit<FileBackendCodexWorkerOptions, "workspace" | "workspacePath" | "stateRootDir"> & {
+    readonly stateRootDir?: string;
+  };
+};
+export type FileBackendCodexSafeExecutorInput =
+  Omit<FileBackendCodexSafeExecutorOptions, "accounts" | "stateRootDir" | "storageRootDir"> &
+  ({ readonly stateRootDir: string; readonly storageRootDir?: string;
+    readonly accounts: readonly FileBackendCodexSafeExecutorAccountInput[] } |
+   { readonly storageRootDir: string; readonly stateRootDir?: string;
+    readonly accounts: readonly InheritedStorageSafeExecutorAccountInput[] });
+
+export function resolveFileBackendCodexSafeExecutorOptions(input: FileBackendCodexSafeExecutorInput): FileBackendCodexSafeExecutorOptions {
+  const roots = input.storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(input.storageRootDir);
+  const stateRootDir = input.stateRootDir ?? (roots ? join(roots.stateRootDir, "codex-workers") : undefined);
+  if (stateRootDir === undefined) throw new Error("file_backend_codex_safe_state_root_required");
+  const accounts = input.accounts.map(account => {
+    const worker = account.worker;
+    if (worker.stateRootDir !== undefined) {
+      return { ...account, worker: resolveFileBackendCodexWorkerOptions({ ...worker, stateRootDir: worker.stateRootDir }) };
+    }
+    const storageRootDir = worker.storageRootDir ?? input.storageRootDir;
+    if (storageRootDir === undefined) throw new Error("file_backend_codex_state_root_required");
+    return { ...account, worker: resolveFileBackendCodexWorkerOptions({ ...worker, storageRootDir }) };
+  });
+  return { ...input, stateRootDir, accounts };
+}
+
 export type FileBackendCodexSafeExecutorRunInput = FileBackendCodexWorkerJob & {
   readonly jobId?: string;
   readonly taskId: string;
@@ -165,7 +199,11 @@ export class FileBackendCodexSafeExecutor {
   private disposed = false;
   private childRunEntered = false;
 
-  constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
+  private readonly options: FileBackendCodexSafeExecutorOptions;
+
+  constructor(input: FileBackendCodexSafeExecutorInput) {
+    let options = resolveFileBackendCodexSafeExecutorOptions(input);
+    this.options = options;
     assertHostedDependencyExecutionWorkspace(options.workspacePath);
     options.assertProviderAdmission?.();
     if (options.childBudget && !options.executionLifetime) {
