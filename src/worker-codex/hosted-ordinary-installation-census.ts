@@ -41,7 +41,7 @@ function joined(args: readonly string[], inventory: Pick<HostedInventoryV5, "sup
 function names(text: string): string[] { return text ? text.split(" ").filter(Boolean) : []; }
 function show(name: string, inventory: Pick<HostedInventoryV5, "supervisor">, cleanup = false): Record<string, string> {
   const result: Record<string, string> = {}, properties = propertiesFor(name);
-  for (const line of lines(joined(["show", `--property=${properties}`, "--", name], inventory, cleanup))) {
+  for (const line of lines(joined(["show", "--all", `--property=${properties}`, "--", name], inventory, cleanup))) {
     const at = line.indexOf("="); if (at < 1 || line.slice(0, at) in result) denied();
     result[line.slice(0, at)] = line.slice(at + 1);
   }
