@@ -232,6 +232,100 @@ pinned to `81063add`/`49d08b6d` (published-output-reconciliation,
 published-integration-commit-adoption, hosted-public-research) are byte-identical
 to the current document and were left as they are.
 
+## Current reference 4728b276 (Consumer Module Standard; supersedes d6127e2d as CURRENT)
+
+The d612, `81063add`, `6b31` and `03a7` records above and in the other docs stay as
+accepted history. From this point the CURRENT reference is the exact document below.
+Both complete documents were read in full from retained bytes; no new upstream fetch
+and no moving-main lookup was made, so this is not independent online research.
+
+| Identity | Previous (d612) | Current |
+| --- | --- | --- |
+| Commit | `d6127e2d3f499b91b220a222fc3672d29dff1ab2` | `4728b276b87378ca9d72a7be2b89a5fd49b97eea` |
+| Git blob | `bb36631c0ba14ad24521a8b675a5047e07b72580` | `20c281b3137f5d3c198250e9f8101c0ecd4cbc75` |
+| SHA-256 | `49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7` | `859fbca1e8a0c61b6ae873bea0057735a55b80230100e6e73a74de22e123165a` |
+| Size / lines | 47402 B / 796 | 54680 B / 927 |
+
+Exact delta d612 to 4728: **141 insertions, 10 deletions** (260-line unified diff),
+SHA-256 `f5da152530e6c0830afb9a26f93863347eed8f76e9067aee9442db2c6c0717b6`. Retained
+copies (outside this repository, Root evidence): `cms-current-upstream-exact-a3.md`
+(current bytes), `cms-d612-to4728-shared-delta-complete.diff`,
+`cms-d612-to4728-shared-delta-provenance.json` and `cms-d612-to4728-shared-delta-analysis.md`
+in the `runtime-retention-integration-preparation-a1` evidence directory.
+
+Gates the newer document adds, which apply only if the code actually contains the
+corresponding composition element (conditional, not a statement about this feature):
+
+- **Assembly 0.4 `profileId`** (ADR-0035): production roots prepare with `profileId`; the
+  profile is completed from bound handles and the completed plan is checked against a
+  hand-written oracle table (consumer, slot, providers, capability, token), never derived
+  from the implementation. `prepare({ composition })` stays only for a Host that compiles
+  a profile itself, and for `isolate`.
+- **Contract property lint**: contract value types use function-typed properties, enforced
+  by a real lint command (`typescript/method-signature-style: property`), with the value
+  types declared explicitly.
+- **`checkNamespaces`** over every supplied declaration, input modules and fakes included.
+- **Scoped `ModuleContext`**: a factory typed with `ModuleContext` is bound through
+  `scoped()`, even when it registers no resource.
+
+This feature declares none of these: it has no Assembly graph, no Get Modular package
+dependency, no declaration, no contract descriptor and no `ModuleContext` factory, and
+this document does not invent a local Assembly adoption. It remains a static private Host
+feature, `not-adopted`. Unchanged and not removed: the accepted Agent Runtime PR #168
+passive setup and ordinary-session slice in the standard (contained-turn and dynamic
+plugin scope are still not admitted). Still pending, and stated as pending rather than
+passing: installed authority, retention physical qualification and any adoption.
+
+Real current module-boundary check: `npm run check:boundaries` (`package.json`:
+`scripts/check-boundaries.mjs`, its self-test and `check:architecture-guardrails`). Root
+reports the source-checkpoint CI quality job as PASS for it; the author of this section ran
+nothing. That check qualifies the Runtime source layering only. It does **not** qualify
+Assembly adoption: there is no adopted profile and no CMS checker in this repository, and
+the standard assigns that checker to an adopting consumer. Until an accepted local decision,
+a profile, reciprocal references and a real checker with positive and rejecting fixtures
+(unknown boundary, pin drift, missing path, no-op command chain, stale exception) exist in
+the fast and full gates, that work is **pending** and must not be reported as a no-op success.
+
+### Library-first placement (replaces the second-consumer-only trigger)
+
+The earlier wording in the classification sections below ("a consumer-owned port plus
+contract descriptor only if a second independently assembled consumer appears") conflicts
+with the owner library-first rule: a proven repeatable, policy-free module-system mechanism
+is placed under its Get Modular owner from the start. A second consumer limits how stable a
+shared SPI may be claimed to be; it does not decide placement. The 4728 delta itself does
+not change extraction rules.
+
+Narrow option evaluated against the actual source concern (the closed
+`HostedMemoryTopologyIdentity` / `HostMemoryReference` records produced by
+`observeHostMemoryTopology` in `src/worker-local/linux-memory-availability.ts:200` and
+`collectHostedMemoryTopology` in `src/worker-codex/retained-memory-topology-issuance.ts:18`,
+parsed by `parseHostedMemoryTopologyIdentity` in
+`src/core/host-infrastructure/host-retention-operation.ts:83`):
+
+- *Candidate:* a contract-only package (descriptor plus port type, no implementation, no
+  observation code) for the closed reference record.
+- *Owner / direction:* Get Modular contract package; Runtime Host adapters depend on it,
+  never the reverse. Observation, admission, permissions, process and storage cleanup stay
+  in Runtime.
+- *Boundaries:* the Linux facts (initial cgroup-namespace inode, single cgroup2 mount,
+  unified hierarchy, memory controller at root) are kernel-observation policy and are not
+  shared.
+- *Cost (my estimate, not measured):* about 30 LOC of strict-field helpers
+  (`host-retention-operation.ts:60-87`) are the only candidate shared code, plus a
+  descriptor and a release dependency; roughly 40-80 LOC in total.
+- *Tradeoff:* a third-party-owned package for a record with one producer and one reader adds
+  a release and a pin to maintain and freezes a shape that is still moving, for no
+  demonstrated invariant that two implementations must agree on.
+
+Decision: **no stable cross-consumer invariant is demonstrated**, so the product authority
+adapter stays Host-owned (the Host assigns trust issuance and the topology anchor; this is
+not a missing second consumer). No generic manager and no speculative API is added. What
+would warrant a mechanism or nominal contract: an independently assembled consumer that
+needs the same closed record with the same fail-closed semantics, shown by one contract
+suite passing against two implementations (the real observer and a fake). Then the
+descriptor goes to the contract owner, with the SPI-stability claim limited by that single
+additional consumer.
+
 ## Verification record
 
 All commands ran in this checkout (or a disposable container with the source
@@ -722,9 +816,10 @@ private Host adapters inside one cohesive feature: fixed library dependencies an
 imports and typed factories, no Core/Assembly handle, no module, descriptor, resource scope, dynamic
 instance or lifecycle registration. Trust issuance and the topology anchor are Host-owned authority (the
 standard assigns permissions and trusted admission to the Host). Classification: **private Host boundary,
-`not-adopted`**, one consumer; **pending migration** to a consumer-owned port plus contract descriptor only
-when a second real consumer needs the same host context. The upstream pin is a classification reference and
-is assumed NOT to move under this work; if it does, re-classify. No adoption, consumer profile or
+`not-adopted`**, one consumer; migration to a consumer-owned port plus contract descriptor stays **pending** until a
+stable cross-consumer invariant is shown (placement is library-first, see "Library-first placement" in "Current
+reference 4728b276"; a second consumer is not the placement trigger). The d612 pin read here is historical: the
+upstream did move, and the CURRENT reference is `4728b276` in that section. No adoption, consumer profile or
 repository-wide conformance is claimed and no ADR bytes are touched.
 
 ### a3 verification record
@@ -872,8 +967,9 @@ a closed `HostMemoryReference`. Stable resource bounds stay in core and do not d
 orchestration and kernel observation stay Host. No Core/Assembly handle, module, descriptor, resource scope or dynamic
 instance is created and no SPI or manager is added: classification **private Host boundary, `not-adopted`**, one proven
 consumer, adoption pending. The standard requires correct guidance now rather than after a second consumer; the guidance
-is "static imports and typed factories inside the cohesive feature; a consumer-owned port plus contract descriptor only if
-a second independently assembled consumer appears". No repository CMS checker exists (the standard itself says a
+is "static imports and typed factories inside the cohesive feature; a consumer-owned port plus contract descriptor once a
+stable cross-consumer invariant is demonstrated" (corrected from a second-consumer-only trigger, see "Library-first
+placement"; current reference `4728b276`). No repository CMS checker exists (the standard itself says a
 checker is an adopting consumer's job), so the enforcing checks are the rejecting tests below; no pin was moved.
 
 ### a5 verification record
@@ -1032,8 +1128,9 @@ contract in the existing Host-infrastructure folder, Host adapters for installat
 port that the retention feature accepts as a plain function type. Stable finite policy stays in core and names no Linux
 fact. No Core/Assembly handle, module, descriptor, resource scope or dynamic instance is created; no SPI, manager or
 service bag exists. Classification: **private Host boundary, `not-adopted`; adoption pending**; the correct guidance now is
-static imports and typed factories inside the feature, and a consumer-owned port plus contract descriptor only if a second
-independently assembled consumer needs the same context. No repository CMS checker exists (the standard leaves that to an
+static imports and typed factories inside the feature, and a consumer-owned port plus contract descriptor once a stable
+cross-consumer invariant is demonstrated (a second consumer limits the stable-SPI claim, not placement; see "Library-first
+placement"; current reference `4728b276`). No repository CMS checker exists (the standard leaves that to an
 adopting consumer), so the enforced checks are the rejecting tests above plus the existing architecture guardrails (the
 activation file remains under its 1000-line cap).
 

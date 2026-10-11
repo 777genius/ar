@@ -512,13 +512,24 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
       reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow("hosted_research_registered_execution_unsupported");
     expect(existsSync(local(join(researchJobAuthority(r.jobId), "grant.json")))).toBe(false);
   });
-  it("seals CodingV1/64 in its grant while native activation stays closed", async () => {
+  it("seals CodingV1/64 in its grant and maps it to the fixed run configuration", async () => {
     state.mimo = true; await initializeRegisteredFixture();
     const r = await grantAndRequest();
     expect(r).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 });
     const grant = JSON.parse(researchRead(join(researchJobAuthority(r.jobId), "grant.json")).toString());
     expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
-    expect(() => researchRunConfig(r)).toThrow("hosted_mimo_coding_activation_closed");
+    // Configuration mapping only, not an admission proof. CodingV1/64 is the live registered project-worker policy
+    // (project-mimo-worker-launch.ts requests it; research-registered-execution.ts accepts only it for MiMo), and
+    // researchRunConfig has no activation gate, so the sealed request maps to its fixed run config here. Authority
+    // still comes only from the grant, credential proxy and sealed root, none of which this config mints. The rejected
+    // budgets are bound by the sibling test.
+    expect(researchRunConfig(r)).toMatchObject({ modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, executionEngine: "app-server",
+      hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64, workerReportMode: "structured-output",
+      accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
+      safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" } });
+    // 64 is selected by the CodingV1 profile, not by the MiMo backend: the Worker profile keeps its own fixed budget.
+    expect(researchRunConfig(selected())).toMatchObject({ modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, maxGoalTurns: 8 });
+    expect(researchRunConfig(selected())).not.toHaveProperty("hostedProfile");
   });
 });

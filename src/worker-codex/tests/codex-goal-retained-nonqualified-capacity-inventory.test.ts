@@ -149,6 +149,9 @@ describe.runIf(localProjectControlEvidenceCustodySupported)("retained inventory 
 
   it("fetches a LARGE independently staged blob only when collecting: verification binds index oid, mode and size without any body fetch", async () => {
     const { root, git } = await workspace();
+    // MM needs the path tracked in HEAD: a file absent from HEAD is reported as AM (added + modified), never MM.
+    await writeFile(join(root, "big-staged.bin"), "head side\n"); await git("add", "big-staged.bin");
+    await git("commit", "-q", "-m", "chore(test): base big-staged");
     // MM: a 24 MiB staged side (index) and a tiny, different worktree side. Real bytes (Git needs them), not sparse.
     const stagedBody = Buffer.alloc(24 * MIB);
     for (let i = 0; i < stagedBody.length; i += 1) stagedBody[i] = (i * 31 + (i >> 8)) & 0xff;

@@ -71,7 +71,10 @@ jobs:
     if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_unit == 'true') }}
     needs: [ci-proof-reuse]
     name: Unit tests (${{ matrix.shard }}/4)
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    # Stock VM, not the configurable RUNNER pool: the private TEST tmp mount needs
+    # sudo + CAP_SYS_ADMIN + mount namespaces, which only this stock image is known to
+    # provide (see observer-mount-tests). The proof label below names this same runner.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -101,7 +104,7 @@ jobs:
         id: capture
         continue-on-error: true
         env:
-          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+          CI_PROOF_RUNNER_LABEL: ubuntu-24.04
           CI_PROOF_FAMILY: unit
           CI_PROOF_LANE: ${{ matrix.shard }}
           CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
@@ -122,9 +125,25 @@ jobs:
           done
           subscription_test_home=$(sudo -n mktemp -d /home/subscription-ci-TEST-XXXXXX)
           subscription_test_home_identity=$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")
+          # Set only by the unit-shard branch below, after it created the canonical TEST
+          # scratch mountpoint. Removed by the same EXIT cleanup.
+          subscription_test_tmp_mount=""
+          subscription_test_tmp_identity=""
           cleanup_subscription_test_home() {
             local subscription_test_original_status=$?
             local subscription_test_cleanup_status=0
+            if [[ -n "$subscription_test_tmp_mount" ]]; then
+              # The tmpfs lived only in the private mount namespace and vanished with its last
+              # process; only the empty root-owned mountpoint remains. No recursive removal.
+              if [[ "$subscription_test_tmp_mount" == /mnt/TEST-private-scratch ]] &&
+                test -d "$subscription_test_tmp_mount" && test ! -L "$subscription_test_tmp_mount" &&
+                test "$(stat -c '%d:%i:%u:%a' -- "$subscription_test_tmp_mount")" = "$subscription_test_tmp_identity"; then
+                sudo -n rmdir -- "$subscription_test_tmp_mount" || subscription_test_cleanup_status=$?
+              else
+                echo "::error::Private TEST tmp mountpoint identity changed; cleanup refused"
+                subscription_test_cleanup_status=1
+              fi
+            fi
             if [[ "$subscription_test_home" =~ ^/home/subscription-ci-TEST-[[:alnum:]]{6}$ ]] &&
               [[ "$subscription_test_home_identity" == *:700 ]] &&
               test -d "$subscription_test_home" && test ! -L "$subscription_test_home" &&
@@ -156,7 +175,63 @@ jobs:
               # Every shard needs dist fixtures; retain the configured two
               # isolated forks and the full default test selection.
               npm run build
-              npm run test:unit -- --shard="$CI_TEST_TARGET"
+              # The placement fixtures need their TEST tmp on its own mount at the canonical
+              # /mnt/TEST-private-scratch: on the runner's overlay "/" the real mount exposes
+              # every granted family. Mount a fresh tmpfs there, inside a private mount
+              # namespace (existing sudo unshare --mount --propagation private recipe), then
+              # drop back to the captured non-root UID, GID and supplementary groups before
+              # Vitest. Needs sudo, CAP_SYS_ADMIN and mount namespaces (stock ubuntu-24.04);
+              # without them this step fails loudly.
+              subscription_test_uid=$(id -u)
+              subscription_test_gid=$(id -g)
+              (( subscription_test_uid > 0 && subscription_test_gid > 0 ))
+              # Exact numeric group set of the original test user, captured before any privilege.
+              subscription_test_groups=$(id -G | tr ' ' '\n' | sort -nu | paste -sd, -)
+              [[ "$subscription_test_groups" =~ ^[0-9]+(,[0-9]+)*$ ]]
+              test -d /mnt && test ! -L /mnt && test "$(readlink -f -- /mnt)" = /mnt
+              (( (8#$(stat -c '%a' -- /mnt) & 022) == 0 ))
+              # Single-use resource of this one-job VM: refuse anything already there, in the
+              # filesystem or in this namespace's mount table; mkdir itself fails if it exists.
+              if test -e /mnt/TEST-private-scratch || test -L /mnt/TEST-private-scratch ||
+                grep -qF ' /mnt/TEST-private-scratch ' /proc/self/mountinfo; then
+                echo "::error::Canonical TEST scratch /mnt/TEST-private-scratch already exists; refusing"
+                exit 1
+              fi
+              sudo -n mkdir -m 700 -- /mnt/TEST-private-scratch
+              subscription_test_tmp_mount=/mnt/TEST-private-scratch
+              subscription_test_tmp_identity=$(stat -c '%d:%i:%u:%a' -- "$subscription_test_tmp_mount")
+              [[ "$subscription_test_tmp_identity" == *:0:700 ]]
+              # Explicit environment whitelist (not a copy of the runner environment): PATH and
+              # HOME for npm and the setup-node Node, CI / SR_ARCHIVE_TEST_PRIVILEGE which the
+              # sources read, CI_TEST_TARGET and locale. Values travel as argv, so they are visible
+              # in process metadata; none of them is a secret. TMPDIR is added inside the namespace.
+              subscription_test_environment=("PATH=$PATH" "HOME=$HOME")
+              for subscription_test_name in CI GITHUB_ACTIONS LANG LC_ALL SR_ARCHIVE_TEST_PRIVILEGE CI_TEST_TARGET; do
+                if [[ -v "$subscription_test_name" ]]; then
+                  subscription_test_environment+=("$subscription_test_name=${!subscription_test_name}")
+                fi
+              done
+              IFS= read -r -d '' subscription_test_root_script <<'SUBSCRIPTION_TEST_ROOT' || true
+          set -euo pipefail
+          uid=$1; gid=$2; groups=$3; mount_point=$4; shift 4
+          environment=()
+          while [[ "$1" != "--" ]]; do environment+=("$1"); shift; done
+          shift
+          # Verified in the dropped process, before Vitest: unchanged non-root UID/GID, the exact
+          # original supplementary group set, and TMPDIR really on the private tmpfs.
+          identity='test "$(id -u):$(id -g)" = "$1" && test "$(id -G | tr " " "\n" | sort -nu | paste -sd, -)" = "$2" &&
+            test "$(stat -f -c %T -- "$TMPDIR")" = tmpfs && shift 2 && exec "$@"'
+          /usr/bin/mount -t tmpfs -o "mode=0700,uid=$uid,gid=$gid,size=4g,nosuid,nodev" subscription-ci-TEST-tmp "$mount_point"
+          exec /usr/bin/setpriv --reuid="$uid" --regid="$gid" --groups="$groups" -- \
+            /usr/bin/env -i "${environment[@]}" TMPDIR="$mount_point" \
+            /bin/bash -c "$identity" identity-check "$uid:$gid" "$groups" "$@"
+          SUBSCRIPTION_TEST_ROOT
+              sudo -n /usr/bin/env -i PATH=/usr/bin:/bin \
+                /usr/bin/unshare --mount --propagation private -- \
+                /bin/bash -c "$subscription_test_root_script" subscription-test-root \
+                "$subscription_test_uid" "$subscription_test_gid" "$subscription_test_groups" "$subscription_test_tmp_mount" \
+                "${subscription_test_environment[@]}" -- \
+                npm run test:unit -- --shard="$CI_TEST_TARGET"
               ;;
             ancillary)
               npm run test:before-unit

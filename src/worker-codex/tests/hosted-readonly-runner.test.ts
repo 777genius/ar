@@ -55,6 +55,8 @@ vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
     const birth = Buffer.from(JSON.stringify({ ...epoch, generation: 1, phase: "closed", revoked: false, reservations: [], outerRuntime: null }));
     if (name === "readonly-enrollment.json") return birth;
     if (name === "readonly-epoch.json") return Buffer.from(JSON.stringify(epoch));
+    // The SELECTED inventory record: the kernel inventory reader and the inspected-installation binding both read these exact bytes.
+    if (name === "readonly-inventory.json") return inventoryBytes();
     if (name === "host-installation.json") return Buffer.from(JSON.stringify({ schemaVersion: 1, installationId: "install",
       hostId: epoch.hostId, runtimeDirectory, runtimeSha: epoch.identity.runtimeSha,
       runtimeManifestSha256: epoch.identity.runtimeManifestSha256, inventorySha256: hash(inventoryBytes()) }));

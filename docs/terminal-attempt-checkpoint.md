@@ -91,8 +91,13 @@ process wait belongs under it.
 Current canonical Get Modular Consumer Module Standard evidence is the supplied
 complete document bytes for `agent-teams-ai/get-modular`,
 `docs/architecture/common-assembly.md#consumer-module-standard`, commit
-`d6127e2d3f499b91b220a222fc3672d29dff1ab2`, complete-document SHA-256
-`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`.
+`4728b276b87378ca9d72a7be2b89a5fd49b97eea` (Git blob
+`20c281b3137f5d3c198250e9f8101c0ecd4cbc75`, 54680 B), complete-document SHA-256
+`859fbca1e8a0c61b6ae873bea0057735a55b80230100e6e73a74de22e123165a`.
+The previously reviewed `d6127e2d3f499b91b220a222fc3672d29dff1ab2` hashes to
+`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7` (delta to 4728:
+141 insertions, 10 deletions, diff SHA-256
+`f5da152530e6c0830afb9a26f93863347eed8f76e9067aee9442db2c6c0717b6`).
 The retained previous bytes at `6b31f20fe3e5fb8324812aa2ee907905751cde71` hash to
 `d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f` and the
 oldest retained bytes at `03a7df64bc5e9939f7b51694a80a7f3d61453f98` hash to
@@ -100,19 +105,23 @@ oldest retained bytes at `03a7df64bc5e9939f7b51694a80a7f3d61453f98` hash to
 The current document adds the optional lifecycle candidate, module resource
 scopes, dynamic instances, the authoring builder with contract descriptors,
 identity rules and the conformance kit (ADR-0029 to ADR-0033); the exact delta
-from `6b31` is recorded in `retained-nonqualified-attempt.md`. None establishes an accepted Assembly adoption scope for this
+from `6b31` and the d612 to 4728 delta are recorded in `retained-nonqualified-attempt.md`. None establishes an accepted Assembly adoption scope for this
 subscription-runtime consumer. This feature uses existing typed/static
 composition and does not change ADR bytes or claim consumer adoption.
 This reviewed reference is a classification identity, not an accepted consumer
-adoption pin. The upstream document was fetched at the exact commit above.
+adoption pin. The document was read from retained exact bytes at the commit above; no new upstream fetch was made in this change.
 
 The narrow reusable contract is already owned by `worker-core`: terminal
 identity, selection and seal metadata. Filesystem and Codex adapters depend
-inward on it. A cross-repository conformance package would cost roughly
-100-150 LOC and one release dependency; no independent consumer has yet
-proven the same receipt and writer semantics. The local typed contract keeps
-that extraction possible without sharing Host inventory, process ownership
-or retention policy. This classification adds no Assembly scope.
+inward on it. A cross-repository contract package would cost roughly
+100-150 LOC and one release dependency. Placement of a proven repeatable,
+policy-free mechanism is decided by owner, not by consumer count (library-first;
+see "Library-first placement" in `retained-nonqualified-attempt.md`): no stable
+cross-consumer receipt and writer invariant has been demonstrated yet, so none
+is extracted now. A second consumer would limit the stable-SPI claim for such a
+package, not where it lives. The local typed contract keeps that extraction
+possible without sharing Host inventory, process ownership or retention policy.
+This classification adds no Assembly scope.
 
 Raw-tree backup service and timer activation remain **NO-GO**. The checkpoint
 does not imply provider-session resumability.

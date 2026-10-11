@@ -4,13 +4,17 @@ This is an inert selected-job maintenance capture. Its receipt does not seal a
 terminal attempt, prove provider completion, activate routing, or grant
 resumability. The private helpers are fixed dependencies within the
 `worker-codex` cold-maintenance feature. They create no Core/Assembly handle or
-new consumer adoption claim. The canonical Get Modular document remains
+new consumer adoption claim. The current canonical Get Modular document is
 `docs/architecture/common-assembly.md#consumer-module-standard` at
-`d6127e2d3f499b91b220a222fc3672d29dff1ab2`, SHA-256
-`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`
-(the previously reviewed `6b31f20fe3e5fb8324812aa2ee907905751cde71` /
+`4728b276b87378ca9d72a7be2b89a5fd49b97eea` (Git blob
+`20c281b3137f5d3c198250e9f8101c0ecd4cbc75`, 54680 B), complete-document SHA-256
+`859fbca1e8a0c61b6ae873bea0057735a55b80230100e6e73a74de22e123165a`.
+The previously reviewed `d6127e2d3f499b91b220a222fc3672d29dff1ab2` /
+`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`, `6b31f20fe3e5fb8324812aa2ee907905751cde71` /
 `d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f` and the exact
-delta are recorded in `retained-nonqualified-attempt.md`; adoption stays pending).
+deltas (including d612 to 4728: 141 insertions, 10 deletions, diff SHA-256
+`f5da152530e6c0830afb9a26f93863347eed8f76e9067aee9442db2c6c0717b6`) are recorded in
+`retained-nonqualified-attempt.md` as historical records; adoption stays pending.
 
 `private-cold-source-observation.ts` reads actual kernel boot, mount and sysfs
 block-device state. It requires an exact source mount, a read-only mount and

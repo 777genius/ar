@@ -20,7 +20,15 @@ pretending its own Docker/cache mounts match the producer. Node/OS/tool binary
 facts are still independently measured inside the control process. A missing/changed
 value safely runs full gates. Runner images must be ephemeral,
 trusted and isolated; a shared writable runner installation cannot authenticate
-its own environment. Source runner label is the effective `vars.RUNNER`.
+its own environment. The source runner label is per family: the crash lanes use
+the effective `vars.RUNNER`, while the four Unit lanes run on the stock
+`ubuntu-24.04` VM (their private TEST tmp mount needs sudo, CAP_SYS_ADMIN and mount
+namespaces) and capture `CI_PROOF_RUNNER_LABEL: ubuntu-24.04`. The detector verifies
+all lanes against one expected label and one trusted producer fingerprint, so a
+receipt whose label differs (for example when `vars.RUNNER` is not `ubuntu-24.04`),
+or whose image digest or config revision is missing (a stock VM has no
+`CI_RUNNER_IMAGE_DIGEST` / `CI_RUNNER_CONFIG_REV`), is rejected and the matching
+lanes run in full. Reuse then fails closed; it is never forged.
 
 ## Detector job (main pushes only)
 
