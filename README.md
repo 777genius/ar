@@ -47,7 +47,7 @@ await runCodexGoal({
   workspacePath: "/srv/my-app/repo",
   authRootDir: "/srv/my-app/accounts",
   promptPath: "/srv/my-app/prompts/review.md",
-  accounts: ["worker-1"],
+  accounts: [{ name: "worker-1" }],
 });
 ```
 
