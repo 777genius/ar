@@ -365,6 +365,7 @@ function createCodexAgentDriver(input: {
         allowedTools: options.boundedWorkspaceTools.allowedTools,
         modelBackend,
         mimoApiKeyEnvVarName,
+        ...(executionEngine === "app-server-goal" ? { nativeGoalControls: true as const } : {}),
         ...(options.childBudget ? { childLifetime: options.childBudget.lifetime } : {}),
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
@@ -455,6 +456,7 @@ function createCodexAgentDriver(input: {
                   historyMode: "none" as const,
                 },
                 nativeToolSurface: "disabled" as const,
+                ...(executionEngine === "app-server-goal" ? { nativeGoalControls: true as const } : {}),
               }
             : modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard
             ? { nativeToolSurface: "disabled" as const }
