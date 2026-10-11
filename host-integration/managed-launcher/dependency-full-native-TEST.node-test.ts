@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
+import {constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
 test("counterfeit accessors and proxies cannot execute during request capture",()=>{
   let calls=0;const getter={get jobId(){calls++;return "TEST-dependency-full-native-20261007-r1";}};
   const proxy=new Proxy({}, {get(){calls++;throw Error("TEST-private");},getPrototypeOf(){calls++;throw Error("TEST-private");},ownKeys(){calls++;throw Error("TEST-private");},getOwnPropertyDescriptor(){calls++;throw Error("TEST-private");}});
@@ -272,4 +272,11 @@ test("source package contract keeps legacy and binds selected Positive package b
   const bytes=readFileSync(new URL("../../package.json",import.meta.url));
   assert.equal(fullNativeSourcePackageHash(2),createHash("sha256").update(bytes).digest("hex"));
   for(const value of [undefined,null,0,3,"2",{},true])assert.throws(()=>fullNativeSourcePackageHash(value));
+});
+
+test("staged constructor, census and close reject copied original-parent DATA before any physical work",async()=>{
+  const fake=Object.freeze({removalCase:FullRemovalCase.ParentCrashH1,unit:fullNativeUnit,revalidate(){throw new Error("caller callback must not execute");}});
+  assert.throws(()=>constructOriginalH1StagedObserver(fake),/Held/);
+  await assert.rejects(closeOriginalH1StagedObserver(fake),/Held/);
+  assert.throws(()=>readOriginalH1StagedTask(fake,{path:"/proc/1",processPid:1,processBirth:"1",birth:"1",revalidate(){throw new Error("caller callback must not execute");}}),/Held/);
 });

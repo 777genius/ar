@@ -197,9 +197,12 @@ finally:
 `;
 type Observer={child:ChildProcess;birth:string;argv:Buffer;exe:BigIntStats;parentBirth:string;request:H1Request;requestRef:Ref;root:string;hostOutbox:string;hostParent:Ref["identity"];hostDirectory:Ref["identity"];descriptors:readonly number[];stdio:readonly BigIntStats[];sources:readonly BigIntStats[];parentPid:number;lock:string;closed:boolean};
 const observers=new WeakMap<object,Observer>();
-export function startOriginalH1Observer(parent:originalProfile.FullParentSession):Readonly<{armed:Promise<void>;closed:Promise<H1ObserverState>}>{
-  originalProfile.assertRetainedCurrentFullParent(parent);assert(!observers.has(parent));assert.equal(process.platform,"linux");assert.equal(process.getuid!(),0);assert.equal(readlinkSync("/proc/self/ns/pid"),readlinkSync("/proc/1/ns/pid"));
-  const held:Pin[]=[],dirs:number[]=[];let child:ChildProcess|undefined;
+type H1PreparedObserver=ReturnType<typeof retainOriginalH1ObserverInputs>;
+const preparedObservers=new WeakMap<object,H1PreparedObserver>();
+/** Fixed source-owned input custody, never a caller FD/namespace registry. */
+function retainOriginalH1ObserverInputs(parent:originalProfile.FullParentSession){
+  originalProfile.assertRetainedCurrentFullParent(parent);assert(!observers.has(parent) && !preparedObservers.has(parent));
+  const held:Pin[]=[],dirs:number[]=[];
   const keep=(path:string,max?:number)=>{const p=pin(path,max);held.push(p);return p;},dir=(path:string)=>{const fd=directory(path);dirs.push(fd);return fd;},procDir=(path:string)=>{const fd=openSync(path,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);dirs.push(fd);return fd;};
   try{
     const pairPin=keep(originalProfile.fullNativeLiveRoot+"/current-full-pair.json"),backingPin=keep(originalProfile.fullNativeLiveRoot+"/current-full-backing.json"),pair=json(pairPin),backing=json(backingPin);
@@ -215,23 +218,116 @@ export function startOriginalH1Observer(parent:originalProfile.FullParentSession
     assert.equal(bounded("/proc/"+parentPid+"/cmdline",32768),parentArgv);assert.equal(bounded("/proc/"+supervisorPid+"/cmdline",32768),supervisorArgv);const group=bounded("/proc/"+parentPid+"/cgroup",4096);assert.equal(group,bounded("/proc/"+supervisorPid+"/cgroup",4096));assert(group.endsWith("/system.slice/TEST-retention-supervisor.service\n"));
     assert(Array.isArray(p.guestSources));for(const path of [runtime+"/toolchain/bin/node",runtime+"/scripts/dependency-retention-os-test/current-full-guest.js",runtime+"/scripts/dependency-retention-os-test/current-full-supervisor.js"]){const rows:unknown[]=p.guestSources.filter((v:unknown)=>v && typeof v==="object" && "path" in v && v.path===path);assert.equal(rows.length,1);assert.equal(digest(readFileSync(root+path)),(rows[0] as {sha256:unknown}).sha256);}
     const absentPin=keep(root+request.absent.path),av=json(absentPin);assert(equal({...absentPin.ref,path:request.absent.path},request.absent));assert(av && typeof av==="object" && "state" in av && "operationId" in av && "revision" in av && "workspace" in av);assert(av.state==="absent" && typeof av.operationId==="string" && uuid.test(av.operationId) && av.revision===request.revision && equal(av.workspace,request.workspace));
-    const ns:number[]=[];let supervisorInvocation:string;
-    try{for(const path of ["/proc/"+guest.pid+"/ns/mnt","/proc/"+guest.pid+"/ns/pid",root])ns.push(openSync(path,C.O_RDONLY));parent.revalidate();
-      const shown=namespaceTool(parent,tool=>{assert.equal(tool.executable,"/usr/bin/nsenter");const before=fstatSync(tool.executableFd,{bigint:true});assert(before.isFile() && before.uid===0n && (before.mode&0o7777n)===0o755n);
-        const result=spawnSync("/proc/self/fd/6",["--mount=/proc/self/fd/3","--pid=/proc/self/fd/4","--root=/proc/self/fd/5","--wdns=/","--","/usr/bin/systemctl","--system","show","--property=Id,MainPID,InvocationID,ControlGroup,ActiveState,Job","--","TEST-retention-supervisor.service"],{stdio:["ignore","pipe","pipe",...ns,tool.executableFd],encoding:"utf8",timeout:2000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",DBUS_SYSTEM_BUS_ADDRESS:"unix:path=/run/systemd/private"}});assert(sameStat(before,fstatSync(tool.executableFd,{bigint:true})));return result;});
-      assert(!shown.error && shown.status===0 && shown.signal===null && shown.stderr==="");const values:Record<string,string>={};for(const line of shown.stdout.trimEnd().split("\n")){const at=line.indexOf("=");assert(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}assert.equal(Object.keys(values).sort().join(","),"ActiveState,ControlGroup,Id,InvocationID,Job,MainPID");assert(values.Id==="TEST-retention-supervisor.service" && values.MainPID===request.supervisorId.split(":")[0] && values.ControlGroup==="/system.slice/TEST-retention-supervisor.service" && values.ActiveState==="active" && values.Job==="" && values.InvocationID && /^[a-f0-9]{32}$/.test(values.InvocationID));supervisorInvocation=values.InvocationID;parent.revalidate();assert.equal(birth("/proc/"+guest.pid),guest.birth);
-    }finally{for(const fd of ns)closeSync(fd);}
     const ops=dir(root+operations),owner=dir(root+policy+"/dependency-owners"),pd=dir(root+policy),od=dir(root+outbox),pp=procDir("/proc/"+parentPid),sp=procDir("/proc/"+supervisorPid);
     const hostOutbox=dirname(p.root)+"/policy-request-outbox",hostParentFd=directory(dirname(p.root));let hostFd:number|undefined,hostParent!:Ref["identity"],hostDirectory!:Ref["identity"];
     try{hostFd=directory("/proc/self/fd/"+hostParentFd+"/policy-request-outbox");hostParent=identity(fstatSync(hostParentFd,{bigint:true}));hostDirectory=identity(fstatSync(hostFd,{bigint:true}));assert(equal(hostDirectory,identity(fstatSync(od,{bigint:true}))));const hp=ready(hostOutbox,H1ReadinessRecord.Request,16384);try{assert(equal({...hp.ref,path:requestPin.ref.path},requestPin.ref) && equal(parseH1Request(json(hp)),request));}finally{closeSync(hp.fd);}parent.revalidate();assert.equal(birth("/proc/"+guest.pid),guest.birth);}finally{if(hostFd!==undefined)closeSync(hostFd);closeSync(hostParentFd);}
-    const config={purpose:"TEST_original_removal_H1_only",request,operations,policy,key:request.workspace.dev+"-"+request.workspace.ino,evictionId:av.operationId,ownerPath:policy+"/dependency-owners/"+request.workspace.dev+"-"+request.workspace.ino+".json",parentPid,parentTicks:birth("/proc/"+parentPid),supervisorPid,supervisorTicks:birth("/proc/"+supervisorPid),group,parentArgv,supervisorArgv,pidNamespace:guest.pidNamespace,supervisorInvocation,requestPath:outbox+"/"+H1ReadinessRecord.Request,requestDigest:requestPin.ref.sha256,backingPath:originalProfile.fullNativeLiveRoot+"/current-full-backing.json",backingDigest:backingPin.ref.sha256};
+    const config={purpose:"TEST_original_removal_H1_only",request,operations,policy,key:request.workspace.dev+"-"+request.workspace.ino,evictionId:av.operationId,ownerPath:policy+"/dependency-owners/"+request.workspace.dev+"-"+request.workspace.ino+".json",parentPid,parentTicks:birth("/proc/"+parentPid),supervisorPid,supervisorTicks:birth("/proc/"+supervisorPid),group,parentArgv,supervisorArgv,pidNamespace:guest.pidNamespace,supervisorInvocation:null,requestPath:outbox+"/"+H1ReadinessRecord.Request,requestDigest:requestPin.ref.sha256,backingPath:originalProfile.fullNativeLiveRoot+"/current-full-backing.json",backingDigest:backingPin.ref.sha256};
+    const mnt=openSync("/proc/"+guest.pid+"/ns/mnt",C.O_RDONLY);dirs.push(mnt);
+    const pidns=openSync("/proc/"+guest.pid+"/ns/pid",C.O_RDONLY);dirs.push(pidns);
+    const rootFd=openSync(root,C.O_RDONLY);dirs.push(rootFd);const ns=[mnt,pidns,rootFd] as const;
+    const anchors=Object.freeze([ops,owner,pd,od,absentPin.fd,pp,sp,requestPin.fd,backingPin.fd]);
+    const fixedDirs=dirs.map(fd=>({fd,stat:fstatSync(fd,{bigint:true})}));
+    const guestBoot=bounded(root+"/proc/sys/kernel/random/boot_id",128).trim();assert.equal(guestBoot,request.bootId);
+    let closed=false;
+    function revalidateSources(){
+      assert(!closed);parent.revalidate();assert.equal(birth("/proc/"+guest.pid),guest.birth);
+      assert.equal(readlinkSync("/proc/"+guest.pid+"/ns/pid"),guest.pidNamespace);
+      assert.equal(String(statSync(root,{bigint:true}).dev),p.rootDev);assert.equal(String(statSync(root,{bigint:true}).ino),p.rootIno);
+      for(const pin of held){assert(sameStat(pin.stat,fstatSync(pin.fd,{bigint:true})) && sameStat(pin.stat,lstatSync(pin.path,{bigint:true})));const bytes=Buffer.alloc(pin.bytes.length+1),size=readSync(pin.fd,bytes,0,bytes.length,0);assert(size===pin.bytes.length && bytes.subarray(0,size).equals(pin.bytes) && sameStat(pin.stat,fstatSync(pin.fd,{bigint:true})));}
+      for(const d of fixedDirs){const actual=fstatSync(d.fd,{bigint:true});assert(equal(identity(actual),identity(d.stat)) && actual.mode===d.stat.mode && actual.uid===d.stat.uid && actual.gid===d.stat.gid);}
+      assert.equal(birth("/proc/"+supervisorPid),config.supervisorTicks);
+      assert.equal(bounded(root+"/proc/sys/kernel/random/boot_id",128).trim(),guestBoot);parent.revalidate();
+    }
+    function revalidate(){revalidateSources();assert.equal(birth("/proc/"+parentPid),config.parentTicks);revalidateSources();}
+    function close(){if(closed)return;closed=true;for(const fd of dirs)closeSync(fd);for(const pin of held)closeSync(pin.fd);}
+    revalidate();return {config,anchors,queryAnchors:ns,revalidate,revalidateSources,descriptors:()=>Object.freeze(closed?[]:[...dirs,...held.map(pin=>pin.fd)]),close,request,requestPin,root,hostOutbox,hostParent,hostDirectory,parentPid,evictionId:av.operationId};
+  }catch(error){for(const fd of dirs)closeSync(fd);for(const pin of held)closeSync(pin.fd);throw error;}
+}
+/** Query program stays fixed SOURCE and performs no fanotify work before the
+ * constructor consumes actual private query attribution and closes its gates. */
+const stagedQuery=String.raw`
+qr,qw=os.pipe();er,ew=os.pipe();ar,aw=os.pipe()
+query=os.fork()
+if query==0:
+ os.close(qr);os.close(er);os.close(ar)
+ assert os.read(0,1)==b'2'
+ os.write(aw,b'1');os.close(aw)
+ os.dup2(qw,1);os.dup2(ew,2);os.close(qw);os.close(ew)
+ for fd in range(3,12):os.close(fd)
+ for fd in (13,14,15):os.set_inheritable(fd,True)
+ os.execve('/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',['/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2','--inhibit-cache','--library-path','/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/systemd','/usr/bin/nsenter','--mount=/proc/self/fd/13','--pid=/proc/self/fd/14','--root=/proc/self/fd/15','--wdns=/','--','/usr/bin/systemctl','--system','show','--property=Id,MainPID,InvocationID,ControlGroup,ActiveState,Job','--','TEST-retention-supervisor.service'],{'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','DBUS_SYSTEM_BUS_ADDRESS':'unix:path=/run/systemd/private'})
+os.close(qw);os.close(ew);os.close(aw)
+queryfd=os.pidfd_open(query,0)
+print('query:'+str(query),flush=True)
+try:
+ assert select.select([ar],[],[],max(0,deadline-time.monotonic()))[0] and os.read(ar,2)==b'1'
+ os.close(ar);ar=None;queryend=min(deadline,time.monotonic()+2);data=b'';errors=b'';streams={qr,er}
+ while streams:
+  ready=select.select(list(streams),[],[],max(0,queryend-time.monotonic()))[0];assert ready,'TEST_H1_query_timeout_HOLD'
+  for fd in ready:
+   chunk=os.read(fd,4097)
+   if fd==qr:data+=chunk
+   else:errors+=chunk
+   assert len(data)+len(errors)<=4096
+   if not chunk:streams.remove(fd)
+ assert not errors and select.select([queryfd],[],[],max(0,queryend-time.monotonic()))[0]
+ assert os.waitpid(query,0)[1]==0
+ values={}
+ for line in data.decode().rstrip('\n').split('\n'):
+  key,value=line.split('=',1);assert key not in values;values[key]=value
+ assert sorted(values)==['ActiveState','ControlGroup','Id','InvocationID','Job','MainPID']
+ assert values['Id']=='TEST-retention-supervisor.service' and values['MainPID']==c['request']['supervisorId'].split(':')[0] and values['ControlGroup']=='/system.slice/TEST-retention-supervisor.service' and values['ActiveState']=='active' and values['Job']==''
+ invocation=values['InvocationID'];assert len(invocation)==32 and all(x in '0123456789abcdef' for x in invocation)
+ c['supervisorInvocation']=invocation
+ print('query_complete:'+json.dumps(values,separators=(',',':')),flush=True)
+ assert select.select([0],[],[],max(0,deadline-time.monotonic()))[0] and os.read(0,1)==b'3'
+ assert select.select([0],[],[],max(0,deadline-time.monotonic()))[0] and os.read(0,1)==b''
+finally:
+ try:
+  if not select.select([queryfd],[],[],0)[0]:signal.pidfd_send_signal(queryfd,signal.SIGKILL,None,0)
+ finally:
+  os.close(queryfd);os.close(qr);os.close(er)
+  if ar is not None:os.close(ar)
+`;
+const stagedKernel=kernel.replace("lib=ctypes.CDLL(None,use_errno=True)",stagedQuery+"\nlib=ctypes.CDLL(None,use_errno=True)").replace("assert open('/proc/sys/kernel/random/boot_id').read().strip()==c['request']['bootId']","boot=os.open('proc/sys/kernel/random/boot_id',flags,dir_fd=15)\n try:assert os.read(boot,129).decode().strip()==c['request']['bootId']\n finally:os.close(boot)");
+/** Fixed factory called only by the retained original native slot. */
+export function prepareOriginalH1StagedObserver(parent:originalProfile.FullParentSession){
+  const prepared=retainOriginalH1ObserverInputs(parent);preparedObservers.set(parent,prepared);
+  return Object.freeze({program:stagedKernel,config:JSON.stringify(prepared.config),anchors:prepared.anchors,queryAnchors:prepared.queryAnchors,revalidate:prepared.revalidate,revalidateSources:prepared.revalidateSources,descriptors:prepared.descriptors,close:prepared.close});
+}
+type StagedObserverContext=Pick<Observer,"request"|"requestRef"|"hostOutbox"|"hostParent"|"hostDirectory"|"closed">;
+const stagedObservers=new WeakMap<object,StagedObserverContext>();
+export async function startOriginalH1StagedObserver(parent:originalProfile.FullParentSession):Promise<Readonly<{armed:Promise<void>;closed:Promise<H1ObserverState>}>>{
+  const launch=await originalProfile.constructOriginalH1StagedObserver(parent),prepared=preparedObservers.get(parent);assert(prepared);
+  const own:StagedObserverContext={request:prepared.request,requestRef:prepared.requestPin.ref,hostOutbox:prepared.hostOutbox,hostParent:prepared.hostParent,hostDirectory:prepared.hostDirectory,closed:false};stagedObservers.set(parent,own);
+  let resolveArm!:()=>void,rejectArm!:(e:Error)=>void;const armed=new Promise<void>((resolve,reject)=>{resolveArm=resolve;rejectArm=reject;});void armed.catch(()=>{});
+  let output="",errors=0,arm=false,failed=false;
+  const fail=()=>{failed=true;rejectArm(new Error("TEST_H1_staged_protocol_HOLD"));void originalProfile.closeOriginalH1StagedObserver(parent).catch(()=>{});};
+  launch.stdout.on("data",(chunk:Buffer)=>{try{output+=chunk.toString("utf8");assert(output.length<=128 && "armed\noriginal_parent_dead\n".startsWith(output));if(!arm && output.startsWith("armed\n")){publishH1ReadinessRecord(own.hostOutbox,H1ReadinessRecord.Armed,encode({purpose:"TEST_observer_armed_only",requestSha256:own.requestRef.sha256}));arm=true;resolveArm();}}catch{fail();}});
+  launch.stderr.on("data",(chunk:Buffer)=>{errors+=chunk.length;if(errors>4096)fail();});
+  const closed=launch.closed.then(async()=>{own.closed=true;assert(!failed && arm && errors===0 && launch.child.exitCode===0 && launch.child.signalCode===null && output==="armed\noriginal_parent_dead\n");await originalProfile.closeOriginalH1StagedObserver(parent);parent.revalidate();return H1ObserverState.ParentDead;},error=>{rejectArm(new Error("TEST_H1_staged_not_armed"));throw error;});void closed.catch(()=>rejectArm(new Error("TEST_H1_staged_not_armed")));return Object.freeze({armed,closed});
+}
+export function startOriginalH1Observer(parent:originalProfile.FullParentSession):Readonly<{armed:Promise<void>;closed:Promise<H1ObserverState>}>{
+  const prepared=retainOriginalH1ObserverInputs(parent);
+  const {config,anchors,request,requestPin,root,hostOutbox,hostParent,hostDirectory,parentPid,evictionId}=prepared;
+  const [ops,owner,pd,od,absentFd,pp,sp,requestFd,backingFd]=anchors;
+  assert(ops!==undefined && owner!==undefined && pd!==undefined && od!==undefined && absentFd!==undefined && pp!==undefined && sp!==undefined && requestFd!==undefined && backingFd!==undefined);
+  let child:ChildProcess|undefined;
+  try{
+    const ns=prepared.queryAnchors;let supervisorInvocation:string;
+    try{prepared.revalidate();
+      const shown=namespaceTool(parent,tool=>{assert.equal(tool.executable,"/usr/bin/nsenter");const before=fstatSync(tool.executableFd,{bigint:true});assert(before.isFile() && before.uid===0n && (before.mode&0o7777n)===0o755n);
+        const result=spawnSync("/proc/self/fd/6",["--mount=/proc/self/fd/3","--pid=/proc/self/fd/4","--root=/proc/self/fd/5","--wdns=/","--","/usr/bin/systemctl","--system","show","--property=Id,MainPID,InvocationID,ControlGroup,ActiveState,Job","--","TEST-retention-supervisor.service"],{stdio:["ignore","pipe","pipe",...ns,tool.executableFd],encoding:"utf8",timeout:2000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",DBUS_SYSTEM_BUS_ADDRESS:"unix:path=/run/systemd/private"}});assert(sameStat(before,fstatSync(tool.executableFd,{bigint:true})));return result;});
+      assert(!shown.error && shown.status===0 && shown.signal===null && shown.stderr==="");const values:Record<string,string>={};for(const line of shown.stdout.trimEnd().split("\n")){const at=line.indexOf("=");assert(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}assert.equal(Object.keys(values).sort().join(","),"ActiveState,ControlGroup,Id,InvocationID,Job,MainPID");assert(values.Id==="TEST-retention-supervisor.service" && values.MainPID===request.supervisorId.split(":")[0] && values.ControlGroup==="/system.slice/TEST-retention-supervisor.service" && values.ActiveState==="active" && values.Job==="" && values.InvocationID && /^[a-f0-9]{32}$/.test(values.InvocationID));supervisorInvocation=values.InvocationID;parent.revalidate();prepared.revalidate();
+    }finally{prepared.revalidate();}
+    const launchConfig={...config,supervisorInvocation};
     let exe!:BigIntStats,sources!:readonly BigIntStats[],executableFd!:number;
-    child=pythonTool(parent,tool=>{assert.equal(tool.executable,"/usr/bin/python3.12");exe=fstatSync(tool.executableFd,{bigint:true});sources=[exe,...tool.closure.map(x=>fstatSync(x.fd,{bigint:true}))];executableFd=tool.executableFd;child=spawn("/proc/self/fd/12",["-I","-S","-B","-c",kernel,JSON.stringify(config)],{stdio:["pipe","pipe","pipe",ops,owner,pd,od,absentPin.fd,pp,sp,requestPin.fd,backingPin.fd,tool.executableFd],env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C"}});return child;});assert(child?.pid && child.stdin && child.stdout && child.stderr);child.stdin.end();assert(equal(identity(statSync("/proc/"+child.pid+"/exe",{bigint:true})),identity(exe)));
-    const own:Observer={child,birth:birth("/proc/"+child.pid),argv:Buffer.from(["/proc/self/fd/12","-I","-S","-B","-c",kernel,JSON.stringify(config),""].join("\0")),exe,parentBirth:process.pid+":"+birth("/proc/self"),request,requestRef:requestPin.ref,root,hostOutbox,hostParent,hostDirectory,descriptors:[ops,owner,pd,od,absentPin.fd,pp,sp,requestPin.fd,backingPin.fd,executableFd],stdio:[0,1,2].map(fd=>statSync("/proc/"+child!.pid+"/fd/"+fd,{bigint:true})),sources,parentPid,lock:root+operations+"/"+av.operationId+".remove.lock",closed:false};observers.set(parent,own);
+    child=pythonTool(parent,tool=>{assert.equal(tool.executable,"/usr/bin/python3.12");exe=fstatSync(tool.executableFd,{bigint:true});sources=[exe,...tool.closure.map(x=>fstatSync(x.fd,{bigint:true}))];executableFd=tool.executableFd;child=spawn("/proc/self/fd/12",["-I","-S","-B","-c",kernel,JSON.stringify(launchConfig)],{stdio:["pipe","pipe","pipe",ops,owner,pd,od,absentFd,pp,sp,requestPin.fd,backingFd,tool.executableFd],env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C"}});return child;});assert(child?.pid && child.stdin && child.stdout && child.stderr);child.stdin.end();assert(equal(identity(statSync("/proc/"+child.pid+"/exe",{bigint:true})),identity(exe)));
+    const own:Observer={child,birth:birth("/proc/"+child.pid),argv:Buffer.from(["/proc/self/fd/12","-I","-S","-B","-c",kernel,JSON.stringify(launchConfig),""].join("\0")),exe,parentBirth:process.pid+":"+birth("/proc/self"),request,requestRef:requestPin.ref,root,hostOutbox,hostParent,hostDirectory,descriptors:[ops,owner,pd,od,absentFd,pp,sp,requestPin.fd,backingFd,executableFd],stdio:[0,1,2].map(fd=>statSync("/proc/"+child!.pid+"/fd/"+fd,{bigint:true})),sources,parentPid,lock:root+operations+"/"+evictionId+".remove.lock",closed:false};observers.set(parent,own);
     let armResolve!:()=>void,armReject!:(e:Error)=>void;const armed=new Promise<void>((r,j)=>{armResolve=r;armReject=j;});void armed.catch(()=>{});let output="",errors=0,arm=false,failed=false;
     const fail=()=>{failed=true;armReject(new Error("TEST_H1_protocol_HOLD"));child!.kill("SIGTERM");};child.stdout.on("data",(chunk:Buffer)=>{try{output+=chunk.toString("utf8");assert(output.length<=128 && "armed\noriginal_parent_dead\n".startsWith(output));if(!arm && output.startsWith("armed\n")){publishH1ReadinessRecord(hostOutbox,H1ReadinessRecord.Armed,encode({purpose:"TEST_observer_armed_only",requestSha256:requestPin.ref.sha256}));arm=true;armResolve();}}catch{fail();}});child.stderr.on("data",(chunk:Buffer)=>{errors+=chunk.length;if(errors>4096)fail();});
-    const closed=new Promise<H1ObserverState>((resolve,reject)=>{const timer=setTimeout(()=>child!.kill("SIGTERM"),32000);child!.once("close",(code,signal)=>{clearTimeout(timer);own.closed=true;for(const fd of dirs)closeSync(fd);for(const p of held)closeSync(p.fd);if(!failed && arm && code===0 && signal===null && errors===0 && output==="armed\noriginal_parent_dead\n"){try{parent.revalidate();resolve(H1ObserverState.ParentDead);}catch{reject(new Error("TEST_H1_parent_HOLD"));}}else{armReject(new Error("TEST_H1_not_armed"));reject(new Error("TEST_H1_NOT_RUN"));}});child!.once("error",()=>armReject(new Error("TEST_H1_spawn_HOLD")));});void closed.catch(()=>{});return {armed,closed};
-  }catch(e){if(child)child.kill("SIGTERM");for(const fd of dirs)closeSync(fd);for(const p of held)closeSync(p.fd);throw e;}
+    const closed=new Promise<H1ObserverState>((resolve,reject)=>{const timer=setTimeout(()=>child!.kill("SIGTERM"),32000);child!.once("close",(code,signal)=>{clearTimeout(timer);own.closed=true;prepared.close();if(!failed && arm && code===0 && signal===null && errors===0 && output==="armed\noriginal_parent_dead\n"){try{parent.revalidate();resolve(H1ObserverState.ParentDead);}catch{reject(new Error("TEST_H1_parent_HOLD"));}}else{armReject(new Error("TEST_H1_not_armed"));reject(new Error("TEST_H1_NOT_RUN"));}});child!.once("error",()=>armReject(new Error("TEST_H1_spawn_HOLD")));});void closed.catch(()=>{});return {armed,closed};
+  }catch(e){if(child)child.kill("SIGTERM");prepared.close();throw e;}
 }
 export enum H1DescriptorKind {OriginalAnchor="original_anchor",OwnPipe="own_fixed_pipe",ProtectedRecord="original_protected_record",ToolSource="original_tool_source",Fanotify="own_finite_fanotify_group",Requester="own_original_requester_pidfd"}
 export type H1TaskAnchor=Readonly<{path:string;processPid:number;processBirth:string;revalidate():void}>;
@@ -251,7 +347,7 @@ export function readOriginalH1Observer(parent:object,task:H1TaskAnchor):Readonly
   for(let fd=0;fd<=12;fd++)assert(list.includes(String(fd)));assert.equal(groups,1);const maps=bounded(task.path+"/maps",1024*1024);for(const line of maps.trimEnd().split("\n")){const m=/^[0-9a-f]+-[0-9a-f]+\s+[rwxps-]{4}\s+[0-9a-f]+\s+([0-9a-f]+):([0-9a-f]+)\s+([0-9]+)(?:\s+.*)?$/.exec(line);assert(m);if(m[3]==="0")continue;const major=BigInt("0x"+m[1]),minor=BigInt("0x"+m[2]),dev=(minor&255n)|(major<<8n)|((minor&~255n)<<12n);assert(own.sources.some(source=>source.dev===dev && String(source.ino)===m[3]));}assert.equal(bounded(task.path+"/maps",1024*1024),maps);assert(equal(list,readdirSync(task.path+"/fd").sort((a,b)=>Number(a)-Number(b))));rejoin();return Object.freeze({pid,birth:own.birth,programSha256:digest(Buffer.from(kernel)),descriptors:Object.freeze(descriptors),sources:Object.freeze(own.sources.map(source=>Object.freeze(identity(source))))});
 }
 export function readOriginalH1SupervisorAcceptance(parent:object):Readonly<{supervisorBirth:string;originalParentPid:number;recoveryPid:number;originalRequest:H1Request}>{
-  originalProfile.assertRetainedCurrentFullParent(parent);const own=observers.get(parent);assert(own?.closed);const hostParent=directory(dirname(own.hostOutbox));let hostDir:number|undefined,a:Pin|undefined,r:Pin|undefined;
+  originalProfile.assertRetainedCurrentFullParent(parent);const own=stagedObservers.get(parent)??observers.get(parent);assert(own?.closed);const hostParent=directory(dirname(own.hostOutbox));let hostDir:number|undefined,a:Pin|undefined,r:Pin|undefined;
   const rejoin=()=>{originalProfile.assertRetainedCurrentFullParent(parent);assert(equal(identity(fstatSync(hostParent,{bigint:true})),own.hostParent) && equal(identity(lstatSync(dirname(own.hostOutbox),{bigint:true})),own.hostParent));assert(hostDir!==undefined && equal(identity(fstatSync(hostDir,{bigint:true})),own.hostDirectory) && equal(identity(lstatSync("/proc/self/fd/"+hostParent+"/policy-request-outbox",{bigint:true})),own.hostDirectory));originalProfile.assertRetainedCurrentFullParent(parent);};
   try{hostDir=directory("/proc/self/fd/"+hostParent+"/policy-request-outbox");rejoin();a=ready(own.hostOutbox,H1ReadinessRecord.Accepted,4096);r=ready(own.hostOutbox,H1ReadinessRecord.Request,16384);const v=json(a),request=parseH1Request(json(r));assert(equal({...r.ref,path:own.requestRef.path},own.requestRef) && equal(request,own.request));fields(v,"schemaVersion,purpose,sourceSha,supervisorBirth,originalParentPid,recoveryPid");assert(v.schemaVersion===1 && v.purpose==="TEST_actual_supervisor_H1_child_close_only" && v.sourceSha===request.sourceSha && v.supervisorBirth===request.supervisorId && String(v.originalParentPid)===request.parentBirth.split(":")[0] && Number.isSafeInteger(v.recoveryPid) && Number(v.recoveryPid)>1 && v.recoveryPid!==v.originalParentPid);rejoin();const again=ready(own.hostOutbox,H1ReadinessRecord.Request,16384);try{assert(equal({...again.ref,path:own.requestRef.path},own.requestRef) && equal(parseH1Request(json(again)),request));}finally{closeSync(again.fd);}rejoin();return Object.freeze({supervisorBirth:request.supervisorId,originalParentPid:Number(v.originalParentPid),recoveryPid:Number(v.recoveryPid),originalRequest:Object.freeze({...request,workspace:Object.freeze({...request.workspace}),absent:Object.freeze({...request.absent,identity:Object.freeze({...request.absent.identity})})})});
   }finally{if(a)closeSync(a.fd);if(r)closeSync(r.fd);if(hostDir!==undefined)closeSync(hostDir);closeSync(hostParent);}

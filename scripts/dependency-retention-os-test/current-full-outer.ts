@@ -10,8 +10,8 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { FullRestoreConsumer, FullRemovalCase, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
-import { H1ReadinessRecord, h1Qualification, readH1ReadinessRecord, readOriginalH1SupervisorAcceptance, startOriginalH1Observer, H1ObserverState } from "./current-removal-h1-fixture.js";
+import { FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { H1ReadinessRecord, h1Qualification, readH1ReadinessRecord, readOriginalH1SupervisorAcceptance, startOriginalH1StagedObserver, H1ObserverState } from "./current-removal-h1-fixture.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
@@ -224,12 +224,12 @@ try {
     assert.match(invocationId ?? "", /^[a-f0-9]{32}$/); evidence.invocationId = invocationId;
     throw new Error("owned TEST diagnostic-only observation; qualification not attempted");
   }
-  let h1Observer:ReturnType<typeof startOriginalH1Observer>|undefined;
+  let h1Observer:Awaited<ReturnType<typeof startOriginalH1StagedObserver>>|undefined;
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     remaining(deadline);
     if(managedParent.removalCase===FullRemovalCase.ParentCrashH1 && !h1Observer && readH1ReadinessRecord(outbox,H1ReadinessRecord.Request)){
-      assert(evidence.backingIntervalQualified);h1Observer=startOriginalH1Observer(managedParent);await h1Observer.armed;
+      assert(evidence.backingIntervalQualified);h1Observer=await startOriginalH1StagedObserver(managedParent);await h1Observer.armed;
     }
     const intervalRequest=outbox+"/current-full-interval-request.json";
     if(existsSync(intervalRequest) && !evidence.backingIntervalQualified) {
@@ -366,6 +366,7 @@ try {
       }
       if (backing) { try { backing.revalidate(); } catch { evidence.backingFinalObservationUncertain = true; } }
       if(backing && evidence.status==="partial_pass" && managedParent.removalCase===FullRemovalCase.ParentCrashH1){try{backing.prepareH1Terminal();}catch{evidence.backingRetentionTerminalUnproven=true;evidence.status="failed";process.exitCode=1;}}
+      if(managedParent.removalCase===FullRemovalCase.ParentCrashH1)await closeOriginalH1StagedObserver(managedParent);
       command("/usr/bin/systemctl", ["stop", unit], 45000);
       evidence.ownedOsStopped = true;
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }

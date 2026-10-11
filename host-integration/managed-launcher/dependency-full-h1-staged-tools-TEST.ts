@@ -1,4 +1,4 @@
-/** Fixed H1 staged-tool DATA validation. No child, callback, namespace or FD grant. */
+/** Fixed H1 staged-tool catalog and original constructor transport. DATA parsers never grant authority. */
 import {createHash} from "node:crypto";
 import {types} from "node:util";
 import {performance} from "node:perf_hooks";
@@ -58,7 +58,7 @@ export function h1StagedSubjectData(v:unknown):H1StagedSubject{
 /** Equality of already captured DATA; never substitutes for owned namespace reads. */
 export function h1StagedManifestData(expected:H1StagedSubject,actual:unknown):void{const d=record(actual,["mounts","hostRelease","syntheticBootId"]);same(list(d.mounts).map(mountRow),expected.mounts);same(hostRelease(d.hostRelease),expected.hostRelease);need(uuid(d.syntheticBootId)===expected.syntheticBootId && d.syntheticBootId!==expected.bootId);}
 /** Linux retained physical DATA facts only; returns neither descriptors nor authority. */
-export function retainH1StagedCatalogData(root:string,subject:H1StagedSubject,deadline:number):Readonly<{revalidate():void;close():void}>{
+export function retainH1StagedCatalogData(root:string,subject:H1StagedSubject,deadline:number):Readonly<{revalidate():void;descriptors():readonly number[];close():void}>{
   subject=h1StagedSubjectData(subject);need(process.platform==="linux" && root!=="/" && root.length<=4096 && root.startsWith("/") && posix.normalize(root)===root && Number.isFinite(deadline));
   let closed=false,total=0;const held=new Map<string,{fd:number;identity:H1ObjectIdentity;entry:H1CatalogEntry|undefined}>(),ancestry:{fd:number;parent:number|undefined;name:string;identity:H1ObjectIdentity}[]=[];
   const tick=()=>need(!closed && performance.now()<deadline);
@@ -71,8 +71,53 @@ export function retainH1StagedCatalogData(root:string,subject:H1StagedSubject,de
   try{let parent=openSync("/",constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);ancestry.push({fd:parent,parent:undefined,name:"/",identity:actualIdentity(fstatSync(parent,{bigint:true}))});for(const name of root.slice(1).split("/").slice(0,-1)){const next=openChild(parent,name,true);const s=fstatSync(next,{bigint:true});ancestry.push({fd:next,parent,name,identity:actualIdentity(s)});need(s.uid===0n && s.gid===0n && (s.mode&0o022n)===0n);parent=next;}
     const fd=openChild(parent,posix.basename(root),true);held.set("",{fd,identity:subject.rootIdentity,entry:undefined});same(actualIdentity(fstatSync(fd,{bigint:true})),subject.rootIdentity);
     for(const entry of [...subject.catalog].sort((a,b)=>a.path.split("/").length-b.path.split("/").length)){if(entry.kind===H1CatalogKind.Alias)continue;const directory=held.get(posix.dirname(entry.path)==="."?"":posix.dirname(entry.path));need(directory);const child=openChild(directory.fd,posix.basename(entry.path),entry.kind===H1CatalogKind.Directory);held.set(entry.path,{fd:child,identity:entry.identity,entry});const s=fstatSync(child,{bigint:true});need(entry.kind===H1CatalogKind.Directory?s.isDirectory():s.isFile());same(actualIdentity(s),entry.identity);if(entry.kind===H1CatalogKind.File){total+=Number(s.size);need(total<=limits.totalBytes && readHash(child)===entry.sha256);}}
-    validate();return Object.freeze({revalidate:validate,close:finish});
+    validate();return Object.freeze({revalidate:validate,descriptors(){tick();return Object.freeze([...held.values()].map(row=>row.fd).concat(ancestry.map(row=>row.fd)));},close:finish});
   }catch(error){finish();throw error;}
 }
-/** Selected-build runtime facts and genuine constructor are not implemented here. */
+/** Actual constructor qualification remains Held; candidate facts never release effects. */
 export function requireQualifiedH1StagedConstructor():never{throw new Error("TEST H1 staged Held: "+H1StagedUnsupportedReason.ConstructorRows);}
+
+/** Produced only by the source-pinned original fixture, then independently
+ * joined against the original native parent's selected guest and proc objects. */
+export interface H1StagedObserverPrepared {
+  readonly program:string;
+  readonly config:string;
+  readonly anchors:readonly number[];
+  readonly queryAnchors:readonly [number,number,number];
+  revalidate():void;
+  revalidateSources():void;
+  descriptors():readonly number[];
+  close():void;
+}
+export enum H1StagedSlotState {Unconstructed="unconstructed",Constructing="constructing",Constructed="constructed",Closed="closed"}
+export enum H1StagedActorRole {Monitor="h1_staged_monitor",Worker="h1_staged_worker",Query="h1_staged_query",Systemctl="h1_staged_systemctl"}
+/** No HOST Python/import source, cache, caller program or environment selection.
+ * The script itself is retained original SOURCE; aliases are generated solely
+ * from the original native parent's nine retained descriptor objects. */
+export const h1StagedObserverBootstrap=String.raw`
+import os,sys,json,stat,select,time,fcntl
+assert os.getuid()==0 and sys.platform=='linux'
+p=json.loads(sys.argv[1]); assert set(p)=={'parentPid','parentTicks','anchors','anchorObjects','queryAnchors','queryObjects','program','config','bootId','guestBootId'}
+assert len(p['anchors'])==len(p['anchorObjects'])==9 and len(p['queryAnchors'])==len(p['queryObjects'])==3
+s=open('/proc/'+str(p['parentPid'])+'/stat').read();assert s[s.rfind(')')+2:].split()[19]==p['parentTicks']
+opened=[]
+for source,obj in zip(p['anchors']+p['queryAnchors'],p['anchorObjects']+p['queryObjects']):
+ fd=os.open('/proc/'+str(p['parentPid'])+'/fd/'+str(source),os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK)
+ a=os.fstat(fd);assert [str(a.st_dev),str(a.st_ino),str(a.st_mode)]==obj;opened.append(fd)
+# First duplicate above all target slots. Opening successive objects directly
+# into slots3..11 could destroy a still-needed original descriptor.
+held=[fcntl.fcntl(fd,fcntl.F_DUPFD_CLOEXEC,16) for fd in opened]
+for slot,fd in zip(list(range(3,12))+[13,14,15],held):os.dup2(fd,slot,inheritable=False)
+for fd in set(opened+held):
+ if fd not in list(range(3,12))+[13,14,15]:os.close(fd)
+s=open('/proc/self/stat').read();parts=s[s.rfind(')')+2:].split()
+print('constructor:'+json.dumps({'pid':os.getpid(),'birth':parts[19],'ppid':os.getppid()},separators=(',',':')),flush=True)
+ready,_,_=select.select([0],[],[],2);assert ready
+assert os.read(0,1)==b'1'
+# Native checks actual proc/root/ns/catalog before releasing this one byte.
+# Original guest activation boot evidence is retained in the request. The host
+# boot stays in native original custody; tool synthetic /proc is separate.
+c=json.loads(p['config']);assert c['request']['bootId']==p['guestBootId']
+sys.argv=['/usr/bin/python3.12',p['config']]
+exec(compile(p['program'],'<original-source-H1>','exec'),{'__name__':'__main__'})
+`;

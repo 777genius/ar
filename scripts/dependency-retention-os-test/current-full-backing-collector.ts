@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../src/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { H1DescriptorKind, H1ReadinessRecord, parseH1Request, readH1ReadinessRecord, readOriginalH1Observer, readOriginalH1SupervisorAcceptance } from "./current-removal-h1-fixture.js";
@@ -734,6 +734,13 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
    * Its reader rejoins argv/birth/namespaces, every descriptor and source map. */
   function originalH1(anchor:FullProcTaskAnchor,joins:readonly Record<string,unknown>[],exposures:ReadonlySet<FullBackingExposure>):boolean {
     if(parent.removalCase!==FullRemovalCase.ParentCrashH1)return false;
+    const staged=readOriginalH1StagedTask(parent,anchor);
+    if(staged){
+      assert(staged.pid===anchor.processPid && staged.birth===anchor.processBirth);
+      for(const exposure of exposures)assert([FullBackingExposure.PrivilegeCandidate,FullBackingExposure.ProcDescriptor,FullBackingExposure.NamespaceDescriptor,FullBackingExposure.SocketDescriptor].includes(exposure));
+      for(const join of joins){const fd=staged.descriptors.find(entry=>String(entry.fd)===join.fd);assert(fd && fd.dev===String(join.dev) && fd.ino===String(join.ino));}
+      anchor.revalidate();assert.deepEqual(readOriginalH1StagedTask(parent,anchor),staged);return true;
+    }
     const fact=readOriginalH1Observer(parent,anchor);if(!fact)return false;
     assert(fact.pid===anchor.processPid && fact.birth===anchor.processBirth);
     for(const exposure of exposures)assert([FullBackingExposure.PrivilegeCandidate,FullBackingExposure.ProcDescriptor,FullBackingExposure.NamespaceDescriptor,FullBackingExposure.SocketDescriptor].includes(exposure));
