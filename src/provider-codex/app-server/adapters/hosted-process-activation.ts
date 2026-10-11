@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { hostedFdLaunch } from "./hosted-fd-launch";
 import type { ChildProcess } from "node:child_process";
@@ -169,7 +170,7 @@ const installationKeys = "schemaVersion,installationId,hostId,runtimeDirectory,r
  * Every use rereads the same-artifact stage, grant and retained managed history. */
 function collectHostedOrdinaryProcessFacts(fence: HostedActivationFence) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
-  const group = readFileSync("/proc/self/cgroup", "utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8"));
   const match = new RegExp(`^0::${unitGroup(`subscription-runtime-ordinary-(${uuid}).service`).replace(/\./g, "\\.")}$`).exec(group);
   if (!match) invalid();
   for (const pending of ["host-activation.next", "ordinary-origins.next", "readonly-epoch.next"]) {
@@ -413,7 +414,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const creator = creators.find(row => row.creatorId === start.creatorId);
   if (!creator) invalid(); same(creator, start, "jobId,jobRootDir,workspacePath");
   const show = (name: string) => {
-    const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name], {
+    const result = spawnSync("/usr/bin/systemctl", ["show", "--all", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000, maxBuffer: 256 * 1024,
       env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" },
     });
@@ -454,7 +455,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   }
   const creatorPid = str(start.creatorPidBirth).split(":")[0]!;
   if (pidBirth(creatorPid) !== start.creatorPidBirth ||
-      readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+      observedProcessCgroup(readFileSync(`/proc/${creatorPid}/cgroup`, "utf8")) !== `0::${owner.controlGroup}`) invalid();
   if (systemBusInfrastructure) verifySystemBusInfrastructure(systemBusInfrastructure);
   return creator;
 }
@@ -670,8 +671,8 @@ export function retainHostedScopedSubmitter(fence: HostedActivationFence, correl
   const c = parseScopedStartCorrelation(correlation);
   if (!child.pid) invalid();
   const submitter = { schemaVersion: 1, correlationDigest: scopedDigest(c),
-    pidBirth: pidBirth(String(child.pid)), controlGroup: readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim().replace(/^0::/, "") };
-  if (!/^0::\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim())) invalid();
+    pidBirth: pidBirth(String(child.pid)), controlGroup: observedProcessCgroup(readFileSync(`/proc/${child.pid}/cgroup`, "utf8")).replace(/^0::/, "") };
+  if (!/^0::\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(observedProcessCgroup(readFileSync(`/proc/${child.pid}/cgroup`, "utf8")))) invalid();
   const bytes = Buffer.from(JSON.stringify(submitter) + "\n");
   createActivationRecord(`ordinary-submitters/${c.startId}.json`, bytes);
   // Wrapper exit is an observation only. The separately owned launcher must
@@ -763,7 +764,7 @@ export function retainHostedScopedActorChain(fence: HostedActivationFence, corre
   const end = performance.now() + 1000;
   const observe = () => chain.actors.map(actor => {
     const pid = actor.pidBirth.split(":")[0]!;
-    if (pidBirth(pid) !== actor.pidBirth || readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}`) invalid();
+    if (pidBirth(pid) !== actor.pidBirth || observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8")) !== `0::${actor.controlGroup}`) invalid();
     const stat = scopedTaskStat(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
     if (actor.parentPidBirth && stat.parent !== actor.parentPidBirth.split(":")[0]) invalid();
     // Creator siblings belong to separately retained scopes. Only the admitted
@@ -809,7 +810,7 @@ export function observeHostedScopedActorChildren(actor: ScopedEnqueueActor, end:
     const stat = scopedTaskStat(tid, readFileSync(path + "/stat", "utf8"));
     const status = readFileSync(path + "/status", "utf8"), raw = readFileSync(path + "/children", "utf8");
     if (status.length > 65536 || status.match(/^Tgid:\s+([0-9]+)$/m)?.[1] !== pid || status.match(/^Pid:\s+([0-9]+)$/m)?.[1] !== tid ||
-        readFileSync(path + "/cgroup", "utf8").trim() !== `0::${actor.controlGroup}` || raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) throw new Error("scoped_actor_tasks_ambiguous");
+        observedProcessCgroup(readFileSync(path + "/cgroup", "utf8")) !== `0::${actor.controlGroup}` || raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) throw new Error("scoped_actor_tasks_ambiguous");
     const children = raw.trim() ? raw.trim().split(/\s+/).sort() : [];
     if (children.length > 64 || new Set(children).size !== children.length) throw new Error("scoped_actor_tasks_ambiguous");
     return { ...stat, children };
@@ -818,7 +819,7 @@ export function observeHostedScopedActorChildren(actor: ScopedEnqueueActor, end:
   // A child appearing under two different tasks is ambiguous, not a union proof.
   if (children.length > 64 || new Set(children).size !== children.length || JSON.stringify(ids) !== JSON.stringify(taskIds()) ||
       scopedDigest(tasks) !== scopedDigest(observe()) || pidBirth(pid) !== actor.pidBirth ||
-      readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}` || JSON.stringify(ids) !== JSON.stringify(taskIds())) throw new Error("scoped_actor_membership_changed");
+      observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8")) !== `0::${actor.controlGroup}` || JSON.stringify(ids) !== JSON.stringify(taskIds())) throw new Error("scoped_actor_membership_changed");
   check(); return { children, tasks };
 }
 function scopedTaskStat(tid: string, raw: string): { birth: string; parent: string } {
