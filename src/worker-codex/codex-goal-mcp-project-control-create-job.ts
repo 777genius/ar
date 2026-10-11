@@ -65,6 +65,7 @@ export async function projectControlCreateCodexGoalJobView(
     requested.accessBoundary ?? AccessBoundary.IsolatedWorkspaceWrite;
   const workerRole = projectAdmissionWorkerRoleArg(args.workerRole);
   const accounts = await projectControlCreateAccountNames({
+    ...(requested.modelBackend === undefined ? {} : { modelBackend: requested.modelBackend }),
     ...(requested.authRootDir ? { authRootDir: requested.authRootDir } : {}),
     requestedAccounts: requested.accounts,
     allowedAccountIds: controller.scope.allowedAccountIds ?? [],

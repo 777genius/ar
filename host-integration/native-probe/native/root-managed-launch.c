@@ -21,7 +21,11 @@
 #define MANAGER_IFACE "org.freedesktop.systemd1.Manager"
 #define DAEMON "org.freedesktop.DBus"
 #define DAEMON_PATH "/org/freedesktop/DBus"
+#ifdef NP_RETAINED_V2_B1A
+#define CALLS 96
+#else
 #define CALLS 1024
+#endif
 #define JOBS 32
 #define MATCH "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.systemd1'"
 struct original_call {
@@ -43,6 +47,11 @@ struct original_job {
 ;
 struct np_managed_original {
   struct np_root_origin *origin;
+#ifdef NP_RETAINED_V2_B1A
+  bool retained_only,retained_refs[3],retained_acks[3],retained_name_acquired;
+  char retained_digests[3][65];
+  sd_bus_message *retained_incoming[160];unsigned retained_messages;
+#endif
   sd_bus *direct,*api,*collision;
   sd_bus_slot *direct_filter,*api_filter;
   struct np_birth manager,daemon;
@@ -77,6 +86,61 @@ static int copy(char *to,size_t capacity,const char *from){
   strcpy(to,from);
   return 0;
 }
+static bool cgroup_token_char(unsigned char c,bool named) {
+  return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-'||(named&&c=='.');
+}
+static int cgroup_controllers(const unsigned char *bytes,size_t length) {
+  if(!length)return -1;
+  size_t at=0;
+  while(at<length){
+    size_t end=at;
+    while(end<length&&bytes[end]!=',')end++;
+    bool named=end-at>=5&&!memcmp(bytes+at,"name=",5);
+    size_t start=at+(named?5:0);
+    if(start==end)return -1;
+    for(size_t i=start;i<end;i++)if(!cgroup_token_char(bytes[i],named))return -1;
+    if(end==length)return 0;
+    at=end+1;
+  }
+  return -1;
+}
+int np_managed_cgroup_bytes_v1(const void *data,size_t length,const char *expected) {
+  if(!data||!length||length>NP_MANAGED_CGROUP_BYTES||!expected||expected[0]!='/')return -1;
+  const unsigned char *bytes=data;
+  if(bytes[length-1]!='\n'||memchr(bytes,0,length)||memchr(bytes,'\r',length))return -1;
+  size_t expected_length=strnlen(expected,1024);
+  if(expected_length>=1024)return -1;
+  bool unified=false;
+  size_t at=0;
+  while(at<length){
+    size_t end=at;
+    while(end<length&&bytes[end]!='\n')end++;
+    size_t first=at;
+    while(first<end&&bytes[first]>='0'&&bytes[first]<='9')first++;
+    if(first==at||first==end||bytes[first]!=':'||(bytes[at]=='0'&&first!=at+1))return -1;
+    size_t second=first+1;
+    while(second<end&&bytes[second]!=':')second++;
+    if(second==end||second+1==end||bytes[second+1]!='/')return -1;
+    if(bytes[at]=='0'){
+      size_t path_length=end-second-1;
+      if(unified||second!=first+1||path_length!=expected_length||memcmp(bytes+second+1,expected,path_length))return -1;
+      unified=true;
+    }else if(cgroup_controllers(bytes+first+1,second-first-1))return -1;
+    at=end+1;
+  }
+  return unified?0:-1;
+}
+int np_managed_cgroup_read_v1(int fd,const char *expected) {
+  unsigned char bytes[NP_MANAGED_CGROUP_BYTES],extra;
+  size_t used=0;
+  for(;;){
+    ssize_t count=read(fd,used==sizeof bytes?&extra:bytes+used,used==sizeof bytes?1:sizeof bytes-used);
+    if(count<0)return -1;
+    if(!count)return np_managed_cgroup_bytes_v1(bytes,used,expected);
+    if(used==sizeof bytes)return -1;
+    used+=(size_t)count;
+  }
+}
 static int same(int a,int b){
   struct stat x,y;
   return fstat(a,&x)||fstat(b,&y)||x.st_dev!=y.st_dev||x.st_ino!=y.st_ino?-1:0;
@@ -86,7 +150,13 @@ static void lose(struct np_managed_original *m,const char *reason) {
   if(!m->loss_reason){m->loss_reason=reason;(void)np_origin_journal_v1(m->origin,"manager-loss",reason);}
 }
 static int boundary(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
-  if((m->lost&&!cleanup)||np_birth_live_v1(&m->manager)||np_origin_boundary_v1(o,cleanup)){
+  if((m->lost&&!cleanup)||np_birth_live_v1(&m->manager)||
+#ifdef NP_RETAINED_V2_B1A
+    (m->retained_only&&!cleanup?np_origin_retained_boundary_v2(o):np_origin_boundary_v1(o,cleanup))
+#else
+    np_origin_boundary_v1(o,cleanup)
+#endif
+  ){
     return -1;
   }
   if(m->connect_sent&&(np_birth_live_v1(&m->daemon)||live(m->listener_pidfd))){
@@ -114,6 +184,26 @@ static int response(sd_bus_message *message,void *data,sd_bus_error *error) {
 static int event(sd_bus_message *message,void *data,sd_bus_error *error) {
   (void)error;
   struct np_managed_original *m=data;
+#ifdef NP_RETAINED_V2_B1A
+  if(m->retained_only && sd_bus_message_get_bus(message)==m->api){
+    if(m->retained_messages==160){lose(m,"retained-api-message-bound");return 1;}
+    m->retained_incoming[m->retained_messages++]=sd_bus_message_ref(message);
+    uint8_t type;
+    if(sd_bus_message_get_type(message,&type)<0 || type==1){lose(m,"retained-api-unexpected-method");return 1;}
+    if((type==2 || type==3) && m->initialized){
+      uint64_t cookie;bool retained=false;
+      if(sd_bus_message_get_reply_cookie(message,&cookie)<0){lose(m,"retained-api-reply-cookie");return 1;}
+      for(unsigned i=0;i<m->call_count;i++)if(m->calls[i].sent && m->calls[i].cookie==cookie && sd_bus_message_get_bus(m->calls[i].request)==m->api){retained=true;break;}
+      if(!retained){lose(m,"retained-api-unassociated-reply");return 1;}
+    }
+    if(type==4 && sd_bus_message_is_signal(message,DAEMON,"NameAcquired")>0){
+      const char *sender=sd_bus_message_get_sender(message),*name;
+      if(!sender || strcmp(sender,DAEMON) || !sd_bus_message_get_path(message) || strcmp(sd_bus_message_get_path(message),DAEMON_PATH) || sd_bus_message_has_signature(message,"s")<=0 || sd_bus_message_read(message,"s",&name)<=0 || !name || name[0]!=':' || m->retained_name_acquired || (m->sender[0]&&strcmp(m->sender,name)) || copy(m->sender,sizeof m->sender,name))lose(m,"retained-api-name-acquired");
+      m->retained_name_acquired=true;return 0;
+    }
+    if(type==4 && sd_bus_message_is_signal(message,DAEMON,"NameOwnerChanged")<=0){lose(m,"retained-api-unexpected-signal");return 0;}
+  }
+#endif
   if(sd_bus_message_get_bus(message)==m->api&&sd_bus_message_is_signal(message,DAEMON,"NameOwnerChanged")>0){
     const char *name,*before,*after;
     const char *sender=sd_bus_message_get_sender(message);
@@ -179,7 +269,11 @@ static int pump(struct np_root_origin *o,struct np_managed_original *m,bool clea
   return 0;
 }
 static struct original_call *message(struct np_managed_original *m,sd_bus *bus,const char *destination,const char *path,const char *interface,const char *method,const char *sender) {
-  if(m->call_count>=CALLS){
+  if(m->call_count>=CALLS
+#ifdef NP_RETAINED_V2_B1A
+    || (m->retained_only && m->call_count>=96)
+#endif
+  ){
     return NULL;
   }
   struct original_call *c=&m->calls[m->call_count++];
@@ -457,13 +551,18 @@ static int daemon_same(struct np_root_origin *o,struct np_managed_original *m,bo
   }
   return 0;
 }
-int np_managed_open_v1(struct np_root_origin *o,struct np_managed_original **out) {
+static int managed_open(struct np_root_origin *o,struct np_managed_original **out,bool retained) {
   struct np_managed_original *m=calloc(1,sizeof *m);
   if(!m){
     return -1;
   }
   *out=m;
   m->origin=o;
+#ifdef NP_RETAINED_V2_B1A
+  m->retained_only=retained;
+#else
+  (void)retained;
+#endif
   m->manager.pidfd=m->manager.time=m->manager.children=m->daemon.pidfd=m->daemon.time=m->daemon.children=-1;
   m->listener_pidfd=m->daemon_exe=m->daemon_proc=m->events=m->collision_peer=-1;
   if(copy(m->unit,sizeof m->unit,np_origin_unit_v1(o))){
@@ -488,6 +587,19 @@ int np_managed_open_v1(struct np_root_origin *o,struct np_managed_original **out
   m->initialized=!result;
   return result;
 }
+int np_managed_open_v1(struct np_root_origin *o,struct np_managed_original **out){return managed_open(o,out,false);}
+#ifdef NP_RETAINED_V2_B1A
+static struct np_managed_original *original_retained_reference;
+int np_managed_retained_open_v2(struct np_root_origin *o,struct np_managed_original **out,const struct np_birth *manager){
+  if(!out || !manager || original_retained_reference || manager->pid!=1 || np_birth_live_v1(manager))return -1;
+  /* Register the sole original channel before any connect: failure is retained,
+   * never a reconnect or a new sender. The original Root provides its cell. */
+  int result=managed_open(o,out,true);
+  original_retained_reference=*out;
+  if(result || !*out || same((*out)->manager.time,manager->time) || same((*out)->manager.children,manager->children) )return -1;
+  return 0;
+}
+#endif
 int np_managed_api_ref_open_v1(struct np_root_origin *o,struct np_managed_original *m) {
   struct unit_facts f;
   unsigned char zero[16]={
@@ -545,7 +657,7 @@ int np_managed_api_ref_open_v1(struct np_root_origin *o,struct np_managed_origin
     return -1;
   }
   const char *sender;
-  if(sd_bus_get_unique_name(m->api,&sender)<0||copy(m->sender,sizeof m->sender,sender)||simple(o,m,m->api,DAEMON,DAEMON_PATH,DAEMON,"AddMatch",MATCH,false,-1,DAEMON,NULL)){
+  if(sd_bus_get_unique_name(m->api,&sender)<0||(m->sender[0]&&strcmp(m->sender,sender))||copy(m->sender,sizeof m->sender,sender)||simple(o,m,m->api,DAEMON,DAEMON_PATH,DAEMON,"AddMatch",MATCH,false,-1,DAEMON,NULL)){
     return -1;
   }
   m->matched=true;
@@ -575,6 +687,37 @@ static int api_owner(struct np_root_origin *o,struct np_managed_original *m,bool
   }
   return daemon_same(o,m,cleanup);
 }
+#ifdef NP_RETAINED_V2_B1A
+int np_managed_retained_ref_v2(struct np_root_origin *o,struct np_managed_original *m,unsigned role,const char digest[65],uint64_t cookies[2]){
+  if(!m || m!=original_retained_reference || m->origin!=o || !m->retained_only || !m->initialized || role>=3 || !cookies || !digest || strnlen(digest,65)!=64 || strspn(digest,"0123456789abcdef")!=64 || m->retained_refs[role] || (role && !m->retained_acks[role-1]) || (role==1 && strcmp(digest,m->retained_digests[0])))return -1;
+  const char *format=role==0?"subscription-runtime-hosted-%s.slice":role==1?"subscription-runtime-retain-%s.target":"subscription-runtime-actors-%s.scope";
+  char unit[128];int n=snprintf(unit,sizeof unit,format,digest);
+  if(n<=0 || (size_t)n>=sizeof unit || boundary(o,m,false))return -1;
+  m->retained_refs[role]=true;memcpy(m->retained_digests[role],digest,65);
+  /* Original once slot burned before the first request. Every query is bounded
+   * by the same original work end, protected daemon birth and fixed sender.
+   * ACK is retained DATA; actual reference custody lives on this API handle. */
+  struct original_call *actual=NULL;
+  if(api_owner(o,m,false) || simple(o,m,m->api,m->unique,MANAGER_PATH,MANAGER_IFACE,"RefUnit",unit,false,(int)NP_ORIGIN_SLICE_RETAINED_REF+(int)role,m->unique,&actual) || api_owner(o,m,false) || !actual)return -1;
+  cookies[0]=actual->cookie;cookies[1]=actual->reply_cookie;
+  m->retained_acks[role]=true;return 0;
+}
+int np_managed_retained_current_v2(struct np_root_origin *o,struct np_managed_original *m){
+  if(!m || m!=original_retained_reference || m->origin!=o || !m->retained_only || !m->initialized || boundary(o,m,false) || np_birth_live_v1(&m->daemon) || live(m->listener_pidfd) || np_directory_check_v1(&m->socket_path))return -1;
+  const char *sender;
+  if(sd_bus_get_unique_name(m->api,&sender)<0 || !sender || strcmp(sender,m->sender))return -1;
+  int exe=openat(m->daemon_proc,"exe",O_RDONLY|O_CLOEXEC);
+  int changed=exe<0 || same(exe,m->daemon_exe) || same(m->daemon_exe,np_origin_daemon_fd_v1(o));if(exe>=0)close(exe);
+  if(changed)return -1;
+  /* Passive original channel reread: never reconnect, construct, enqueue or
+   * flush. Pending owner loss/unknown messages close before native commit. */
+  for(unsigned i=0;i<160;i++){
+    uint64_t queued=0;if(boundary(o,m,false) || sd_bus_get_n_queued_write(m->api,&queued)<0 || queued)return -1;
+    int progress=sd_bus_process(m->api,NULL);if(progress<0 || m->lost)return -1;if(!progress)return 0;
+  }
+  lose(m,"retained-api-drain-bound");return -1;
+}
+#endif
 int np_managed_live_v1(struct np_root_origin *o,struct np_managed_original *m) {
   uint64_t now;
   if(!m||m->closed||boundary(o,m,false)||np_origin_now_v1(o,&now)){
@@ -728,13 +871,9 @@ int np_managed_launch_v1(struct np_root_origin *o,struct np_managed_original *m,
   m->events=openat(np_directory_fd_v1(&m->cgroup),"cgroup.events",O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
   snprintf(path,sizeof path,"/proc/%ld/cgroup",(long)child);
   int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
-  char content[1200]={
-    0}
-  ,expected[1200];
-  snprintf(expected,sizeof expected,"0::%s\n",f.group);
-  ssize_t length=fd<0?-1:read(fd,content,sizeof content-1);
+  int membership=fd<0?-1:np_managed_cgroup_read_v1(fd,f.group);
   if(fd>=0)close(fd);
-  return m->events<0||length<=0||strcmp(content,expected)||live(pidfd)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,m->scope_invocation,false)?-1:0;
+  return m->events<0||membership||live(pidfd)||by_pidfd(o,m,pidfd,np_origin_unit_v1(o),m->scope_path,m->scope_invocation,false)?-1:0;
 }
 static int scope_same(struct np_root_origin *o,struct np_managed_original *m,bool cleanup) {
   struct unit_facts f;

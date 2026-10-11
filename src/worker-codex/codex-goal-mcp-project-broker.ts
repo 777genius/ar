@@ -1,3 +1,4 @@
+import { isProjectMimoWorkerLaunch, launchProjectMimoWorker, stopProjectMimoWorker } from "./project-mimo-worker-launch";
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
 import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { CodexGoalLaunchState, buildCodexGoalNoTmuxCommand } from "./codex-goal-ops";
@@ -403,11 +404,17 @@ function codexProjectControlPorts(
           }
           // Broker authorization publishes a receipt. Managed broker requests
           // must already be enclosed by the fixed CLI outer command before it.
-          await admitHostedControllerLaunch(startLaunch);
+          if (!isProjectMimoWorkerLaunch(startLaunch)) await admitHostedControllerLaunch(startLaunch);
           const previousBrokeredStart =
             process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START;
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START = "1";
           const launchWorker = async () => {
+            if (isProjectMimoWorkerLaunch(startLaunch)) {
+              const launched = await launchProjectMimoWorker({ registryRootDir: input.registryRootDir,
+                controllerJobId: input.controller.jobId, reservedLaunch: input.startLaunch! });
+              return { args: [], preview: `MiMo worker ${launched.jobId} (${launched.startId})`,
+                launchState: CodexGoalLaunchState.Scheduled };
+            }
             const outerStatus = await routeHostedGoalLaunch(startLaunch);
             if (outerStatus !== undefined) {
               return { args: [], preview: buildCodexGoalNoTmuxCommand(startLaunch), launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed };
@@ -493,6 +500,11 @@ function codexProjectControlPorts(
         });
         if (!stopPolicy.allowed) {
           throw new Error(stopPolicy.reason);
+        }
+        if (isProjectMimoWorkerLaunch(input.stopLaunch)) {
+          const evidence = await stopProjectMimoWorker({ registryRootDir: input.registryRootDir,
+            controllerJobId: input.controller.jobId, launch: input.stopLaunch });
+          return operationResult("MiMo worker stopped with reconciled workspace", evidence);
         }
         if (isHostedActivatedGoalLaunch(input.stopLaunch)) {
           stopHostedGoalLaunch(input.stopLaunch);

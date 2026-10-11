@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId,
+import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile,
   type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
-import { parseResearchGrant, parseResearchStartSpec, researchRunConfig, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
+import { assertResearchMimoProfileMatch, parseResearchGrant, parseResearchStartSpec, researchRunConfig, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchHash,
   researchId, researchInvalid, researchJson, researchName, researchPublish, researchRead, researchRecord, researchCustody, researchPath } from "./research-launch-files";
 import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSharedHost,
@@ -15,6 +15,7 @@ import { researchProviderUnits, signalResearchProvider } from "./research-launch
 import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
+import { researchAdmissionObservation, ResearchAdmissionFailureStage } from "./research-launch-admission-diagnostics";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
@@ -50,6 +51,7 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
       JSON.stringify(grant.registeredHandoff) !== JSON.stringify(spec.registeredHandoff) ||
       JSON.stringify(grant.workspaceDirectory) !== JSON.stringify(spec.workspaceDirectory)) researchInvalid();
   if ((spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
+  assertResearchMimoProfileMatch(spec.request, grant);
   assertResearchDirectory(spec.jobDirectory); assertResearchDirectory(spec.workspaceDirectory);
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
@@ -161,21 +163,22 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   const binding = readResearchStartBinding(initial.directory), { spec } = initial;
   if (spec.request.jobRootDir !== identity.jobRootDir || spec.request.workspacePath !== identity.workspacePath ||
       binding.specSha256 !== researchHash(initial.bytes) || binding.process.pid !== ownerPid || binding.service.unit !== spec.unit) researchInvalid();
-  const assertAuthorityCurrent = (): void => {
+  const observe = researchAdmissionObservation(initial.directory, initial.bytes, bindingBytes);
+  const assertAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
     const current = researchProcessIdentity(ownerPid), service = researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(current, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(current) !== JSON.stringify(binding.process) || JSON.stringify(service) !== JSON.stringify(binding.service) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
-  };
+  });
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
-  const assertCurrent = (): void => {
+  const assertCurrent = (): void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
     assertAuthorityCurrent();
     assertResearchMaterialBytes(spec);
     assertAuthorityCurrent();
-  };
+  });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
   return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent });
@@ -190,7 +193,11 @@ export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexP
 }
 export function admitResearchProcessFactory(identity: HostedTestEgressIdentity): CodexAppServerProcessFactory {
   const captured = captureResearchRuntime(identity);
-  const spawn = admittedResearchCodexProcessFactory({ jobId: identity.jobId,
+  const factory = admittedResearchCodexProcessFactory({ jobId: identity.jobId,
+    ...(captured.spec.request.hostedProfile === HostedMimoProfile.CodingV1
+      ? { hostedProfile: HostedMimoProfile.CodingV1 } : {}),
+    launchValidation: { codexBinaryPath: captured.spec.request.codexBinaryPath,
+      workspacePath: identity.workspacePath, homeRoot: join(identity.jobRootDir, "home") },
     launcherPath: join(captured.spec.runtimeDirectory, "host-integration", "research-provider-launch.mjs"),
     submit: (unit, effect) => {
       captured.assertCurrent();
@@ -206,14 +213,6 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
     },
     signal: (unit, signal) => signalResearchProvider(captured.directory, unit, signal),
   });
-  const factory: CodexAppServerProcessFactory = launch => {
-    const cwd = researchPath(launch.cwd), home = researchPath(launch.env.CODEX_HOME);
-    const runtimeHome = join(identity.jobRootDir, "home");
-    if (launch.command !== captured.spec.request.codexBinaryPath ||
-        (cwd !== identity.workspacePath && !cwd.startsWith(runtimeHome + "/")) ||
-        !home.startsWith(runtimeHome + "/")) researchInvalid();
-    return spawn(launch);
-  };
   factoryGuards.set(factory, captured.assertCurrent);
   if (captured.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) mimoWorkerFactories.set(factory, captured.spec);
   return factory;
