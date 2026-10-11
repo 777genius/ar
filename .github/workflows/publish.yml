@@ -59,9 +59,24 @@ jobs:
           ref: ${{ needs.validate_release.outputs.release_tag }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: &node_linux_prerequisite_script |
+          set -euo pipefail
+          # The official Linux Node.js binary needs libatomic.so.1 before setup-node can run it.
+          have_libatomic() { grep -q 'libatomic\.so\.1 ' < <(/sbin/ldconfig -p 2>/dev/null); }
+          if have_libatomic; then exit 0; fi
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::libatomic.so.1 is missing and this Linux runner has no apt-get"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1
+          have_libatomic
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and the ARC runners'
       # egress to the registry mirrors is intermittently flaky. Gates are never
@@ -113,9 +128,13 @@ jobs:
           persist-credentials: false
           sparse-checkout: scripts/publish-preflight.mjs
           sparse-checkout-cone-mode: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
           registry-url: https://npm.pkg.github.com
           scope: "@vioxen"

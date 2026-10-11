@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { readFileSync } from "node:fs";
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "../provider-codex/app-server/adapters/hosted-fd-child";
@@ -23,7 +24,7 @@ export function collectOriginalHostedDependencySnapshot(access:symbol,fence: Hos
   if(cold?.installerFrame && cold.installerPhase!==HostedDependencyColdInstallerPhase.Waited) {
     const frame=cold.installerFrame;assertHostedFdProcess(frame.child,frame.unit,HostedFdLaunchKind.Installer,frame.command,frame.args);
   }
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   if (/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(group)) {
     assertSelectedDescriptors(access,scope,rootPurpose);
     const before = collectCurrentHostedOrdinaryDependencyOrigin(fence);
