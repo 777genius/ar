@@ -102,8 +102,10 @@ export function fullReviewData(value:unknown) {
     return review;
   }
   check(version.value===1);
-  const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedSelected=Object.hasOwn(value,"h1StagedSubject");
-  const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedSelected?["h1StagedSubject"]:[])]);
+  const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedInline=Object.hasOwn(value,"h1StagedSubject"),stagedReference=Object.hasOwn(value,"h1StagedSubjectSha256"),stagedSelected=stagedInline || stagedReference;
+  check(!(stagedInline && stagedReference));
+  const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedInline?["h1StagedSubject"]:[]),...(stagedReference?["h1StagedSubjectSha256"]:[])]);
+  if(stagedReference)check(digest(review.h1StagedSubjectSha256));
   if(removalSelected)fullNativeRemovalCase(review.removalCase);
   if(stagedSelected)check(review.removalCase===FullRemovalCase.ParentCrashH1 && (review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary));
   if(selected)check(review.restoreConsumer===FullRestoreConsumer.Ordinary || review.restoreConsumer===FullRestoreConsumer.Readonly);
@@ -223,8 +225,11 @@ export function fullPositiveHostLibcData(value:unknown) {
 /** Original acquire uses this same closed selection/consumption parser. */
 export function fullHostToolsData(review:Record<string,unknown>) {
   const libcSelected=hasPositiveHostLibc(review.hostTools),sharedSelected=hasPositiveHostSystemdShared(review.hostTools),exceptional=libcSelected||sharedSelected;
-  const stagedH1=review.schemaVersion===1 && review.removalCase===FullRemovalCase.ParentCrashH1 && Object.hasOwn(review,"h1StagedSubject");
-  if(stagedH1){check(review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary);const subject=h1StagedSubjectData(review.h1StagedSubject);check(subject.sourceSha===review.sourceSha && subject.machineId===review.machineId && subject.bootId===review.bootId);}
+  const stagedInline=Object.hasOwn(review,"h1StagedSubject"),stagedReference=Object.hasOwn(review,"h1StagedSubjectSha256");check(!(stagedInline && stagedReference));
+  const stagedH1=review.schemaVersion===1 && review.removalCase===FullRemovalCase.ParentCrashH1 && (stagedInline || stagedReference);
+  if(stagedH1){check(review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary);
+    if(stagedReference)check(digest(review.h1StagedSubjectSha256));
+    else {const subject=h1StagedSubjectData(review.h1StagedSubject);check(subject.sourceSha===review.sourceSha && subject.machineId===review.machineId && subject.bootId===review.bootId);}}
   if(exceptional && !stagedH1){check(review.schemaVersion===2 && review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);fullPositiveAccountData(review.accountName);}
   if(stagedH1)check(libcSelected && sharedSelected);
   const tools=fullData(review.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(review.removalCase===FullRemovalCase.ParentCrashH1 && !stagedH1?["h1PythonClosure","h1NsenterClosure"]:[]),...(libcSelected?["positiveHostLibc"]:[]),...(sharedSelected?["positiveHostSystemdShared"]:[])]);
@@ -328,8 +333,17 @@ function acquire(context:RootContext=RootContext.Launcher){
     if(removalCase===FullRemovalCase.ParentCrashH1){
       // The independent subject selects one retained physical catalog, never
       // a namespace or process grant. Constructor authority stays original-only.
-      if(Object.hasOwn(r,"h1StagedSubject")){
-        const staged=h1StagedSubjectData(r.h1StagedSubject);
+      if(Object.hasOwn(r,"h1StagedSubject") || Object.hasOwn(r,"h1StagedSubjectSha256")){
+        // The measured complete physical catalog exceeds the inline review
+        // cap. One fixed separately pinned DATA file preserves all rows;
+        // neither this reference nor its contents grants effect qualification.
+        let subjectData:unknown=r.h1StagedSubject;
+        if(Object.hasOwn(r,"h1StagedSubjectSha256")){
+          const subjectPath=selectedReviewRoot+"/h1-staged-subject.json";
+          pins.publicFile(subjectPath,requireDigest(r.h1StagedSubjectSha256));
+          subjectData=pins.json(subjectPath,512*1024);
+        }
+        const staged=h1StagedSubjectData(subjectData);
         check(staged.sourceSha===r.sourceSha && staged.machineId===r.machineId && staged.bootId===r.bootId);
         // One physical .js delivery, shared by installed .mjs and source .js;
         // no unverified alias or second private-authority module instance.
@@ -631,6 +645,29 @@ export function constructOriginalH1StagedObserver(parent:object):Promise<FullH1S
 export async function closeOriginalH1StagedObserver(parent:object):Promise<void>{
   assertRetainedCurrentFullParent(parent);const close=fullH1StagedClosers.get(parent);check(close);await close();assertRetainedCurrentFullParent(parent);
 }
+export enum FullH1PrearmPhase { Constructing="constructing", ActorCaptured="actor_captured", Constructed="constructed", QueryReleased="query_released", QueryComplete="query_complete", QualificationGuard="qualification_guard", Held="held", CloseStarted="close_started", Closed="closed", CloseHeld="close_held" }
+export enum FullH1ObservationState { Unobserved="unobserved", Complete="complete", Incomplete="incomplete" }
+export enum FullH1PhysicalClass { File="file", Directory="directory", Pipe="pipe", Socket="socket", Character="character", Block="block", Fanotify="fanotify", Pidfd="pidfd", Unknown="unknown" }
+export enum FullH1SourceJoin { Monitor="monitor", Staged="staged", Guest="guest", Unknown="unknown" }
+export enum FullH1DescriptorJoin { Stdio="stdio", Source="source", Retained="retained", QueryPipe="query_pipe", WorkerPipe="worker_pipe", Kernel="kernel", Unknown="unknown" }
+type FullH1ObjectFact=Readonly<{dev:string;ino:string;mode:string;uid:string}>;
+type FullH1TableFact<T>=Readonly<{state:FullH1ObservationState;rows:readonly T[]}>;
+type FullH1PrearmActorFact=Readonly<{role:H1StagedActorRole;pid:number;birth:string;proc:FullH1ObjectFact;exe:FullH1ObjectFact;root:FullH1ObjectFact;mount:FullH1ObjectFact;exeSource:FullH1SourceJoin;
+  namespaces:Readonly<{mnt:string|null;pid:string|null;user:string|null;cgroup:string|null}>;joined:boolean;sourceObjects:readonly Readonly<{dev:string;ino:string;source:FullH1SourceJoin}>[];
+  mounts:FullH1TableFact<Readonly<{id:string;parent:string;device:string;rowSha256:string;rootSha256:string;targetSha256:string}>>;
+  maps:FullH1TableFact<Readonly<{start:string;end:string;permissions:string;offset:string;dev:string;ino:string;source:FullH1SourceJoin;unknownVeto:boolean}>>;
+  descriptors:FullH1TableFact<Readonly<{fd:number;object:FullH1ObjectFact;physicalClass:FullH1PhysicalClass;source:FullH1SourceJoin;join:FullH1DescriptorJoin;unknownVeto:boolean}>>;
+  tasks:FullH1TableFact<Readonly<{tid:number;tgid:number;birth:string}>>}>;
+export type FullH1PrearmSnapshot=Readonly<{schemaVersion:1;purpose:"TEST_actual_H1_prearm_facts_only";qualified:false;sourceComplete:false;state:H1StagedSlotState;
+  phases:readonly FullH1PrearmPhase[];actors:readonly FullH1PrearmActorFact[];observationIncomplete:boolean;
+  query:Readonly<{sourceSeen:boolean;systemctlSourceSeen:boolean;complete:boolean;held:boolean;effectAccepted:boolean}>;
+  close:Readonly<{started:boolean;state:FullH1ObservationState;absence:readonly Readonly<{role:H1StagedActorRole;pid:number;birth:string;absent:boolean}>[];descendants:readonly Readonly<{pid:number;birth:string;absent:boolean}>[];descriptorsClosed:boolean}>}>;
+const fullH1PrearmReaders=new WeakMap<object,()=>FullH1PrearmSnapshot>();
+/** Retained original-parent brand only. Frozen DATA survives owned close;
+ * this reader accepts no paths/callbacks and cannot construct or open a gate. */
+export function readOriginalH1PrearmSnapshot(parent:object):FullH1PrearmSnapshot{
+  const read=fullH1PrearmReaders.get(parent);check(read);return read();
+}
 type H1ActualActor=Readonly<{role:H1StagedActorRole;pid:number;birth:string;anchor:number;identity:string;exe:number;mount:number;root:number;command:Buffer;stdio:readonly Readonly<{dev:bigint;ino:bigint;mode:bigint;uid:bigint}>[]}>;
 export type FullH1StagedTaskFact=Readonly<{role:H1StagedActorRole;pid:number;birth:string;mountNamespace:string;
   descriptors:readonly Readonly<{fd:number;dev:string;ino:string}>[];sources:readonly Readonly<{dev:string;ino:string}>[]}>;
@@ -652,6 +689,53 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
   let lifetimeDeadline:number|undefined;
   const validatePrepared=()=>{if(parentDead)prepared?.revalidateSources();else prepared?.revalidate();};
   const actors:H1ActualActor[]=[],owned:number[]=[],stdout=new PassThrough(),stderr=new PassThrough();
+  const phases:FullH1PrearmPhase[]=[],actorFacts:FullH1PrearmActorFact[]=[];
+  let observationIncomplete=false,closeState=FullH1ObservationState.Unobserved,descriptorsClosed=false;
+  const absence:{role:H1StagedActorRole;pid:number;birth:string;absent:boolean}[]=[],descendantAbsence:{pid:number;birth:string;absent:boolean}[]=[];
+  const phase=(value:FullH1PrearmPhase)=>{if(phases.length<16)phases.push(value);else observationIncomplete=true;};
+  const objectFact=(stat:Readonly<{dev:bigint;ino:bigint;mode:bigint;uid:bigint}>):FullH1ObjectFact=>Object.freeze({dev:String(stat.dev),ino:String(stat.ino),mode:String(stat.mode),uid:String(stat.uid)});
+  // Independent factual reads never supply admission or extend the original
+  // deadline. Raw cmdline, filenames, mount paths and auth are not exported.
+  function observeActor(actor:H1ActualActor){
+    if(actorFacts.length>=8){observationIncomplete=true;return;}
+    const base=`/proc/self/fd/${actor.anchor}`;
+    const tick=()=>check(lifetimeDeadline!==undefined && performance.now()<lifetimeDeadline && !closing);
+    const bytes=(suffix:string,limit:number)=>{tick();const fd=openSync(base+suffix,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      try{const buffer=Buffer.alloc(limit+1);let size=0,count=0;while((count=readSync(fd,buffer,size,buffer.length-size,null))>0){size+=count;check(size<=limit);tick();}return buffer.subarray(0,size).toString("utf8");}finally{closeSync(fd);}};
+    const table=<T>(read:()=>T[]):FullH1TableFact<T>=>{try{return Object.freeze({state:FullH1ObservationState.Complete,rows:Object.freeze(read())});}catch{observationIncomplete=true;return Object.freeze({state:FullH1ObservationState.Incomplete,rows:Object.freeze([] as T[])});}};
+    try{
+      tick();const proc=objectFact(fstatSync(actor.anchor,{bigint:true})),exe=objectFact(fstatSync(actor.exe,{bigint:true})),root=objectFact(fstatSync(actor.root,{bigint:true})),mount=objectFact(fstatSync(actor.mount,{bigint:true}));
+      const monitor=c.monitorSources.map(row=>fstatSync(row.fd,{bigint:true})),staged=(c.h1Catalog?.descriptors()??[]).map(fd=>fstatSync(fd,{bigint:true}));
+      const same=(a:Readonly<{dev:bigint;ino:bigint}>,b:Readonly<{dev:bigint;ino:bigint}>)=>a.dev===b.dev && a.ino===b.ino;
+      const sourceObjects:Readonly<{dev:string;ino:string;source:FullH1SourceJoin}>[]=[];
+      const source=(dev:bigint,ino:bigint):FullH1SourceJoin=>{const actual={dev,ino};const join=actor.role===H1StagedActorRole.Monitor && monitor.some(row=>same(actual,row))?FullH1SourceJoin.Monitor:actor.role!==H1StagedActorRole.Monitor && actor.role!==H1StagedActorRole.Systemctl && staged.some(row=>row.isFile() && same(actual,row))?FullH1SourceJoin.Staged:actor.role===H1StagedActorRole.Systemctl && guestSources.some(row=>same(actual,row))?FullH1SourceJoin.Guest:FullH1SourceJoin.Unknown;if(join!==FullH1SourceJoin.Unknown && !sourceObjects.some(row=>row.dev===String(dev) && row.ino===String(ino))){if(sourceObjects.length<64)sourceObjects.push(Object.freeze({dev:String(dev),ino:String(ino),source:join}));else observationIncomplete=true;}return join;};
+      const namespace=(name:string)=>{try{tick();const value=readlinkSync(base+"/ns/"+name);check(new RegExp("^"+name+":\\[[1-9][0-9]*\\]$").test(value));return value;}catch{observationIncomplete=true;return null;}};
+      const namespaces=Object.freeze({mnt:namespace("mnt"),pid:namespace("pid"),user:namespace("user"),cgroup:namespace("cgroup")});
+      const mounts=table(()=>{const raw=bytes("/mountinfo",256*1024),lines=raw.trimEnd().split("\n");check(raw.endsWith("\n") && lines.length<=128);
+        const rows=lines.map(line=>{check(Buffer.byteLength(line)<=fullMountLineBytes);const cells=line.split(" "),at=cells.indexOf("-");check(at>=6 && cells.length===at+4 && /^[1-9][0-9]*$/.test(cells[0]??"") && /^[1-9][0-9]*$/.test(cells[1]??"") && /^[0-9]+:[0-9]+$/.test(cells[2]??""));
+          return Object.freeze({id:cells[0]!,parent:cells[1]!,device:cells[2]!,rowSha256:hash(line),rootSha256:hash(cells[3]!),targetSha256:hash(cells[4]!)});});check(bytes("/mountinfo",256*1024)===raw);return rows;});
+      const maps=table(()=>{const raw=bytes("/maps",1024*1024),lines=raw.trimEnd().split("\n");check(lines.length<=256);
+        const rows=lines.map(line=>{const cells=/^([0-9a-f]+)-([0-9a-f]+)\s+([rwxps-]{4})\s+([0-9a-f]+)\s+([0-9a-f]+):([0-9a-f]+)\s+([0-9]+)(?:\s+.*)?$/.exec(line);check(cells);
+          const major=BigInt("0x"+cells[5]),minor=BigInt("0x"+cells[6]),dev=(minor&255n)|(major<<8n)|((minor&~255n)<<12n),join=source(dev,BigInt(cells[7]!));
+          return Object.freeze({start:cells[1]!,end:cells[2]!,permissions:cells[3]!,offset:cells[4]!,dev:String(dev),ino:cells[7]!,source:join,unknownVeto:cells[7]!=="0" && join===FullH1SourceJoin.Unknown});});check(bytes("/maps",1024*1024)===raw);return rows;});
+      const descriptors=table(()=>{tick();const names=readdirSync(base+"/fd").sort((a,b)=>Number(a)-Number(b));check(names.length<=64 && names.every(name=>/^(0|[1-9][0-9]*)$/.test(name)));
+        const retained=[...owned,...(prepared?.descriptors()??[])].map(fd=>fstatSync(fd,{bigint:true}));
+        const rows=names.map(name=>{tick();const path=base+"/fd/"+name,stat=statSync(path,{bigint:true}),link=readlinkSync(path),fd=Number(name),sourceJoin=source(stat.dev,stat.ino);
+          const physicalClass=link==="anon_inode:[fanotify]"?FullH1PhysicalClass.Fanotify:link==="anon_inode:[pidfd]"?FullH1PhysicalClass.Pidfd:stat.isFile()?FullH1PhysicalClass.File:stat.isDirectory()?FullH1PhysicalClass.Directory:stat.isFIFO()?FullH1PhysicalClass.Pipe:stat.isSocket()?FullH1PhysicalClass.Socket:stat.isCharacterDevice()?FullH1PhysicalClass.Character:stat.isBlockDevice()?FullH1PhysicalClass.Block:FullH1PhysicalClass.Unknown;
+          const stdio=fd<3 && !!actor.stdio[fd] && same(actor.stdio[fd]!,stat) && actor.stdio[fd]!.mode===stat.mode && actor.stdio[fd]!.uid===stat.uid;
+          const join=stdio?FullH1DescriptorJoin.Stdio:sourceJoin!==FullH1SourceJoin.Unknown?FullH1DescriptorJoin.Source:retained.some(row=>same(row,stat))?FullH1DescriptorJoin.Retained:!effectAccepted && queryPipes.some(row=>same(row,stat) && row.mode===stat.mode)?FullH1DescriptorJoin.QueryPipe:actor.role===H1StagedActorRole.Monitor && worker?.stdio.some(row=>same(row,stat) && row.mode===stat.mode && row.uid===stat.uid)?FullH1DescriptorJoin.WorkerPipe:actor.role===H1StagedActorRole.Worker && (physicalClass===FullH1PhysicalClass.Fanotify || physicalClass===FullH1PhysicalClass.Pidfd)?FullH1DescriptorJoin.Kernel:FullH1DescriptorJoin.Unknown;
+          check(same(stat,statSync(path,{bigint:true})) && readlinkSync(path)===link);
+          return Object.freeze({fd,object:objectFact(stat),physicalClass,source:sourceJoin,join,unknownVeto:join===FullH1DescriptorJoin.Unknown});});check(JSON.stringify(readdirSync(base+"/fd").sort((a,b)=>Number(a)-Number(b)))===JSON.stringify(names));return rows;});
+      const tasks=table(()=>{tick();const names=readdirSync(base+"/task").sort();check(names.length<=32 && names.every(name=>/^[1-9][0-9]*$/.test(name)));
+        const rows=names.map(name=>{const status=bytes("/task/"+name+"/status",16384),tid=Number(/^Pid:\s+([1-9][0-9]*)$/m.exec(status)?.[1]),tgid=Number(/^Tgid:\s+([1-9][0-9]*)$/m.exec(status)?.[1]);check(tid===Number(name) && tgid===actor.pid);const birth=actualBirth(base+"/task/"+name,tid).birth;return Object.freeze({tid,tgid,birth});});check(JSON.stringify(readdirSync(base+"/task").sort())===JSON.stringify(names));return rows;});
+      let joined=false;try{tick();joined=identity(fstatSync(actor.anchor))===actor.identity && identity(statSync("/proc/"+actor.pid))===actor.identity && actualBirth(base,actor.pid).birth===actor.birth && identity(statSync(base+"/exe"))===identity(fstatSync(actor.exe)) && identity(statSync(base+"/root"))===identity(fstatSync(actor.root)) && identity(statSync(base+"/ns/mnt"))===identity(fstatSync(actor.mount));}catch{observationIncomplete=true;}
+      const fact=Object.freeze({role:actor.role,pid:actor.pid,birth:actor.birth,proc,exe,root,mount,exeSource:source(BigInt(exe.dev),BigInt(exe.ino)),namespaces,joined,mounts,maps,descriptors,tasks,sourceObjects:Object.freeze(sourceObjects)});
+      if(Buffer.byteLength(JSON.stringify(actorFacts.concat(fact)))<=96*1024)actorFacts.push(fact);else observationIncomplete=true;
+    }catch{observationIncomplete=true;}
+  }
+  const snapshot=():FullH1PrearmSnapshot=>Object.freeze({schemaVersion:1,purpose:"TEST_actual_H1_prearm_facts_only",qualified:false,sourceComplete:false,state,phases:Object.freeze([...phases]),actors:Object.freeze([...actorFacts]),observationIncomplete,
+    query:Object.freeze({sourceSeen:querySourceSeen,systemctlSourceSeen,complete:queryComplete,held:queryFailure!==undefined,effectAccepted}),
+    close:Object.freeze({started:closing,state:closeState,absence:Object.freeze(absence.map(row=>Object.freeze({...row}))),descendants:Object.freeze(descendantAbsence.map(row=>Object.freeze({...row}))),descriptorsClosed})});
   const actualBirth=(path:string,pid:number)=>{const raw=readFileSync(path+"/stat","utf8"),end=raw.lastIndexOf(") "),cells=raw.slice(end+2).trim().split(/\s+/);
     check(raw.startsWith(pid+" (") && end>0 && !["Z","X","x"].includes(cells[0]??"") && /^[1-9][0-9]*$/.test(cells[19]??""));return {birth:cells[19]!,ppid:Number(cells[1])};};
   const hold=(path:string,directory=false)=>{const fd=openSync(path,constants.O_RDONLY|(directory?constants.O_DIRECTORY:0));owned.push(fd);return fd;};
@@ -659,7 +743,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     const anchor=hold("/proc/"+pid,true);check(retainedFilesystemType(anchor)===0x9fa0n);
     const base=`/proc/self/fd/${anchor}`,first=actualBirth(base,pid),exe=hold(base+"/exe"),mount=hold(base+"/ns/mnt"),root=hold(base+"/root",true);
     const actor=Object.freeze({role,pid,birth:first.birth,anchor,identity:identity(fstatSync(anchor)),exe,mount,root,command:readFileSync(base+"/cmdline"),stdio:Object.freeze([0,1,2].map(fd=>statSync(base+"/fd/"+fd,{bigint:true})))});
-    check(actualBirth(base,pid).birth===first.birth);actors.push(actor);return actor;
+    check(actualBirth(base,pid).birth===first.birth);actors.push(actor);phase(FullH1PrearmPhase.ActorCaptured);return actor;
   }
   function rejoin(actor:H1ActualActor){
     c.validate();validatePrepared();const base=`/proc/self/fd/${actor.anchor}`;
@@ -706,7 +790,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
   }
   function close():Promise<void>{
     if(closePromise)return closePromise;if(state===H1StagedSlotState.Closed)return Promise.resolve();
-    closing=true;
+    closing=true;phase(FullH1PrearmPhase.CloseStarted);closeState=FullH1ObservationState.Incomplete;
     closePromise=(async()=>{
     const descendants=new Map<number,string>();
     function census(pid:number,depth=0){
@@ -724,15 +808,15 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     // Drain is kernel-observed on retained objects, never merely ChildProcess
     // event state. Unknown living descendants prevent closure.
     for(const actor of actors){try{readFileSync(`/proc/self/fd/${actor.anchor}/stat`);refuse();}
-      catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));}}
-    for(const [pid,birth] of descendants){try{check(actualBirth("/proc/"+pid,pid).birth!==birth);}
-      catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));}}
-    prepared?.close();for(const fd of owned.reverse())closeSync(fd);owned.length=0;state=H1StagedSlotState.Closed;c.validate();
-    })();return closePromise;
+      catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));absence.push({role:actor.role,pid:actor.pid,birth:actor.birth,absent:true});}}
+    for(const [pid,birth] of descendants){try{check(actualBirth("/proc/"+pid,pid).birth!==birth);descendantAbsence.push({pid,birth,absent:true});}
+      catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));descendantAbsence.push({pid,birth,absent:true});}}
+    prepared?.close();for(const fd of owned.reverse())closeSync(fd);owned.length=0;descriptorsClosed=true;state=H1StagedSlotState.Closed;c.validate();closeState=FullH1ObservationState.Complete;phase(FullH1PrearmPhase.Closed);
+    })().catch(error=>{phase(FullH1PrearmPhase.CloseHeld);throw error;});return closePromise;
   }
   async function construct():Promise<FullH1StagedObserver>{
     assertRetainedCurrentFullParent(parent);check(!closing && state===H1StagedSlotState.Unconstructed && c.h1Subject && c.h1Catalog && c.tuple.removalCase===FullRemovalCase.ParentCrashH1);
-    state=H1StagedSlotState.Constructing;lifetimeDeadline=performance.now()+32000;
+    state=H1StagedSlotState.Constructing;phase(FullH1PrearmPhase.Constructing);lifetimeDeadline=performance.now()+32000;
     try{
       const guest=selectedGuest();check(guest);c.validate();
       const module:typeof import("../../scripts/dependency-retention-os-test/current-removal-h1-fixture.js")=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-removal-h1-fixture.js").href);
@@ -759,19 +843,19 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       check(Buffer.byteLength(payload)<=65536);prepared.revalidate();c.validate();
       const directory=fullNativeInputBase+"/"+c.tuple.sourceSha+"/h1-tool-root-r1";
       child=spawn("/usr/bin/systemd-nspawn",["--quiet","--directory="+directory,"--read-only","--private-users=no","--settings=no","--register=no","--keep-unit","--share-system","--link-journal=no","--console=pipe","--resolv-conf=off","--timezone=off","--","/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2","--inhibit-cache","--library-path","/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/systemd","/usr/bin/python3.12","-I","-S","-B","-X","pycache_prefix=/nonexistent/TEST-h1-readonly-pycache","-c",h1StagedObserverBootstrap,payload],{stdio:["pipe","pipe","pipe"],env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_NSPAWN_USE_CGNS:"0"}});
-      check(child.pid && child.stdin && child.stdout && child.stderr);await new Promise<void>((resolve,reject)=>{child!.once("spawn",resolve);child!.once("error",reject);});capture(H1StagedActorRole.Monitor,child.pid);
+      check(child.pid && child.stdin && child.stdout && child.stderr);await new Promise<void>((resolve,reject)=>{child!.once("spawn",resolve);child!.once("error",reject);});observeActor(capture(H1StagedActorRole.Monitor,child.pid));
       done=new Promise<void>((resolve,reject)=>{child!.once("close",()=>resolve());child!.once("error",reject);});void done.catch(()=>{});
       child.stdin.on("error",()=>{stderr.write("TEST_H1_staged_gate_HOLD\n");child?.kill("SIGTERM");});
       child.stderr.on("data",(chunk:Buffer)=>stderr.write(chunk));child.stderr.on("end",()=>stderr.end());
       await new Promise<void>((resolve,reject)=>{let pending="";const timer=setTimeout(()=>reject(new Error("TEST H1 staged constructor timeout Held")),2000);
         const receive=(chunk:Buffer)=>{try{pending+=chunk.toString("utf8");check(Buffer.byteLength(pending)<=4096);const newline=pending.indexOf("\n");if(newline<0)return;
           const line=pending.slice(0,newline);check(line.startsWith("constructor:"));const announced=fullData(JSON.parse(line.slice(12)),["pid","birth","ppid"]);
-          check(Number.isSafeInteger(announced.pid) && Number(announced.pid)>1);worker=capture(H1StagedActorRole.Worker,Number(announced.pid));check(worker.birth===announced.birth);physicalWorker(worker);
+          check(Number.isSafeInteger(announced.pid) && Number(announced.pid)>1);worker=capture(H1StagedActorRole.Worker,Number(announced.pid));check(worker.birth===announced.birth);physicalWorker(worker);observeActor(worker);
           clearTimeout(timer);child!.stdout!.off("data",receive);child!.stdout!.on("data",protocol);child!.stdout!.on("end",()=>stdout.end());
-          check(pending.slice(newline+1)==="");state=H1StagedSlotState.Constructed;child!.stdin!.write("1");resolve();
+          check(pending.slice(newline+1)==="");state=H1StagedSlotState.Constructed;phase(FullH1PrearmPhase.Constructed);child!.stdin!.write("1");resolve();
         }catch(error){clearTimeout(timer);reject(error);}};child!.stdout!.on("data",receive);child!.once("error",reject);child!.once("close",()=>reject(new Error("TEST H1 staged constructor died Held")));});
       return Object.freeze({child,stdout,stderr,closed:done});
-    }catch(error){await close();throw error;}
+    }catch(error){phase(FullH1PrearmPhase.Held);await close();throw error;}
   }
   let protocolBuffer="";
   function protocol(chunk:Buffer){
@@ -787,22 +871,22 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
           check(pipeGroups.size===3);for(const group of pipeGroups.values()){check(group.worker && group.query);queryPipes.push({dev:BigInt(group.stat.dev),ino:BigInt(group.stat.ino),mode:BigInt(group.stat.mode)});}
           // This byte only releases the original fork into the fixed staged
           // nsenter command. It never releases fanotify/effect admission.
-          child.stdin.write("2");observeQueryTransitions();
+          observeActor(query);child.stdin.write("2");phase(FullH1PrearmPhase.QueryReleased);observeQueryTransitions();
         }else if(line.startsWith("query_complete:")){
           check(query && !queryComplete && prepared && child?.stdin && queryFailure===undefined);
           const values=fullData(JSON.parse(line.slice(15)),["ActiveState","ControlGroup","Id","InvocationID","Job","MainPID"]);
           check(values.ActiveState==="active" && values.ControlGroup==="/system.slice/TEST-retention-supervisor.service" && values.Id==="TEST-retention-supervisor.service" && values.Job==="" && values.MainPID===guestSupervisorPid && typeof values.InvocationID==="string" && /^[a-f0-9]{32}$/.test(values.InvocationID));
-          check(querySourceSeen && systemctlSourceSeen);queryComplete=true;c.validate();prepared.revalidate();check(worker);physicalWorker(worker);
+          check(querySourceSeen && systemctlSourceSeen);queryComplete=true;phase(FullH1PrearmPhase.QueryComplete);c.validate();prepared.revalidate();check(worker);physicalWorker(worker);
           // Complete original-source and actual fork/setns/exec joins, then
           // one private byte+EOF. No reported PID or DTO opens this gate.
           const effectGate=child.stdin;
-          requireQualifiedH1StagedConstructor();
+          phase(FullH1PrearmPhase.QualificationGuard);requireQualifiedH1StagedConstructor();
           effectAccepted=true;effectGate.end("3");
         }else{check(effectAccepted && (line==="armed" || line==="original_parent_dead"));
           if(line==="original_parent_dead"){check(prepared && !parentDead);let dead=false;try{readFileSync(`/proc/self/fd/${prepared.anchors[5]}/stat`);}catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));dead=true;}check(dead);parentDead=true;validatePrepared();}
           stdout.write(line+"\n");}
       }
-    }catch(error){queryFailure=error;stderr.write("TEST_H1_staged_protocol_HOLD\n");void close().catch(()=>stderr.write("TEST_H1_staged_drain_HOLD\n"));}
+    }catch(error){queryFailure=error;phase(FullH1PrearmPhase.Held);stderr.write("TEST_H1_staged_protocol_HOLD\n");void close().catch(()=>stderr.write("TEST_H1_staged_drain_HOLD\n"));}
   }
   function observeQueryTransitions(){
     check(query && prepared && worker);const original=query,started=performance.now();
@@ -811,7 +895,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       const base=`/proc/self/fd/${original.anchor}`;check(actualBirth(base,original.pid).birth===original.birth);
       const mapped=readFileSync(base+"/maps","utf8"),nsenter=c.h1Subject!.catalog.find(row=>row.path==="usr/bin/nsenter");check(nsenter?.kind===H1CatalogKind.File);
       const appears=(raw:string,dev:bigint,ino:bigint)=>raw.trimEnd().split("\n").some(line=>{const cells=/\s([0-9a-f]+):([0-9a-f]+)\s+([0-9]+)(?:\s+.*)?$/.exec(line);if(!cells)return false;const major=BigInt("0x"+cells[1]),minor=BigInt("0x"+cells[2]);return ((minor&255n)|(major<<8n)|((minor&~255n)<<12n))===dev && cells[3]===String(ino);});
-      if(!querySourceSeen && appears(mapped,BigInt(nsenter.identity.dev),BigInt(nsenter.identity.ino))){capture(H1StagedActorRole.Query,original.pid);querySourceSeen=true;}
+      if(!querySourceSeen && appears(mapped,BigInt(nsenter.identity.dev),BigInt(nsenter.identity.ino))){const actor=capture(H1StagedActorRole.Query,original.pid);querySourceSeen=true;observeActor(actor);}
       const children=readFileSync(base+"/task/"+original.pid+"/children","utf8").trim().split(/\s+/).filter(Boolean);check(children.length<=1);
       const candidates=[original.pid,...children.map(value=>{check(/^[1-9][0-9]*$/.test(value));return Number(value);})];
       for(const pid of candidates){
@@ -824,10 +908,10 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
         const actor=capture(H1StagedActorRole.Systemctl,pid),raw=readFileSync(path+"/maps","utf8");
         for(const line of raw.trimEnd().split("\n")){const cells=/\s([0-9a-f]+):([0-9a-f]+)\s+([0-9]+)(?:\s+.*)?$/.exec(line);check(cells);if(cells[3]==="0")continue;
           const major=BigInt("0x"+cells[1]),minor=BigInt("0x"+cells[2]),dev=(minor&255n)|(major<<8n)|((minor&~255n)<<12n);check(guestSources.some(source=>source.dev===dev && String(source.ino)===cells[3]));}
-        rejoin(actor);systemctlSourceSeen=true;
+        rejoin(actor);systemctlSourceSeen=true;observeActor(actor);
       }
       if(!systemctlSourceSeen)setImmediate(poll);
-    }catch(error){queryFailure=error;child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(poll);
+    }catch(error){queryFailure=error;phase(FullH1PrearmPhase.Held);child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(poll);
   }
   const read=(task:FullMonitorTaskAnchor):FullH1StagedTaskFact|undefined=>{
     const actor=[...actors].reverse().find(row=>row.pid===task.processPid && row.birth===task.processBirth);if(!actor || state===H1StagedSlotState.Closed)return;
@@ -864,7 +948,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     check(readFileSync(base+"/maps","utf8")===maps && JSON.stringify(readdirSync(base+"/fd").sort((a,b)=>Number(a)-Number(b)))===JSON.stringify(names));
     rejoin(actor);task.revalidate();return Object.freeze({role:actor.role,pid:actor.pid,birth:actor.birth,mountNamespace:readlinkSync(base+"/ns/mnt"),descriptors:Object.freeze(descriptors),sources:Object.freeze(sources.map(source=>Object.freeze({dev:String(source.dev),ino:String(source.ino)})))});
   };
-  return Object.freeze({construct,close,read,descriptors:()=>Object.freeze(state===H1StagedSlotState.Closed?[]:owned.concat(prepared?.descriptors()??[]))});
+  return Object.freeze({construct,close,read,snapshot,descriptors:()=>Object.freeze(state===H1StagedSlotState.Closed?[]:owned.concat(prepared?.descriptors()??[]))});
 }
 const fullParentDescriptors=new WeakMap<object,()=>readonly number[]>();
 export type FullMonitorTaskAnchor=Readonly<{path:string;processPid:number;processBirth:string;birth:string;revalidate():void}>;
@@ -1128,7 +1212,7 @@ export function retainCurrentFullParent():FullParentSession {
       }
       revalidate();closed=true;for(const fd of procFds.reverse())closeSync(fd);c.h1Catalog?.close();c.h1LibcPins.close();c.pins.close();
     }});fullParents.set(session,revalidate);
-    if(c.h1Subject){h1StagedSlot=originalH1StagedSlot(c,session,()=>guestId);fullH1StagedConstructors.set(session,h1StagedSlot.construct);fullH1StagedClosers.set(session,h1StagedSlot.close);fullH1StagedReaders.set(session,h1StagedSlot.read);}
+    if(c.h1Subject){h1StagedSlot=originalH1StagedSlot(c,session,()=>guestId);fullH1StagedConstructors.set(session,h1StagedSlot.construct);fullH1StagedClosers.set(session,h1StagedSlot.close);fullH1StagedReaders.set(session,h1StagedSlot.read);fullH1PrearmReaders.set(session,h1StagedSlot.snapshot);}
     h1ToolReaders.set(session,(executable,callback)=>{
       revalidate();check(c.tuple.removalCase===FullRemovalCase.ParentCrashH1 && c.tuple.restoreConsumer===FullRestoreConsumer.Ordinary);
       const tool=c.h1Tools.get(executable);check(tool);try{const result=callback(tool);check(!types.isPromise(result));return result;}finally{revalidate();}

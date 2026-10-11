@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, readOriginalH1PrearmSnapshot, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { H1ReadinessRecord, h1Qualification, readH1ReadinessRecord, readOriginalH1SupervisorAcceptance, startOriginalH1StagedObserver, H1ObserverState } from "./current-removal-h1-fixture.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
@@ -333,6 +333,10 @@ try {
   // Cleanup uses the separately reserved shared allowance, never another full
   // guest budget. Uncertain ownership/deadline failure remains failed/held.
   deadline = earlier(outerDeadline, process.hrtime.bigint() + milliseconds(90000));
+  if(managedParent.removalCase===FullRemovalCase.ParentCrashH1){
+    try{const snapshot=readOriginalH1PrearmSnapshot(managedParent);evidence.h1PrearmSnapshot=snapshot;evidence.h1PrearmBeforeClose={state:snapshot.state,close:snapshot.close};}
+    catch{evidence.h1PrearmSnapshotUnavailable=true;}
+  }
   if (registered && existsSync("/run/systemd/system/" + unit)) {
     try {
       assert.deepEqual(directoryIdentity(root), registered);
@@ -366,10 +370,17 @@ try {
       }
       if (backing) { try { backing.revalidate(); } catch { evidence.backingFinalObservationUncertain = true; } }
       if(backing && evidence.status==="partial_pass" && managedParent.removalCase===FullRemovalCase.ParentCrashH1){try{backing.prepareH1Terminal();}catch{evidence.backingRetentionTerminalUnproven=true;evidence.status="failed";process.exitCode=1;}}
-      if(managedParent.removalCase===FullRemovalCase.ParentCrashH1)await closeOriginalH1StagedObserver(managedParent);
+      if(managedParent.removalCase===FullRemovalCase.ParentCrashH1){
+        try{await closeOriginalH1StagedObserver(managedParent);}
+        finally{try{evidence.h1PrearmSnapshot=readOriginalH1PrearmSnapshot(managedParent);}catch{evidence.h1PrearmSnapshotUnavailable=true;}}
+      }
       command("/usr/bin/systemctl", ["stop", unit], 45000);
       evidence.ownedOsStopped = true;
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }
+  }
+  if(managedParent.removalCase===FullRemovalCase.ParentCrashH1){
+    try{evidence.h1PrearmSnapshot=readOriginalH1PrearmSnapshot(managedParent);}
+    catch{evidence.h1PrearmSnapshotUnavailable=true;}
   }
   if (backing && evidence.ownedOsStopped === true) {
     try { fullParentTerminal=backing.closeAfterTerminal();evidence.backingTerminal=fullParentTerminal; }

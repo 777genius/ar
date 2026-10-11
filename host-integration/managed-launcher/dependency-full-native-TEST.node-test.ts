@@ -230,6 +230,14 @@ test("Positive HOST two fixed DSO roles consume the observed22 canonical rows",(
   const {positiveHostLibc:unused2,...sharedOnly}=review.hostTools;assert.doesNotThrow(()=>fullReviewData({...review,hostTools:sharedOnly}));
   for(const changed of [{schemaVersion:1},{removalCase:"parent_crash_h1"},{restoreConsumer:"readonly"},{accountName:"account-u"}])assert.throws(()=>fullReviewData({...review,...changed}));
 });
+test("FULL H1 separate subject digest is exact DATA-only selection",()=>{
+  const review={...positiveTwoDsoReview(),schemaVersion:1,accountName:"account-u",removalCase:"parent_crash_h1",h1StagedSubjectSha256:"5".repeat(64)};
+  assert.equal(fullReviewData(review).h1StagedSubjectSha256,review.h1StagedSubjectSha256);
+  for(const changed of [{h1StagedSubjectSha256:"/tmp/TEST-subject"},{h1StagedSubject:{}},{h1StagedSubjectPath:"/tmp/TEST-subject"},{schemaVersion:2,accountName:"account-r",removalCase:"positive"},{removalCase:"positive"},{restoreConsumer:"readonly"}])
+    assert.throws(()=>fullReviewData({...review,...changed}));
+  let calls=0;const accessor={...review};Object.defineProperty(accessor,"h1StagedSubjectSha256",{enumerable:true,get(){calls++;return review.h1StagedSubjectSha256;}});
+  assert.throws(()=>fullReviewData(accessor));assert.equal(calls,0);
+});
 test("Positive HOST second DSO rejects broadened roles and unconsumed proofs",()=>{
   const review=positiveTwoDsoReview(),shared=review.hostTools.positiveHostSystemdShared,libc=review.hostTools.positiveHostLibc;
   for(const changed of [{path:libc.path},{path:shared.path.replace("255","256")},{sha256:libc.sha256},{extra:true},{tuple:libc.libcTuple},{tuple:{...shared.tuple,mode:"33261"}},{tuple:{...shared.tuple,nlink:"1"}},{tuple:{...shared.tuple,nlink:"3"}},{tuple:{...shared.tuple,uid:"1"}},{tuple:{...shared.tuple,gid:"1"}},{tuple:{...shared.tuple,extra:true}},{aliases:libc.libcAliases},{aliases:[...shared.aliases].reverse()},{aliases:[...shared.aliases,shared.path]},{aliases:[shared.aliases[0]!.replace("7f29ab33","8f29ab33"),shared.path]}])
