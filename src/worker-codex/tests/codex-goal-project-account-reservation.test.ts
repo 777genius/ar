@@ -1,11 +1,13 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import * as fs from "node:fs";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   InMemoryAttemptJournal,
   InMemoryWorkerAccountCapacityStore,
   InMemoryWorkerAccountLeaseStore,
+  ProjectOperation,
   type SafeExecutionTaskRecord,
 } from "@vioxen/subscription-runtime/worker-core";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
@@ -27,18 +29,85 @@ import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
 } from "../codex-goal-project-workspace-lock";
+import { listCodexGoalJobs, readCodexGoalJob } from "../codex-goal-jobs";
+import { admissionStartSelfIdentity } from "../application/project-control/codex-goal-project-admission-target";
+import { cleanupProjectPreStartAdmissionFixtures, createBuiltinFixture } from "./codex-goal-project-pre-start-admission-fixture";
+import { prepareProjectPreStartAdmission } from "../application/project-control/codex-goal-project-pre-start-admission";
+
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 
 export { fixture } from "./codex-goal-project-account-reservation-fixture";
 
 const roots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  await cleanupProjectPreStartAdmissionFixtures();
   await Promise.all(roots.splice(0).map((root) =>
     rm(root, { recursive: true, force: true })
   ));
 });
 
 describe("project account reservation", () => {
+  // RED: an official exclusive receipt used to make the fresh self unavailable.
+  it("qualifies a never-started self only with its original private exclusive receipt", async () => {
+    const f = await createBuiltinFixture({ temporaryRoot: fs.realpathSync(tmpdir()) });
+    const registryRootDir = join(f.root, "registry"), plan = f.plan();
+    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath] };
+    await mkdir(join(registryRootDir, f.manifest.jobId), { recursive: true });
+    await writeFile(join(registryRootDir, f.manifest.jobId, "job.json"), JSON.stringify({
+      ...f.storedManifest, projectPreStartAdmission: plan.descriptor,
+    }));
+    const manifest = await readCodexGoalJob({ registryRootDir, jobId: f.manifest.jobId });
+    await prepareProjectPreStartAdmission({ plan, manifest, scope });
+    const preparedBytes = await readFile(plan.descriptor.receiptPath);
+    const base = fixture(f.root, manifest.jobId);
+    const launch = { ...base.launch, cwd: manifest.workspacePath, logPath: join(manifest.jobRootDir, "worker.log"),
+      config: { ...base.launch.config, jobRootDir: manifest.jobRootDir, workspacePath: manifest.workspacePath,
+        promptPath: manifest.promptPath, taskId: manifest.taskId, accounts: [{ name: manifest.accounts[0]! }] } };
+    const reservation = await reserveCodexProjectAccount({ manifest, launch, deps: {
+      leaseMode: "exclusive", capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseStore: new InMemoryWorkerAccountLeaseStore(),
+    } });
+    const receiptPath = join(manifest.jobRootDir, "account-reservation.json"), bytes = await readFile(receiptPath);
+    // Model only the protected owner principal; physical identity, links, modes
+    // and selected FD bytes remain native in this portable TEST boundary.
+    const lstat = fs.lstatSync, fstat = fs.fstatSync;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof lstat>) =>
+      Object.assign(lstat(...args), { uid: args[1]?.bigint ? 0n : 0 })) as typeof lstat);
+    vi.spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fstat>) =>
+      Object.assign(fstat(...args), { uid: args[1]?.bigint ? 0n : 0 })) as typeof fstat);
+    await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(registryRootDir), scope,
+      requestedWorkspacePath: manifest.workspacePath, owner: `project-start:project-controller:${manifest.jobId}`,
+      effect: async workspaceLease => {
+        const summaries = await listCodexGoalJobs({ registryRootDir });
+        const overviewItems = [{ ok: true, jobId: manifest.jobId, workerAlive: false, workerProcessAlive: false,
+          progressProcessAlive: false, workspaceConflict: false, workspaceDirty: false, resultExists: false, activeWriterRisk: "none" }];
+        const identity = (selected = reservation.launch) => admissionStartSelfIdentity({ registryRootDir, scope,
+          controllerJobId: "project-controller", request: { operation: ProjectOperation.StartWorker, jobId: manifest.jobId,
+            workspacePath: manifest.workspacePath, ownedPaths: ["src/example.ts"] }, summaries, overviewItems,
+          binding: { start: { manifest, launch: selected, workspaceLease } } });
+        const expected = { jobId: manifest.jobId, workspacePath: manifest.workspacePath };
+        await expect(identity()).resolves.toEqual(expected);
+        await expect(identity({ ...reservation.launch })).resolves.toBeUndefined();
+        await writeFile(receiptPath, Buffer.concat([bytes, Buffer.from("\n")]));
+        await expect(identity()).resolves.toBeUndefined();
+        await writeFile(receiptPath, bytes);
+        for (const alias of ["symlink", "hardlink"] as const) {
+          const copy = join(f.root, "TEST-receipt-copy.json");
+          await writeFile(copy, bytes, { mode: 0o600 }); await rm(receiptPath);
+          if (alias === "symlink") await symlink(copy, receiptPath); else await link(copy, receiptPath);
+          await expect(identity()).resolves.toBeUndefined();
+          await rm(receiptPath); await rm(copy); await writeFile(receiptPath, bytes, { mode: 0o600 });
+        }
+        await chmod(receiptPath, 0o644); await expect(identity()).resolves.toBeUndefined();
+        await chmod(receiptPath, 0o600); await rm(receiptPath); await expect(identity()).resolves.toBeUndefined();
+        await writeFile(receiptPath, bytes, { mode: 0o600 });
+        await expect(identity()).resolves.toEqual(expected);
+      } });
+    expect(await readFile(plan.descriptor.receiptPath)).toEqual(preparedBytes);
+    expect(assertCodexProjectReservedLaunchAuthority({ manifest, sourceLaunch: launch, reservedLaunch: reservation.launch }).fresh).toBe(true);
+    expect(fs.existsSync(launch.logPath)).toBe(false);
+  });
   // RED: cloning, mutating, or replaying a supported selection would mint a
   // fresh execution budget without the original immutable reservation lineage.
   it("binds original selection, declared config and nested account metadata once", async () => {

@@ -22,6 +22,7 @@ import { prospectiveAdmissionResourceBacking } from "./codex-goal-project-admiss
 import { protectedCodexGoalJobBirthPreparationCurrent, type ProtectedCodexGoalJobBirthPreparation } from "../../protected-job-birth";
 import { reviewedOutputAggregateView, type ReviewedOutputAggregate } from "./reviewed-output-aggregate-materializer";
 import { MAX_STAGED_PATCH_BYTES } from "./codex-goal-project-git";
+import { codexProjectReservedAccountReceiptArtifactPath } from "./codex-goal-project-account-reservation";
 
 // Only the broker's already-bound mutation ports supply these values. They are
 // not transport request fields and cannot be replaced by a caller's exemption flag.
@@ -167,7 +168,7 @@ export async function assertAdmissionStoredLaunchIdentity(input: {
   if (await realpath(stored.workspacePath) !== input.launch.config.workspacePath) throw new Error("project_control_start_launch_identity_mismatch");
 }
 
-async function neverLaunchedSelf(manifest: CodexGoalJobManifest, launch: CodexGoalLaunchInput, item: Readonly<Record<string, unknown>>, registryRootDir: string, diagnostic?: DependencyPreflightDiagnosticBinding): Promise<boolean> {
+async function neverLaunchedSelf(manifest: CodexGoalJobManifest, launch: CodexGoalLaunchInput, item: Readonly<Record<string, unknown>>, registryRootDir: string, diagnostic?: DependencyPreflightDiagnosticBinding, reservationPath?: string): Promise<boolean> {
   if (item.progressExists === true || item.progressPid !== undefined || item.progressStatus !== undefined ||
     item.lastProgressAt !== undefined || item.workerFreshProgressAlive === true ||
     (item.workerSupervisorKind !== undefined && item.workerSupervisorKind !== "none") ||
@@ -184,6 +185,7 @@ async function neverLaunchedSelf(manifest: CodexGoalJobManifest, launch: CodexGo
   const colocated = resolve(manifest.jobRootDir) === join(resolve(registryRootDir), manifest.jobId);
   if (!entries.every((entry) => !entry.isSymbolicLink() &&
     ((entry.isFile() && (entry.name === basename(manifest.promptPath) || (colocated && entry.name === "job.json") ||
+      (reservationPath !== undefined && join(manifest.jobRootDir, entry.name) === reservationPath) ||
       (diagnostic !== undefined && join(manifest.jobRootDir, entry.name) === diagnostic.path &&
         dependencyPreflightDiagnosticCurrent(diagnostic, manifest.jobRootDir, launch.config.workspacePath)))) ||
       (entry.isDirectory() && entry.name === basename(admissionDir))))) return false;
@@ -202,6 +204,9 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
     if (!start || !request || request.operation !== ProjectOperation.StartWorker ||
       request.jobId !== start.manifest.jobId || !request.workspacePath || !input.controllerJobId) return undefined;
     const diagnostic = start.dependencyPreflightDiagnostic;
+    const reservationPath = !start.continuation && !start.workspaceMode
+      ? codexProjectReservedAccountReceiptArtifactPath({ manifest: start.manifest, reservedLaunch: start.launch }) : undefined;
+    const reservationRoot = reservationPath !== undefined ? researchDirectoryIdentity(start.manifest.jobRootDir) : undefined;
     if (diagnostic !== undefined && !dependencyPreflightDiagnosticCurrent(diagnostic, start.manifest.jobRootDir, start.launch.config.workspacePath)) return undefined;
     const workspace = await projectControlCanonicalWorkspacePath(request.workspacePath, input.scope);
     const lease = start.workspaceLease;
@@ -243,7 +248,7 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
       if (item.workspaceDirty !== false || item.resultExists !== false || item.activeWriterRisk !== "none") return undefined;
       // Dead native PIDs also map to false/false; only artifact-free prepared
       // state proves a fresh start without an authorized continuation.
-      if (!await neverLaunchedSelf(stored, start.launch, item, input.registryRootDir, diagnostic)) return undefined;
+      if (!await neverLaunchedSelf(stored, start.launch, item, input.registryRootDir, diagnostic, reservationPath)) return undefined;
     }
     const descriptor = stored.projectPreStartAdmission;
     const contractBefore = await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract");
@@ -256,6 +261,8 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
     if (contractBefore !== contractAfter || !storedOwnership.length ||
       (request.ownedPaths !== undefined && !sameOwnedPaths(request.ownedPaths, storedOwnership))) return undefined;
     if (diagnostic !== undefined && !dependencyPreflightDiagnosticCurrent(diagnostic, stored.jobRootDir, workspace)) return undefined;
+    if (reservationPath !== undefined && codexProjectReservedAccountReceiptArtifactPath({ manifest: stored, reservedLaunch: start.launch }) !== reservationPath) return undefined;
+    if (reservationRoot !== undefined) assertResearchDirectory(reservationRoot);
     return { jobId: stored.jobId, workspacePath: workspace };
   } catch { return undefined; }
 }

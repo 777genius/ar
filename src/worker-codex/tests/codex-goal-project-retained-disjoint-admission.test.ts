@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, recordTerminalOutputDecision, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
+import { ProjectAdmissionDecisionReason, ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, recordTerminalOutputDecision, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
 import { RunEventProjectionService, RunEventProviderKind, type RunObservationSnapshot } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileRunEventStore, LocalFileRunEventProjectionStateStore } from "@vioxen/subscription-runtime/store-local-file";
 import { runEventRootFromArgs } from "../codex-goal-mcp-inputs";
@@ -524,6 +524,36 @@ describe("operation-bound retained output admission", () => {
     };
     await expect(broker.createWorktree(f.target)).rejects.toThrow("project_control_creation_admission_changed");
     await expect(lstat(join(alternate, "worker"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "linux")("denies a future target retargeted during the awaited owner read", async () => {
+    const f = await creationFixture();
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    const before = await prospectiveAdmissionResourceBacking(f.target.path);
+    expect(before?.length).toBeGreaterThan(0);
+    const retained = await readFile(f.handoff.patchPath);
+    const alternate = join(f.root, "alternate");
+    await mkdir(alternate);
+    const observeOwner = f.input.deps.readWriterWritableRoots!;
+    let retargeted = false;
+    const deps = { ...f.input.deps, readWriterWritableRoots: async (manifest: CodexGoalJobManifest) => {
+      const observed = await observeOwner(manifest);
+      if (!retargeted) {
+        retargeted = true;
+        await symlink(alternate, join(f.root, "future"));
+      }
+      return observed;
+    } };
+    const decision = await codexProjectAdmissionGate({ ...f.input, deps }).evaluate(f.request);
+    expect(retargeted).toBe(true);
+    const after = await prospectiveAdmissionResourceBacking(f.target.path);
+    expect(after?.length).toBeGreaterThan(0);
+    expect(after).not.toEqual(before);
+    expect(decision).toMatchObject({ allowed: false, reason: ProjectAdmissionDecisionReason.UnreadableProjectState,
+      summary: { scope: "unknown", target: {} } });
+    expect(decision.summary?.target).toEqual({});
+    await expect(lstat(join(alternate, "worker"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(f.handoff.patchPath)).toEqual(retained);
   });
 
   it.skipIf(process.platform !== "linux")("creates a missing target through the actual broker without consuming disjoint retained output", async () => {

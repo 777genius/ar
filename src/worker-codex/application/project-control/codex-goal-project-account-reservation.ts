@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
@@ -26,6 +27,7 @@ import {
   codexAccountCapacityStore,
 } from "../codex-account-capacity-store";
 import { directCodexAppServerFailureCause } from "./codex-app-server-failure-cause";
+import { researchDirectoryIdentity, researchPromptBytes } from "../../research-launch-files";
 
 const reservationSchemaVersion = 1 as const;
 const reservationGraceMs = 10 * 60_000;
@@ -101,6 +103,32 @@ export async function assertCodexProjectReservedAccountReceiptCurrent(input: {
     JSON.stringify(await readReservation(codexProjectAccountReservationPath(input.manifest))) !== JSON.stringify(expected))) {
     throw new Error("project_control_account_reservation_changed_before_start");
   }
+}
+
+/** Only the original exclusive reservation qualifies this extra fresh-job leaf.
+ * Shared/unreserved launches grant no leaf; changed exclusive receipts deny. */
+export function codexProjectReservedAccountReceiptArtifactPath(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly reservedLaunch: CodexGoalLaunchInput;
+}): string | undefined {
+  const expected = reservedAccountReceipts.get(input.reservedLaunch);
+  if (expected === undefined || expected === null) return undefined;
+  const authority = reservedLaunchAuthorities.get(input.reservedLaunch);
+  if (!authority?.fresh || codexProjectReservationValueSha256(input.manifest) !== authority.manifestSha256 ||
+      codexProjectReservationValueSha256(input.reservedLaunch.config) !== authority.reservedConfigSha256) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+  const path = codexProjectAccountReservationPath(input.manifest);
+  const root = researchDirectoryIdentity(input.manifest.jobRootDir), before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || (before.mode & 0o7777) !== 0o600 || before.size > 64 * 1024) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+  const bytes = researchPromptBytes(root, path), after = lstatSync(path);
+  if (!(["dev", "ino", "mode", "uid", "gid", "nlink", "size", "ctimeMs", "mtimeMs"] as const).every(key => before[key] === after[key]) ||
+      bytes.toString("utf8") !== reservationBytes(expected)) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+  return path;
 }
 
 export type CodexProjectAccountReservationDeps = {
@@ -860,7 +888,7 @@ async function writeReservation(
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const stagingPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await writeFile(stagingPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    await writeFile(stagingPath, reservationBytes(receipt), {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
@@ -869,6 +897,10 @@ async function writeReservation(
   } finally {
     await rm(stagingPath, { force: true });
   }
+}
+
+function reservationBytes(receipt: PersistedCodexProjectAccountReservation): string {
+  return `${JSON.stringify(receipt, null, 2)}\n`;
 }
 
 function requiredText(value: unknown): string {

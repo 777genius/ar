@@ -118,6 +118,11 @@ export async function prepareCodexProjectScopedAdmission(
       } catch { return false; }
     })) historicalDisjoint.add(item);
   }
+  // Owner/history reads may change a target or its future ancestor backing.
+  // Reobserve through the same kernel-backed projection before returning proof.
+  const currentBackings = await Promise.all((target.writableRoots ?? []).map(prospectiveAdmissionResourceBacking));
+  const targetCurrent = currentBackings.every((roots) => roots !== undefined) &&
+    isDeepStrictEqual(currentBackings.flat(), target.physicalWritableRoots);
   const safetyDebt: ProjectDebtItem[] = [
     ...input.snapshot.debt.filter((item) => !historicalDisjoint.has(item) &&
       isTargetSafetyDebt(item, input.request, target, overlaps, input.registryRootDir)
@@ -128,9 +133,9 @@ export async function prepareCodexProjectScopedAdmission(
   const safetyKeys = new Set(safetyDebt.map(debtKey));
   const backlog = input.snapshot.debt.filter((item) => !safetyKeys.has(debtKey(item)));
   return {
-    target,
+    target: targetCurrent ? target : {},
     safetyDebt,
-    scope: safetyDebt.length > 0 ? "target" : backlog.length > 0 ? "unrelated_history" : "target",
+    scope: !targetCurrent ? "unknown" : safetyDebt.length > 0 ? "target" : backlog.length > 0 ? "unrelated_history" : "target",
     backlog: {
       count: backlog.length,
       preview: backlog.slice(0, MAX_BACKLOG_PREVIEW).map((item) => ({

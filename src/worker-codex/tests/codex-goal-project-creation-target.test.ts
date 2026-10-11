@@ -27,6 +27,7 @@ import { bindDependencyPreflightDiagnostic, runDependencyBootstrap } from "../de
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../codex-goal-project-workspace-lock";
 import { codexProjectAdmissionGate } from "../application/project-control/codex-goal-project-admission";
+import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
 
 afterEach(cleanupProjectPreStartAdmissionFixtures);
 
@@ -53,6 +54,61 @@ async function fixture() {
 }
 
 describe("scoped creation targets", () => {
+  it("keeps a prepared job released when its required checkpoint publisher is missing", async () => {
+    const f = await createBuiltinFixture({ temporaryRoot: tmpdir() }), registryRootDir = join(f.root, "registry");
+    const worktreeRoot = join(f.root, "worktrees"), authRootDir = join(f.root, "TEST-auth");
+    await mkdir(registryRootDir, { mode: 0o700 }); await mkdir(worktreeRoot, { mode: 0o700 });
+    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath],
+      worktreeRoots: [worktreeRoot], jobIdPrefixes: ["project-"], allowedAccountIds: f.manifest.accounts };
+    const controllerRoot = join(f.root, "jobs", "project-controller");
+    const controller = await createCodexGoalJob({ registryRootDir, manifest: { ...f.manifest,
+      jobId: "project-controller", taskId: "project-controller", jobRootDir: controllerRoot,
+      promptPath: join(controllerRoot, "prompt.md"), authRootDir, accessBoundary: AccessBoundary.ProjectScopedControl,
+      projectAccessScope: scope } });
+    const plan = f.plan();
+    await rm(f.manifest.jobRootDir, { recursive: true });
+    const manifest = await createCodexGoalJob({ registryRootDir, manifest: { ...f.manifest, authRootDir,
+      checkpointRequired: true, projectPreStartAdmission: plan.descriptor,
+      projectAccessScope: { projectId: scope.projectId, isolatedWorkspaceRoot: f.workspacePath,
+        allowedAccountIds: f.manifest.accounts, authRoot: authRootDir } } });
+    await prepareProjectPreStartAdmission({ plan, manifest, scope });
+    const receiptBefore = await readFile(plan.descriptor.receiptPath);
+    const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
+    const deps = { listJobs: listCodexGoalJobs, readJob: readCodexGoalJob,
+      readWriterWritableRoots: observeProtectedCodexGoalJobBirth,
+      buildOverviewItems: async (inputs: readonly { jobId: string }[]) => inputs.map(({ jobId }) => ({
+        ok: true, jobId, workspacePath: f.workspacePath, workerAlive: false, workerProcessAlive: false,
+        progressProcessAlive: false, workspaceDirty: false, resultExists: false, activeWriterRisk: "none",
+        progressExists: false, workerSupervisorKind: "none" })) };
+    const oldSocket = process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET;
+    delete process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET;
+    try {
+      await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(registryRootDir), scope,
+        requestedWorkspacePath: manifest.workspacePath, owner: `project-start:${controller.jobId}:${manifest.jobId}`,
+        effect: async workspaceLease => {
+          const broker = createCodexProjectControlBroker({ registryRootDir, controller, scope, admissionDeps: deps,
+            startManifest: manifest, startLaunch: launch, startWorkspaceLease: workspaceLease,
+            revalidateStartPublication: async () => undefined });
+          await expect(broker.startWorker({ jobId: manifest.jobId, registryRoot: registryRootDir,
+            workspacePath: manifest.workspacePath, accounts: manifest.accounts, ownedPaths: ["src/example.ts"] }))
+            .rejects.toThrow("checkpoint_publisher_required");
+        },
+      });
+      expect(await readFile(plan.descriptor.receiptPath)).toEqual(receiptBefore);
+      expect(await observeProtectedCodexGoalJobBirth(manifest)).toEqual({ status: "released" });
+      const target = { sourceWorkspacePath: f.workspacePath, expectedSourceRealPath: f.workspacePath,
+        path: join(worktreeRoot, "project-independent"), expectedRevision: String(f.contract.baseSha), sourceRevisionPinned: true };
+      await expect(codexProjectAdmissionGate({ registryRootDir, scope, controllerJobId: controller.jobId, deps,
+        targetBinding: { createWorktree: target } }).evaluate({ operation: ProjectOperation.CreateWorktree,
+          workspacePath: target.path })).resolves.toMatchObject({ allowed: true });
+      await expect(access(launch.config.outputPath!)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (oldSocket === undefined) delete process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET;
+      else process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET = oldSocket;
+    }
+  });
+
   it("qualifies only the official unchanged dependency diagnostic for a never-started self", async () => {
     const f = await createBuiltinFixture({ temporaryRoot: tmpdir() }), registryRootDir = join(f.root, "registry");
     await mkdir(registryRootDir, { mode: 0o700 });
@@ -275,7 +331,7 @@ describe("scoped creation targets", () => {
       });
       if (modern) {
         expect(result).toMatchObject({ ok: false, admission: { allowed: false, resource: f.workspacePath,
-          examples: expect.arrayContaining([{ reason: "active_writer_conflict" }]) } });
+          examples: expect.arrayContaining([expect.objectContaining({ reason: "active_writer_conflict" })]) } });
         await expect(access(f.manifest.jobRootDir)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(access(join(f.registryRootDir, f.manifest.jobId))).rejects.toMatchObject({ code: "ENOENT" });
       } else {

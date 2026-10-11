@@ -263,6 +263,24 @@ function codexProjectControlPorts(
   readAdoptionWorkspaceLease: () => ProjectControlWorkspaceLease | undefined,
 ): ProjectControlBrokerPorts {
   let preparedAuthorization: ProjectPreStartAdmissionLaunchAuthorization | undefined;
+  const startLaunchWithPrerequisites = (): CodexGoalLaunchInput => {
+    if (!input.startLaunch) throw new Error("project_control_start_launch_required");
+    // Child env is filtered, so carry the Host socket through argv.
+    const launch = bindProjectChildCheckpointPublisher({
+      launch: input.startLaunch,
+      controllerCheckpointRequired: input.controller.checkpointRequired === true,
+      childCheckpointRequired: input.startManifest?.checkpointRequired === true,
+      hostEnv: process.env,
+    });
+    if (!input.startWorkspaceLease) throw new Error("project_control_start_workspace_lease_required");
+    if (input.startWorkspaceLease.canonicalWorkspacePath !== launch.config.workspacePath) {
+      throw new Error("project_control_start_workspace_lease_mismatch");
+    }
+    if (!input.startManifest && input.scope.preStartAdmission?.required) {
+      throw new Error("project_control_start_manifest_required");
+    }
+    return launch;
+  };
   return {
     authority: authorityStore,
     admissionCoordination: {
@@ -399,6 +417,7 @@ function codexProjectControlPorts(
     },
     supervisor: {
       async prepareStartWorker() {
+        startLaunchWithPrerequisites();
         if (!input.startManifest || !input.startLaunch) return;
         preparedAuthorization = await authorizeProjectPreStartAdmissionLaunch({
           manifest: input.startManifest,
@@ -429,30 +448,12 @@ function codexProjectControlPorts(
         recordProtectedCodexGoalJobFirstEffect(input.startManifest.jobRootDir);
       },
       async startWorker() {
-        if (!input.startLaunch) {
-          throw new Error("project_control_start_launch_required");
-        }
-        if (input.startManifest) await assertAdmissionStoredLaunchIdentity({
-          registryRootDir: input.registryRootDir, manifest: input.startManifest, launch: input.startLaunch,
-        });
-        // Child env is filtered, so carry the Host socket through argv.
-        const startLaunch = bindProjectChildCheckpointPublisher({
-          launch: input.startLaunch,
-          controllerCheckpointRequired: input.controller.checkpointRequired === true,
-          childCheckpointRequired: input.startManifest?.checkpointRequired === true,
-          hostEnv: process.env,
-        });
-        if (!input.startWorkspaceLease) {
-          throw new Error("project_control_start_workspace_lease_required");
-        }
-        if (
-          input.startWorkspaceLease.canonicalWorkspacePath !==
-          startLaunch.config.workspacePath
-        ) {
-          throw new Error("project_control_start_workspace_lease_mismatch");
-        }
         let submissionMayHaveOccurred = false;
         const start = async () => {
+          if (input.startManifest && input.startLaunch) await assertAdmissionStoredLaunchIdentity({
+            registryRootDir: input.registryRootDir, manifest: input.startManifest, launch: input.startLaunch,
+          });
+          const startLaunch = startLaunchWithPrerequisites();
           if (input.controlledRuntimeInPlaceContinuation) {
             if (!input.startManifest) {
               throw new Error(
@@ -497,9 +498,6 @@ function codexProjectControlPorts(
                   }
                 : {}),
           });
-          if (!input.startManifest && input.scope.preStartAdmission?.required) {
-            throw new Error("project_control_start_manifest_required");
-          }
           // Broker authorization publishes a receipt. Managed broker requests
           // must already be enclosed by the fixed CLI outer command before it.
           if (!isProjectMimoWorkerLaunch(startLaunch)) await admitHostedControllerLaunch(startLaunch);

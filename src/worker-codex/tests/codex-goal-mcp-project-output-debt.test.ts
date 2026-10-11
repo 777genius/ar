@@ -472,7 +472,8 @@ describe("codex goal MCP server", () => {
           allowed: false,
           reason: "output_debt_present",
           resource: heldWorkspace,
-          examples: expect.arrayContaining([{ reason: "unconsumed_completed_job" }]),
+          examples: expect.arrayContaining([expect.objectContaining({ reason: "unconsumed_completed_job", subject: heldWorkspace })]),
+          action: "Inspect the reported resource and owner; use an independent sibling workspace for conflicting writes.",
         },
       });
       await expect(access(overlapJobRoot))
