@@ -12,13 +12,15 @@ import { pathInsideOrEqual } from "./codex-goal-project-utils";
 import { projectControlCanonicalWorkspacePath } from "./codex-goal-project-workspace-scope";
 import { assertProjectPreStartAdmissionLaunchBinding, type ProjectPreStartAdmissionLaunchWorkspaceMode } from "./codex-goal-project-pre-start-admission";
 import { readBoundedFile } from "./codex-goal-project-pre-start-artifact-io";
-import { parseWorkerLaunchSpec } from "./worker-launch-spec";
+import { parseWorkerLaunchSpec, type WorkerLaunchSpec } from "./worker-launch-spec";
 import { assertProjectControlledRuntimeInPlaceContinuation, type ProjectControlledRuntimeInPlaceContinuation } from "./codex-goal-project-in-place-continuation";
 import { LocalConsumedOutputLedgerSource } from "./codex-goal-consumed-output-ledger-io";
 import { assertResearchInitialRoot } from "../../research-launch-host";
-import { assertResearchDirectory, researchCustody, researchDirectoryIdentity } from "../../research-launch-files";
+import { assertResearchDirectory, researchByteValidationTimeoutMs, researchCustody, researchDirectoryIdentity, researchFileDigest, researchHash, type ResearchDirectoryIdentity } from "../../research-launch-files";
 import { prospectiveAdmissionResourceBacking } from "./codex-goal-project-admission-paths";
 import { protectedCodexGoalJobBirthPreparationCurrent, type ProtectedCodexGoalJobBirthPreparation } from "../../protected-job-birth";
+import { reviewedOutputAggregateView, type ReviewedOutputAggregate } from "./reviewed-output-aggregate-materializer";
+import { MAX_STAGED_PATCH_BYTES } from "./codex-goal-project-git";
 
 // Only the broker's already-bound mutation ports supply these values. They are
 // not transport request fields and cannot be replaced by a caller's exemption flag.
@@ -26,6 +28,7 @@ export type ProjectAdmissionTargetBinding = {
   readonly createWorktree?: CodexGoalProjectCreateWorktreeInput;
   readonly createManifest?: CodexGoalJobManifestInput;
   readonly createBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
+  readonly createReviewedOutputAggregate?: { readonly aggregate: ReviewedOutputAggregate; readonly sourceRealPath: string };
   readonly start?: {
     readonly manifest: CodexGoalJobManifest;
     readonly launch: CodexGoalLaunchInput;
@@ -249,31 +252,74 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
   } catch { return undefined; }
 }
 
+async function trustedReviewedAggregateStage(input: TargetInput, contract: WorkerLaunchSpec): Promise<ResearchDirectoryIdentity | undefined> {
+  const manifest = input.binding?.createManifest, preparation = input.binding?.createBirthPreparation;
+  const bound = input.binding?.createReviewedOutputAggregate;
+  if (!manifest || preparation === undefined || !bound) return undefined;
+  const aggregate = bound.aggregate, proof = { preparation, manifest, registryRootDir: input.registryRootDir };
+  if (!protectedCodexGoalJobBirthPreparationCurrent(proof) || aggregate.baseCommit !== contract.baseSha ||
+    aggregate.baseCommit !== contract.phaseStartSha || aggregate.patchSha256 !== contract.inputPatchHash ||
+    aggregate.patchByteLength !== Buffer.byteLength(aggregate.patch) || aggregate.patchByteLength > MAX_STAGED_PATCH_BYTES ||
+    researchHash(aggregate.patch) !== aggregate.patchSha256 || !aggregate.changedFiles.length ||
+    !aggregate.changedFiles.every(path => !isAbsolute(path) && !path.includes("\\") &&
+      !path.split("/").some(segment => !segment || segment === "." || segment === "..") &&
+      contract.ownedPaths.some(owned => owned.endsWith("/") ? path.startsWith(owned) : path === owned))) return undefined;
+  const source = await projectControlCanonicalWorkspacePath(bound.sourceRealPath, input.scope);
+  if (source !== bound.sourceRealPath || await realpath(await git(source, "rev-parse", "--show-toplevel")) !== source ||
+    await git(source, "rev-parse", `${aggregate.baseCommit}^{commit}`) !== aggregate.baseCommit) return undefined;
+  const root = join(manifest.jobRootDir, "reviewed-output-aggregate"), identity = researchDirectoryIdentity(root);
+  researchCustody(root, true);
+  const entries = await readdir(root, { withFileTypes: true });
+  if (entries.length !== 2 || !entries.every(entry => entry.isFile() && !entry.isSymbolicLink() &&
+    ["input.patch", "provenance.json"].includes(entry.name))) return undefined;
+  const provenance = `${JSON.stringify(reviewedOutputAggregateView(aggregate), null, 2)}\n`;
+  const { provenanceSha256: _digest, ...view } = reviewedOutputAggregateView(aggregate);
+  if (researchHash(`${JSON.stringify(view)}\n`) !== aggregate.provenanceSha256 || Buffer.byteLength(provenance) > MAX_STAGED_PATCH_BYTES) return undefined;
+  const options = { maxBytes: MAX_STAGED_PATCH_BYTES, deadline: performance.now() + researchByteValidationTimeoutMs, cache: new Map(), cacheEntries: 2 };
+  for (const [name, expected] of [["input.patch", aggregate.patchSha256], ["provenance.json", researchHash(provenance)]] as const) {
+    const path = join(root, name);
+    researchCustody(path, true);
+    if (researchFileDigest(path, options) !== expected) return undefined;
+  }
+  researchCustody(root, true); assertResearchDirectory(identity);
+  return protectedCodexGoalJobBirthPreparationCurrent(proof) ? identity : undefined;
+}
+
 async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promise<boolean> {
   const manifest = input.binding?.createManifest;
   const request = input.request;
   if (!manifest || !request || request.operation !== ProjectOperation.CreateJob || request.jobId !== jobId ||
     manifest.jobId !== jobId ||
     request.workspacePath !== manifest.workspacePath || !manifest.projectPreStartAdmission || !request.ownedPaths?.length) return false;
-  // Prepared target staging has only its bound prompt and pre-start artifacts.
-  // Existing runtime/progress/output paths or arbitrary directories are not staging.
-  const entries = await readdir(manifest.jobRootDir, { withFileTypes: true });
   const descriptor = manifest.projectPreStartAdmission;
   const admissionDir = dirname(descriptor.contractPath);
   if (dirname(admissionDir) !== resolve(manifest.jobRootDir) ||
     dirname(resolve(manifest.promptPath)) !== resolve(manifest.jobRootDir)) return false;
-  if (!entries.every((entry) => !entry.isSymbolicLink() &&
-    ((entry.isFile() && entry.name === basename(manifest.promptPath)) ||
-      (entry.isDirectory() && entry.name === basename(admissionDir))))) return false;
-  const contract = parseWorkerLaunchSpec(JSON.parse(await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract")));
+  // The official aggregate is the only extra staging directory. Its original
+  // create capability and exact artifact/source/contract bytes are checked cold.
+  const aggregate = input.binding?.createReviewedOutputAggregate;
+  const stagingEntriesCurrent = async (): Promise<boolean> => (await readdir(manifest.jobRootDir, { withFileTypes: true })).every(entry =>
+    !entry.isSymbolicLink() && ((entry.isFile() && entry.name === basename(manifest.promptPath)) ||
+      (entry.isDirectory() && (entry.name === basename(admissionDir) || (aggregate !== undefined && entry.name === "reviewed-output-aggregate")))));
+  if (!await stagingEntriesCurrent()) return false;
+  const contractBytes = await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract");
+  const contract = parseWorkerLaunchSpec(JSON.parse(contractBytes));
   if (contract.jobId !== manifest.jobId || contract.workspaceRoot !== manifest.workspacePath ||
     !sameOwnedPaths(request.ownedPaths, contract.ownedPaths)) return false;
+  const before = aggregate === undefined ? undefined : await trustedReviewedAggregateStage(input, contract);
+  if (aggregate !== undefined && !before) return false;
   await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope);
   // The same native prepared receipt that start verifies must already bind the
   // unpublished manifest, prompt, exact workspace HEAD and ownership contract.
-  await assertProjectPreStartAdmissionLaunchBinding({
-    manifest, scope: input.scope,
+  await assertProjectPreStartAdmissionLaunchBinding({ manifest, scope: input.scope,
+    ...(aggregate ? { expectedInputPatchArtifactSha256: aggregate.aggregate.patchSha256 } : {}),
   });
+  if (aggregate !== undefined && (!isDeepStrictEqual(before, await trustedReviewedAggregateStage(input, contract)) ||
+    !await stagingEntriesCurrent() || contractBytes !== await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract"))) return false;
+  if (aggregate !== undefined) {
+    await assertProjectPreStartAdmissionLaunchBinding({ manifest, scope: input.scope, expectedInputPatchArtifactSha256: aggregate.aggregate.patchSha256 });
+    if (!protectedCodexGoalJobBirthPreparationCurrent({ preparation: input.binding!.createBirthPreparation!, manifest, registryRootDir: input.registryRootDir })) return false;
+  }
   return true;
 }
 

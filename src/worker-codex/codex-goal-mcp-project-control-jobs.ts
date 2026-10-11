@@ -570,6 +570,7 @@ export async function projectControlRefillWorkerView(
       scope: controller.scope,
       createManifest,
       ...(protectedBirthPreparation ? { protectedBirthPreparation } : {}),
+      ...(reviewedOutputAggregate ? { createReviewedOutputAggregate: { aggregate: reviewedOutputAggregate, sourceRealPath: resolvedSource.sourceRealPath } } : {}),
       createOverwrite: booleanValue(args.overwrite) ?? false,
       ...(producerInputPatch
         ? {

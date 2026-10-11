@@ -1,9 +1,9 @@
 import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
-import { access, chmod, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { AccessBoundary, ProjectOperation, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
@@ -16,6 +16,14 @@ import {
 import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
 import { host } from "./research-launch-fixture";
 import { callToolJson as invokeTool, git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
+import { cleanupProjectPreStartAdmissionFixtures, createBuiltinFixture, declarativeContract } from "./codex-goal-project-pre-start-admission-fixture";
+import { planProjectPreStartAdmission, prepareProjectPreStartAdmission } from "../application/project-control/codex-goal-project-pre-start-admission";
+import { materializeReviewedOutputAggregateArtifacts, resolveLocalReviewedOutputAggregate } from "../codex-goal-mcp-project-verifier-support";
+import { stagedPatchSha256 } from "../application/project-control/codex-goal-project-git";
+import { createApprovedReviewedOutput } from "./codex-goal-mcp-project-prepare-verifier-test-support";
+import { reviewedWorkerOutputRoot } from "../reviewed-worker-output";
+
+afterEach(cleanupProjectPreStartAdmissionFixtures);
 
 async function fixture() {
   const root = join(tmpdir(), "TEST-creation-target");
@@ -119,6 +127,62 @@ describe("scoped creation targets", () => {
     expect(protectedCodexGoalJobBirthPreparationCurrent(proof)).toBe(false);
     expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
     await expect(access(join(f.registryRootDir, f.manifest.jobId))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("admits only the original official reviewed aggregate staging and rejects artifact drift", async () => {
+    const f = await createBuiltinFixture({ temporaryRoot: tmpdir() }), registryRootDir = join(f.root, "registry");
+    await mkdir(registryRootDir, { mode: 0o700 });
+    await mkdir(join(f.root, "worktrees"), { mode: 0o700 });
+    const reviewed = await createApprovedReviewedOutput({ root: f.root, sourceWorkspacePath: f.workspacePath,
+      reviewedRoot: reviewedWorkerOutputRoot(registryRootDir), workerJobId: "project-reviewed", changedFile: "README.md", content: "TEST approved aggregate\n" });
+    const aggregate = await resolveLocalReviewedOutputAggregate({ registryRootDir, projectId: "project",
+      reviewedOutputIds: [reviewed.reviewedOutputId], expectedBaseCommit: String(f.contract.baseSha) });
+    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.root] };
+    const plan = planProjectPreStartAdmission({ confirmed: true, scope, manifest: f.manifest,
+      value: { mode: "serial-builtin", contract: { ...declarativeContract(f.contract), inputPatchHash: aggregate.patchSha256, ownedPaths: ["README.md"] } },
+    })!;
+    const manifest = { ...f.manifest, projectPreStartAdmission: plan.descriptor };
+    await rm(manifest.jobRootDir, { recursive: true });
+    const preparation = await prepareProtectedCodexGoalJobBirth({ manifest, registryRootDir });
+    expect(preparation).toBeDefined();
+    const artifacts = await materializeReviewedOutputAggregateArtifacts({ jobRootDir: manifest.jobRootDir, aggregate });
+    await writeFile(manifest.promptPath, "TEST reviewed aggregate prompt\n", { mode: 0o600 });
+    await git(f.workspacePath, ["apply", "--index", artifacts.patchPath]);
+    await prepareProjectPreStartAdmission({ plan, manifest, scope,
+      verifiedInputPatchArtifactSha256: aggregate.patchSha256, verifiedInputPatchStagedSha256: await stagedPatchSha256(f.workspacePath) });
+    const binding = { createManifest: manifest, createBirthPreparation: preparation!,
+      createReviewedOutputAggregate: { aggregate, sourceRealPath: f.workspacePath } };
+    const input = { registryRootDir, scope, binding,
+      request: { operation: ProjectOperation.CreateJob, jobId: manifest.jobId, workspacePath: manifest.workspacePath, ownedPaths: ["README.md"] } };
+    for (let attempt = 0; attempt < 2; attempt++) expect(await admissionCreateJobTargetIdentity(input)).toBe(f.workspacePath);
+    expect(protectedCodexGoalJobBirthPreparationCurrent({ preparation: preparation!, manifest, registryRootDir })).toBe(true);
+    const { createBirthPreparation: _preparation, ...capless } = binding;
+    const { createReviewedOutputAggregate: _aggregate, ...withoutAggregate } = binding;
+    for (const changed of [
+      capless,
+      { ...binding, createBirthPreparation: Object.freeze({}) as ProtectedCodexGoalJobBirthPreparation },
+      withoutAggregate,
+      { ...binding, createReviewedOutputAggregate: { ...binding.createReviewedOutputAggregate, sourceRealPath: join(f.root, "missing-source") } },
+      { ...binding, createReviewedOutputAggregate: { ...binding.createReviewedOutputAggregate, aggregate: { ...aggregate, baseCommit: "0".repeat(40) } } },
+    ]) expect(await admissionCreateJobTargetIdentity({ ...input, binding: changed })).toBeUndefined();
+    for (const path of [artifacts.patchPath, artifacts.provenancePath]) {
+      const original = await readFile(path);
+      await writeFile(path, "TEST tampered aggregate\n");
+      expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
+      await writeFile(path, original);
+    }
+    const extra = join(manifest.jobRootDir, "reviewed-output-aggregate", "extra.json");
+    await writeFile(extra, "{}", { mode: 0o600 });
+    expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
+    await rm(extra);
+    const patch = await readFile(artifacts.patchPath);
+    await rm(artifacts.patchPath); await symlink(manifest.promptPath, artifacts.patchPath);
+    expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
+    await rm(artifacts.patchPath); await writeFile(artifacts.patchPath, patch, { mode: 0o600 });
+    expect(await admissionCreateJobTargetIdentity(input)).toBe(f.workspacePath);
+    recordProtectedCodexGoalJobFirstEffect(manifest.jobRootDir);
+    expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
+    await expect(access(join(registryRootDir, manifest.jobId))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([false, true])("keeps legacy enforcement and refuses fallback for malformed modern birth=%s", async modern => {

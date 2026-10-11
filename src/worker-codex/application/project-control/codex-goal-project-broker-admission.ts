@@ -7,7 +7,7 @@ import type { CodexGoalJobManifest, CodexGoalJobManifestInput } from "../../code
 import type { CodexGoalLaunchInput } from "../../codex-goal-ops";
 import type { ProjectControlWorkspaceLease } from "../../codex-goal-project-workspace-lock";
 import { codexProjectAdmissionGate, type CodexProjectAdmissionDeps } from "./codex-goal-project-admission";
-import { boundCreationTargetIdentity } from "./codex-goal-project-admission-target";
+import { boundCreationTargetIdentity, type ProjectAdmissionTargetBinding } from "./codex-goal-project-admission-target";
 import type { ProjectAdmissionJobWorkspaceBinding } from "./codex-goal-project-admission-normalization";
 import type { CodexGoalProjectCreateWorktreeInput } from "./codex-goal-project-control-contracts";
 import type { ProjectControlledRuntimeInPlaceContinuation } from "./codex-goal-project-in-place-continuation";
@@ -21,6 +21,7 @@ type BrokerAdmissionInput = {
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly createManifest?: CodexGoalJobManifestInput;
   readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
+  readonly createReviewedOutputAggregate?: ProjectAdmissionTargetBinding["createReviewedOutputAggregate"];
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
   readonly startLaunch?: CodexGoalLaunchInput;
   readonly startManifest?: CodexGoalJobManifest;
@@ -53,6 +54,7 @@ export function createProjectBrokerAdmission(
         ...(input.createWorktreeInput ? { createWorktree: input.createWorktreeInput } : {}),
         ...(input.createManifest ? { createManifest: input.createManifest } : {}),
         ...(input.protectedBirthPreparation !== undefined ? { createBirthPreparation: input.protectedBirthPreparation } : {}),
+        ...(input.createReviewedOutputAggregate !== undefined ? { createReviewedOutputAggregate: input.createReviewedOutputAggregate } : {}),
         ...(input.startManifest && input.startLaunch && input.startWorkspaceLease ? {
           start: { manifest: input.startManifest, launch: input.startLaunch, workspaceLease: input.startWorkspaceLease,
             ...(input.startAdmissionWorkspaceMode ? { workspaceMode: input.startAdmissionWorkspaceMode } : {}),

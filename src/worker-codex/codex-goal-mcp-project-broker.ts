@@ -43,6 +43,7 @@ import {
   assertAdmissionStoredLaunchIdentity,
   boundCreationTargetIdentity,
   revalidateAdmissionCreatedWorktree,
+  type ProjectAdmissionTargetBinding,
 } from "./application/project-control/codex-goal-project-admission-target";
 import {
   authorizeProjectPreStartAdmissionLaunch,
@@ -145,6 +146,7 @@ export type CodexProjectControlBrokerInput = {
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly createManifest?: CodexGoalJobManifestInput;
   readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
+  readonly createReviewedOutputAggregate?: ProjectAdmissionTargetBinding["createReviewedOutputAggregate"];
   readonly createOverwrite?: boolean;
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
   readonly admittedInputPatchTarget?: {
