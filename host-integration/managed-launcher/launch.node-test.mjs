@@ -25,10 +25,13 @@ const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'
 test('original provider accepts only finite materialized storage roles and keeps other envelopes closed', () => {
   const storageContext = { workspace: '/scratch/workspace', home: '/scratch/session/home', codexHome: '/scratch/session/codex-home' };
   assert.deepEqual(parseInvocation({ ...provider, storageContext }).storageContext, storageContext);
+  const tempContext = { ...storageContext, agentTemp: '/scratch/task/tmp/agent' };
+  assert.deepEqual(parseInvocation({ ...provider, storageContext: tempContext }).storageContext, tempContext);
   assert.equal(parseInvocation(provider).storageContext, undefined);
   for (const request of [{ ...job, storageContext }, { ...provider, storageContext, readonlyPaths: [] },
     { ...provider, storageContext, payload: [...provider.payload, '--provider-storage-v1', 'caller-witness'] },
     { ...provider, storageContext: { ...storageContext, writablePaths: ['/etc'] } },
+    { ...provider, storageContext: { ...tempContext, extraTemp: '/scratch/state' } },
     { ...provider, storageContext: { ...storageContext, home: storageContext.home + '\n' } },
     { ...provider, storageContext: { ...storageContext, workspace: '/' } }]) assert.throws(() => parseInvocation(request));
 });

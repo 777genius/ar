@@ -147,7 +147,7 @@ export function parseInvocation(request) {
     const context = request.storageContext;
     if (operation !== 'provider' || payload.length !== 2 || request.readonlyPaths !== undefined ||
         !context || typeof context !== 'object' || Array.isArray(context) ||
-        Object.keys(context).sort().join(',') !== 'codexHome,home,workspace' ||
+        !['codexHome,home,workspace', 'agentTemp,codexHome,home,workspace'].includes(Object.keys(context).sort().join(',')) ||
         Object.values(context).some(path => !safePath(path) || path === '/' || path !== path.trim() || path.endsWith('/') || path.length > 4096)) denied();
   }
   return { ...request, trusted };

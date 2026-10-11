@@ -17,7 +17,7 @@ const canonical = (path: unknown): path is string => typeof path === "string" &&
 
 export function decodeOriginalProviderStorageContext(value: unknown): OriginalProviderStorageContext {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).sort().join(",") !== "codexHome,home,workspace") invalid();
+      !["codexHome,home,workspace", "agentTemp,codexHome,home,workspace"].includes(Object.keys(value).sort().join(","))) invalid();
   const context = value as OriginalProviderStorageContext;
   if (![context.workspace, context.home, context.codexHome].every(canonical)) invalid();
   if (context.home === context.codexHome || context.workspace === context.home ||
@@ -27,7 +27,11 @@ export function decodeOriginalProviderStorageContext(value: unknown): OriginalPr
   // Original materializers retain private sibling home/codex-home leaves;
   // nested CODEX_HOME is also supported without changing either retained path.
   if (!inside(context.codexHome, context.home) && dirname(context.home) !== dirname(context.codexHome)) invalid();
-  return { workspace: context.workspace, home: context.home, codexHome: context.codexHome };
+  if ("agentTemp" in context && (!canonical(context.agentTemp) || !context.agentTemp.endsWith("/tmp/agent") ||
+      [context.workspace, context.home, context.codexHome].some(path => path === context.agentTemp ||
+        inside(path, context.agentTemp!) || inside(context.agentTemp!, path)))) invalid();
+  return { workspace: context.workspace, home: context.home, codexHome: context.codexHome,
+    ...(context.agentTemp === undefined ? {} : { agentTemp: context.agentTemp }) };
 }
 
 function pathsFor(root: string, context: OriginalProviderStorageContext): string[] {
@@ -48,6 +52,7 @@ function assertOriginalMounts(root: string, context: OriginalProviderStorageCont
     if (separator < 6) invalid();
     const path = fields[4]!.replace(/\\(040|011|012|134)/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
     if (path === root && fields[3] !== "/") invalid();
+    if (context.agentTemp && inside(path, context.agentTemp)) invalid();
     if (!inside(path, root)) continue;
     // A pathname alias or nested mount must never select a writable role.
     if (Object.values(context).some(leaf => leaf === path || inside(leaf, path))) invalid();
@@ -66,7 +71,7 @@ function openAnchors(root: string, context: OriginalProviderStorageContext, priv
       if (!named.isDirectory() || named.isSymbolicLink() || realpathSync(path) !== path ||
           named.uid !== (privileged ? 0n : 65532n) || (named.mode & 0o022n) ||
           ((path === root || inside(path, root)) && named.dev !== rootDevice)) invalid();
-      if ((path === context.home || path === context.codexHome ||
+      if ((path === context.home || path === context.codexHome || path === context.agentTemp ||
           (path === dirname(context.home) && !inside(context.codexHome, context.home))) &&
           (named.mode & 0o777n) !== 0o700n) invalid();
       const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -113,6 +118,7 @@ export function assertOriginalProviderStorageFrame(raw: string, frame: {
       value.anchors.some((anchor, index) => !anchor || Object.keys(anchor).sort().join(",") !== "dev,ino,mode,path" ||
         anchor.path !== paths[index] || !/^[0-9]+$/.test(anchor.dev) || !/^[1-9][0-9]*$/.test(anchor.ino) || !Number.isSafeInteger(anchor.mode))) invalid();
   if (frame.env.HOME !== context.home || frame.env.CODEX_HOME !== context.codexHome ||
+      (context.agentTemp !== undefined && (frame.env.TMPDIR !== context.agentTemp || frame.env.TMP !== context.agentTemp || frame.env.TEMP !== context.agentTemp)) ||
       (frame.cwd !== context.home && frame.cwd !== context.workspace) ||
       process.env.SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH !== "1" ||
       !process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT?.startsWith(value.root + "/jobs/")) invalid();

@@ -4,6 +4,7 @@ export type OriginalProviderStorageContext = {
   readonly workspace: string;
   readonly home: string;
   readonly codexHome: string;
+  readonly agentTemp?: string;
 };
 
 export type CodexAppServerProcessFactory = ((input: {
