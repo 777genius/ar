@@ -1,3 +1,4 @@
+import { finishReasonForFailure } from "./codex-json-agent-finish-reason";
 import { readTaskGoalObjective, readTaskManagedRunId } from "./codex-task-metadata";
 import { snapshotSessionUpdate } from "./codex-session-update-snapshot";
 import { SessionExecutionUseDisposition } from "@vioxen/subscription-runtime/core";
@@ -989,21 +990,4 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
     pending ??= fn().catch(error => { pending = undefined; throw error; });
     return pending;
   };
-}
-
-function finishReasonForFailure(
-  code: ProviderFailure["code"],
-):
-  | "completed"
-  | "waiting_for_input"
-  | "max_turns"
-  | "cancelled"
-  | "timeout"
-  | "budget_exceeded"
-  | "provider_error" {
-  if (code === "task_cancelled") return "cancelled";
-  if (code === "task_timeout") return "timeout";
-  if (code === "goal_slice_exhausted") return "max_turns";
-  if (code === "budget_exceeded") return "budget_exceeded";
-  return "provider_error";
 }

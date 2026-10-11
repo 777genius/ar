@@ -1,3 +1,4 @@
+import { assertNoManagedOrigin } from "./hosted-ordinary-origin-isolation";
 import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { sealHostedOrdinaryWriterExtent, assertHostedOrdinaryLaunchExtent, isHostedOrdinaryRuntime } from "./hosted-ordinary-writer-authority";
 import { recordInventoriedRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
@@ -31,11 +32,11 @@ import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedAct
 import { fileURLToPath } from "node:url";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, ordinaryCompletionBytes, ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
 import { assertHostedForegroundResult, type HostedForegroundResult, type HostedFdOriginalSpawnCustody } from "../provider-codex/app-server/adapters/hosted-fd-launch";
-import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "./hosted-test-egress-contract";
+import { parseHostedTestEgressGrant } from "./hosted-test-egress-contract";
 import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
-import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
+import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
 import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
 /** Installation, origin and activation persistence under the common host fence.
@@ -962,21 +963,6 @@ function validateCatalogBirths(catalog: HostedOrdinaryOrigins): void {
     if (digest(bytes) !== row.birthSha256 || birth.installationId !== catalog.installationId || birth.jobId !== row.jobId ||
         birth.jobRootDir !== row.jobRootDir || birth.workspacePath !== row.workspacePath) invalid();
   }
-}
-function assertNoManagedOrigin(birth: HostedOrdinaryBirth): string | null {
-  const jobId = birth.jobId;
-  const name = digest(Buffer.from(jobId)) + ".json";
-  if (readHostedPrivateBytes(join(hostedReadonlyPolicyRoot, name), 64 * 1024)) invalid();
-  if (readHostedActivationBytes("codex-readonly-custody/" + name) || readHostedActivationBytes("codex-readonly-revoked/" + name)) invalid();
-  const enrollment = readHostedActivationBytes("readonly-enrollment.json");
-  if (enrollment && parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment)) === jobId) invalid();
-  const grantBytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, name), 4096);
-  if (grantBytes) {
-    const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(grantBytes));
-    assertHostedTestEgressIdentity(grant, birth);
-    if (grant.profileId === CodexProviderEgressProfileId.TestManagedQualification) invalid();
-  }
-  return grantBytes ? digest(grantBytes) : null;
 }
 export { isHostedOrdinaryRuntime, admitHostedOrdinaryIdentity } from "./hosted-ordinary-writer-authority";
 

@@ -1,3 +1,5 @@
+import * as installation from '../hosted-installation-activation';
+import { HostedActivationPhase } from '@vioxen/subscription-runtime/worker-core';
 // Independent composition: actual use cases, CLI parser, route, foreground and shared ops.
 // Substituted boundaries: host authority/OS process, status/doctor, manifest, goal execution.
 import { EventEmitter } from 'node:events';
@@ -44,7 +46,11 @@ const launch:any={config:{jobId:'TEST',taskId:'TEST',jobRootDir:'/TEST/job',work
 const io={cwd:()=>'/TEST/W',env:()=>launch.config.sourceEnv,writeStdout:()=>{},writeStderr:(s:string)=>{h.events.push("stderr:"+s)}};
 const start=()=>startCodexGoalLaunch({launch,registryRootDir:'/TEST/registry',jobId:'TEST',confirmStart:true,skipDoctor:false,forceStart:true});
 const resume=(skipDoctor=false)=>continueStoredJobLifecycle({confirmContinue:true,forceStart:true,skipDoctor},{mode:'continue',confirmKey:'confirmContinue'},{loadJobLaunch:async()=>({launch,registryRootDir:'/TEST/registry',manifest:{jobId:'TEST'} as any})});
-beforeEach(()=>{h.activationEnabled=true;vi.spyOn(process,'platform','get').mockReturnValue('linux');vi.spyOn(process,'getuid').mockReturnValue(0);h.role='supervisor';h.events=[];h.argv=[];h.doctorOk=false;h.runStatus='completed';h.fail='';h.status={tmuxAlive:false,recommendedAction:'start_worker',resultExists:true,workspaceDirty:true};h.inner=undefined;h.clientOk=true;vi.spyOn(ops,'collectCodexGoalStatus').mockImplementation(async()=>h.status);vi.spyOn(ops,'reconcileCodexGoalRuntimeResult').mockImplementation(async(input)=>{expect(input.preservePatch).toBe(true);h.events.push('reconcile-preserve-patch');if(h.fail==='reconcile')throw Error('TEST patch preservation failed');return {} as any});});
+// Replace the existing installation read after the transport import graph loads.
+// The real installation/dispatch contract has its own activation fixture.
+beforeEach(()=>{vi.spyOn(installation,'readHostedInstallationActivation').mockReturnValue({
+ activation:{phase:HostedActivationPhase.Exclusive},
+} as ReturnType<typeof installation.readHostedInstallationActivation>);h.activationEnabled=true;vi.spyOn(process,'platform','get').mockReturnValue('linux');vi.spyOn(process,'getuid').mockReturnValue(0);h.role='supervisor';h.events=[];h.argv=[];h.doctorOk=false;h.runStatus='completed';h.fail='';h.status={tmuxAlive:false,recommendedAction:'start_worker',resultExists:true,workspaceDirty:true};h.inner=undefined;h.clientOk=true;vi.spyOn(ops,'collectCodexGoalStatus').mockImplementation(async()=>h.status);vi.spyOn(ops,'reconcileCodexGoalRuntimeResult').mockImplementation(async(input)=>{expect(input.preservePatch).toBe(true);h.events.push('reconcile-preserve-patch');if(h.fail==='reconcile')throw Error('TEST patch preservation failed');return {} as any});});
 afterEach(()=>vi.unstubAllEnvs());
 for (const role of ['supervisor', 'runtime']) {
   for (const operation of ['start', 'continue', 'recover'] as const) {
@@ -165,10 +171,3 @@ vi.mock("node:fs", async original => {
       path === "/proc/self/cgroup" ? "0::/user.slice/offline-control.service\n" : real.readFileSync(path, options),
   };
 });
-
-// The managed transport fixture has a separately substituted EXCLUSIVE host.
-// Actual installation/dispatch composition lives in hosted-ordinary-installation.
-vi.mock("../hosted-installation-activation", async original => ({
-  ...await original<typeof import("../hosted-installation-activation")>(),
-  readHostedInstallationActivation: () => ({ activation: { phase: "EXCLUSIVE" } }),
-}));
