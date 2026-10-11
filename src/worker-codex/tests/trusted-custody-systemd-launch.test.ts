@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch, trustedOrdinaryInstallationSupervisorLaunch,
   trustedOrdinaryQualificationOuterLaunch, trustedOrdinaryQualificationWorkerLaunch } from "../trusted-custody-systemd-launch";
 
+const probes = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock("node:child_process", async importOriginal => ({ ...await importOriginal<typeof import("node:child_process")>(), spawnSync: probes.run }));
+const complete = (stdout: string, status = 0, stderr = "") => ({ stdout, stderr, status, signal: null, error: undefined });
+const old252 = () => probes.run.mockImplementation((_file: string, args: string[]) => args.includes("--help")
+  ? complete("", 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n")
+  : complete("systemd 252 (252.39-1~deb12u2)\n+PAM +AUDIT\n"));
+beforeEach(() => { probes.run.mockReset(); probes.run.mockReturnValue(complete("  --expand-environment=BOOL\n")); });
 const startId = "12345678-1234-1234-1234-123456789abc";
 describe("trusted custody launch contract", () => {
   it.each([TrustedCustodyLaunchRole.Outer, TrustedCustodyLaunchRole.Ordinary])("fixes all service properties for %s", role => {
@@ -48,5 +55,57 @@ describe("fixed ordinary installation recipes", () => {
   it.each([0, -1, 30_001])("refuses invalid original stop allowance %s", stopMs => {
     expect(() => trustedOrdinaryQualificationOuterLaunch(startId, rootfs, 10_000, stopMs)).toThrow();
     expect(() => trustedOrdinaryQualificationWorkerLaunch(startId, 10_000, stopMs)).toThrow();
+  });
+});
+
+
+describe("original ordinary literal argv compatibility", () => {
+  const recipes = [
+    () => trustedOrdinaryInstallationSupervisorLaunch(startId, 10_000, 20_000),
+    () => trustedOrdinaryQualificationOuterLaunch(startId, "/srv/workers/TEST-ordinary-rootfs", 10_000, 1_000),
+    () => trustedOrdinaryQualificationWorkerLaunch(startId, 10_000, 1_000),
+  ];
+  it.each([0, 1, 2])("retains exact modern recipe and explicit expansion veto for role %s", ordinal => {
+    const plan = recipes[ordinal]!();
+    expect(plan.args).toContain("--expand-environment=no");
+    expect(plan.args).toContain("--property=Delegate=no");
+    expect(plan.args).toContain("--property=KillMode=control-group");
+    expect(probes.run).toHaveBeenCalledOnce();
+    expect(probes.run.mock.calls[0]![0]).toBe("/usr/bin/systemd-run");
+    expect(probes.run.mock.calls[0]![1]).toEqual(["--expand-environment=no", "--help"]);
+    expect(probes.run.mock.calls[0]![2]).toMatchObject({ timeout: 2000, maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
+  });
+  it.each([0, 1, 2])("admits stock252 only with dollar-free exact unchanged operands/properties for role %s", ordinal => {
+    const modern = recipes[ordinal]!(); probes.run.mockClear(); old252(); const legacy = recipes[ordinal]!();
+    expect(legacy.command).toBe(modern.command);
+    expect(legacy.args).toEqual(modern.args.filter(arg => arg !== "--expand-environment=no"));
+    expect(legacy.args.slice(legacy.args.indexOf("--") + 1).every(arg => !arg.includes("$"))).toBe(true);
+    expect(probes.run.mock.calls.map(call => call[1])).toEqual([["--expand-environment=no", "--help"], ["--version"]]);
+  });
+  it.each(["$USER", "${USER}", "$$", "literal$tail"])("rejects legacy command expansion operand %s before original launch", operand => {
+    old252(); const before = process.execPath;
+    try { Object.defineProperty(process, "execPath", { value: "/synthetic/" + operand, configurable: true });
+      expect(() => recipes[0]!()).toThrow("ordinary_launcher_qualification_held");
+      expect(() => recipes[2]!()).toThrow("ordinary_launcher_qualification_held");
+      expect(probes.run.mock.calls.every(call => JSON.stringify(call[1]) === '["--expand-environment=no","--help"]' || JSON.stringify(call[1]) === '["--version"]')).toBe(true);
+    } finally { Object.defineProperty(process, "execPath", { value: before, configurable: true }); }
+  });
+  it("retains literal dollar operands on the modern explicit-veto route", () => {
+    const before = process.execPath;
+    try { Object.defineProperty(process, "execPath", { value: "/synthetic/$USER", configurable: true });
+      const plan = recipes[2]!(); expect(plan.args).toContain("--expand-environment=no");
+      expect(plan.args.slice(plan.args.indexOf("--") + 1)[0]).toBe("/synthetic/$USER");
+    } finally { Object.defineProperty(process, "execPath", { value: before, configurable: true }); }
+  });
+  it("keeps rootfs dollar injection rejected before capability reads", () => {
+    old252(); expect(() => trustedOrdinaryQualificationOuterLaunch(startId, "/srv/workers/$USER", 10_000, 1000)).toThrow();
+    expect(probes.run).not.toHaveBeenCalled();
+  });
+  it.each(["systemd 251\n", "systemd 253\n", "systemd UNKNOWN\n"])("refuses an unsupported unqualified version %s", version => {
+    old252(); probes.run.mockImplementationOnce(() => complete("", 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n"));
+    probes.run.mockImplementationOnce(() => complete(version)); expect(() => recipes[1]!()).toThrow("ordinary_launcher_qualification_held");
+  });
+  it.each([complete("help without required capability"), complete("", 1, "foreign failure\n"), { ...complete(""), signal: "SIGTERM" }, { ...complete(""), error: new Error("TEST private probe failure") }])("refuses ambiguous capability evidence", result => {
+    probes.run.mockReturnValue(result); expect(() => recipes[1]!()).toThrow("ordinary_launcher_qualification_held");
   });
 });
