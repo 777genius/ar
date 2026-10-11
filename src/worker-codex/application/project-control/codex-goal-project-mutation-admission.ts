@@ -56,6 +56,7 @@ export function codexProjectAdmissionGate(
       }
       const hasScopedBinding = Boolean(input.targetBinding?.createWorktree ||
         input.targetBinding?.createManifest?.projectPreStartAdmission ||
+        input.targetBinding?.createBirthPreparation !== undefined ||
         freshControlledTarget ||
         input.targetBinding?.start?.manifest.projectPreStartAdmission);
       const scoped = hasScopedBinding ? await prepareCodexProjectScopedAdmission({

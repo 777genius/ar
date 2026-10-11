@@ -7,7 +7,8 @@ import { expect, it } from "vitest";
 import { AccessBoundary, ProjectOperation, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
-import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
+import { observeProtectedCodexGoalJobBirth, prepareProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthPreparationCurrent,
+  recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "../protected-job-birth";
 import { researchAuthorityRoot, researchHash } from "../research-launch-files";
 import {
   admissionCreationTargetIdentity, admissionCreateJobTargetIdentity, admissionNeedsFreshCreateJobTarget,
@@ -88,6 +89,36 @@ describe("scoped creation targets", () => {
     await writeFile(f.manifest.promptPath, "TEST existing prompt\n");
     expect(await admissionNeedsFreshCreateJobTarget(f.input.binding)).toBe(false);
     expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+  });
+
+  it("qualifies existing staging only with the original unconsumed cold create capability", async () => {
+    const f = await fixture(), proofInput = { manifest: f.manifest, registryRootDir: f.registryRootDir };
+    const preparation = await prepareProtectedCodexGoalJobBirth(proofInput);
+    expect(preparation).toBeDefined();
+    const proof = { ...proofInput, preparation: preparation! };
+    await writeFile(f.manifest.promptPath, "TEST protected staging\n", { mode: 0o600 });
+    const input = { ...f.input, binding: { ...f.input.binding, createBirthPreparation: preparation! } };
+    expect(await admissionNeedsFreshCreateJobTarget(input.binding)).toBe(false);
+    expect(protectedCodexGoalJobBirthPreparationCurrent(proof)).toBe(true);
+    for (let attempt = 0; attempt < 2; attempt++) expect(await admissionCreateJobTargetIdentity(input)).toBe(f.workspacePath);
+    expect(protectedCodexGoalJobBirthPreparationCurrent(proof)).toBe(true);
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+    expect(await admissionCreateJobTargetIdentity({ ...input, binding: {
+      ...input.binding, createBirthPreparation: Object.freeze({}) as ProtectedCodexGoalJobBirthPreparation,
+    } })).toBeUndefined();
+    expect(await admissionCreateJobTargetIdentity({ ...input,
+      scope: { ...f.scope, preStartAdmission: { required: true, mode: "serial-builtin" } },
+    })).toBeUndefined();
+    expect(await admissionCreateJobTargetIdentity({ ...input, binding: {
+      ...input.binding, createManifest: { ...f.manifest, taskId: "TEST-rewritten" },
+    } })).toBeUndefined();
+    await mkdir(join(f.registryRootDir, f.manifest.jobId), { mode: 0o700 });
+    expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
+    await rm(join(f.registryRootDir, f.manifest.jobId), { recursive: true });
+    recordProtectedCodexGoalJobFirstEffect(f.manifest.jobRootDir);
+    expect(protectedCodexGoalJobBirthPreparationCurrent(proof)).toBe(false);
+    expect(await admissionCreateJobTargetIdentity(input)).toBeUndefined();
+    await expect(access(join(f.registryRootDir, f.manifest.jobId))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([false, true])("keeps legacy enforcement and refuses fallback for malformed modern birth=%s", async modern => {
@@ -208,8 +239,10 @@ describe("scoped creation targets", () => {
     if (existing) {
       await writeFile(join(path, "README.md"), "TEST adopted changes\n");
       expect(await admissionCreationTargetIdentity(input)).toBe(path);
+      const unbound = { ...target };
+      delete unbound.expectedRealPath;
       for (const changed of [
-        { ...target, expectedRealPath: undefined }, { ...target, expectedRealPath: f.workspacePath },
+        unbound, { ...target, expectedRealPath: f.workspacePath },
         { ...target, expectedSourceRealPath: path }, { ...target, newBranch: "fix/TEST-other" },
         { ...target, expectedRevision: "0".repeat(40) },
       ]) expect(await admissionCreationTargetIdentity({ ...input, binding: { createWorktree: changed } })).toBeUndefined();

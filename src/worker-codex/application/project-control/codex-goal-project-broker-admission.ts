@@ -12,6 +12,7 @@ import type { ProjectAdmissionJobWorkspaceBinding } from "./codex-goal-project-a
 import type { CodexGoalProjectCreateWorktreeInput } from "./codex-goal-project-control-contracts";
 import type { ProjectControlledRuntimeInPlaceContinuation } from "./codex-goal-project-in-place-continuation";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./codex-goal-project-pre-start-admission";
+import type { ProtectedCodexGoalJobBirthPreparation } from "../../protected-job-birth";
 
 type BrokerAdmissionInput = {
   readonly registryRootDir: string;
@@ -19,6 +20,7 @@ type BrokerAdmissionInput = {
   readonly scope: ProjectAccessScope;
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly createManifest?: CodexGoalJobManifestInput;
+  readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
   readonly startLaunch?: CodexGoalLaunchInput;
   readonly startManifest?: CodexGoalJobManifest;
@@ -50,6 +52,7 @@ export function createProjectBrokerAdmission(
       targetBinding: {
         ...(input.createWorktreeInput ? { createWorktree: input.createWorktreeInput } : {}),
         ...(input.createManifest ? { createManifest: input.createManifest } : {}),
+        ...(input.protectedBirthPreparation !== undefined ? { createBirthPreparation: input.protectedBirthPreparation } : {}),
         ...(input.startManifest && input.startLaunch && input.startWorkspaceLease ? {
           start: { manifest: input.startManifest, launch: input.startLaunch, workspaceLease: input.startWorkspaceLease,
             ...(input.startAdmissionWorkspaceMode ? { workspaceMode: input.startAdmissionWorkspaceMode } : {}),

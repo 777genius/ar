@@ -18,12 +18,14 @@ import { LocalConsumedOutputLedgerSource } from "./codex-goal-consumed-output-le
 import { assertResearchInitialRoot } from "../../research-launch-host";
 import { assertResearchDirectory, researchCustody, researchDirectoryIdentity } from "../../research-launch-files";
 import { prospectiveAdmissionResourceBacking } from "./codex-goal-project-admission-paths";
+import { protectedCodexGoalJobBirthPreparationCurrent, type ProtectedCodexGoalJobBirthPreparation } from "../../protected-job-birth";
 
 // Only the broker's already-bound mutation ports supply these values. They are
 // not transport request fields and cannot be replaced by a caller's exemption flag.
 export type ProjectAdmissionTargetBinding = {
   readonly createWorktree?: CodexGoalProjectCreateWorktreeInput;
   readonly createManifest?: CodexGoalJobManifestInput;
+  readonly createBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
   readonly start?: {
     readonly manifest: CodexGoalJobManifest;
     readonly launch: CodexGoalLaunchInput;
@@ -279,7 +281,11 @@ export async function admissionCreateJobTargetIdentity(input: TargetInput): Prom
   try {
     const jobId = input.request?.jobId;
     if (!jobId) return undefined;
-    if (!input.binding?.createManifest?.projectPreStartAdmission) return await freshCreateJobTargetIdentity(input);
+    if (!input.binding?.createManifest?.projectPreStartAdmission) {
+      return input.binding?.createBirthPreparation !== undefined
+        ? await preparedCreateJobTargetIdentity(input)
+        : await freshCreateJobTargetIdentity(input);
+    }
     if (!await trustedUnpublishedStage(input, jobId)) return undefined;
     return await projectControlCanonicalWorkspacePath(input.binding!.createManifest!.workspacePath, input.scope);
   } catch { return undefined; }
@@ -291,6 +297,28 @@ export async function admissionCreateJobTargetIdentity(input: TargetInput): Prom
 export async function admissionNeedsFreshCreateJobTarget(binding: ProjectAdmissionTargetBinding | undefined): Promise<boolean> {
   return Boolean(binding?.createManifest && !binding.createManifest.projectPreStartAdmission &&
     await absent(binding.createManifest.jobRootDir));
+}
+
+async function preparedCreateJobTargetIdentity(input: TargetInput): Promise<string | undefined> {
+  const manifest = input.binding?.createManifest, preparation = input.binding?.createBirthPreparation, request = input.request;
+  if (!manifest || preparation === undefined || !request || request.operation !== ProjectOperation.CreateJob ||
+    input.scope.preStartAdmission?.required || request.jobId !== manifest.jobId || request.workspacePath !== manifest.workspacePath ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(manifest.jobId) || !await absent(join(input.registryRootDir, manifest.jobId))) return undefined;
+  const proof = { preparation, manifest, registryRootDir: input.registryRootDir };
+  if (!protectedCodexGoalJobBirthPreparationCurrent(proof)) return undefined;
+  const workspace = await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope);
+  if (await realpath(manifest.jobRootDir) !== manifest.jobRootDir ||
+    input.scope.registryRoot !== undefined && resolve(input.scope.registryRoot) !== input.registryRootDir) return undefined;
+  // Only the original exclusive-create capability qualifies existing staging.
+  // Its cold owner proof brackets actual FD backing without granting release.
+  const paths = [workspace, manifest.jobRootDir];
+  const before = await Promise.all(paths.map(prospectiveAdmissionResourceBacking));
+  if (before.some(roots => !roots?.length)) return undefined;
+  const after = await Promise.all(paths.map(prospectiveAdmissionResourceBacking));
+  if (!isDeepStrictEqual(before, after) || !await absent(join(input.registryRootDir, manifest.jobId)) ||
+    await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope) !== workspace ||
+    !protectedCodexGoalJobBirthPreparationCurrent(proof)) return undefined;
+  return workspace;
 }
 
 async function createJobWorkspaceIdentity(path: string, scope: ProjectAccessScope): Promise<{

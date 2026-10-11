@@ -181,6 +181,45 @@ function eligiblePaths(manifest: CodexGoalJobManifestInput, registryRootDir: str
 }
 const preparations = new WeakMap<ProtectedCodexGoalJobBirthPreparation, PreparedBirth>();
 const manifestInputSnapshot = (manifest: CodexGoalJobManifestInput): unknown => JSON.parse(JSON.stringify(manifest));
+function assertPreparedBirthCurrent(prepared: PreparedBirth | undefined, manifest: CodexGoalJobManifestInput,
+  manifestPath: string): PreparedBirth {
+  if (!prepared || prepared.manifestPath !== manifestPath ||
+      !isDeepStrictEqual(prepared.manifest, manifestInputSnapshot(manifest)) ||
+      prepared.jobDirectory.path !== manifest.jobRootDir) invalid();
+  assertResearchDirectory(prepared.jobDirectory);
+  assertResearchDirectory(prepared.registryDirectory);
+  if (prepared.workspaceDirectory) assertResearchDirectory(prepared.workspaceDirectory);
+  const records = paths(manifest.jobRootDir), physical = physicalPaths(prepared.jobDirectory);
+  if (optionalRecord(records.birth) !== undefined || optionalRecord(physical.birth) !== undefined) invalid();
+  return prepared;
+}
+
+/** Original create-only staging capability, read without consuming it. A public
+ * prompt/root shape cannot replace its exact owner snapshot or grant release. */
+export function protectedCodexGoalJobBirthPreparationCurrent(input: {
+  readonly preparation: ProtectedCodexGoalJobBirthPreparation;
+  readonly manifest: CodexGoalJobManifestInput;
+  readonly registryRootDir: string;
+}): boolean {
+  try {
+    assertResearchInitialRoot(true);
+    if (!eligiblePaths(input.manifest, input.registryRootDir)) return false;
+    const manifestPath = join(input.registryRootDir, input.manifest.jobId, "job.json");
+    const prepared = assertPreparedBirthCurrent(preparations.get(input.preparation), input.manifest, manifestPath);
+    const workspace = prepared.workspaceDirectory ?? eligibleDirectory(input.manifest.workspacePath);
+    if (!workspace) return false;
+    const directories = [prepared.jobDirectory, prepared.registryDirectory, workspace];
+    for (const directory of directories) { researchCustody(directory.path); assertResearchDirectory(directory); }
+    const records = paths(input.manifest.jobRootDir), physical = physicalPaths(prepared.jobDirectory);
+    if (optionalRecord(records.effect) !== undefined || optionalRecord(physical.effect) !== undefined ||
+        researchArtifactDigest(runtimeDirectory()) !== prepared.artifactSha256) return false;
+    assertResearchInitialRoot(true);
+    if (assertPreparedBirthCurrent(preparations.get(input.preparation), input.manifest, manifestPath) !== prepared ||
+        optionalRecord(records.effect) !== undefined || optionalRecord(physical.effect) !== undefined) return false;
+    for (const directory of directories) { researchCustody(directory.path); assertResearchDirectory(directory); }
+    return true;
+  } catch { return false; }
+}
 
 /** The trusted refill owner must create the root before prompt/admission writes.
  * Only this exclusive mkdir issues an opaque, single-use in-process capability.
@@ -234,16 +273,11 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
   });
   if (!capability) return await input.publish(false);
   return await withProtectedCodexGoalJobBirthPublication(async () => {
-    const prepared = preparations.get(capability);
+    const candidate = preparations.get(capability);
     preparations.delete(capability); // A failed/uncertain publication is never replayed.
-    if (!prepared || prepared.manifestPath !== input.manifestPath ||
-        !isDeepStrictEqual(prepared.manifest, manifestInputSnapshot(input.manifestInput)) ||
-        prepared.jobDirectory.path !== input.job.jobRootDir) return invalid();
+    const prepared = assertPreparedBirthCurrent(candidate, input.manifestInput, input.manifestPath);
+    if (prepared.jobDirectory.path !== input.job.jobRootDir) return invalid();
     const { job } = input, records = paths(job.jobRootDir), physical = physicalPaths(prepared.jobDirectory);
-    assertResearchDirectory(prepared.jobDirectory);
-    assertResearchDirectory(prepared.registryDirectory);
-    if (prepared.workspaceDirectory) assertResearchDirectory(prepared.workspaceDirectory);
-    if (optionalRecord(records.birth) !== undefined || optionalRecord(physical.birth) !== undefined) invalid();
     // Refill may prepare the root before its future worktree exists. An absent
     // first workspace witness degrades before publication; captured drift does not.
     const workspaceDirectory = prepared.workspaceDirectory ?? eligibleDirectory(job.workspacePath);
