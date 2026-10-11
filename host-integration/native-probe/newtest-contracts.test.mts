@@ -8,10 +8,42 @@ import { retainedResourceDigest } from "../../src/core/scoped-retained-resource-
 import { elfInputs, tree, verifyTree } from "./assemble-newtest.mjs";
 import { boundedCommand, NewtestCommandFailure, claimOnce, decodeConfig, assertBootstrapCgroup, type NewtestConfig } from "./newtest-bootstrap.mjs";
 import { finitePermit, managerFacts, unwrapManagedJob } from "./newtest-guest.mjs";
+import { isNewtestGuestCgroup } from "./newtest-cgroup.mjs";
 const fixture=(directory:string):NewtestConfig=>decodeConfig({version:1,kind:"NativeOriginalNewtest",runId:"a".repeat(16),machineId:"b".repeat(32),sourceCommit:"c".repeat(40),storageRoot:directory,artifactDirectory:directory,artifactDigest:"d".repeat(64),baseArchive:directory+"/base",node:process.execPath,nodeSha256:"e".repeat(64),preparationEndNs:"900000000000",cleanupEndNs:"1200000000000"});
 if(process.argv[2]==="claim-child"){
   try{const directory=process.argv[3]!;claimOnce(directory,fixture(directory),1n,"f".repeat(32));process.exitCode=0;}catch{process.exitCode=77;}
 }else{
+  // Red: the fixed guest rejects valid supplementary nspawn membership or
+  // accepts a foreign/ambiguous v2 row. This is DATA, not physical qualification.
+  test("fixed guest membership admits supplementary v1 but requires exact unique v2",()=>{
+    const group="/system.slice/native-newtest.service",unified=`0::${group}\n`;
+    for(const text of [`1:name=systemd:/\n${unified}`,`${unified}1:name=systemd:${group}/init.scope\n2:cpu,cpuacct:/\n`,unified,unified.slice(0,-1)])assert.equal(isNewtestGuestCgroup(text),true);
+    const invalid=[
+      ["host init", "1:name=systemd:/\n0::/init.scope\n"],
+      ["named guest but foreign v2", `1:name=systemd:${group}\n0::/system.slice/foreign.service\n`],
+      ["bootstrap unit", "0::/system.slice/subscription-runtime-native-newtest-284e13e813e17671.service\n"],
+      ["descendant", `0::${group}/payload\n`],
+      ["similar unit", `0::${group}.other\n`],
+      ["noncanonical path", `0::/system.slice/..${group}\n`],
+      ["duplicate identical", unified+unified],
+      ["duplicate conflicting", unified+"0::/\n"],
+      ["duplicate reversed", "0::/\n"+unified],
+      ["missing v2", `1:name=systemd:${group}\n`],
+      ["v2 controllers", `0:name=systemd:${group}\n`],
+      ["missing path", "0::\n"],
+      ["relative path", "0::system.slice/native-newtest.service\n"],
+      ["malformed supplementary", "1:name=systemd\n"+unified],
+      ["empty v1 controllers", "1::/\n"+unified],
+      ["malformed controllers", "1:cpu,,cpuacct:/\n"+unified],
+      ["blank row", unified+"\n"],
+      ["leading whitespace", " "+unified],
+      ["trailing whitespace", `0::${group} \n`],
+      ["CR", `0::${group}\r\n`],
+      ["NUL", `0::${group}\0\n`],
+      ["empty text", ""],
+    ] as const;
+    for(const [fault,text] of invalid)assert.equal(isNewtestGuestCgroup(text),false,fault);
+  });
   // Red: valid host supplementary membership refuses, or an ambiguous/foreign
   // unified row grants the fixed bootstrap DATA admission. This is not Origin.
   test("bootstrap membership requires one exact v2 service alongside host v1 rows",()=>{
