@@ -7,11 +7,11 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   AccessBoundary,
   NetworkAccessMode,
@@ -23,7 +23,6 @@ import { stagedPatchSha256 } from "../application/project-control/codex-goal-pro
 import { localProjectControlEvidenceCustodySupported } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
-  callToolJson,
   git,
   gitInitRepository,
   gitStdout,
@@ -135,31 +134,6 @@ describe("project refill adoption", () => {
         "diff.context",
         "5",
       ]);
-      const handoff = await materializeCodexGoalHandoffArtifacts({
-        workerJobId: "project-producer",
-        taskId: "project-producer",
-        workspacePath: producerWorkspace,
-        jobRootDir: producerJobRoot,
-      });
-      if (!handoff) throw new Error("expected producer handoff");
-      const artifactSha256 = handoff.manifest.artifacts.patch.sha256;
-      await writeFile(
-        join(producerJobRoot, "project-producer.latest-result.json"),
-        `${JSON.stringify({
-          status: "failed",
-          reason: "unknown_error",
-          changedFiles: handoff.changedPaths,
-          evidence: ["immutable_handoff_captured"],
-          blockers: ["model_capacity"],
-          nextAction: "preserve_patch",
-          artifacts: handoff.artifacts,
-          details: { baseCommit: handoff.baseCommit },
-        })}\n`,
-      );
-      await writeFakeAuth(authRootDir, "account-a", {
-        lastRefresh: new Date().toISOString(),
-      });
-
       await Promise.all([
         server.connect(serverTransport),
         client.connect(clientTransport),
@@ -186,6 +160,32 @@ describe("project refill adoption", () => {
         },
       });
       if (producer.ok !== true) throw new Error(JSON.stringify(producer));
+
+      const handoff = await materializeCodexGoalHandoffArtifacts({
+        workerJobId: "project-producer",
+        taskId: "project-producer",
+        workspacePath: producerWorkspace,
+        jobRootDir: producerJobRoot,
+      });
+      if (!handoff) throw new Error("expected producer handoff");
+      const artifactSha256 = handoff.manifest.artifacts.patch.sha256;
+      await writeFile(
+        join(producerJobRoot, "project-producer.latest-result.json"),
+        `${JSON.stringify({
+          status: "failed",
+          reason: "unknown_error",
+          changedFiles: handoff.changedPaths,
+          evidence: ["immutable_handoff_captured"],
+          blockers: ["model_capacity"],
+          nextAction: "preserve_patch",
+          artifacts: handoff.artifacts,
+          details: { baseCommit: handoff.baseCommit },
+        })}\n`,
+      );
+      await writeFakeAuth(authRootDir, "account-a", {
+        lastRefresh: new Date().toISOString(),
+      });
+
       const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "project-controller",
