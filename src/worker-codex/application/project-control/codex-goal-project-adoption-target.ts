@@ -43,7 +43,8 @@ export async function readPlannedProjectAdoptionProof(input: {
   if ((request.operation !== ProjectOperation.CreateWorktree && request.operation !== ProjectOperation.CreateJob) ||
     request.jobId !== manifest.jobId || request.workspacePath !== manifest.workspacePath || target.path !== manifest.workspacePath ||
     target.jobId !== manifest.jobId || !target.expectedRealPath || target.inputPatch || target.fastForwardExisting ||
-    target.workerRole !== "adoption" || manifest.projectPreStartAdmission?.mode !== "serial-builtin" ||
+    target.workerRole !== "adoption" || !manifest.projectPreStartAdmission ||
+    !("mode" in manifest.projectPreStartAdmission) || manifest.projectPreStartAdmission.mode !== "serial-builtin" ||
     adoption.preparation === undefined) return invalid();
   const contract = parseWorkerLaunchSpec(adoption.contract);
   if (!workerLaunchSpecHasOwnershipBoundWorkKey(contract) || contract.registryStatus !== "queued" || contract.revision !== 0 ||

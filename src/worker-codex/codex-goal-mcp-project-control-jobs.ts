@@ -483,7 +483,7 @@ export async function projectControlRefillWorkerView(
     expectedSourceRealPath: resolvedSource.sourceRealPath,
     ...(producerInputPatch ? { inputPatch: producerInputPatch } : {}),
   };
-  const plannedAdoption = role === "adoption" && preStartAdmission?.descriptor.mode === "serial-builtin" &&
+  const plannedAdoption = role === "adoption" && preStartAdmission && "mode" in preStartAdmission.descriptor && preStartAdmission.descriptor.mode === "serial-builtin" &&
     createWorktreeInput.expectedRealPath && !producerInputPatch
     ? { target: createWorktreeInput, manifest: createManifest, contract: preStartAdmission.contract, preparation: protectedBirthPreparation }
     : undefined;

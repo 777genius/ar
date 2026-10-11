@@ -80,7 +80,7 @@ export async function orphanDirtyWorkspaceDebt(input: {
       debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
       continue;
     }
-    const status = await gitStatusShort(workspacePath, gitStatusTimeoutMs, resolved === input.guardedGitRead?.workspacePath ? input.guardedGitRead.recipe : undefined);
+    const status = await gitStatusShort(workspacePath, gitStatusTimeoutMs, input.guardedGitRead && resolved === input.guardedGitRead.workspacePath ? input.guardedGitRead.recipe : undefined);
     if (status.ok && status.lines.length === 0) continue;
     const binding = input.orphanWorkspaceBindings.find((candidate) =>
       candidate.state === "quarantined" &&
