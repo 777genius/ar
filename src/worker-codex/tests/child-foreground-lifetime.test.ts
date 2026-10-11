@@ -118,7 +118,7 @@ describe("production foreground child lifetime", () => {
       expect([
         { status: "failed", reason: "budget_exceeded" },
         { status: "partial", reason: "task_timeout" },
-      ], JSON.stringify(result)).toContainEqual({ status: result.status, reason: result.reason });
+      ], JSON.stringify(result)).toContainEqual({ status: result.status, reason: "reason" in result ? result.reason : undefined });
       const rows = await f.rows();
       expect(result.attempts).toHaveLength(1);
       expect(rows.filter(r => r.type === "provider-start"), JSON.stringify(result)).toHaveLength(1);
