@@ -32,7 +32,7 @@ import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedO
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
-  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
+  omitEmptyManagerProperties: false, failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
@@ -117,15 +117,17 @@ vi.mock("node:fs/promises", async original => {
 vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpected external command"); },
   spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
   if (command !== "/usr/bin/systemctl") throw new Error("unexpected external command");
+  const show = (stdout: string) => fixture.omitEmptyManagerProperties && !args.includes("--all")
+    ? stdout.replace(/^DropInPaths=\n/gm, "") : stdout;
   if (args[0] === "kill" || args[0] === "stop") {
     fixture.stops.push(args.at(-1)!); fixture.onStop?.();
     return { status: fixture.stopFailed ? 1 : 0, stdout: "" };
   }
   if (args[0] === "show" && args.at(-1) === fixture.runtimeUnit) return { status: 0, stdout:
-    `Id=${fixture.runtimeUnit}\nFragmentPath=\nDropInPaths=\nControlGroup=/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${fixture.runtimeUnit}\nMainPID=234\n` };
+    show(`Id=${fixture.runtimeUnit}\nFragmentPath=\nDropInPaths=\nControlGroup=/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${fixture.runtimeUnit}\nMainPID=234\n`) };
   if (args[0] === "show" && args.at(-1) !== "trusted.service") return { status: 0, stdout:
-    `Id=${args.at(-1)}\nFragmentPath=\nDropInPaths=\nControlGroup=\nMainPID=0\n` };
-  if (args[0] === "show") return { status: 0, stdout: "Id=trusted.service\nFragmentPath=/etc/systemd/system/trusted.service\nDropInPaths=\nControlGroup=/system.slice/trusted.service\nMainPID=123\n" };
+    show(`Id=${args.at(-1)}\nFragmentPath=\nDropInPaths=\nControlGroup=\nMainPID=0\n`) };
+  if (args[0] === "show") return { status: 0, stdout: show("Id=trusted.service\nFragmentPath=/etc/systemd/system/trusted.service\nDropInPaths=\nControlGroup=/system.slice/trusted.service\nMainPID=123\n") };
   if (args[0] === "list-unit-files") return { status: 0, stdout: fixture.enabled };
   if (args[0] === "list-units") return { status: 0, stdout: args.includes("--type=socket,timer") ? "" : "trusted.service loaded active running trusted\n" };
   if (args[0] === "list-jobs") return { status: 0, stdout: fixture.jobs };
@@ -142,7 +144,7 @@ beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
   writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
-  fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
+  fixture.omitEmptyManagerProperties = false; fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.spawn.mockReset(); fixture.captureAncestry = false; fixture.captureDirectories.clear();
   const child = Object.assign(new EventEmitter(), { stdin: Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() }),
@@ -721,6 +723,13 @@ describe("real default provider primitive under ordinary activation", () => {
     if (fault === "environment") input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND = "";
     await expect(admitHostedTestEgress({ ...identity, ...(fault === "engine" ? { executionEngine: "plain-exec" as const } : {}) })).rejects.toThrow();
     expect(fixture.spawn).not.toHaveBeenCalled();
+  });
+  it("requests empty manager properties before authentic ordinary provider reservation", () => {
+    const { store, input } = runtime();
+    fixture.omitEmptyManagerProperties = true;
+    spawnCodexAppServerProcess(input);
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
+    expect(store.read().ordinaryStarts).toHaveLength(2);
   });
   it.each([false, true])("the default primitive reserves before real mocked OS submission; npm=%s", npm => {
     const { store, input } = runtime(npm);

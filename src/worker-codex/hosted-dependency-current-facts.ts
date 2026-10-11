@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, type BigIntStats, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -75,13 +76,13 @@ export function readCurrentHostedDependencySignedParentRecipe(facts:CurrentHoste
 /** Routing facts only. */
 export function isHostedManagedReadonlyOuterRuntime(): boolean {
   return process.platform === "linux" && /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.test(
-    readFileSync("/proc/self/cgroup","utf8").trim());
+    observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8")));
 }
 /** Classification only: actual outer epoch determines whether omitted/foreign
  * request paths still require the protected dependency branch. */
 export function isCurrentHostedDependencyManagedReadonlyOrigin(fence: HostedActivationFence): boolean {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   if (!/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.test(group)) return false;
   const epoch = parseHostedCustodyEpoch(decodeHostedActivationBytes(fixed("readonly-epoch.json").bytes));
   return isHostedDependencyWorkspace(epoch.identity.workspacePath);
@@ -94,7 +95,7 @@ export function requiresCurrentHostedDependencyRootPurpose(heldFence?: HostedAct
   if (process.platform !== "linux") return false;
   const group = readFileSync("/proc/self/cgroup","utf8");
   if (group.length > 4096) invalid();
-  const current = group.trim();
+  const current = observedProcessCgroup(group);
   const outer = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.exec(current);
   const ordinary = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.exec(current);
   if ((!outer || outer[0] !== current) && (!ordinary || ordinary[0] !== current)) return false;
