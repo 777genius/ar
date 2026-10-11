@@ -4,6 +4,9 @@ export enum WorkflowEvent { PullRequest = 'pull_request', Push = 'push' }
 export const WORKFLOW_PATH = '.github/workflows/ci.yml';
 export const CHECKOUT_ACTION = '11d5960a326750d5838078e36cf38b85af677262';
 export const SETUP_NODE_ACTION = '49933ea5288caeca8642d1e84afbd3f7d6820020';
+// Locked TypeScript install without lifecycle scripts plus the helper compile. Its
+// name must never contain `npm ci`: the single full install is counted below.
+export const HELPER_STEP = 'Prepare CI proof helper with locked project TypeScript';
 export const CAPTURE_STEP = 'Capture CI proof identity before source execution';
 export const UPLOAD_STEP = 'Publish successful CI lane proof';
 export const IDENTITY_MARKER = 'CI_PROOF_IDENTITY=';
@@ -144,7 +147,9 @@ export function observeCheckout(job: Job, log: string): string {
   return observations[0]!;
 }
 export function observeReceipt(job: Job, log: string): Receipt {
+  const helper = uniqueStep(job, HELPER_STEP);
   const capture = uniqueStep(job, CAPTURE_STEP);
+  demand(helper.number < capture.number, 'CI proof helper prepared after identity capture');
   const install = job.steps.filter(step => step.name.includes('npm ci'));
   const builds = job.steps.filter(step => step.name.startsWith('Run npm run build'));
   demand(install.length === 1 && [...install, ...builds].every(step => step.number > capture.number), 'Identity captured after source execution');
@@ -197,7 +202,7 @@ export function validateReceipt(target: Target, run: Run, lane: Lane, receipt: R
   if (lane.family === ProofFamily.Crash) { expected.resticVersion = ''; expected.resticBinaryHash = ''; }
   demand(JSON.stringify(receipt.fingerprint) === JSON.stringify(expected), 'Toolchain or runner fingerprint mismatch');
   demand(/^sha256:[a-f0-9]{64}$/.test(expected.imageDigest) && /^[a-f0-9]{64}$/.test(expected.configRevision)
-    && expected.runnerLabel.length > 0 && /^v22\./.test(expected.nodeVersion), 'Missing trusted runner fingerprint');
+    && expected.runnerLabel.length > 0 && /^v26\./.test(expected.nodeVersion), 'Missing trusted runner fingerprint');
 }
 export function validateToolchainLog(job: Job, log: string, receipt: Receipt): void {
   const setup = uniqueStep(job, `Run actions/setup-node@${SETUP_NODE_ACTION}`);
