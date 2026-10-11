@@ -97,13 +97,18 @@ export async function prepareHostedMimoProject(inputPath: string): Promise<unkno
   researchCustody(b.sourceWorkspacePath);
   assertPreparationGitMetadata(b.sourceWorkspacePath);
   assertPreparationSandbox(b.sourceWorkspacePath, sandboxRelative);
-  makePrivate(b.registryRootDir); makePrivate(join(b.stateRoot, "controller")); makePrivate(join(b.scratchRoot, "workspaces"));
-  const promptPath = join(b.stateRoot, "controller", "prompt.md");
+  makePrivate(b.registryRootDir); makePrivate(join(b.scratchRoot, "workspaces"));
+  const evidenceRoot = join(b.registryRootDir, "archives"), ledgerRoot = join(b.registryRootDir, "consumed-output-ledger");
+  const reviewedOutputRoot = join(b.stateRoot, "reviewed-worker-outputs");
+  // Canonical job birth materializes ledger/evidence custody before publication.
+  for (const path of [reviewedOutputRoot, join(reviewedOutputRoot, ".locks"), join(reviewedOutputRoot, ".locks", "workspace-locks")]) makePrivate(path);
+  const promptPath = join(b.stateRoot, "controller-prompt.md");
   writeFileSync(promptPath, "Operator-owned MiMo project controller. Never launch this controller.\n", { flag: "wx", mode: 0o600 });
   const scope: ProjectAccessScope = { projectId: b.projectId, registryRoot: b.registryRootDir, authRoot: plan.authRootDir,
     workspaceRoots: [b.scratchRoot], worktreeRoots: [join(b.scratchRoot, "workspaces")], observedWorkspaceRoots: [b.sourceWorkspacePath],
     jobIdPrefixes: [plan.workerJobPrefix, b.controllerJobId], tmuxSessionPrefixes: [plan.workerJobPrefix, b.controllerJobId],
     allowedBranches: [b.sourceRef, b.sourceRef.slice(7), "feat/" + plan.workerJobPrefix + "*"], allowedGitRemotes: ["origin"],
+    consumedOutputEvidenceRoots: [evidenceRoot], consumedOutputLedgerRoots: [ledgerRoot],
     allowedAccountIds: ["account-q"], commitIdentity: plan.commitIdentity, preStartAdmission: { required: true, mode: "serial-builtin" } };
   await createCodexGoalJob({ registryRootDir: b.registryRootDir, overwrite: false, manifest: { jobId: b.controllerJobId,
     taskId: b.controllerJobId, jobRootDir: join(b.stateRoot, "controller"), workspacePath: b.sourceWorkspacePath, promptPath,
