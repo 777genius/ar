@@ -5,7 +5,7 @@ import { collectUnitNotFound } from "./hosted-readonly-linux-collector";
 export function assertInstallerTerminalUnit(unit: string): void {
   const fail = (): never => { throw new Error("dependency_installer_unit_unresolved"); };
   if (!/^subscription-runtime-installer-[a-f0-9-]{36}\.service$/.test(unit)) fail();
-  const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup,DropInPaths", "--", unit], {
+  const result = spawnSync("/usr/bin/systemctl", ["show", "--all", "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup,DropInPaths", "--", unit], {
     encoding: "utf8", timeout: 5000, maxBuffer: 8192, stdio: ["ignore", "pipe", "pipe"],
     env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" },
   });
