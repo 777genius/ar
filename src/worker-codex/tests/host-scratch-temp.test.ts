@@ -1,7 +1,13 @@
 import { strict as assert } from "node:assert";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { prepareHostScratchCaches, prepareHostScratchTemp, resolveHostScratchTempRoot, type ScratchTempHost } from "../host-scratch-temp";
 import { normalizeResearchMaterialFailure, ResearchLaunchCause, ResearchLaunchDiagnostic, ResearchMaterialRole, ScratchCapacityVolumeRole } from "../research-launch-diagnostics";
+
+// Platform-independent control of the separate-provider-unit predicate (real cgroup logic has its own test).
+const separateUnit = vi.hoisted(() => ({ value: false }));
+vi.mock("../../provider-codex/app-server/adapters/node-app-server-process.js", () => ({
+  hostedProviderRunsInSeparateUnit: () => separateUnit.value,
+}));
 
 const root = "/srv/workers";
 const uuid = "d0f2cac1-2009-4e9d-a710-e156f417938f";
@@ -16,8 +22,12 @@ function fixture() {
   const contents = new Map<string, string[]>();
   const mutations: string[] = [];
   let mountId = 20;
+  const namespaces = { own: "mnt:[4026532000]", manager: "mnt:[4026531841]", owned: true };
   const host: ScratchTempHost = {
     uid: 0,
+    mountNamespace: () => namespaces.own,
+    managerMountNamespace: () => namespaces.manager,
+    ownsRunnerNamespace: () => namespaces.owned,
     realpath: (path) => path,
     lstat(path) {
       const info = nodes.get(path);
@@ -39,7 +49,7 @@ function fixture() {
     makePrivate(target) { mutations.push(`private ${target}`); mounts.set(target, { ...mounts.get(target), isPrivate: true }); },
     unmount(target) { mutations.push(`unmount ${target}`); mounts.delete(target); },
   };
-  return { host, nodes, mounts, contents, mutations, directory, setConfig: (value: unknown) => { config = JSON.stringify(value); } };
+  return { host, nodes, mounts, contents, mutations, directory, namespaces, setConfig: (value: unknown) => { config = JSON.stringify(value); } };
 }
 
 // Regressions: portable or trusted managed jobs unexpectedly change their layout.
@@ -298,4 +308,75 @@ test("second cache private failure rolls back only its newly created leaf", asyn
   const retained = f.mounts.get(first); assert.ok(retained); assert.equal(retained.isPrivate, true);
   assert.equal(f.mounts.has(second), false);
   assert.deepEqual(f.mutations.filter(action => action.startsWith("unmount ")), [`unmount ${second}`]);
+});
+
+// Guard: a bind made in PID 1's mount namespace is never reclaimed and is copied into every unit.
+test("scratch bind refuses to run in the manager mount namespace before any mutation", async () => {
+  const f = fixture();
+  f.namespaces.own = f.namespaces.manager;
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /requires a private mount namespace/);
+  await assert.rejects(prepareHostScratchCaches("/home/codex", {}, f.host), /requires a private mount namespace/);
+  // Only the plain cache parent directory may be created; no lock, source, bind or propagation change.
+  assert.deepEqual(f.mutations, ["mkdir /home/codex/plugins"]);
+  assert.equal(f.mounts.has("/jobs/a/tmp"), false);
+});
+
+// Guard: an inherited namespace (tmux server, MCP child) differs from PID 1's but is shared by other runners.
+test("scratch bind refuses an inherited namespace that this runner does not own", async () => {
+  const f = fixture();
+  f.namespaces.owned = false;
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /requires a private mount namespace/);
+  assert.deepEqual(f.mutations, []);
+  assert.equal(f.mounts.has("/jobs/a/tmp"), false);
+});
+
+test("a visible matching bind is reused from the manager namespace without a new mount", async () => {
+  const f = fixture();
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  f.namespaces.own = f.namespaces.manager;
+  const before = [...f.mutations];
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  assert.deepEqual(f.mutations, before);
+});
+
+test("runs whose provider is a separate hosted unit prepare no scratch binds", async () => {
+  const f = fixture();
+  separateUnit.value = true;
+  try {
+    await prepareHostScratchTemp("/jobs/a", {}, f.host);
+    await prepareHostScratchCaches("/home/codex", {}, f.host);
+  } finally { separateUnit.value = false; }
+  assert.deepEqual(f.mutations, []);
+});
+
+// Resume after a host-side release: the target is unbound again, so preparation must re-establish it.
+test("preparation re-binds a target whose mount was released and stays idempotent otherwise", async () => {
+  const f = fixture();
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  const settled = [...f.mutations];
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  assert.deepEqual(f.mutations, settled);
+  for (const target of ["/jobs/a/tmp", "/home/codex/plugins/cache", "/home/codex/cache/remote_plugin_catalog"]) f.mounts.delete(target);
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  assert.equal(f.mutations.slice(settled.length).filter(action => action.startsWith("bind ")).length, 3);
+  for (const target of ["/jobs/a/tmp", "/home/codex/plugins/cache", "/home/codex/cache/remote_plugin_catalog"]) assert.equal(f.mounts.get(target)?.isPrivate, true);
+});
+
+// Low disk must not fail a resume whose binds are already in place, but must still stop fresh binds.
+test("free-space check applies to new binds only, not to resuming with binds in place", async () => {
+  const f = fixture();
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  const settled = [...f.mutations];
+  f.host.statfs = () => ({ bavail: 1024, bsize: 1 });
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  await prepareHostScratchCaches("/home/codex", {}, f.host);
+  assert.deepEqual(f.mutations, settled);
+  await assert.rejects(prepareHostScratchTemp("/jobs/b", {}, f.host), /at least 5 GiB/);
+  assert.deepEqual(f.mutations, settled);
 });

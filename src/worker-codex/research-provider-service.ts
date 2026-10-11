@@ -1,3 +1,4 @@
+import { observeResearchProviderBootstrapDiagnostics } from "./research-provider-bootstrap-diagnostics";
 import { trustedResearchProviderLaunch } from "./trusted-custody-systemd-launch";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -161,7 +162,7 @@ type ResearchProviderLaunchPhase = "runtime-capture" | "reservation" | "service-
   "submission-custody" | "systemd-submission" | "ready-and-owner" | "native-forwarding";
 async function runAdmittedResearchProvider(jobId: string, unit: string, selectedCodexHome: string,
   phase: (next: ResearchProviderLaunchPhase) => void, capture: RootTimingCapture, publishTiming: () => void): Promise<void> {
-  const { spec, directory } = researchCurrentStart(jobId), request = spec.request;
+  const { spec, directory, bytes } = researchCurrentStart(jobId), request = spec.request;
   const captured = captureResearchRuntime(request, process.ppid);
   phase("reservation");
   const reservation = readResearchProviderReservation(directory, unit);
@@ -206,6 +207,13 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       proxy.stdin.on("error", error => {
         if (!inputReleased || (error as NodeJS.ErrnoException).code !== "EPIPE") failed();
       });
+    });
+    observeResearchProviderBootstrapDiagnostics(proxy.stderr, safeMessage => {
+      // Protected finite observation independent of client exit/abort delivery.
+      // Never persist raw provider stderr or use this record as launch authority.
+      try { researchPublish(join(directory, "provider-root-bootstrap.json"), {
+        schemaVersion: 1, unit, specSha256: researchHash(bytes), safeMessage,
+      }); } catch { /* Observation failure never changes launch semantics. */ }
     });
     proxy.stderr.pipe(process.stderr);
     void terminal.catch(() => {}); // Observed below; never an unhandled early exit.
