@@ -26,6 +26,7 @@ import {
   registerCodexGoalLaunchTools,
 } from "./codex-goal-mcp-operation-tools";
 import { registerCodexGoalAccountTools } from "./codex-goal-mcp-account-tools";
+import { enterScratchPrivateMountNamespace } from "./scratch-mount-namespace";
 import { subscriptionRuntimePackageVersion } from
   "./subscription-runtime-package-version";
 export { buildCodexGoalBrief } from "./codex-goal-mcp-brief";
@@ -106,6 +107,7 @@ function registerCodexGoalJobResource(server: McpServer): void {
 }
 
 if (await isMainModule()) {
+  enterScratchPrivateMountNamespace();
   try {
     const server = createCodexGoalMcpServer();
     await server.connect(new StdioServerTransport());

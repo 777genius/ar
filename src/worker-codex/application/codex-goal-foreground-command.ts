@@ -1,3 +1,5 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
 import { assertCodexGoalAccessLaunchAllowed } from "../codex-goal-access-plan";
 
@@ -22,6 +24,8 @@ export function buildCodexGoalForegroundArgv(
   lifecycle?: HostedGoalLifecycleRequest,
 ): string[] {
   const config = input.config;
+  const storageData = parseCodexGoalStorageData(config);
+  assertCodexGoalStorageTransportSupported(config);
   if (config.childLifetime && lifecycle && lifecycle.operation !== HostedGoalLifecycleOperation.Start) throw new Error("child_continuation_denied");
   assertCodexGoalAccessLaunchAllowed(config);
   const args = [
@@ -43,6 +47,8 @@ export function buildCodexGoalForegroundArgv(
     "--format",
     input.format ?? "text",
   ];
+  if (storageData.storage) args.push("--session-home-profile-json", JSON.stringify(storageData.sessionHomeProfile),
+    "--storage-json", JSON.stringify(storageData.storage));
   pushOptional(args, "--registry-root", input.registryRootDir);
   pushOptional(args, "--description", input.registryMetadata?.description);
   pushOptional(args, "--tags", input.registryMetadata?.tags?.join(","));
@@ -56,10 +62,10 @@ export function buildCodexGoalForegroundArgv(
   pushOptional(args, "--model", config.model);
   pushOptional(args, "--effort", config.reasoningEffort);
   pushOptional(args, "--service-tier", config.serviceTier);
-  pushOptional(args, "--execution-engine", config.executionEngine);
+  pushOptional(args, "--execution-engine", config.executionEngine ?? (storageData.storage ? "app-server-goal" : undefined));
   pushOptional(args, "--checkpoint-publisher-socket", config.checkpointPublisherSocketPath);
   if (config.checkpointRequired) args.push("--require-turn-checkpoint");
-  pushOptional(args, "--model-backend", config.modelBackend);
+  pushOptional(args, "--model-backend", config.modelBackend ?? (storageData.storage ? CodexModelBackend.OpenAiChatGpt : undefined));
   pushOptionalNumber(args, "--timeout-ms", config.taskTimeoutMs);
   pushOptionalNumber(
     args,
