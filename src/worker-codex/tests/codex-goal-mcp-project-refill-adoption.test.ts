@@ -578,8 +578,40 @@ describe("project refill adoption", () => {
       );
       expect(mismatched).toEqual({
         ok: false,
-        error: "project_control_pre_start_input_patch_hash_mismatch; rollback=prompt",
+        error: "project_control_pre_start_input_patch_hash_mismatch",
       });
+
+      await expect(access(join(root, "worker-jobs", "infinity-context-adoption-mismatch-v1", "prompt.md"))).rejects.toThrow();
+      await expect(access(join(registryRootDir, "infinity-context-adoption-mismatch-v1", "job.json"))).rejects.toThrow();
+      const filterSentinel = join(root, "TEST-adoption-filter-executed");
+      await git(sourceWorkspacePath, ["config", "extensions.worktreeConfig", "true"]);
+      for (const [key, attributes, error, suffix] of [
+        ["filter.TEST.clean", "README.md filter=TEST\n", "failed_no_output_git_conversion_unsupported", "conversion"],
+        ["core.fsmonitor", "", "project_control_adoption_target_unproved", "fsmonitor"],
+      ] as const) {
+        const deniedJobId = `infinity-context-adoption-${suffix}-v1`;
+        await git(childWorkspace, ["config", "--worktree", key, `/bin/sh -c 'printf executed > "${filterSentinel}"; /bin/cat'`]);
+        if (attributes) await writeFile(join(childWorkspace, ".gitattributes"), attributes);
+        try {
+          const converted = await callToolJson(client, "codex_goal_project_refill_worker", {
+            registryRootDir, controllerJobId: "infinity-context-controller-v1", jobId: deniedJobId,
+            jobRootDir: join(root, "worker-jobs", deniedJobId), authRootDir,
+            sourceWorkspacePath, sourceRef: "main", newBranch: childBranch, workspacePath: childWorkspace,
+            promptBody: "Reject executable Git configuration.\n", taskId: deniedJobId,
+            accounts: ["account-a"], workerRole: "adoption", preStartAdmission: { mode: "serial-builtin", contract },
+            confirmPreStartAdmission: true, startWorker: false, dependencyBootstrap: "off", confirmRefill: true,
+          });
+          expect(converted).toEqual({ ok: false, error });
+          await expect(access(filterSentinel)).rejects.toThrow();
+          await expect(access(join(root, "worker-jobs", deniedJobId, "prompt.md"))).rejects.toThrow();
+          await expect(access(join(registryRootDir, deniedJobId, "job.json"))).rejects.toThrow();
+          await expect(readFile(join(childWorkspace, "README.md"), "utf8")).resolves.toBe("preserved dirty output\n");
+        } finally {
+          if (attributes) await rm(join(childWorkspace, ".gitattributes"));
+          await git(childWorkspace, ["config", "--worktree", "--unset", key]);
+        }
+      }
+      await git(sourceWorkspacePath, ["config", "--unset", "extensions.worktreeConfig"]);
 
       const result = await callToolJson(
         client,

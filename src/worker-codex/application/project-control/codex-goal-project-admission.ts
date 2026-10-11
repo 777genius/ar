@@ -146,6 +146,7 @@ type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly skipActiveProposedAdmissionNormalization?: boolean;
   readonly admittedInputPatchRequest?: ProjectAdmissionRequest;
   readonly targetRequest?: ProjectAdmissionRequest;
+  readonly guardedOrphanGitRead?: { readonly workspacePath: string; readonly recipe: import("../../codex-goal-runtime-result-io").WorkspacePatchGitReadRecipe };
 };
 
 export function projectAdmissionDetailView(input: {
@@ -362,6 +363,7 @@ export async function buildCodexProjectAdmissionSnapshot(
       consumedOutput,
       orphanWorkspaceBindings: ledgerState.orphanWorkspaceBindings,
       deniedRoots: input.scope.deniedRoots ?? [],
+      ...(input.guardedOrphanGitRead ? { guardedGitRead: input.guardedOrphanGitRead } : {}),
     }));
     debt.push(...await diskPressureDebt(root));
   }

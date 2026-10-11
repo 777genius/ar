@@ -1,3 +1,4 @@
+import { readPlannedProjectAdoptionProof } from "./application/project-control/codex-goal-project-adoption-target";
 import { isProjectMimoWorkerLaunch, launchProjectMimoWorker, stopProjectMimoWorker } from "./project-mimo-worker-launch";
 import { recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
 import { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
@@ -76,6 +77,7 @@ import { LocalProjectAuthorityTupleStore } from
   "../worker-local/project-authority-tuple-local-adapter";
 import {
   withProjectAdmissionPublicationLock,
+  withValidatedProjectWorkspaceLock, projectControlWorkspaceLocks,
   type ProjectControlWorkspaceLease,
 } from "./codex-goal-project-workspace-lock";
 import {
@@ -149,6 +151,7 @@ export type CodexProjectControlBrokerInput = {
   readonly createReviewedOutputAggregate?: ProjectAdmissionTargetBinding["createReviewedOutputAggregate"];
   readonly createOverwrite?: boolean;
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
+  readonly plannedAdoption?: import("./application/project-control/codex-goal-project-adoption-target").PlannedProjectAdoption;
   readonly admittedInputPatchTarget?: {
     readonly jobId: string;
     readonly workspacePath: string;
@@ -234,8 +237,9 @@ export function createCodexProjectControlBroker(
     rootDir: join(input.registryRootDir, ".project-authority"),
     projectId: input.scope.projectId,
   });
+  let adoptionWorkspaceLease: ProjectControlWorkspaceLease | undefined;
   const admission = createProjectBrokerAdmission(
-    input, admittedInputPatchTarget, codexProjectControlPathExists,
+    input, admittedInputPatchTarget, codexProjectControlPathExists, () => adoptionWorkspaceLease,
   );
   return new ProjectControlBroker(
     {
@@ -243,7 +247,7 @@ export function createCodexProjectControlBroker(
       scope: input.scope,
     },
     {
-      ...codexProjectControlPorts(input, authorityStore, admission.creationProof),
+      ...codexProjectControlPorts(input, authorityStore, admission.creationProof, current => { adoptionWorkspaceLease = current; }, () => adoptionWorkspaceLease),
       admission: admission.gate,
     },
   );
@@ -253,6 +257,8 @@ function codexProjectControlPorts(
   input: CodexProjectControlBrokerInput,
   authorityStore: LocalProjectAuthorityTupleStore,
   creationProof: () => ProjectCreationAdmissionProof | undefined,
+  setAdoptionWorkspaceLease: (current: ProjectControlWorkspaceLease | undefined) => void,
+  readAdoptionWorkspaceLease: () => ProjectControlWorkspaceLease | undefined,
 ): ProjectControlBrokerPorts {
   let preparedAuthorization: ProjectPreStartAdmissionLaunchAuthorization | undefined;
   return {
@@ -278,7 +284,21 @@ function codexProjectControlPorts(
         return await withProjectAdmissionPublicationLock({
           registryRootDir: input.registryRootDir,
           owner: `project-admission-publication:${input.controller.jobId}`,
-          effect,
+          effect: input.plannedAdoption ? async () => {
+            const target = input.plannedAdoption!.target;
+            if ((request.operation !== ProjectOperation.CreateWorktree && request.operation !== ProjectOperation.CreateJob) ||
+              request.request.workspacePath !== target.path || request.request.jobId !== target.jobId || !target.expectedRealPath) {
+              throw new Error("project_control_adoption_request_binding_mismatch");
+            }
+            return await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(input.registryRootDir),
+              scope: input.scope, requestedWorkspacePath: target.path, expectedCanonicalWorkspacePath: target.expectedRealPath,
+              owner: `project-adoption:${input.controller.jobId}:${target.jobId}`,
+              effect: async current => {
+                setAdoptionWorkspaceLease(current);
+                try { return await effect(); } finally { setAdoptionWorkspaceLease(undefined); }
+              },
+            });
+          } : effect,
         });
       },
     },
@@ -681,6 +701,12 @@ function codexProjectControlPorts(
               return operationResult(input.createWorktreeInput.path);
             }
           }
+          if (input.plannedAdoption) await readPlannedProjectAdoptionProof({ registryRootDir: input.registryRootDir,
+            controllerJobId: input.controller.jobId, scope: input.scope,
+            request: { operation: ProjectOperation.CreateWorktree, jobId: input.createWorktreeInput.jobId!, workspacePath: input.createWorktreeInput.path,
+              ownedPaths: input.createWorktreeInput.ownedPaths! },
+            adoption: { ...input.plannedAdoption, workspaceLease: readAdoptionWorkspaceLease },
+          });
           return noopOperationResult(
             input.createWorktreeInput.path,
             "existing worktree candidate delegated for exact identity validation",

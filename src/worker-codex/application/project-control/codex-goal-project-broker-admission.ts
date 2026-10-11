@@ -23,6 +23,7 @@ type BrokerAdmissionInput = {
   readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
   readonly createReviewedOutputAggregate?: ProjectAdmissionTargetBinding["createReviewedOutputAggregate"];
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
+  readonly plannedAdoption?: import("./codex-goal-project-adoption-target").PlannedProjectAdoption;
   readonly startLaunch?: CodexGoalLaunchInput;
   readonly startManifest?: CodexGoalJobManifest;
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
@@ -38,6 +39,7 @@ export function createProjectBrokerAdmission(
   input: BrokerAdmissionInput,
   admittedInputPatchTarget: ProjectAdmissionJobWorkspaceBinding | undefined,
   pathExists: (path: string) => Promise<boolean>,
+  adoptionWorkspaceLease: () => ProjectControlWorkspaceLease | undefined = () => undefined,
 ): {
   readonly gate: ProjectAdmissionGate;
   readonly creationProof: () => ProjectCreationAdmissionProof | undefined;
@@ -52,6 +54,7 @@ export function createProjectBrokerAdmission(
       deps: input.admissionDeps,
       targetBinding: {
         ...(input.createWorktreeInput ? { createWorktree: input.createWorktreeInput } : {}),
+        ...(input.plannedAdoption ? { plannedAdoption: { ...input.plannedAdoption, workspaceLease: adoptionWorkspaceLease } } : {}),
         ...(input.createManifest ? { createManifest: input.createManifest } : {}),
         ...(input.protectedBirthPreparation !== undefined ? { createBirthPreparation: input.protectedBirthPreparation } : {}),
         ...(input.createReviewedOutputAggregate !== undefined ? { createReviewedOutputAggregate: input.createReviewedOutputAggregate } : {}),

@@ -1,10 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { evaluateProjectAdmission, type ProjectAdmissionGate, type ProjectAdmissionRequest, type ProjectAdmissionSnapshot, type ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import { buildCodexProjectAdmissionSnapshot, type CodexProjectMutationAdmissionInput } from "./codex-goal-project-admission";
-import { withoutCapacityContinuationSiblingDebt, withoutInPlaceContinuationSelfDebt } from "./codex-goal-project-admission-normalization";
+import { withoutAdmittedInputPatchDebt, withoutCapacityContinuationSiblingDebt, withoutInPlaceContinuationSelfDebt } from "./codex-goal-project-admission-normalization";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { prepareCodexProjectScopedAdmission } from "./codex-goal-project-scoped-admission";
 import { admissionNeedsFreshCreateJobTarget } from "./codex-goal-project-admission-target";
+import { adoptionGitReadRecipe, readPlannedProjectAdoptionProof } from "./codex-goal-project-adoption-target";
 import { researchJobWriterOwnerNamespacePresent } from "../../research-writer-observation";
 
 export function codexProjectAdmissionGate(
@@ -16,6 +17,7 @@ export function codexProjectAdmissionGate(
       const observedSnapshot = await buildCodexProjectAdmissionSnapshot({
         ...input,
         targetRequest: request,
+        ...(input.targetBinding?.plannedAdoption ? { guardedOrphanGitRead: { workspacePath: input.targetBinding.plannedAdoption.target.expectedRealPath!, recipe: adoptionGitReadRecipe } } : {}),
         ...(request.workspacePath
           ? { requestedWorkspacePath: request.workspacePath }
           : {}),
@@ -77,9 +79,21 @@ export function codexProjectAdmissionGate(
         snapshot: continuationSnapshot,
       });
   };
+  const evaluateAdoption = async (request: ProjectAdmissionRequest, deps = input.deps) => {
+    const adoption = input.targetBinding!.plannedAdoption!;
+    const proofInput = { registryRootDir: input.registryRootDir, controllerJobId: input.controllerJobId, scope: input.scope, request, adoption };
+    const before = await readPlannedProjectAdoptionProof(proofInput);
+    const snapshot = await withoutAdmittedInputPatchDebt({ snapshot: await observe(request), request,
+      binding: { jobId: before.jobId, workspacePath: before.workspacePath }, orphanOnly: true });
+    const decision = await evaluatePrepared(request, snapshot, deps);
+    if (!isDeepStrictEqual(before, await readPlannedProjectAdoptionProof(proofInput))) throw new Error("project_control_adoption_target_changed");
+    return decision;
+  };
   return {
     async prepare(request) {
-      const snapshot = await observe(request);
+      // Adoption's exact target proof must precede even its status observation,
+      // under publication + the current leaf. Other callers retain preparation.
+      const snapshot = input.targetBinding?.plannedAdoption ? undefined : await observe(request);
       let deps = input.deps;
       if (input.deps.prepareWriterObservation && input.deps.readJob) {
         const prepared = new Map<string, { manifest: CodexGoalJobManifest;
@@ -102,12 +116,12 @@ export function codexProjectAdmissionGate(
           if (!isDeepStrictEqual(currentRequest, request)) {
             throw new Error("project_control_prepared_admission_request_changed");
           }
-          return await evaluatePrepared(currentRequest, snapshot, deps);
+          return input.targetBinding?.plannedAdoption ? await evaluateAdoption(currentRequest, deps) : await evaluatePrepared(currentRequest, snapshot!, deps);
         },
       };
     },
     async evaluate(request) {
-      return await evaluatePrepared(request, await observe(request));
+      return input.targetBinding?.plannedAdoption ? await evaluateAdoption(request) : await evaluatePrepared(request, await observe(request));
     },
   };
 }

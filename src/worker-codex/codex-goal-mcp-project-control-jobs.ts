@@ -483,11 +483,16 @@ export async function projectControlRefillWorkerView(
     expectedSourceRealPath: resolvedSource.sourceRealPath,
     ...(producerInputPatch ? { inputPatch: producerInputPatch } : {}),
   };
+  const plannedAdoption = role === "adoption" && preStartAdmission?.descriptor.mode === "serial-builtin" &&
+    createWorktreeInput.expectedRealPath && !producerInputPatch
+    ? { target: createWorktreeInput, manifest: createManifest, contract: preStartAdmission.contract, preparation: protectedBirthPreparation }
+    : undefined;
   const worktreeBroker = deps.codexProjectControlBroker({
     registryRootDir: controller.registryRootDir,
     controller: controller.controller,
     scope: controller.scope,
     createWorktreeInput,
+    ...(plannedAdoption ? { plannedAdoption } : {}),
   });
   let worktreeCreated = false;
   let workerToolRoot: WorkerToolRootOutcome | undefined;
@@ -570,6 +575,7 @@ export async function projectControlRefillWorkerView(
       scope: controller.scope,
       createManifest,
       ...(protectedBirthPreparation ? { protectedBirthPreparation } : {}),
+      ...(plannedAdoption ? { plannedAdoption } : {}),
       ...(reviewedOutputAggregate ? { createReviewedOutputAggregate: { aggregate: reviewedOutputAggregate, sourceRealPath: resolvedSource.sourceRealPath } } : {}),
       createOverwrite: booleanValue(args.overwrite) ?? false,
       ...(producerInputPatch

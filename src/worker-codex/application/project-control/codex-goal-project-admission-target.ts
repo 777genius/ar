@@ -27,6 +27,7 @@ import { MAX_STAGED_PATCH_BYTES } from "./codex-goal-project-git";
 export type ProjectAdmissionTargetBinding = {
   readonly createWorktree?: CodexGoalProjectCreateWorktreeInput;
   readonly createManifest?: CodexGoalJobManifestInput;
+  readonly plannedAdoption?: import("./codex-goal-project-adoption-target").PlannedProjectAdoption & { readonly workspaceLease: () => ProjectControlWorkspaceLease | undefined };
   readonly createBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
   readonly createReviewedOutputAggregate?: { readonly aggregate: ReviewedOutputAggregate; readonly sourceRealPath: string };
   readonly start?: {
@@ -81,7 +82,7 @@ async function prospectiveDirectoryIdentity(path: string): Promise<string> {
   return join(await realpath(ancestor), ...suffix);
 }
 
-async function worktreeCreationIdentity(input: Pick<TargetInput, "scope" | "binding" | "request">, ownershipRequired = true): Promise<string | undefined> {
+export async function worktreeCreationIdentity(input: Pick<TargetInput, "scope" | "binding" | "request">, ownershipRequired = true, readGit = git): Promise<string | undefined> {
   const target = input.binding?.createWorktree;
   const request = input.request;
   if (!target || !request || request.operation !== ProjectOperation.CreateWorktree ||
@@ -103,17 +104,17 @@ async function worktreeCreationIdentity(input: Pick<TargetInput, "scope" | "bind
     // Retry/adoption binds an observed existing identity, not an absent-path
     // exemption. Dirty/input-patch and fast-forward checks remain in the reuse
     // validators; writer census still observes every existing writer.
-    if (!target.expectedRealPath || await realpath(await git(identity, "rev-parse", "--show-toplevel")) !== identity) return undefined;
-    const current = await git(identity, "rev-parse", "HEAD");
+    if (!target.expectedRealPath || await realpath(await readGit(identity, "rev-parse", "--show-toplevel")) !== identity) return undefined;
+    const current = await readGit(identity, "rev-parse", "HEAD");
     if (current !== target.expectedRevision && current !== target.fastForwardExisting?.expectedCurrentRevision.toLowerCase()) return undefined;
-    if (target.newBranch && await git(identity, "symbolic-ref", "--short", "HEAD") !== target.newBranch) return undefined;
+    if (target.newBranch && await readGit(identity, "symbolic-ref", "--short", "HEAD") !== target.newBranch) return undefined;
   }
   const source = await projectControlCanonicalWorkspacePath(target.sourceWorkspacePath, input.scope);
   if (source !== target.expectedSourceRealPath ||
-    await realpath(await git(source, "rev-parse", "--show-toplevel")) !== source ||
-    await git(source, "rev-parse", `${target.expectedRevision}^{commit}`) !== target.expectedRevision) return undefined;
+    await realpath(await readGit(source, "rev-parse", "--show-toplevel")) !== source ||
+    await readGit(source, "rev-parse", `${target.expectedRevision}^{commit}`) !== target.expectedRevision) return undefined;
   if (!target.sourceRevisionPinned && !target.newBranch &&
-    await git(source, "rev-parse", `${target.sourceRef ?? target.baseBranch ?? target.expectedRevision}^{commit}`) !== target.expectedRevision) return undefined;
+    await readGit(source, "rev-parse", `${target.sourceRef ?? target.baseBranch ?? target.expectedRevision}^{commit}`) !== target.expectedRevision) return undefined;
   return identity;
 }
 
