@@ -118,7 +118,7 @@ vi.mock("node:fs/promises", async original => {
       }
       return physical === actual ? path : actual;
     },
-    lstat: (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => real.lstat(projected(path), options),
+    lstat: async (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => Object.assign(await real.lstat(projected(path), options), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     open: async (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => {
       const handle = await real.open(projected(path), flags, mode);
       captureProjection.retainCapturePath(handle.fd,path,fixture);
