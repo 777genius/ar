@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectJobs, collectProcessBirth,
-  collectProcessCgroup, collectSelfCgroup, collectUnitInvocation, collectUnitNotFound, collectUnitShow } from "../hosted-readonly-linux-collector";
+import { fenceScopedSubmitter, collectFutureCreatorShow, collectBootId, collectCgroupProcesses, collectCustodyEvents, collectJobs, collectProcessBirth,
+  collectProcessCgroup, collectSelfCgroup, collectNonDelegatedUnitShow, collectUnitInvocation, collectUnitNotFound, collectUnitShow } from "../hosted-readonly-linux-collector";
 
 const os = vi.hoisted(() => ({ files: new Map<string, string>(), errors: new Map<string, string>(),
   systemctl: vi.fn() }));
@@ -78,4 +78,59 @@ import { parseScopedManagerJobs } from "../hosted-readonly-observations";
 it("R7 accepts legal unrelated manager units and jobs before exact selection", () => {
   const jobs = parseScopedManagerJobs("1 dev-loop0.device start running\n2 dev-disk-by\\x2duuid.swap stop waiting\n3 a.automount nop waiting\n");
   expect(jobs.map(j => j.unit)).toEqual(["dev-loop0.device", "dev-disk-by\\x2duuid.swap", "a.automount"]);
+});
+
+
+describe("complete systemd and canonical hybrid cgroup evidence", () => {
+  it.each(["0::/system.slice/trusted.service\n1:name=systemd:/\n", "1:name=systemd:/\n0::/system.slice/trusted.service\n"])("selects only the unified row with the exact legacy root", raw => {
+    os.files.set("/proc/123/cgroup", raw); os.files.set("/proc/self/cgroup", raw);
+    expect(collectProcessCgroup("123")).toBe("0::/system.slice/trusted.service");
+    expect(collectSelfCgroup()).toBe("0::/system.slice/trusted.service");
+  });
+  it.each([
+    "0::/owned\n0::/foreign\n", "0::/owned\n1:name=systemd:/foreign\n",
+    "0::/owned\n1:name=systemd:/\n1:name=systemd:/\n", "1:name=systemd:/\n",
+    "0::/owned\n2:cpu:/\n", "0::/owned\n\n", " 0::/owned\n", "0::/owned/../foreign\n",
+    "0::/owned\r\n", "0::/owned\nforeign\n",
+  ])("rejects malformed, duplicate and foreign cgroup evidence %j", raw => {
+    os.files.set("/proc/123/cgroup", raw); os.files.set("/proc/self/cgroup", raw);
+    expect(() => collectProcessCgroup("123")).toThrow("evidence_invalid");
+    expect(() => collectSelfCgroup()).toThrow("evidence_invalid");
+  });
+  it("requests all properties so an empty DropInPaths remains observed evidence", () => {
+    os.systemctl.mockImplementation((_command: string, args: string[]) => ({ status: 0,
+      stdout: (args.includes("--all") ? show : show.replace("DropInPaths=\n", "")) +
+        (args.includes("--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID,Delegate") ? "Delegate=no\n" : "") }));
+    expect(collectUnitShow(unit).DropInPaths).toBe("");
+    expect(collectNonDelegatedUnitShow(unit)).toMatchObject({ DropInPaths: "", Delegate: "no" });
+    expect(os.systemctl.mock.calls.every(([, args]) => args.includes("--all"))).toBe(true);
+  });
+});
+
+
+it("pidfd fence uses the same complete hybrid membership rule before owned birth checks", async () => {
+  os.systemctl.mockReturnValue({ status: 0, stdout: JSON.stringify({ pidBirth: "123:456", controlGroup: group, exitObserved: true }) });
+  fenceScopedSubmitter("123:456", group, 1000);
+  const [command, args] = os.systemctl.mock.calls[0]!;
+  expect(command).toBe("/usr/bin/python3");
+  const source: string = args[2];
+  expect(source).toContain("fd=os.pidfd_open(pid,0)");
+  expect(source).toContain("signal.pidfd_send_signal(fd,signal.SIGTERM)");
+  expect(source).toContain("actual!=birth or membership(open('/proc/'+str(pid)+'/cgroup').read())!='0::'+group");
+  const pure = source.slice(0, source.indexOf("fd=os.pidfd_open(pid,0)")) + "print(membership(sys.argv[5]))\n";
+  const { spawnSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  for (const raw of [`0::${group}\n`, `0::${group}\n1:name=systemd:/\n`, `1:name=systemd:/\n0::${group}\n`]) {
+    const result = spawnSync("/usr/bin/python3", ["-I", "-c", pure, "123", "123:456", group, "1000", raw], { encoding: "utf8", timeout: 1000 });
+    expect(result.status).toBe(0); expect(result.stdout.trimEnd()).toBe(`0::${group}`);
+  }
+  for (const raw of [`0::${group}\n0::/foreign\n`, `0::${group}\n1:name=systemd:/foreign\n`, `0::${group}\n1:name=systemd:/\n1:name=systemd:/\n`, "1:name=systemd:/\n", "0::/owned/../foreign\n", "0::/owned\n\n"]) {
+    const result = spawnSync("/usr/bin/python3", ["-I", "-c", pure, "123", "123:456", group, "1000", raw], { encoding: "utf8", timeout: 1000 });
+    expect(result.status).not.toBe(0);
+  }
+});
+
+
+it("preserves the empty queued-job field when observing a future creator", () => {
+  os.systemctl.mockImplementation((_command: string,args:string[]) => ({status:0,stdout:`Id=${unit}\nLoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n`+(args.includes("--all")?"Job=\n":"")}));
+  expect(collectFutureCreatorShow(unit)).toContain("Job=\n");
 });
