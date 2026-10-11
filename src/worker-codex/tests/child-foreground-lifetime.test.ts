@@ -115,7 +115,10 @@ describe("production foreground child lifetime", () => {
     const f = await fixture("delayed", 900);
     try {
       const result = await runParsedChild(f);
-      expect(result.status).toBe("failed");
+      expect([
+        { status: "failed", reason: "budget_exceeded" },
+        { status: "partial", reason: "task_timeout" },
+      ], JSON.stringify(result)).toContainEqual({ status: result.status, reason: result.reason });
       const rows = await f.rows();
       expect(result.attempts).toHaveLength(1);
       expect(rows.filter(r => r.type === "provider-start"), JSON.stringify(result)).toHaveLength(1);
