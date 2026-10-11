@@ -1,10 +1,20 @@
-import test from 'node:test';
+import test, { beforeEach, afterEach, mock } from 'node:test';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+let capabilityRead;
+const actualSpawnSync = cp.spawnSync;
+const completed = (stdout, status = 0, stderr = '') => ({ stdout, stderr, status, signal: null, error: undefined });
+beforeEach(() => { capabilityRead = mock.method(cp, 'spawnSync', (command, ...args) => command === '/usr/bin/systemd-run' ? completed('  --expand-environment=BOOL\n') : actualSpawnSync(command, ...args)); syncBuiltinESMExports(); });
+afterEach(() => { mock.restoreAll(); syncBuiltinESMExports(); });
+const old252 = () => capabilityRead.mock.mockImplementation((_file, args) => args.includes('--help')
+  ? completed('', 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n")
+  : completed('systemd 252 (252.39-1~deb12u2)\n+PAM +AUDIT\n'));
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
@@ -280,4 +290,44 @@ test('pressure CLI exits finitely after its child exits despite a pending observ
   assert.equal(result.error, undefined, result.stderr);
   assert.equal(result.signal, null, result.stderr);
   assert.equal(result.status, 70, result.stderr);
+});
+
+test('stock252 closed provider preserves exact command/properties except unsupported flag', async () => {
+  const modern = await build(provider); old252(); const legacy = await build(provider);
+  assert.deepEqual(legacy, { command: modern.command, args: modern.args.filter(a => a !== '--expand-environment=no') });
+  assert.ok(legacy.args.slice(legacy.args.indexOf('--') + 1).every(a => !a.includes('$')));
+  assert.deepEqual(capabilityRead.mock.calls.slice(-2).map(c => c.arguments[1]), [['--expand-environment=no', '--help'], ['--version']]);
+  for (const call of capabilityRead.mock.calls) {
+    assert.equal(call.arguments[0], '/usr/bin/systemd-run');
+    assert.equal(call.arguments[2].timeout, 2000); assert.equal(call.arguments[2].maxBuffer, 32768);
+    assert.deepEqual(call.arguments[2].env, { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SYSTEMD_COLORS: '0' });
+  }
+});
+test('stock252 provider rejects dollars in all dynamic command operands', async () => {
+  old252();
+  for (const dollar of ['$USER', '${USER}', '$$', 'literal$tail']) {
+    await assert.rejects(build(provider, { nodePath: '/synthetic/' + dollar }), /unsupported/);
+    await assert.rejects(build(provider, { guardPath: '/synthetic/' + dollar }), /unsupported/);
+  }
+  for (const value of ['', 'x'.repeat(4097), 'line\nbreak', 'nul\0byte'])
+    await assert.rejects(build(provider, { guardPath: value }), /unsupported/);
+});
+test('modern provider keeps explicit veto and literal dollar argv', async () => {
+  const plan = await build(provider, { nodePath: '/synthetic/$USER', guardPath: '/synthetic/${USER}' });
+  assert.ok(plan.args.includes('--expand-environment=no'));
+  assert.ok(plan.args.includes('/synthetic/$USER')); assert.ok(plan.args.includes('/synthetic/${USER}'));
+  assert.equal(capabilityRead.mock.callCount(), 1);
+});
+test('unknown capability and non252 versions refuse provider before systemd launch', async () => {
+  for (const value of [completed('ambiguous help'), completed('', 1, 'foreign error'), { ...completed(''), signal: 'SIGTERM' }, { ...completed(''), error: Error('private') }]) {
+    capabilityRead.mock.mockImplementation(() => value); await assert.rejects(build(provider), /unsupported/);
+  }
+  for (const version of ['systemd 251\n', 'systemd 253\n', 'systemd UNKNOWN\n']) {
+    capabilityRead.mock.mockImplementation((_file, args) => args.includes('--help') ? completed('', 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n") : completed(version));
+    await assert.rejects(build(provider), /unsupported/);
+  }
+});
+test('managed job keeps original explicit flag without provider capability IO', async () => {
+  old252(); const plan = await build(job);
+  assert.ok(plan.args.includes('--expand-environment=no')); assert.equal(capabilityRead.mock.callCount(), 0);
 });
