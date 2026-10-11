@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { enrollHostedChildSlot } from "./hosted-child-slot-files";
+import { hostedReadonlyOperatorDiagnostic } from "./hosted-readonly-operator-diagnostic";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { HostedCustodyPhase } from "@vioxen/subscription-runtime/worker-core";
@@ -96,8 +97,11 @@ async function runReadonlyOperator(): Promise<void> {
   }
 }
 try { await runReadonlyOperator(); }
-catch {
+catch (error) {
+  const diagnostic = hostedReadonlyOperatorDiagnostic(error);
   process.stderr.write("hosted_readonly_operator_action_failed\n");
+  process.stderr.write(diagnostic.reason + "\n");
+  for (const location of diagnostic.locations) process.stderr.write(`/${location.file}:${location.line}:${location.column}\n`);
   process.exitCode = 1;
 }
 function hash(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }

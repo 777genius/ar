@@ -50,11 +50,17 @@ export function runtimeDiagnostic(text: string) {
     "hosted_activation_evidence_invalid", "hosted_activation_authority_required", "system_bus_infrastructure_invalid", "system_bus_infrastructure_unqualified", "hosted_process_admission_required",
     "hosted_process_activation_invalid", "dependency_cleanup_unresolved", "dependency_profile_unsupported", "dependency_environment_busy",
     "dependency_needs_install", "dependency_tree_unsafe", "hosted_fd_profile_invalid", "hosted_fd_boundary_unresolved",
-    "hosted_fd_launch_invalidated", "hosted_fd_input_overflow", "TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline"];
+    "hosted_fd_launch_invalidated", "hosted_fd_input_overflow", "TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
+    "hosted_readonly_operator_action_failed", "hosted_readonly_host_operator_required", "hosted_readonly_authority_invalid",
+    "hosted_readonly_managed_grant_required", "hosted_readonly_independent_review_required", "hosted_readonly_verified_stage_required",
+    "hosted_readonly_revoked", "hosted_custody_enrollment_mismatch", "hosted_custody_durable_authority_required",
+    "hosted_custody_creator_not_fenced", "hosted_activation_publication_recovery_required", "hosted_test_egress_custody_invalid"];
   const sourceFiles = ["hosted-readonly-host-launch-cli", "hosted-readonly-foreground", "hosted-installation-activation",
     "hosted-readonly-host-kernel", "hosted-readonly-inputs", "hosted-dependency-admission", "hosted-dependency-materialization",
     "hosted-dependency-installer", "hosted-dependency-installer-recipe", "hosted-process-activation", "codex-goal-cli", "system-bus-infrastructure",
-    "hosted-fd-observation", "hosted-fd-launch", "hosted-fd-fence"];
+    "hosted-fd-observation", "hosted-fd-launch", "hosted-fd-fence", "hosted-readonly-inputs-cli", "hosted-readonly-authority",
+    "hosted-readonly-custody", "hosted-readonly-epoch-store", "hosted-readonly-supervisor-host",
+    "hosted-readonly-linux-collector", "hosted-readonly-observations", "hosted-test-egress-files", "fd-collector-profile"];
   return { ...setupDiagnostic(text), reasons: reasons.filter(reason => new RegExp(`(?:^|[^A-Za-z0-9_])${reason}(?:$|[^A-Za-z0-9_])`).test(text)),
     unitSetup: ["Failed to start transient service unit", "Failed to create bus connection", "Failed to connect to bus",
       "Failed to execute", "Failed at step", "Unit subscription-runtime-hosted.slice not found"].filter(value => text.includes(value)),
@@ -64,9 +70,13 @@ export function runtimeDiagnostic(text: string) {
     })).slice(0, 16) };
 }
 export const digest = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
-export function command(file: string, args: readonly string[], timeout = 30000, cwd = "/"): string {
+export function command(file: string, args: readonly string[], timeout = 30000, cwd = "/",
+  onFailure?: (failure: { status: number | null; signal: NodeJS.Signals | null; diagnostic: ReturnType<typeof runtimeDiagnostic> }) => void): string {
   const result = spawnSync(file, [...args], { cwd, env: cleanEnv, encoding: "utf8", timeout,
     maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0 || result.signal !== null) {
+    onFailure?.({ status: result.status, signal: result.signal, diagnostic: runtimeDiagnostic((result.stdout ?? "") + "\n" + (result.stderr ?? "")) });
+  }
   assert(!result.error && result.status === 0 && result.signal === null,
     `TEST command failed: ${file}, status=${result.status}, signal=${result.signal}`);
   return result.stdout;

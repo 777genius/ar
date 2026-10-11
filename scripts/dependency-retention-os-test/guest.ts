@@ -438,8 +438,14 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
     reviewReference: "TEST exact-source native fixture projection " + process.env.TEST_SOURCE_SHA,
     custodyReference: "TEST finite input SHA256 " + digest(input) });
   const policyInput = root + "/TEST-readonly-policy.json"; json(policyInput, projection);
-  const operator = (operation: string, operand?: string) => command(node,
-    [runtime + "/dist/worker-codex/hosted-readonly-inputs-cli.js", operation, ...(operand ? [operand] : [])], 60000);
+  const operator = (operation: string, operand?: string) => {
+    evidence.readonlyOperator = { operation, status: null, signal: null };
+    const output = command(node,
+      [runtime + "/dist/worker-codex/hosted-readonly-inputs-cli.js", operation, ...(operand ? [operand] : [])], 60000, "/",
+      failure => { evidence.readonlyOperator = { operation, ...failure }; });
+    evidence.readonlyOperator = { operation, status: 0, signal: null };
+    return output;
+  };
   evidence.kernelGatePhase = "readonly_real_enrollment_and_recovery";
   operator("enroll", policyInput); operator("recover", jobId); operator("finish-exclusive");
   const host = new HostedReadonlySupervisorHost(), enrolled = host.readEpoch();
