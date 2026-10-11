@@ -185,7 +185,7 @@ function assertPreparedBirthCurrent(prepared: PreparedBirth | undefined, manifes
   manifestPath: string): PreparedBirth {
   if (!prepared || prepared.manifestPath !== manifestPath ||
       !isDeepStrictEqual(prepared.manifest, manifestInputSnapshot(manifest)) ||
-      prepared.jobDirectory.path !== manifest.jobRootDir) invalid();
+      prepared.jobDirectory.path !== manifest.jobRootDir) return invalid();
   assertResearchDirectory(prepared.jobDirectory);
   assertResearchDirectory(prepared.registryDirectory);
   if (prepared.workspaceDirectory) assertResearchDirectory(prepared.workspaceDirectory);
