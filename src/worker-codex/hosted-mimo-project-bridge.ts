@@ -5,9 +5,10 @@ import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-
 import { researchCustody, researchHash, researchPath, researchRecord } from "./research-launch-files";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
-import { projectControlRefillWorker, projectControlStartStoredJob, projectControlStopStoredJob } from "./codex-goal-mcp-project-control-tool-handlers";
+import { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob } from "./codex-goal-mcp-project-control-tool-handlers";
 import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
 import { collectRegisteredCodexGoalJobStatus } from "./application/codex-goal-registered-job-observation";
+import { hostedMimoSealedSourcePort } from "./hosted-mimo-project-source";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 
 export type HostedMimoProjectBinding = Readonly<{
@@ -105,13 +106,13 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
     // be replayed as a new workspace or provider attempt under this job ID.
     writeFileSync(recordPath, JSON.stringify({ schemaVersion: 1, requestSha256: researchHash(JSON.stringify(request)),
       projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId, jobRoot, workspace }) + "\n", { flag: "wx", mode: 0o600 });
-    return unwrap(await projectControlRefillWorker({ ...args, jobRootDir: jobRoot, workspacePath: workspace,
+    return unwrap(await projectControlRefillWorkerFromSealedSource({ ...args, jobRootDir: jobRoot, workspacePath: workspace,
       sourceWorkspacePath: binding.sourceWorkspacePath, sourceRef: binding.sourceRef, expectedSourceCommit: binding.sourceCommit,
       newBranch: `feat/${request.jobId}`, promptBody: request.prompt!, preStartAdmission: childAdmission(binding, workspace),
       confirmPreStartAdmission: true, confirmRefill: true, startWorker: false, overwrite: false, dependencyBootstrap: "off", executionMode: "sync",
       modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], model: "mimo-v2.6-pro", executionEngine: "app-server",
       maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: "medium",
-      taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }));
+      taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }, hostedMimoSealedSourcePort(binding)));
   }
   researchCustody(records);
   const retained = lstatSync(recordPath);
