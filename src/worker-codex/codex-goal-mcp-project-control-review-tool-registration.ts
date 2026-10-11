@@ -19,7 +19,7 @@ export function registerCodexGoalProjectControlReviewTools(server: McpServer): v
     {
       title: "Project Control Stop Codex Goal Worker",
       description:
-        "Stop a stored Codex goal worker through a ProjectScopedControl controller manifest and broker policy.",
+        "Stop a stored Codex goal worker through a ProjectScopedControl controller manifest and broker policy. Configured remote MiMo uses mimoProjectId, mimoWorkstreamId, jobId and confirmStop without local paths or controllerJobId; inspect owned operation settlement with codex_goal_status_by_id.",
       inputSchema: {
         ...jobIdInputSchema(),
         controllerJobId: z.string().optional(),

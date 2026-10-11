@@ -1,3 +1,4 @@
+import { assertCodexGoalStorageBindingUnchanged, assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./application/codex-goal-storage-data";
 import { optionalWorkerMode } from "./project-control-worker-mode";
 import { childConfigFromRecord } from "./child-execution-confinement";
 import { createHash } from "node:crypto";
@@ -86,6 +87,8 @@ export type CodexGoalJobManifest = {
   readonly updatedAt: string;
   readonly description?: string;
   readonly tags?: readonly string[];
+  readonly sessionHomeProfile?: CodexGoalRunConfig["sessionHomeProfile"];
+  readonly storage?: CodexGoalRunConfig["storage"];
   readonly jobRootDir: string;
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
@@ -239,15 +242,17 @@ export async function createCodexGoalJob(input: {
   readonly now?: Date;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 }): Promise<CodexGoalJobManifest> {
+  const storageData = parseCodexGoalStorageData(input.manifest);
+  const publicationInput = { ...input.manifest, ...storageData };
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
   const manifest = parseCodexGoalJobManifest({
-    ...input.manifest,
-    durableHandoffRootDir: input.manifest.durableHandoffRootDir ??
-      join(registryRootDir, "durable-handoffs"),
+    ...publicationInput,
+    durableHandoffRootDir: publicationInput.durableHandoffRootDir ??
+      join(storageData.storage ? publicationInput.jobRootDir : registryRootDir, "durable-handoffs"),
     schemaVersion: codexGoalJobManifestSchemaVersion,
-    createdAt: input.manifest.createdAt ?? now,
-    updatedAt: input.manifest.updatedAt ?? now,
+    createdAt: publicationInput.createdAt ?? now,
+    updatedAt: publicationInput.updatedAt ?? now,
   });
   assertCodexGoalStoredAccessBoundaryAllowed(manifest);
   await assertCodexGoalJobManifestAccessConsistency(
@@ -265,6 +270,7 @@ export async function createCodexGoalJob(input: {
   }
   if (existedBeforeAdmission) {
     const previous: unknown = JSON.parse(await readFile(path, "utf8"));
+    assertCodexGoalStorageBindingUnchanged(previous, manifest);
     if (!previous || typeof previous !== "object" ||
         !("jobRootDir" in previous) || previous.jobRootDir !== manifest.jobRootDir) {
       throw new Error("job_manifest_activity_identity_invalid");
@@ -278,6 +284,7 @@ export async function createCodexGoalJob(input: {
       }
       if (existedBeforeAdmission) {
         const current: unknown = JSON.parse(await readFile(path, "utf8"));
+        assertCodexGoalStorageBindingUnchanged(current, manifest);
         if (!current || typeof current !== "object" ||
             !("jobRootDir" in current) || current.jobRootDir !== manifest.jobRootDir) {
           throw new Error("job_manifest_activity_identity_invalid");
@@ -338,6 +345,8 @@ export async function updateCodexGoalJob(input: {
   readonly expectedParsedManifestSha256?: string;
   readonly beforeManifestPublication?: () => Promise<void>;
 }): Promise<CodexGoalJobManifest> {
+  const storageData = parseCodexGoalStorageData(input.patch);
+  const patch = { ...input.patch, ...storageData };
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const lockedManifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: input.jobId });
   return await withCodexGoalManifestUpdate({
@@ -357,15 +366,16 @@ export async function updateCodexGoalJob(input: {
         }
       };
       assertExpectedParsedManifest(existing);
-      assertAccountReplacementHasKnownOrigin({ existing, patch: input.patch });
+      assertAccountReplacementHasKnownOrigin({ existing, patch });
       const manifest = parseCodexGoalJobManifest({
         ...existing,
-        ...input.patch,
+        ...patch,
         jobId: existing.jobId,
         schemaVersion: codexGoalJobManifestSchemaVersion,
         createdAt: existing.createdAt,
         updatedAt: (input.now ?? new Date()).toISOString(),
       });
+      assertCodexGoalStorageBindingUnchanged(existing, manifest);
       // Admission is held for the persisted job root. Moving that identity
       // would publish a manifest under the wrong checkpoint fence.
       if (manifest.jobRootDir !== existing.jobRootDir) {
@@ -431,6 +441,7 @@ export function codexGoalJobToArgs(
   manifest: CodexGoalJobManifest,
 ): Readonly<Record<string, unknown>> {
   return {
+    ...parseCodexGoalStorageData(manifest),
     jobId: manifest.jobId,
     jobRootDir: manifest.jobRootDir,
     durableHandoffRootDir: manifest.durableHandoffRootDir,
@@ -517,6 +528,7 @@ function parseCodexGoalJobManifestValue(
   options: { readonly allowLegacyBuiltinContractSchema?: boolean },
 ): CodexGoalJobManifest {
   if (!isRecord(value)) throw new Error("codex_goal_job_manifest_invalid");
+  assertCodexGoalStorageTransportSupported(value);
   if (value.schemaVersion !== codexGoalJobManifestSchemaVersion) {
     throw new Error("codex_goal_job_manifest_version_unsupported");
   }
@@ -552,6 +564,7 @@ function parseCodexGoalJobManifestValue(
     fieldName: "providerSandboxMode",
   });
   const manifest: CodexGoalJobManifest = {
+    ...parseCodexGoalStorageData(value),
     schemaVersion: codexGoalJobManifestSchemaVersion,
     jobId,
     createdAt: requiredIsoDate(value.createdAt, "createdAt"),

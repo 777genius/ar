@@ -1,0 +1,56 @@
+name: Build pinned PR222 Native TEST artifact
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/native222-prebuild.yml
+      - scripts/native222-prebuild/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native222-prebuild-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prebuild:
+    if: github.actor == '777genius' && github.repository == 'vioxen/subscription-runtime' && github.event.repository.private
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: helper
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 853ce6ee213689cc11c52139077b01d39652cd62
+          path: pinned-source
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+      - name: Prebuild and typecheck the pinned source and producer
+        env:
+          NATIVE222_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          NATIVE222_WORKFLOW_REF: ${{ github.workflow_ref }}
+          NATIVE222_HELPER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          NATIVE222_RUNNER_NAME: ${{ runner.name }}
+        run: |
+          node --experimental-strip-types helper/scripts/native222-prebuild/produce.mts
+      # Publish build output only. Root must independently validate GitHub job
+      # provenance and archive closure before protected native TEST staging.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native222-prebuilt-853ce6-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native222-prebuild-${{ github.run_id }}-${{ github.run_attempt }}/output/artifact.tar
+            ${{ runner.temp }}/native222-prebuild-${{ github.run_id }}-${{ github.run_attempt }}/output/artifact-leaves.json
+            ${{ runner.temp }}/native222-prebuild-${{ github.run_id }}-${{ github.run_attempt }}/output/producer-receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

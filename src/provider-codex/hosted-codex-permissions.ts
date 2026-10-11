@@ -1,5 +1,5 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
-import { codexProviderEgressPolicy, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
+import { codexManagedPublicNetworkConfigLines, codexProviderEgressPolicy, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -234,6 +234,7 @@ export function hostedCodexPermissionProfilesToml(
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.network]`,
     "enabled = true",
     ...(policy.profileId === CodexProviderEgressProfileId.FullInternetV1 ? [] : [`domains = { ${domains} }`]),
+    ...codexManagedPublicNetworkConfigLines(policy),
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem]`,
     '":root" = "deny"',
@@ -252,6 +253,7 @@ export function hostedCodexPermissionProfilesToml(
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.network]`,
     "enabled = true",
     ...(policy.profileId === CodexProviderEgressProfileId.FullInternetV1 ? [] : [`domains = { ${domains} }`]),
+    ...codexManagedPublicNetworkConfigLines(policy),
     "",
   ].join("\n");
 }
