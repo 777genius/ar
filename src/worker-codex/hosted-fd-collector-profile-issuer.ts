@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fdCollectorProfileLimitMaxima, FdCollectorRenderer, knownFdCollectorPeer, parseFdCollectorProfile,
   type FdCollectorPeer, type FdCollectorProfile, type FdExecutablePin, type FdFilePin, type HostedInventoryFile } from "@vioxen/subscription-runtime/core";
 import { elfClosureMaxFiles, measureElfClosure, type ElfPin } from "../provider-codex/app-server/adapters/elf-closure";
+import { hostedDependencySystemdRunExecutable } from "../provider-codex/app-server/adapters/hosted-dependency-systemd-command";
 import { collectHostedFdPeers } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { assertHostedActivationOperator } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertOrdinaryCollectorProfileUpgrade, type OrdinaryPriorCollectorProfile } from "./hosted-ordinary-installation-launcher";
@@ -20,7 +21,8 @@ import { readonlySupervisorRoot } from "./hosted-readonly-custody";
  * Limits are the contract maxima (`fdCollectorProfileLimitMaxima`): the parser's own ceilings, not measurements (a measured zero is invalid
  * by contract and no hosted launcher exists before the profile does).
  */
-const wrapperPaths = ["/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare"] as const;
+// Measurement-only identities (the collector profile pins the four wrapper binaries' bytes); nothing here executes them. The systemd-run path is the canonical byte-exact inert export, not a second literal.
+const wrapperPaths = ["/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare"] as const;
 const installedLauncherRoot = "/opt/subscription-runtime";
 const sha = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_runtime_issuer_invalid"); }
