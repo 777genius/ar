@@ -12,7 +12,7 @@ import { HostedActivationPhase, HostedCustodyPhase, HostedCustodyReservationStat
   parseHostedCustodyEpoch, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { CodexProviderEgressProfileId } from "../provider-codex/codex-provider-egress-policy";
-import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes,
+import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, selectedHostedInstallationRecordName,
   readHostedOrdinaryProcessOrigin, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedReadonlyDependencyAssociation, readHostedReadonlyDependencyStart } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { assertHostedDependencyPhysicalWorkspace, hostedDependencyBindingName, readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, isHostedDependencyWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -24,7 +24,6 @@ import { verifySystemBusInfrastructure } from "../provider-codex/app-server/adap
 import { assertHostedFdFrameEnvironment } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "../provider-codex/app-server/adapters/hosted-fd-child";
 import { hostedDependencySystemdRunExecutable } from "../provider-codex/app-server/adapters/hosted-dependency-systemd-command";
-
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { invalidateDependencyGeneration } from "../worker-core/dependency-environment/application/invalidate-dependency-generation";
@@ -77,7 +76,10 @@ function selectedFile(path: string, maximum: number, privateFile = true) {
     return { bytes:data, reference };
   } finally { closeSync(fd); }
 }
-function fixed(name: string, maximum = 65536) { return selectedFile(`${root}/${name}`,maximum); }
+function fixed(name: string, maximum = 65536) {
+  // The installation and inventory are the SELECTED records (original fixed files, or the versioned successor copies).
+  return selectedFile(`${root}/${name === "host-installation.json" || name === "readonly-inventory.json" ? selectedHostedInstallationRecordName(name) : name}`,maximum);
+}
 function material(expected: DependencyProtectedReference, path: string, maximum = 262144, privateFile = true) {
   if (expected.path !== path) invalid(); const pin = selectedFile(path,maximum,privateFile);
   if (!sameDependencyProtectedReference(pin.reference,expected)) invalid(); return pin;
@@ -416,7 +418,6 @@ export function isHostedManagedReadonlyOuterRuntime(): boolean {
   return process.platform === "linux" && /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.test(
     readFileSync("/proc/self/cgroup","utf8").trim());
 }
-
 /** Classification only: actual outer epoch determines whether omitted/foreign
  * request paths still require the protected dependency branch. */
 export function isCurrentHostedDependencyManagedReadonlyOrigin(fence: HostedActivationFence): boolean {

@@ -67,6 +67,7 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
+import { retainedNonqualifiedAdmission } from "./codex-goal-project-retained-nonqualified-admission";
 import { pendingAdmittedInputPatchPathEvidence } from
   "./codex-goal-project-pending-input-patch-admission";
 import { orphanDirtyWorkspaceDebt } from
@@ -606,8 +607,8 @@ async function debtFromConsumedJobSummary(input: {
   });
   if (!consumed) return undefined;
   if (consumed.retentionEvidenceMissing) return undefined;
-  // A no-output record cannot replace a fresh process and workspace read.
-  if (consumed.status === "failed_no_output") return undefined;
+  // Neither a no-output record nor retained custody replaces a fresh process and workspace read.
+  if (consumed.status === "failed_no_output" || consumed.status === "retained_nonqualified") return undefined;
   await rememberKnownWorkspacePath(
     input.knownWorkspacePaths,
     input.summary.workspacePath,
@@ -663,11 +664,14 @@ async function debtFromOverviewItem(input: {
   const resolvedWorkspacePath = workspacePath
     ? await optionalRealPathForAdmission(workspacePath)
     : undefined;
+  const retained = await retainedNonqualifiedAdmission({ jobId, item, ledger: input.consumedOutput,
+    summary: input.summariesByJobId.get(jobId), registryRootDir: input.registryRootDir, readJob: input.readJob });
   const stoppedTerminalConsumption = await stoppedWorkspaceTerminalConsumption({
     ledger: input.consumedOutput,
     jobId,
     workerAlive,
     workerExplicitlyStopped: item.workerAlive === false,
+    retainedNonqualifiedVerified: retained.verified,
     workspaceDirty: item.workspaceDirty === true
       ? true
       : item.workspaceDirty === false
@@ -825,6 +829,9 @@ async function debtFromOverviewItem(input: {
     ...(workspacePath ? { workspacePath } : {}),
     ...(resolvedWorkspacePath ? { resolvedWorkspacePath } : {}),
   });
+  if (consumed?.status === "retained_nonqualified" && !retained.verified) {
+    return [...debt, retained.unverifiedDebt(subject)]; // unverifiable custody consumes nothing
+  }
   if (consumed) {
     debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
     return debt;

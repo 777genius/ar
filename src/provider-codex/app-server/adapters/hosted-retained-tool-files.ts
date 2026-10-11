@@ -9,6 +9,7 @@ import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/ho
 import { hostedFdTable } from "./hosted-fd-table";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
+import { selectedHostedInstallationRecordName } from "./hosted-process-activation"; // call-time use only (module cycle with the activation reader)
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v) + "\n");
@@ -111,7 +112,8 @@ export function openHostedRetainedToolFiles(context: Readonly<{ unit: string; pa
   const snapshots: Leaf[] = [], leaves: Leaf[] = [];
   let scope: HostedRetainedToolFiles | undefined;
   try {
-    for (const name of names) { const leaf = openLeaf(join(root, name), 4 * 1024 * 1024); snapshots.push(leaf); closeSync(leaf.fd); }
+    // The installation and inventory are the SELECTED records (original fixed files, or the versioned successor copies).
+    for (const name of names) { const leaf = openLeaf(join(root, name === "host-installation.json" || name === "readonly-inventory.json" ? selectedHostedInstallationRecordName(name) : name), 4 * 1024 * 1024); snapshots.push(leaf); closeSync(leaf.fd); }
     const installation = json(snapshots[0]!.bytes), inventory = decodeHostedInventoryBytes(snapshots[1]!.bytes) as Record<string, unknown>, binding = json(snapshots[3]!.bytes),
       parent = json(snapshots[4]!.bytes), provider = json(snapshots[5]!.bytes), relation = json(snapshots[6]!.bytes);
     const pin = inventory.collectorProfile as { path?: unknown; sha256?: unknown } | undefined;

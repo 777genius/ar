@@ -12,6 +12,8 @@ import type {
   ProjectControlCustodyBootstrapCertification,
   ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
+import { proveLeafAbsentUnderHeldParent } from "./project-control-evidence-custody-absence";
+import { code, custodyError, deepCode } from "./project-control-evidence-custody-errors";
 import { materializeApprovedProjectControlCustody } from
   "./project-control-evidence-custody-materialization";
 
@@ -76,9 +78,21 @@ export class LocalProjectControlEvidenceCustody implements
         sha256: hash.digest("hex"),
         length,
         bytes: Buffer.concat(chunks, length),
+        mode: before.mode & 0o777,
       };
     } finally {
       await closeHeldLexicalFile(held);
+    }
+  }
+
+  /** Absent only if one held canonical parent proves it (see proveLeafAbsentUnderHeldParent); otherwise refuses. */
+  async readOptionalImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile | undefined> {
+    try { return await this.readImmutableFile(path, maxBytes); }
+    catch (error) {
+      if (deepCode(error) !== "ENOENT") throw error;
+      await proveLeafAbsentUnderHeldParent(resolve(path), openAbsoluteDirectoryNoSymlinks, error,
+        async (lexical) => await this.crashHook?.("after_immutable_read_before_lexical_reopen", lexical));
+      return undefined;
     }
   }
 
@@ -556,7 +570,7 @@ async function assertHeldRootLexicalBinding(
   }
 }
 
-async function openAbsoluteFileNoSymlinks(path: string) {
+export async function openAbsoluteFileNoSymlinks(path: string) {
   const lexical = resolve(path);
   const parent = await openAbsoluteDirectoryNoSymlinks(dirname(lexical));
   let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -578,13 +592,13 @@ async function openAbsoluteFileNoSymlinks(path: string) {
   }
 }
 
-type HeldLexicalFile = Awaited<ReturnType<typeof openAbsoluteFileNoSymlinks>>;
+export type HeldLexicalFile = Awaited<ReturnType<typeof openAbsoluteFileNoSymlinks>>;
 
-async function closeHeldLexicalFile(held: HeldLexicalFile): Promise<void> {
+export async function closeHeldLexicalFile(held: HeldLexicalFile): Promise<void> {
   await held.handle.close().finally(async () => await held.parent.close());
 }
 
-async function assertHeldLexicalFile(
+export async function assertHeldLexicalFile(
   held: HeldLexicalFile,
   identity: Awaited<ReturnType<FileHandle["stat"]>>,
   errorCode: string,
@@ -980,21 +994,4 @@ export async function writeAll(
 function safeSegment(value: string): void {
   if (!value || value === "." || value === ".." || value.includes("/") ||
     value.includes("\\")) throw new Error("evidence_custody_path_invalid");
-}
-function code(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error &&
-    typeof error.code === "string" ? error.code : undefined;
-}
-function deepCode(error: unknown): string | undefined {
-  const direct = code(error);
-  if (direct) return direct;
-  return error instanceof Error && error.cause !== undefined
-    ? deepCode(error.cause)
-    : undefined;
-}
-function custodyError(message: string, cause: unknown): Error & { code?: string } {
-  const error: Error & { code?: string } = new Error(message, { cause });
-  const causeCode = deepCode(cause);
-  if (causeCode !== undefined) error.code = causeCode;
-  return error;
 }

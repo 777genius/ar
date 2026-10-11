@@ -1,4 +1,5 @@
 import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
+import { hostedFundedInstallationVersions } from "../core/host-infrastructure/host-installation-successor";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, lstatSync } from "node:fs";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -74,7 +75,7 @@ export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySuper
     issuedEpochMs: number; issuedMonotonicNs: string; workEndEpochMs: number; cleanupEndEpochMs: number; runtimeDirectory: string;
     node: { path: string; sha256: string }; bootstrap: { path: string; sha256: string };
     preparedFixture: { guestMachineId: string; guestHostname: string; guestEntrySha256: string; inputSha256: string } };
-  if (packet.schemaVersion !== 2 || packet.operationId !== supervisor.operationId ||
+  if (!hostedFundedInstallationVersions.includes(packet.schemaVersion) || packet.operationId !== supervisor.operationId ||
       packet.workEndEpochMs !== supervisor.workEndEpochMs || packet.cleanupEndEpochMs !== supervisor.cleanupEndEpochMs ||
       !Number.isSafeInteger(packet.issuedEpochMs) || !Number.isSafeInteger(packet.workEndEpochMs) || !Number.isSafeInteger(packet.cleanupEndEpochMs) ||
       packet.issuedEpochMs >= packet.workEndEpochMs || packet.workEndEpochMs >= packet.cleanupEndEpochMs ||

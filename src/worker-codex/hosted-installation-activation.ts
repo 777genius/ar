@@ -4,7 +4,7 @@ import type { HostedForegroundRequest } from "./hosted-foreground-request-custod
 import type { ChildProcess } from "node:child_process";
 import { assertOrdinaryInstallationRuntimeWait, retainOrdinaryInstallationReservation, retainOrdinaryInstallationChild, bindOrdinaryInstallationReady, ordinaryInstallationSpawnCustody } from "./hosted-ordinary-installation-owned";
 import type { HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
-import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
+import { decodeHostedInventoryBytes } from "../core/host-infrastructure/host-inventory";
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
 import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferenceStart,
   retainHostedLegacyReferenceRelease } from "./hosted-dependency-legacy-reference";
@@ -34,7 +34,7 @@ import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
-import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
+import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement"; import { assertInstallationSelectionTransition } from "./hosted-installation-selection-transition"; import { resolveSelectedInstallationRecord } from "../provider-codex/app-server/adapters/hosted-process-activation";
 
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
@@ -120,6 +120,7 @@ export class HostedInstallationActivationStore {
     assertHostedActivationFence(fence);
     const prior = this.readCommitted(fence);
     assertHostedActivationSuccessor(prior, next, authority ? scopedOrdinaryAuthority(authority) : undefined);
+    assertInstallationSelectionTransition(prior, next); // a selection change is re-validated here, also when recovering
     const pending = readHostedActivationBytes("host-activation.next");
     if (pending && !recovering) throw new Error("hosted_activation_publication_recovery_required");
     const bytes = Buffer.from(JSON.stringify(parseHostedActivation(next)) + "\n");
@@ -802,11 +803,11 @@ export class HostedInstallationActivationStore {
 export function readHostedInstallationActivation(): {
   readonly installation: HostedInstallation; readonly activation: HostedActivation;
 } {
-  if (readHostedActivationBytes("host-activation.next") || readHostedActivationBytes("ordinary-origins.next")) {
-    throw new Error("hosted_activation_publication_recovery_required");
-  }
-  const installation = parseHostedInstallation(decodeHostedActivationBytes(required("host-installation.json")));
-  const activation = parseHostedActivation(decodeHostedActivationBytes(required("host-activation.json")));
+  if (readHostedActivationBytes("host-activation.next") || readHostedActivationBytes("ordinary-origins.next")) throw new Error("hosted_activation_publication_recovery_required");
+  const activationBytes = required("host-activation.json"); // ONE snapshot (a10 F5): the selected installation resolves FROM these bytes, never from a second read
+  const installation = parseHostedInstallation(decodeHostedActivationBytes(resolveSelectedInstallationRecord("host-installation.json",
+    name => name === "host-activation.json" ? activationBytes : readHostedActivationBytes(name)).bytes ?? required("host-installation.json")));
+  const activation = parseHostedActivation(decodeHostedActivationBytes(activationBytes));
   if (installation.installationId !== activation.installationId || installation.hostId !== activation.hostId) invalid();
   // The durable exclusive reference cannot disappear with mutable egress grants.
   const enrollment = readHostedActivationBytes("readonly-enrollment.json");
@@ -827,6 +828,7 @@ export function readHostedInstallationActivation(): {
         Object.keys(birth.identity).some(key => birth.identity[key as keyof typeof birth.identity] !==
           epoch.identity[key as keyof typeof epoch.identity])) invalid();
   } else if (epochBytes) invalid();
+  if (!readHostedActivationBytes("host-activation.json")?.equals(activationBytes)) invalid(); // a publication that landed mid-read refuses (retry); it is never merged into a mixed answer
   return { installation, activation };
 }
 
@@ -926,13 +928,13 @@ function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion" | "in
       Object.keys(stage).sort().join(",") !== "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion" ||
       !("schemaVersion" in stage) || stage.schemaVersion !== 1 || !("runtimeDirectory" in stage) || stage.runtimeDirectory !== runtimeDirectory ||
       !("runtimeSha" in stage) || typeof stage.runtimeSha !== "string" || !("runtimeManifestSha256" in stage) || typeof stage.runtimeManifestSha256 !== "string") invalid();
-  const inventoryBytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
+  const inventoryBytes = readHostedActivationBytes("readonly-inventory.json"); // the SELECTED inventory (original or successor)
   if (!inventoryBytes) invalid();
   decodeHostedInventoryBytes(inventoryBytes);
   return { hostId: inventory.hostId, runtimeDirectory, runtimeSha: stage.runtimeSha,
     runtimeManifestSha256: stage.runtimeManifestSha256, inventorySha256: digest(inventoryBytes) };
 }
-function assertInspectedInstallation(installation: HostedInstallation): void {
+export function assertInspectedInstallation(installation: HostedInstallation): void {
   const binding = inspectedInstallation();
   if (Object.keys(binding).some(key => installation[key as keyof typeof binding] !== binding[key as keyof typeof binding])) invalid();
 }
@@ -986,7 +988,6 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
     return grant.profileId;
   });
 }
-
 
 /** Scheduling admission supplements, never replaces, managed material/owner
  * checks. Both outer launch and every provider spawn call this production gate. */

@@ -36,6 +36,9 @@ export type HostedActivation = {
   readonly phase: HostedActivationPhase; readonly ordinaryOriginsSha256: string;
   readonly exclusiveEnrollmentSha256: string | null;
   readonly ordinaryStarts: readonly HostedOrdinaryReservation[];
+  /** Optional; present only after an installation SUCCESSOR was published. It selects (by digest) the content-addressed
+   * `installation-successors/<digest>.json` record. Absent means the original fixed installation/inventory records. */
+  readonly installationSelectionSha256?: string;
 };
 export type HostedOrdinaryStart = Omit<HostedOrdinaryBirth, "origin"> & {
   readonly activationGeneration: number; readonly bootId: string; readonly supervisorId: string;
@@ -106,8 +109,11 @@ export function parseHostedOrdinaryStart(value: unknown): HostedOrdinaryStart {
   return Object.freeze({ ...input }) as HostedOrdinaryStart;
 }
 export function parseHostedActivation(value: unknown): HostedActivation {
-  const input = record(value, "schemaVersion,installationId,hostId,bootId,supervisorId,generation,phase,ordinaryOriginsSha256,exclusiveEnrollmentSha256,ordinaryStarts");
+  const selecting = !!value && typeof value === "object" && !Array.isArray(value) && "installationSelectionSha256" in value;
+  const input = record(value, "schemaVersion,installationId,hostId,bootId,supervisorId,generation,phase,ordinaryOriginsSha256,exclusiveEnrollmentSha256,ordinaryStarts" +
+    (selecting ? ",installationSelectionSha256" : ""));
   base(input);
+  if (selecting && !digest(input.installationSelectionSha256)) invalid();
   if (!id(input.hostId) || !id(input.bootId) || !id(input.supervisorId) || !generation(input.generation) ||
       !Object.values(HostedActivationPhase).includes(input.phase as HostedActivationPhase) ||
       !digest(input.ordinaryOriginsSha256) || (input.exclusiveEnrollmentSha256 !== null && !digest(input.exclusiveEnrollmentSha256)) ||
@@ -151,6 +157,13 @@ export function assertHostedActivationSuccessor(before: HostedActivation, after:
       prior.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal))) invalid();
   if (prior.ordinaryOriginsSha256 !== next.ordinaryOriginsSha256 &&
       (prior.phase !== HostedActivationPhase.Closed || next.phase !== HostedActivationPhase.Closed)) invalid();
+  // Selecting another installation record is the ONE successor transition: CLOSED to CLOSED, every start terminal, a new
+  // supervisor session, the origin catalog untouched, and never a removal of an earlier selection.
+  if (prior.installationSelectionSha256 !== next.installationSelectionSha256 &&
+      (next.installationSelectionSha256 === undefined || prior.phase !== HostedActivationPhase.Closed || next.phase !== HostedActivationPhase.Closed ||
+        !sessionChanged || prior.ordinaryOriginsSha256 !== next.ordinaryOriginsSha256 ||
+        prior.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal) ||
+        next.ordinaryStarts.length !== prior.ordinaryStarts.length)) invalid();
   if (prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256 &&
       (prior.phase !== HostedActivationPhase.EnteringExclusive ||
         ![HostedActivationPhase.EnteringExclusive, HostedActivationPhase.Exclusive].includes(next.phase))) invalid();

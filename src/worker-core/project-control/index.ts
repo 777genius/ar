@@ -6,6 +6,7 @@ export * from "./application/project-control-broker";
 export * from "./application/record-terminal-output-decision";
 export * from "./application/record-failed-no-output";
 export * from "./domain/terminal-output-decision";
+export * from "./domain/retained-nonqualified-attempt";
 export * from "./ports/consumed-output-ledger-writer-port";
 export * from "./ports/project-control-evidence-custody-port";
 export * from "./domain/project-admission";

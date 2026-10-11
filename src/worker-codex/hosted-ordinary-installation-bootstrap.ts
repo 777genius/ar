@@ -4,15 +4,15 @@ import { resolveStoredProjectStartPlan } from "./stored-start-planning";
 import { readTrustedFragment } from "./hosted-readonly-host-kernel";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, readdirSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, readdirSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHostedActivationOperator, verifySystemBusInfrastructure } from "@vioxen/subscription-runtime/provider-codex";
-import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
+import { assertHostedActivationOperator, readHostedActivationBytes, verifySystemBusInfrastructure } from "@vioxen/subscription-runtime/provider-codex";
+import { HostedActivationPhase, HostedCustodyReservationState } from "@vioxen/subscription-runtime/worker-core";
 import { parseHostedInventoryV5, type HostedInventoryCreator, type HostedInventoryFile, type HostedInventorySupervisor, type HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
 import { readSystemBusInfrastructureField, readFdCollectorProfileField, parseFdCollectorProfile, type FdCollectorProfilePin } from "@vioxen/subscription-runtime/core";
 import { verifyPinnedFdCollectorProfile, observeHostedFdProcess } from "../provider-codex/app-server/adapters/hosted-fd-observation";
-import { collectBootId, collectProcessBirth, collectSelfCgroup, collectUnitInvocation, collectUnitShow, collectNonDelegatedUnitShow, collectJobs } from "./hosted-readonly-linux-collector";
+import { collectBootId, collectProcessBirth, collectSelfCgroup, collectUnitInvocation, collectUnitShow, collectNonDelegatedUnitShow, collectJobs, collectOriginalUnitTerminalShow } from "./hosted-readonly-linux-collector";
 import { HostedInstallationActivationStore, readHostedInstallationActivation } from "./hosted-installation-activation";
 import { ordinaryInstallationCollectorFailure, collectOrdinaryInstallationDraft } from "./hosted-ordinary-installation-census";
 import { bindOriginalOrdinaryInstallationSupervisor, retainOriginalOrdinaryInstallationOperation, retainOriginalOrdinaryInstallationOperator, retainOriginalOrdinaryInstallationClosed, assertOrdinaryInstallationOriginalClose, type OrdinaryInstallationOperation, type OriginalOrdinaryInstallationClosed } from "./hosted-ordinary-installation-owned";
@@ -20,6 +20,11 @@ import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, publishReadonlyInventory, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { runHostedRuntimeForeground } from "./hosted-readonly-foreground";
 import { hostedForegroundExitCode } from "./hosted-foreground-result";
+import { HostedRetentionCleanupOutcome, HostedRetentionLaunchKind, parseHostedRetentionRequest, type HostedRetentionRequest } from "../core/host-infrastructure/host-retention-operation";
+import { hostedFundedInstallationVersions, parseHostedSuccessorRequest, type HostedSuccessorRequest } from "../core/host-infrastructure/host-installation-successor";
+import { cleanupOwnedRetentionContainer, deriveOriginalUnitExpectation, proveOriginalUnitTerminal, runAdmittedRetentionOperation, type OriginalCgroupNode, type OriginalLeafObservation, type OriginalUnitFacts, type OriginalUnitSample } from "./retention-operation-host";
+import type { OutsideCleanupGate, OutsideCleanupResult } from "./retention-operation-test-launcher";
+import { commitInstallationSuccessor, type OutsideSupervisorRecord } from "./hosted-installation-successor";
 import { trustedOrdinaryInstallationSupervisorLaunch, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import { withScopedCollectionBudget, requestScopedManagerEffect } from "./hosted-readonly-linux-collector";
 
@@ -32,11 +37,19 @@ export type OrdinaryInstallationPacket = Readonly<{
   systemBusInfrastructure: Readonly<Record<string, unknown>>;
   copiedLauncher: HostedInventoryFile; copiedCodec: HostedInventoryFile;
 }>;
-export type QualifiedPairInstallationRequest = Readonly<{ schemaVersion: 1; packet: OrdinaryInstallationPacket;
+/**
+ * schemaVersion 1 is the normal installation; 2 adds ONE closed retention request (the retention discriminator); 3 adds, on top
+ * of 2, the closed pins of the committed predecessor of an ALREADY-INSTALLED host (the installation successor). A successor is
+ * only ever authorized together with the retention request.
+ */
+export type QualifiedPairInstallationRequest = Readonly<{ schemaVersion: 1 | 2 | 3; packet: OrdinaryInstallationPacket;
   candidate: OrdinaryLauncherCandidate; preparedFixture: OrdinaryLauncherQualificationFixture; copiedCohort: OrdinaryCopiedCohort;
-  preparedCollectorProfile: HostedInventoryFile; priorCollectorProfile: OrdinaryPriorCollectorProfile }>;
+  preparedCollectorProfile: HostedInventoryFile; priorCollectorProfile: OrdinaryPriorCollectorProfile; retention?: HostedRetentionRequest; successor?: HostedSuccessorRequest }>;
+/** Funded: schemaVersion 2 = normal; 3 = plus the retention request (never a normal job); 4 = plus the successor pins. */
 type FundedQualifiedPacket = Omit<OrdinaryInstallationPacket, "schemaVersion"> & Omit<QualifiedPairInstallationRequest, "schemaVersion" | "packet"> &
-  Readonly<{ schemaVersion: 2; qualificationRequestSha256: string }>;
+  Readonly<{ schemaVersion: 2 | 3 | 4; qualificationRequestSha256: string }>;
+const requestKeys = "schemaVersion,packet,candidate,preparedFixture,copiedCohort,preparedCollectorProfile,priorCollectorProfile";
+const fundedExtraKeys = (version: number) => version === 4 ? ",retention,successor" : version === 3 ? ",retention" : "";
 const packetKeys = "bootId,bootstrap,collectorProfile,copiedCodec,copiedLauncher,creator,hostId,issuedEpochMs,issuedMonotonicNs,operationId,runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion,systemBusInfrastructure,workEndEpochMs,cleanupEndEpochMs";
 const qualificationKeys = "candidate,copiedCohort,preparedCollectorProfile,preparedFixture,priorCollectorProfile,qualificationRequestSha256";
 const copiedNames = ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs", "managed-launcher/storage-pressure-guard.mjs"] as const;
@@ -51,8 +64,11 @@ function packetPath(id: string): string {
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) denied(); return join(operationRoot, id + ".json");
 }
 function checkedPacket(input: OrdinaryInstallationPacket | FundedQualifiedPacket): OrdinaryInstallationPacket {
-  if (input.schemaVersion === 2) {
-    closed(input, packetKeys + "," + qualificationKeys);
+  if (input.schemaVersion !== 1) {
+    if (!hostedFundedInstallationVersions.includes(input.schemaVersion)) denied();
+    closed(input, packetKeys + "," + qualificationKeys + fundedExtraKeys(input.schemaVersion));
+    if (input.schemaVersion >= 3) parseHostedRetentionRequest(input.retention);
+    if (input.schemaVersion === 4) parseHostedSuccessorRequest(input.successor);
     if (!/^[a-f0-9]{64}$/.test(input.qualificationRequestSha256)) denied();
     const projected = Object.fromEntries(packetKeys.split(",").map(key => [key, key === "schemaVersion" ? 1 : input[key as keyof typeof input]]));
     return checkedPacket(projected as OrdinaryInstallationPacket);
@@ -119,8 +135,12 @@ function assertCopiedCohort(cohort: OrdinaryCopiedCohort): void {
 function admitQualifiedPairRequestCold(operationId: string): { request: QualifiedPairInstallationRequest; bytes: Buffer } {
   const bytes = readHostedPrivateBytes(packetPath(operationId).replace(/\.json$/, ".request.json"), 64 * 1024); if (!bytes) denied();
   const request = JSON.parse(bytes.toString("utf8")) as QualifiedPairInstallationRequest;
-  closed(request, "schemaVersion,packet,candidate,preparedFixture,copiedCohort,preparedCollectorProfile,priorCollectorProfile");
-  if (request.schemaVersion !== 1 || request.packet.schemaVersion !== 1 || request.packet.operationId !== operationId) denied();
+  const version = (request as { schemaVersion?: unknown } | null)?.schemaVersion;
+  if (version !== 1 && version !== 2 && version !== 3) denied();
+  closed(request, requestKeys + (version === 3 ? ",retention,successor" : version === 2 ? ",retention" : ""));
+  if (request.schemaVersion >= 2) parseHostedRetentionRequest(request.retention);
+  const successor = request.schemaVersion === 3 ? parseHostedSuccessorRequest(request.successor) : undefined;
+  if (request.packet.schemaVersion !== 1 || request.packet.operationId !== operationId) denied();
   const packet = checkedPacket(request.packet); admitSourcePacket(packet);
   const candidate = request.candidate;
   closed(candidate, "candidateArtifactPath,runtimeSha,runtimeManifestSha256,launcherSha256,codecSha256,profileSha256,sourceScopeSha256");
@@ -136,14 +156,26 @@ function admitQualifiedPairRequestCold(operationId: string): { request: Qualifie
   if (profile.node.path !== packet.node.path || profile.node.sha256 !== packet.node.sha256) denied();
   for (const executable of [profile.ss, profile.node, ...profile.wrappers]) for (const pin of executable.elfFiles) { protectedPin(pin); budget(packet, false); }
   validatePreparedOrdinaryLauncherQualification(candidate, request.preparedFixture, packet);
-  const existing = readHostedPrivateBytes(join(readonlySupervisorRoot, "host-installation.json"), 64 * 1024);
+  // The SELECTED installation (the original fixed record, or the versioned successor copy the activation selects).
+  const existing = readHostedActivationBytes("host-installation.json");
+  if (successor && !existing) denied(); // a successor needs an installed predecessor
   if (existing) {
     const { installation, activation } = readHostedInstallationActivation();
-    if (activation.phase !== HostedActivationPhase.Closed || installation.hostId !== packet.hostId || installation.runtimeDirectory !== packet.runtimeDirectory || installation.runtimeSha !== packet.runtimeSha || installation.runtimeManifestSha256 !== packet.runtimeManifestSha256) denied();
-    const installedInventory = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), 4 * 1024 * 1024);
+    const installedInventory = readHostedActivationBytes("readonly-inventory.json");
     if (!installedInventory) denied();
     const prior = parseHostedInventoryV5(JSON.parse(installedInventory.toString("utf8")));
-    if (prior.supervisor.operationId !== packet.operationId || prior.collectorProfile.sha256 !== packet.collectorProfile.sha256 || prior.supervisor.bootstrap.sha256 !== packet.bootstrap.sha256) denied();
+    if (successor) {
+      // Early refusal only: the supervisor re-checks every pin under the activation fence, the authority for the transition.
+      // The runtime may differ from the predecessor's (that is the point of a new artifact); nothing else may.
+      if (activation.phase !== HostedActivationPhase.Closed || activation.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal) ||
+          installation.hostId !== packet.hostId || activation.bootId !== packet.bootId || installation.installationId !== successor.installationId ||
+          hash(existing) !== successor.installationSha256 || hash(installedInventory) !== successor.inventorySha256 ||
+          hash(readHostedActivationBytes("host-activation.json") ?? denied()) !== successor.activationSha256 || activation.generation !== successor.activationGeneration ||
+          prior.supervisor.operationId === packet.operationId) denied();
+    } else {
+      if (activation.phase !== HostedActivationPhase.Closed || installation.hostId !== packet.hostId || installation.runtimeDirectory !== packet.runtimeDirectory || installation.runtimeSha !== packet.runtimeSha || installation.runtimeManifestSha256 !== packet.runtimeManifestSha256) denied();
+      if (prior.supervisor.operationId !== packet.operationId || prior.collectorProfile.sha256 !== packet.collectorProfile.sha256 || prior.supervisor.bootstrap.sha256 !== packet.bootstrap.sha256) denied();
+    }
   }
   if (!existing) {
     for (const name of ["host-activation.json", "host-activation.next", "ordinary-origins.json", "ordinary-origins.next", "readonly-enrollment.json", "readonly-epoch.json", "readonly-epoch.next"])
@@ -157,8 +189,9 @@ function admitQualifiedPairRequestCold(operationId: string): { request: Qualifie
 }
 export async function runQualifiedPairInstallationOperator(operationId: string) {
   const { request, bytes } = admitQualifiedPairRequestCold(operationId), packet = checkedPacket(request.packet);
-  const funded: FundedQualifiedPacket = { ...packet, schemaVersion: 2, qualificationRequestSha256: hash(bytes), candidate: request.candidate,
-    preparedFixture: request.preparedFixture, copiedCohort: request.copiedCohort, preparedCollectorProfile: request.preparedCollectorProfile, priorCollectorProfile: request.priorCollectorProfile };
+  const funded: FundedQualifiedPacket = { ...packet, schemaVersion: request.schemaVersion === 3 ? 4 : request.schemaVersion === 2 ? 3 : 2, qualificationRequestSha256: hash(bytes), candidate: request.candidate,
+    preparedFixture: request.preparedFixture, copiedCohort: request.copiedCohort, preparedCollectorProfile: request.preparedCollectorProfile, priorCollectorProfile: request.priorCollectorProfile,
+    ...(request.schemaVersion >= 2 ? { retention: request.retention } : {}), ...(request.schemaVersion === 3 ? { successor: request.successor } : {}) };
   assertCopiedCohort(request.copiedCohort);
   assertOrdinaryCollectorProfileUpgrade(operationId, request.preparedCollectorProfile, request.priorCollectorProfile,
     request.candidate.candidateArtifactPath, request.candidate.launcherSha256, request.candidate.codecSha256);
@@ -168,7 +201,7 @@ export async function runQualifiedPairInstallationOperator(operationId: string) 
   publication.publish(); admitInstalledPair(packet);
   if (!readHostedPrivateBytes(packet.collectorProfile.path, 64 * 1024)?.equals(readHostedPrivateBytes(request.preparedCollectorProfile.path, 64 * 1024)!)) denied();
   publication.consumeBeforeOriginalSupervisorBirth();
-  return runFundedInstallationSupervisor(packet, operation);
+  return runFundedInstallationSupervisor(packet, operation, request.retention);
 }
 /** Administrative Root issue. The original funded record precedes supervisor
  * birth. It cannot recreate a consumed operation or certify its own terminal. */
@@ -187,23 +220,34 @@ function fundOriginalOperation(packet: OrdinaryInstallationPacket | FundedQualif
   retainOriginalOrdinaryInstallationOperation(operation, operationBytes);
   return operation;
 }
-async function runFundedInstallationSupervisor(packet: OrdinaryInstallationPacket, operation: OrdinaryInstallationOperation): Promise<Readonly<{ sourceExitCode: number; settled: true; closure: OriginalOrdinaryInstallationClosed }>> {
+async function runFundedInstallationSupervisor(packet: OrdinaryInstallationPacket, operation: OrdinaryInstallationOperation, retention?: HostedRetentionRequest): Promise<Readonly<{ sourceExitCode: number; settled: true; closure: OriginalOrdinaryInstallationClosed }>> {
   budget(packet, false);
   const unit = `subscription-runtime-installation-${packet.operationId}.service`;
   const launch = trustedOrdinaryInstallationSupervisorLaunch(packet.operationId, budget(packet, false), budget(packet, true));
   budget(packet, false);
   const child = spawn(launch.command, launch.args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "pipe"] });
   const closure = retainOperatorChild(child, packet, unit, operation);
-  const wait = await closure;
+  let wait: Awaited<typeof closure> | undefined, waitFailure: unknown;
+  try { wait = await closure; } catch (error) { waitFailure = error; }
+  // OUTSIDE cleanup owner. The proxy has closed here, but a closed proxy (or a requested `stop --no-block`) is NOT the unit's
+  // terminal custody: until the ORIGINAL unit is observed terminal (MainPID 0, no job, control group empty) the admitted
+  // supervisor can still create and start the container. `runOutsideCleanup` therefore proves that FIRST, inside the cleanup
+  // window, and only then stops ONLY the exact container the supervisor bound to this operation, or retains the uncertainty.
+  let cleanedUp = true;
+  if (retention?.launch.kind === HostedRetentionLaunchKind.DockerTest) {
+    cleanedUp = (await runOutsideCleanup(packet.operationId, { hostId: packet.hostId, bootId: packet.bootId }, () => budget(packet, true))).ok;
+  }
+  if (waitFailure) throw waitFailure;
+  if (!wait || !cleanedUp) denied();
   budget(packet, true);
   const session = readHostedPrivateBytes(join(operationRoot, packet.operationId + ".supervisor.json"), 4096);
   if (!session || wait.signal !== null) denied();
   const original = JSON.parse(session.toString("utf8"));
   if (JSON.stringify(original) !== JSON.stringify(wait.original)) denied();
   if (original.unit !== unit || original.bootId !== packet.bootId || !/^[a-f0-9]{32}$/.test(original.invocationId) || original.operationId !== packet.operationId) denied();
-  const current = collectOriginal(packet, true, () => collectUnitShow(unit));
-  if (collectOriginal(packet, true, () => collectUnitInvocation(unit)) !== original.invocationId || current.ControlGroup !== original.controlGroup || current.MainPID !== "0" || collectOriginal(packet, true, collectJobs).includes(unit)) denied();
-  assertOriginalSupervisorEmpty(original.controlGroup, unit, packet);
+  // The SAME terminal proof the outside cleanup uses. A normally exited or stopped `--wait` unit is collected by systemd (empty group
+  // and invocation, `not-found`) and its leaf is gone; it is accepted only on the retained, authenticated original identity.
+  await proveOriginalUnitTerminalCustody(packet.operationId, { hostId: packet.hostId, bootId: packet.bootId }, () => budget(packet, true));
   const terminal = readHostedPrivateBytes(join(operationRoot, packet.operationId + ".closed.json"), 4096);
   if (!terminal || JSON.parse(terminal.toString("utf8")).sourceExitCode !== wait.code || wait.code !== 0) denied();
   return Object.freeze({ sourceExitCode: wait.code, settled: true, closure: collectOriginal(packet, true, () => retainOriginalOrdinaryInstallationClosed(operation)) });
@@ -214,7 +258,7 @@ function retainOperatorChild(child: ChildProcess, packet: OrdinaryInstallationPa
     // These listeners and their retained raw buffers/log cells belong to this
     // original child, before any fallible descriptor acquisition or observation.
     const fds: { fd: number; closed: boolean; failed: boolean }[] = [], raw: Buffer[][] = [[], []];
-    let original: Record<string, unknown> | undefined, readyText = "", proxyBirth: string | null = null;
+    let original: Record<string, unknown> | undefined, liveChain: OriginalLeafChain | undefined, readyText = "", proxyBirth: string | null = null;
     let stdoutEnded = false, stderrEnded = false, failed = false, written = 0, stopping = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const bind = () => {
@@ -225,6 +269,8 @@ function retainOperatorChild(child: ChildProcess, packet: OrdinaryInstallationPa
             current.ControlGroup !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}`) denied();
         const facts = observeHostedFdProcess(Number(current.MainPID));
         if (facts.exe !== packet.node.path || facts.argv.join("\0") !== [packet.node.path, bootstrapPath, "--operation", packet.operationId].join("\0")) denied();
+        // The live leaf and its parents, observed while the unit is alive, are the only provenance a later `not-found` unit can use.
+        liveChain = observeLiveLeafChain(current.ControlGroup, unit, () => budget(packet, true));
         budget(packet, true); bindOriginalOrdinaryInstallationSupervisor(operation);
         original = { operationId: packet.operationId, unit, bootId: packet.bootId, birth: facts.birth, invocationId, controlGroup: current.ControlGroup };
       });
@@ -271,6 +317,9 @@ function retainOperatorChild(child: ChildProcess, packet: OrdinaryInstallationPa
             if (readyText.length > 4096) denied();
             if (readyText.includes("ordinary_installation_supervisor_ready\n")) {
               bind(); budget(packet, true);
+              // Chain first: a bound record without its chain only ever withholds authority for a collected unit, never grants it.
+              createReadonlyPrivateRecord(join(directory, "original-leaf-chain.json"), Buffer.from(JSON.stringify({ operationId: packet.operationId, unit,
+                bootId: packet.bootId, controlGroup: original!.controlGroup, parents: liveChain!.parents, leaf: liveChain!.leaf }) + "\n"));
               createReadonlyPrivateRecord(join(directory, "original-supervisor.json"), Buffer.from(JSON.stringify(original) + "\n"));
             }
           }
@@ -302,11 +351,11 @@ function retainOperatorChild(child: ChildProcess, packet: OrdinaryInstallationPa
 }
 /** Only the original fixed issuer reservation selects this path. Every node
  * positively reports zero members/population; absent groups remain HELD. */
-function assertOriginalSupervisorEmpty(group: string, unit: string, packet: OrdinaryInstallationPacket): void {
-  if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}`) denied();
+function assertOriginalSupervisorEmpty(group: string, unit: string, remaining: () => number): void {
+  if (group !== originalUnitGroup(unit)) denied();
   let nodes = 0;
   const walk = (path: string): void => {
-    budget(packet, true); if (++nodes > 256) denied();
+    remaining(); if (++nodes > 256) denied();
     const before = lstatSync(path), fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
       const stat = fstatSync(fd); if (!stat.isDirectory() || stat.uid !== 0 || stat.dev !== before.dev || stat.ino !== before.ino) denied();
@@ -318,6 +367,170 @@ function assertOriginalSupervisorEmpty(group: string, unit: string, packet: Ordi
   };
   walk("/sys/fs/cgroup" + group);
 }
+const installationUnit = (operationId: string) => `subscription-runtime-installation-${operationId}.service`;
+const originalUnitGroup = (unit: string) => `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}`;
+const cgroupRoot = "/sys/fs/cgroup", cgroup2SuperMagic = 0x63677270n;
+/**
+ * Bound observation of the exact ORIGINAL leaf. Every directory from the cgroup2 root down is opened THROUGH its parent's
+ * descriptor (`/proc/self/fd/<fd>/<name>`, O_DIRECTORY|O_NOFOLLOW), must be a root-owned cgroup2 directory (every non-root one with a
+ * readable `cgroup.events`, i.e. a live cgroup), and is re-resolved by path afterwards to the same device/inode.
+ * - The leaf exists: the existing safe positive walk (`assertOriginalSupervisorEmpty`) must show it and every descendant empty
+ *   (`empty`); populated, unreadable or vanished-mid-walk is `not_proved`.
+ * - The leaf name is ABSENT (ENOENT on the parent descriptor and not listed by it): `absent_proved` only if EVERY parent of the
+ *   canonical original path was opened and proved live and none changed afterwards. A missing or unproved parent, any other error
+ *   or any identity change is `not_proved` (or throws), never absence. A global scan is never consulted.
+ */
+type HeldCgroupNode = { path: string; fd: number; dev: number; ino: number };
+function splitOriginalGroup(group: string, unit: string): { parents: string[]; leaf: string } {
+  if (group !== originalUnitGroup(unit)) denied();
+  const parents = group.split("/").slice(1), leaf = parents.pop()!;
+  if (!/^[A-Za-z0-9_.@-]+\.service$/.test(leaf) || parents.some(part => !/^[A-Za-z0-9_.@-]+\.slice$/.test(part))) denied();
+  return { parents, leaf };
+}
+/**
+ * Opens the cgroup2 root and then each parent THROUGH its parent's descriptor into `held` (the caller closes every entry). Returns
+ * false when the chain is not proved (a parent is absent, not a root-owned cgroup2 directory, or has no readable `cgroup.events`);
+ * any other failure throws. The one place both the live retention and the terminal observation build their ancestry.
+ */
+function holdCgroupParents(parents: readonly string[], held: HeldCgroupNode[], remaining: () => number): boolean {
+  for (const [depth, name] of [null, ...parents].entries()) {
+    remaining();
+    const path = held.length === 0 ? cgroupRoot : `${held.at(-1)!.path}/${name}`, via = held.length === 0 ? cgroupRoot : `/proc/self/fd/${held.at(-1)!.fd}/${name}`;
+    let fd: number;
+    try { fd = openSync(via, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    const stat = fstatSync(fd), anchored = `/proc/self/fd/${fd}`;
+    held.push({ path, fd, dev: stat.dev, ino: stat.ino });
+    if (!stat.isDirectory() || stat.uid !== 0 || statfsSync(anchored, { bigint: true }).type !== cgroup2SuperMagic) return false;
+    if (depth > 0 && !/^populated [01]$/m.test(readFileSync(anchored + "/cgroup.events", "utf8"))) return false;
+  }
+  return true;
+}
+const releaseCgroupNodes = (held: HeldCgroupNode[]) => { for (const node of held.reverse()) try { closeSync(node.fd); } catch { /* the observation is already decided; a stuck close cannot turn it into proof */ } };
+/** The slice directories below the cgroup2 root, as retained/compared identities (path relative to the root). */
+const ancestryOf = (held: readonly HeldCgroupNode[]): OriginalCgroupNode[] => held.slice(1).map(node => ({ path: node.path.slice(cgroupRoot.length), dev: node.dev, ino: node.ino }));
+/**
+ * The issuer's LIVE observation of the original leaf and its parents, taken from the same bind that records unit, invocation, group,
+ * argv and birth, while the unit is alive: every parent proved and the leaf present as a root-owned directory. Retained (create-once)
+ * as `original-leaf-chain.json`; a later `not-found` unit is only ever judged against THESE parents, never against whatever
+ * directories happen to carry the same names. Any failure throws and the bind is not completed.
+ */
+function observeLiveLeafChain(group: string, unit: string, remaining: () => number): OriginalLeafChain {
+  const { parents, leaf } = splitOriginalGroup(group, unit), held: HeldCgroupNode[] = [];
+  try {
+    if (!holdCgroupParents(parents, held, remaining)) denied();
+    const stat = lstatSync(`/proc/self/fd/${held.at(-1)!.fd}/${leaf}`);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0) denied();
+    return { parents: ancestryOf(held), leaf: { dev: stat.dev, ino: stat.ino } };
+  } finally { releaseCgroupNodes(held); }
+}
+type OriginalLeafChain = Readonly<{ parents: readonly OriginalCgroupNode[]; leaf: Readonly<{ dev: number; ino: number }> }>;
+function observeOriginalLeaf(group: string, unit: string, remaining: () => number): { leaf: OriginalLeafObservation; parents: readonly OriginalCgroupNode[] } {
+  const { parents, leaf } = splitOriginalGroup(group, unit), held: HeldCgroupNode[] = [];
+  const result = (observation: OriginalLeafObservation) => ({ leaf: observation, parents: observation === "not_proved" ? [] : ancestryOf(held) });
+  try {
+    if (!holdCgroupParents(parents, held, remaining)) return result("not_proved");
+    const parent = held.at(-1)!, anchoredParent = `/proc/self/fd/${parent.fd}`;
+    let exists = true;
+    try { lstatSync(`${anchoredParent}/${leaf}`); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; exists = false; }
+    if (exists) {
+      try { assertOriginalSupervisorEmpty(group, unit, remaining); return result("empty"); }
+      catch { return result("not_proved"); /* populated, unreadable or gone mid-walk: not proved empty, polled again until the window ends */ }
+    }
+    remaining();
+    if (readdirSync(anchoredParent).includes(leaf)) return result("not_proved");
+    for (const node of held) {
+      const now = lstatSync(node.path);
+      if (!now.isDirectory() || now.dev !== node.dev || now.ino !== node.ino) return result("not_proved");
+    }
+    if (!/^populated [01]$/m.test(readFileSync(anchoredParent + "/cgroup.events", "utf8"))) return result("not_proved"); // the parent is a slice, never the root
+    return result("absent_proved");
+  } finally { releaseCgroupNodes(held); }
+}
+function sampleOriginalUnit(unit: string): OriginalUnitSample {
+  const show = collectOriginalUnitTerminalShow(unit);
+  return { bootId: collectBootId(), loadState: show.LoadState!, activeState: show.ActiveState!, mainPid: show.MainPID!,
+    jobPresent: show.Job !== "" || collectJobs().includes(unit), controlGroup: show.ControlGroup!, invocationId: show.InvocationID! };
+}
+/**
+ * Positive observation of the ORIGINAL installation unit for the outside cleanup owner (a10 F1): manager state, MainPID, queued
+ * job, and the exact original leaf, as ONE bracket: authenticated unit sample, bound leaf observation, authenticated unit sample
+ * again. The decision (identity, terminal-retired state, drift between the samples) is the pure `originalUnitPending`.
+ */
+function observeOriginalUnit(unit: string, remaining: () => number): OriginalUnitFacts {
+  return withScopedCollectionBudget(remaining(), () => {
+    const before = sampleOriginalUnit(unit), observed = observeOriginalLeaf(originalUnitGroup(unit), unit, remaining), after = sampleOriginalUnit(unit);
+    return { before, leaf: observed.leaf, parents: observed.parents, after };
+  });
+}
+/** The outside issuer's own record of the supervisor it bound (`original-supervisor.json`), or `null` when none was written. */
+function readOutsideSupervisorRecord(operationId: string): OutsideSupervisorRecord | null {
+  const bytes = readHostedPrivateBytes(join(operationRoot, operationId, "original-supervisor.json"), 4096);
+  if (!bytes) return null;
+  const value = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+  closed(value, "operationId,unit,bootId,birth,invocationId,controlGroup");
+  return Object.freeze(value as unknown as OutsideSupervisorRecord);
+}
+/**
+ * ONE terminal proof of the ORIGINAL installation unit, shared by the outside cleanup gate and the issuer's final closure
+ * (`runFundedInstallationSupervisor`); there is no second, weaker predicate. The expectation is DERIVED by the pure
+ * `deriveOriginalUnitExpectation` (funded vs live machine and boot, the issuer's bound record, the supervisor's self-record, the
+ * retained live leaf chain) from the raw bytes of the three records, read here through the private root-owned reader, BEFORE any
+ * observation. A terminal unit (empty current invocation/group, leaf gone, even a manager that already forgot it) is therefore only
+ * ever judged against the retained identity of the original admitted supervisor, never against the current manager state alone.
+ */
+async function proveOriginalUnitTerminalCustody(operationId: string, identity: Readonly<{ hostId: string; bootId: string }>, remaining: () => number): Promise<void> {
+  const unit = installationUnit(operationId), directory = join(operationRoot, operationId);
+  const expected = deriveOriginalUnitExpectation({ operationId, unit, controlGroup: originalUnitGroup(unit), hostId: identity.hostId, bootId: identity.bootId,
+    liveHostId: readFileSync("/etc/machine-id", "utf8").trim(), liveBootId: collectBootId() }, {
+    bound: readHostedPrivateBytes(join(directory, "original-supervisor.json"), 4096),
+    self: readHostedPrivateBytes(join(operationRoot, operationId + ".supervisor.json"), 4096),
+    chain: readHostedPrivateBytes(join(directory, "original-leaf-chain.json"), 4096) });
+  await proveOriginalUnitTerminal(expected, () => observeOriginalUnit(unit, remaining),
+    { remainingMs: remaining, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) });
+}
+/** The gate `cleanupOwnedRetentionContainer` REQUIRES: terminal custody of the original unit inside the cleanup window. */
+function outsideCleanupGate(operationId: string, identity: Readonly<{ hostId: string; bootId: string }>, remaining: () => number): OutsideCleanupGate {
+  return Object.freeze({ remainingMs: remaining, proveOriginalTerminal: () => proveOriginalUnitTerminalCustody(operationId, identity, remaining) });
+}
+/**
+ * Terminal-custody gate, then the exact-container cleanup. A failed attempt is contained here (the caller only learns `ok`) and
+ * retained as the FIRST evidence in `cleanup-held.json`; it consumes no terminal receipt, so the same helper can be re-run by the
+ * recovery entry once the unit is provably gone.
+ */
+async function runOutsideCleanup(operationId: string, identity: Readonly<{ hostId: string; bootId: string }>, remaining: () => number): Promise<OutsideCleanupResult> {
+  let result: OutsideCleanupResult;
+  try { result = await cleanupOwnedRetentionContainer(operationId, outsideCleanupGate(operationId, identity, remaining)); }
+  catch (error) { result = { ok: false, outcome: HostedRetentionCleanupOutcome.CleanupUnproved, containerId: null, reason: `cleanup_failed:${error instanceof Error ? error.message : "unknown"}` }; }
+  if (!result.ok) {
+    try { createReadonlyPrivateRecord(join(operationRoot, operationId, "cleanup-held.json"), Buffer.from(JSON.stringify({ operationId, outcome: result.outcome, containerId: result.containerId, reason: result.reason ?? null }) + "\n")); }
+    catch { /* The first retained cleanup-held record stays the evidence; the operation itself is still reported HELD by the caller. */ }
+  }
+  return result;
+}
+/** Bounded window of the recovery entry: a fresh finite budget, never the (ended) window of the original operation. */
+export const recoveryCleanupWindowMs = 120_000;
+/**
+ * RECOVERY of the outside cleanup owner when the issuer died (or its cleanup was left HELD). It re-runs the SAME helper
+ * (`cleanupOwnedRetentionContainer`, with the same terminal-custody gate) for an already funded Docker TEST operation. It funds
+ * nothing, starts nothing and replays nothing: it requires the operation record, its launcher-consumption record and the live
+ * boot/machine of the funded packet, and it acts only on the custody the admitted supervisor retained. A closing receipt that
+ * already exists closes idempotently without a Docker call; a live (not terminal) unit keeps it HELD.
+ */
+export async function recoverOwnedRetentionCleanup(operationId: string, windowMs = recoveryCleanupWindowMs): Promise<OutsideCleanupResult> {
+  assertHostedActivationOperator();
+  const bytes = readHostedPrivateBytes(packetPath(operationId), 64 * 1024); if (!bytes) denied();
+  const funded = JSON.parse(bytes.toString("utf8")) as FundedQualifiedPacket;
+  if (!hostedFundedInstallationVersions.includes(funded.schemaVersion) || funded.schemaVersion < 3 || funded.operationId !== operationId ||
+      !readHostedPrivateBytes(join(operationRoot, operationId, "operation.json"), 64 * 1024)?.equals(bytes) ||
+      !readHostedPrivateBytes(join(operationRoot, operationId, "launcher-consumed.json"), 4096)?.equals(Buffer.from(hash(bytes) + "\n"))) denied();
+  if (parseHostedRetentionRequest(funded.retention).launch.kind !== HostedRetentionLaunchKind.DockerTest) denied(); // nothing owned outside the unit
+  if (readFileSync("/etc/machine-id", "utf8").trim() !== funded.hostId || collectBootId() !== funded.bootId) denied();
+  if (!Number.isSafeInteger(windowMs) || windowMs < 1) denied();
+  const end = performance.now() + windowMs;
+  return runOutsideCleanup(operationId, { hostId: funded.hostId, bootId: funded.bootId }, () => { const ms = Math.floor(end - performance.now()); return ms < 1 ? denied() : ms; });
+}
 function retainCollectorFailure(operationId: string, error: unknown): void {
   const failed = ordinaryInstallationCollectorFailure(error);
   if (!failed) return;
@@ -326,12 +539,25 @@ function retainCollectorFailure(operationId: string, error: unknown): void {
   createReadonlyPrivateRecord(join(directory, "collector-stderr.log"), Buffer.from(failed.stderr));
   createReadonlyPrivateRecord(join(directory, "collector-failure.json"), Buffer.from(JSON.stringify({ operationId, args: failed.args, status: failed.status, signal: failed.signal }) + "\n"));
 }
+/**
+ * The OUTSIDE issuer's own record of the supervisor it launched (`original-supervisor.json`, written by `retainOperatorChild`
+ * after the issuer's fresh physical bind of unit, invocation, cgroup, argv, executable and birth). A successor commits only
+ * when this independent record agrees with the supervisor's own census; bounded wait, never an unbounded poll.
+ */
+async function outsideSupervisorRecord(packet: OrdinaryInstallationPacket): Promise<OutsideSupervisorRecord> {
+  for (;;) {
+    const record = readOutsideSupervisorRecord(packet.operationId);
+    if (record) return record;
+    if (budget(packet, false) < 500) denied();
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+}
 /** One original measured supervisor, all Store operations in this same PID. */
 export async function runOrdinaryInstallationSupervisor(operationId: string): Promise<number> {
   assertHostedActivationOperator();
   const bytes = readHostedPrivateBytes(packetPath(operationId), 64 * 1024); if (!bytes) denied();
   const funded = JSON.parse(bytes.toString("utf8")) as FundedQualifiedPacket;
-  if (funded.schemaVersion !== 2 || !readHostedPrivateBytes(join(operationRoot, operationId, "operation.json"), 64 * 1024)?.equals(bytes) ||
+  if (!hostedFundedInstallationVersions.includes(funded.schemaVersion) || !readHostedPrivateBytes(join(operationRoot, operationId, "operation.json"), 64 * 1024)?.equals(bytes) ||
       !readHostedPrivateBytes(join(operationRoot, operationId, "launcher-consumed.json"), 4096)?.equals(Buffer.from(hash(bytes) + "\n"))) denied();
   const packet = checkedPacket(funded); admitInstalledPair(packet);
   if (!readHostedPrivateBytes(packet.collectorProfile.path, 64 * 1024)?.equals(readHostedPrivateBytes(funded.preparedCollectorProfile.path, 64 * 1024)!)) denied();
@@ -350,11 +576,36 @@ export async function runOrdinaryInstallationSupervisor(operationId: string): Pr
     runtimeLaunch: packet.creator.launch, systemBusInfrastructure: packet.systemBusInfrastructure, collectorProfile: packet.collectorProfile }); }
   catch (error) { retainCollectorFailure(operationId, error); throw error; }
   parseHostedInventoryV5(inventory); readSystemBusInfrastructureField(inventory as unknown as Record<string, unknown>); readFdCollectorProfileField(inventory as unknown as Record<string, unknown>);
-  budget(packet, false); publishReadonlyInventory(Buffer.from(JSON.stringify(inventory) + "\n"));
+  const inventoryBytes = Buffer.from(JSON.stringify(inventory) + "\n");
+  // The installation-successor discriminator (funded schemaVersion 4) keeps the predecessor's create-once fixed inventory; the
+  // candidate census is staged and selected by the successor transaction below instead of being published over it.
+  const successor = funded.schemaVersion === 4 ? parseHostedSuccessorRequest(funded.successor) : undefined;
+  budget(packet, false); if (!successor) publishReadonlyInventory(inventoryBytes);
   const store = new HostedInstallationActivationStore();
   let sourceExitCode = 70;
+  // The retention discriminator (funded schemaVersion 3 or 4). It is parsed closed again here, from the funded bytes that the
+  // launcher-consumed record already pins, so only a request that was funded with the operation can select this branch.
+  const retention = funded.schemaVersion >= 3 ? parseHostedRetentionRequest(funded.retention) : undefined;
   try {
-    collectOriginal(packet, false, () => store.install()); collectOriginal(packet, false, () => store.enrollOrdinary(packet.creator.creatorId)); collectOriginal(packet, false, () => store.resumeOrdinary());
+    if (successor) {
+      const outside = await outsideSupervisorRecord(packet);
+      collectOriginal(packet, false, () => commitInstallationSuccessor({ store, operationId, request: successor, candidateBytes: inventoryBytes,
+        runtime: { runtimeDirectory: packet.runtimeDirectory, runtimeSha: packet.runtimeSha, runtimeManifestSha256: packet.runtimeManifestSha256 }, outside }));
+    } else collectOriginal(packet, false, () => store.install());
+    if (retention) {
+      // This is the admitted supervisor: no creator enrollment, no resume, no hosted creator launch, no origin birth. The
+      // activation stays Closed; the role runs the finite retention operation and nothing else.
+      const outcome = await runAdmittedRetentionOperation({ operationId, hostId: packet.hostId, bootId: packet.bootId, issuedEpochMs: packet.issuedEpochMs,
+        workEndEpochMs: packet.workEndEpochMs, cleanupEndEpochMs: packet.cleanupEndEpochMs, issuedMonotonicNs: packet.issuedMonotonicNs, node: packet.node,
+        bootstrap: packet.bootstrap, runtimeDirectory: packet.runtimeDirectory, runtimeSha: packet.runtimeSha, runtimeManifestSha256: packet.runtimeManifestSha256 }, retention);
+      sourceExitCode = outcome.ok ? 0 : 1;
+      budget(packet, true);
+      const activation = collectOriginal(packet, true, () => readHostedInstallationActivation().activation);
+      if (activation.phase !== HostedActivationPhase.Closed) denied();
+      createReadonlyPrivateRecord(join(operationRoot, operationId + ".closed.json"), Buffer.from(JSON.stringify({ operationId, sourceExitCode, generation: activation.generation }) + "\n"));
+      return sourceExitCode;
+    }
+    collectOriginal(packet, false, () => store.enrollOrdinary(packet.creator.creatorId)); collectOriginal(packet, false, () => store.resumeOrdinary());
     budget(packet, false);
     sourceExitCode = hostedForegroundExitCode(await runHostedRuntimeForeground(packet.creator.launch.command, packet.creator.launch.args, packet.creator.launch.cwd, {}));
     if (sourceExitCode !== 0) denied();
@@ -365,7 +616,8 @@ export async function runOrdinaryInstallationSupervisor(operationId: string): Pr
   } catch (error) {
     retainCollectorFailure(operationId, error);
     createReadonlyPrivateRecord(join(operationRoot, operationId + ".held.json"), Buffer.from(JSON.stringify({ operationId, sourceExitCode, error: error instanceof Error ? error.message : "held" }) + "\n"));
-    try { store.closeOrdinaryRuntimeLaunch(); } catch { /* Original evidence remains held. */ }
+    // The retention branch never opened an ordinary runtime launch, so there is nothing to close for it.
+    if (!retention) try { store.closeOrdinaryRuntimeLaunch(); } catch { /* Original evidence remains held. */ }
     throw error;
   }
 }
@@ -373,6 +625,15 @@ if (process.argv[1] === bootstrapPath) {
   if (process.argv.length !== 4 && process.argv.length !== 5) denied();
   if (process.argv.length === 5 && process.argv[2] === "install" && process.argv[3] === "--qualified-pair") {
     void runQualifiedPairInstallationOperator(process.argv[4]!).then(result => { process.exitCode = result.sourceExitCode; }, () => { process.exitCode = 70; });
+  } else if (process.argv.length === 4 && process.argv[2] === "--recover-cleanup") {
+    // Root operator recovery of the outside cleanup owner of ONE already funded Docker TEST operation (no funding, no replay).
+    void recoverOwnedRetentionCleanup(process.argv[3]!).then(result => {
+      process.stdout.write(JSON.stringify({ ok: result.ok, outcome: result.outcome, containerId: result.containerId, reason: result.reason ?? null }) + "\n");
+      process.exitCode = result.ok ? 0 : 70;
+    }, (error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : "hosted_ordinary_installation_held"}\n`);
+      process.exitCode = 70;
+    });
   } else {
     if (process.argv.length !== 4 || process.argv[2] !== "--operation") denied();
     void runOrdinaryInstallationSupervisor(process.argv[3]!).then(code => { process.exitCode = code; }, () => { process.exitCode = 70; });

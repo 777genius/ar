@@ -380,6 +380,7 @@ jobs:
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            src/worker-codex/tests/codex-goal-mcp-project-retained-nonqualified.test.ts \
             src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json

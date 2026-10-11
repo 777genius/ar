@@ -14,6 +14,7 @@ assert.equal(report.numFailedTests, 0);
 assert.equal(report.numPendingTests, 0);
 const expectedFiles = new Set([
   resolve('src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts'),
+  resolve('src/worker-codex/tests/codex-goal-mcp-project-retained-nonqualified.test.ts'),
   resolve('src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts'),
 ]);
 assert(Array.isArray(report.testResults) && report.testResults.length === expectedFiles.size);

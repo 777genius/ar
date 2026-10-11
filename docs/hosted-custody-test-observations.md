@@ -54,6 +54,8 @@ including `populated 0\n populated 1\n`. This can refuse malformed legacy
 observations that the old filter ignored.
 
 The private/static boundary classification and Consumer Module Standard
-reference remain `6b31f20fe3e5fb8324812aa2ee907905751cde71` (complete
-SHA-256 `d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f`).
+reference is now `d6127e2d3f499b91b220a222fc3672d29dff1ab2` (complete
+SHA-256 `49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`);
+it was `6b31f20fe3e5fb8324812aa2ee907905751cde71` (`d5bb71e5...`) and the delta is
+recorded in `retained-nonqualified-attempt.md`. The classification is unchanged.
 There is no Assembly adoption pin.

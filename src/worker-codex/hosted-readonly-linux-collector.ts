@@ -64,6 +64,27 @@ export function collectFutureCreatorShow(name: string): string {
   if (name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name)) invalid();
   return systemctl(["show", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
 }
+/**
+ * Terminal-tolerant manager view of the ORIGINAL installation unit for the outside cleanup owner. systemd reports an EMPTY
+ * `ControlGroup` and `InvocationID` for a normally terminated unit, which the exact readers above refuse by design. `LoadState`
+ * is returned so an unknown unit can never be read as terminal; the classification stays entirely with the caller.
+ */
+export function collectOriginalUnitTerminalShow(name: string): Record<string, string> {
+  unit(name);
+  const keys = ["Id", "LoadState", "ActiveState", "Job", "ControlGroup", "MainPID", "InvocationID"];
+  const rows = systemctl(["show", `--property=${keys.join(",")}`, "--", name]).trimEnd().split("\n");
+  const values = new Map<string, string>();
+  for (const row of rows) {
+    const at = row.indexOf("=");
+    if (at < 1 || values.has(row.slice(0, at))) invalid();
+    values.set(row.slice(0, at), row.slice(at + 1));
+  }
+  const group = values.get("ControlGroup") ?? invalid();
+  if (rows.length !== keys.length || keys.some(key => !values.has(key)) || values.get("Id") !== name || !/^[0-9]{1,10}$/.test(values.get("MainPID")!) ||
+      !/^(?:[a-f0-9]{32})?$/.test(values.get("InvocationID")!) || !/^[0-9]*$/.test(values.get("Job")!) ||
+      (group !== "" && (!/^(?:\/[A-Za-z0-9_.@+-]+)+$/.test(group) || group.split("/").some(part => part === "." || part === "..")))) invalid();
+  return Object.fromEntries(values);
+}
 export function collectJobs(): string {
   return systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]);
 }

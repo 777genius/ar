@@ -91,13 +91,16 @@ process wait belongs under it.
 Current canonical Get Modular Consumer Module Standard evidence is the supplied
 complete document bytes for `agent-teams-ai/get-modular`,
 `docs/architecture/common-assembly.md#consumer-module-standard`, commit
-`6b31f20fe3e5fb8324812aa2ee907905751cde71`, complete-document SHA-256
-`d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f`.
-The retained older bytes at `03a7df64bc5e9939f7b51694a80a7f3d61453f98`
-hash to `ea54578ebe69fc410bf973b6112dcefc4ad7c163e563e0ee307cd7b5f8b8723d`.
-The newer document updates Assembly test paths, records a limited Agent Runtime
-adoption and clarifies cleanup ownership and post-construction reference
-lifetime. None establishes an accepted Assembly adoption scope for this
+`d6127e2d3f499b91b220a222fc3672d29dff1ab2`, complete-document SHA-256
+`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`.
+The retained previous bytes at `6b31f20fe3e5fb8324812aa2ee907905751cde71` hash to
+`d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f` and the
+oldest retained bytes at `03a7df64bc5e9939f7b51694a80a7f3d61453f98` hash to
+`ea54578ebe69fc410bf973b6112dcefc4ad7c163e563e0ee307cd7b5f8b8723d`.
+The current document adds the optional lifecycle candidate, module resource
+scopes, dynamic instances, the authoring builder with contract descriptors,
+identity rules and the conformance kit (ADR-0029 to ADR-0033); the exact delta
+from `6b31` is recorded in `retained-nonqualified-attempt.md`. None establishes an accepted Assembly adoption scope for this
 subscription-runtime consumer. This feature uses existing typed/static
 composition and does not change ADR bytes or claim consumer adoption.
 This reviewed reference is a classification identity, not an accepted consumer

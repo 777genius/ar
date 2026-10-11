@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { AccessBoundary, ReviewDecisionStatus, createAccessPolicyService, detectSecretLikeContent, recordTerminalOutputDecision,
   type TerminalOutputDecision } from "@vioxen/subscription-runtime/worker-core";
@@ -13,14 +13,13 @@ import { codexGoalJobManifestPath } from "./codex-goal-jobs";
 import { collectCodexGoalStatus, resolveCodexGoalWorkerLiveness } from "./codex-goal-ops";
 import { codexGoalStatusInputFromLaunch } from "./codex-goal-mcp-status-input";
 import { LocalConsumedOutputLedgerSource } from "./application/project-control/codex-goal-consumed-output-ledger-io";
+import { assertNoConflictingTerminalDisposition, terminalLedgerItemPath } from "./application/project-control/codex-goal-terminal-disposition-guard";
 import { assertProjectControlCreateManifestPaths, projectControlConsumedOutputEvidenceRoot } from "./codex-goal-mcp-project-scope";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "./codex-goal-project-workspace-lock";
 import { localReviewedWorkerOutputDeps, reviewedWorkerOutputRoot,
   assertReviewedWorkerOutputStillMatchesLocked } from "./reviewed-worker-output";
-import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
 import { z } from "zod";
+import { permitAbsolutePath, permitHash, readRootOwnedPermitBytes, rootPermitSha256 } from "./codex-goal-mcp-project-control-root-permit";
 import { mcpJson } from "./codex-goal-mcp-response";
 
 /** Brokered root-admin adapter into existing custody, workspace and terminal ports. */
@@ -83,18 +82,11 @@ export async function projectControlArchiveReviewedOutput(args: ReviewedArchiveM
       if (archiveHash(await read(join(permit.archivePath, file))) !== hash) throw new Error("reviewed_archive_backup_hash_mismatch");
     }
   };
-  const ledgerPath = join(ledgerRoot, "items", `${permit.workerJobId.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`);
+  const ledgerPath = terminalLedgerItemPath(ledgerRoot, permit.workerJobId);
   const ledgerSource = new LocalConsumedOutputLedgerSource(scope.consumedOutputEvidenceRoots!);
   const assertNoOtherDisposition = async () => {
     await assertDirectories();
-    const loaded = await ledgerSource.readEntries({ roots: [ledgerRoot] });
-    const safeJobId = permit.workerJobId.replace(/[^a-zA-Z0-9._-]/g, "_");
-    if (loaded.failures.some(failure => failure.subject === ledgerRoot || failure.subject === dirname(ledgerPath) ||
-      basename(failure.subject) === `${safeJobId}.json` || basename(failure.subject).startsWith(`${safeJobId}--`)) || loaded.entries.some(entry =>
-      typeof entry.value === "object" && entry.value !== null && "jobId" in entry.value &&
-      entry.value.jobId === permit.workerJobId && entry.ledgerPath !== ledgerPath)) {
-      throw new Error("consumed_output_ledger_terminal_conflict");
-    }
+    await assertNoConflictingTerminalDisposition({ source: ledgerSource, ledgerRoot, jobId: permit.workerJobId });
     await assertDirectories();
   };
   let decision: TerminalOutputDecision = {
@@ -309,8 +301,8 @@ export async function projectControlArchiveReviewedOutput(args: ReviewedArchiveM
     } });
 }
 
-const hash = z.string().regex(/^[a-f0-9]{64}$/);
-const path = z.string().refine(value => isAbsolute(value) && resolve(value) === value && !value.includes("\\"));
+const hash = permitHash;
+const path = permitAbsolutePath;
 const text = z.string().min(1).max(1024).refine(value => value.trim() === value && !/[\x00-\x1f]/.test(value));
 const identity = z.object({ path, device: z.number().int().nonnegative(), inode: z.number().int().positive() }).strict();
 const reviewedArchiveProgressSchema = z.object({
@@ -342,7 +334,7 @@ export type ReviewedArchiveMcpArgs = {
   registryRootDir?: string; cwd?: string; controllerJobId: string; reviewedOutputId: string;
   permitFile: string; expectedPermitSha256: string; confirmArchive?: boolean | undefined;
 };
-export const archiveHash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+export const archiveHash = rootPermitSha256;
 export const archiveBytes = (value: unknown) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 
 export const reviewedArchiveReceiptSchema = z.object({
@@ -351,25 +343,12 @@ export const reviewedArchiveReceiptSchema = z.object({
 }).strict();
 
 export async function readReviewedArchivePermit(args: ReviewedArchiveMcpArgs) {
-  if (process.geteuid?.() !== 0) throw new Error("reviewed_archive_root_required");
-  path.parse(args.permitFile);
-  hash.parse(args.expectedPermitSha256);
-  await new LocalProjectControlEvidenceCustody().canonicalDirectory(dirname(args.permitFile));
-  const handle = await open(args.permitFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || before.uid !== 0n || (before.mode & 0o777n) !== 0o600n || before.size > 128n * 1024n) {
-      throw new Error("reviewed_archive_permit_security_invalid");
-    }
-    const bytes = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
-    if (BigInt(bytes.length) !== before.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs ||
-        archiveHash(bytes) !== args.expectedPermitSha256) throw new Error("reviewed_archive_permit_hash_mismatch");
-    const permit = reviewedArchivePermitSchema.parse(JSON.parse(bytes.toString("utf8")));
-    if (permit.controllerJobId !== args.controllerJobId || permit.reviewedOutputId !== args.reviewedOutputId) {
-      throw new Error("reviewed_archive_permit_caller_mismatch");
-    }
-    if (detectSecretLikeContent(bytes)) throw new Error("reviewed_archive_permit_secret_like_content");
-    return { permit, bytes };
-  } finally { await handle.close(); }
+  const bytes = await readRootOwnedPermitBytes({ permitFile: args.permitFile,
+    expectedPermitSha256: args.expectedPermitSha256, errorPrefix: "reviewed_archive" });
+  const permit = reviewedArchivePermitSchema.parse(JSON.parse(bytes.toString("utf8")));
+  if (permit.controllerJobId !== args.controllerJobId || permit.reviewedOutputId !== args.reviewedOutputId) {
+    throw new Error("reviewed_archive_permit_caller_mismatch");
+  }
+  if (detectSecretLikeContent(bytes)) throw new Error("reviewed_archive_permit_secret_like_content");
+  return { permit, bytes };
 }

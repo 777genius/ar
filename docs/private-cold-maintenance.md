@@ -6,8 +6,11 @@ resumability. The private helpers are fixed dependencies within the
 `worker-codex` cold-maintenance feature. They create no Core/Assembly handle or
 new consumer adoption claim. The canonical Get Modular document remains
 `docs/architecture/common-assembly.md#consumer-module-standard` at
-`6b31f20fe3e5fb8324812aa2ee907905751cde71`, SHA-256
-`d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f`.
+`d6127e2d3f499b91b220a222fc3672d29dff1ab2`, SHA-256
+`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`
+(the previously reviewed `6b31f20fe3e5fb8324812aa2ee907905751cde71` /
+`d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f` and the exact
+delta are recorded in `retained-nonqualified-attempt.md`; adoption stays pending).
 
 `private-cold-source-observation.ts` reads actual kernel boot, mount and sysfs
 block-device state. It requires an exact source mount, a read-only mount and

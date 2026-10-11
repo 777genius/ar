@@ -13,6 +13,7 @@ import { projectControlAdoptPublishedIntegrationCommit,
 import { projectControlReconcilePublishedReviewedOutput,
   type PublishedReconciliationMcpArgs } from "./codex-goal-mcp-project-control-published-reconciliation";
 import { projectControlArchiveReviewedOutput } from "./codex-goal-mcp-project-control-reviewed-archive";
+import { projectControlRetainNonqualifiedAttempt } from "./codex-goal-mcp-project-control-retained-nonqualified";
 import { projectControlLinkLegacyIntegrationTransport,
   type LegacyTransportLinkMcpArgs } from
   "./codex-goal-mcp-project-control-legacy-transport-link";
@@ -41,6 +42,13 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
       reviewedOutputId: z.string().regex(/^[a-f0-9]{64}$/), permitFile: z.string().min(1),
       expectedPermitSha256: z.string().regex(/^[a-f0-9]{64}$/), confirmArchive: z.boolean().optional() },
   }, async (args) => withMcpErrors(async () => projectControlArchiveReviewedOutput(args)));
+  server.registerTool("codex_goal_project_retain_nonqualified_attempt", {
+    title: "Retain Nonqualified Original Attempt",
+    description: "Root admin custody retention of a stopped original attempt whose terminal result is absent or genuinely failed. Preview by default and hash-bound confirm; records a retained_nonqualified disposition only. Creates no approval, stop, result, no-output or qualification fact and authorizes no replay.",
+    inputSchema: { ...jobRegistryInputSchema(), controllerJobId: z.string().min(1), workerJobId: z.string().min(1),
+      permitFile: z.string().min(1), expectedPermitSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      expectedPlanSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), confirmRetention: z.boolean().optional() },
+  }, async (args) => withMcpErrors(async () => projectControlRetainNonqualifiedAttempt(args)));
   server.registerTool("codex_goal_project_reconcile_published_reviewed_output", {
     title: "Reconcile Incorporated Reviewed Publication",
     description: "Root admin ledger-only reconciliation of approved frozen output incorporated in an authenticated historical canonical publication. Exact publication CI, review tree and immutable permit required; creates no integration attempt or Git write.",

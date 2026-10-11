@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseHostedInstallation, type HostedInstallation } from "../worker-core/hosted-custody/domain/hosted-installation-activation";
 import type { DependencyManifestBlobStore } from "../worker-core/dependency-environment/ports/dependency-manifest-blob-store";
 import { LocalDependencyManifestBlobStore } from "../store-local-file/dependency-environment/local-dependency-manifest-blob-store";
-import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedActivationFence, assertHostedActivationOperator, selectedHostedInstallationRecordName, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot as policyRoot } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
@@ -125,7 +125,7 @@ function outsideGrants(scratch: Pin, installation: HostedInstallation): void {
 function installationFacts(installation: HostedInstallation): void {
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const stage = readHostedPrivateBytes("/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json", 4096);
-  const inventoryBytes = readHostedPrivateBytes(join(policyRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
+  const inventoryBytes = readHostedPrivateBytes(join(policyRoot, selectedHostedInstallationRecordName("readonly-inventory.json")), hostedInventoryMaximumBytes);
   if (!stage || !inventoryBytes) fail();
   const value = decode(stage); fields(value, "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion");
   const inventory = readHostedReadonlyHostInventory();
@@ -211,7 +211,7 @@ export async function openHostedDependencyManifestPlacement(): Promise<Dependenc
   if (!selected || !bytes) fail(HostedManifestPlacementFailure.Unsupported);
   const value = decode(bytes); fields(value, "blobs,bootId,family,installation,limitsRevision,policySha256,scratchRoot,version");
   pin(value.scratchRoot); pin(value.family); pin(value.blobs);
-  const installation = parseHostedInstallation(value.installation), installed = readHostedPrivateBytes(join(policyRoot, "host-installation.json"), 4096);
+  const installation = parseHostedInstallation(value.installation), installed = readHostedPrivateBytes(join(policyRoot, selectedHostedInstallationRecordName("host-installation.json")), 4096);
   if (!installed || value.version !== 1 || !encode(decode(installed)).equals(encode(installation)) || value.bootId !== selected.value.bootId ||
     value.bootId !== readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || value.policySha256 !== hash(selected.bytes) ||
     value.limitsRevision !== selected.value.limitsRevision || !encode(value.scratchRoot).equals(encode(selected.value.scratchRoot)) ||
@@ -224,7 +224,7 @@ export async function openHostedDependencyManifestPlacement(): Promise<Dependenc
   const assertPlacement = () => {
     assertHostedActivationOperator(); installationFacts(installation);
     if (!readHostedPrivateBytes(placementPath, 16384)?.equals(bytes) || !policy()?.bytes.equals(selected.bytes) ||
-      !readHostedPrivateBytes(join(policyRoot, "host-installation.json"), 4096)?.equals(installed)) fail(HostedManifestPlacementFailure.Drift);
+      !readHostedPrivateBytes(join(policyRoot, selectedHostedInstallationRecordName("host-installation.json")), 4096)?.equals(installed)) fail(HostedManifestPlacementFailure.Drift);
     outsideGrants(record.scratchRoot, installation);
     pins.forEach((p, i) => {
       // Closing before the final origin read preserves its descriptor boundary.
