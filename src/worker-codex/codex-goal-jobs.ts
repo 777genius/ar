@@ -1,3 +1,5 @@
+import { deriveRuntimeStorageRoots, deriveRuntimeJobLayout } from "@vioxen/subscription-runtime/core";
+import { MANAGED_MARKER_ENV, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV } from "./managed-job-layout";
 import { assertCodexGoalStorageBindingUnchanged, assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./application/codex-goal-storage-data";
 import { optionalWorkerMode } from "./project-control-worker-mode";
 import { childConfigFromRecord } from "./child-execution-confinement";
@@ -93,6 +95,10 @@ export type CodexGoalJobManifest = {
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
+  readonly encryptionKeyPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
   readonly workspacePath: string;
   readonly promptPath: string;
   readonly codexGoalObjective?: string;
@@ -162,6 +168,8 @@ export type CodexGoalJobSummary = {
 };
 
 export type CodexGoalJobRegistryInput = {
+  readonly storageRootDir?: string;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -178,10 +186,18 @@ export function defaultCodexGoalJobRoot(jobId: string): string {
 export function resolveCodexGoalJobRegistryRoot(
   input: CodexGoalJobRegistryInput = {},
 ): string {
-  return resolvePath(
-    input.cwd ?? process.cwd(),
-    input.registryRootDir ?? defaultCodexGoalJobRegistryRoot(),
-  );
+  const cwd = input.cwd ?? process.cwd();
+  if (input.storageRootDir === "") throw new Error("Invalid runtime storageRootDir");
+  const roots = input.storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(resolvePath(cwd, input.storageRootDir));
+  const env = input.sourceEnv ?? {};
+  if (env[MANAGED_MARKER_ENV] !== undefined) {
+    if (env[MANAGED_MARKER_ENV] !== "1" || !env[MANAGED_JOB_ROOT_ENV] || !env[MANAGED_JOB_ID_ENV]) throw new Error("Managed host requires root-owned launcher");
+    const layout = deriveRuntimeJobLayout(env[MANAGED_JOB_ROOT_ENV]!, env[MANAGED_JOB_ID_ENV]!);
+    const fixed = join(layout.state, "registry");
+    if (input.registryRootDir !== undefined && resolvePath(cwd, input.registryRootDir) !== fixed) throw new Error("Managed writable override rejected: registryRootDir");
+    return fixed;
+  }
+  return resolvePath(cwd, input.registryRootDir ?? (roots ? join(roots.stateRootDir, "codex-goal-jobs") : defaultCodexGoalJobRegistryRoot()));
 }
 
 export function codexGoalJobManifestPath(input: {
@@ -447,6 +463,10 @@ export function codexGoalJobToArgs(
     durableHandoffRootDir: manifest.durableHandoffRootDir,
     authRootDir: manifest.authRootDir,
     stateRootDir: manifest.stateRootDir,
+    agentTempRootDir: manifest.agentTempRootDir,
+    runtimeEventsPath: manifest.runtimeEventsPath,
+    encryptionKeyPath: manifest.encryptionKeyPath,
+    runtimeHomeRootDir: manifest.runtimeHomeRootDir,
     workspacePath: manifest.workspacePath,
     promptPath: manifest.promptPath,
     codexGoalObjective: manifest.codexGoalObjective,
@@ -587,6 +607,10 @@ function parseCodexGoalJobManifestValue(
     ...(optionalString(value.stateRootDir) === undefined
       ? {}
       : { stateRootDir: optionalString(value.stateRootDir) as string }),
+    ...(optionalString(value.runtimeHomeRootDir) === undefined ? {} : { runtimeHomeRootDir: optionalString(value.runtimeHomeRootDir) as string }),
+    ...(optionalString(value.encryptionKeyPath) === undefined ? {} : { encryptionKeyPath: optionalString(value.encryptionKeyPath) as string }),
+    ...(optionalString(value.runtimeEventsPath) === undefined ? {} : { runtimeEventsPath: optionalString(value.runtimeEventsPath) as string }),
+    ...(optionalString(value.agentTempRootDir) === undefined ? {} : { agentTempRootDir: optionalString(value.agentTempRootDir) as string }),
     workspacePath: requiredString(value.workspacePath, "workspacePath"),
     promptPath: requiredString(value.promptPath, "promptPath"),
     ...(optionalString(value.codexGoalObjective) === undefined

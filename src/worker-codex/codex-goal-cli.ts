@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./application/codex-goal-storage-paths";
+import { resolveCodexGoalJobRegistryRoot } from "./codex-goal-jobs";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { enterScratchPrivateMountNamespace, isScratchHelpInvocation } from "./scratch-mount-namespace";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
@@ -128,6 +130,9 @@ type StatusCommand = {
   readonly workspacePath?: string;
   readonly tmuxSession?: string;
   readonly progressPath?: string;
+  readonly resultPath?: string;
+  readonly logPath?: string;
+  readonly runtimeEventsPath?: string;
   readonly format: OutputFormat;
 };
 
@@ -159,11 +164,17 @@ type McpToolCommand = {
 
 type McpResourcesCommand = {
   readonly kind: "mcp-resources";
+  readonly storageRootDir?: string;
+  readonly registryRootDir?: string;
+  readonly sourceEnv: Readonly<Record<string, string | undefined>>;
   readonly format: OutputFormat;
 };
 
 type McpResourceCommand = {
   readonly kind: "mcp-resource";
+  readonly storageRootDir?: string;
+  readonly registryRootDir?: string;
+  readonly sourceEnv: Readonly<Record<string, string | undefined>>;
   readonly uri: string;
   readonly format: OutputFormat;
 };
@@ -266,13 +277,13 @@ export async function runCodexGoalCli(
       return 0;
     }
     if (command.kind === "mcp-resources") {
-      writeJsonOrText(command.format, await listCodexGoalMcpResources(), io);
+      writeJsonOrText(command.format, await listCodexGoalMcpResources(command), io);
       return 0;
     }
     if (command.kind === "mcp-resource") {
       writeJsonOrText(
         command.format,
-        await readCodexGoalMcpResource({ uri: command.uri }),
+        await readCodexGoalMcpResource(command),
         io,
       );
       return 0;
@@ -547,26 +558,62 @@ function cliLaunchInput(command: RunCommand) {
   return buildCodexGoalCliLaunchInput(command, [execPath, currentCliPath()]);
 }
 
+function cliGoalPaths(values: ParsedFlags, env: Readonly<Record<string, string | undefined>>, cwd: string, taskId: string) {
+  if (values.flags.has("--storage-root")) throw new Error("--storage-root requires a value");
+  const selected = (flagName: string, names: readonly string[] = []) => {
+    const value = option(values, env, flagName, names);
+    return value === undefined ? undefined : resolvePath(cwd, value);
+  };
+  return resolveCodexGoalPaths({ taskId,
+    jobId: option(values, env, "--job-id", ["SUBSCRIPTION_RUNTIME_JOB_ID"]),
+    storageRootDir: resolveCodexGoalStorageRoot(option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]), cwd),
+    jobRootDir: selected("--job-root", ["SUBSCRIPTION_RUNTIME_JOB_ROOT"]),
+    workspacePath: selected("--workspace", ["SUBSCRIPTION_RUNTIME_WORKSPACE_PATH", "MEMO_STACK_GOAL_WORKSPACE_PATH"]),
+    stateRootDir: selected("--state-root"), runtimeHomeRootDir: selected("--runtime-home-root"),
+    encryptionKeyPath: selected("--encryption-key-path"),
+    durableHandoffRootDir: selected("--durable-handoff-root", ["SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT"]),
+    runtimeEventsPath: selected("--runtime-events"), agentTempRootDir: selected("--agent-temp-root"),
+    outputPath: selected("--output"), progressPath: selected("--progress"), logPath: selected("--log"), sourceEnv: env,
+  });
+}
+
+function cliInspectionPaths(values: ParsedFlags, env: Readonly<Record<string, string | undefined>>, cwd: string, taskId: string | undefined) {
+  if (values.flags.has("--storage-root")) throw new Error("--storage-root requires a value");
+  const root = option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]);
+  if (root === undefined) return undefined;
+  resolveCodexGoalStorageRoot(root, cwd);
+  if (taskId === undefined) return undefined;
+  const workspace = option(values, env, "--workspace", ["SUBSCRIPTION_RUNTIME_WORKSPACE_PATH", "MEMO_STACK_GOAL_WORKSPACE_PATH"]);
+  const jobRoot = option(values, env, "--job-root", ["SUBSCRIPTION_RUNTIME_JOB_ROOT"]);
+  const inspectionValues = workspace !== undefined || jobRoot === undefined ? values : {
+    ...values, values: new Map([...values.values, ["--workspace", jobRoot]]),
+  };
+  return cliGoalPaths(inspectionValues, env, cwd, taskId);
+}
+
 function parseRun(
   argv: readonly string[],
   io: CodexGoalCliIo,
 ): RunCommand {
   const env = io.env();
   const values = parseFlags(argv);
-  const jobRootDir = requiredOption(values, env, "--job-root", [
+  const jobRootDir = option(values, env, "--job-root", [
     "SUBSCRIPTION_RUNTIME_JOB_ROOT",
   ]);
   const taskId = requiredOption(values, env, "--task-id", [
     "SUBSCRIPTION_RUNTIME_TASK_ID",
     "MEMO_STACK_GOAL_TASK_ID",
   ]);
-  const logPath = option(values, env, "--log", []) ??
-    join(jobRootDir, `${taskId}.log`);
-  const config = runConfigFromFlags(values, env, io.cwd(), jobRootDir, taskId);
-  const registryRootDir = option(values, env, "--registry-root", [
+  const paths = cliGoalPaths(values, env, io.cwd(), taskId);
+  const config = runConfigFromFlags(values, env, io.cwd(), jobRootDir, taskId, paths);
+  const logPath = paths.logPath ?? join(config.jobRootDir, `${taskId}.log`);
+  const explicitRegistry = option(values, env, "--registry-root", [
     "SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT",
     "CODEX_GOAL_REGISTRY_ROOT",
   ]);
+  const registryRootDir = explicitRegistry !== undefined || config.storageRootDir !== undefined || env.SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH !== undefined
+    ? resolveCodexGoalJobRegistryRoot({ registryRootDir: explicitRegistry, storageRootDir: config.storageRootDir, sourceEnv: env, cwd: io.cwd() })
+    : undefined;
   const registryMetadata = registryMetadataFromFlags(values);
   const lifecycle = parseHostedGoalLifecycleRequest(values);
   return {
@@ -594,7 +641,7 @@ function parseDoctor(
 ): DoctorCommand {
   const env = io.env();
   const values = parseFlags(argv);
-  const jobRootDir = requiredOption(values, env, "--job-root", [
+  const jobRootDir = option(values, env, "--job-root", [
     "SUBSCRIPTION_RUNTIME_JOB_ROOT",
   ]);
   const taskId = requiredOption(values, env, "--task-id", [
@@ -629,8 +676,12 @@ function parseStatus(
   ]);
   const tmuxSession = option(values, env, "--tmux-session", []);
   const progressPath = option(values, env, "--progress", []);
+  const rootPaths = cliInspectionPaths(values, env, io.cwd(), taskId);
   return {
     kind: "status",
+    ...(rootPaths ? { jobRootDir: rootPaths.jobRootDir, workspacePath: rootPaths.workspacePath,
+      resultPath: rootPaths.outputPath, progressPath: rootPaths.progressPath, logPath: rootPaths.logPath,
+      runtimeEventsPath: rootPaths.runtimeEventsPath } : {}),
     ...(jobRootDir ? { jobRootDir } : {}),
     ...(taskId ? { taskId } : {}),
     ...(workspacePath ? { workspacePath } : {}),
@@ -653,7 +704,8 @@ function parseTail(
   const jobRoot = option(values, env, "--job-root", [
     "SUBSCRIPTION_RUNTIME_JOB_ROOT",
   ]);
-  const logPath = option(values, env, "--log", []) ??
+  const rootPaths = cliInspectionPaths(values, env, io.cwd(), taskId);
+  const logPath = option(values, env, "--log", []) ?? rootPaths?.logPath ??
     (taskId && jobRoot ? join(jobRoot, `${taskId}.log`) : undefined);
   if (!logPath) throw new Error("--log or --job-root with --task-id is required");
   return {
@@ -689,6 +741,15 @@ function parseMcpTool(
   };
 }
 
+function resourceStorageOptions(values: ParsedFlags, io: CodexGoalCliIo) {
+  const env = { ...io.env() };
+  if (values.flags.has("--storage-root")) throw new Error("--storage-root requires a value");
+  const root = option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]);
+  const registry = option(values, env, "--registry-root", ["SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT", "CODEX_GOAL_REGISTRY_ROOT"]);
+  const storageRootDir = resolveCodexGoalStorageRoot(root, io.cwd());
+  return { storageRootDir, registryRootDir: registry === undefined ? undefined : resolvePath(io.cwd(), registry), sourceEnv: env };
+}
+
 function parseMcpResources(
   argv: readonly string[],
   io: CodexGoalCliIo,
@@ -696,6 +757,7 @@ function parseMcpResources(
   const values = parseFlags(argv);
   return {
     kind: "mcp-resources",
+    ...resourceStorageOptions(values, io),
     format: outputFormatFromFlags(values, io.env()),
   };
 }
@@ -709,6 +771,7 @@ function parseMcpResource(
   const values = parseFlags(argv.slice(1));
   return {
     kind: "mcp-resource",
+    ...resourceStorageOptions(values, io),
     uri,
     format: outputFormatFromFlags(values, io.env()),
   };
@@ -757,10 +820,14 @@ function parseControllerSupervise(
 ): ControllerSuperviseCommand {
   const values = parseFlags(argv);
   const env = io.env();
-  const registryRootDir = option(values, env, "--registry-root", [
+  const explicitRegistry = option(values, env, "--registry-root", [
     "SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT",
     "CODEX_GOAL_REGISTRY_ROOT",
   ]);
+  const registryRootDir = resolveCodexGoalJobRegistryRoot({
+    registryRootDir: explicitRegistry, storageRootDir: option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]),
+    sourceEnv: env, cwd: io.cwd(),
+  });
   const stateDir = option(values, env, "--state-dir", []);
   const mcpCwd = option(values, env, "--mcp-cwd", []);
   const args: Record<string, unknown> = {
