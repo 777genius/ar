@@ -1,5 +1,5 @@
 #!/usr/bin/node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { constants, lstatSync, openSync, fstatSync, readFileSync, readSync, closeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { access, open, readFile, writeFile, statfs, stat, lstat, realpath } from 'node:fs/promises';
@@ -15,6 +15,25 @@ import { hasHostedActivationOrigin, HostedActivationMode, readHostedActivationMo
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
+// Provider COMMAND operands are constructed by this adapter. Stock252 may
+// omit the unsupported veto only after a complete literal-operand proof.
+function providerLiteralArgumentOptions(operands) {
+  const inspect = args => spawnSync('/usr/bin/systemd-run', args, {
+    encoding: 'utf8', timeout: 2000, maxBuffer: 32768, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SYSTEMD_COLORS: '0' },
+  });
+  const help = inspect(['--expand-environment=no', '--help']);
+  if (!help.error && help.signal === null && help.status === 0 && help.stderr === '' && help.stdout.includes('--expand-environment='))
+    return ['--expand-environment=no'];
+  if (help.error || help.signal !== null || help.status !== 1 || help.stdout !== '' ||
+      help.stderr !== "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n") denied();
+  const version = inspect(['--version']);
+  if (version.error || version.signal !== null || version.status !== 0 || version.stderr !== '' ||
+      !/^systemd 252(?: \([A-Za-z0-9.+~:_-]{1,80}\))?$/.test(version.stdout.split('\n')[0] ?? '')) denied();
+  if (!operands.length || operands.some(value => typeof value !== 'string' || value.length < 1 || value.length > 4096 || /[$\0\r\n]/.test(value))) denied();
+  return [];
+}
+
 function governedFdProfile(request) {
   if (readHostedActivationMode() === HostedActivationMode.Disabled && !hasHostedActivationOrigin() &&
       request.readonlyPaths === undefined) return false;
@@ -202,20 +221,21 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
       `InaccessiblePaths=${storagePin.binding.directory}`] : []),
   ];
   assertMemoryAdmission(request, memoryInfo);
+  const operands = [...(storagePin ? [nodePath, guardPath,
+    '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
+      generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
+    '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
+    '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload];
   return { command: '/usr/bin/systemd-run', args: [
     ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
-    `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
+    `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', ...(operation === 'provider' ? providerLiteralArgumentOptions(operands) : ['--expand-environment=no']),
     `--setenv=HOME=${policy.home}`,
     ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
     ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
     `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
     '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
     `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
-    ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
-      '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
-        generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
-      '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
-    '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload,
+    ...properties.map(property => `--property=${property}`), '--', ...operands,
   ] };
 }
 
