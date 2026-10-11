@@ -191,8 +191,10 @@ describe("codex goal MCP server", () => {
       expect(producer).toMatchObject({
         ok: true, workerRole: "producer", startSkipped: true,
       });
-      expectAdvisory(producer.worktree, producerWorkspace);
-      expectAdvisory(producer.createJob, producerWorkspace);
+      expectAdvisory(producer, producerWorkspace);
+      for (const operation of [producer.worktree, producer.createJob]) {
+        expect(operation).not.toHaveProperty("admission");
+      }
       const directProducerWorkspace = join(root, "worktrees", "infinity-context-memory-direct-producer-v1");
       // This sequence needs a real workspace so protected publication can prove
       // no start. The separate future-registration case deliberately stays Unknown.
@@ -267,8 +269,10 @@ describe("codex goal MCP server", () => {
         workerRole: "reviewer",
         startSkipped: true,
       });
-      expectAdvisory(reviewer.worktree, reviewerWorkspace);
-      expectAdvisory(reviewer.createJob, reviewerWorkspace);
+      expectAdvisory(reviewer, reviewerWorkspace);
+      for (const operation of [reviewer.worktree, reviewer.createJob]) {
+        expect(operation).not.toHaveProperty("admission");
+      }
 
       const legacyTarget = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,

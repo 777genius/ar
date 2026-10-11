@@ -179,8 +179,8 @@ async function main(configPath: string): Promise<void> {
     if (response.ok !== true) { report.toolFailure = { tool: name, reason: finiteCode(response.reason), error: finiteCode(response.error), ...(response.admission ? { admission: response.admission } : {}) }; save(); }
     check(response.ok === true, "public_tool_" + name); return response;
   };
-  const summary = (response: Json, nested: string): ProjectAdmissionSummary => {
-    const value = record(record(response[nested]).admission);
+  const summary = (response: Json, nested?: string): ProjectAdmissionSummary => {
+    const value = record(nested ? record(response[nested]).admission : response.admission);
     const backlog = record(value.backlog); check(typeof backlog.count === "number" && backlog.count >= 1 && Array.isArray(backlog.preview) && backlog.preview.length <= 3, "bounded_retained_advisory");
     const summary = value as unknown as ProjectAdmissionSummary;
     process.stdout.write(`Admission advisory: ${summary.backlog.count} retained backlog records; ${summary.backlog.preview.map(item => item.reason).join(", ")}. The count describes records, not running workers.\n`);
@@ -271,7 +271,7 @@ async function main(configPath: string): Promise<void> {
     phase = "linked-refill-b";
     const bResponse = await ok("codex_goal_project_refill_worker", refillArgs(bId, bId, true, true));
     ownStart(bId);
-    observe("siblings-linked", { aAdvisory: summary(aResponse, "result"), bAdvisory: summary(bResponse, "start"), a: nativeSnapshot(aId), b: nativeSnapshot(bId) });
+    observe("siblings-linked", { aAdvisory: summary(aResponse, "result"), bAdvisory: summary(bResponse), a: nativeSnapshot(aId), b: nativeSnapshot(bId) });
     let concurrentProviders: Json | undefined;
     await waitFor("concurrent_native_provider_units", () => {
       const beforeAt = new Date().toISOString(), aBefore = runningProviders(aId);

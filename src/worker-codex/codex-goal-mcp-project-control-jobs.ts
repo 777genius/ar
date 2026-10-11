@@ -774,6 +774,10 @@ export async function projectControlRefillWorkerView(
     assertProjectControlDependencyBootstrapReady(dependencyPreflight);
   }
 
+  const { admission: worktreeAdmission, ...worktreeView } = worktree;
+  const { admission: createJobAdmission, ...createJobView } = createJob;
+  const { admission: startAdmission, ...startView } = start ?? {};
+  const admission = startAdmission ?? createJobAdmission ?? worktreeAdmission;
   return {
     ok: true,
     mode: "project_control_refill_worker",
@@ -820,10 +824,11 @@ export async function projectControlRefillWorkerView(
       : {}),
     dependencyPreflight: dependencyPreflight as unknown as JsonObject,
     jobId: manifest.jobId,
-    worktree: worktree as unknown as JsonObject,
-    createJob: createJob as unknown as JsonObject,
+    ...(admission ? { admission } : {}),
+    worktree: worktreeView as unknown as JsonObject,
+    createJob: createJobView as unknown as JsonObject,
     ...(start
-      ? { start: start as unknown as JsonObject }
+      ? { start: startView as unknown as JsonObject }
       : { startSkipped: true }),
     manifest,
     summary: summarizeCodexGoalJob(manifest, controller.registryRootDir),
