@@ -168,9 +168,9 @@ export type CodexGoalJobSummary = {
 };
 
 export type CodexGoalJobRegistryInput = {
-  readonly storageRootDir?: string;
+  readonly storageRootDir?: string | undefined;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-  readonly registryRootDir?: string;
+  readonly registryRootDir?: string | undefined;
   readonly cwd?: string;
 };
 

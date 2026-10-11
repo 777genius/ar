@@ -32,7 +32,7 @@ export async function loadJobLaunch(
     manifest,
     launch: await goalLaunchInput({
       ...codexGoalJobToArgs(manifest),
-      sourceEnv: args.sourceEnv,
+      ...(args.sourceEnv === undefined ? {} : { sourceEnv: args.sourceEnv }),
       durableHandoffRootDir: manifest.durableHandoffRootDir ??
         join(manifest.storage ? manifest.jobRootDir : registryRootDir, "durable-handoffs"),
     }),

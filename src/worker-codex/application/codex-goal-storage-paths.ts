@@ -6,15 +6,20 @@ import { mapManagedGoalLayout } from "../managed-goal-admission";
 import { MANAGED_JOB_ID_ENV, MANAGED_JOB_ROOT_ENV, MANAGED_MARKER_ENV } from "../managed-job-layout";
 
 type GoalPaths = Pick<CodexGoalRunConfig, "storageRootDir" | "jobId" | "jobRootDir" | "workspacePath" | "taskId" | "stateRootDir" | "runtimeHomeRootDir" | "encryptionKeyPath" | "durableHandoffRootDir" | "outputPath" | "progressPath" | "runtimeEventsPath" | "agentTempRootDir" | "sourceEnv">;
-export type CodexGoalPathInput = Omit<GoalPaths, "jobRootDir" | "workspacePath"> & {
+type DefinedCodexGoalPathInput = Omit<GoalPaths, "jobRootDir" | "workspacePath"> & {
   readonly jobRootDir?: string;
   readonly workspacePath?: string;
   readonly logPath?: string;
 };
 
+/** Transport normalization accepts explicit absence; resolved paths do not. */
+export type CodexGoalPathInput = Pick<DefinedCodexGoalPathInput, "taskId"> & {
+  readonly [K in keyof Omit<DefinedCodexGoalPathInput, "taskId">]?: DefinedCodexGoalPathInput[K] | undefined;
+};
+
 /** Placement only. The managed admission owner still checks caller overrides. */
 export function resolveCodexGoalPaths(raw: CodexGoalPathInput): GoalPaths & { readonly logPath?: string } {
-  const input = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== undefined)) as CodexGoalPathInput;
+  const input = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== undefined)) as DefinedCodexGoalPathInput;
   const roots = input.storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(input.storageRootDir);
   const env = input.sourceEnv ?? process.env;
   const managed = env[MANAGED_MARKER_ENV] !== undefined;
@@ -29,7 +34,7 @@ export function resolveCodexGoalPaths(raw: CodexGoalPathInput): GoalPaths & { re
       workspacePath: input.workspacePath ?? layout.workspace,
       sourceEnv: env,
     }, ...(input.logPath === undefined ? {} : { logPath: input.logPath }) });
-    return { ...mapped.config, logPath: mapped.logPath,
+    return { ...mapped.config, ...(mapped.logPath === undefined ? {} : { logPath: mapped.logPath }),
       durableHandoffRootDir: input.durableHandoffRootDir ?? join(layout.jobRoot, "durable-handoffs") };
   }
   const rootSelected = input.jobRootDir === undefined && roots !== undefined;

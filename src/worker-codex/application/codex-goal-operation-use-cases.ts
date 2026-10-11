@@ -147,9 +147,9 @@ export async function startCodexGoalLaunch(input: {
 }
 
 export async function inspectCodexGoalStatus(input: {
-  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-  readonly storageRootDir?: string;
-  readonly jobId?: string;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly storageRootDir?: string | undefined;
+  readonly jobId?: string | undefined;
   readonly cwd: string | undefined;
   readonly jobRootDir: string | undefined;
   readonly taskId: string | undefined;
@@ -189,9 +189,9 @@ export async function inspectCodexGoalDoctor(input: {
 }
 
 export async function tailCodexGoalRunLog(input: {
-  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-  readonly storageRootDir?: string;
-  readonly jobId?: string;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly storageRootDir?: string | undefined;
+  readonly jobId?: string | undefined;
   readonly cwd: string | undefined;
   readonly jobRootDir: string | undefined;
   readonly taskId: string | undefined;
@@ -213,9 +213,9 @@ export async function tailCodexGoalRunLog(input: {
   return { ok: true, logPath: resolvedLogPath, text };
 }
 
-function inspectionStoragePaths(input: { readonly sourceEnv?: Readonly<Record<string, string | undefined>>; readonly storageRootDir?: string; readonly jobId?: string;
-  readonly jobRootDir?: string; readonly taskId?: string; readonly workspacePath?: string;
-  readonly logPath?: string; readonly progressPath?: string }, cwd: string) {
+function inspectionStoragePaths(input: { readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined; readonly storageRootDir?: string | undefined; readonly jobId?: string | undefined;
+  readonly jobRootDir?: string | undefined; readonly taskId?: string | undefined; readonly workspacePath?: string | undefined;
+  readonly logPath?: string | undefined; readonly progressPath?: string | undefined }, cwd: string) {
   const sourceEnv = input.sourceEnv ?? process.env;
   const root = input.storageRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_STORAGE_ROOT;
   if (root === undefined) return undefined;

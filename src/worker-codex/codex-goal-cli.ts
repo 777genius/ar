@@ -747,7 +747,11 @@ function resourceStorageOptions(values: ParsedFlags, io: CodexGoalCliIo) {
   const root = option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]);
   const registry = option(values, env, "--registry-root", ["SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT", "CODEX_GOAL_REGISTRY_ROOT"]);
   const storageRootDir = resolveCodexGoalStorageRoot(root, io.cwd());
-  return { storageRootDir, registryRootDir: registry === undefined ? undefined : resolvePath(io.cwd(), registry), sourceEnv: env };
+  return {
+    ...(storageRootDir === undefined ? {} : { storageRootDir }),
+    ...(registry === undefined ? {} : { registryRootDir: resolvePath(io.cwd(), registry) }),
+    sourceEnv: env,
+  };
 }
 
 function parseMcpResources(

@@ -13,10 +13,10 @@ export function agentCliStorageRoots(value: string | undefined, cwd: string): Ru
 
 /** Existing state and ephemeral precedence, with one owned temporary allocation. */
 export async function agentCliStateRoot(input: {
-  readonly stateRootDir?: string;
+  readonly stateRootDir?: string | undefined;
   readonly ephemeral: boolean;
-  readonly envStateRootDir?: string;
-  readonly roots?: RuntimeStorageRoots;
+  readonly envStateRootDir?: string | undefined;
+  readonly roots?: RuntimeStorageRoots | undefined;
   readonly consumer: "agent-task" | "agent-runtime-task";
   readonly provider: string;
 }): Promise<{ readonly stateRootDir?: string; readonly temporaryRoot?: string }> {
@@ -27,5 +27,6 @@ export async function agentCliStateRoot(input: {
     const temporaryRoot = await mkdtemp(join(parent, `subscription-runtime-${input.consumer}-`));
     return { stateRootDir: temporaryRoot, temporaryRoot };
   }
-  return { stateRootDir: input.envStateRootDir ?? (input.roots && join(input.roots.stateRootDir, input.consumer, input.provider)) };
+  const stateRootDir = input.envStateRootDir ?? (input.roots && join(input.roots.stateRootDir, input.consumer, input.provider));
+  return stateRootDir === undefined ? {} : { stateRootDir };
 }

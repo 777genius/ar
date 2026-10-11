@@ -54,7 +54,7 @@ export function createCodexGoalMcpServer(
     version: subscriptionRuntimePackageVersion,
   });
 
-  const sourceEnv = Object.freeze({ ...(options.sourceEnv ?? process.env),
+  const sourceEnv: Readonly<Record<string, string | undefined>> = Object.freeze({ ...(options.sourceEnv ?? process.env),
     ...(options.storageRootDir === undefined ? {} : { SUBSCRIPTION_RUNTIME_STORAGE_ROOT: options.storageRootDir }),
     ...(options.registryRootDir === undefined ? {} : { SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT: options.registryRootDir }),
   });
