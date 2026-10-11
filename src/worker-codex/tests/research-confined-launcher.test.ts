@@ -19,12 +19,17 @@ beforeAll(() => {
   // Only the module invocation is observed; no admission/service/provider runs.
   writeFileSync(join(helper, "dist/worker-codex/research-provider-service.js"),
     'export async function runResearchProviderService(...args) { process.stdout.write(JSON.stringify(args)); }');
-  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors", "hosted-fd-prelude", "hosted-blocking-output", "managed-provider-scratch-environment"]) {
+  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame-decoder", "hosted-process-descriptors", "hosted-fd-prelude", "hosted-blocking-output", "managed-provider-scratch-environment"]) {
     const source = readFileSync(join(process.cwd(), "src/provider-codex/app-server/adapters", name + ".ts"), "utf8");
     const translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText
-      .replace(/from "\.\/((?:hosted-|managed-provider-scratch-)[a-z-]+)"/g, 'from "./$1.mjs"');
+      .replace(/from "\.\/((?:hosted-|managed-provider-scratch-)[a-z-]+)"/g, 'from "./$1.mjs"')
+      .replace(/from "\.\.\/\.\.\/hosted-mimo-coding-bootstrap"/g, 'from "./hosted-mimo-coding-bootstrap.mjs"');
     writeFileSync(join(root, name + ".mjs"), translated);
   }
+  const codingBootstrapSource = readFileSync(join(process.cwd(), "src/provider-codex/hosted-mimo-coding-bootstrap.ts"), "utf8");
+  writeFileSync(join(root, "hosted-mimo-coding-bootstrap.mjs"), transpileModule(codingBootstrapSource, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText);
   const testClockSource = readFileSync(join(process.cwd(), "src/worker-codex/tests/research-confined-launcher-test-clock.ts"), "utf8");
   writeFileSync(join(root, "TEST-bootstrap-clock.mjs"), transpileModule(testClockSource, {
     compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
@@ -57,7 +62,7 @@ function launch(args: string[] = ["--research-ready-v1"], ignoreInput = false, t
   const first = new Promise<string>((resolve, reject) => {
     const onData = (): void => { if (stdout.includes("\n")) { child.stdout!.off("data", onData); resolve(stdout); } };
     child.stdout!.on("data", onData); child.once("error", reject);
-    child.once("close", () => { if (!stdout.includes("\n")) reject(new Error("TEST readiness absent")); });
+    child.once("close", () => { if (!stdout.includes("\n")) reject(new Error(`TEST readiness absent: ${Buffer.from(stderr).subarray(-4096).toString("utf8")}`)); });
   });
   void first.catch(() => {});
   const clock = testClock ? observeTestClock(child) : undefined;
