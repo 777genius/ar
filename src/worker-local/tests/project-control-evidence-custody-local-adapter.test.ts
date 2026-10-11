@@ -13,28 +13,53 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   localProjectControlEvidenceCustodySupported,
   LocalProjectControlEvidenceCustody,
   writeAll,
 } from "../project-control-evidence-custody-local-adapter";
 
-const fixturePath = fileURLToPath(new URL(
-  "./project-control-evidence-custody-crash-fixture.ts", import.meta.url,
-));
 const fixtureDeadlineMs = 10_000;
 const fixtureMaxStderrBytes = 64 * 1024;
-const fixtureBootstrap = [
-  "import { registerHooks } from 'node:module';",
-  "registerHooks({ resolve(specifier, context, nextResolve) {",
-  "try { return nextResolve(specifier, context); } catch (error) {",
-  "if (error?.code !== 'ERR_MODULE_NOT_FOUND' || !specifier.startsWith('.')) throw error;",
-  "return nextResolve(`${specifier}.ts`, context);",
-  "}}});",
-  `await import(${JSON.stringify(pathToFileURL(fixturePath).href)});`,
-].join("\n");
+// Node 26 has no transform-types flag, and the adapter uses a constructor
+// parameter property. The pinned project TypeScript therefore translates this
+// closed canonical allowlist (the adapter, its two imported leaves and the
+// fixture) into a temporary ESM tree; no loader hook or open-ended transpile.
+const fixtureClosure = [
+  "../project-control-evidence-custody-local-adapter",
+  "../project-control-evidence-custody-materialization",
+  "../project-control-custody-directory-publication",
+  "./project-control-evidence-custody-crash-fixture",
+] as const;
+let stagedFixtureRoot: string | undefined;
+let stagedFixturePath = "";
+beforeAll(async () => {
+  stagedFixtureRoot = await mkdtemp(join(tmpdir(), "custody-fixture-"));
+  const stagedName = (specifier: string): string => `${specifier.split("/").pop()}.mjs`;
+  for (const specifier of fixtureClosure) {
+    const source = await readFile(fileURLToPath(new URL(`${specifier}.ts`, import.meta.url)), "utf8");
+    let translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+    // Map each allowlisted sibling to its staged leaf, with or without a suffix.
+    for (const sibling of fixtureClosure) {
+      const leaf = sibling.split("/").pop()!;
+      translated = translated.replace(new RegExp(`(["'])(?:\\./|\\.\\./)${leaf}(?:\\.ts)?\\1`, "g"), `"./${leaf}.mjs"`);
+    }
+    // Fail closed if any relative or package import escaped the allowlist.
+    for (const found of translated.matchAll(/(?:from|import\()\s*["']([^"']+)["']/g)) {
+      const target = found[1]!;
+      if (target.startsWith("node:") || target.startsWith("./") && target.endsWith(".mjs")) continue;
+      throw new Error(`custody fixture import outside the closed allowlist: ${target}`);
+    }
+    await writeFile(join(stagedFixtureRoot, stagedName(specifier)), translated);
+  }
+  stagedFixturePath = join(stagedFixtureRoot, stagedName(fixtureClosure[3]));
+});
+afterAll(async () => {
+  if (stagedFixtureRoot !== undefined) await rm(stagedFixtureRoot, { recursive: true, force: true });
+});
 
 describe.runIf(localProjectControlEvidenceCustodySupported)(
   "local project-control evidence custody durability", () => {
@@ -608,12 +633,7 @@ async function runFixture(input: {
   readonly onSpawn?: (pid: number) => void;
 }): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [
-      "--experimental-transform-types",
-      "--input-type=module",
-      "--eval",
-      fixtureBootstrap,
-    ], {
+    const child = spawn(process.execPath, [stagedFixturePath], {
       env: {
         ...process.env,
         CUSTODY_FIXTURE_ROOT: input.root,

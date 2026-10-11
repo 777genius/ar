@@ -6,6 +6,7 @@ import { openOriginalHostedDependencyRootDescriptorMaterial, openOriginalHostedM
 import { finishOriginalHostedDependencyColdTree, revokeOriginalHostedDependencyColdState } from "./hosted-dependency-cold-controller";
 import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { assertHostedDependencyRetirementOwnerFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
@@ -120,7 +121,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
   if(cold?.installerFrame && cold.installerPhase!==HostedDependencyColdInstallerPhase.Waited) {
     const frame=cold.installerFrame;assertHostedFdProcess(frame.child,frame.unit,HostedFdLaunchKind.Installer,frame.command,frame.args);
   }
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   if (/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(group)) {
     assertSelectedDescriptors(scope,rootPurpose);
     const before = collectCurrentHostedOrdinaryDependencyOrigin(fence);
