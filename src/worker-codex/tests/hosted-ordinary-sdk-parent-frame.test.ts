@@ -8,7 +8,7 @@ const f = vi.hoisted(() => ({ snapshots: new Map<string, Buffer>(), alias: "", s
   undefined as { binding: HostedDependencyBinding; launch: HostedInventoryLaunch } | undefined, read: vi.fn() }));
 vi.mock("../hosted-readonly-inputs", async original => ({ ...await original<typeof import("../hosted-readonly-inputs")>(),
   readHostedPrivateBytes: (path: string) => f.snapshots.get(path) }));
-vi.mock("../hosted-ordinary-dependency-reader", () => ({
+vi.mock("../hosted-ordinary-dependency-reader", async original => ({ ...await original<typeof import("../hosted-ordinary-dependency-reader")>(),
   readHostedOrdinaryDependencyParentFrame: f.read }));
 vi.mock("../../provider-codex/app-server/adapters/hosted-dependency-workspace", async original => ({
   ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-dependency-workspace")>(),

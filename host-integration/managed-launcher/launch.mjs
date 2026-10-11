@@ -141,7 +141,7 @@ export function parseInvocation(request) {
   if (!['job', 'provider'].includes(operation) || typeof request.jobId !== 'string' || request.jobId !== request.jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId) ||
       !Array.isArray(payload) || !payload.length || payload.length > 4096 ||
       payload.some(x => typeof x !== 'string' || x.includes('\0')) || !safePath(payload[0])) denied();
-  const allowed = ['operation', 'unit', 'jobId', 'payload', ...(operation === 'job' ? ['fingerprint', 'limits'] : ['readonlyPaths'])];
+  const allowed = ['operation', 'unit', 'jobId', 'payload', ...(operation === 'job' ? ['fingerprint', 'limits'] : ['readonlyPaths', 'ordinaryJobRoot'])];
   if (Object.keys(request).some(key => !allowed.includes(key))) denied();
   let trusted = [];
   if (operation === 'job') {
@@ -157,6 +157,11 @@ export function parseInvocation(request) {
     if (!payload[1].endsWith('/hosted-app-server-launcher.js') ||
         !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile(request)))) denied();
     trusted = payload.slice(0, 2);
+  }
+  if (request.ordinaryJobRoot !== undefined) {
+    const pin = request.ordinaryJobRoot;
+    if (operation !== 'provider' || !pin || Object.keys(pin).sort().join(',') !== 'device,inode,path' ||
+        !safePath(pin.path) || !Number.isSafeInteger(pin.device) || pin.device < 0 || !Number.isSafeInteger(pin.inode) || pin.inode < 1) denied();
   }
   if (request.readonlyPaths !== undefined) {
     if (!Array.isArray(request.readonlyPaths) || request.readonlyPaths.length > 256 ||
@@ -178,7 +183,8 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     ...(storagePin ? ['/usr/bin/mount', '/usr/sbin/blkid'] : [])];
   for (const path of [nodePath, ...trusted, ...confinementExecutables]) await trust(path);
   await executable(TINI_PATH);
-  const policy = storagePin ? storagePin.pin.layout : await admit(request.jobId);
+  const policy = storagePin ? storagePin.pin.layout : await admit(request.jobId,
+    request.ordinaryJobRoot ? { expectedJobRoot: request.ordinaryJobRoot } : {});
   if (storagePin && (operation !== 'job' || storagePin.binding.jobId !== request.jobId ||
       storagePin.binding.fingerprint !== request.fingerprint || storagePin.binding.unit !== unit)) denied();
   if (!policy || !safePath(policy.storageRoot) || policy.storageRoot === '/') denied();

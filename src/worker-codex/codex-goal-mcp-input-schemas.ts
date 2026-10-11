@@ -22,6 +22,7 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     jobId: z.string().optional(),
     configPath: z.string().optional(),
     jobRootDir: z.string().optional(),
+    durableHandoffRootDir: z.string().optional(),
     authRootDir: z.string().optional(),
     stateRootDir: z.string().optional(),
     workspacePath: z.string().optional(),

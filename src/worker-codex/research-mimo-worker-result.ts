@@ -3,7 +3,7 @@ import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from "node:
 import { randomUUID } from "node:crypto";
 import { buildRuntimeResultEnvelope, type RuntimeResultEnvelope, type RuntimeResultEnvelopeInput } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
-import { ownedMimoWorkerStart, researchCurrentStart, researchProviderAdmissionGuard } from "./research-launch-admission";
+import { assertResearchMimoProviderHome, ownedMimoWorkerStart, researchCurrentStart, researchProviderAdmissionGuard } from "./research-launch-admission";
 import { researchDirectoryIdentity, assertResearchDirectory, researchCustody, researchHash, researchInvalid, researchJson, researchPublish, researchRead, researchRecord } from "./research-launch-files";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 
@@ -32,10 +32,7 @@ export function researchMimoWorkerLifecycle(factory: CodexAppServerProcessFactor
       },
       async retainHome(path: string): Promise<void> {
         assertCurrent();
-        const retained = researchRecord(researchJson(researchRead(homePath)), "schemaVersion,specSha256,identity");
-        const identity = researchRecord(retained.identity, "path,device,inode");
-        if (retained.schemaVersion !== 1 || retained.specSha256 !== specSha256 || identity.path !== path) researchInvalid();
-        if (JSON.stringify(identity) !== JSON.stringify(researchDirectoryIdentity(path))) researchInvalid();
+        assertResearchMimoProviderHome(spec, path);
       },
     }),
     stage(input: RuntimeResultEnvelopeInput): void {

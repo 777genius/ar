@@ -18,7 +18,7 @@ vi.mock("node:fs", async original => {
 });
 vi.mock("node:fs/promises", async original => {
   const fs = await original<typeof import("node:fs/promises")>(); const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "writeFile", "readFile", "open", "readdir", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
+  for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "appendFile", "writeFile", "readFile", "open", "readdir", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
     result[name] = async (...args: unknown[]) => { const answer = await fn(...args.map(boundary.map)); return name === "realpath" ? boundary.unmap(answer as string) : answer; };
   }
@@ -26,7 +26,7 @@ vi.mock("node:fs/promises", async original => {
 });
 vi.mock("node:child_process", async original => {
   const cp = await original<typeof import("node:child_process")>();
-  return { ...cp, execFileSync: (file: string, args: string[], options: object) => cp.execFileSync(file, args.map(arg => boundary.map(arg) as string), options) };
+  return { ...cp, execFile: Object.assign((file: string, args: string[], ...rest: unknown[]) => (cp.execFile as Function)(file, args.map(arg => boundary.map(arg) as string), ...rest), { [Symbol.for("nodejs.util.promisify.custom")]: (file: string, args: string[], options: object) => new Promise((resolve, reject) => cp.execFile(file, args.map(arg => boundary.map(arg) as string), options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }), execFileSync: (file: string, args: string[], options: object) => cp.execFileSync(file, args.map(arg => boundary.map(arg) as string), options) };
 });
 vi.mock("../research-launch-host", async original => ({ ...await original<object>(), assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: (path: string, privateLeaf = false) => {
@@ -36,10 +36,16 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
   let current = physical;
   for (;;) { const stat = fs.lstatSync(current); if (stat.isSymbolicLink() || (stat.mode & 0o022) || (privateLeaf && current === physical && (stat.mode & 0o077))) throw new Error("TEST custody denied"); if (current === boundary.root) break; const parent = current.slice(0, current.lastIndexOf("/")) || "/"; if (parent === current || !current.startsWith(boundary.root)) break; current = parent; }
 } }));
+// Cold writer census/publication needs a real Linux host; this fixture owns no provider effects.
+vi.mock("../application/project-control/codex-goal-project-admission", async original => ({ ...await original<object>(), codexProjectAdmissionGate: () => ({ evaluate: async () => ({ allowed: true, status: "admitted" }) }) }));
+vi.mock("../protected-job-birth", async original => ({ ...await original<object>(), withProtectedCodexGoalJobBirthPublication: async (effect: () => Promise<unknown>) => effect() }));
+vi.mock("../codex-goal-mcp-project-accounts", async original => ({ ...await original<object>(), projectControlRefillAccountNames: async () => ["account-q"] }));
 import { prepareHostedMimoProject, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
+import { resolveProjectSourceRevision } from "../application/project-control/codex-goal-project-source-revision";
+import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-boundary.root = fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-"));
+boundary.root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-")));
 boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt)(?:\/|$)/.test(value) ? boundary.root + value : value;
 boundary.unmap = value => value.startsWith(boundary.root + "/") ? value.slice(boundary.root.length) : value;
 const physical = (path: string) => boundary.map(path) as string;
@@ -79,4 +85,29 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
   expect(controller.projectAccessScope?.allowedAccountIds).toEqual(["account-q"]);
   expect(fs.statSync(physical(scratch + "/source/sandbox")).isDirectory()).toBe(true);
   expect(JSON.parse(fs.readFileSync(physical("/etc/subscription-runtime/mimo-projects/test-project/test-work.json"), "utf8")).sourceCommit).toBe(sha);
+  // A sealed snapshot must create locally even when Git origin cannot be reached.
+  cp.execFileSync("/usr/bin/git", ["-C", physical(binding.sourceWorkspacePath), "remote", "set-url", "origin", boundary.root + "/TEST-unreachable-origin"]);
+  const create = { kind: "MimoProject", schemaVersion: 1, machineId: machine, projectId: binding.projectId, workstreamId: binding.workstreamId, operation: "create", jobId: "test-worker-sealed", prompt: "TEST isolated child", sourceCommit: sha };
+  await expect(handleHostedMimoProjectBridge(create)).resolves.toMatchObject({ ok: true });
+  const child = scratch + "/workspaces/" + create.jobId;
+  expect(cp.execFileSync("/usr/bin/git", ["-C", physical(child), "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(sha);
+  expect((await readCodexGoalJob({ registryRootDir: state + "/registry", jobId: create.jobId })).workspacePath).toBe(child);
+  const second = { ...create, jobId: "test-worker-sealed-second" };
+  await expect(handleHostedMimoProjectBridge(second)).resolves.toMatchObject({ ok: true });
+  expect(cp.execFileSync("/usr/bin/git", ["-C", physical(scratch + "/workspaces/" + second.jobId), "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(sha);
+  // Ordinary expectedSourceCommit remains a remote pin and cannot use this local seal.
+  await expect(resolveProjectSourceRevision({ resolvedSource: { sourceRealPath: binding.sourceWorkspacePath, revision: sha },
+    remoteTrackingRef: binding.sourceRef, expectedSourceCommit: sha })).rejects.toThrow("project_control_git_failed:ls-remote");
+  const sourceGit = (...args: string[]) => cp.execFileSync("/usr/bin/git", ["-C", physical(binding.sourceWorkspacePath), ...args], { encoding: "utf8" }).trim();
+  const drift = sourceGit("-c", "user.name=iliya", "-c", "user.email=iliyazelenkog@gmail.com", "commit-tree", sha + "^{tree}", "-p", sha, "-m", "test: sealed source drift");
+  for (const ref of ["refs/remotes/origin/main", "HEAD"]) {
+    sourceGit("update-ref", ref, drift);
+    const rejected = { ...create, jobId: "test-worker-drift-" + (ref === "HEAD" ? "head" : "ref") };
+    await expect(handleHostedMimoProjectBridge(rejected)).rejects.toThrow("mimo_project_bridge_source_mismatch");
+    expect(fs.existsSync(physical(scratch + "/workspaces/" + rejected.jobId))).toBe(false);
+    expect(fs.existsSync(physical(state + "/registry/" + rejected.jobId))).toBe(false);
+    sourceGit("update-ref", ref, sha);
+  }
+
+
 });

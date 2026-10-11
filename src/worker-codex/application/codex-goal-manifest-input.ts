@@ -68,6 +68,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
     ...(stringValue(args.description) ? { description: stringValue(args.description) as string } : {}),
     ...(tagValues(args.tags).length ? { tags: tagValues(args.tags) } : {}),
     jobRootDir,
+    ...(args.durableHandoffRootDir ? { durableHandoffRootDir: resolvePath(cwd, args.durableHandoffRootDir) } : {}),
     authRootDir: resolvePath(cwd, args.authRootDir ?? defaultAuthRoot),
     ...(args.stateRootDir ? { stateRootDir: resolvePath(cwd, args.stateRootDir) } : {}),
     workspacePath: requiredString(args.workspacePath, "workspacePath", cwd),
@@ -121,6 +122,7 @@ export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGo
   putIfDefined(patch, "jobRootDir", args.jobRootDir && resolvePath(cwd, args.jobRootDir));
   putIfDefined(patch, "authRootDir", args.authRootDir && resolvePath(cwd, args.authRootDir));
   putIfDefined(patch, "stateRootDir", args.stateRootDir && resolvePath(cwd, args.stateRootDir));
+  putIfDefined(patch, "durableHandoffRootDir", args.durableHandoffRootDir && resolvePath(cwd, args.durableHandoffRootDir));
   putIfDefined(patch, "workspacePath", args.workspacePath && resolvePath(cwd, args.workspacePath));
   putIfDefined(patch, "promptPath", args.promptPath && resolvePath(cwd, args.promptPath));
   putIfDefined(patch, "codexGoalObjective", stringValue(args.codexGoalObjective));

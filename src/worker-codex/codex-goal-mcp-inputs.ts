@@ -30,6 +30,7 @@ export type GoalMcpArgs = {
   readonly jobId?: string;
   readonly configPath?: string;
   readonly jobRootDir?: string;
+  readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
   readonly workspacePath?: string;

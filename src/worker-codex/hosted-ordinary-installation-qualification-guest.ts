@@ -20,6 +20,53 @@ import { QualificationChild, QualificationClock, qualificationBootRecipe, qualif
   type OrdinaryLauncherCandidate } from "./hosted-ordinary-installation-qualification";
 
 const entry = fileURLToPath(import.meta.url);
+enum WorkerQualificationPhase {
+  Input = "input", Descriptors = "descriptors", Profile = "profile", SystemBus = "system_bus", Identity = "identity",
+  Inventory = "inventory", Revalidation = "revalidation", InventoryPublication = "inventory_publication",
+  Installation = "installation", InstallationCheck = "installation_check", ProviderIntent = "provider_intent", Provider = "provider",
+}
+let workerPhase = WorkerQualificationPhase.Input;
+enum WorkerQualificationGuard {
+  Unknown = "unknown", Qualification = "ordinary_launcher_qualification_held", Operator = "hosted_readonly_host_operator_required",
+  Activation = "hosted_activation_evidence_invalid", Stdio = "hosted_custody_stdio_pipe_required",
+  Descriptor = "hosted_custody_descriptor_invalid", InheritedHandle = "hosted_custody_inherited_handle_denied",
+  FdBoundary = "hosted_fd_boundary_unresolved", Bus = "system_bus_infrastructure_unqualified",
+  Inventory = "hosted_ordinary_inventory_unresolved", Custody = "hosted_custody_kernel_evidence_invalid",
+  Policy = "hosted_readonly_policy_invalid", Binding = "hosted_readonly_policy_binding_mismatch",
+  InputCustody = "hosted_readonly_input_custody_invalid", ConflictingEnrollment = "hosted_readonly_conflicting_enrollment",
+  Fence = "hosted_custody_common_fence_required", PublicationRecovery = "hosted_activation_publication_recovery_required",
+}
+enum WorkerQualificationErrno { Unknown = "unknown", Access = "EACCES", Permission = "EPERM", Invalid = "EINVAL",
+  Readonly = "EROFS", Space = "ENOSPC", Timeout = "ETIMEDOUT", Busy = "EBUSY", Missing = "ENOENT", Exists = "EEXIST", Io = "EIO" }
+function retainWorkerFailure(error: unknown): void {
+  try {
+  // This TEST worker's original rejection remains status70. Only closed public
+  // diagnostics are persisted; arbitrary messages, stacks and stdio never are.
+  const failure = error instanceof Error ? error : undefined;
+  const guard = Object.values(WorkerQualificationGuard).find(value => value === failure?.message) ?? WorkerQualificationGuard.Unknown;
+  const errno = Object.values(WorkerQualificationErrno).find(value => value === (failure as NodeJS.ErrnoException | undefined)?.code) ?? WorkerQualificationErrno.Unknown;
+  const modules = ["worker-codex/hosted-ordinary-installation-qualification-guest", "worker-codex/hosted-ordinary-installation-qualification",
+    "worker-codex/hosted-ordinary-installation-census", "worker-codex/hosted-installation-activation", "worker-codex/hosted-readonly-host-kernel",
+    "worker-codex/hosted-readonly-linux-collector", "worker-codex/hosted-readonly-inputs", "worker-codex/hosted-readonly-custody",
+    "provider-codex/app-server/adapters/hosted-process-activation", "provider-codex/app-server/adapters/hosted-process-descriptors",
+    "provider-codex/app-server/adapters/hosted-fd-observation", "provider-codex/app-server/adapters/system-bus-infrastructure"] as const;
+  const runtime = entry.slice(0, -"/dist/worker-codex/hosted-ordinary-installation-qualification-guest.js".length);
+  const callSites: { module: typeof modules[number]; line: number; column: number }[] = [];
+  for (const frame of (failure?.stack ?? "").slice(0, 16384).split("\n").slice(1, 16)) {
+    for (const module of modules) {
+      const prefix = runtime + "/" + (frame.includes(runtime + "/src/") ? "src/" : "dist/") + module + ".";
+      const at = frame.indexOf(prefix); if (at < 0) continue;
+      const match = /^(?:js|ts):(\d{1,5}):(\d{1,5})\)?$/.exec(frame.slice(at + prefix.length));
+      if (match && Number(match[1]) > 0 && Number(match[1]) <= 16384 && Number(match[2]) > 0 && Number(match[2]) <= 4096 && callSites.length < 8)
+        callSites.push({ module, line: Number(match[1]), column: Number(match[2]) });
+    }
+  }
+  qualificationCreate(qualificationRoot + "/output/worker-failure.json", qualificationBytes({
+    schemaVersion: 1, kind: "Pr270OriginalQualificationWorkerFailure", phase: workerPhase, guard, errno, callSites,
+    noRawError: true, noRawStdio: true, qualificationClaim: false,
+  }));
+  } catch { /* Failed diagnostic custody cannot change the original failure outcome. */ }
+}
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 type Input = Readonly<{ schemaVersion: 1; operation: Pick<OrdinaryInstallationOperation, "operationId" | "workEndEpochMs" | "cleanupEndEpochMs">; candidate: OrdinaryLauncherCandidate;
   fixture: Readonly<{ testId: string; guestMachineId: string; guestHostname: string; guestEntrySha256: string }>;
@@ -105,9 +152,13 @@ async function coordinator(): Promise<void> {
   } catch (error) { try { await owned?.settleFailed(); } catch { /* Whole outer owner retains this failed guest. */ } throw error; }
 }
 async function worker(): Promise<void> {
-  const { input, bytes, clock } = readInput(); assertHostedProcessDescriptors();
+  const { input, bytes, clock } = readInput();
+  workerPhase = WorkerQualificationPhase.Descriptors; assertHostedProcessDescriptors();
+  workerPhase = WorkerQualificationPhase.Profile;
   const profile = verifyPinnedFdCollectorProfile({ path: qualificationProfile, sha256: input.candidate.profileSha256 }, () => clock.remaining());
+  workerPhase = WorkerQualificationPhase.SystemBus;
   verifySystemBusInfrastructure(input.systemBusInfrastructure, () => clock.remaining());
+  workerPhase = WorkerQualificationPhase.Identity;
   const workerUnit = `subscription-runtime-hosted-${input.workerId}.service`, birth = collectProcessBirth(String(process.pid));
   const current = clock.collect(() => collectUnitShow(workerUnit)), invocationId = clock.collect(() => collectUnitInvocation(workerUnit));
   const workerGroup = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${workerUnit}`;
@@ -115,17 +166,22 @@ async function worker(): Promise<void> {
       !readFileSync("/proc/self/cmdline").equals(Buffer.from([profile.node.path, entry, "worker"].join("\0") + "\0"))) qualificationHeld();
   const jobId = "ordinary-qualification-" + input.providerId, jobRootDir = "/srv/workers/jobs/" + jobId, workspacePath = jobRootDir + "/workspace";
   const launch = { command: profile.node.path, args: [input.candidate.candidateArtifactPath + "/dist/worker-codex/codex-goal-cli.js"], cwd: workspacePath };
+  workerPhase = WorkerQualificationPhase.Inventory;
   const inventory = collectOrdinaryInstallationDraft({ supervisorUnit: workerUnit,
     supervisor: { birth, executable: { path: profile.node.path, sha256: profile.node.sha256 }, bootstrap: { path: entry, sha256: input.fixture.guestEntrySha256 },
       operationId: input.operation.operationId, workEndEpochMs: input.operation.workEndEpochMs, cleanupEndEpochMs: input.operation.cleanupEndEpochMs },
     ordinaryCreators: [{ creatorId: jobId, jobId, jobRootDir, workspacePath, launch }], disabledCreators: [], runtimeLaunch: launch,
     systemBusInfrastructure: input.systemBusInfrastructure, collectorProfile: { path: qualificationProfile, sha256: input.candidate.profileSha256 } });
-  revalidate(input, bytes, clock); publishReadonlyInventory(qualificationBytes(inventory));
+  workerPhase = WorkerQualificationPhase.Revalidation; revalidate(input, bytes, clock);
+  workerPhase = WorkerQualificationPhase.InventoryPublication; publishReadonlyInventory(qualificationBytes(inventory));
+  workerPhase = WorkerQualificationPhase.Installation;
   const store = new HostedInstallationActivationStore(), installed = store.install();
+  workerPhase = WorkerQualificationPhase.InstallationCheck;
   if (installed.phase !== HostedActivationPhase.Closed) qualificationHeld(); revalidate(input, bytes, clock);
   const providerUnit = `subscription-runtime-hosted-${input.providerId}.service`;
+  workerPhase = WorkerQualificationPhase.ProviderIntent;
   qualificationCreate(qualificationRoot + "/output/provider-intent.json", qualificationBytes({ operationSha256: clock.operation.operationSha256, unit: providerUnit }));
-  clock.remaining();
+  workerPhase = WorkerQualificationPhase.Provider; clock.remaining();
   const payload = [profile.node.path, input.candidate.candidateArtifactPath + "/dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js", "--fd-ready-v1"];
   const request = { operation: "provider", unit: providerUnit, jobId, payload, readonlyPaths: [] };
   const custody: { owned?: QualificationChild } = {};
@@ -171,5 +227,5 @@ async function worker(): Promise<void> {
 }
 if (process.argv[1] === entry) {
   if (process.argv.length !== 3 || !["coordinator", "worker"].includes(process.argv[2]!)) qualificationHeld();
-  void (process.argv[2] === "coordinator" ? coordinator() : worker()).then(() => { process.exitCode = 0; }, () => { process.exitCode = 70; });
+  void (process.argv[2] === "coordinator" ? coordinator() : worker()).then(() => { process.exitCode = 0; }, (error: unknown) => { if (process.argv[2] === "worker") retainWorkerFailure(error); process.exitCode = 70; });
 }
