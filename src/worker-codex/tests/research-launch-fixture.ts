@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
 const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.scope", birth: "12345", boot: "a".repeat(8) + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, nativeBackingFacts: false, foreign: new Set<string>(),
+  uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, nativeBackingFacts: false, offlineGit: false, foreign: new Set<string>(),
   fdPaths: new Map<number, string>(), pins: new Map<string, string>(), calls: [] as { command: string; args: string[] }[],
   units: new Map<string, { description: string; pid: number; invocation: string; active: boolean; pending?: boolean;
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
@@ -47,6 +47,8 @@ export const publicTestCa = "-----BEGIN CERTIFICATE-----\nMIIFazCCA1OgAwIBAgIRAI
 // Upstream test-crypto-x509.js independently asserts !x509.ca for this certificate.
 export const publicTestLeaf = "-----BEGIN CERTIFICATE-----\nMIID6DCCAtCgAwIBAgIUFH02wcL3Qgben6tfIibXitsApCYwDQYJKoZIhvcNAQEL\nBQAwejELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAkNBMQswCQYDVQQHDAJTRjEPMA0G\nA1UECgwGSm95ZW50MRAwDgYDVQQLDAdOb2RlLmpzMQwwCgYDVQQDDANjYTExIDAe\nBgkqhkiG9w0BCQEWEXJ5QHRpbnljbG91ZHMub3JnMCAXDTIyMDkwMzIxNDAzN1oY\nDzIyOTYwNjE3MjE0MDM3WjB9MQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExCzAJ\nBgNVBAcMAlNGMQ8wDQYDVQQKDAZKb3llbnQxEDAOBgNVBAsMB05vZGUuanMxDzAN\nBgNVBAMMBmFnZW50MTEgMB4GCSqGSIb3DQEJARYRcnlAdGlueWNsb3Vkcy5vcmcw\nggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDUVjIK+yDTgnCT3CxChO0E\n37q9VuHdrlKeKLeQzUJW2yczSfNzX/0zfHpjY+zKWie39z3HCJqWxtiG2wxiOI8c\n3WqWOvzVmdWADlh6EfkIlg+E7VC6JaKDA+zabmhPvnuu3JzogBMnsWl68lCXzuPx\ndeQAmEwNtqjrh74DtM+Ud0ulb//Ixjxo1q3rYKu+aaexSramuee6qJta2rjrB4l8\nB/bU+j1mDf9XQQfSjo9jRnp4hiTFdBl2k+lZzqE2L/rhu6EMjA2IhAq/7xA2MbLo\n9cObVUin6lfoo5+JKRgT9Fp2xEgDOit+2EA/S6oUfPNeLSVUqmXOSWlXlwlb9Nxr\nAgMBAAGjYTBfMF0GCCsGAQUFBwEBBFEwTzAjBggrBgEFBQcwAYYXaHR0cDovL29j\nc3Aubm9kZWpzLm9yZy8wKAYIKwYBBQUHMAKGHGh0dHA6Ly9jYS5ub2RlanMub3Jn\nL2NhLmNlcnQwDQYJKoZIhvcNAQELBQADggEBAMM0mBBjLMt9pYXePtUeNO0VTw9y\nFWCM8nAcAO2kRNwkJwcsispNpkcsHZ5o8Xf5mpCotdvziEWG1hyxwU6nAWyNOLcN\nG0a0KUfbMO3B6ZYe1GwPDjXaQnv75SkAdxgX5zOzca3xnhITcjUUGjQ0fbDfwFV5\nix8mnzvfXjDONdEznVa7PFcN6QliFUMwR/h8pCRHtE5+a10OSPeJSrGG+FtrGnRW\nG1IJUv6oiGF/MvWCr84REVgc1j78xomGANJIu2hN7bnD1nEMON6em8IfnDOUtynV\n9wfWTqiQYD5Zifj6WcGa0aAHMuetyFG4lIfMAHmd3gaKpks7j9l26LwRPvI=\n-----END CERTIFICATE-----\n";
 export function local(path: string): string {
+  // Native temporary paths returned by filesystem calls are already mapped.
+  if (fixture.offlineGit && fixture.root && (path === fixture.root || path.startsWith(fixture.root + "/"))) return path;
   if (path.startsWith("/proc/1/root/")) return local(path.slice("/proc/1/root".length));
   const authority = "/run/user/subscription-runtime-research-v1", artifact = "/TEST-artifact", project = "/TEST-project";
   // This portable TEST fixture has no Host scratch policy. Never inspect or
@@ -181,7 +183,52 @@ vi.mock("node:fs/promises", async original => {
 vi.mock("node:child_process", async original => {
   const real = await original<typeof import("node:child_process")>();
   const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
-  return { ...real, spawn: (...args: unknown[]) => {
+  // Opt-in prepare integration runs only local Git in allocated backing.
+  // The safe flags and a fresh environment forbid hooks, helpers and network.
+  const offlineGit = (command: string, args: readonly string[], options: import("node:child_process").ExecFileSyncOptions = {}) => {
+    if (command !== "/usr/bin/git" || options.shell || args.some(arg => /[\x00-\x1f\x7f]/.test(arg) || arg.split("/").includes("..")))
+      throw new Error("unexpected TEST offline process effect");
+    const backing = (path: string): string => {
+      const selected = researchScratchBackingPath(path);
+      if (!selected) throw new Error("unallocated TEST Git path");
+      for (let current = selected; current !== fixture.root; current = dirname(current)) {
+        try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error("TEST Git path is a symlink"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      return selected;
+    };
+    const mapped = args.map(arg => arg.startsWith("/") && arg !== "/dev/null" ? backing(arg) : arg);
+    let index = 0;
+    while (index < mapped.length) {
+      const flag = mapped[index];
+      if (["--no-replace-objects", "--literal-pathspecs"].includes(flag!)) { index++; continue; }
+      if (flag === "-C") { backing(args[index + 1]!); index += 2; continue; }
+      if (flag === "-c" && /^(?:core\.(?:fsmonitor=false|hooksPath=\/dev\/null|attributesFile=\/dev\/null|quotepath=false)|diff\.external=|fsck\.skipList=\/dev\/null)$/.test(mapped[index + 1]!)) { index += 2; continue; }
+      break;
+    }
+    const operation = mapped[index], tail = mapped.slice(index + 1);
+    const readers = ["rev-parse", "status", "ls-files"];
+    const localWrite = operation === "clone" && tail.length === 5 && tail.slice(0, 3).join("\0") === "--no-hardlinks\0--no-local\0--" && tail.slice(3).every(path => path.startsWith(fixture.root + "/")) ||
+      operation === "checkout" && tail.length === 2 && tail[0] === "--detach" && /^[a-f0-9]{40}$/.test(tail[1]!) ||
+      operation === "update-ref" && tail.length === 2 && /^refs\/remotes\/origin\//.test(tail[0]!) && /^[a-f0-9]{40}$/.test(tail[1]!);
+    const remoteMetadata = operation === "remote" &&
+      (tail.join("\0") === "get-url\0origin" || tail.length === 3 && tail.slice(0, 2).join("\0") === "set-url\0origin" && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(tail[2]!));
+    if (!readers.includes(operation!) && !localWrite && !remoteMetadata) throw new Error("unexpected TEST offline Git operation");
+    if (!args.includes("-C") && options.cwd === undefined && operation !== "clone") throw new Error("TEST Git workspace required");
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1",
+      GIT_NO_REPLACE_OBJECTS: "1", GIT_ALLOW_PROTOCOL: "file", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "protocol.file.allow", GIT_CONFIG_VALUE_0: "always" };
+    return { args: ["--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", ...mapped],
+      options: { ...options, cwd: options.cwd === undefined ? fixture.root : backing(String(options.cwd)), env } };
+  };
+  return { ...real,
+    execFileSync: (...args: Parameters<typeof real.execFileSync>) => {
+      if (!fixture.offlineGit) return real.execFileSync(...args);
+      const [command, argv, options] = args;
+      if (!Array.isArray(argv)) throw new Error("unexpected TEST Git invocation");
+      const input = offlineGit(command, argv, options);
+      return real.execFileSync("/usr/bin/git", input.args, input.options);
+    }, spawn: (...args: unknown[]) => {
     if (!fixture.nativeBackingFacts) return fixture.spawn(...args);
     const [command, argv, options] = args as [string, string[], import("node:child_process").SpawnOptions];
     const owned = (path: string): boolean => {
@@ -264,8 +311,12 @@ vi.mock("node:child_process", async original => {
         fs.fstatSync(stdio[3]).isDirectory() && owned(fs.readlinkSync(`/proc/self/fd/${stdio[3]}`)) &&
         options.env?.PATH === "/usr/bin:/bin" && options.env?.LC_ALL === "C") return real.spawn(command, argv, options);
     throw new Error("unexpected TEST native process effect");
-  }, spawnSync: (command: string, args: string[]) => {
+  }, spawnSync: (command: string, args: string[], options?: import("node:child_process").SpawnSyncOptions) => {
     fixture.calls.push({ command, args });
+    if (fixture.offlineGit && ["git", "/usr/bin/git"].includes(command)) {
+      const input = offlineGit(command, args, options);
+      return real.spawnSync("/usr/bin/git", input.args, input.options);
+    }
     if (command === "/usr/bin/findmnt") {
       // util-linux treats explicit table selectors as mutually exclusive.
       if (args.includes("--task") && args.some(value => ["--kernel", "--mtab", "--fstab"].includes(value)))
@@ -316,9 +367,10 @@ export function configureResearchFixtureTaskTimeout(taskTimeoutMs: number): void
   writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n", { mode: 0o600 });
 }
 export function setupResearchFixture(): void;
-export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string }): void;
-export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string } = {}): void {
+export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string; readonly offlineGit?: boolean }): void;
+export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string; readonly offlineGit?: boolean } = {}): void {
   fixture.nativeBackingFacts = options.nativeBackingFacts === true;
+  fixture.offlineGit = options.offlineGit === true;
   const parent = options.allocationParent ?? (fixture.nativeBackingFacts ? "/dev/shm" : tmpdir());
   if (options.allocationParent !== undefined && (resolve(parent) !== parent || nativeFs.realpathSync(parent) !== parent ||
       !nativeFs.lstatSync(parent).isDirectory() || nativeFs.lstatSync(parent).isSymbolicLink()))

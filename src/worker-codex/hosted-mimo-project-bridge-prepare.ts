@@ -3,7 +3,8 @@ import { preparationSafeGit, assertPreparationGitMetadata } from "./hosted-mimo-
 export { preparationSafeGit, assertPreparationGitMetadata } from "./hosted-mimo-project-source";
 import { dirname, join, relative } from "node:path";
 import { AccessBoundary, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
-import { createCodexGoalJob } from "./codex-goal-jobs";
+import { createCodexGoalJob, type CodexGoalJobManifestInput } from "./codex-goal-jobs";
+import { prepareProtectedCodexGoalJobBirth } from "./protected-job-birth";
 import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-launch-host";
 import { researchCustody, researchPath, researchRecord } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
@@ -97,17 +98,22 @@ export async function prepareHostedMimoProject(inputPath: string): Promise<unkno
   researchCustody(b.sourceWorkspacePath);
   assertPreparationGitMetadata(b.sourceWorkspacePath);
   assertPreparationSandbox(b.sourceWorkspacePath, sandboxRelative);
-  makePrivate(b.registryRootDir); makePrivate(join(b.stateRoot, "controller")); makePrivate(join(b.scratchRoot, "workspaces"));
+  makePrivate(b.registryRootDir); makePrivate(join(b.scratchRoot, "workspaces"));
   const promptPath = join(b.stateRoot, "controller", "prompt.md");
-  writeFileSync(promptPath, "Operator-owned MiMo project controller. Never launch this controller.\n", { flag: "wx", mode: 0o600 });
   const scope: ProjectAccessScope = { projectId: b.projectId, registryRoot: b.registryRootDir, authRoot: plan.authRootDir,
     workspaceRoots: [b.scratchRoot], worktreeRoots: [join(b.scratchRoot, "workspaces")], observedWorkspaceRoots: [b.sourceWorkspacePath],
     jobIdPrefixes: [plan.workerJobPrefix, b.controllerJobId], tmuxSessionPrefixes: [plan.workerJobPrefix, b.controllerJobId],
     allowedBranches: [b.sourceRef, b.sourceRef.slice(7), "feat/" + plan.workerJobPrefix + "*"], allowedGitRemotes: ["origin"],
     allowedAccountIds: ["account-q"], commitIdentity: plan.commitIdentity, preStartAdmission: { required: true, mode: "serial-builtin" } };
-  await createCodexGoalJob({ registryRootDir: b.registryRootDir, overwrite: false, manifest: { jobId: b.controllerJobId,
+  const manifest: CodexGoalJobManifestInput = { jobId: b.controllerJobId,
     taskId: b.controllerJobId, jobRootDir: join(b.stateRoot, "controller"), workspacePath: b.sourceWorkspacePath, promptPath,
-    authRootDir: plan.authRootDir, accounts: ["account-q"], accessBoundary: AccessBoundary.ProjectScopedControl, projectAccessScope: scope } });
+    authRootDir: plan.authRootDir, accounts: ["account-q"], accessBoundary: AccessBoundary.ProjectScopedControl, projectAccessScope: scope };
+  // Capture original absent-root ownership before writing the controller prompt.
+  // Existing or uncertain roots cannot acquire a new never-started authority.
+  const protectedBirthPreparation = await prepareProtectedCodexGoalJobBirth({ registryRootDir: b.registryRootDir, manifest });
+  if (!protectedBirthPreparation) throw new Error("mimo_project_bridge_controller_birth_required");
+  writeFileSync(promptPath, "Operator-owned MiMo project controller. Never launch this controller.\n", { flag: "wx", mode: 0o600 });
+  await createCodexGoalJob({ registryRootDir: b.registryRootDir, overwrite: false, manifest, protectedBirthPreparation });
   const reviewedPath = join(b.stateRoot, "reviewed-binding.json");
   writeFileSync(reviewedPath, JSON.stringify(b) + "\n", { flag: "wx", mode: 0o600 });
   return { ...await onboardHostedMimoProject(reviewedPath) as object, workerJobPrefix: plan.workerJobPrefix };
