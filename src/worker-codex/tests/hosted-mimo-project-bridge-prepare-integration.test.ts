@@ -20,7 +20,7 @@ vi.mock("node:fs/promises", async original => {
   const fs = await original<typeof import("node:fs/promises")>(); const result = { ...fs } as Record<string, unknown>;
   for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "appendFile", "writeFile", "readFile", "open", "readdir", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
-    result[name] = async (...args: unknown[]) => { const answer = await fn(...args.map(boundary.map)); return name === "realpath" ? boundary.unmap(answer as string) : answer; };
+    result[name] = async (...args: unknown[]) => { const answer = await fn(...args.map(boundary.map)); return name === "realpath" && !String(args[0]).startsWith("/proc/self/fd/") ? boundary.unmap(answer as string) : answer; };
   }
   return result;
 });
@@ -40,10 +40,38 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
 vi.mock("../application/project-control/codex-goal-project-admission", async original => ({ ...await original<object>(), codexProjectAdmissionGate: () => ({ evaluate: async () => ({ allowed: true, status: "admitted" }) }) }));
 vi.mock("../protected-job-birth", async original => ({ ...await original<object>(), withProtectedCodexGoalJobBirthPublication: async (effect: () => Promise<unknown>) => effect() }));
 vi.mock("../codex-goal-mcp-project-accounts", async original => ({ ...await original<object>(), projectControlRefillAccountNames: async () => ["account-q"] }));
+vi.mock("../../worker-local/project-control-evidence-custody-local-adapter", async original => {
+  const adapter = await original<typeof import("../../worker-local/project-control-evidence-custody-local-adapter")>();
+  const fs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const { projectControlCustodyMaterializationPaths } = await import("../../worker-local/project-control-evidence-custody-materialization");
+  return { ...adapter, LocalProjectControlEvidenceCustody: class extends adapter.LocalProjectControlEvidenceCustody {
+    override async canonicalDirectory(path: string, allowMissing = false) {
+      const mapped = boundary.map(path) as string;
+      if (process.platform === "linux") return boundary.unmap(await super.canonicalDirectory(mapped, allowMissing));
+      // macOS substitutes procfs traversal only; real path/mode checks remain.
+      const stat = await fs.lstat(mapped);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(mapped) !== mapped) throw new Error("TEST noncanonical custody");
+      return path;
+    }
+    override async materializeApprovedProjectControlCustody(input: Parameters<InstanceType<typeof adapter.LocalProjectControlEvidenceCustody>["materializeApprovedProjectControlCustody"]>[0]) {
+      if (process.platform === "linux") return super.materializeApprovedProjectControlCustody({ ...input,
+        approvedAnchor: boundary.map(input.approvedAnchor) as string, ledgerRoots: input.ledgerRoots.map(root => boundary.map(root) as string),
+        evidenceRoots: input.evidenceRoots.map(root => boundary.map(root) as string), deniedRoots: input.deniedRoots.map(root => boundary.map(root) as string) });
+      const paths = projectControlCustodyMaterializationPaths({ anchor: input.approvedAnchor, ledgerRoots: input.ledgerRoots, evidenceRoots: input.evidenceRoots });
+      for (const path of paths) await fs.mkdir(boundary.map(path) as string, { recursive: true, mode: 0o700 });
+      const revalidate = async () => { for (const path of paths) { await this.canonicalDirectory(path);
+        if ((await fs.lstat(boundary.map(path) as string)).mode & 0o077) throw new Error("TEST custody denied"); } };
+      await revalidate();
+      return { ...input, revalidate, close: async () => {} };
+    }
+  } };
+});
 import { prepareHostedMimoProject, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
 import { resolveProjectSourceRevision } from "../application/project-control/codex-goal-project-source-revision";
 import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { readCodexGoalJob } from "../codex-goal-jobs";
+import { loadProjectControlController } from "../codex-goal-mcp-project-control-deps";
+import { projectControlAdoptPublishedIntegrationCommit } from "../codex-goal-mcp-project-control-published-adoption";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
 boundary.root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-")));
 boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt)(?:\/|$)/.test(value) ? boundary.root + value : value;
@@ -83,6 +111,26 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
   expect(result).toMatchObject({ ok: true, projectId: "test-project" }); expect(fs.existsSync(marker)).toBe(false);
   const controller = await readCodexGoalJob({ registryRootDir: state + "/registry", jobId: "test-controller" });
   expect(controller.projectAccessScope?.allowedAccountIds).toEqual(["account-q"]);
+  const archive = state + "/registry/archives", ledger = state + "/registry/consumed-output-ledger";
+  expect(controller.projectAccessScope?.consumedOutputEvidenceRoots).toEqual([archive]);
+  expect(controller.projectAccessScope?.consumedOutputLedgerRoots).toEqual([ledger]);
+  for (const path of [state + "/reviewed-worker-outputs", state + "/reviewed-worker-outputs/.locks", state + "/reviewed-worker-outputs/.locks/workspace-locks",
+    state + "/registry/.consumed-output-ledger-mutation-locks", archive, ledger, ledger + "/items"]) {
+    const stat = fs.lstatSync(physical(path));
+    expect(stat.isDirectory()).toBe(true); expect(stat.isSymbolicLink()).toBe(false); expect(stat.mode & 0o777).toBe(0o700);
+  }
+  const control = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId };
+  await expect(loadProjectControlController(control)).resolves.toMatchObject({ scope: controller.projectAccessScope });
+  // The public consumption boundary must accept initial authority without scope repair.
+  const adoption = await projectControlAdoptPublishedIntegrationCommit({ ...control, attemptId: "test-attempt", commitSha: sha,
+    message: "test: readiness only", permitFile: "/etc/subscription-runtime/test-unread-permit.json", expectedPermitSha256: "a".repeat(64) });
+  expect(JSON.parse(adoption.content[0]!.text!)).toMatchObject({ reason: "confirm_adoption_required" });
+  // Canonical controller loading fails closed if either authority root disappears.
+  for (const path of [archive, ledger]) {
+    fs.renameSync(physical(path), physical(path + "-held"));
+    await expect(loadProjectControlController(control)).rejects.toThrow();
+    fs.renameSync(physical(path + "-held"), physical(path));
+  }
   expect(fs.statSync(physical(scratch + "/source/sandbox")).isDirectory()).toBe(true);
   expect(JSON.parse(fs.readFileSync(physical("/etc/subscription-runtime/mimo-projects/test-project/test-work.json"), "utf8")).sourceCommit).toBe(sha);
   // A sealed snapshot must create locally even when Git origin cannot be reached.

@@ -17,6 +17,16 @@ Configure `~/.config/subscription-runtime/mimo-project-routes.json` as an operat
 }
 ```
 
+Publish one reviewed route through the local operator command:
+
+```sh
+node /absolute/subscription-runtime/dist/worker-codex/mimo-project-client-cli.js --configure-route /absolute/reviewed-route.json
+```
+
+The input uses the same protected JSON schema above with exactly one route. Use the verified host alias, machine ID and owned authenticated socket directory from current inventory. The command publishes to `~/.config/subscription-runtime/mimo-project-routes.json`, preserves other entries, and makes an identical existing route a no-op. A conflicting entry or concurrent publication is refused; inspect the existing configuration instead of overwriting it. The command does not install credentials, open a host route or launch work. A new local installation needs protected configuration parents and an authenticated restricted Host Jobs endpoint first.
+
+Use this command after trusted `--prepare-project` for both existing and future projects. Keep one entry per logical project/workstream and reuse that identity for subsequent jobs. Every agent using this local MCP configuration shares the same route catalog; adding project-specific SDK code is unnecessary.
+
 Use `mimoProjectId` and `mimoWorkstreamId` with the ordinary tools:
 
 - `codex_goal_project_create_job`: `jobId`, `promptBody`, exact enrolled `sourceCommit`, `confirmCreate: true`.
