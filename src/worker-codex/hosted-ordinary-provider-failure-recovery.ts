@@ -225,7 +225,7 @@ function readCompletionForFinal(fence:HostedActivationFence,startId:string,start
   const pid=receipt.proxyBirth.slice(0,receipt.proxyBirth.indexOf(":"));
   try {lstatSync(`/proc/${pid}`);held();} catch(error) {if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error;}
   if (!collectUnitNotFound(row.unit)) {
-    const observation=spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",row.unit],
+    const observation=spawnSync("/usr/bin/systemctl",["show","--all","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",row.unit],
       {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
     if (observation.error || observation.status!==0 || !matchesManagedProviderProxyWait(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout),receipt.invocationId,receipt.waitStatus) ||
         receipt.terminal!==null && !encode(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout)).equals(encode(receipt.terminal))) held();
