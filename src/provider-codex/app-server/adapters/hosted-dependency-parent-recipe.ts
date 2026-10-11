@@ -1,3 +1,4 @@
+import { readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import { parseCodexGoalProjectAccessScopeJson } from "../../../worker-codex/codex-goal-access-plan";
 import type { HostedInventoryLaunch } from "../../../core/host-infrastructure/host-inventory";
 import { resolveStoredProjectStartPlan } from "../../../worker-codex/stored-start-planning";
@@ -19,7 +20,8 @@ export function readHostedDependencyParentRecipe(launch: HostedInventoryLaunch, 
   const argv = buildCodexGoalForegroundArgv(plan.launch);
   if (argv[0] !== launch.command || argv[1] !== args[0]) fail();
   const resolved = Object.freeze({ command: launch.command, args: Object.freeze(argv.slice(1)), cwd: launch.cwd });
-  assertHostedDependencyParentRecipe(resolved.args, job, workspace); return resolved;
+  if (!readHostedOriginalUsableParentRoots(launch, job, workspace)) assertHostedDependencyParentRecipe(resolved.args, job, workspace);
+  return resolved;
 }
 
 import { isHostedDependencySignedTaskId } from "./hosted-dependency-root-purpose-record";

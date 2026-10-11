@@ -1,3 +1,4 @@
+import { readHostedOriginalUsableParentRoots } from "../provider-codex/app-server/adapters/hosted-original-usable-parent-recipe";
 import { matchesDependencyToolExecution, type DependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
 import type { DependencyToolReadyRead, DependencyToolSourceRoot } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { readHostedOrdinaryDependencyParentFrame } from "./hosted-ordinary-dependency-reader";
@@ -62,7 +63,7 @@ export function assertHostedManagedDependencyToolParentFrame(fence: HostedActiva
 export function assertHostedOrdinaryDependencyToolParentFrame(fence:HostedActivationFence,startId:string,frame:string|Buffer):void {
   const selected=readHostedOrdinaryDependencyParentFrame(fence,startId,frame); if (!selected) return;
   const recipe=readHostedDependencyParentRecipe(selected.launch,selected.binding.jobRootDir,selected.binding.workspace.canonicalPath);
-  assertParentAuthWriterScope(selected.binding,recipe.args);
+  assertParentAuthWriterScope(selected.binding,recipe.args,selected.launch);
   readHostedOrdinaryDependencyParentFrame(fence,startId,frame);
 }
 
@@ -142,12 +143,18 @@ function readManagedParentProducer(path: string): Buffer {
 }
 
 /** Metadata only: never open auth.json or derive authority from a credential.
- * The exact inventoried auth leaf and its capacity sibling must stay beneath
- * the root-owned job namespace before any privileged migration can execute. */
-function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: readonly string[]): void {
+ * Generic writers stay in the root-owned job namespace. The original Usable
+ * producer alone selects its sealed broker and registry metadata scope. */
+function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: readonly string[], raw?: import("../core/host-infrastructure/host-inventory").HostedInventoryLaunch): void {
+  const original = raw ? readHostedOriginalUsableParentRoots(raw, binding.jobRootDir, binding.workspace.canonicalPath) : null;
   assertHostedDependencyPhysicalWorkspace(binding); // Includes all bind/mount aliases.
   const job = lstatSync(binding.jobRootDir, { bigint: true });
-  const authPath = `${binding.jobRootDir}/auth`, auth = lstatSync(authPath, { bigint: true });
+  const authPath = original?.auth ?? `${binding.jobRootDir}/auth`, auth = lstatSync(authPath, { bigint: true });
+  if (original) {
+    const parentPath = dirname(authPath), parent = lstatSync(parentPath, { bigint: true });
+    if (!parent.isDirectory() || parent.uid !== 0n || parent.gid !== 0n || (parent.mode & 0o777n) !== 0o700n ||
+        parent.dev !== job.dev || realpathSync(parentPath) !== parentPath) fail();
+  }
   if ((job.mode & 0o777n) !== 0o700n || !auth.isDirectory() || auth.uid !== 0n || auth.gid !== 0n ||
       (auth.mode & 0o777n) !== 0o700n || auth.dev !== job.dev || realpathSync(authPath) !== authPath) fail();
   // Capacity derives dirname(realpath(auth)), not the nominal CLI string.
@@ -168,13 +175,13 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
     } else if (!s.isFile() || s.nlink !== 1n || (s.mode & 0o022n) ||
         strictCapacity && (s.mode & 0o777n) !== 0o600n) fail();
   };
-  walk(`${binding.jobRootDir}/.subscription-runtime-account-capacity`, 0, true);
+  walk(original?.capacity ?? `${binding.jobRootDir}/.subscription-runtime-account-capacity`, 0, true);
   // Other actual fixed startup/migration writers cannot be redirected by a
   // preexisting state/handoff directory or flat event/key/log leaf alias.
-  for (const name of ["state", "durable-handoffs"]) walk(join(binding.jobRootDir, name), 0, false);
+  for (const path of original ? [original.state, original.registry] : [join(binding.jobRootDir, "state"), join(binding.jobRootDir, "durable-handoffs")]) walk(path, 0, false);
   const taskIndex = args.indexOf("--task-id"), task = args[taskIndex + 1]; if (taskIndex < 0 || !task) fail();
-  for (const name of ["encryption-key.hex", `${task}.events.jsonl`, `${task}.log`, `${task}.progress.json`]) {
-    const path = join(binding.jobRootDir, name);
+  for (const path of [join(binding.jobRootDir, "encryption-key.hex"), join(binding.jobRootDir, `${task}.events.jsonl`),
+    original?.log ?? join(binding.jobRootDir, `${task}.log`), original?.progress ?? join(binding.jobRootDir, `${task}.progress.json`)]) {
     try {
       const leaf = lstatSync(path, { bigint: true });
       if (!leaf.isFile() || leaf.uid !== 0n || leaf.nlink !== 1n || (leaf.mode & 0o022n) ||
@@ -185,6 +192,7 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
   const after = lstatSync(authPath, { bigint: true }), parent = lstatSync(binding.jobRootDir, { bigint: true });
   if (after.dev !== auth.dev || after.ino !== auth.ino || after.ctimeNs !== auth.ctimeNs ||
       parent.dev !== job.dev || parent.ino !== job.ino) fail();
+  if (original && (!raw || JSON.stringify(readHostedOriginalUsableParentRoots(raw, binding.jobRootDir, binding.workspace.canonicalPath)) !== JSON.stringify(original))) fail();
 }
 
 /** Only a live enrolled origin and its reserved provider can prepare the plan.
