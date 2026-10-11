@@ -76,14 +76,15 @@ async function prospectiveDirectoryIdentity(path: string): Promise<string> {
   return join(await realpath(ancestor), ...suffix);
 }
 
-async function futureCreationIdentity(input: Pick<TargetInput, "scope" | "binding" | "request">, ownershipRequired = true): Promise<string | undefined> {
+async function worktreeCreationIdentity(input: Pick<TargetInput, "scope" | "binding" | "request">, ownershipRequired = true): Promise<string | undefined> {
   const target = input.binding?.createWorktree;
   const request = input.request;
   if (!target || !request || request.operation !== ProjectOperation.CreateWorktree ||
     request.jobId !== target.jobId || request.workspacePath !== target.path ||
     (ownershipRequired && (!target.jobId || !sameOwnedPaths(request.ownedPaths, target.ownedPaths))) || !isAbsolute(target.path) ||
-    !/^[0-9a-f]{40}$/.test(target.expectedRevision) || !await absent(target.path)) return undefined;
-  const identity = await prospectiveDirectoryIdentity(target.path);
+    !/^[0-9a-f]{40}$/.test(target.expectedRevision)) return undefined;
+  const missing = await absent(target.path);
+  const identity = missing ? await prospectiveDirectoryIdentity(target.path) : await projectControlCanonicalWorkspacePath(target.path, input.scope);
   // The ancestor anchors a future identity; only the explicitly scoped root
   // grants authority. An absent worktree root never authorizes its siblings.
   let scoped = false;
@@ -93,6 +94,15 @@ async function futureCreationIdentity(input: Pick<TargetInput, "scope" | "bindin
   }
   if (!scoped) return undefined;
   if (target.expectedRealPath && target.expectedRealPath !== identity) return undefined;
+  if (!missing) {
+    // Retry/adoption binds an observed existing identity, not an absent-path
+    // exemption. Dirty/input-patch and fast-forward checks remain in the reuse
+    // validators; writer census still observes every existing writer.
+    if (!target.expectedRealPath || await realpath(await git(identity, "rev-parse", "--show-toplevel")) !== identity) return undefined;
+    const current = await git(identity, "rev-parse", "HEAD");
+    if (current !== target.expectedRevision && current !== target.fastForwardExisting?.expectedCurrentRevision.toLowerCase()) return undefined;
+    if (target.newBranch && await git(identity, "symbolic-ref", "--short", "HEAD") !== target.newBranch) return undefined;
+  }
   const source = await projectControlCanonicalWorkspacePath(target.sourceWorkspacePath, input.scope);
   if (source !== target.expectedSourceRealPath ||
     await realpath(await git(source, "rev-parse", "--show-toplevel")) !== source ||
@@ -116,7 +126,7 @@ export async function admissionCreationTargetIdentity(input: TargetInput): Promi
   try {
     // A standalone worktree creates no child writer. Bound ownership is still
     // exact when the refill carries it, rather than a required public field.
-    return await futureCreationIdentity(input, input.binding?.createWorktree?.ownedPaths !== undefined || input.request?.ownedPaths !== undefined);
+    return await worktreeCreationIdentity(input, input.binding?.createWorktree?.ownedPaths !== undefined || input.request?.ownedPaths !== undefined);
   } catch { return undefined; }
 }
 
@@ -124,7 +134,9 @@ export async function boundCreationTargetIdentity(input: {
   readonly target: CodexGoalProjectCreateWorktreeInput; readonly scope: ProjectAccessScope;
 }): Promise<string | undefined> {
   try {
-    return await futureCreationIdentity({ scope: input.scope,
+    // This port revalidates only a prior absent-path creation proof.
+    if (!await absent(input.target.path)) return undefined;
+    return await worktreeCreationIdentity({ scope: input.scope,
       binding: { createWorktree: input.target }, request: { operation: ProjectOperation.CreateWorktree,
         workspacePath: input.target.path,
         ...(input.target.jobId ? { jobId: input.target.jobId } : {}),
@@ -281,6 +293,29 @@ export async function admissionNeedsFreshCreateJobTarget(binding: ProjectAdmissi
     await absent(binding.createManifest.jobRootDir));
 }
 
+async function createJobWorkspaceIdentity(path: string, scope: ProjectAccessScope): Promise<{
+  readonly canonicalPath: string; readonly ancestor: string; readonly missing: boolean;
+}> {
+  if (!await absent(path)) {
+    const canonicalPath = await projectControlCanonicalWorkspacePath(path, scope);
+    return { canonicalPath, ancestor: canonicalPath, missing: false };
+  }
+  // Registration may precede the worktree. Only its exact explicit scope grants
+  // the future destination; the existing ancestor supplies custody/backing, not
+  // authority over siblings or proof that any writer was released.
+  const canonicalPath = await prospectiveDirectoryIdentity(path);
+  if (!isAbsolute(path) || resolve(path) !== path || canonicalPath !== path) throw new Error("project_control_future_workspace_unsafe");
+  let scoped = false;
+  for (const root of [...(scope.workspaceRoots ?? []), ...(scope.worktreeRoots ?? []),
+    ...(scope.isolatedWorkspaceRoot ? [scope.isolatedWorkspaceRoot] : [])]) {
+    if (pathInsideOrEqual(canonicalPath, await prospectiveDirectoryIdentity(root))) scoped = true;
+  }
+  if (!scoped) throw new Error("project_control_workspace_real_path_outside_scope");
+  let ancestor = dirname(canonicalPath);
+  while (await absent(ancestor)) ancestor = dirname(ancestor);
+  return { canonicalPath, ancestor, missing: true };
+}
+
 async function freshCreateJobTargetIdentity(input: TargetInput): Promise<string | undefined> {
   const manifest = input.binding?.createManifest, request = input.request;
   if (!manifest || !request || request.operation !== ProjectOperation.CreateJob ||
@@ -292,14 +327,15 @@ async function freshCreateJobTargetIdentity(input: TargetInput): Promise<string 
   // Reuse the protected create owner's actual host and directory qualification.
   // No role, caller marker or supplied profile can select this positive branch.
   assertResearchInitialRoot(true);
-  const workspace = await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope);
+  const workspaceIdentity = await createJobWorkspaceIdentity(manifest.workspacePath, input.scope);
+  const workspace = workspaceIdentity.canonicalPath;
   const registry = resolve(input.registryRootDir);
   if (await realpath(registry) !== registry ||
     input.scope.registryRoot !== undefined && resolve(input.scope.registryRoot) !== registry ||
     await prospectiveDirectoryIdentity(manifest.jobRootDir) !== manifest.jobRootDir) return undefined;
   let ancestor = dirname(manifest.jobRootDir);
   while (await absent(ancestor)) ancestor = dirname(ancestor);
-  const directories = [workspace, registry, ancestor].map(path => {
+  const directories = [workspaceIdentity.ancestor, registry, ancestor].map(path => {
     researchCustody(path);
     return researchDirectoryIdentity(path);
   });
@@ -309,7 +345,7 @@ async function freshCreateJobTargetIdentity(input: TargetInput): Promise<string 
   const after = await Promise.all(paths.map(prospectiveAdmissionResourceBacking));
   if (!isDeepStrictEqual(before, after) || !await absent(manifest.jobRootDir) ||
     !await absent(join(registry, manifest.jobId)) ||
-    await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope) !== workspace) return undefined;
+    !isDeepStrictEqual(await createJobWorkspaceIdentity(manifest.workspacePath, input.scope), workspaceIdentity)) return undefined;
   assertResearchInitialRoot(true);
   directories.forEach(identity => { researchCustody(identity.path); assertResearchDirectory(identity); });
   return workspace;

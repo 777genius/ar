@@ -1,5 +1,5 @@
 import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
-import { access, chmod, mkdir, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -39,11 +39,12 @@ async function fixture() {
 }
 
 describe("scoped creation targets", () => {
-  it("publishes a fresh job through the public controller route with actual physical target facts", async () => {
+  it.each([false, true])("registers a fresh job with actual physical target facts (future workspace=%s)", async future => {
     const f = await fixture();
+    if (future) await rm(f.workspacePath, { recursive: true });
     const controllerWorkspace = join(f.root, "workspaces", "controller");
     await mkdir(controllerWorkspace, { mode: 0o700 });
-    for (const workspace of [controllerWorkspace, f.workspacePath]) {
+    for (const workspace of [controllerWorkspace, ...(future ? [] : [f.workspacePath])]) {
       await gitInitRepository(workspace);
       await writeFile(join(workspace, "README.md"), "TEST base\n");
       await git(workspace, ["add", "README.md"]);
@@ -73,7 +74,10 @@ describe("scoped creation targets", () => {
       } } });
       const stored = await readCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: f.manifest.jobId });
       expect(stored.projectPreStartAdmission).toBeUndefined();
-      expect(await observeProtectedCodexGoalJobBirth(stored)).toEqual({ status: "released" });
+      expect(await observeProtectedCodexGoalJobBirth(stored)).toEqual({ status: future ? "unknown" : "released" });
+      // Registration neither creates the future workspace nor grants release
+      // merely because its current directory has not been created yet.
+      if (future) await expect(access(f.workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await client.close(); await server.close(); }
   });
 
@@ -164,15 +168,34 @@ describe("scoped creation targets", () => {
     } } })).toBeUndefined();
   });
 
-  it("admits a pinned standalone worktree without granting mismatched child ownership", async () => {
+  it("rejects an aliased or out-of-scope future workspace and unsafe ancestor custody", async () => {
+    const f = await fixture(), alias = join(f.root, "workspace-alias");
+    await symlink(join(f.root, "workspaces"), alias);
+    for (const workspacePath of [join(alias, "future"), join(f.root, "unscoped-future")]) {
+      expect(await admissionCreateJobTargetIdentity({ ...f.input,
+        request: { ...f.input.request, workspacePath },
+        binding: { createManifest: { ...f.manifest, workspacePath } },
+      })).toBeUndefined();
+    }
+    await rm(f.workspacePath, { recursive: true });
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBe(f.workspacePath);
+    await chmod(join(f.root, "workspaces"), 0o777);
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+    await expect(access(f.workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(f.manifest.jobRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("qualifies a pinned worktree without granting mismatched child ownership (existing=%s)", async existing => {
     const f = await fixture();
     await gitInitRepository(f.workspacePath);
     await writeFile(join(f.workspacePath, "README.md"), "TEST pinned base\n");
     await git(f.workspacePath, ["add", "README.md"]);
     await git(f.workspacePath, ["commit", "-m", "test: standalone worktree target"]);
     const path = join(f.root, "worktrees", "TEST-standalone");
+    if (existing) await git(f.workspacePath, ["worktree", "add", "-b", "fix/TEST-existing", path, "HEAD"]);
     const target = { sourceWorkspacePath: f.workspacePath, expectedSourceRealPath: f.workspacePath,
-      path, expectedRevision: (await gitStdout(f.workspacePath, ["rev-parse", "HEAD"])).trim(), sourceRevisionPinned: true };
+      path, expectedRevision: (await gitStdout(f.workspacePath, ["rev-parse", "HEAD"])).trim(), sourceRevisionPinned: true,
+      ...(existing ? { expectedRealPath: path, newBranch: "fix/TEST-existing", workerRole: "adoption" as const } : {}) };
     const request = { operation: ProjectOperation.CreateWorktree, workspacePath: path };
     const input = { registryRootDir: f.registryRootDir, scope: f.scope, binding: { createWorktree: target }, request };
     expect(await admissionCreationTargetIdentity(input)).toBe(path);
@@ -182,6 +205,15 @@ describe("scoped creation targets", () => {
       request: { ...request, jobId: child.jobId, ownedPaths: ["other/"] } })).toBeUndefined();
     expect(await admissionCreationTargetIdentity({ ...input, binding: { createWorktree: child },
       request: { ...request, jobId: child.jobId, ownedPaths: ["src/"] } })).toBe(path);
-    await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+    if (existing) {
+      await writeFile(join(path, "README.md"), "TEST adopted changes\n");
+      expect(await admissionCreationTargetIdentity(input)).toBe(path);
+      for (const changed of [
+        { ...target, expectedRealPath: undefined }, { ...target, expectedRealPath: f.workspacePath },
+        { ...target, expectedSourceRealPath: path }, { ...target, newBranch: "fix/TEST-other" },
+        { ...target, expectedRevision: "0".repeat(40) },
+      ]) expect(await admissionCreationTargetIdentity({ ...input, binding: { createWorktree: changed } })).toBeUndefined();
+      await expect(access(path)).resolves.toBeUndefined();
+    } else await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
