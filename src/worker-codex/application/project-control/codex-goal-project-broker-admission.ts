@@ -5,6 +5,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobManifestInput } from "../../codex-goal-jobs";
 import type { CodexGoalLaunchInput } from "../../codex-goal-ops";
+import type { DependencyPreflightDiagnosticBinding } from "../../dependency-bootstrap";
 import type { ProjectControlWorkspaceLease } from "../../codex-goal-project-workspace-lock";
 import { codexProjectAdmissionGate, type CodexProjectAdmissionDeps } from "./codex-goal-project-admission";
 import { boundCreationTargetIdentity, type ProjectAdmissionTargetBinding } from "./codex-goal-project-admission-target";
@@ -28,6 +29,7 @@ type BrokerAdmissionInput = {
   readonly startManifest?: CodexGoalJobManifest;
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
   readonly startWorkspaceLease?: ProjectControlWorkspaceLease;
+  readonly startDependencyPreflightDiagnostic?: DependencyPreflightDiagnosticBinding;
   readonly controlledRuntimeInPlaceContinuation?: ProjectControlledRuntimeInPlaceContinuation;
 };
 export type ProjectCreationAdmissionProof = {
@@ -60,6 +62,7 @@ export function createProjectBrokerAdmission(
         ...(input.createReviewedOutputAggregate !== undefined ? { createReviewedOutputAggregate: input.createReviewedOutputAggregate } : {}),
         ...(input.startManifest && input.startLaunch && input.startWorkspaceLease ? {
           start: { manifest: input.startManifest, launch: input.startLaunch, workspaceLease: input.startWorkspaceLease,
+            ...(input.startDependencyPreflightDiagnostic !== undefined ? { dependencyPreflightDiagnostic: input.startDependencyPreflightDiagnostic } : {}),
             ...(input.startAdmissionWorkspaceMode ? { workspaceMode: input.startAdmissionWorkspaceMode } : {}),
             ...(input.controlledRuntimeInPlaceContinuation ? { continuation: input.controlledRuntimeInPlaceContinuation } : {}),
           },

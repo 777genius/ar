@@ -53,6 +53,7 @@ import {
   type ProjectPreStartAdmissionLaunchAuthorization,
 } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/project-control/codex-goal-project-pre-start-admission";
+import type { DependencyPreflightDiagnosticBinding } from "./dependency-bootstrap";
 import {
   assertPendingInputPatchTerminalFree,
   type ValidatedPendingInputPatchAdmission,
@@ -163,6 +164,7 @@ export type CodexProjectControlBrokerInput = {
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
   readonly startPendingInputPatchAdmission?: ValidatedPendingInputPatchAdmission;
   readonly startWorkspaceLease?: ProjectControlWorkspaceLease;
+  readonly startDependencyPreflightDiagnostic?: DependencyPreflightDiagnosticBinding;
   readonly revalidateStartPublication?: (workspace: ProjectControlWorkspaceLease) => Promise<void>;
   readonly startSkipDoctor?: boolean;
   readonly controlledRuntimeInPlaceContinuation?: ProjectControlledRuntimeInPlaceContinuation;

@@ -17,7 +17,7 @@ import {
   listCodexGoalAccountStatuses,
   type CodexGoalLaunchInput,
 } from "./codex-goal-ops";
-import { inspectDependencyBootstrap, runDependencyBootstrap } from "./dependency-bootstrap";
+import { bindDependencyPreflightDiagnostic, inspectDependencyBootstrap, runDependencyBootstrap } from "./dependency-bootstrap";
 import {
   type CodexGoalProjectCreateWorktreeInput,
   type CodexGoalProjectIntegrateCommitInput,
@@ -434,6 +434,8 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         confirmInstall: booleanValue(args.confirmDependencyBootstrap) === true,
       });
       assertProjectControlDependencyBootstrapReady(dependencyPreflight);
+      const startDependencyPreflightDiagnostic = loaded.manifest.projectPreStartAdmission
+        ? bindDependencyPreflightDiagnostic(dependencyPreflight, loaded.manifest.jobRootDir) : undefined;
       let authorizedContinuationWorkspaceMode:
         | "admitted_input_patch"
         | "admitted_input_patch_continuation"
@@ -581,6 +583,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             ? { startPendingInputPatchAdmission: pendingInputPatchAdmission }
             : {}),
           startWorkspaceLease: workspace,
+          ...(startDependencyPreflightDiagnostic !== undefined ? { startDependencyPreflightDiagnostic } : {}),
           revalidateStartPublication: async (currentWorkspace) => {
             const freshController = await deps.loadProjectControlController(args);
             const freshManifest = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: loaded.manifest.jobId });

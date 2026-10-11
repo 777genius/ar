@@ -34,6 +34,7 @@ import {
 } from "./codex-goal-jobs";
 import {
   inspectDependencyBootstrap,
+  bindDependencyPreflightDiagnostic,
   runDependencyBootstrap,
   type DependencyPreflightResult,
 } from "./dependency-bootstrap";
@@ -665,6 +666,8 @@ export async function projectControlRefillWorkerView(
         });
         dependencyPreflight = publicationDependencyBaseline;
         assertProjectControlDependencyBootstrapReady(publicationDependencyBaseline);
+        const startDependencyPreflightDiagnostic = manifest.projectPreStartAdmission
+          ? bindDependencyPreflightDiagnostic(publicationDependencyBaseline, manifest.jobRootDir) : undefined;
         const startAdmissionWorkspaceMode =
           await validateProjectRefillPreStartAdmissionLocked({
             manifest,
@@ -694,6 +697,7 @@ export async function projectControlRefillWorkerView(
               ? { startAdmissionWorkspaceMode }
               : {}),
             startWorkspaceLease: workspace,
+            ...(startDependencyPreflightDiagnostic !== undefined ? { startDependencyPreflightDiagnostic } : {}),
             revalidateStartPublication: async (currentWorkspace) => {
               const freshController = await deps.loadProjectControlController(args);
               const freshManifest = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: manifest.jobId });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstatSync } from "node:fs";
 import {
   access,
   mkdir,
@@ -20,6 +21,7 @@ import {
 import {
   withDependencyBootstrapWorkspaceTransaction,
 } from "./dependency-bootstrap-workspace-transaction";
+import { researchDirectoryIdentity, researchPromptBytes, type ResearchDirectoryIdentity } from "./research-launch-files";
 
 export {
   defaultDependencyCacheRoot,
@@ -98,6 +100,38 @@ export type DependencyBootstrapInput = {
     options: { readonly cwd: string; readonly timeoutMs: number },
   ) => Promise<void>;
 };
+
+export type DependencyPreflightDiagnosticBinding = Readonly<{
+  path: string; workspacePath: string; sha256: string; jobRoot: ResearchDirectoryIdentity;
+}>;
+
+/** Snapshot only the diagnostic emitted by successful internal preparation.
+ * Unsupported custody leaves it unbound; it cannot qualify a fresh self. */
+export function bindDependencyPreflightDiagnostic(result: DependencyPreflightResult, jobRootDir: string): DependencyPreflightDiagnosticBinding | undefined {
+  if (!result.diagnosticPath) return undefined;
+  try {
+    if (result.diagnosticPath !== join(jobRootDir, "dependency-preflight.json")) return undefined;
+    const jobRoot = researchDirectoryIdentity(jobRootDir);
+    const bytes = researchPromptBytes(jobRoot, result.diagnosticPath);
+    if (bytes.length > 256 * 1024 || bytes.toString("utf8") !== `${JSON.stringify(result, null, 2)}\n`) return undefined;
+    const binding = Object.freeze({ path: result.diagnosticPath, workspacePath: result.workspacePath,
+      sha256: createHash("sha256").update(bytes).digest("hex"), jobRoot });
+    return dependencyPreflightDiagnosticCurrent(binding, jobRootDir, result.workspacePath) ? binding : undefined;
+  } catch { return undefined; }
+}
+
+export function dependencyPreflightDiagnosticCurrent(binding: DependencyPreflightDiagnosticBinding, jobRootDir: string, workspacePath: string): boolean {
+  try {
+    if (binding.path !== join(jobRootDir, "dependency-preflight.json") || binding.jobRoot.path !== jobRootDir ||
+      binding.workspacePath !== workspacePath) return false;
+    const status = lstatSync(binding.path);
+    if (!status.isFile() || status.isSymbolicLink() || (status.mode & 0o7777) !== 0o600 || status.size > 256 * 1024) return false;
+    const digest = createHash("sha256").update(researchPromptBytes(binding.jobRoot, binding.path)).digest("hex");
+    const after = lstatSync(binding.path);
+    return (["dev", "ino", "mode", "uid", "gid", "nlink", "size", "ctimeMs", "mtimeMs"] as const).every(key =>
+      status[key] === after[key]) && digest === binding.sha256;
+  } catch { return false; }
+}
 
 export async function runDependencyBootstrap(
   input: DependencyBootstrapInput,

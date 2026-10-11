@@ -1,17 +1,18 @@
 import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
-import { access, chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, link, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, it } from "vitest";
 import { AccessBoundary, ProjectOperation, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
-import { readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
+import { codexGoalJobToArgs, createCodexGoalJob, listCodexGoalJobs, readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import { observeProtectedCodexGoalJobBirth, prepareProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthPreparationCurrent,
   recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "../protected-job-birth";
 import { researchAuthorityRoot, researchHash } from "../research-launch-files";
 import {
   admissionCreationTargetIdentity, admissionCreateJobTargetIdentity, admissionNeedsFreshCreateJobTarget,
+  type ProjectAdmissionTargetBinding,
 } from "../application/project-control/codex-goal-project-admission-target";
 import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
 import { host } from "./research-launch-fixture";
@@ -22,6 +23,10 @@ import { materializeReviewedOutputAggregateArtifacts, resolveLocalReviewedOutput
 import { stagedPatchSha256 } from "../application/project-control/codex-goal-project-git";
 import { createApprovedReviewedOutput } from "./codex-goal-mcp-project-prepare-verifier-test-support";
 import { reviewedWorkerOutputRoot } from "../reviewed-worker-output";
+import { bindDependencyPreflightDiagnostic, runDependencyBootstrap } from "../dependency-bootstrap";
+import { goalLaunchInput } from "../application/codex-goal-launch-input";
+import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../codex-goal-project-workspace-lock";
+import { codexProjectAdmissionGate } from "../application/project-control/codex-goal-project-admission";
 
 afterEach(cleanupProjectPreStartAdmissionFixtures);
 
@@ -48,6 +53,59 @@ async function fixture() {
 }
 
 describe("scoped creation targets", () => {
+  it("qualifies only the official unchanged dependency diagnostic for a never-started self", async () => {
+    const f = await createBuiltinFixture({ temporaryRoot: tmpdir() }), registryRootDir = join(f.root, "registry");
+    await mkdir(registryRootDir, { mode: 0o700 });
+    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath] }, plan = f.plan();
+    const manifest = await createCodexGoalJob({ registryRootDir, manifest: { ...f.manifest,
+      authRootDir: join(f.root, "TEST-auth"), projectPreStartAdmission: plan.descriptor } });
+    await prepareProjectPreStartAdmission({ plan, manifest, scope });
+    const receiptBefore = await readFile(plan.descriptor.receiptPath);
+    const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
+    const request = { operation: ProjectOperation.StartWorker, jobId: manifest.jobId,
+      workspacePath: manifest.workspacePath, ownedPaths: ["src/example.ts"] };
+    const deps = { listJobs: listCodexGoalJobs, readJob: readCodexGoalJob,
+      readWriterWritableRoots: async () => ({ status: "unknown" as const }),
+      buildOverviewItems: async () => [{ ok: true, jobId: manifest.jobId, workspacePath: manifest.workspacePath,
+        workerAlive: false, workerProcessAlive: false, progressProcessAlive: false, workspaceDirty: false,
+        resultExists: false, activeWriterRisk: "none", progressExists: false, workerSupervisorKind: "none" }] };
+    await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(registryRootDir), scope,
+      requestedWorkspacePath: manifest.workspacePath, owner: `project-refill-start:project-controller:${manifest.jobId}`,
+      effect: async workspaceLease => {
+        const start = { manifest, launch, workspaceLease };
+        const gate = (bound: NonNullable<ProjectAdmissionTargetBinding["start"]> = start) => codexProjectAdmissionGate({ registryRootDir, scope,
+          controllerJobId: "project-controller", deps, targetBinding: { start: bound } });
+        const prepared = await runDependencyBootstrap({ workspacePath: manifest.workspacePath, jobRootDir: manifest.jobRootDir, mode: "off" });
+        const diagnostic = bindDependencyPreflightDiagnostic(prepared, manifest.jobRootDir)!;
+        expect(diagnostic).toBeDefined();
+        const bound = { ...start, dependencyPreflightDiagnostic: diagnostic };
+        await expect(gate().evaluate(request)).resolves.toMatchObject({ allowed: false });
+        await expect(gate(bound).evaluate(request)).resolves.toMatchObject({ allowed: true });
+        const bytes = await readFile(diagnostic.path);
+        await writeFile(diagnostic.path, Buffer.concat([bytes, Buffer.from("\n")]));
+        await expect(gate(bound).evaluate(request)).resolves.toMatchObject({ allowed: false });
+        await writeFile(diagnostic.path, bytes);
+        for (const alias of ["symlink", "hardlink"] as const) {
+          const copy = join(f.root, "TEST-diagnostic-copy.json");
+          await writeFile(copy, bytes, { mode: 0o600 }); await rm(diagnostic.path);
+          if (alias === "symlink") await symlink(copy, diagnostic.path); else await link(copy, diagnostic.path);
+          await expect(gate(bound).evaluate(request)).resolves.toMatchObject({ allowed: false });
+          await rm(diagnostic.path); await rm(copy); await writeFile(diagnostic.path, bytes, { mode: 0o600 });
+        }
+        await chmod(diagnostic.path, 0o644);
+        await expect(gate(bound).evaluate(request)).resolves.toMatchObject({ allowed: false });
+        await chmod(diagnostic.path, 0o600);
+        await expect(gate({ ...bound, dependencyPreflightDiagnostic: { ...diagnostic, workspacePath: f.root } }).evaluate(request)).resolves.toMatchObject({ allowed: false });
+        const foreign = join(manifest.jobRootDir, "TEST-other.json"); await writeFile(foreign, "{}", { mode: 0o600 });
+        await expect(gate(bound).evaluate(request)).resolves.toMatchObject({ allowed: false });
+        await rm(foreign);
+        await expect(gate(bound).evaluate(request)).resolves.toMatchObject({ allowed: true });
+      },
+    });
+    expect(await readFile(plan.descriptor.receiptPath)).toEqual(receiptBefore);
+    await expect(access(launch.config.outputPath!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each([false, true])("registers a fresh job with actual physical target facts (future workspace=%s)", async future => {
     const f = await fixture();
     if (future) await rm(f.workspacePath, { recursive: true });

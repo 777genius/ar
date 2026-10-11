@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { consumedOutputRecordFromJson, ProjectOperation, type ProjectAccessScope, type ProjectAdmissionRequest } from "@vioxen/subscription-runtime/worker-core";
 import { readCodexGoalJob, type CodexGoalJobManifest, type CodexGoalJobManifestInput, type CodexGoalJobSummary } from "../../codex-goal-jobs";
 import type { CodexGoalLaunchInput } from "../../codex-goal-ops";
+import { dependencyPreflightDiagnosticCurrent, type DependencyPreflightDiagnosticBinding } from "../../dependency-bootstrap";
 import { projectControlWorkspaceLockRoot, type ProjectControlWorkspaceLease } from "../../codex-goal-project-workspace-lock";
 import type { CodexGoalProjectCreateWorktreeInput } from "./codex-goal-project-control-contracts";
 import { defaultProjectControlGitPort } from "./adapters/host-command-adapters";
@@ -34,6 +35,7 @@ export type ProjectAdmissionTargetBinding = {
     readonly manifest: CodexGoalJobManifest;
     readonly launch: CodexGoalLaunchInput;
     readonly workspaceLease: ProjectControlWorkspaceLease;
+    readonly dependencyPreflightDiagnostic?: DependencyPreflightDiagnosticBinding;
     readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
     readonly continuation?: ProjectControlledRuntimeInPlaceContinuation;
   };
@@ -165,7 +167,7 @@ export async function assertAdmissionStoredLaunchIdentity(input: {
   if (await realpath(stored.workspacePath) !== input.launch.config.workspacePath) throw new Error("project_control_start_launch_identity_mismatch");
 }
 
-async function neverLaunchedSelf(manifest: CodexGoalJobManifest, launch: CodexGoalLaunchInput, item: Readonly<Record<string, unknown>>, registryRootDir: string): Promise<boolean> {
+async function neverLaunchedSelf(manifest: CodexGoalJobManifest, launch: CodexGoalLaunchInput, item: Readonly<Record<string, unknown>>, registryRootDir: string, diagnostic?: DependencyPreflightDiagnosticBinding): Promise<boolean> {
   if (item.progressExists === true || item.progressPid !== undefined || item.progressStatus !== undefined ||
     item.lastProgressAt !== undefined || item.workerFreshProgressAlive === true ||
     (item.workerSupervisorKind !== undefined && item.workerSupervisorKind !== "none") ||
@@ -181,7 +183,9 @@ async function neverLaunchedSelf(manifest: CodexGoalJobManifest, launch: CodexGo
   const entries = await readdir(manifest.jobRootDir, { withFileTypes: true });
   const colocated = resolve(manifest.jobRootDir) === join(resolve(registryRootDir), manifest.jobId);
   if (!entries.every((entry) => !entry.isSymbolicLink() &&
-    ((entry.isFile() && (entry.name === basename(manifest.promptPath) || (colocated && entry.name === "job.json"))) ||
+    ((entry.isFile() && (entry.name === basename(manifest.promptPath) || (colocated && entry.name === "job.json") ||
+      (diagnostic !== undefined && join(manifest.jobRootDir, entry.name) === diagnostic.path &&
+        dependencyPreflightDiagnosticCurrent(diagnostic, manifest.jobRootDir, launch.config.workspacePath)))) ||
       (entry.isDirectory() && entry.name === basename(admissionDir))))) return false;
   const allowed = new Set([descriptor.contractPath, descriptor.statePath, descriptor.receiptPath].map((path) => basename(path)));
   return (await readdir(admissionDir, { withFileTypes: true })).every((entry) =>
@@ -197,6 +201,8 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
     const request = input.request;
     if (!start || !request || request.operation !== ProjectOperation.StartWorker ||
       request.jobId !== start.manifest.jobId || !request.workspacePath || !input.controllerJobId) return undefined;
+    const diagnostic = start.dependencyPreflightDiagnostic;
+    if (diagnostic !== undefined && !dependencyPreflightDiagnosticCurrent(diagnostic, start.manifest.jobRootDir, start.launch.config.workspacePath)) return undefined;
     const workspace = await projectControlCanonicalWorkspacePath(request.workspacePath, input.scope);
     const lease = start.workspaceLease;
     if (workspace !== lease.canonicalWorkspacePath || workspace !== lease.lease.workspacePath ||
@@ -237,7 +243,7 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
       if (item.workspaceDirty !== false || item.resultExists !== false || item.activeWriterRisk !== "none") return undefined;
       // Dead native PIDs also map to false/false; only artifact-free prepared
       // state proves a fresh start without an authorized continuation.
-      if (!await neverLaunchedSelf(stored, start.launch, item, input.registryRootDir)) return undefined;
+      if (!await neverLaunchedSelf(stored, start.launch, item, input.registryRootDir, diagnostic)) return undefined;
     }
     const descriptor = stored.projectPreStartAdmission;
     const contractBefore = await readBoundedFile(descriptor.contractPath, 256 * 1024, "contract");
@@ -249,6 +255,7 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
     const storedOwnership = parseWorkerLaunchSpec(JSON.parse(contractBefore)).ownedPaths;
     if (contractBefore !== contractAfter || !storedOwnership.length ||
       (request.ownedPaths !== undefined && !sameOwnedPaths(request.ownedPaths, storedOwnership))) return undefined;
+    if (diagnostic !== undefined && !dependencyPreflightDiagnosticCurrent(diagnostic, stored.jobRootDir, workspace)) return undefined;
     return { jobId: stored.jobId, workspacePath: workspace };
   } catch { return undefined; }
 }
