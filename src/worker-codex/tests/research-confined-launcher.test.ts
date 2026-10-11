@@ -19,14 +19,19 @@ beforeAll(() => {
   // Only the module invocation is observed; no admission/service/provider runs.
   writeFileSync(join(helper, "dist/worker-codex/research-provider-service.js"),
     'export async function runResearchProviderService(...args) { process.stdout.write(JSON.stringify(args)); }');
-  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame-decoder", "hosted-process-descriptors", "hosted-fd-prelude", "hosted-blocking-output", "managed-provider-scratch-environment", "hosted-mimo-coding-bootstrap"]) {
-    const sourceDirectory = name === "hosted-mimo-coding-bootstrap" ? "src/provider-codex" : "src/provider-codex/app-server/adapters";
-    const source = readFileSync(join(process.cwd(), sourceDirectory, name + ".ts"), "utf8");
+  // Finite runtime import closure of the launcher. The launch-frame barrel is
+  // only a type import there (erased), so its heavier imports are not staged.
+  const stage = (relative: string, name: string): void => {
+    const source = readFileSync(join(process.cwd(), relative), "utf8");
     const translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText
       .replace(/from "\.\/((?:hosted-|managed-provider-scratch-)[a-z-]+)"/g, 'from "./$1.mjs"')
-      .replace(/from "\.\.\/\.\.\/hosted-mimo-coding-bootstrap"/g, 'from "./hosted-mimo-coding-bootstrap.mjs"');
+      .replace(/from "\.\.\/\.\.\/(hosted-mimo-coding-bootstrap)"/g, 'from "./$1.mjs"');
     writeFileSync(join(root, name + ".mjs"), translated);
+  };
+  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame-decoder", "hosted-process-descriptors", "hosted-fd-prelude", "hosted-blocking-output", "managed-provider-scratch-environment"]) {
+    stage(join("src/provider-codex/app-server/adapters", name + ".ts"), name);
   }
+  stage("src/provider-codex/hosted-mimo-coding-bootstrap.ts", "hosted-mimo-coding-bootstrap");
   const testClockSource = readFileSync(join(process.cwd(), "src/worker-codex/tests/research-confined-launcher-test-clock.ts"), "utf8");
   writeFileSync(join(root, "TEST-bootstrap-clock.mjs"), transpileModule(testClockSource, {
     compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
