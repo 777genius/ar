@@ -8,7 +8,14 @@ unrelated gate failed. The whole run conclusion is never accepted as proof.
 Pin checkout to `11d5960a326750d5838078e36cf38b85af677262`, setup-node to
 `49933ea5288caeca8642d1e84afbd3f7d6820020`, upload-artifact to
 `ea165f8d65b6e75b540449e92b4886f43607fa02` throughout participating jobs.
-Keep Node 22. Scripts with strict enums run with `--experimental-transform-types`.
+Keep Node 26.11.1. The helper uses strict enums, which Node 26 cannot run directly
+(it rejects `--experimental-transform-types`). Every participating job first runs the
+step named `Prepare CI proof helper with locked project TypeScript`: the locked
+`npm ci --ignore-scripts`, then
+`npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"`. The helper
+is the closed `scripts/ci-proof-reuse/*.mts` set emitted as `.mjs` by the project
+compiler (`tsconfig.build.json`, `rewriteRelativeImportExtensions`). The step name must
+not contain `npm ci`, and must complete before the capture step.
 
 Producer jobs receive chart-controlled `CI_RUNNER_IMAGE_DIGEST`
 (`sha256:` plus 64 hex digits) and `CI_RUNNER_CONFIG_REV` (64 hex digits).
@@ -27,7 +34,7 @@ its own environment. Source runner label is the effective `vars.RUNNER`.
 Run on a separate control pool with the same runtime image and the trusted
 expected producer profile. Control does not mount producer Docker/cache volumes.
 Grant only job-scoped `contents: read`, `actions: read` and `pull-requests: read`. Checkout the current main push
-SHA, with persisted credentials disabled. Setup Node 22. Install restic with the
+SHA, with persisted credentials disabled. Setup Node 26.11.1. Install restic with the
 same existing unit prerequisite, then execute:
 
 ```yaml
@@ -36,7 +43,7 @@ same existing unit prerequisite, then execute:
   env:
     GITHUB_TOKEN: ${{ github.token }}
     CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
-  run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts detect
+  run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" detect
 ```
 
 Expose `steps.proof.outputs.reuse_unit` and `reuse_crash` as job outputs. A failed,
@@ -64,7 +71,7 @@ setup-node and restic (unit only), BEFORE npm/source/build commands, capture:
     CI_PROOF_FAMILY: unit
     CI_PROOF_LANE: ${{ matrix.shard }}
     CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
-  run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
+  run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
 ```
 
 For crash use `CI_PROOF_FAMILY: crash`, `matrix.lane`, and
@@ -89,8 +96,9 @@ It should print whether proof was verified or the actual matrix ran. Final test
 must still require detector success when reused and all original nonportable gates.
 
 Add `tsc --noEmit -p scripts/ci-proof-reuse/tsconfig.json` to `typecheck:ci-tools`
-and `scripts/ci-proof-reuse/{contract,github,workflow}.test.mts` with the transform flag to
-`test:ci-tools`. No dependencies or production source changes are needed.
+and run the compiled `{contract,github,workflow}.test.mjs` (after
+`npm run build:ci-proof-reuse`) from `test:ci-tools`. No dependencies or production
+source changes are needed.
 
 The protocol is deliberately conservative: TTL 24h, unique merged PR for exact
 main commit, same repository/workflow, explicit complete attempt, twelve unique

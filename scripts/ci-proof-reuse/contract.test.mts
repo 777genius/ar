@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { artifactName, CAPTURE_STEP, CHECKOUT_ACTION, IDENTITY_MARKER, LANES, ProofFamily,
+import { artifactName, CAPTURE_STEP, CHECKOUT_ACTION, HELPER_STEP, IDENTITY_MARKER, LANES, ProofFamily,
   ReuseDecision, SETUP_NODE_ACTION, TTL_MS, UPLOAD_STEP, WORKFLOW_PATH,
   observeCheckout, type Artifact, type Fingerprint, type GitCommit, type Job, type PullRequest,
   type Receipt, type Run, type Target } from './protocol.mts';
@@ -12,7 +12,7 @@ const hash = (digit: string): string => digit.repeat(40);
 const digest = (digit: string): string => digit.repeat(64);
 const fingerprint: Fingerprint = { runnerLabel: 'arc-runner-set', imageDigest: `sha256:${digest('1')}`,
   configRevision: digest('2'), os: 'linux', architecture: 'x64', kernel: '6.8.0', osReleaseHash: digest('3'),
-  nodeVersion: 'v22.23.3', nodeBinaryHash: digest('4'), npmVersion: '10.9.9', gitVersion: 'git version 2.55.0',
+  nodeVersion: 'v26.11.1', nodeBinaryHash: digest('4'), npmVersion: '10.9.9', gitVersion: 'git version 2.55.0',
   resticVersion: 'restic 0.16.4 compiled with go1.22.2 on linux/amd64', resticBinaryHash: digest('5') };
 const repository = { id: 10, full_name: 'example/repository' };
 const target: Target = { repositoryId: 10, repository: repository.full_name, sha: hash('a'), tree: hash('b'),
@@ -33,9 +33,9 @@ function fixture() {
       lockBlob: target.lockBlob, fingerprint: { ...fingerprint,
         ...(lane.family === ProofFamily.Crash ? { resticVersion: '', resticBinaryHash: '' } : {}) } };
     receipts.set(index + 100, receipt);
+    const at = (seconds: number) => new Date(Date.parse('2026-10-09T12:00:00Z') + seconds * 1000).toISOString();
     const step = (name: string, number: number) => ({ name, number, status: 'completed', conclusion: 'success',
-      started_at: `2026-10-09T12:00:${String(number * 10).padStart(2, '0')}Z`,
-      completed_at: `2026-10-09T12:00:${String(number * 10 + 1).padStart(2, '0')}Z` });
+      started_at: at(number * 10), completed_at: at(number * 10 + 1) });
     logs.set(index + 100, [
       `2026-10-09T12:00:01.100Z Download action repository 'actions/checkout@${CHECKOUT_ACTION}' (SHA:${CHECKOUT_ACTION})`,
       `2026-10-09T12:00:01.200Z Download action repository 'actions/setup-node@${SETUP_NODE_ACTION}' (SHA:${SETUP_NODE_ACTION})`,
@@ -43,14 +43,14 @@ function fixture() {
       `2026-10-09T12:00:10.200Z ${checkout}`,
       `2026-10-09T12:00:20.100Z node: ${fingerprint.nodeVersion}`,
       `2026-10-09T12:00:20.200Z npm: ${fingerprint.npmVersion}`,
-      `2026-10-09T12:00:30.100Z ${IDENTITY_MARKER}${JSON.stringify(receipt)}`,
+      `2026-10-09T12:00:40.100Z ${IDENTITY_MARKER}${JSON.stringify(receipt)}`,
     ].join('\n'));
     return { id: index + 100, run_id: 30, run_attempt: 1, head_sha: run.head_sha, name: lane.name,
       status: 'completed', conclusion: 'success', labels: [fingerprint.runnerLabel],
       started_at: run.created_at, completed_at: '2026-10-09T12:04:00Z',
       steps: [step(`Run actions/checkout@${CHECKOUT_ACTION}`, 1), step(`Run actions/setup-node@${SETUP_NODE_ACTION}`, 2),
-        step(CAPTURE_STEP, 3), step('Run npm ci', 4), step(lane.testStep, 5),
-        { ...step(UPLOAD_STEP, 6), started_at: '2026-10-09T12:01:00Z', completed_at: '2026-10-09T12:01:01Z' }] };
+        step(HELPER_STEP, 3), step(CAPTURE_STEP, 4), step('Run npm ci', 5), step(lane.testStep, 6),
+        { ...step(UPLOAD_STEP, 7), started_at: '2026-10-09T12:01:10Z', completed_at: '2026-10-09T12:01:11Z' }] };
   });
   const artifacts: Artifact[] = LANES.map((lane, index) => ({ id: index + 100, name: artifactName(1, lane), expired: false,
     size_in_bytes: 1000, digest: `sha256:${digest('1')}`, workflow_run: { id: 30, head_sha: run.head_sha } }));
@@ -89,8 +89,10 @@ test('mixed-attempt, missing, duplicate, skipped and continue-on-error lane resu
     (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.run_attempt = 2; },
     (setup: ReturnType<typeof fixture>) => { setup.jobs.pop(); },
     (setup: ReturnType<typeof fixture>) => { setup.jobs.push({ ...setup.jobs[0]! }); },
-    (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.steps[4]!.conclusion = 'failure'; },
-    (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.steps[4]!.status = 'skipped'; },
+    (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.steps[5]!.conclusion = 'failure'; },
+    (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.steps[5]!.status = 'skipped'; },
+    (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.steps[2]!.conclusion = 'failure'; },
+    (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.steps.splice(2, 1); },
     (setup: ReturnType<typeof fixture>) => { setup.jobs[0]!.conclusion = 'cancelled'; },
     (setup: ReturnType<typeof fixture>) => { setup.artifacts.pop(); },
     (setup: ReturnType<typeof fixture>) => { setup.artifacts.push({ ...setup.artifacts[0]!, id: 999 }); },
@@ -130,7 +132,7 @@ test('empty run PR links require a unique authoritative head commit association'
   assert.equal((await findReusableProof(target, setup.github)).decision, ReuseDecision.Full);
 });
 test('runner/toolchain epoch changes, unknown fingerprint and API failure execute full gates', async () => {
-  for (const changes of [{ imageDigest: '' }, { configRevision: '' }, { nodeVersion: 'v22.23.4' },
+  for (const changes of [{ imageDigest: '' }, { configRevision: '' }, { nodeVersion: 'v26.11.2' },
     { resticBinaryHash: digest('6') }, { runnerLabel: 'another-pool' }, { kernel: 'new-kernel' }]) {
     const setup = fixture();
     assert.equal((await findReusableProof({ ...target, fingerprint: { ...fingerprint, ...changes } }, setup.github)).decision, ReuseDecision.Full);
@@ -140,8 +142,12 @@ test('runner/toolchain epoch changes, unknown fingerprint and API failure execut
 });
 test('late/ambiguous capture or forged checkout log after tests never grants proof', async () => {
   const setup = fixture();
-  setup.jobs[0]!.steps[2]!.number = 5;
+  setup.jobs[0]!.steps[3]!.number = 6;
   assert.equal((await findReusableProof(target, setup.github)).decision, ReuseDecision.Full);
+  // The compiler must be prepared before capture, never after it.
+  const lateHelper = fixture();
+  lateHelper.jobs[0]!.steps[2]!.number = 4.5;
+  assert.equal((await findReusableProof(target, lateHelper.github)).decision, ReuseDecision.Full);
   const clean = fixture();
   const forged = clean.logs.get(100)!.replace('12:00:10.100Z', '12:03:10.100Z').replace('12:00:10.200Z', '12:03:10.200Z');
   assert.throws(() => observeCheckout(clean.jobs[0]!, forged), /checkout observation/);

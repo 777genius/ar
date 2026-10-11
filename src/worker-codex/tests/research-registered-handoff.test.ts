@@ -512,17 +512,19 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
       reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow("hosted_research_registered_execution_unsupported");
     expect(existsSync(local(join(researchJobAuthority(r.jobId), "grant.json")))).toBe(false);
   });
-  it("seals CodingV1/64 in its grant and maps the fixed coding policy", async () => {
+  it("seals CodingV1/64 in its grant and derives the registered coding run config", async () => {
     state.mimo = true; await initializeRegisteredFixture();
     const r = await grantAndRequest();
     expect(r).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 });
     const grant = JSON.parse(researchRead(join(researchJobAuthority(r.jobId), "grant.json")).toString());
     expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
+    // Registered coding is enabled; the sealed budget (not a caller default) drives the run.
     expect(researchRunConfig(r)).toMatchObject({
       hostedProfile: HostedMimoProfile.CodingV1,
       executionEngine: "app-server",
       maxGoalTurns: 64,
+      maxReconnectRetriesPerAccount: 0,
       workerReportMode: "structured-output",
     });
   });
