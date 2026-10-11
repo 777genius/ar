@@ -32,7 +32,7 @@ import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedO
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
-  omitEmptyManagerProperties: false, failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
+  omitEmptyManagerProperties: false, failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", kernelMountInfoSnapshot: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
@@ -63,6 +63,23 @@ function local(path: string): string {
 }
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
+  const kernelMountInfoPath = (): string => {
+    if (!real.existsSync(fixture.kernelMountInfoSnapshot)) {
+      const maximum = 8 * 1024 * 1024, fd = real.openSync("/proc/self/mountinfo", real.constants.O_RDONLY);
+      const chunks: Buffer[] = [], buffer = Buffer.alloc(1024 * 1024); let total = 0;
+      try {
+        for (;;) {
+          const n = real.readSync(fd, buffer, 0, Math.min(buffer.length, maximum + 1 - total), null);
+          if (n === 0) break;
+          total += n;
+          if (total > maximum) throw new Error("TEST kernel mount DATA exceeds original reader bound");
+          chunks.push(Buffer.from(buffer.subarray(0, n)));
+        }
+      } finally { real.closeSync(fd); }
+      real.writeFileSync(fixture.kernelMountInfoSnapshot, Buffer.concat(chunks, total), { flag: "wx", mode: 0o400 });
+    }
+    return fixture.kernelMountInfoSnapshot;
+  };
   return { ...real,
     readFileSync: (path: Parameters<typeof real.readFileSync>[0], options: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path !== "string") return real.readFileSync(path, options);
@@ -74,6 +91,7 @@ vi.mock("node:fs", async original => {
       if (path === `/proc/${process.pid}/stat`) return `${process.pid} (dispatcher) ` + [...Array(19).fill("0"), fixture.creatorBirth].join(" ");
       if (path === `/proc/${process.pid}/cgroup`) return `0::${fixture.creatorGroup}\n`;
       if (path === "/proc/self/mountinfo") {
+        if (fixture.kernelMountInfoSnapshot) return real.readFileSync(kernelMountInfoPath(), options);
         const text = fixture.manifestMountInfo || "1 0 8:1 / / rw - ext4 /dev/TEST rw\n";
         return options === "utf8" ? text : Buffer.from(text);
       }
@@ -91,13 +109,13 @@ vi.mock("node:fs", async original => {
     realpathSync: (path: string) => {
       const physical = local(path), actual = real.realpathSync(physical); return physical !== path && actual === physical ? path : actual;
     },
-    statfsSync: (path: string, options?: { bigint?: boolean }) => path === "/proc/self/fd"
-      ? real.statfsSync(path, options?.bigint ? { bigint: true } : undefined)
+    statfsSync: (path: string, options?: { bigint?: boolean }) => fixture.kernelMountInfoSnapshot || path === "/proc/self/fd"
+      ? real.statfsSync(local(path), options?.bigint ? { bigint: true } : undefined)
       : { type: options?.bigint ? 0xef53n : 0xef53 },
     lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
       { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
-    openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
+    openSync: (path: string, flags: number, mode: number) => real.openSync(path === "/proc/self/mountinfo" && fixture.kernelMountInfoSnapshot ? kernelMountInfoPath() : local(path), flags, mode),
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
     renameSync: (from: string, to: string) => {
@@ -215,6 +233,7 @@ beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   vi.spyOn(process, "geteuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
+  fixture.kernelMountInfoSnapshot = "";
   writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
   fixture.omitEmptyManagerProperties = false; fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
