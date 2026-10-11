@@ -1,3 +1,6 @@
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
+import { JobStorageCapabilityUnavailableError, JobStorageUnavailableCapability } from "@vioxen/subscription-runtime/worker-core";
+import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import {
   CodexModelBackend,
   codexMimoTokenPlanEgressPolicy,
@@ -10,10 +13,23 @@ import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
 
-/** Host authority is read here, never supplied by MCP/profile arguments. Call
- * before immutable state binding, and again before account/session effects. */
+/** Host authority is read here, never supplied by MCP/profile arguments.
+ * Project controllers publish their admitted state location before this possible
+ * allocation boundary, then recheck admission before account/session effects. */
 export async function admitHostedControllerLaunch(launch: CodexGoalLaunchInput) {
+  return admitLaunch(launch, false);
+}
+
+/** Raw routes share admission, but must settle creation history before allocation. */
+export async function admitHostedRawGoalLaunch(launch: CodexGoalLaunchInput) {
+  return admitLaunch(launch, true);
+}
+
+async function admitLaunch(launch: CodexGoalLaunchInput, raw: boolean) {
   const config = launch.config;
+  // This transport has no admitted storage lease. Its raw entry cannot publish
+  // history for a NEW layout before the runner's native lifetime admission.
+  if (raw && config.storage) throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.NativeLifetime);
   assertHostedMimoGoalConfinement(config);
   const identity = {
     jobId: config.jobId ?? config.taskId,
@@ -30,6 +46,8 @@ export async function admitHostedControllerLaunch(launch: CodexGoalLaunchInput) 
     ? codexMimoTokenPlanEgressPolicy()
     : codexProviderEgressPolicy(admitted.profileId);
   if (policy.profileId !== admitted.profileId) throw new Error("hosted_mimo_admission_invalid");
+  assertHostedOrdinaryGoalExtent(config);
+  if (raw) recordRawGoalStateOrigin(config.jobRootDir);
   const factory = admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy });
   return { policy, processFactory: egressBoundCodexProcessFactory(policy, factory) };
 }

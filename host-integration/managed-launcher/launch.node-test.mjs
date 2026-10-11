@@ -1,20 +1,43 @@
-import test, { beforeEach, afterEach, mock } from 'node:test';
+import test, { beforeEach, afterEach, after, mock } from 'node:test';
 import cp from 'node:child_process';
+import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+// Argument tests model a host with no enrollment, independently of the worker
+// running them. Keep the real policy reader and real ENOENT from absent files.
+const policyFixture = fs.mkdtempSync(join(tmpdir(), 'TEST-managed-launcher-policy-'));
+const actualLstat = fs.lstatSync, actualReadFile = fs.readFileSync;
+const policyPath = path => {
+  if (typeof path !== 'string') return path;
+  for (const [prefix, name] of [['/etc/subscription-runtime', 'etc'],
+    ['/var/lib/subscription-runtime-host-policy', 'private']]) {
+    if (path === prefix || path.startsWith(prefix + '/')) return join(policyFixture, name) + path.slice(prefix.length);
+  }
+  return path;
+};
 let capabilityRead;
 const actualSpawnSync = cp.spawnSync;
 const completed = (stdout, status = 0, stderr = '') => ({ stdout, stderr, status, signal: null, error: undefined });
-beforeEach(() => { capabilityRead = mock.method(cp, 'spawnSync', (command, ...args) => command === '/usr/bin/systemd-run' ? completed('  --expand-environment=BOOL\n') : actualSpawnSync(command, ...args)); syncBuiltinESMExports(); });
+beforeEach(() => {
+mock.method(fs, 'lstatSync', (path, ...options) => actualLstat(policyPath(path), ...options));
+mock.method(fs, 'readFileSync', (path, options) => {
+  if (path !== '/proc/self/cgroup') return actualReadFile(path, options);
+  const bytes = Buffer.from('0::/\n'), encoding = typeof options === 'string' ? options : options?.encoding;
+  return encoding ? bytes.toString(encoding) : bytes;
+});
+  capabilityRead = mock.method(cp, 'spawnSync', (command, ...args) => command === '/usr/bin/systemd-run' ? completed('  --expand-environment=BOOL\n') : actualSpawnSync(command, ...args)); syncBuiltinESMExports(); });
 afterEach(() => { mock.restoreAll(); syncBuiltinESMExports(); });
 const old252 = () => capabilityRead.mock.mockImplementation((_file, args) => args.includes('--help')
   ? completed('', 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n")
   : completed('systemd 252 (252.39-1~deb12u2)\n+PAM +AUDIT\n'));
+after(() => { fs.rmSync(policyFixture, { recursive: true, force: true }); });
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);

@@ -1,4 +1,6 @@
 import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
+import { readHostedFdProfile } from "./hosted-fd-observation";
+import { assertHostedOrdinaryWriterPaths, readHostedOrdinaryWriterExtent, assertHostedOrdinaryProviderNamespace, type HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { hostedFdLaunch } from "./hosted-fd-launch";
 import type { ChildProcess } from "node:child_process";
@@ -467,7 +469,7 @@ function pidBirth(pid: string): string {
 }
 
 const failedOrdinaryWaits = new WeakSet<object>();
-const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void }>();
+const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void; namespace?: (pid: number) => void }>();
 export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess): void {
   failedOrdinaryWaits.add(child); revokeHostedToolFilesForChild(child);
 }
@@ -485,6 +487,14 @@ export function releaseHostedOrdinaryProcess(child: CodexAppServerChildProcess, 
     });
     retained.released = true;
   });
+}
+
+export function assertHostedOrdinaryProviderRelease(child: object, fence: HostedActivationFence, pid: number): void {
+  assertHostedActivationFence(fence);
+  const retained = ordinaryReleases.get(child);
+  if (!retained) return;
+  if (retained.released || failedOrdinaryWaits.has(child)) invalid();
+  retained.namespace?.(pid);
 }
 
 /** Production default primitive calls this with its private synchronous spawn.
@@ -607,23 +617,40 @@ export function readHostedOrdinaryProviderFacts(fence:HostedActivationFence,star
 }
 
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string; readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
-    readHostedOrdinaryProcessOrigin(fence); // Generic strict descriptor ingress stays mandatory.
+    const extentOrigin = readHostedOrdinaryProcessOrigin(fence); // Generic strict descriptor ingress stays mandatory.
+    const extentJobRoot = canonical(extentOrigin.start.jobRootDir), extentWorkspacePath = canonical(extentOrigin.start.workspacePath);
+    const extentStartId = str(extentOrigin.reservation.startId), extentStartBytes = readHostedActivationBytes(`ordinary-starts/${extentStartId}.json`);
+    if (!extentStartBytes) invalid();
+    const extent = readHostedOrdinaryWriterExtent(fence, extentStartId, extentStartBytes,
+      extentOrigin.installation as { runtimeSha: unknown; runtimeManifestSha256: unknown; inventorySha256: unknown });
+    const assertExtent = () => {
+      if (!extent) return;
+      if (!extent.homes.some(row => row.home === input.env.HOME && row.codexHome === input.env.CODEX_HOME)) invalid();
+      assertHostedOrdinaryWriterPaths(extent, [extentJobRoot, extentWorkspacePath, input.env.HOME!, input.env.CODEX_HOME!,
+        join(input.env.CODEX_HOME!, "plugins/cache"), join(input.env.CODEX_HOME!, "cache/remote_plugin_catalog"),
+        ...["TMPDIR", "TMP", "TEMP", "SUBSCRIPTION_RUNTIME_TMPDIR"].flatMap(key => input.env[key] ? [input.env[key]!] : [])]);
+    };
+    assertExtent();
+    if (extent && !readHostedFdProfile()) throw new Error("hosted_ordinary_provider_namespace_unqualified");
+    const jobIdentity = extent ? lstatSync(extentJobRoot) : undefined;
+    const ordinaryJobRoot = jobIdentity ? { path: extentJobRoot, device: jobIdentity.dev, inode: jobIdentity.ino } : undefined;
     const actual=reserveHostedOrdinaryProviderFacts(fence,input);
     const {parent:{activation,start,reservation:parentReservation,childBound},startId,unit,parentId,bytes,reservation,dependency,companion}=actual;
     const workspacePath=canonical(start.workspacePath), generation=positive(reservation.generation);
     const next={...activation,generation,ordinaryStarts:[...rows(activation.ordinaryStarts)]};
     try {
-      const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath, ...(ordinaryJobRoot ? { ordinaryJobRoot } : {}) }, fence);
       const descriptorScope = hostedToolFilesForChild(child);
-      ordinaryReleases.set(child, { released: false, revalidate: held => {
+      ordinaryReleases.set(child, { released: false, ...(extent ? { namespace: (pid: number) => assertHostedOrdinaryProviderNamespace(extent, pid, ordinaryJobRoot!) } : {}), revalidate: held => {
         const fresh = readHostedOrdinaryProcessOrigin(held, descriptorScope);
         if (JSON.stringify(fresh.start) !== JSON.stringify(start) ||
             JSON.stringify(fresh.reservation) !== JSON.stringify(parentReservation) ||
             fresh.activation.installationId !== activation.installationId || fresh.activation.bootId !== activation.bootId ||
             fresh.activation.supervisorId !== activation.supervisorId) invalid();
         assertHostedScopedAdmission(held, parentId);
+        assertExtent();
         const retained = readHostedActivationBytes(`ordinary-starts/${startId}.json`);
         const current = requiredWire("host-activation.json", activationKeys).value;
         const row = rows(current.ordinaryStarts).find(row => !!row && typeof row === "object" && "startId" in row && row.startId === startId);

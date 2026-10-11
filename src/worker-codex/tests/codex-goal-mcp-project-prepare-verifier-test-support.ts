@@ -1,3 +1,4 @@
+import { callToolJson } from "./codex-goal-mcp-project-admission-test-fixture";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -15,7 +16,6 @@ import {
   localReviewedWorkerOutputDeps,
 } from "../reviewed-worker-output";
 import {
-  callToolJson,
   git,
   gitStdout,
 } from "./codex-goal-mcp-test-support";

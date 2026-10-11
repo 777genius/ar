@@ -57,8 +57,8 @@ export async function prepareBuiltin(
   });
 }
 
-export async function createBuiltinFixture() {
-  const base = await createFixture();
+export async function createBuiltinFixture(options: { readonly temporaryRoot?: string } = {}) {
+  const base = await createFixture(options);
   await mkdir(join(base.workspacePath, "sandbox"));
   await writeFile(join(base.workspacePath, "controller.md"), "controller\n");
   await writeFile(join(base.workspacePath, "lane.md"), "lane\n");
@@ -209,9 +209,9 @@ export function declarativeContract(
 }
 
 export async function createFixture(
-  options: { readonly admissionValidatorBody?: string } = {},
+  options: { readonly admissionValidatorBody?: string; readonly temporaryRoot?: string } = {},
 ) {
-  const root = await mkdtemp(join(tmpdir(), "project-pre-start-admission-"));
+  const root = await mkdtemp(join(options.temporaryRoot ?? tmpdir(), options.temporaryRoot ? "TEST-project-pre-start-admission-" : "project-pre-start-admission-"));
   roots.push(root);
   const workspacePath = join(root, "workspace");
   const jobRootDir = join(root, "jobs", "project-worker");

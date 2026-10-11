@@ -18,6 +18,7 @@ export type { HostedControllerDynamicToolAdapter, HostedControllerDynamicToolCal
 export * from "./app-server/domain/model-catalog";
 export * from "./codex-json-execution-engine";
 export * from "./codex-session-materializer";
+export { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 export * from "./codex-cli-provider-driver";
 export * from "./codex-cli-session-driver";
 export * from "./codex-mimo-session-driver";

@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   ProjectAdmissionWorkerRole,
   type ProjectAccessScope,
+  ProjectControlSubmissionUncertainError,
   type ProjectControlBroker,
 } from "@vioxen/subscription-runtime/worker-core";
 import { assertLocalControllerMaintenanceFenceOpen, withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
@@ -15,11 +17,10 @@ import {
   listCodexGoalAccountStatuses,
   type CodexGoalLaunchInput,
 } from "./codex-goal-ops";
-import { runDependencyBootstrap } from "./dependency-bootstrap";
+import { bindDependencyPreflightDiagnostic, inspectDependencyBootstrap, runDependencyBootstrap } from "./dependency-bootstrap";
 import {
   type CodexGoalProjectCreateWorktreeInput,
   type CodexGoalProjectIntegrateCommitInput,
-  type CodexGoalProjectPushBranchInput,
   type CodexProjectControlBrokerInput,
   projectControlAuditPath,
 } from "./codex-goal-mcp-project-broker";
@@ -48,9 +49,7 @@ import {
 import {
   assertSafeGitCommitSha,
   assertSafeGitRefName,
-  assertSafeGitRemoteName,
 } from "./codex-goal-mcp-project-git";
-import { resolveProjectExternalRewriteRecovery } from "./application/project-control/codex-goal-project-external-rewrite-recovery";
 import {
   resolveProjectSourceReference,
   resolveProjectSourceRevision,
@@ -69,6 +68,7 @@ import {
   sameProjectPreStartContinuation,
 } from "./codex-goal-project-continuation-runtime";
 import {
+  assertProjectControlledRuntimeInPlaceContinuation,
   projectRuntimeContinuationCause,
   resolveProjectControlledRuntimeInPlaceContinuation,
 } from "./application/project-control/codex-goal-project-in-place-continuation";
@@ -96,6 +96,8 @@ import type {
 } from "./codex-goal-mcp-inputs";
 import { localCodexProjectSafeExecutionJournal } from "./codex-goal-project-safe-execution-journal";
 import {
+  assertCodexProjectReservedLaunchAuthority,
+  assertCodexProjectReservedAccountReceiptCurrent,
   codexProjectContinuationReservationInput,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
@@ -432,6 +434,8 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         confirmInstall: booleanValue(args.confirmDependencyBootstrap) === true,
       });
       assertProjectControlDependencyBootstrapReady(dependencyPreflight);
+      const startDependencyPreflightDiagnostic = loaded.manifest.projectPreStartAdmission
+        ? bindDependencyPreflightDiagnostic(dependencyPreflight, loaded.manifest.jobRootDir) : undefined;
       let authorizedContinuationWorkspaceMode:
         | "admitted_input_patch"
         | "admitted_input_patch_continuation"
@@ -560,6 +564,12 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
               : authorizedContinuationWorkspaceMode));
       let result;
       try {
+        // Capture after bootstrap and supervisor reap, whose effects are intentional.
+        const publicationBaseline = await observeProjectPreStartContinuation({
+          manifest: loaded.manifest,
+          launch: loaded.launch,
+          ...(reviewedOutputId ? { reviewedOutputId } : {}),
+        });
         const broker = deps.codexProjectControlBroker({
           registryRootDir: controller.registryRootDir,
           controller: currentController,
@@ -573,6 +583,72 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             ? { startPendingInputPatchAdmission: pendingInputPatchAdmission }
             : {}),
           startWorkspaceLease: workspace,
+          ...(startDependencyPreflightDiagnostic !== undefined ? { startDependencyPreflightDiagnostic } : {}),
+          revalidateStartPublication: async (currentWorkspace) => {
+            const freshController = await deps.loadProjectControlController(args);
+            const freshManifest = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: loaded.manifest.jobId });
+            const fresh = await loadProjectPreStartObservation(freshManifest, reviewedOutputId, controller.registryRootDir);
+            if (freshController.registryRootDir !== controller.registryRootDir ||
+              !isDeepStrictEqual(freshController.scope, controller.scope) ||
+              !isDeepStrictEqual(freshController.controller, currentController) ||
+              !isDeepStrictEqual(fresh.manifest, loaded.manifest) ||
+              !isDeepStrictEqual(fresh.launch, loaded.launch)) {
+              throw new Error("project_control_start_binding_changed_before_publication");
+            }
+            const observation = fresh;
+            if (observation.workerAlive ||
+              (observation.status.workspaceDirty === true) !== (publicationBaseline.status.workspaceDirty === true) ||
+              observation.status.resultExists !== publicationBaseline.status.resultExists ||
+              !sameProjectPreStartContinuation(observation.decision, publicationBaseline.decision)) {
+              throw new Error("project_control_workspace_state_changed_before_start");
+            }
+            await assertProjectPreStartContinuationEvidence({
+              decision: lockedContinuationDecision, manifest: fresh.manifest, launch: canonicalLaunch,
+            });
+            if (reviewedContinuation) {
+              await assertReviewedWorkerOutputStillMatchesLocked(reviewedOutputDeps, reviewedContinuation, currentWorkspace.lease);
+              await assertReviewedWorkerContinuationEnvironmentLocked(reviewedOutputDeps, currentWorkspace.lease);
+            } else if (terminalRecovery) {
+              await verifyTerminalHandoffRecovery({
+                producer: fresh.manifest, workspacePath: currentWorkspace.canonicalWorkspacePath,
+                snapshotter: reviewedOutputDeps.snapshotter,
+                consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+                consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots, expected: terminalRecovery,
+              });
+              await assertReviewedWorkerContinuationEnvironmentLocked(reviewedOutputDeps, currentWorkspace.lease);
+            }
+            if (startAdmissionWorkspaceMode) {
+              await assertProjectPreStartAdmissionLaunchBinding({
+                manifest: fresh.manifest, scope: controller.scope, workspaceMode: startAdmissionWorkspaceMode,
+              });
+            } else {
+              const mode = await validateProjectRefillPreStartAdmissionLocked({
+                manifest: fresh.manifest, scope: controller.scope,
+                ...(freshAdmittedInputPatchCandidate ? { admittedInputPatch: true } : {}),
+              });
+              if (mode !== startAdmissionWorkspaceMode) throw new Error("project_control_start_admission_mode_changed");
+            }
+            if (pendingInputPatchAdmission) {
+              const pending = await readValidatedInputPatchWorkerLaunchSpec({ manifest: fresh.manifest, scope: controller.scope });
+              if (!isDeepStrictEqual(pending, pendingInputPatchAdmission)) throw new Error("project_control_start_input_patch_changed");
+            }
+            if (controlledRuntimeInPlaceContinuation) {
+              await assertProjectControlledRuntimeInPlaceContinuation({
+                manifest: fresh.manifest, scope: controller.scope,
+                workspacePath: currentWorkspace.canonicalWorkspacePath,
+                expected: controlledRuntimeInPlaceContinuation,
+              });
+            }
+            const dependencies = await inspectDependencyBootstrap(currentWorkspace.canonicalWorkspacePath, dependencyPreflight.mode);
+            assertProjectControlDependencyBootstrapReady(dependencies);
+            if (!isDeepStrictEqual(dependencies.fingerprintInputs, dependencyPreflight.fingerprintInputs) ||
+              !isDeepStrictEqual(dependencies.binaryChecks, dependencyPreflight.binaryChecks) ||
+              dependencies.environmentExists !== dependencyPreflight.environmentExists) {
+              throw new Error("project_control_dependency_environment_changed_before_start");
+            }
+            assertCodexProjectReservedLaunchAuthority({ manifest: fresh.manifest, sourceLaunch: continuationLaunch, reservedLaunch });
+            await assertCodexProjectReservedAccountReceiptCurrent({ manifest: fresh.manifest, reservedLaunch });
+          },
           startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           ...(reviewedContinuation ? { reviewedContinuation } : {}),
           ...(controlledRuntimeInPlaceContinuation
@@ -608,11 +684,16 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             }),
         });
       } catch (error) {
-        await releaseCodexProjectAccount({
-          manifest: loaded.manifest,
-          launch: reservedLaunch,
-          reason: "worker_start_failed",
-        });
+        let leafHeld = false;
+        try { leafHeld = workspace.lease.workspacePath === workspace.canonicalWorkspacePath; }
+        catch { /* Failed handoff: preserve the reservation for reconciliation. */ }
+        if (!(error instanceof ProjectControlSubmissionUncertainError) && leafHeld) {
+          await releaseCodexProjectAccount({
+            manifest: loaded.manifest,
+            launch: reservedLaunch,
+            reason: "worker_start_failed",
+          });
+        }
         throw error;
       }
       return {
@@ -904,87 +985,7 @@ export async function projectControlIntegrateCommitView(
   };
 }
 
-export async function projectControlPushBranchView(
-  args: ProjectControlMcpArgs,
-  deps: CodexGoalMcpProjectControlActionsDeps,
-): Promise<JsonObject> {
-  const controller = await deps.loadProjectControlController(args);
-  const workspacePath = projectControlPathArg(
-    args,
-    args.workspacePath,
-    "workspacePath",
-  );
-  const branch = requiredRawString(args.branch, "branch");
-  const remote = stringValue(args.remote) ?? "origin";
-  const force = booleanValue(args.force) ?? false;
-  const expectedRemoteCommit = stringValue(args.expectedRemoteCommit);
-  const expectedLocalCommit = stringValue(args.expectedLocalCommit);
-  const confirmExternalRewriteRecovery =
-    booleanValue(args.confirmExternalRewriteRecovery) ?? false;
-  assertSafeGitRefName(branch, "branch");
-  assertSafeGitRemoteName(remote, "remote");
-  const recovery = resolveProjectExternalRewriteRecovery({
-    force,
-    expectedRemoteCommit,
-    expectedLocalCommit,
-    confirmExternalRewriteRecovery,
-  });
-  const realWorkspacePath = await projectControlRealPathOutsideWorkspaceScope(
-    workspacePath,
-    controller.scope,
-  );
-  const pushBranchInput: CodexGoalProjectPushBranchInput = {
-    workspacePath,
-    ...(realWorkspacePath ? { realWorkspacePath } : {}),
-    branch,
-    remote,
-    force,
-    ...(expectedRemoteCommit ? { expectedRemoteCommit } : {}),
-    ...(expectedLocalCommit ? { expectedLocalCommit } : {}),
-    ...(confirmExternalRewriteRecovery
-      ? { confirmExternalRewriteRecovery: true }
-      : {}),
-  };
-  if (!args.confirmPush) {
-    return {
-      ok: false,
-      reason: "confirm_push_required",
-      controllerJobId: controller.controller.jobId,
-      auditPath: projectControlAuditPath(controller.controller),
-      commandPreview: [
-        "git",
-        "-C",
-        workspacePath,
-        "push",
-        ...(recovery
-          ? [
-              `--force-with-lease=refs/heads/${branch}:${recovery.expectedRemoteCommit}`,
-            ]
-          : force
-            ? ["--force-with-lease"]
-            : []),
-        remote,
-        `HEAD:refs/heads/${branch}`,
-      ],
-    };
-  }
-
-  const broker = deps.codexProjectControlBroker({
-    registryRootDir: controller.registryRootDir,
-    controller: controller.controller,
-    scope: controller.scope,
-    pushBranchInput,
-  });
-  const result = await broker.pushBranch(pushBranchInput);
-  return {
-    ok: true,
-    mode: "project_control_push_branch",
-    controllerJobId: controller.controller.jobId,
-    registryRootDir: controller.registryRootDir,
-    auditPath: projectControlAuditPath(controller.controller),
-    result: result as unknown as JsonObject,
-  };
-}
+export { projectControlPushBranchView } from "./codex-goal-mcp-project-control-push";
 
 export { projectControlStopStoredJobView } from
   "./codex-goal-mcp-project-control-stop";

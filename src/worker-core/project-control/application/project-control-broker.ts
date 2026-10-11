@@ -17,6 +17,7 @@ import {
   normalizeProjectAdmissionWorkerRole,
   type ProjectAdmissionDecision,
   type ProjectAdmissionGate,
+  type ProjectAdmissionSummary,
   type ProjectAdmissionWorkerRole,
 } from "../domain/project-admission";
 import {
@@ -34,6 +35,7 @@ export enum ProjectControlAuditEventType {
 export type ProjectControlOperationResult = {
   readonly status: "applied" | "noop";
   readonly safeMessage?: string;
+  readonly admission?: ProjectAdmissionSummary;
   readonly resourceId?: string;
   readonly evidence?: Readonly<Record<string, string>>;
 };
@@ -103,6 +105,13 @@ export interface ProjectJobRegistryPort {
 }
 
 export interface ProjectWorkerSupervisorPort {
+  /**
+   * Publishes the durable launch claim under the short admission coordination
+   * section. The actual provider submission remains outside that section.
+   */
+  prepareStartWorker?(
+    input: ProjectControlStartWorkerInput,
+  ): Promise<void>;
   startWorker(input: ProjectControlStartWorkerInput): Promise<ProjectControlOperationResult>;
   stopWorker(input: ProjectJobAccessRequest): Promise<ProjectControlOperationResult>;
 }
@@ -121,6 +130,19 @@ export interface ProjectGitPort {
   pushBranch(input: ProjectGitAccessRequest): Promise<ProjectControlOperationResult>;
 }
 
+export type ProjectControlAdmissionCoordination = {
+  withPublication<T>(
+    input: {
+      readonly operation: ProjectOperation;
+      readonly request: ProjectControlAdmissionMetadata & {
+        readonly jobId?: string;
+        readonly workspacePath?: string;
+      };
+    },
+    effect: () => Promise<T>,
+  ): Promise<T>;
+};
+
 export type ProjectControlBrokerPorts = {
   readonly registry: ProjectJobRegistryPort;
   readonly supervisor: ProjectWorkerSupervisorPort;
@@ -128,6 +150,7 @@ export type ProjectControlBrokerPorts = {
   readonly git: ProjectGitPort;
   readonly authority: ProjectAuthorityTupleStorePort;
   readonly admission?: ProjectAdmissionGate;
+  readonly admissionCoordination?: ProjectControlAdmissionCoordination;
   readonly audit?: ProjectControlAuditPort;
   readonly clock?: { now(): Date };
 };
@@ -149,6 +172,14 @@ export class ProjectControlAdmissionDeniedError extends Error {
     super(`project_control_admission_denied:${decision.reason}`);
     this.name = "ProjectControlAdmissionDeniedError";
     this.decision = decision;
+  }
+}
+
+/** A provider effect may exist; callers must retain capacity and launch claims. */
+export class ProjectControlSubmissionUncertainError extends Error {
+  constructor(cause: unknown) {
+    super("project_control_submission_outcome_unknown", { cause });
+    this.name = "ProjectControlSubmissionUncertainError";
   }
 }
 
@@ -177,8 +208,15 @@ export class ProjectControlBroker {
     for (const accountId of input.accounts ?? []) {
       await this.authorize(this.policy.canUseAccount({ accountId }));
     }
-    await this.admit(ProjectOperation.CreateJob, input);
-    return this.ports.registry.createJob(input);
+    const gate = await this.prepareAdmission(ProjectOperation.CreateJob, input);
+    return this.withAdmissionPublication(
+      ProjectOperation.CreateJob,
+      input,
+      async () => {
+        const decision = await this.admit(ProjectOperation.CreateJob, input, gate);
+        return this.withAdmissionSummary(await this.ports.registry.createJob(input), decision);
+      },
+    );
   }
 
   async startWorker(
@@ -188,8 +226,26 @@ export class ProjectControlBroker {
     for (const accountId of input.accounts ?? []) {
       await this.authorize(this.policy.canUseAccount({ accountId }));
     }
-    await this.admit(ProjectOperation.StartWorker, input);
-    return this.ports.supervisor.startWorker(input);
+    const gate = await this.prepareAdmission(ProjectOperation.StartWorker, input);
+    if (this.ports.supervisor.prepareStartWorker) {
+      let decision: ProjectAdmissionDecision | undefined;
+      await this.withAdmissionPublication(
+        ProjectOperation.StartWorker,
+        input,
+        async () => {
+          decision = await this.admit(ProjectOperation.StartWorker, input, gate);
+          await this.ports.supervisor.prepareStartWorker!(input);
+        },
+      );
+      // Only the provider adapter knows whether submission happened. A thrown
+      // timeout must not erase a published claim and permit a duplicate launch.
+      return this.withAdmissionSummary(await this.ports.supervisor.startWorker(input), decision);
+    }
+    if (this.ports.admissionCoordination) {
+      throw new Error("project_control_launch_publication_required");
+    }
+    const decision = await this.admit(ProjectOperation.StartWorker, input, gate);
+    return this.withAdmissionSummary(await this.ports.supervisor.startWorker(input), decision);
   }
 
   async stopWorker(
@@ -203,14 +259,22 @@ export class ProjectControlBroker {
     input: ProjectControlCreateWorktreeInput,
   ): Promise<ProjectControlOperationResult> {
     await this.authorize(this.policy.canCreateWorktree(input));
-    await this.admit(ProjectOperation.CreateWorktree, {
+    const admissionInput = {
       ...(input.jobId ? { jobId: input.jobId } : {}),
       workspacePath: input.path,
       ...(input.workerRole ? { workerRole: input.workerRole } : {}),
       ...(input.tags ? { tags: input.tags } : {}),
       ...(input.ownedPaths ? { ownedPaths: input.ownedPaths } : {}),
-    });
-    return this.ports.workspace.createWorktree(input);
+    };
+    const gate = await this.prepareAdmission(ProjectOperation.CreateWorktree, admissionInput);
+    return this.withAdmissionPublication(
+      ProjectOperation.CreateWorktree,
+      admissionInput,
+      async () => {
+        const decision = await this.admit(ProjectOperation.CreateWorktree, admissionInput, gate);
+        return this.withAdmissionSummary(await this.ports.workspace.createWorktree(input), decision);
+      },
+    );
   }
 
   async resolveWorktreeRevision(
@@ -257,6 +321,28 @@ export class ProjectControlBroker {
     return { status };
   }
 
+  private withAdmissionSummary(
+    result: ProjectControlOperationResult,
+    decision: ProjectAdmissionDecision | undefined,
+  ): ProjectControlOperationResult {
+    return decision?.summary ? { ...result, admission: decision.summary } : result;
+  }
+
+  private async withAdmissionPublication<T>(
+    operation: ProjectOperation,
+    request: ProjectControlAdmissionMetadata & {
+      readonly jobId?: string;
+      readonly workspacePath?: string;
+    },
+    effect: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.ports.admissionCoordination) return await effect();
+    return await this.ports.admissionCoordination.withPublication(
+      { operation, request },
+      effect,
+    );
+  }
+
   private async authorize(decision: PolicyDecision): Promise<void> {
     await this.ports.audit?.record({
       schemaVersion: 1,
@@ -268,13 +354,32 @@ export class ProjectControlBroker {
     if (!decision.allowed) throw new ProjectControlDeniedError(decision);
   }
 
+  private async prepareAdmission(
+    operation: ProjectOperation.CreateJob | ProjectOperation.StartWorker | ProjectOperation.CreateWorktree,
+    input: ProjectControlAdmissionMetadata & {
+      readonly jobId?: string;
+      readonly workspacePath?: string;
+    },
+  ): Promise<ProjectAdmissionGate | undefined> {
+    const gate = this.ports.admission;
+    return gate?.prepare ? await gate.prepare({
+      operation,
+      ...(input.jobId ? { jobId: input.jobId } : {}),
+      ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+      ...(input.workerRole ? { workerRole: input.workerRole } : {}),
+      ...(input.tags ? { tags: input.tags } : {}),
+      ...(input.ownedPaths ? { ownedPaths: input.ownedPaths } : {}),
+    }) : gate;
+  }
+
   private async admit(
     operation: ProjectOperation.CreateJob | ProjectOperation.StartWorker | ProjectOperation.CreateWorktree,
     input: ProjectControlAdmissionMetadata & {
       readonly jobId?: string;
       readonly workspacePath?: string;
     },
-  ): Promise<void> {
+    gate: ProjectAdmissionGate | undefined,
+  ): Promise<ProjectAdmissionDecision> {
     const request = {
       operation,
       ...(input.jobId ? { jobId: input.jobId } : {}),
@@ -283,8 +388,8 @@ export class ProjectControlBroker {
       ...(input.tags ? { tags: input.tags } : {}),
       ...(input.ownedPaths ? { ownedPaths: input.ownedPaths } : {}),
     };
-    const decision = this.ports.admission
-      ? await this.ports.admission.evaluate(request)
+    const decision = gate
+      ? await gate.evaluate(request)
       : missingAdmissionDecision(request);
     await this.ports.audit?.record({
       schemaVersion: 1,
@@ -296,6 +401,7 @@ export class ProjectControlBroker {
     if (!decision.allowed) {
       throw new ProjectControlAdmissionDeniedError(decision);
     }
+    return decision;
   }
 }
 

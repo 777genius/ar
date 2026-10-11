@@ -3,7 +3,7 @@ import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind, ty
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { Writable, PassThrough, type Readable } from "node:stream";
-import { assertHostedActivationFence, type HostedActivationFence } from "./hosted-process-activation";
+import { assertHostedActivationFence, assertHostedOrdinaryProviderRelease, type HostedActivationFence } from "./hosted-process-activation";
 import { assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdManagedGuard, collectHostedFdPeers, hostedFdGroupPids, hostedFdTable, observeHostedFdProcess,
   observeHostedFdUnit, readHostedFdProfile, type HostedFdFact, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
 import { knownFdCollectorPeer, type FdCollectorProfile } from "@vioxen/subscription-runtime/core";
@@ -375,6 +375,8 @@ export class HostedFdLaunch {
       assertHostedDependencyToolRelease(this.child, fence, current.bootstrap, current.unit);
       // N3's synchronous namespace/file observations are also bounded by the
       // real owner lifetime and this same one-shot release fence.
+      revalidateOwner();
+      assertHostedOrdinaryProviderRelease(this.child, fence, current.bootstrap.pid);
       revalidateOwner();
     }
     this.#remaining();
