@@ -58,7 +58,9 @@ describe("scoped creation targets", () => {
     await mkdir(registryRootDir, { mode: 0o700 });
     const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath] }, plan = f.plan();
     const manifest = await createCodexGoalJob({ registryRootDir, manifest: { ...f.manifest,
-      authRootDir: join(f.root, "TEST-auth"), projectPreStartAdmission: plan.descriptor } });
+      authRootDir: join(f.root, "TEST-auth"), projectPreStartAdmission: plan.descriptor,
+      projectAccessScope: { projectId: scope.projectId, isolatedWorkspaceRoot: f.workspacePath,
+        allowedAccountIds: f.manifest.accounts, authRoot: join(f.root, "TEST-auth") } } });
     await prepareProjectPreStartAdmission({ plan, manifest, scope });
     const receiptBefore = await readFile(plan.descriptor.receiptPath);
     const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
