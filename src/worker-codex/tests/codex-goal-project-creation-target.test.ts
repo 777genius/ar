@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, it } from "vitest";
-import { AccessBoundary, ProjectOperation, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { AccessBoundary, InMemoryWorkerAccountCapacityStore, InMemoryWorkerAccountLeaseStore, ProjectOperation, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { codexGoalJobToArgs, createCodexGoalJob, listCodexGoalJobs, readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import { observeProtectedCodexGoalJobBirth, prepareProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthPreparationCurrent,
   recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "../protected-job-birth";
 import { researchAuthorityRoot, researchHash } from "../research-launch-files";
 import {
-  admissionCreationTargetIdentity, admissionCreateJobTargetIdentity, admissionNeedsFreshCreateJobTarget,
+  admissionCreationTargetIdentity, admissionCreateJobTargetIdentity, admissionNeedsFreshCreateJobTarget, admissionStartSelfIdentity,
   type ProjectAdmissionTargetBinding,
 } from "../application/project-control/codex-goal-project-admission-target";
 import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
@@ -28,6 +28,7 @@ import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../codex-goal-project-workspace-lock";
 import { codexProjectAdmissionGate } from "../application/project-control/codex-goal-project-admission";
 import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
+import { assertCodexProjectReservedLaunchAuthority, reserveCodexProjectAccount } from "../application/project-control/codex-goal-project-account-reservation";
 
 afterEach(cleanupProjectPreStartAdmissionFixtures);
 
@@ -108,6 +109,56 @@ describe("scoped creation targets", () => {
       if (oldSocket === undefined) delete process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET;
       else process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET = oldSocket;
     }
+  });
+
+  // RED: an official exclusive receipt used to make the fresh self unavailable.
+  it("qualifies a never-started self only with its original private exclusive receipt", async () => {
+    const f = await createBuiltinFixture({ temporaryRoot: tmpdir() });
+    const registryRootDir = join(f.root, "registry"), plan = f.plan();
+    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath] };
+    await mkdir(registryRootDir, { mode: 0o700 });
+    const authRootDir = join(f.root, "TEST-auth");
+    const manifest = await createCodexGoalJob({ registryRootDir, manifest: { ...f.manifest, authRootDir,
+      projectPreStartAdmission: plan.descriptor, projectAccessScope: { projectId: scope.projectId,
+        isolatedWorkspaceRoot: f.workspacePath, allowedAccountIds: f.manifest.accounts, authRoot: authRootDir } } });
+    await prepareProjectPreStartAdmission({ plan, manifest, scope });
+    const preparedBytes = await readFile(plan.descriptor.receiptPath);
+    const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
+    const reservation = await reserveCodexProjectAccount({ manifest, launch, deps: {
+      leaseMode: "exclusive", capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseStore: new InMemoryWorkerAccountLeaseStore(),
+    } });
+    const receiptPath = join(manifest.jobRootDir, "account-reservation.json"), bytes = await readFile(receiptPath);
+    await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(registryRootDir), scope,
+      requestedWorkspacePath: manifest.workspacePath, owner: `project-start:project-controller:${manifest.jobId}`,
+      effect: async workspaceLease => {
+        const summaries = await listCodexGoalJobs({ registryRootDir });
+        const overviewItems = [{ ok: true, jobId: manifest.jobId, workerAlive: false, workerProcessAlive: false,
+          progressProcessAlive: false, workspaceConflict: false, workspaceDirty: false, resultExists: false, activeWriterRisk: "none" }];
+        const identity = (selected = reservation.launch) => admissionStartSelfIdentity({ registryRootDir, scope,
+          controllerJobId: "project-controller", request: { operation: ProjectOperation.StartWorker, jobId: manifest.jobId,
+            workspacePath: manifest.workspacePath, ownedPaths: ["src/example.ts"] }, summaries, overviewItems,
+          binding: { start: { manifest, launch: selected, workspaceLease } } });
+        const expected = { jobId: manifest.jobId, workspacePath: manifest.workspacePath };
+        await expect(identity()).resolves.toEqual(expected);
+        await expect(identity({ ...reservation.launch })).resolves.toBeUndefined();
+        await writeFile(receiptPath, Buffer.concat([bytes, Buffer.from("\n")]));
+        await expect(identity()).resolves.toBeUndefined();
+        await writeFile(receiptPath, bytes);
+        for (const alias of ["symlink", "hardlink"] as const) {
+          const copy = join(f.root, "TEST-receipt-copy.json");
+          await writeFile(copy, bytes, { mode: 0o600 }); await rm(receiptPath);
+          if (alias === "symlink") await symlink(copy, receiptPath); else await link(copy, receiptPath);
+          await expect(identity()).resolves.toBeUndefined();
+          await rm(receiptPath); await rm(copy); await writeFile(receiptPath, bytes, { mode: 0o600 });
+        }
+        await chmod(receiptPath, 0o644); await expect(identity()).resolves.toBeUndefined();
+        await chmod(receiptPath, 0o600); await rm(receiptPath); await expect(identity()).resolves.toBeUndefined();
+        await writeFile(receiptPath, bytes, { mode: 0o600 });
+        await expect(identity()).resolves.toEqual(expected);
+      } });
+    expect(await readFile(plan.descriptor.receiptPath)).toEqual(preparedBytes);
+    expect(assertCodexProjectReservedLaunchAuthority({ manifest, sourceLaunch: launch, reservedLaunch: reservation.launch }).fresh).toBe(true);
+    await expect(access(launch.logPath!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("qualifies only the official unchanged dependency diagnostic for a never-started self", async () => {
