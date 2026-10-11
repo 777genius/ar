@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fixed closed initial-root operator service bootstrap. No environment admission.
 import { normalizeResearchMaterialFailure } from '../dist/worker-codex/research-launch-diagnostics.js';
+import { hostedMimoOriginReadFailure } from '../dist/provider-codex/hosted-mimo-worker-origin.js';
 let phase = "imports";
 try {
   if (process.argv.length !== 4) throw new Error();
@@ -29,5 +30,7 @@ try {
   const { legacyCode, cause, diagnostic, materialRole, scratchCapacity } = normalizeResearchMaterialFailure(error);
   process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${legacyCode}:${cause}:${diagnostic}:${materialRole}\n`);
   if (scratchCapacity) process.stderr.write(`hosted_research_runtime_scratch_capacity:${JSON.stringify(scratchCapacity)}\n`);
+  const originRead = hostedMimoOriginReadFailure(error);
+  if (originRead) process.stderr.write(`hosted_research_runtime_origin_read_failure:${JSON.stringify(originRead)}\n`);
   process.exitCode = 70;
 }

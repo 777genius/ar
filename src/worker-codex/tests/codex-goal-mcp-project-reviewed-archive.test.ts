@@ -160,7 +160,10 @@ describe("approved output retained archive through native root MCP on disposable
       join(f.source, "a.txt"), join(f.source, "new.txt"), join(f.source, "binary.dat"), join(f.source, ".git", "index"), f.resultPath];
     const before = await Promise.all(paths.map(path => readFile(path)));
     const canonicalHead = await git(f.canonical, "rev-parse", "HEAD");
-    expect(await f.run()).toMatchObject({ ok: true, disposition: "archived", result: { idempotentReplay: false } });
+    const archiveResult = await f.run();
+    const diagnostic = typeof archiveResult.error === "string" && /^reviewed_archive_[a-z_]{1,96}$/.test(archiveResult.error)
+      ? archiveResult.error : "archive_result_without_closed_error_code";
+    expect(archiveResult, diagnostic).toMatchObject({ ok: true, disposition: "archived", result: { idempotentReplay: false } });
     const ledger = await f.readLedger(); expect(ledger.byJobId.get("TEST-worker")).toMatchObject({ valid: true, status: "archived" });
     expect(await f.admission()).toMatchObject({ decision: { allowed: true } });
     expect(await Promise.all(paths.map(path => readFile(path)))).toEqual(before);

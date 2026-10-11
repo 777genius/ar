@@ -1,17 +1,14 @@
+import { collectRegisteredCodexGoalJobStatus } from "./codex-goal-registered-job-observation";
 import {
   codexGoalJobToArgs,
   readCodexGoalJob,
 } from "../codex-goal-jobs";
 import {
-  collectCodexGoalStatus,
   listCodexGoalAccountStatuses,
 } from "../codex-goal-ops";
 import { join } from "node:path";
 import { buildCodexGoalBrief } from "./codex-goal-brief";
 import { goalLaunchInput } from "./codex-goal-launch-input";
-import {
-  codexGoalStatusInputFromLaunch as statusInput,
-} from "./codex-goal-status-input";
 import { mapCodexGoalObservations } from "./codex-goal-bounded-map";
 import {
   createCodexGoalObservationContext,
@@ -47,14 +44,15 @@ export async function buildCodexGoalOverviewItem(
       jobId: input.jobId,
     });
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
-    const status = await collectCodexGoalStatus(
-      statusInput(launch),
-      input.observation,
-    );
+    const status = await collectRegisteredCodexGoalJobStatus({
+      registryRootDir: input.registryRootDir, launch, ...(input.observation ? { observation: input.observation } : {}),
+    });
     const accounts = await listCodexGoalAccountStatuses({
       authRootDir: launch.config.authRootDir,
       accounts: launch.config.accounts.map((account) => account.name),
       stateRootDir: launch.config.stateRootDir ?? join(launch.config.jobRootDir, "state"),
+      ...(launch.config.modelBackend ? { modelBackend: launch.config.modelBackend } : {}),
+      ...(launch.config.mimoAccounts ? { mimoAccounts: launch.config.mimoAccounts } : {}),
     });
     const brief = await buildCodexGoalBrief({
       jobId: manifest.jobId,

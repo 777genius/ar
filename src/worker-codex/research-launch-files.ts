@@ -86,6 +86,32 @@ export function researchRead(path: string, privateFile = true, max = 1024 * 1024
   researchCustody(dirname(path), privateFile);
   return readResearchRegularBytes(path, privateFile, max);
 }
+/** A registered job's direct prompt stays private when sandbox preparation
+ * grants only traversal on its admitted job root. No authority directory gains
+ * this exception, and prompt permissions never inherit the directory allowance. */
+export function researchRegisteredPromptBytes(jobRoot: string, path: string): Buffer {
+  researchPath(jobRoot); researchPath(path);
+  const parent = dirname(path);
+  const checkParent = (): void => {
+    researchCustody(parent, parent !== jobRoot);
+    if (parent === jobRoot) {
+      const stat = lstatSync(parent), mode = stat.mode & 0o7777;
+      if (!stat.isDirectory() || (mode !== 0o700 && mode !== 0o701)) researchInvalid();
+    }
+  };
+  checkParent();
+  const pathBefore = lstatSync(path), fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd), signature = researchFileSignature(before);
+    if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o7777) !== 0o600 ||
+        before.size > 1024 * 1024 || researchFileSignature(pathBefore) !== signature) researchInvalid();
+    const bytes = readFileSync(fd);
+    if (bytes.length !== before.size || researchFileSignature(fstatSync(fd)) !== signature ||
+        researchFileSignature(lstatSync(path)) !== signature) researchInvalid();
+    checkParent();
+    return bytes;
+  } finally { closeSync(fd); }
+}
 function readResearchRegularBytes(path: string, privateFile: boolean, max: number): Buffer {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
