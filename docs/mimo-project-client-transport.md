@@ -35,6 +35,8 @@ Use `mimoProjectId` and `mimoWorkstreamId` with the ordinary tools:
 - `codex_goal_project_start`: the same identity, `jobId`, `confirmStart: true`, after create settled successfully.
 - `codex_goal_project_stop`: the same identity, `jobId`, `confirmStop: true`.
 
+Create and refill accept optional `reasoningEffort`: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; omission keeps `medium`. Use `reasoningEffort: "none"` to request disabled thinking through MiMo's Responses API. MiMo documents every other level as enabling the same thinking behavior. The value is retained for that new job and cannot be changed by start, status, or stop. See [MiMo Responses documentation](https://mimo.mi.com/docs/en-US/api/chat/responses).
+
 Create, start and stop return a pending owned operation. Inspect status until that operation settles; a pending operation or successful submission is not worker completion. A transport timeout is uncertain: inspect the same job instead of resubmitting. Caller paths, credentials, environment, commands, model/provider overrides and arbitrary tool names are refused. The ordinary OpenAI route is unchanged when the MiMo route fields are absent.
 
 An installed, authenticated host endpoint and enrolled project binding are required. A local route file alone does not enable execution. Contained clients require their own authorized transport channel; do not expose host SSH credentials or the shared MiMo key to a worker to obtain one.

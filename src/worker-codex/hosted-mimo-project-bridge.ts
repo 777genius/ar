@@ -113,7 +113,7 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
       newBranch: `feat/${request.jobId}`, promptBody: request.prompt!, preStartAdmission: childAdmission(binding, workspace),
       confirmPreStartAdmission: true, confirmRefill: true, startWorker: false, overwrite: false, dependencyBootstrap: "off", executionMode: "sync",
       modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], model: "mimo-v2.6-pro", executionEngine: "app-server",
-      maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: "medium",
+      maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: request.reasoningEffort ?? "medium",
       taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }, hostedMimoSealedSourcePort(binding)));
   }
   researchCustody(records);
