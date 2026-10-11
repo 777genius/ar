@@ -425,12 +425,18 @@ describe("codex goal MCP server", () => {
       // Keep the original controller's required builtin refill admission. A
       // separate protected legacy controller exercises public direct creation
       // at the actual retained workspace, before any new job is published.
-      const overlapControllerId = "infinity-context-overlap-controller-v1";
+      const overlapControllerId = "overlap-controller-v1";
+      const overlapControllerWorkspace = join(root, "overlap-control-workspace");
+      await mkdir(overlapControllerWorkspace, { mode: 0o700 });
+      await gitInitRepository(overlapControllerWorkspace);
+      await writeFile(join(overlapControllerWorkspace, "README.md"), "Independent TEST controller.\n");
+      await git(overlapControllerWorkspace, ["add", "README.md"]);
+      await git(overlapControllerWorkspace, ["commit", "-m", "test: isolated overlap controller"]);
       await expect(callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: overlapControllerId,
         jobRootDir: join(root, "worker-jobs", overlapControllerId),
-        workspacePath: sourceWorkspacePath,
+        workspacePath: overlapControllerWorkspace,
         promptPath: join(root, "worker-jobs", overlapControllerId, "prompt.md"),
         taskId: overlapControllerId,
         accounts: ["account-a"],
@@ -438,10 +444,10 @@ describe("codex goal MCP server", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "infinity-context",
-          workspaceRoots: [join(root, "workspaces")],
+          workspaceRoots: [overlapControllerWorkspace],
           worktreeRoots: [worktreeRoot],
           registryRoot: registryRootDir,
-          jobIdPrefixes: ["infinity-context-"],
+          jobIdPrefixes: ["infinity-context-", "overlap-controller-"],
           tmuxSessionPrefixes: ["infinity-context-"],
           allowedAccountIds: ["account-a"],
         },

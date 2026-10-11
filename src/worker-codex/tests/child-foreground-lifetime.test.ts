@@ -62,7 +62,7 @@ describe("production foreground child lifetime", () => {
     const f = await fixture();
     try {
       const result = await runParsedChild(f);
-      expect(result).toMatchObject({ status: "failed", reason: "budget_exceeded" });
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "failed", reason: "budget_exceeded" });
       expect(result.attempts).toHaveLength(1);
       const rows = await f.rows();
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(2);
@@ -87,7 +87,7 @@ describe("production foreground child lifetime", () => {
       expect(result.status).not.toBe("completed");
       expect(result.attempts).toHaveLength(1);
       const rows = await f.rows();
-      expect(rows.filter(r => r.type === "provider-start")).toHaveLength(1);
+      expect(rows.filter(r => r.type === "provider-start"), JSON.stringify(result)).toHaveLength(1);
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(1);
       await expectProviderCleanedUp(f, rows);
@@ -118,7 +118,7 @@ describe("production foreground child lifetime", () => {
       expect(result.status).toBe("failed");
       const rows = await f.rows();
       expect(result.attempts).toHaveLength(1);
-      expect(rows.filter(r => r.type === "provider-start")).toHaveLength(1);
+      expect(rows.filter(r => r.type === "provider-start"), JSON.stringify(result)).toHaveLength(1);
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(1);
       const acknowledgments = rows.filter(r => r.type === "turn-start-ack");
