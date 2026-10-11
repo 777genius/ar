@@ -1,3 +1,5 @@
+import { delegateMimoProjectOperation } from "./mimo-project-bridge-client";
+import { MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
 import { projectControlRelocateControllerWorkspaceView } from "./codex-goal-mcp-project-controller-relocation";
 import { mcpJson } from "./codex-goal-mcp-response";
 import type {
@@ -233,10 +235,15 @@ function projectControlJobsDeps() {
 }
 
 export async function projectControlCreateCodexGoalJob(args: ProjectControlMcpArgs) {
+  const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Create, args);
+  if (remote !== undefined) return mcpJson(remote);
   return mcpJson(await projectControlCreateCodexGoalJobView(args, projectControlJobsDeps()));
 }
 
 export async function projectControlRefillWorker(args: ProjectControlMcpArgs) {
+  const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Create, args);
+  if (remote !== undefined) return mcpJson({ ...remote, requestedStartWorker: args.startWorker !== false,
+    nextOperation: "status", safeMessage: "Wait for creation to settle successfully, then start the same job through the project start tool." });
   return mcpJson(await projectControlRefillWorkerView(args, projectControlJobsDeps()));
 }
 
@@ -261,6 +268,8 @@ function projectControlActionDeps() {
 }
 
 export async function projectControlStartStoredJob(args: ProjectControlMcpArgs) {
+  const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Start, args);
+  if (remote !== undefined) return mcpJson(remote);
   return mcpJson(await projectControlStartStoredJobView(args, projectControlActionDeps()));
 }
 
@@ -277,6 +286,8 @@ export async function projectControlPushBranch(args: ProjectControlMcpArgs) {
 }
 
 export async function projectControlStopStoredJob(args: ProjectControlMcpArgs) {
+  const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Stop, args);
+  if (remote !== undefined) return mcpJson(remote);
   return mcpJson(await projectControlStopStoredJobView(args, projectControlActionDeps()));
 }
 

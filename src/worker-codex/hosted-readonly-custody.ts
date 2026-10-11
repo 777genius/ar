@@ -80,6 +80,13 @@ function publishPrivateRecord(path: string, bytes: Buffer, maximum: number): voi
   try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
   syncRecordAncestry(path);
 }
+/** One-time consumption: every existing name refuses, including identical
+ * bytes. Partial publication remains held evidence, never repaired as replay. */
+export function createReadonlyPrivateRecordOnce(path: string, bytes: Buffer): void {
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
+  syncRecordAncestry(path);
+}
 function syncRecordAncestry(path: string): void {
   // The operator may have just created private directories. Persist those names
   // too, not only the final record's link in its immediate parent.

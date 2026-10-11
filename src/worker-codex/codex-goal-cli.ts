@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { mapManagedGoalLayout } from "./managed-goal-admission";
+import { enterScratchPrivateMountNamespace, isScratchHelpInvocation } from "./scratch-mount-namespace";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
 import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-reference";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
 import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { assertInProcessRunComposition, hasTrustedRunDeps, assertStorageCommandSerializationSupported, assertStorageRegistrySupported } from "./codex-goal-cli-run-composition";
 import { isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
@@ -38,6 +40,7 @@ export type { CodexGoalCliIo } from "./codex-goal-cli-support";
 import {
   runCodexGoal,
   type CodexGoalRunConfig,
+  type CodexGoalRunDeps,
 } from "./codex-goal-runner";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -200,13 +203,22 @@ type HelpCommand = {
   readonly kind: "help";
 };
 
+/** Installed trusted composition only; never serialize or transport to a new process. */
+export type CodexGoalCliTrustedComposition = {
+  readonly runDeps?: CodexGoalRunDeps;
+};
 
 export async function runCodexGoalCli(
   argv = process.argv.slice(2),
   io: CodexGoalCliIo = defaultIo,
+  trusted: CodexGoalCliTrustedComposition = {},
 ): Promise<number> {
   try {
+    const runDeps = trusted.runDeps;
     let command = parseCodexGoalCliArgs(argv, io);
+    if (hasTrustedRunDeps(runDeps) && command.kind !== "run") {
+      throw new Error("codex_goal_cli_trusted_run_command_required");
+    }
     if (command.kind === "help") {
       io.writeStdout(usage());
       return 0;
@@ -333,6 +345,7 @@ export async function runCodexGoalCli(
     if (!command.dryRun && !command.printCommand) {
       command = { ...command, ...mapManagedGoalLayout(command) };
     }
+    assertInProcessRunComposition(command, runDeps, () => cliLaunchInput(command));
     if (command.lifecycle) {
       return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
     }
@@ -362,7 +375,7 @@ export async function runCodexGoalCli(
     await upsertRunCommandManifest(command);
     const reference = await tryRunHostedLegacyReference(command.config);
     if (reference) { writeJsonOrText(command.format, reference, io); return 0; }
-    const result = await runCodexGoal(command.config);
+    const result = await runCodexGoal(command.config, runDeps);
     writeJsonOrText(command.format, result, io);
     return result.status === "completed" ? 0 : 1;
   } catch (error) {
@@ -477,15 +490,18 @@ export function buildTmuxCommand(command: RunCommand): {
   readonly args: readonly string[];
   readonly preview: string;
 } {
+  assertStorageCommandSerializationSupported(command);
   return buildCodexGoalTmuxCommand(cliLaunchInput(command));
 }
 
 export function buildNoTmuxShellCommand(command: RunCommand): string {
+  assertStorageCommandSerializationSupported(command);
   return buildCodexGoalNoTmuxCommand(cliLaunchInput(command));
 }
 
 export async function upsertRunCommandManifest(command: RunCommand) {
   if (!command.registryRootDir) return undefined;
+  assertStorageRegistrySupported(command);
   return upsertCodexGoalLaunchManifest({
     registryRootDir: command.registryRootDir,
     launch: cliLaunchInput(command),
@@ -905,6 +921,7 @@ const defaultIo: CodexGoalCliIo = {
 };
 
 if (await isMainModule()) {
+  if (!isScratchHelpInvocation(process.argv.slice(2))) enterScratchPrivateMountNamespace();
   installBrokenPipeHandlers();
   process.exitCode = await runCodexGoalCli();
 }

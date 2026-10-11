@@ -1,3 +1,4 @@
+import { assertNoUnsupportedMimoRemoteRoute } from "./mimo-project-bridge-client";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -74,6 +75,8 @@ export type StartMcpArgs = GoalMcpArgs & {
 };
 
 export type JobRegistryMcpArgs = {
+  readonly mimoProjectId?: string;
+  readonly mimoWorkstreamId?: string;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -142,6 +145,7 @@ export type JobCreateMcpArgs = GoalMcpArgs & JobIdMcpArgs & {
 export type JobUpdateMcpArgs = JobIdMcpArgs & Partial<JobCreateMcpArgs>;
 
 export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
+  readonly sourceCommit?: string;
   readonly storedStartBinding?: import("./stored-start-planning").StoredProjectStartBinding;
   readonly controllerJobId?: string;
   readonly path?: string;
@@ -361,6 +365,8 @@ export type AccountPoolMcpArgs = {
 
 export function jobRegistryInputSchema(): Record<string, z.ZodTypeAny> {
   return {
+    mimoProjectId: z.string().optional().describe("Configured hosted MiMo project route."),
+    mimoWorkstreamId: z.string().optional(),
     registryRootDir: z.string().optional(),
     cwd: z.string().optional(),
   };
@@ -374,6 +380,7 @@ export function jobIdInputSchema(): Record<string, z.ZodTypeAny> {
 }
 
 export function registryRootFromArgs(args: JobRegistryMcpArgs): string {
+  assertNoUnsupportedMimoRemoteRoute(args);
   return resolveCodexGoalJobRegistryRoot({
     ...(args.registryRootDir ? { registryRootDir: args.registryRootDir } : {}),
     ...(args.cwd ? { cwd: args.cwd } : {}),

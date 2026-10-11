@@ -1,3 +1,5 @@
+import { captureHostedDependencyToolReadyReader } from "../hosted-dependency-tool-ready-reader";
+import { registerMaterializationAttemptTest } from "./hosted-dependency-materialization-attempt-test-support";
 import { sessionArtifactFromCodexAuthJson } from "@vioxen/subscription-runtime/provider-codex";
 import { FileBackendCodexWorker } from "../file-backend-codex-worker";
 import * as runtimeFactory from "../file-backend-codex-runtime-factory";
@@ -28,11 +30,15 @@ import type { EventEmitter } from "node:events";
 import type { CodexAppServerChildProcess } from "../../provider-codex/app-server/application/app-server-process-port";
 import { dependencyCoverageRevision, readHostedDependencyReceipt } from "../hosted-dependency-materialization";
 import { publishHostedDependencyReceipt, hostedDependencyReceiptHistoryRoot } from "../hosted-dependency-receipts";
+import { dependencyToolPins, DependencyToolProfileId, DependencyToolTransformCache } from "../../core/dependency-environment/dependency-tool-profile";
+import { captureManagedDependencyGitContext, isLinkedGitWorktree } from "../managed-dependency-git";
+import { readLocalGitHeadCommit } from "../codex-goal-git-revision";
+import { withHandoffLiveIndexSnapshot, withHandoffWorktreeIndex } from "../codex-goal-handoff-worktree-index";
 
 /** Uses the ordinary suite's real private FS and retained origin composition.
  * Synthetic kernel facts do not certify the production mount/capability fence. */
 export function registerDependencyConsumerAdmissionTests(input: {
-  fixture: { root: string; runtimeUnit: string; group: string; jobs: string; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
+  fixture: { root: string; runtimeUnit: string; group: string; jobs: string; captureAncestry: boolean; captureDirectories: Map<number, string>; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
   stageName: string; runtimeDirectory: string; local: (path: string) => string;
   put: (name: string, value: unknown) => void; read: (name: string) => any;
 }): void {
@@ -118,6 +124,49 @@ export function registerDependencyConsumerAdmissionTests(input: {
       // real descriptor I/O while the outer fixture supplies finite /proc facts.
       vi.spyOn(fs, "readFileSync").mockImplementation((path, options) =>
         typeof path === "number" ? real.readFileSync(path, options) : fixtureReadFile(path, options));
+    });
+    registerMaterializationAttemptTest({ prepared, local: input.local, fixture: input.fixture });
+    it.each(["missing-binding", "reference-v3", "foreign-identity", "stale-v1-runtime"])("optional tool reader refuses actual protected %s before default fallback", fault => {
+      // Red if a missing protected binding, reference purpose or caller alias
+      // can select the ordinary default factory without a current owner.
+      const p = prepared(), name = hostedDependencyBindingName(jobId);
+      if (fault === "missing-binding") fs.unlinkSync(input.local(`/var/lib/subscription-runtime-host-policy/${name}`));
+      if (fault === "stale-v1-runtime") input.put(name,{...p.binding,runtimeSha:"b".repeat(40)});
+      if (fault === "reference-v3") input.put(name,{...p.binding,version:3,reference:{
+        kind:HostedDependencyReferenceKind.LegacyRegistryV1,operationId:randomUUID()}});
+      expect(() => withHostedActivationFence(fence => captureHostedDependencyToolReadyReader(fence,{
+        jobId,jobRootDir,workspacePath:fault === "foreign-identity" ? "/tmp/TEST-foreign-workspace" : workspacePath,
+      }))).toThrow();
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+      expect(readFileSync(input.local(workspacePath+"/dirty-source"),"utf8")).toBe("original dirty TEST bytes\n");
+    });
+    it.each(["unprepared-v2", "missing-binding", "reference-v3"])("actual protected %s rejects omitted helper context and aliases before generic IO/callback", async kind => {
+      // Red on the old lexical dispatcher: a real protected C start plus an
+      // outside-jobsRoot alias enters PATH Git or the generic index callback.
+      const p = prepared();
+      const files = Array.from({ length: 7 }, (_, index) => ({ path: `${jobRootDir}/TEST-readonly-${index}`, sha256: "a".repeat(64) }));
+      const binding = parseHostedDependencyBinding({ ...p.binding, version: 2, toolProfile: {
+        version: 1, profileId: DependencyToolProfileId.ViteVitestConfigFreeV1, pins: dependencyToolPins,
+        cache: { ...p.binding.workspace, canonicalPath: `${jobRootDir}/tool-cache/${DependencyToolProfileId.ViteVitestConfigFreeV1}` },
+        node: { path: `${jobRootDir}/TEST-node`, sha256: "b".repeat(64) }, helper: files[0], readonlyFiles: files,
+        testFiles: ["source.test.ts"], optimizerDependencies: ["test-tool"], transformCache: DependencyToolTransformCache.Temporary,
+      } });
+      input.put(hostedDependencyBindingName(jobId), binding);
+      if (kind === "missing-binding") fs.unlinkSync(input.local(`/var/lib/subscription-runtime-host-policy/${hostedDependencyBindingName(jobId)}`));
+      if (kind === "reference-v3") input.put(hostedDependencyBindingName(jobId), parseHostedDependencyBinding({ ...p.binding, version: 3,
+        reference: { kind: HostedDependencyReferenceKind.LegacyRegistryV1, operationId: randomUUID() } }));
+      const authored = input.local(workspacePath + "/dirty-source"), before = readFileSync(authored);
+      const alias = join(input.fixture.root, "TEST-workspace-alias"); fs.symlinkSync(input.local(workspacePath), alias);
+      const initialize = vi.fn(async () => {}), operation = vi.fn(async () => "unexpected generic callback");
+      expect(() => captureManagedDependencyGitContext(alias)).toThrow();
+      await expect(isLinkedGitWorktree(alias)).rejects.toThrow();
+      await expect(readLocalGitHeadCommit(alias)).rejects.toThrow();
+      await expect(withHandoffWorktreeIndex({ initialize, operation })).rejects.toThrow();
+      await expect(withHandoffLiveIndexSnapshot({ sourceIndexPath: authored, operation })).rejects.toThrow();
+      expect(initialize).not.toHaveBeenCalled(); expect(operation).not.toHaveBeenCalled();
+      expect(readFileSync(authored)).toEqual(before); expect(input.fixture.spawn).not.toHaveBeenCalled();
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
     });
     it("reference purpose denies generic entry before qualification, even with no requested workspace", async () => {
       // Regression: accepting the new binding without the mandatory generic

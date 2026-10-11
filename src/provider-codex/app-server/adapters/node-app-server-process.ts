@@ -1,8 +1,12 @@
+import { join } from "node:path";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
+import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, type HostedMimoCodingWorkerOrigin } from "../../hosted-mimo-worker-origin";
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type {
   CodexAppServerChildProcess,
@@ -12,7 +16,7 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
 import { readHostedFdProfile } from "./hosted-fd-observation";
-import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
+import { spawnHostedFdChild, hostedFdLaunch, hostedFdCleanupUnit, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
 import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
@@ -84,6 +88,27 @@ export function signalHostedSystemdUnit(
       (finalActiveResult.status === 3 || finalActiveResult.status === 4)
     ? "stopping"
     : "bounded";
+}
+
+/** Research units own their mount namespace (MountFlags=private); their scratch binds stay there. */
+export function isResearchUnitCgroup(cgroup: string): boolean {
+  return /\/subscription-runtime-research-/.test(cgroup);
+}
+
+/** True when the provider of a run is a separate `subscription-runtime-hosted-*` unit created
+ * from PID 1's mount namespace. Unlike `isHostedContainment`, research units are excluded:
+ * their scratch binds live in the unit's own namespace and must stay. */
+export function hostedProviderRunsInSeparateUnit(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform,
+  readCgroup: () => string = () => readFileSync("/proc/self/cgroup", "utf8"),
+): boolean {
+  if (platform !== "linux") return false;
+  const cgroup = readCgroup();
+  if (isResearchUnitCgroup(cgroup)) return false;
+  return env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(cgroup);
 }
 
 export type CodexAppServerProcessInvocation = {
@@ -216,7 +241,7 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
-        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+        invocation.systemdUnit, HostedFdLaunchKind.Provider);
       bindHostedDependencyToolChild(invocation, child);
     } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
@@ -275,36 +300,70 @@ export type {
   CodexAppServerProcessFactory,
 };
 
+function researchLaunchPath(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 4096 && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(value) &&
+    !value.split("/").some(part => part === "." || part === "..");
+}
+const codingResearchFactories = new WeakMap<CodexAppServerProcessFactory, HostedMimoCodingWorkerOrigin>();
+/** Read-only genuine adapter provenance; a callback cannot register itself. */
+export function readHostedMimoCodingProcessFactoryOrigin(factory: CodexAppServerProcessFactory): HostedMimoCodingWorkerOrigin | undefined {
+  const origin = codingResearchFactories.get(factory);
+  if (origin) assertHostedMimoCodingWorkerOriginCurrent(origin);
+  return origin;
+}
 /** Worker-owned research admission supplies the immutable installed launcher and
  * synchronous authority recheck. No environment marker selects this route. */
 export function admittedResearchCodexProcessFactory(input: {
   readonly jobId: string;
   readonly launcherPath: string;
+  readonly hostedProfile?: HostedMimoProfile.CodingV1;
+  readonly launchValidation?: Readonly<{ codexBinaryPath: string; workspacePath: string; homeRoot: string }>;
   readonly submit: (unit: string, effect: () => CodexAppServerChildProcess) => CodexAppServerChildProcess;
   readonly signal: (unit: string, signal: NodeJS.Signals) => void;
 }): CodexAppServerProcessFactory {
-  return launch => {
+  const jobId = input.jobId, launcherPath = input.launcherPath, submit = input.submit, signal = input.signal, profile = input.hostedProfile;
+  const origin = profile === HostedMimoProfile.CodingV1 ? readHostedMimoCodingWorkerOrigin() : undefined;
+  const validation = input.launchValidation && Object.freeze({ ...input.launchValidation });
+  if (profile !== undefined && profile !== HostedMimoProfile.CodingV1 ||
+      profile === HostedMimoProfile.CodingV1 && (!origin || !validation || jobId !== origin.jobId ||
+        launcherPath !== join(origin.runtimeDirectory, "host-integration/research-provider-launch.mjs") ||
+        validation.codexBinaryPath !== origin.codexBinaryPath || validation.workspacePath !== origin.workspacePath || validation.homeRoot !== origin.homeRoot)) {
+    throw new Error("hosted_mimo_coding_factory_invalid");
+  }
+  const factory: CodexAppServerProcessFactory = launch => {
+    const admittedLaunch = { ...launch };
+    admittedLaunch.args = [...admittedLaunch.args]; admittedLaunch.env = { ...admittedLaunch.env };
+    if (origin) assertHostedMimoCodingWorkerOriginCurrent(origin);
+    if (validation && (!researchLaunchPath(admittedLaunch.cwd) || !researchLaunchPath(admittedLaunch.env.CODEX_HOME) || admittedLaunch.command !== validation.codexBinaryPath ||
+        (admittedLaunch.cwd !== validation.workspacePath && (origin !== undefined || !admittedLaunch.cwd.startsWith(validation.homeRoot + "/"))) ||
+        typeof admittedLaunch.env.CODEX_HOME !== "string" || !admittedLaunch.env.CODEX_HOME.startsWith(validation.homeRoot + "/"))) {
+      throw new Error("hosted_research_launch_denied");
+    }
     const unit = `subscription-runtime-research-provider-${randomUUID()}.service`;
-    return input.submit(unit, () => {
-      const child = spawnInvocation(launch, { command: process.execPath,
-        args: [input.launcherPath, input.jobId, unit, launch.env.CODEX_HOME!],
-        stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...launch, args: [...launch.args] }),
+    return submit(unit, () => {
+      if (origin) assertHostedMimoCodingWorkerOriginCurrent(origin);
+      const child = spawnInvocation(admittedLaunch, { command: process.execPath,
+        args: [launcherPath, jobId, unit, admittedLaunch.env.CODEX_HOME!],
+        stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...admittedLaunch, args: [...admittedLaunch.args] }),
       });
-      researchSignals.set(child, signal => input.signal(unit, signal));
+      researchSignals.set(child, value => signal(unit, value));
       return child;
     });
   };
+  if (origin) codingResearchFactories.set(factory, origin);
+  return factory;
 }
 
 export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
+  const fdUnit = hostedFdCleanupUnit(child);
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }
   try {
-    const systemdUnit = hostedSystemdUnits.get(child);
+    const systemdUnit = fdUnit ?? hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {
       signalHostedSystemdUnit(systemdUnit, signal);
       // Never kill only the systemd-run proxy: the bounded service would leak.

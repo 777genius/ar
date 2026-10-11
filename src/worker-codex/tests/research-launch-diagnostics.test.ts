@@ -164,6 +164,7 @@ describe("finite startup diagnostics", () => {
     const f = await preparedResearchScratch("/TEST-job", "/TEST-home");
     const original = Object.assign(new Error("TEST-statfs failure"), { code: "ETIMEDOUT" });
     f.host.statfs = () => { throw original; };
+    f.mounts.delete("/TEST-job/tmp"); // a new bind is needed, so the capacity check runs
     await expect(prepareHostScratchTemp("/TEST-job", {}, f.host)).rejects.toBe(original);
     expect(normalizeResearchLaunchFailure(original)).toEqual({ legacyCode: "unclassified", cause: C.None, diagnostic: D.ETIMEDOUT });
     expect(f.mutations).toEqual([]);
@@ -180,7 +181,7 @@ describe("finite startup diagnostics", () => {
     if (scenario === "config custody") f.nodes.set(f.configPath, { ...f.nodes.get(f.configPath)!, mode: 0o666 });
     if (scenario === "schema") f.setPolicy({ schemaVersion: 2, root: f.root, uuid: f.uuid });
     if (scenario === "mount") f.mounts.set(f.root, { target: f.root, uuid: "wrong", fsroot: "/" });
-    if (scenario === "space") f.host.statfs = () => ({ bavail: 1, bsize: 1 });
+    if (scenario === "space") { f.host.statfs = () => ({ bavail: 1, bsize: 1 }); f.mounts.delete(`${job}/tmp`); } // a new bind is needed, so the capacity check runs
     if (scenario === "root custody") f.nodes.set(f.root, { ...f.nodes.get(f.root)!, mode: 0o777 });
     if (scenario === "source safety") f.nodes.set(source, { ...f.nodes.get(source)!, mode: 0o744 });
     if (scenario === "bind verification") {
@@ -235,4 +236,23 @@ describe("finite startup diagnostics", () => {
     expect(child.stdout).toBe("");
     expect(child.stderr).toBe("hosted_research_runtime_launch_denied:imports:unclassified:none:unknown:unknown\n");
   });
+});
+
+it("assembly failure exposes numeric location without message or host path", async () => {
+  const { annotateResearchMaterialFailure, annotateScratchCapacityFailure, ScratchCapacityVolumeRole, ResearchMaterialRole, normalizeResearchAssemblyFailure } = await import("../research-launch-diagnostics");
+  const error = new Error("TEST_SECRET_NEVER_PUBLISH");
+  error.stack = "TEST_SECRET_NEVER_PUBLISH\n at read (/opt/private/dist/worker-codex/research-launch-admission.js:75:58)\n at check (/opt/private/dist/worker-codex/research-provider-root-assembler.js:123:9)";
+  annotateResearchMaterialFailure(error, ResearchMaterialRole.RuntimeArtifact);
+  annotateScratchCapacityFailure(error, ScratchCapacityVolumeRole.RootControl, 0, 1);
+  const result = normalizeResearchAssemblyFailure(error);
+  expect(result).toMatchObject({ assemblyLine: 123, assemblyColumn: 9, materialLine: 75, materialColumn: 58, materialRole: ResearchMaterialRole.RuntimeArtifact });
+  expect(result).not.toHaveProperty("scratchCapacity");
+  expect(JSON.stringify(result)).not.toContain("TEST_SECRET");
+  expect(JSON.stringify(result)).not.toContain("/opt/private");
+  let reads = 0;
+  const foreign = new Error("TEST foreign");
+  Object.defineProperty(foreign, "stack", { get() { reads++; throw new Error("TEST getter"); } });
+  expect(normalizeResearchAssemblyFailure(foreign)).not.toHaveProperty("assemblyLine");
+  expect(reads).toBe(0);
+  expect(normalizeResearchAssemblyFailure({ materialRole: ResearchMaterialRole.CodexExecutable }).materialRole).toBe(ResearchMaterialRole.Unknown);
 });

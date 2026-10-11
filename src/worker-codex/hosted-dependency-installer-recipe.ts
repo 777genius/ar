@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { systemdObservationBudget } from "../provider-codex/app-server/adapters/systemd-service-arrays";
+import { assertHostedDependencyRootGitProfile, type HostedDependencyRootGitProfile } from "./hosted-dependency-root-git-profile";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
   realpathSync, readdirSync, symlinkSync, writeFileSync, chownSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,11 +20,14 @@ export const hostedDependencyInstallerRoot = join(readonlySupervisorRoot, "depen
 export const hostedDependencyInstallerNetworkRoot = join(readonlySupervisorRoot, "dependency-installer-network");
 export enum HostedDependencyInstallerNetworkInput { Hosts = "hosts", Resolver = "resolv.conf", NameService = "nsswitch.conf" }
 export enum HostedDependencyInstallerRevision { NumericUidDropV2 = "npm_registry_no_scripts_numeric_uid_drop_v2" }
-export type HostedDependencyInstallerProfile = DependencyTestNpmToolchain & { readonly schemaVersion: 1;
+type HostedDependencyInstallerBaseProfile = DependencyTestNpmToolchain & {
   readonly networkInputs: Readonly<Record<HostedDependencyInstallerNetworkInput, string>>;
   readonly recipeRevision: HostedDependencyInstallerRevision.NumericUidDropV2;
   readonly privilegeDropper: { readonly path: "/usr/bin/setpriv"; readonly sha256: string; readonly version: "2.39.3";
     readonly libraries: DependencyTestNpmToolchain["toolRoots"] } };
+export type HostedDependencyInstallerProfile = HostedDependencyInstallerBaseProfile & (
+  { readonly schemaVersion: 1; readonly rootGit?: never } |
+  { readonly schemaVersion: 2; readonly rootGit: HostedDependencyRootGitProfile });
 const plans = new WeakMap<object, string>();
 const localInputs = new WeakMap<object, HostedDependencyLocalInstallerInputs>();
 export type HostedDependencyInstallerPlan = Readonly<{ startId: string; directory: string; rootDirectory: string;
@@ -86,13 +91,14 @@ export function hostedDependencyInstallerNpmRootSha256(root: string): string {
   };
   walk(root); return createHash("sha256").update(encodeDependencyTreeManifest(facts)).digest("hex");
 }
-export function readHostedDependencyInstallerProfile(): HostedDependencyInstallerProfile {
+export function readHostedDependencyInstallerProfile(remaining = systemdObservationBudget()): HostedDependencyInstallerProfile {
   assertReadonlyHostOperator();
   const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "dependency-installer-profile.json"), 16384);
   if (!bytes) fail();
   const v = decodePrivateJson(bytes) as HostedDependencyInstallerProfile;
-  if (!v || Object.keys(v).sort().join(",") !== "arch,libc,networkInputs,nodeAbi,nodePath,nodeSha256,nodeVersion,npmCliPath,npmRootPath,npmRootSha256,npmSha256,npmVersion,platform,privilegeDropper,recipeRevision,schemaVersion,toolRoots" ||
-      v.schemaVersion !== 1 || ![v.nodeSha256, v.npmSha256].every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s)) ||
+  const keys = "arch,libc,networkInputs,nodeAbi,nodePath,nodeSha256,nodeVersion,npmCliPath,npmRootPath,npmRootSha256,npmSha256,npmVersion,platform,privilegeDropper,recipeRevision,schemaVersion,toolRoots";
+  if (!v || (v.schemaVersion !== 1 && v.schemaVersion !== 2) ||
+      Object.keys(v).sort().join(",") !== (v.schemaVersion === 2 ? keys.replace("recipeRevision,schemaVersion", "recipeRevision,rootGit,schemaVersion") : keys) || ![v.nodeSha256, v.npmSha256].every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s)) ||
       typeof v.nodeVersion !== "string" || !/^v\d+\.\d+\.\d+$/.test(v.nodeVersion) ||
       typeof v.npmVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(v.npmVersion) ||
       typeof v.nodePath !== "string" || !/^\/(?:usr|opt)\//.test(v.nodePath) ||
@@ -119,6 +125,7 @@ export function readHostedDependencyInstallerProfile(): HostedDependencyInstalle
       new Set(v.privilegeDropper.libraries.map(l => l.path)).size !== v.privilegeDropper.libraries.length ||
       !v.toolRoots.some(l => l.sha256 === v.libc.sha256 && l.path === v.libc.path && /\/libc\.so\.[0-9]+$/.test(l.path)) ||
       hostedDependencyInstallerNpmRootSha256(v.npmRootPath) !== v.npmRootSha256) fail();
+  if (v.schemaVersion === 2) return Object.freeze({ ...v, rootGit: assertHostedDependencyRootGitProfile(v.rootGit, remaining) });
   return Object.freeze({ ...v });
 }
 function libraries(profile: HostedDependencyInstallerProfile): DependencyTestNpmToolchain["toolRoots"] {
@@ -236,7 +243,9 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
   writeFileSync(join(root, "runtime/bootstrap.js"), bytes, { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/hosted-dependency-installer-local-stage.js"), trustedFile(fileURLToPath(new URL("./hosted-dependency-installer-local-stage.js", import.meta.url))), { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
-  writeFileSync(join(root, "runtime/profile.json"), JSON.stringify({ ...selected, stagingDirectory: staging,
+  // Git belongs only to root-purpose transport; never enter npm bootstrap or mounts.
+  const { rootGit: _rootGit, ...installerProfile } = selected;
+  writeFileSync(join(root, "runtime/profile.json"), JSON.stringify({ ...installerProfile, stagingDirectory: staging,
     lockName: inputs.lockName, inputSha256: inputs.sha256, installArgv: local ? local.installArgv : hostedDependencyInstallerArgv,
     ...(local ? { localStage: local.stage } : {}),
     environment: dependencyTestNpmEnvironment, umask: dependencyTestNpmUmask }), { flag: "wx", mode: 0o644 });
