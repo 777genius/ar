@@ -1,11 +1,18 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it, vi } from "vitest";
-const boundary = vi.hoisted(() => ({ root: "", map: (value: unknown): unknown => value, unmap: (value: string) => value }));
+const boundary = vi.hoisted(() => ({ root: "", runtimeDirectory: "", map: (value: unknown): unknown => value, unmap: (value: string) => value }));
+vi.mock("node:url", async original => {
+  const url = await original<typeof import("node:url")>();
+  return { ...url, fileURLToPath: (value: URL | string) => {
+    const path = url.fileURLToPath(value);
+    return path === boundary.runtimeDirectory + "/" ? "/opt/TEST-mimo-runtime/" : path;
+  } };
+});
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["existsSync", "mkdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
+  for (const name of ["existsSync", "mkdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "unlinkSync", "renameSync", "rmdirSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => unknown>)[name]!;
     result[name] = (...args: unknown[]) => {
       const answer = fn(...args.map(boundary.map));
@@ -13,12 +20,14 @@ vi.mock("node:fs", async original => {
       return name === "realpathSync" ? boundary.unmap(answer as string) : answer;
     };
   }
-  result.fstatSync = (fd: number) => Object.assign(fs.fstatSync(fd), { uid: 0 });
+  result.fstatSync = (fd: number, options?: { bigint?: boolean }) => options?.bigint
+    ? Object.assign(fs.fstatSync(fd, { bigint: true }), { uid: 0n })
+    : Object.assign(fs.fstatSync(fd), { uid: 0 });
   return result;
 });
 vi.mock("node:fs/promises", async original => {
   const fs = await original<typeof import("node:fs/promises")>(); const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "appendFile", "writeFile", "readFile", "open", "readdir", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
+  for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "appendFile", "writeFile", "readFile", "open", "readdir", "link", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
     result[name] = async (...args: unknown[]) => { const answer = await fn(...args.map(boundary.map)); return name === "realpath" ? boundary.unmap(answer as string) : answer; };
   }
@@ -36,23 +45,31 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
   let current = physical;
   for (;;) { const stat = fs.lstatSync(current); if (stat.isSymbolicLink() || (stat.mode & 0o022) || (privateLeaf && current === physical && (stat.mode & 0o077))) throw new Error("TEST custody denied"); if (current === boundary.root) break; const parent = current.slice(0, current.lastIndexOf("/")) || "/"; if (parent === current || !current.startsWith(boundary.root)) break; current = parent; }
 } }));
-// Cold writer census/publication needs a real Linux host; this fixture owns no provider effects.
+// This source/Git fixture does not qualify the cold writer census. The separate
+// prepare-birth integration exercises real admission publication and readers.
 vi.mock("../application/project-control/codex-goal-project-admission", async original => ({ ...await original<object>(), codexProjectAdmissionGate: () => ({ evaluate: async () => ({ allowed: true, status: "admitted" }) }) }));
-vi.mock("../protected-job-birth", async original => ({ ...await original<object>(), withProtectedCodexGoalJobBirthPublication: async (effect: () => Promise<unknown>) => effect() }));
 vi.mock("../codex-goal-mcp-project-accounts", async original => ({ ...await original<object>(), projectControlRefillAccountNames: async () => ["account-q"] }));
 import { prepareHostedMimoProject, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
 import { resolveProjectSourceRevision } from "../application/project-control/codex-goal-project-source-revision";
 import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+boundary.runtimeDirectory = (await vi.importActual<typeof import("node:url")>("node:url")).fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
 boundary.root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-")));
-boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt)(?:\/|$)/.test(value) ? boundary.root + value : value;
+boundary.map = value => typeof value === "string" && value !== boundary.root && !value.startsWith(boundary.root + "/") &&
+  /^\/(?:srv|etc|opt|run)(?:\/|$)/.test(value) ? boundary.root + value : value;
 boundary.unmap = value => value.startsWith(boundary.root + "/") ? value.slice(boundary.root.length) : value;
 const physical = (path: string) => boundary.map(path) as string;
 function directory(path: string) { fs.mkdirSync(physical(path), { recursive: true, mode: 0o700 }); }
 function file(path: string, bytes: string, mode = 0o600) { directory(path.slice(0, path.lastIndexOf("/"))); fs.writeFileSync(physical(path), bytes, { mode }); }
 afterAll(() => fs.rmSync(boundary.root, { recursive: true, force: true }));
 it("real filesystem prepare creates a real scoped controller and onboards; fsmonitor stays inert", async () => {
+  // Protected birth hashes actual retained artifact bytes and publishes into an
+  // allocated private authority namespace, never the checkout or real /run.
+  directory("/run/user");
+  for (const path of ["dist", "host-integration", "node_modules"]) directory("/opt/TEST-mimo-runtime/" + path);
+  file("/opt/TEST-mimo-runtime/package.json", '{"type":"module"}');
+  file("/opt/TEST-mimo-runtime/dist/runtime.js", "TEST inert runtime bytes");
   const snapshot = "/srv/reviewed/test-source", state = "/srv/worker-state/mimo-projects/test-project/test-work", scratch = "/srv/workers/mimo-projects/test-project/test-work";
   directory(snapshot); directory("/srv/worker-state/account-pools/auth"); directory("/srv/workers"); directory("/srv/worker-state");
   const git = (...args: string[]) => cp.execFileSync("/usr/bin/git", ["-C", physical(snapshot), ...args], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } }).trim();
