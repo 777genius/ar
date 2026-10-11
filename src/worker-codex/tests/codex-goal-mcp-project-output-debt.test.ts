@@ -52,7 +52,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("codex goal MCP server", () => {
-  it("blocks producer refill but allows reviewer drain when orphan dirty output exists", async () => {
+  it("admits independent modern mutations with bounded orphan-output advisory and preserves historical bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-admission-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -106,6 +106,18 @@ describe("codex goal MCP server", () => {
         join(brokenWorkspace, ".git"),
         `gitdir: ${join(root, "missing-gitdir")}\n`,
       );
+      const historicalPaths = [join(orphanWorkspace, "memory.py"), join(linkedOrphanTarget, "linked.py"), join(brokenWorkspace, ".git")];
+      const historicalBytes = await Promise.all(historicalPaths.map(path => readFile(path)));
+      const expectAdvisory = (operation: unknown, canonicalPath: string): void => {
+        expect(operation).toMatchObject({ admission: { scope: "unrelated_history", target: { canonicalPath } } });
+        const { backlog } = (operation as { admission: { backlog: { count: number; preview: { subject: string }[] } } }).admission;
+        expect(backlog.count).toBeGreaterThanOrEqual(3);
+        expect(backlog.preview).toHaveLength(3);
+        for (const item of backlog.preview) {
+          expect(item).toMatchObject({ severity: "info", evidence: [] });
+          expect(item.subject.length).toBeLessThanOrEqual(240);
+        }
+      };
 
       await Promise.all([
         server.connect(serverTransport),
@@ -177,16 +189,21 @@ describe("codex goal MCP server", () => {
         confirmRefill: true,
       });
       expect(producer).toMatchObject({
-        ok: false,
-        error: "project_control_admission_denied:output_debt_present",
+        ok: true, workerRole: "producer", startSkipped: true,
       });
+      expectAdvisory(producer.worktree, producerWorkspace);
+      expectAdvisory(producer.createJob, producerWorkspace);
+      const directProducerWorkspace = join(root, "worktrees", "infinity-context-memory-direct-producer-v1");
+      // This sequence needs a real workspace so protected publication can prove
+      // no start. The separate future-registration case deliberately stays Unknown.
+      await git(sourceWorkspacePath, ["worktree", "add", "--detach", directProducerWorkspace, "HEAD"]);
       const directProducer = await callToolJson(client, "codex_goal_project_create_job", {
         registryRootDir,
         controllerJobId: "infinity-context-controller-v1",
         jobId: "infinity-context-memory-direct-producer-v1",
         jobRootDir: join(root, "worker-jobs", "infinity-context-memory-direct-producer-v1"),
         authRootDir: join(root, "auth"),
-        workspacePath: join(root, "worktrees", "infinity-context-memory-direct-producer-v1"),
+        workspacePath: directProducerWorkspace,
         promptPath: join(
           root,
           "worker-jobs",
@@ -199,12 +216,12 @@ describe("codex goal MCP server", () => {
         confirmCreate: true,
       });
       expect(directProducer).toMatchObject({
-        ok: false,
-        error: "project_control_admission_denied:output_debt_present",
+        ok: true, result: { status: "applied" },
       });
+      expectAdvisory(directProducer.result, directProducerWorkspace);
       await expect(access(
         join(root, "worker-jobs", "registry", "infinity-context-memory-direct-producer-v1"),
-      )).rejects.toThrow();
+      )).resolves.toBeUndefined();
       const directWorktreePath = join(
         root,
         "worktrees",
@@ -224,10 +241,10 @@ describe("codex goal MCP server", () => {
         },
       );
       expect(directWorktree).toMatchObject({
-        ok: false,
-        error: "project_control_admission_denied:output_debt_present",
+        ok: true, result: { status: "applied" },
       });
-      await expect(access(directWorktreePath)).rejects.toThrow();
+      expectAdvisory(directWorktree.result, directWorktreePath);
+      await expect(access(directWorktreePath)).resolves.toBeUndefined();
 
       const reviewer = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,
@@ -250,6 +267,8 @@ describe("codex goal MCP server", () => {
         workerRole: "reviewer",
         startSkipped: true,
       });
+      expectAdvisory(reviewer.worktree, reviewerWorkspace);
+      expectAdvisory(reviewer.createJob, reviewerWorkspace);
 
       const legacyTarget = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,
@@ -276,6 +295,7 @@ describe("codex goal MCP server", () => {
         ok: false,
         error: "project_control_denied:path_outside_scope",
       });
+      expect(await Promise.all(historicalPaths.map(path => readFile(path)))).toEqual(historicalBytes);
     } finally {
       await client.close();
       await server.close();
