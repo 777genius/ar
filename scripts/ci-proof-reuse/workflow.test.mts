@@ -3,12 +3,17 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
+import { CAPTURE_STEP, HELPER_STEP } from './protocol.mts';
 // Execute the real aggregate shell. An accidental acceptance of skipped or
 // failed matrices, missing proof, or failed ancillary phases makes this red.
 const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
-function aggregate(job: string): string {
+function jobBlock(job: string): string {
   const block = workflow.split(`  ${job}:\n`)[1]?.split(/^  [a-z][a-z-]*:\n/m)[0];
-  assert.ok(block, 'Aggregate job exists');
+  assert.ok(block, `Job ${job} exists`);
+  return block;
+}
+function aggregate(job: string): string {
+  const block = jobBlock(job);
   const body = block.split('        run: |\n')[1];
   assert.ok(body, 'Executable aggregate shell exists');
   return body.split('\n').filter(line => line.startsWith('          ')).map(line => line.slice(10)).join('\n');
@@ -51,6 +56,57 @@ test('real matrix guards run every lane when detector is skipped, fails or retur
         assert.equal(evaluate(result, proof, true), false);
       }
     }
+  }
+});
+
+// Node 26 rejects --experimental-transform-types, and the protocol uses strict
+// enums that type stripping cannot run. Every default-CI entry must therefore
+// execute the compiled helper that was built from the locked project compiler.
+test('default CI runs the compiled proof helper, prepared before any capture or full install', () => {
+  const entry = 'node "$RUNNER_TEMP/ci-proof-helper/cli.mjs"';
+  const build = 'npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"';
+  const packageScripts = (JSON.parse(readFileSync(resolve('package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts;
+  assert.ok(!workflow.includes('--experimental-transform-types'), 'Removed Node flag in default CI');
+  assert.ok(!packageScripts['test:ci-tools']!.includes('--experimental-transform-types'), 'Removed Node flag in test:ci-tools');
+  assert.equal(workflow.match(/scripts\/ci-proof-reuse\/cli\.mts/g), null, 'Direct TypeScript entry in default CI');
+  assert.equal(workflow.match(/ci-proof-helper\/cli\.mjs/g)?.length, 3, 'Detector plus unit and crash capture only');
+  for (const [job, action, before] of [['ci-proof-reuse', 'detect', 'Verify reusable PR lane proofs'],
+    ['unit-test-shards', 'capture', CAPTURE_STEP], ['crash-boundary-shards', 'capture', CAPTURE_STEP]] as const) {
+    const block = jobBlock(job);
+    const prepare = block.indexOf(`- name: ${HELPER_STEP}\n`);
+    assert.ok(prepare >= 0, `${job} prepares the helper`);
+    assert.ok(block.indexOf('npm ci --ignore-scripts', prepare) > prepare, `${job} installs without lifecycle scripts`);
+    assert.ok(block.indexOf(build, prepare) > prepare, `${job} compiles with the project compiler`);
+    const use = block.indexOf(`${entry} ${action}`);
+    assert.ok(use > prepare && use > block.indexOf(`- name: ${before}\n`), `${job} executes the compiled helper after preparation`);
+    // The helper install must stay separate from the one counted full install.
+    const fullInstall = block.indexOf('npm ci && break');
+    if (fullInstall >= 0) assert.ok(prepare < use && use < fullInstall, `${job} captures before the full install`);
+  }
+});
+
+// The official Linux Node.js binary cannot load without libatomic.so.1, which
+// fails setup-node itself before any source command. The prerequisite must come
+// first in every job that selects Node, on Linux only, and fail visibly.
+test('every Node 26 job installs the Linux libatomic prerequisite before setup-node', () => {
+  const prerequisite = 'name: Install Node.js Linux runtime prerequisite';
+  const first = (...positions: number[]): number => positions.filter(position => position >= 0).sort((a, b) => a - b)[0] ?? -1;
+  for (const [file, jobsWithNode] of [['ci.yml', 7], ['publish.yml', 2], ['publish-registry-contract.yml', 1]] as const) {
+    const text = readFileSync(resolve('.github/workflows', file), 'utf8');
+    let checked = 0;
+    for (const block of text.split(/^(?=  [a-z][a-z0-9-]*:\n)/m)) {
+      const node = first(block.indexOf('actions/setup-node@'), block.indexOf('*unit_test_node\n'));
+      if (node < 0) continue;
+      checked += 1;
+      const install = first(block.indexOf(prerequisite), block.indexOf('*unit_test_node_prerequisite\n'));
+      assert.ok(install >= 0 && install < node, `${file} ${block.split('\n')[0]!.trim()} installs the prerequisite before setup-node`);
+    }
+    assert.equal(checked, jobsWithNode, `${file} Node jobs`);
+    // Definitions only: an alias reuses the anchored step, including its condition.
+    assert.equal(text.match(/^ +if: runner\.os == 'Linux'$/gm)?.length ?? 0,
+      text.match(new RegExp(`^ +- (?:${prerequisite}|&unit_test_node_prerequisite)$`, 'gm'))?.length ?? 0, `${file} limits every prerequisite step to Linux`);
+    assert.ok(text.includes('sudo apt-get install -y --no-install-recommends libatomic1'), `${file} installs libatomic1 with apt`);
+    assert.ok(text.includes('::error::libatomic.so.1 is missing and this Linux runner has no apt-get'), `${file} fails visibly without apt`);
   }
 });
 
