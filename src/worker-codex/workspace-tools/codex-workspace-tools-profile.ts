@@ -115,7 +115,7 @@ export function buildCodexWorkspaceToolsProfile(input: {
     configToml: `${configToml}\n`,
     developerInstructions: [
       input.nativeGoalControls
-        ? "Use only the agent_runtime_workspace MCP tools for filesystem operations. Use native goal-status controls only to inspect the active Goal and mark it complete after satisfying its objective."
+        ? 'Use only the agent_runtime_workspace MCP tools for filesystem operations. An active Goal is already provided: use get_goal to inspect it and do not create another Goal. Work autonomously without requesting human input. After independently verifying that the objective is satisfied, call update_goal({status:"complete"}) before your final response.'
         : "Use only the agent_runtime_workspace MCP tools exposed for this task.",
       "Native shell, web, delegation, applications, and direct environment tools are unavailable.",
       "All paths must be relative to the provided workspace root.",
