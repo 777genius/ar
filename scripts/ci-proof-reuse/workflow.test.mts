@@ -85,6 +85,31 @@ test('default CI runs the compiled proof helper, prepared before any capture or 
   }
 });
 
+// The official Linux Node.js binary cannot load without libatomic.so.1, which
+// fails setup-node itself before any source command. The prerequisite must come
+// first in every job that selects Node, on Linux only, and fail visibly.
+test('every Node 26 job installs the Linux libatomic prerequisite before setup-node', () => {
+  const prerequisite = 'name: Install Node.js Linux runtime prerequisite';
+  const first = (...positions: number[]): number => positions.filter(position => position >= 0).sort((a, b) => a - b)[0] ?? -1;
+  for (const [file, jobsWithNode] of [['ci.yml', 7], ['publish.yml', 2], ['publish-registry-contract.yml', 1]] as const) {
+    const text = readFileSync(resolve('.github/workflows', file), 'utf8');
+    let checked = 0;
+    for (const block of text.split(/^(?=  [a-z][a-z0-9-]*:\n)/m)) {
+      const node = first(block.indexOf('actions/setup-node@'), block.indexOf('*unit_test_node\n'));
+      if (node < 0) continue;
+      checked += 1;
+      const install = first(block.indexOf(prerequisite), block.indexOf('*unit_test_node_prerequisite\n'));
+      assert.ok(install >= 0 && install < node, `${file} ${block.split('\n')[0]!.trim()} installs the prerequisite before setup-node`);
+    }
+    assert.equal(checked, jobsWithNode, `${file} Node jobs`);
+    // Definitions only: an alias reuses the anchored step, including its condition.
+    assert.equal(text.match(/^ +if: runner\.os == 'Linux'$/gm)?.length ?? 0,
+      text.match(new RegExp(`^ +- (?:${prerequisite}|&unit_test_node_prerequisite)$`, 'gm'))?.length ?? 0, `${file} limits every prerequisite step to Linux`);
+    assert.ok(text.includes('sudo apt-get install -y --no-install-recommends libatomic1'), `${file} installs libatomic1 with apt`);
+    assert.ok(text.includes('::error::libatomic.so.1 is missing and this Linux runner has no apt-get'), `${file} fails visibly without apt`);
+  }
+});
+
 // Missing PR read prevents authoritative PR/commit association reads; a wider
 // token would unnecessarily grant the trusted metadata job write capabilities.
 test('detector token grants exactly the three required read-only API scopes', () => {
