@@ -448,7 +448,7 @@ describe("codex goal MCP server", () => {
           worktreeRoots: [worktreeRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-", "overlap-controller-"],
-          tmuxSessionPrefixes: ["infinity-context-"],
+          tmuxSessionPrefixes: ["infinity-context-", "overlap-controller-"],
           allowedAccountIds: ["account-a"],
         },
       })).resolves.toMatchObject({ ok: true });

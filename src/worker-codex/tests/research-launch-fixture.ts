@@ -326,6 +326,9 @@ export function setupResearchFixture(options: { readonly nativeBackingFacts?: bo
   fixture.root = nativeFs.mkdtempSync(join(parent, "TEST-research-launch-r7-"));
   const allocated = nativeFs.lstatSync(fixture.root);
   ownedRoot = { path: fixture.root, device: allocated.dev, inode: allocated.ino };
+  // Clear inherited setgid only on the fresh owned TEST root, before its
+  // private descendants inherit modes from a shared CI workspace.
+  nativeFs.chmodSync(fixture.root, 0o700);
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
