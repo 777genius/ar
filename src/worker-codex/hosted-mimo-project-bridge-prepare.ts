@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
+import { existsSync, mkdirSync, writeFileSync, lstatSync } from "node:fs";
+import { preparationSafeGit, assertPreparationGitMetadata } from "./hosted-mimo-project-source";
+export { preparationSafeGit, assertPreparationGitMetadata } from "./hosted-mimo-project-source";
 import { dirname, join, relative } from "node:path";
 import { AccessBoundary, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalJob } from "./codex-goal-jobs";
@@ -50,34 +50,6 @@ function configuredRepository(yaml: string, key: string): Record<string, unknown
 function makePrivate(path: string): void {
   if (!existsSync(path)) { researchCustody(dirname(path)); mkdirSync(path, { mode: 0o700 }); }
   researchCustody(path, true);
-}
-/** Same inert environment/flags as managed/source handoff Git; no inherited mappings. */
-export function preparationSafeGit(args: readonly string[]): string {
-  researchCustody("/usr/bin/git");
-  return execFileSync("/usr/bin/git", ["--no-replace-objects", ...managedDependencyGitFlags,
-    "-c", "core.attributesFile=/dev/null", "-c", "fsck.skipList=/dev/null", ...args], {
-    env: { ...managedDependencyGitEnvironment(), GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
-    timeout: 30000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-}
-export function assertPreparationGitMetadata(workspace: string): void {
-  if (existsSync(join(workspace, ".gitmodules")) || existsSync(join(workspace, ".lfsconfig"))) throw new Error("mimo_project_bridge_snapshot_linked_git");
-  const root = join(workspace, ".git"); researchCustody(root);
-  if (!lstatSync(root).isDirectory()) throw new Error("mimo_project_bridge_snapshot_linked_git");
-  let count = 0;
-  function visit(path: string): void {
-    if (++count > 100000) throw new Error("mimo_project_bridge_snapshot_metadata_bounds");
-    researchCustody(path); const stat = lstatSync(path);
-    if (stat.isDirectory()) for (const child of readdirSync(path)) visit(join(path, child));
-    else if (!stat.isFile() || stat.nlink !== 1) throw new Error("mimo_project_bridge_snapshot_metadata_invalid");
-  }
-  visit(root);
-  for (const name of ["commondir", "objects/info/alternates", "objects/info/http-alternates", "shallow", "modules", "lfs"])
-    if (existsSync(join(root, name))) throw new Error("mimo_project_bridge_snapshot_linked_git");
-  if (lstatSync(join(root, "config")).size > 65536) throw new Error("mimo_project_bridge_snapshot_config_invalid");
-  const config = readFileSync(join(root, "config"), "utf8");
-  if (Buffer.byteLength(config) > 65536 || /\[\s*(?:include|includeIf|extensions|filter|fsck|uploadpack|receive|credential|protocol|url)\b/i.test(config) ||
-      /^\s*(?:worktree|promisor|sshCommand|uploadpack|receivepack)\s*=/im.test(config)) throw new Error("mimo_project_bridge_snapshot_config_invalid");
 }
 export function assertPreparationSandbox(workspace: string, subdirectory: string): void {
   const path = join(workspace, subdirectory); researchCustody(path);

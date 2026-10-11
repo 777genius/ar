@@ -1,4 +1,4 @@
-import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { CodexModelBackend } from "../../codex-model-backend";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";

@@ -1,4 +1,4 @@
-import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { assertHostedOrdinaryWriterPaths, readHostedOrdinaryWriterExtent, assertHostedOrdinaryProviderNamespace, type HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
