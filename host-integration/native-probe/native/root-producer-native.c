@@ -1,10 +1,17 @@
 #define _GNU_SOURCE
 #include "root-producer-native.h"
 #include "root-managed-launch.h"
+#ifdef NP_RETAINED_V2_B1A
+#include "original-birth-interlock.h"
+#endif
 #include "original-owner.h"
 #include "native-root-control.h"
 #ifdef NP_RETAINED_V2_A1
 #include "retained-v2.h"
+#ifdef NP_RETAINED_V2_B1A
+#include "retained-v2-actors.h"
+#include <linux/sched.h>
+#endif
 #include <linux/magic.h>
 #include <sys/vfs.h>
 #endif
@@ -59,6 +66,11 @@ struct shared_origin {
   _Atomic bool closed, broken;
   _Atomic unsigned admission;
    bool slots[NP_ORIGIN_EFFECTS];
+#ifdef NP_RETAINED_V2_B1A
+  bool actor_creator_claim,actor_submitter_claim,actor_setup_claim;
+  _Atomic bool actor_setup_held, actor_close_requested;
+  struct np_birth_interlock actor_birth_lock;
+#endif
 }
 ;
 struct np_origin_child {
@@ -88,6 +100,10 @@ struct np_root_origin {
   uint64_t sequence[2];
   unsigned child_state, journal_count;
   bool journal_failed;
+#ifdef NP_RETAINED_V2_B1A
+  pid_t original_creator_role;
+  bool retained_reference_attempted;
+#endif
 }
 ;
 static struct np_root_origin *sole;
@@ -370,6 +386,11 @@ int np_root_origin_begin_v1(struct np_admin_operation *a, struct np_root_origin 
     return -1;
   }
   atomic_init(&o->shared->admission,0);
+#ifdef NP_RETAINED_V2_B1A
+  atomic_init(&o->shared->actor_setup_held,false);
+  atomic_init(&o->shared->actor_close_requested,false);
+  np_birth_interlock_init(&o->shared->actor_birth_lock);
+#endif
   if(np_origin_mutex_init_v1(&o->shared->lock)){
     return -1;
   }
@@ -449,18 +470,37 @@ void np_origin_admission_close_v1(_Atomic unsigned *admission) {
   atomic_store(admission,2);
 }
 static void record_close(struct np_root_origin *o) {
+  /* First original cleanup observation is retained BEFORE any lock wait; a
+   * delayed transaction never shifts the attempt anchor or grants fresh time. */
   uint64_t now,observed=atomic_load(&o->shared->high_water);
   if(monotonic(&now)||now<observed)now=observed;
   uint64_t end=now<=INT64_MAX-60*NP_ORIGIN_SECOND?minimum(now+60*NP_ORIGIN_SECOND,o->cleanup_ends.cleanup):o->cleanup_ends.cleanup;
   uint64_t absent=0;
   (void)atomic_compare_exchange_strong(&o->shared->attempt_end,&absent,end);
+#ifdef NP_RETAINED_V2_B1A
+  /* Close intent prevents another transaction, but is not a closed receipt.
+   * A Creator already inside the actual birth transaction must relinquish it
+   * before closed/admission2. Timeout leaves pending custody, never bypasses
+   * the live owner or authorizes a new attempt. Kernel owner-death is negative. */
+  atomic_store(&o->shared->actor_close_requested,true);
+  bool borrowed=np_birth_interlock_owned(&o->shared->actor_birth_lock);
+  int acquired=borrowed?0:np_birth_interlock_take(&o->shared->actor_birth_lock,minimum(atomic_load(&o->shared->attempt_end),o->cleanup_ends.cleanup));
+  if(acquired && acquired!=EOWNERDEAD){o->cleanup_uncertain=true;return;}
+  if(acquired==EOWNERDEAD)o->shared->broken=true;
+#endif
   np_origin_admission_close_v1(&o->shared->admission);
   atomic_store(&o->shared->closed,true);
+#ifdef NP_RETAINED_V2_B1A
+  if(!borrowed && np_birth_interlock_drop(&o->shared->actor_birth_lock))o->cleanup_uncertain=true;
+#endif
 }
 static int lock_origin(struct np_root_origin *o, uint64_t end) {
   if(!o||o!=sole||!o->shared){
     return -1;
   }
+#ifdef NP_RETAINED_V2_B1A
+  if(atomic_load(&o->shared->actor_close_requested))return -1;
+#endif
   int result=np_origin_mutex_take_v1(&o->shared->lock,end);
   if(!result){
     return 0;
@@ -547,7 +587,16 @@ int np_origin_effect_check_v1(struct np_root_origin *o,bool cleanup,uint64_t end
   if(!o||o!=sole||getpid()!=o->principal)return -1;
   uint64_t now;
   if(o->cleanup_started)return !cleanup||cleanup_now(o,&now)||now>=end?-1:0;
+#ifdef NP_RETAINED_V2_B1A
+  bool borrowed=np_birth_interlock_owned(&o->shared->actor_birth_lock);
+  int locked=borrowed?0:np_birth_interlock_take(&o->shared->actor_birth_lock,end);
+  if(locked){if(locked==EOWNERDEAD){record_close(o);(void)np_birth_interlock_drop(&o->shared->actor_birth_lock);}return -1;}
+  int result=atomic_load(&o->shared->actor_close_requested) || sample_locked(o,&o->clock,&now) || o->shared->closed || atomic_load(&o->shared->admission)==2 || now>=end || now>=o->cleanup_ends.work?-1:0;
+  if(!borrowed && np_birth_interlock_drop(&o->shared->actor_birth_lock))return -1;
+  return result;
+#else
   return sample_locked(o,&o->clock,&now)||(o->shared->closed||atomic_load(&o->shared->admission)==2)||now>=end||now>=o->cleanup_ends.work?-1:0;
+#endif
 }
 void np_origin_effect_end_v1(struct np_root_origin *o){
   if(o&&o==sole&&o->cleanup_effect){o->cleanup_effect=false;
@@ -1402,6 +1451,9 @@ int np_origin_retained_lock_v2(struct np_root_origin *o) {
 }
 void np_origin_retained_unlock_v2(struct np_root_origin *o) {
   if (o == sole && getpid() == o->principal && o->effect_locked) {
+#ifdef NP_RETAINED_V2_B1A
+    atomic_store(&o->shared->actor_setup_held,false);
+#endif
     o->effect_locked = false; pthread_mutex_unlock(&o->shared->lock);
   }
 }
@@ -1413,7 +1465,73 @@ int np_origin_retained_context_v2(struct np_root_origin *o, struct np_v2_context
     .operation_digest = o->admin->operation, .installation = o->admin->installation,
     .profile = o->admin->profile, .manifest = o->admin->manifest, .allocation = o->digest,
     .funded_bytes = o->allocation, .funded_length = o->allocation_size, .admitted_epoch = get64(o->snapshot + 376), .work_epoch = get64(o->snapshot + 376) + (o->shared->ends.work - get64(o->snapshot + 384)) / UINT64_C(1000000),
-    .delegation = fd, .mount_namespace = fd + 1, .cgroup_namespace = fd + 2 };
+    .delegation = fd, .mount_namespace = fd + 1, .cgroup_namespace = fd + 2,
+#ifdef NP_RETAINED_V2_B1A
+    .boot_fd=o->boot,.observer_pidfd=o->admin->parent.pidfd,.principal_pidfd=o->self_pidfd,.pid_namespace=o->pid_ns,
+#endif
+  };
   np_origin_retained_unlock_v2(o); return 0;
 }
+#ifdef NP_RETAINED_V2_B1A
+/* Membership is minted only by these actual original clone-return branches.
+ * The child receives no principal or generic associated-child authority. */
+int np_origin_retained_boundary_v2(struct np_root_origin *o){
+  if(!o || o!=sole || getpid()!=o->principal || !o->frozen || !o->intent)return -1;
+  return o->effect_locked?np_origin_effect_check_v1(o,false,o->shared->ends.work):np_origin_boundary_v1(o,false);
+}
+int np_origin_retained_reference_open_v2(struct np_root_origin *o,struct np_managed_original **out,const struct np_birth *manager){
+  if(!out || !o || o!=sole || getpid()!=o->principal || !o->frozen || !o->intent || o->managed || o->retained_reference_attempted || np_origin_retained_boundary_v2(o))return -1;
+  o->retained_reference_attempted=true;*out=NULL;
+  int failed=np_managed_retained_open_v2(o,&o->managed,manager);
+  *out=o->managed;return failed;
+}
+static int actor_principal_single_thread(void) {
+  DIR *tasks=opendir("/proc/self/task");if(!tasks)return -1;
+  char expected[32];snprintf(expected,sizeof expected,"%ld",(long)getpid());
+  unsigned seen=0;bool failed=false;struct dirent *entry;errno=0;
+  while((entry=readdir(tasks))){
+    if(!strcmp(entry->d_name,".") || !strcmp(entry->d_name,".."))continue;
+    if(strcmp(entry->d_name,expected) || seen++){failed=true;break;}
+  }
+  if(errno || seen!=1)failed=true;
+  closedir(tasks);return failed?-1:0;
+}
+pid_t np_origin_actor_creator_fork_v2(struct np_root_origin *o,int *pidfd) {
+  uint64_t now;
+  if(!o || o!=sole || !pidfd || getpid()!=o->principal || !o->effect_locked || o->shared->actor_creator_claim || actor_principal_single_thread() || sample_locked(o,&o->clock,&now) || o->shared->closed || o->shared->broken || now>=o->shared->ends.work)return -1;
+  o->shared->actor_creator_claim=true;
+  struct clone_args args={.flags=CLONE_PIDFD,.pidfd=(uint64_t)(uintptr_t)pidfd,.exit_signal=SIGCHLD};
+  pid_t child=(pid_t)syscall(SYS_clone3,&args,sizeof args);
+  if(!child){o->original_creator_role=getpid();o->effect_locked=false;}
+  return child;
+}
+pid_t np_origin_actor_submitter_fork_v2(struct np_root_origin *o,int *pidfd) {
+  uint64_t now;
+  if(!o || o!=sole || !pidfd || !o->original_creator_role || getpid()!=o->original_creator_role || getppid()!=o->principal || live(o->self_pidfd) || !o->shared->actor_creator_claim)return -1;
+  /* Native robust futex ownership is the actual calling kernel tid. The
+   * principal's libc mutex remains outer during SETUP, but no raw child calls
+   * inherited pthread primitives. Close uses this same birth transaction. */
+  int locked=np_birth_interlock_take(&o->shared->actor_birth_lock,o->shared->ends.work);
+  if(locked){if(locked==EOWNERDEAD){record_close(o);(void)np_birth_interlock_drop(&o->shared->actor_birth_lock);}return -1;}
+  if(atomic_load(&o->shared->actor_close_requested) || !atomic_load(&o->shared->actor_setup_held) || sample_locked(o,&o->clock,&now) || o->shared->closed || o->shared->broken || atomic_load(&o->shared->admission)==2 || o->shared->actor_submitter_claim || now>=o->shared->ends.work){(void)np_birth_interlock_drop(&o->shared->actor_birth_lock);return -1;}
+  o->shared->actor_submitter_claim=true;
+  struct clone_args args={.flags=CLONE_PIDFD,.pidfd=(uint64_t)(uintptr_t)pidfd,.exit_signal=SIGCHLD};
+  pid_t child=(pid_t)syscall(SYS_clone3,&args,sizeof args);
+  /* Child must not unlock Creator's gate or inherit its role. Parent retains
+   * ambiguous/error debt; the once slot is never restored. */
+  if(!child){o->original_creator_role=0;return 0;}
+  if(np_birth_interlock_drop(&o->shared->actor_birth_lock))return -1;
+  return child;
+}
+int np_origin_actor_setup_begin_v2(struct np_root_origin *o) {
+  uint64_t now;
+  if(!o || o!=sole || getpid()!=o->principal || !o->effect_locked || !o->shared->actor_creator_claim || o->shared->actor_setup_claim || o->shared->actor_submitter_claim || sample_locked(o,&o->clock,&now) || o->shared->closed || o->shared->broken || now>=o->shared->ends.work)return -1;
+  o->shared->actor_setup_claim=true;atomic_store(&o->shared->actor_setup_held,true);return 0;
+}
+/* Independent original cleanup observation after irreversible work closure.
+ * No new attempt, clock, allowance, registry or role membership is minted. */
+int np_origin_retained_cleanup_v2(struct np_root_origin *o,uint64_t *out) {
+  return !o || o!=sole || getpid()!=o->principal || !o->cleanup_started || !o->frozen || !o->intent || (!atomic_load(&o->shared->closed) && !atomic_load(&o->shared->actor_close_requested)) || !o->cleanup_attempt_end || cleanup_now(o,out)?-1:0;
+}
+#endif
 #endif

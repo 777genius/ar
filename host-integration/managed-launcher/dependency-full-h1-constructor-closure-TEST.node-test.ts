@@ -52,7 +52,8 @@ test("Python contract inspection does not invoke object or array getters or Prox
 });
 test("generated host-release cells reject changed source transformation, extra routes and notify borrowing",()=>{
  const expected={container_host_id:"ubuntu"};assert.doesNotThrow(()=>checkH1HostReleaseData(Buffer.from("container_host_id=ubuntu\0PATH=/usr/bin:/bin\0"),expected));
- for(const raw of ["container_host_id=foreign\0","container_host_id=ubuntu\0container_host_extra=value\0","container_host_id=ubuntu\0NOTIFY_SOCKET=/run/host/notify\0","container_host_id=ubuntu\0PYTHONPATH=/host\0","container_host_id=ubuntu\0container_host_id=ubuntu\0"])assert.throws(()=>checkH1HostReleaseData(Buffer.from(raw),expected));
+ assert.doesNotThrow(()=>checkH1HostReleaseData(Buffer.from("container_host_id=ubuntu\0NOTIFY_SOCKET=/run/host/notify\0"),expected));
+ for(const raw of ["container_host_id=foreign\0","container_host_id=ubuntu\0container_host_extra=value\0","container_host_id=ubuntu\0NOTIFY_SOCKET=/run/systemd/nspawn/notify\0","container_host_id=ubuntu\0NOTIFY_SOCKET=/run/host/foreign\0","container_host_id=ubuntu\0PYTHONPATH=/host\0","container_host_id=ubuntu\0container_host_id=ubuntu\0"])assert.throws(()=>checkH1HostReleaseData(Buffer.from(raw),expected));
 });
 test("kernel API physical class and ownership cannot be borrowed from a regular pathname",()=>{
  assert.doesNotThrow(()=>checkH1ApiObjectData("/proc",H1ApiKind.Directory,0n,0n,0o40555n));assert.throws(()=>checkH1ApiObjectData("/proc",H1ApiKind.Directory,0n,0n,0o46555n),/unknown_api_object/);

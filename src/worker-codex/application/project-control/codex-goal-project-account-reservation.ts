@@ -208,6 +208,7 @@ async function reserveExclusiveCodexProjectAccount(
   const capacityStore =
     input.deps?.capacityStore ??
     codexAccountCapacityStore(input.launch.config.authRootDir, {
+      ...(input.launch.config.modelBackend === undefined ? {} : { modelBackend: input.launch.config.modelBackend }),
       authJsonPaths: Object.fromEntries(
         input.launch.config.accounts.flatMap((account) =>
           account.authJsonPath ? [[account.name, account.authJsonPath]] : [],
@@ -262,6 +263,7 @@ async function selectSharedCodexProjectAccount(
   const capacityStore =
     input.deps?.capacityStore ??
     codexAccountCapacityStore(input.launch.config.authRootDir, {
+      ...(input.launch.config.modelBackend === undefined ? {} : { modelBackend: input.launch.config.modelBackend }),
       authJsonPaths: Object.fromEntries(
         input.launch.config.accounts.flatMap((account) =>
           account.authJsonPath ? [[account.name, account.authJsonPath]] : [],

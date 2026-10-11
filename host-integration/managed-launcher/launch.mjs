@@ -1,6 +1,6 @@
 #!/usr/bin/node
-import { spawn } from 'node:child_process';
-import { constants, lstatSync, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { constants, lstatSync, openSync, fstatSync, readFileSync, readSync, closeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { access, open, readFile, writeFile, statfs, stat, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -17,6 +17,25 @@ export const managedSystemdRunExecutable = '/usr/bin/systemd-run';
 const nativeInvocations = new WeakMap();
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
+// Provider COMMAND operands are constructed by this adapter. Stock252 may
+// omit the unsupported veto only after a complete literal-operand proof.
+function providerLiteralArgumentOptions(operands) {
+  const inspect = args => spawnSync('/usr/bin/systemd-run', args, {
+    encoding: 'utf8', timeout: 2000, maxBuffer: 32768, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SYSTEMD_COLORS: '0' },
+  });
+  const help = inspect(['--expand-environment=no', '--help']);
+  if (!help.error && help.signal === null && help.status === 0 && help.stderr === '' && help.stdout.includes('--expand-environment='))
+    return ['--expand-environment=no'];
+  if (help.error || help.signal !== null || help.status !== 1 || help.stdout !== '' ||
+      help.stderr !== "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n") denied();
+  const version = inspect(['--version']);
+  if (version.error || version.signal !== null || version.status !== 0 || version.stderr !== '' ||
+      !/^systemd 252(?: \([A-Za-z0-9.+~:_-]{1,80}\))?$/.test(version.stdout.split('\n')[0] ?? '')) denied();
+  if (!operands.length || operands.some(value => typeof value !== 'string' || value.length < 1 || value.length > 4096 || /[$\0\r\n]/.test(value))) denied();
+  return [];
+}
+
 function governedFdProfile(request) {
   if (readHostedActivationMode() === HostedActivationMode.Disabled && !hasHostedActivationOrigin() &&
       request.readonlyPaths === undefined) return false;
@@ -87,7 +106,33 @@ const UNSHARE_PATH = '/usr/bin/unshare';
 const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
-const MANAGED_STARTUP_SECONDS = 300;
+const MANAGED_STARTUP_SECONDS = 600;
+// Admission snapshot, not a reservation of memory against concurrent launches.
+const OS_SSH_RESERVE_BYTES = 2n * 1024n ** 3n;
+function readMemoryInfo() {
+  const fd = openSync('/proc/meminfo', constants.O_RDONLY | constants.O_NOFOLLOW);
+  const bytes = Buffer.alloc(65536); let length = 0;
+  try {
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) return bytes.subarray(0, length).toString('utf8');
+      length += count;
+    }
+    throw Error('memory admission unknown');
+  } finally { closeSync(fd); }
+}
+function assertMemoryAdmission(request, memoryInfo) {
+  try {
+    const text = memoryInfo();
+    if (typeof text !== 'string' || Buffer.byteLength(text) >= 65536) throw Error();
+    const rows = text.split('\n').filter(line => line.startsWith('MemAvailable:'));
+    if (rows.length !== 1 || !/^MemAvailable:\s+\d+ kB$/.test(rows[0])) throw Error();
+    const available = BigInt(rows[0].match(/\d+/)[0]) * 1024n;
+    const requested = request.operation === 'job' ? BigInt(request.limits.memoryMiB) * 1024n ** 2n : 4n * 1024n ** 3n;
+    if (available < requested + OS_SSH_RESERVE_BYTES) throw Error();
+  } catch { throw Error('managed launcher: memory admission unavailable'); }
+}
+
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
 export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
 
@@ -142,14 +187,14 @@ export function managedLauncherInvocation(request, profile = ManagedLauncherProf
 
 export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath,
   guardPath = PAYLOAD_GUARD_PATH, launcherPath = MANAGED_LAUNCHER_PATH,
-  executable = path => access(path, constants.X_OK), storagePin } = {}) {
+  executable = path => access(path, constants.X_OK), storagePin, memoryInfo = readMemoryInfo } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
   if (request.jobId === legacyFullTestJob) denied();
   if (request.jobId === fullPositiveTestJob) {
     if (process.argv[1] !== fullPositiveTestEntry) denied();
     // Fixed protected FULL branch. The original manager's exclusive ledger is
     // already present; the helper retains the reviewed complete source closure.
-    const { fullNativeArguments } = await import('./dependency-full-native-TEST.mjs');
+    const { fullNativeArguments } = await import('./dependency-full-native-TEST.js');
     const native = fullNativeArguments(request);
     const invocation = Object.freeze({ command: managedSystemdRunExecutable, args: native.args });
     nativeInvocations.set(invocation, native.custody); return invocation;
@@ -163,7 +208,17 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
       storagePin.binding.fingerprint !== request.fingerprint || storagePin.binding.unit !== unit)) denied();
   if (!policy || !safePath(policy.storageRoot) || policy.storageRoot === '/') denied();
   const cwd = policy.workspace;
-  if (policy.jobRoot !== `${policy.storageRoot}/jobs/${request.jobId}` || cwd !== `${policy.jobRoot}/workspace`) denied();
+  if (policy.jobRoot !== `${policy.storageRoot}/jobs/${request.jobId}` || cwd !== `${policy.jobRoot}/workspace` ||
+      policy.home !== `${policy.jobRoot}/home` || policy.tmp !== `${policy.jobRoot}/tmp`) denied();
+  // Writable bulk is derived from the admitted job, never inherited host caches.
+  const bulk = `${policy.tmp}/tool-caches`;
+  const scratchEnv = {
+    TMPDIR: policy.tmp, TMP: policy.tmp, TEMP: policy.tmp, GOTMPDIR: policy.tmp,
+    XDG_CACHE_HOME: bulk, npm_config_cache: `${bulk}/npm`,
+    COREPACK_HOME: `${bulk}/corepack`, YARN_CACHE_FOLDER: `${bulk}/yarn`,
+    PIP_CACHE_DIR: `${bulk}/pip`, UV_CACHE_DIR: `${bulk}/uv`,
+    GOCACHE: `${bulk}/go-build`, GOMODCACHE: `${bulk}/go-mod`,
+  };
   for (const path of [nodePath, guardPath, launcherPath, ...trusted]) {
     if (path === policy.storageRoot || path.startsWith(policy.storageRoot + '/')) denied();
   }
@@ -190,19 +245,22 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
       `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
       `InaccessiblePaths=${storagePin.binding.directory}`] : []),
   ];
+  assertMemoryAdmission(request, memoryInfo);
+  const operands = [...(storagePin ? [nodePath, guardPath,
+    '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
+      generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
+    '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
+    '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload];
   return { command: managedSystemdRunExecutable, args: [
     ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
-    `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
-    `--setenv=HOME=${policy.home}`, `--setenv=TMPDIR=${policy.tmp}`,
+    `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', ...(operation === 'provider' ? providerLiteralArgumentOptions(operands) : ['--expand-environment=no']),
+    `--setenv=HOME=${policy.home}`,
+    ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
     ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
     `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
     '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
     `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
-    ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
-      '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
-        generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
-      '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
-    '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload,
+    ...properties.map(property => `--property=${property}`), '--', ...operands,
   ] };
 }
 

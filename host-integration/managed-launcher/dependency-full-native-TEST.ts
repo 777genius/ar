@@ -826,14 +826,14 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     const monitorGroup=readFileSync("/proc/"+child.pid+"/cgroup","utf8");checkH1OwnedCgroupData(monitorGroup,fullNativeControlGroup,fullNativeControlGroup+"/supervisor");
     for(const name of ["pid","user","cgroup"])check(readlinkSync(base+"/ns/"+name)===readlinkSync("/proc/self/ns/"+name));
     const environment=readFileSync(base+"/environ");checkH1HostReleaseData(environment,c.h1Subject.hostRelease.cells);
-    if(environment.toString("utf8").split("\0").includes("NOTIFY_SOCKET=/run/systemd/nspawn/notify")){
-      const socket=statSync(base+"/root/run/systemd/nspawn/notify",{bigint:true});check(socket.isSocket() && socket.uid===0n && socket.gid===0n);
+    if(environment.toString("utf8").split("\0").includes("NOTIFY_SOCKET=/run/host/notify")){
+      const socket=statSync(base+"/root/run/host/notify",{bigint:true});check(socket.isSocket() && socket.uid===0n && socket.gid===0n);
       const monitor=actors.find(row=>row.role===H1StagedActorRole.Monitor);check(monitor);rejoin(monitor);
       const network=readFileSync(`/proc/self/fd/${monitor.anchor}/net/unix`,"utf8");check(Buffer.byteLength(network)<=65536);
-      const records=network.trimEnd().split("\n").slice(1).map(line=>line.trim().split(/\s+/)).filter(row=>row.length===8 && row[7]==="/run/systemd/nspawn/notify");check(records.length===1 && /^[1-9][0-9]*$/.test(records[0]![6]??""));
+      const records=network.trimEnd().split("\n").slice(1).map(line=>line.trim().split(/\s+/)).filter(row=>row.length===8 && row[7]==="/run/host/notify");check(records.length===1 && /^[1-9][0-9]*$/.test(records[0]![6]??""));
       const expected="socket:["+records[0]![6]+"]",names=readdirSync(`/proc/self/fd/${monitor.anchor}/fd`);check(names.length<=64);
       const matches=names.filter(name=>readlinkSync(`/proc/self/fd/${monitor.anchor}/fd/${name}`)===expected);check(matches.length===1);const descriptor=statSync(`/proc/self/fd/${monitor.anchor}/fd/${matches[0]}`,{bigint:true});check(descriptor.isSocket() && descriptor.uid===0n);if(notifyObject)check(notifyObject.dev===descriptor.dev && notifyObject.ino===descriptor.ino);else notifyObject={dev:descriptor.dev,ino:descriptor.ino};
-      check(readFileSync(`/proc/self/fd/${monitor.anchor}/net/unix`,"utf8")===network && statSync(base+"/root/run/systemd/nspawn/notify",{bigint:true}).ino===socket.ino);rejoin(monitor);
+      check(readFileSync(`/proc/self/fd/${monitor.anchor}/net/unix`,"utf8")===network && statSync(base+"/root/run/host/notify",{bigint:true}).ino===socket.ino);rejoin(monitor);
     }
     const rootStat=fstatSync(actor.root,{bigint:true});check(String(rootStat.dev)===c.h1Subject.rootIdentity.dev && String(rootStat.ino)===c.h1Subject.rootIdentity.ino);
     const source=c.h1Subject.catalog.find(row=>row.path==="usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2");check(source?.kind===H1CatalogKind.File);

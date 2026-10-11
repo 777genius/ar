@@ -15,9 +15,17 @@ The regression assertions are:
   `RootDirectory`. Real terminal-unit and recursive cgroup observations follow
   the manager's wait return. No success/drain record is fabricated.
 - A typed TEST reader mounted as one additional read-only file in that
-  installer's finite root can read the installed dependency
-  and cannot read source, Git, needed ignored, key, state, output or privileged
-  sibling TEST sentinels. Their original bytes and inodes remain unchanged.
+  installer's finite root can read the installed dependency. Seven separate
+  root-owned TEST canaries have readable 0644 files and traversable 0755 source
+  ancestry outside private policy custody. Their logical source, Git, needed
+  ignored, key, state, output and sibling targets have 0755 ancestry only inside
+  the disposable installer root. The unexposed probe requires ENOENT at every
+  target; EACCES never counts as containment. A second real systemd launch adds
+  only seven exact read-only file binds at those same targets and must read all
+  seven expected hashes under the same observed UID/capability confinement.
+  Absence runs before exposure because systemd may create target mountpoints.
+  Both units require actual terminal/cgroup observations. The original private
+  policy permissions and privileged sentinel bytes/inodes remain unchanged.
 - A same-device bind mounted only in a fresh user/mount namespace produces the
   specific `mount_crossing` observation and blocks anchored rename before any
   destination appears. The external sentinel remains unchanged.

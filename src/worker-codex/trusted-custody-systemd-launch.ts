@@ -1,19 +1,52 @@
+import { readOriginalUsableGuestFunding } from "./hosted-ordinary-usable-guest-funding";
 import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, lstatSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseResearchStartSpec, researchProviderSetupTimeoutMs, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
-import { researchInvalid, researchName, researchPath } from "./research-launch-files";
+import { researchInvalid, researchName, researchPath, researchHash, researchRecord, researchCustody } from "./research-launch-files";
+import type { ResearchOperatorBinding } from "./research-operator-binding";
 import { researchProviderRootSeal, type ResearchProviderRootPlan } from "./research-provider-root";
 import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 
+import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
+
 export const trustedCustodySystemdRunExecutable = "/usr/bin/systemd-run";
+enum OrdinaryArgumentExpansion { Disabled = "disabled", Stock252Literal = "stock_252_literal" }
+/** Fixed, help-only capability reads create no manager job. An unsupported
+ * flag never permits expansion of caller DATA: stock 252 is accepted only
+ * for the closed original recipes' dollar-free command operands. */
+function ordinaryArgumentExpansion(): OrdinaryArgumentExpansion {
+  const inspect = (args: readonly string[]) => spawnSync(trustedCustodySystemdRunExecutable, [...args], {
+    encoding: "utf8", timeout: 2000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" },
+  });
+  const help = inspect(["--expand-environment=no", "--help"]);
+  if (!help.error && help.signal === null && help.status === 0 && help.stderr === "" && help.stdout.includes("--expand-environment="))
+    return OrdinaryArgumentExpansion.Disabled;
+  if (help.error || help.signal !== null || help.status !== 1 || help.stdout !== "" ||
+      help.stderr !== "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n")
+    throw new Error("ordinary_launcher_qualification_held");
+  const version = inspect(["--version"]);
+  if (version.error || version.signal !== null || version.status !== 0 || version.stderr !== "" ||
+      !/^systemd 252(?: \([A-Za-z0-9.+~:_-]{1,80}\))?$/.test(version.stdout.split("\n")[0] ?? ""))
+    throw new Error("ordinary_launcher_qualification_held");
+  return OrdinaryArgumentExpansion.Stock252Literal;
+}
+function ordinaryLiteralArgumentOptions(operands: readonly string[]): readonly string[] {
+  if (ordinaryArgumentExpansion() === OrdinaryArgumentExpansion.Disabled) return ["--expand-environment=no"];
+  if (!operands.length || operands.some(value => typeof value !== "string" || value.length < 1 || value.length > 4096 || /[$\0\r\n]/.test(value)))
+    throw new Error("ordinary_launcher_qualification_held");
+  return [];
+}
+
 const ordinaryRecipeId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 function assertOrdinaryRecipeId(id: string): void {
   if (!ordinaryRecipeId.test(id)) throw new Error("hosted_ordinary_installation_held");
@@ -25,16 +58,18 @@ export function trustedOrdinaryInstallationSupervisorLaunch(operationId: string,
   { command: string; args: string[] } {
   assertOrdinaryRecipeId(operationId);
   const unit = `subscription-runtime-installation-${operationId}.service`;
-  return { command: trustedCustodySystemdRunExecutable, args: ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", "--expand-environment=no",
+  const managerProperties = ordinaryInstallationManagerProperties(workMs, cleanupMs);
+  const operands = [process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-bootstrap.js", import.meta.url)), "--operation", operationId];
+  return { command: trustedCustodySystemdRunExecutable, args: ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", ...ordinaryLiteralArgumentOptions(operands),
     "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group", "--property=Delegate=no",
-    "--property=SendSIGKILL=yes", ...ordinaryInstallationManagerProperties(workMs, cleanupMs).map(p => "--property=" + p), "--working-directory=/",
-    "--", process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-bootstrap.js", import.meta.url)), "--operation", operationId] };
+    "--property=SendSIGKILL=yes", ...managerProperties.map(p => "--property=" + p), "--working-directory=/",
+    "--", ...operands] };
 }
-function ordinaryQualificationArgs(unit: string, workMs: number, stopMs: number): string[] {
+function ordinaryQualificationArgs(unit: string, workMs: number, stopMs: number, operands: readonly string[]): string[] {
   if (!Number.isSafeInteger(workMs) || workMs < 1 || !Number.isSafeInteger(stopMs) || stopMs < 1 || stopMs > 30_000) {
     throw new Error("ordinary_launcher_qualification_held");
   }
-  return ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", "--expand-environment=no",
+  return ["--quiet", "--wait", "--pipe", "--unit=" + unit, "--service-type=exec", ...ordinaryLiteralArgumentOptions(operands),
     "--property=Slice=subscription-runtime-hosted.slice", "--property=Restart=no", "--property=KillMode=control-group",
     "--property=Delegate=no", "--property=SendSIGKILL=yes", "--property=RuntimeMaxSec=" + workMs / 1000,
     "--property=TimeoutStopSec=" + stopMs / 1000, "--working-directory=/", "--"];
@@ -44,15 +79,35 @@ export function trustedOrdinaryQualificationOuterLaunch(testId: string, rootfsPa
   assertOrdinaryRecipeId(testId);
   if (!/^\/srv\/workers\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(rootfsPath) || rootfsPath.length > 4096 ||
       rootfsPath.split("/").some(part => part === "." || part === "..")) throw new Error("ordinary_launcher_qualification_held");
-  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-ordinary-${testId}.service`, workMs, stopMs),
-    "/usr/bin/systemd-nspawn", "--directory=" + rootfsPath, "--machine=ordinary-test-" + testId,
-    "--boot", "--private-users=no", "--private-network", "--register=no", "--settings=no", "--link-journal=no"] };
+  const operands = ["/usr/bin/systemd-nspawn", "--directory=" + rootfsPath, "--machine=ordinary-test-" + testId,
+    "--boot", "--private-users=no", "--private-network", "--register=no", "--settings=no", "--link-journal=no"];
+  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-ordinary-${testId}.service`, workMs, stopMs, operands), ...operands] };
 }
 export function trustedOrdinaryQualificationWorkerLaunch(workerId: string, workMs: number, stopMs: number):
   { command: string; args: string[] } {
   assertOrdinaryRecipeId(workerId);
-  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-hosted-${workerId}.service`, workMs, stopMs),
-    process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-qualification-guest.js", import.meta.url)), "worker"] };
+  const operands = [process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-qualification-guest.js", import.meta.url)), "worker"];
+  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-hosted-${workerId}.service`, workMs, stopMs, operands), ...operands] };
+}
+
+export function trustedOrdinaryUsableGuestWorkerLaunch(workerId: string, workMs: number, stopMs: number): { command: string; args: string[] } {
+  assertOrdinaryRecipeId(workerId);
+  const operands = [process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-usable-guest.js", import.meta.url)), "worker"];
+  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-hosted-${workerId}.service`, workMs, stopMs, operands), ...operands] };
+}
+
+/** Only the fixed original broker owner supplies its retained namespace FDs.
+ * Descriptor numbers are part of this private recipe, never caller DATA. */
+export function trustedOrdinaryGuestSeedReaderLaunch(node: string, runtimeDirectory: string): { command: string; args: string[] } {
+  if (node !== process.execPath || !/^\/srv\/workers\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(runtimeDirectory) ||
+      runtimeDirectory.split("/").some(part => part === "." || part === "..")) throw new Error("ordinary_launcher_qualification_held");
+  return { command: "/usr/bin/nsenter", args: ["--mount=/proc/self/fd/5", "--pid=/proc/self/fd/6", "--net=/proc/self/fd/7",
+    "--root=/proc/self/fd/4", "--wdns=/", "--", node,
+    runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-seed-reader.js", "--capture-original-seed"] };
+}
+export function trustedOrdinaryGuestNetworkLaunch(): { command: string; args: string[] } {
+  return { command: "/usr/bin/slirp4netns", args: ["--configure", "--mtu=65520", "--disable-host-loopback", "--netns-type=path",
+    "--ready-fd=3", "--exit-fd=4", "/proc/self/fd/5", "tap0"] };
 }
 
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer", Remover = "remover" }
@@ -64,9 +119,10 @@ export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySuper
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(supervisor.operationId)) held();
   const root = "/var/lib/subscription-runtime-host-policy", guestEntry = "/dist/worker-codex/hosted-ordinary-installation-qualification-guest.js";
   const guest = supervisor.bootstrap.path.endsWith(guestEntry);
-  const bytes = readHostedPrivateBytes(guest ? root + "/ordinary-qualification/funded-operation.json" :
+  const usableGuest = supervisor.bootstrap.path.endsWith("/dist/worker-codex/hosted-ordinary-installation-usable-guest.js");
+  const bytes = usableGuest ? readOriginalUsableGuestFunding(supervisor) : readHostedPrivateBytes(guest ? root + "/ordinary-qualification/funded-operation.json" :
     `${root}/ordinary-installations/${supervisor.operationId}/operation.json`, 65536);
-  if (!bytes || !guest && !readHostedPrivateBytes(`${root}/ordinary-installations/${supervisor.operationId}.json`, 65536)?.equals(bytes)) held();
+  if (!bytes || !guest && !usableGuest && !readHostedPrivateBytes(`${root}/ordinary-installations/${supervisor.operationId}.json`, 65536)?.equals(bytes)) held();
   const packet = JSON.parse(bytes.toString("utf8")) as { schemaVersion: number; operationId: string; hostId: string; bootId: string;
     issuedEpochMs: number; issuedMonotonicNs: string; workEndEpochMs: number; cleanupEndEpochMs: number; runtimeDirectory: string;
     node: { path: string; sha256: string }; bootstrap: { path: string; sha256: string };
@@ -84,9 +140,9 @@ export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySuper
         !input || createHash("sha256").update(input).digest("hex") !== fixture.inputSha256) held();
     const projection = JSON.parse(input.toString("utf8")) as { operation?: { operationId: string; workEndEpochMs: number; cleanupEndEpochMs: number } };
     if (projection.operation?.operationId !== packet.operationId || projection.operation.workEndEpochMs !== packet.workEndEpochMs || projection.operation.cleanupEndEpochMs !== packet.cleanupEndEpochMs) held();
-  } else if (supervisor.bootstrap.path !== packet.runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-bootstrap.js" ||
+  } else if (!usableGuest && (supervisor.bootstrap.path !== packet.runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-bootstrap.js" ||
       packet.bootstrap?.path !== supervisor.bootstrap.path || packet.bootstrap.sha256 !== supervisor.bootstrap.sha256 ||
-      readFileSync("/etc/machine-id", "utf8").trim() !== packet.hostId || readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== packet.bootId) held();
+      readFileSync("/etc/machine-id", "utf8").trim() !== packet.hostId || readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== packet.bootId)) held();
   const now = Date.now(), elapsed = Number((process.hrtime.bigint() - BigInt(packet.issuedMonotonicNs)) / 1_000_000n);
   if (!Number.isSafeInteger(elapsed) || elapsed < 0 || now < packet.issuedEpochMs || now < packet.issuedEpochMs + elapsed - 1000) held();
   const end = cleanup ? packet.cleanupEndEpochMs : packet.workEndEpochMs, ms = Math.min(end - now, end - packet.issuedEpochMs - elapsed);
@@ -179,6 +235,9 @@ export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha25
     ...properties.map(p => `--property=${p}`), "--", process.execPath,
     join(spec.runtimeDirectory, "host-integration", "research-runtime-launch.mjs"), request.jobId, spec.startId] };
 }
+/** Trusted assembly needs PID1 cold-root witnesses. The fixed root transition
+ * drops every capability before tini and any provider or workspace code. */
+export const researchProviderAssemblyCapabilityBoundingSet = "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE";
 export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: string, selectedCodexHome: string,
   rootPlan: ResearchProviderRootPlan): { command: string; args: string[] } {
   const spec = parseResearchStartSpec(value), { request } = spec;
@@ -194,9 +253,59 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",
     "SystemCallFilter=~@raw-io @module", "RestrictSUIDSGID=yes", "AmbientCapabilities=",
-    "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes"];
+    researchProviderAssemblyCapabilityBoundingSet, "NoNewPrivileges=yes"];
   return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`,
     `--description=subscription-runtime-research-provider:${spec.startId}:${unit}`, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
     ...properties.map(p => `--property=${p}`), "--", "/usr/bin/unshare", "--mount", "--propagation", "private", process.execPath,
     join(spec.runtimeDirectory, "dist/worker-codex/research-provider-root-assembler.js"), request.jobId, unit, home, seal.sha256, String(seal.deadline)] };
+}
+
+/** Closed root MiMo operation recipe: fixed entry, exact durable request and
+ * derived ownership only; no caller commands, environment or properties. */
+export function trustedMimoProjectOperationLaunch(value: Readonly<{
+  request: MimoProjectBridgeRequest; requestSha256: string; generation: number; unit: string; description: string;
+  requestPath: string; entry: string; node: string; operationTimeoutMs: number;
+}>): { command: string; args: string[] } {
+  const data = researchRecord(value, "request,requestSha256,generation,unit,description,requestPath,entry,node,operationTimeoutMs");
+  const request = parseMimoProjectBridgeRequest(data.request);
+  const digest = researchHash(JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))));
+  const generation = data.generation;
+  if (data.requestSha256 !== digest || !Number.isSafeInteger(generation) || (generation as number) < 0 ||
+      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop].includes(request.operation) && generation !== 0) ||
+      !Number.isSafeInteger(data.operationTimeoutMs) || (data.operationTimeoutMs as number) < 1000 || (data.operationTimeoutMs as number) > 86400000)
+    throw new Error("mimo_project_bridge_operation_invalid");
+  const unitDigest = researchHash(digest + ":" + generation), unit = `subscription-runtime-mimo-project-${unitDigest}.service`;
+  const requestPath = `/srv/worker-state/mimo-projects/${request.projectId}/${request.workstreamId}/mimo-bridge-operations/${request.jobId}.${request.operation}.request.json`;
+  const description = `subscription-runtime MiMo project ${unitDigest}`;
+  const entry = researchPath(data.entry), node = researchPath(data.node);
+  if (data.unit !== unit || data.description !== description || data.requestPath !== requestPath ||
+      !/^\/opt\/subscription-runtime\/releases\/[a-f0-9]{40}\/dist\/worker-codex\/hosted-mimo-project-bridge-cli\.js$/.test(entry) ||
+      entry !== realpathSync(entry) || node !== realpathSync(process.execPath)) throw new Error("mimo_project_bridge_operation_invalid");
+  researchCustody(entry); researchCustody(node);
+  for (const path of [entry, node]) {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.nlink !== 1 || (path === node && !(file.mode & 0o111)))
+      throw new Error("mimo_project_bridge_operation_invalid");
+  }
+  return { command: trustedCustodySystemdRunExecutable, args: ["--quiet",
+    ...(request.operation === MimoProjectBridgeOperation.Stop ? [] : ["--collect"]),
+    "--unit=" + unit, "--description=" + description, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
+    ...["KillMode=control-group", "Restart=no", "Delegate=no", "SendSIGKILL=yes",
+      "RuntimeMaxSec=" + Math.ceil((data.operationTimeoutMs as number) / 1000), "TimeoutStopSec=30", "UMask=0077", "NoNewPrivileges=yes"].map(p => "--property=" + p),
+    "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", node, entry, "--execute-owned", requestPath] };
+}
+
+/** Fixed initial-root operator service; provider launch remains independently contained. */
+export function trustedResearchOperatorLaunch(binding: ResearchOperatorBinding, ownerSha256: string) {
+  if (!/^[a-f0-9]{64}$/.test(ownerSha256)) throw new Error("research_operator_owner_invalid");
+  const digest = researchHash(binding.jobId + ":" + ownerSha256);
+  const unit = `subscription-runtime-research-operator-${digest}.service`;
+  const description = `subscription-runtime research operator ${digest}`;
+  const entry = join(binding.runtimeDirectory, "dist/worker-codex/research-operator-ingress-cli.js");
+  researchCustody(entry); researchCustody(binding.node);
+  return { unit, description, command: "/usr/bin/systemd-run", args: ["--quiet", "--unit=" + unit, "--description=" + description,
+    "--service-type=exec", "--expand-environment=no", "--working-directory=/",
+    ...["KillMode=control-group", "Restart=no", "Delegate=no", "SendSIGKILL=yes", "RuntimeMaxSec=600", "TimeoutStopSec=30", "MemoryMax=1G", "MemorySwapMax=0", "CPUQuota=100%", "TasksMax=128", "UMask=0077", "NoNewPrivileges=yes"].map(p => "--property=" + p),
+    "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=/root", "USER=root", "LOGNAME=root", binding.node, entry,
+    "--execute-owned", binding.jobId, ownerSha256] };
 }

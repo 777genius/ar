@@ -104,3 +104,17 @@ describe("hosted Codex permission profiles", () => {
     expect(outside.split('"/srv/k" = "deny"')).toHaveLength(3);
   });
 });
+
+it("gives both managed-public permission profiles exact ProxyOnly settings without broadening filesystem custody", () => {
+  const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1);
+  const network = ['domains = { "*" = "allow" }', 'mode = "full"', 'allow_local_binding = false',
+    'allow_upstream_proxy = false', 'enable_socks5 = false', 'enable_socks5_udp = false',
+    'dangerously_allow_non_loopback_proxy = false', 'dangerously_allow_all_unix_sockets = false'];
+  const rendered = withoutExecutableRule(hostedCodexPermissionProfilesToml(policy));
+  expect(rendered).toBe(goldenProfiles(network));
+  expect(rendered).not.toContain('credential_broker');
+  expect(rendered).not.toContain('proxy_url');
+  expect(rendered.match(/":root" = "deny"/g)).toHaveLength(2);
+  expect(rendered).toContain('".git" = "read"'); expect(rendered).toContain('".codex" = "read"');
+  expect(hostedCodexPermissionProfilesToml({ ...policy, domains: ["127.0.0.1"] })).toBe(hostedCodexPermissionProfilesToml(policy));
+});

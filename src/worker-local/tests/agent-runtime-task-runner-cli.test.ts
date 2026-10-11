@@ -140,7 +140,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
   });
 
-  it("runs the default packaged Codex worker in the borrowed request cwd without deleting it", async () => {
+  it("runs the default packaged Codex worker in the borrowed request cwd without deleting it", async ({ onTestFinished }) => {
     const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
     const workspaceDir = join(tempDir, "workspace");
     const authPath = join(tempDir, "auth.json");
@@ -152,6 +152,19 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     await writeFakeCodexBinary(codexPath);
 
     try {
+      // This fake-CLI fixture prepares regular private cache leaves; scratch
+      // mount admission is covered by the host-scratch-temp guard tests.
+      const prepareCaches = vi.spyOn(
+        await import("../../worker-codex/host-scratch-temp"),
+        "prepareHostScratchCaches",
+      ).mockImplementation(async home => {
+        for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+          await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+        }
+      });
+      onTestFinished(() => {
+        prepareCaches.mockRestore();
+      });
       const stdout: string[] = [];
       const exitCode = await runSubscriptionAgentRuntimeTaskCli(
         [
@@ -189,12 +202,13 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         outputText: `fake-codex-exec-ok:${await realpath(workspaceDir)}:hello-from-sandbox`,
       });
       await expect(access(canaryPath)).resolves.toBeUndefined();
+      expect(prepareCaches).toHaveBeenCalled();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
 
-  it("uses fail-closed app-server execution for bounded Codex file tools", async () => {
+  it("uses fail-closed app-server execution for bounded Codex file tools", async ({ onTestFinished }) => {
     const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-tools-"));
     const workspaceDir = join(tempDir, "workspace");
     const authPath = join(tempDir, "auth.json");
@@ -205,6 +219,28 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     await writeFakeCodexBinary(codexPath, { fallbackExecFails: true });
 
     try {
+      // This fake-CLI fixture prepares regular private cache leaves; scratch
+      // mount admission is covered by the host-scratch-temp guard tests.
+      const prepareCaches = vi.spyOn(
+        await import("../../worker-codex/host-scratch-temp"),
+        "prepareHostScratchCaches",
+      ).mockImplementation(async home => {
+        for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+          await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+        }
+      });
+      onTestFinished(() => {
+        prepareCaches.mockRestore();
+      });
+      // Host enrollment belongs to admission tests; this fixture runs a real
+      // fake app-server process independently of installed Host policy.
+      const assertBaseline = vi.spyOn(
+        await import("../../provider-codex/app-server/adapters/hosted-host-policy"),
+        "assertHostedBaselineIdentity",
+      ).mockImplementation(() => {});
+      onTestFinished(() => {
+        assertBaseline.mockRestore();
+      });
       const stdout: string[] = [];
       const exitCode = await runSubscriptionAgentRuntimeTaskCli(
         [
@@ -250,6 +286,10 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         outputText: expect.stringContaining("fake-codex-ok:"),
       });
       await expect(access(join(workspaceDir, "file.txt"))).resolves.toBeUndefined();
+      expect(prepareCaches).toHaveBeenCalled();
+      if (process.platform === "linux" && process.getuid?.() === 0) {
+        expect(assertBaseline).toHaveBeenCalledWith(undefined);
+      }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -375,7 +415,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     }
   });
 
-  it("runs the Codex exec fallback in the borrowed request cwd", async () => {
+  it("runs the Codex exec fallback in the borrowed request cwd", async ({ onTestFinished }) => {
     const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
     const workspaceDir = join(tempDir, "workspace");
     const authPath = join(tempDir, "auth.json");
@@ -389,6 +429,19 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
 
     try {
+      // This fake-CLI fixture prepares regular private cache leaves; scratch
+      // mount admission is covered by the host-scratch-temp guard tests.
+      const prepareCaches = vi.spyOn(
+        await import("../../worker-codex/host-scratch-temp"),
+        "prepareHostScratchCaches",
+      ).mockImplementation(async home => {
+        for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+          await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+        }
+      });
+      onTestFinished(() => {
+        prepareCaches.mockRestore();
+      });
       const stdout: string[] = [];
       const exitCode = await runSubscriptionAgentRuntimeTaskCli(
         [
@@ -428,6 +481,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
       expect(result.outputText).toContain(`fake-codex-exec-ok:${await realpath(workspaceDir)}:`);
       expect(result.outputText).toContain("hello-from-fallback");
       await expect(access(canaryPath)).resolves.toBeUndefined();
+      expect(prepareCaches).toHaveBeenCalled();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -542,7 +596,14 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
       );
 
       // The total deadline includes preflight; expire it only after run observes abort.
-      await workerEntered;
+      await Promise.race([
+        workerEntered,
+        execution.then(() => {
+          throw new Error("task finished before worker.run entered");
+        }),
+      ]);
+      expect(aborted).toBe(false);
+      expect(disposed).toBe(false);
       await vi.advanceTimersByTimeAsync(5);
       const exitCode = await execution;
 

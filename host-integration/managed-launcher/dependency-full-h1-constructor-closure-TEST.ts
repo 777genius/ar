@@ -126,5 +126,5 @@ export function checkH1HostReleaseData(raw:Buffer,expected:Readonly<Record<strin
  for(const cell of raw.toString("utf8").split("\0").slice(0,-1)){const at=cell.indexOf("=");requireThat(at>0&&!Object.hasOwn(values,cell.slice(0,at)),H1ConstructorHeld.Definition);values[cell.slice(0,at)]=cell.slice(at+1);}
  const keys=Object.keys(values).filter(key=>key.startsWith("container_host_")).sort();requireThat(JSON.stringify(keys)===JSON.stringify(Object.keys(expected).sort())&&keys.every(key=>values[key]===expected[key]),H1ConstructorHeld.Definition);
  // A notify socket or configuration route cannot be borrowed from the HOST environment.
- requireThat((values.NOTIFY_SOCKET===undefined||values.NOTIFY_SOCKET==="/run/systemd/nspawn/notify")&&values.LD_PRELOAD===undefined&&values.LD_LIBRARY_PATH===undefined&&values.PYTHONPATH===undefined&&values.PYTHONHOME===undefined,H1ConstructorHeld.LoadRoute);
+ requireThat((values.NOTIFY_SOCKET===undefined||values.NOTIFY_SOCKET==="/run/host/notify")&&values.LD_PRELOAD===undefined&&values.LD_LIBRARY_PATH===undefined&&values.PYTHONPATH===undefined&&values.PYTHONHOME===undefined,H1ConstructorHeld.LoadRoute);
 }
