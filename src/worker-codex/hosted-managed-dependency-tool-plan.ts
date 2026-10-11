@@ -1,3 +1,5 @@
+import { matchesDependencyToolExecution, type DependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
+import type { DependencyToolReadyRead, DependencyToolSourceRoot } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { readHostedOrdinaryDependencyParentFrame } from "./hosted-ordinary-dependency-reader";
 import { fileURLToPath } from "node:url";
 import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
@@ -15,7 +17,7 @@ import { sameDependencyProtectedReference, isDependencyProtectedReference } from
 import { HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { readHostedReadonlyDependencyStart, readHostedReadonlyDependencyAssociation } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
-import { dependencyToolGuestConfigPath, type DependencyToolFile, type DependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
+import { dependencyToolGuestConfigPath, type DependencyToolFile } from "../core/dependency-environment/dependency-tool-profile";
 import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, matchesRegistryDependencyToolReady, matchesDependencyToolReadyIdentity,
   type DependencyToolReadyFacts } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
@@ -35,9 +37,9 @@ import { isHostedManagedReadonlyOuterRuntime, assertCurrentHostedDependencyAttem
 
 type Plan = { readonly refresh: boolean; readonly writable: readonly Readonly<{path:string;dev:string;ino:string}>[]; readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
   readonly managedOrigin: CurrentHostedDependencyOrigin; invocation?: CodexAppServerProcessInvocation;
-  readonly provenance: DependencyToolReadyFacts["provenance"];
+  readonly admission: Exclude<DependencyToolReadyRead,{status:DependencyToolReadyReadStatus.Unknown}>;
   readonly sourceAncestors: readonly Readonly<{ canonicalPath: string; dev: string; ino: string }>[];
-  readonly qualification: DependencyToolQualification;
+  readonly qualification: DependencyToolAdmissionQualification;
   readonly attempt: ReturnType<typeof readHostedDependencyAttempt>; readonly parentBirth: string;
   readonly parentGroup: string; readonly sources: readonly string[];
   readonly rootIdentity: Readonly<{ dev: bigint; ino: bigint }>;
@@ -202,19 +204,17 @@ function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: str
   assertHostedDependencyToolProfileFiles(binding.toolProfile, binding.jobRootDir);
   const managedTools = prepareCurrentHostedManagedDependencyProviderTools(managedOrigin,fence,unit);
   try {
-  const initial = {status:DependencyToolReadyReadStatus.Ready,facts:managedTools.ready} as const;
-  if (initial.status !== DependencyToolReadyReadStatus.Ready) fail();
-  assertLocalSources(binding, initial.facts.provenance);
-  const localRoots = (initial.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || initial.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) ?
-    initial.facts.provenance.readonlySources : [];
-  const sourceAncestors = localSourceAncestors(binding, initial.facts.provenance);
+  const initial=managedTools.admission;
+  if(initial.status===DependencyToolReadyReadStatus.Ready)assertLocalSources(binding,initial.facts.provenance);
+  else assertUsableSources(binding,initial.execution.sourceRoots);
+  const localRoots=admissionSourceRoots(initial),sourceAncestors=admissionSourceAncestors(binding,initial);
   try {
-    const q = managedTools.qualification, path = managedTools.capsulePath;
+    const qualification=managedTools.qualification,q=qualification.version===1?qualification:qualification.execution,path=managedTools.capsulePath;
     const parentProcess = observeHostedFdProcess(process.pid);
     const rootStat = lstatSync(root, { bigint: true });
     const plan: Plan = { refresh:session.refresh,writable:Object.freeze(writable.map(path => { const stat = lstatSync(path,{bigint:true});
-        return Object.freeze({path,dev:String(stat.dev),ino:String(stat.ino)}); })),unit, root, binding, managedOrigin, provenance: initial.facts.provenance, sourceAncestors,
-      qualification: q, attempt, parentBirth: parentProcess.birth,
+        return Object.freeze({path,dev:String(stat.dev),ino:String(stat.ino)}); })),unit, root, binding, managedOrigin, admission: initial, sourceAncestors,
+      qualification, attempt, parentBirth: parentProcess.birth,
       files: Object.freeze([...q.profile.readonlyFiles, q.profile.node,...managedDependencyHookFiles()].map(pin => {
         const s = lstatSync(pin.path, { bigint: true }); return Object.freeze({ pin, dev: s.dev, ino: s.ino });
       })),
@@ -313,32 +313,37 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   const managed = readCurrentHostedManagedDependencyProviderTools(plan.managedOrigin,fence,plan.unit);
   const session = readCurrentHostedDependencyProviderSessionHome(plan.managedOrigin,fence,plan.writable[1]?.path,plan.writable[2]?.path);
   if (session.refresh !== plan.refresh) fail();
-  const q = plan.qualification, binding = plan.binding;
+  const qualification=plan.qualification,q=qualification.version===1?qualification:qualification.execution,binding=plan.binding;
   const root = lstatSync(plan.root, { bigint: true }), parentDirectory = lstatSync(dirname(plan.root), { bigint: true });
   if (!root.isDirectory() || root.uid !== 0n || root.gid !== 0n || (root.mode & 0o777n) !== 0o700n ||
       root.dev !== plan.rootIdentity.dev || root.ino !== plan.rootIdentity.ino || !parentDirectory.isDirectory() ||
       parentDirectory.uid !== 0n || (parentDirectory.mode & 0o777n) !== 0o700n) fail();
   if (!encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) ||
       !sameDependencyAttempt(managed.provider.attempt, plan.attempt)) fail();
-  if (!encode(managed.qualification).equals(encode(q))) fail();
+  if(!encode(managed.qualification).equals(encode(qualification)) || !encode(managed.admission).equals(encode(plan.admission)))fail();
   // The admitted worker-owned reader opens only established history and closes
   // every temporary descriptor before the FD-table checks below. It is retained
   // with this actual invocation/child, never reconstructed from serialized facts.
-  const ready = {status:DependencyToolReadyReadStatus.Ready,facts:qualified.providerReady} as const;
-  if (!encode(ready.facts).equals(encode(managed.ready))) fail();
-  const expected = { workspace: binding.workspace, coverageRevision: hash(encode(binding)),
-    revision: q.readyRevision, installKey: q.installKey, tree: q.tree, manifestDigest: q.manifestDigest };
-  if (ready.status !== DependencyToolReadyReadStatus.Ready ||
-      !(ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted ?
-        matchesRegistryDependencyToolReady(expected, ready.facts) :
-        (ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || ready.facts.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) && matchesDependencyToolReadyIdentity(expected, ready.facts)) ||
-      !encode(ready.facts.provenance).equals(encode(plan.provenance)) ||
-      q.installationId !== binding.installationId || q.runtimeSha !== binding.runtimeSha || q.grantDigest !== binding.grantDigest ||
-      !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== plan.attempt.launch.startId || q.attemptId !== plan.attempt.attemptId ||
-      q.epoch !== plan.attempt.epoch ||
-      binding.version !== 2 || !encode(q.profile).equals(encode(binding.toolProfile))) fail();
-  assertLocalSources(binding, ready.facts.provenance);
-  if (!encode(localSourceAncestors(binding, ready.facts.provenance)).equals(encode(plan.sourceAncestors))) fail();
+  const ready=qualified.status===DependencyToolReadyReadStatus.Ready ?
+    {status:DependencyToolReadyReadStatus.Ready,facts:qualified.providerReady} as const :
+    {status:DependencyToolReadyReadStatus.Usable,execution:qualified.execution} as const;
+  if(!encode(ready).equals(encode(managed.admission)))fail();
+  if(qualification.version===1) {
+    const legacy=qualification;
+    const expected={workspace:binding.workspace,coverageRevision:hash(encode(binding)),revision:legacy.readyRevision,
+      installKey:legacy.installKey,tree:legacy.tree,manifestDigest:legacy.manifestDigest};
+    if(ready.status!==DependencyToolReadyReadStatus.Ready ||
+      !(ready.facts.provenance.kind===DependencyToolReadyProvenanceKind.RegistryCompleted ? matchesRegistryDependencyToolReady(expected,ready.facts) :
+        (ready.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompleted || ready.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompared) && matchesDependencyToolReadyIdentity(expected,ready.facts)))fail();
+    assertLocalSources(binding,ready.facts.provenance);
+  } else {
+    if(ready.status!==DependencyToolReadyReadStatus.Usable || !matchesDependencyToolExecution(qualification.execution,ready.execution))fail();
+    assertUsableSources(binding,ready.execution.sourceRoots);
+  }
+  if(q.installationId!==binding.installationId || q.runtimeSha!==binding.runtimeSha || q.grantDigest!==binding.grantDigest ||
+    !encode(q.workspace).equals(encode(binding.workspace)) || q.startId!==plan.attempt.launch.startId || q.attemptId!==plan.attempt.attemptId ||
+    q.epoch!==plan.attempt.epoch || binding.version!==2 || !encode(q.profile).equals(encode(binding.toolProfile)) ||
+    !encode(admissionSourceAncestors(binding,ready)).equals(encode(plan.sourceAncestors)))fail();
   assertHostedDependencyToolProfileFiles(q.profile, binding.jobRootDir);
   for (const file of plan.files) {
     const s = lstatSync(file.pin.path, { bigint: true });
@@ -357,6 +362,30 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
 function providerId(unit: string): string {
   const id = /^subscription-runtime-hosted-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.service$/.exec(unit)?.[1];
   if (!id) fail(); return id;
+}
+
+function admissionSourceRoots(admission:Plan["admission"]):readonly DependencyToolSourceRoot[] {
+  if(admission.status===DependencyToolReadyReadStatus.Usable)return admission.execution.sourceRoots;
+  const provenance=admission.facts.provenance;
+  return provenance.kind===DependencyToolReadyProvenanceKind.RegistryCompleted?[]:provenance.readonlySources;
+}
+function admissionSourceAncestors(binding:HostedDependencyBinding,admission:Plan["admission"]) {
+  return localSourceAncestors(binding,admissionSourceRoots(admission));
+}
+/** Current source directory facts only, never generated install provenance. */
+function assertUsableSources(binding:HostedDependencyBinding,roots:readonly DependencyToolSourceRoot[]):void {
+  assertHostedDependencyPhysicalWorkspace(binding);if(roots.length>128)fail();
+  for(let index=0;index<roots.length;index++) {
+    const root=roots[index]!,path=root.canonicalPath;
+    if(!path.startsWith(binding.workspace.canonicalPath+"/") || /[\s:%\\"'\x00-\x1f\x7f]/.test(path) || path.length>4096 ||
+      path.slice(binding.workspace.canonicalPath.length+1).split("/").some(part=>part===".git" || part==="node_modules") ||
+      roots.slice(0,index).some(other=>other.canonicalPath>=path || path.startsWith(other.canonicalPath+"/")))fail();
+    for(let ancestor=path;;ancestor=dirname(ancestor)) {
+      const stat=lstatSync(ancestor);
+      if(!stat.isDirectory() || stat.uid!==0 || (stat.mode&0o022) || realpathSync(ancestor)!==ancestor)fail();if(ancestor==="/")break;
+    }
+    const stat=lstatSync(path,{bigint:true});if(String(stat.dev)!==root.identity.dev || String(stat.ino)!==root.identity.ino)fail();
+  }
 }
 
 /** Only the captive current reader selects these paths. Directory pins are
@@ -400,15 +429,13 @@ function assertLocalSources(binding: HostedDependencyBinding, provenance: Depend
 
 /** Derive the finite topology only from the same captive source roots. No
  * caller can nominate an ancestor or substitute a mount/identity descriptor. */
-function localSourceAncestors(binding: HostedDependencyBinding, provenance: DependencyToolReadyFacts["provenance"]) {
+function localSourceAncestors(binding: HostedDependencyBinding, sources: readonly DependencyToolSourceRoot[]) {
   const paths = new Set<string>();
-  if ((provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared)) {
-    for (const source of provenance.readonlySources) {
-      if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
-      for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
-        if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
-        paths.add(path);
-      }
+  for (const source of sources) {
+    if (source.canonicalPath.slice(binding.workspace.canonicalPath.length + 1).split("/").some(part => part === ".git" || part === "node_modules")) fail();
+    for (let path = dirname(source.canonicalPath); path !== binding.workspace.canonicalPath; path = dirname(path)) {
+      if (!path.startsWith(binding.workspace.canonicalPath + "/") || paths.size >= 512 && !paths.has(path)) fail();
+      paths.add(path);
     }
   }
   return Object.freeze([...paths].sort().map(canonicalPath => {
@@ -419,7 +446,7 @@ function localSourceAncestors(binding: HostedDependencyBinding, provenance: Depe
 }
 
 function assertNamespaceMounts(plan: Plan, process: HostedFdProcess) {
-  const prefix = `/proc/${process.pid}/root`, q = plan.qualification;
+  const prefix=`/proc/${process.pid}/root`,q=plan.qualification.version===1?plan.qualification:plan.qualification.execution;
   const root = statSync(prefix, { bigint: true });
   if (!root.isDirectory() || root.dev !== plan.rootIdentity.dev || root.ino !== plan.rootIdentity.ino) fail();
   const mounts = readFileSync(`/proc/${process.pid}/mountinfo`, "utf8");
@@ -445,7 +472,7 @@ function assertNamespaceMounts(plan: Plan, process: HostedFdProcess) {
   for (const pin of plan.writable) { exact(pin.path,false); directory(pin.path,pin);
     const named = lstatSync(pin.path,{bigint:true}), guest = statSync(prefix+pin.path,{bigint:true});
     if (named.uid !== 0n || named.gid !== 0n || (pin.path.startsWith(plan.binding.jobRootDir+"/home/") ? (named.mode & 0o7777n) !== 0o700n : !!(named.mode & 0o022n)) || guest.mode !== named.mode) fail(); }
-  const localRoots = (plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) ? plan.provenance.readonlySources : [];
+  const localRoots=admissionSourceRoots(plan.admission);
   const workspaceMount = exact(plan.binding.workspace.canonicalPath, plan.refresh);
   const physicalRoot = (path: string) => workspaceMount.root.replace(/\/$/, "") + path.slice(plan.binding.workspace.canonicalPath.length);
   const ancestorMounts = plan.sourceAncestors.map(ancestor => {
@@ -514,8 +541,8 @@ function assertNamespace(plan: Plan, process: HostedFdProcess, unit: HostedFdUni
     const after = fstatSync(fd, { bigint: true }), current = statSync(prefix + dependencyToolGuestConfigPath, { bigint: true });
     if (after.ctimeNs !== capsule.ctimeNs || after.mtimeNs !== capsule.mtimeNs || current.dev !== capsule.dev || current.ino !== capsule.ino) fail();
   } finally { closeSync(fd); }
-  if ((plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared)) {
-    assertLocalLinkRoutes(prefix, tree, plan.provenance.readonlySources.map(source => source.canonicalPath));
+  if(plan.admission.status===DependencyToolReadyReadStatus.Usable || plan.admission.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompleted || plan.admission.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompared) {
+    assertLocalLinkRoutes(prefix,tree,admissionSourceRoots(plan.admission).map(source=>source.canonicalPath));
     assertLocalProcessDescriptors(plan, process, unit);
   }
 }
