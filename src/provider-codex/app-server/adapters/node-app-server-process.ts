@@ -189,9 +189,12 @@ export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppSe
   if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
   if (!submission && requiresHostedProcessAdmission(input.env)) {
     if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
-    return submitHostedOrdinaryProcess(input, (unit, identity, fence) => spawnInvocation(input,
-      hostedDependencyProviderInvocation(fence, unit, input) ??
-      codexAppServerProcessInvocation({ ...input, env: { ...input.env,
+    // Ordinary admission owns its existing storage boundary and launch frame,
+    // including without an FD collector. The context extension is baseline-only.
+    const ordinaryInput = { command: input.command, args: input.args, cwd: input.cwd, env: input.env };
+    return submitHostedOrdinaryProcess(ordinaryInput, (unit, identity, fence) => spawnInvocation(ordinaryInput,
+      hostedDependencyProviderInvocation(fence, unit, ordinaryInput) ??
+      codexAppServerProcessInvocation({ ...ordinaryInput, env: { ...ordinaryInput.env,
         SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit }),
       (child, release) => releaseHostedOrdinaryProcess(child, release)));
   }
