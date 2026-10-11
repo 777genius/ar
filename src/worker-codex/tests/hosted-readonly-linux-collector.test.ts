@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fenceScopedSubmitter, collectBootId, collectCgroupProcesses, collectCustodyEvents, collectJobs, collectProcessBirth,
+import { fenceScopedSubmitter, collectFutureCreatorShow, collectBootId, collectCgroupProcesses, collectCustodyEvents, collectJobs, collectProcessBirth,
   collectProcessCgroup, collectSelfCgroup, collectNonDelegatedUnitShow, collectUnitInvocation, collectUnitNotFound, collectUnitShow } from "../hosted-readonly-linux-collector";
 
 const os = vi.hoisted(() => ({ files: new Map<string, string>(), errors: new Map<string, string>(),
@@ -127,4 +127,10 @@ it("pidfd fence uses the same complete hybrid membership rule before owned birth
     const result = spawnSync("/usr/bin/python3", ["-I", "-c", pure, "123", "123:456", group, "1000", raw], { encoding: "utf8", timeout: 1000 });
     expect(result.status).not.toBe(0);
   }
+});
+
+
+it("preserves the empty queued-job field when observing a future creator", () => {
+  os.systemctl.mockImplementation((_command: string,args:string[]) => ({status:0,stdout:`Id=${unit}\nLoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n`+(args.includes("--all")?"Job=\n":"")}));
+  expect(collectFutureCreatorShow(unit)).toContain("Job=\n");
 });

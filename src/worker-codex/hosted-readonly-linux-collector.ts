@@ -62,7 +62,7 @@ export function collectNonDelegatedUnitShow(name: string): Record<string, string
 }
 export function collectFutureCreatorShow(name: string): string {
   if (name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name)) invalid();
-  return systemctl(["show", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
+  return systemctl(["show", "--all", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
 }
 export function collectJobs(): string {
   return systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]);
