@@ -52,7 +52,7 @@ Config fields, all required:
   {"schemaVersion":1,"runtimeDirectory":"/QUALIFIED/CANDIDATE","candidateCommit":"40-or-64-hex-source-commit","expectedArtifactSha256":"64-hex-qualified-artifact","expectedMachineId":"32-hex-inventory-machine-id","testParentDirectory":"/ROOT-OWNED/APPROVED-TEST-PARENT","authRootDir":"/CONFIGURED/ROOT-OWNED/AUTH-ROOT","codexBinaryPath":"/QUALIFIED/CODEX"}
 
 Exactly three provider attempts are planned: finalized retained history, sibling A, sibling B. There is no automatic launch retry.
-Sibling tasks read/process 40 actual TEST inputs using enabled workspace MCP tools. No unavailable shell/sleep tool is requested. Live A/B overlap must be observed; finishing too quickly fails without retry.
+Sibling tasks read/process 40 actual TEST inputs using CodingV1's native exec_command tool. Live A/B overlap must be observed; finishing too quickly fails without retry.
 The collision and same-operation retry must not create a fourth attempt. A 20-minute scenario deadline bounds MCP requests and observation; late success is rejected.
 Qualification and exact-start cleanup run outside that scenario deadline with existing finite native timeouts. Do not hard-exit the process at the scenario deadline, because that would skip reconciliation.
 Cleanup cancels only exact starts allocated by this run. Evidence/worktrees/pins remain for review; no recursive removal or shared process cleanup occurs.
@@ -77,6 +77,7 @@ async function main(configPath: string): Promise<void> {
   const files: typeof import("../../src/worker-codex/research-launch-files") = await import(moduleUrl("worker-codex/research-launch-files"));
   const admission: typeof import("../../src/worker-codex/research-launch-admission") = await import(moduleUrl("worker-codex/research-launch-admission"));
   const lifecycle: typeof import("../../src/worker-codex/research-launch-lifecycle") = await import(moduleUrl("worker-codex/research-launch-lifecycle"));
+  const contract: typeof import("../../src/worker-codex/research-launch-contract") = await import(moduleUrl("worker-codex/research-launch-contract"));
   const writers: typeof import("../../src/worker-codex/research-writer-observation") = await import(moduleUrl("worker-codex/research-writer-observation"));
   const jobs: typeof import("../../src/worker-codex/codex-goal-jobs") = await import(moduleUrl("worker-codex/codex-goal-jobs"));
   const core: typeof import("../../src/worker-core/index") = await import(moduleUrl("worker-core/index"));
@@ -93,7 +94,7 @@ async function main(configPath: string): Promise<void> {
   const runId = "TEST-runtime-admission-" + randomUUID();
   const root = join(config.testParentDirectory, runId);
   mkdirSync(root, { mode: 0o700 });
-  const source = join(root, "source"), worktrees = join(root, "worktrees"), jobRoots = join(root, "jobs"), registryRootDir = join(root, "registry");
+  const source = join(root, "source"), worktrees = join(root, "workspaces"), jobRoots = join(root, "jobs"), registryRootDir = join(root, "registry");
   for (const path of [source, worktrees, jobRoots, registryRootDir]) mkdirSync(path, { mode: 0o700 });
   const jobPrefix = runId.toLowerCase() + "-"; // Builtin worker-launch identifiers are lowercase; the exclusive project directory retains TEST.
   const controllerJobId = jobPrefix + "controller", oldId = jobPrefix + "old", aId = jobPrefix + "a", bId = jobPrefix + "b", collisionId = jobPrefix + "collision", idleId = jobPrefix + "never-started";
@@ -121,8 +122,18 @@ async function main(configPath: string): Promise<void> {
   };
   const ownStart = (jobId: string): NativeStart | undefined => {
     try {
-      const current = admission.researchCurrentStart(jobId), binding = current.spec.projectLaunchBinding;
-      check(binding?.registryRootDir === registryRootDir && binding.controllerJobId === controllerJobId && current.spec.request.jobRootDir === join(jobRoots, jobId), "native_owner_binding");
+      const current = admission.researchCurrentStart(jobId), binding = current.spec.registeredHandoff, request = current.spec.request;
+      check(!current.spec.projectLaunchBinding && binding?.registryRootDir === registryRootDir && binding.controllerJobId === controllerJobId &&
+        binding.durableDirectory.path === join(registryRootDir, "durable-handoffs") && request.durableHandoffRootDir === binding.durableDirectory.path &&
+        request.jobId === jobId && request.taskId === jobId && request.jobRootDir === join(jobRoots, jobId) &&
+        request.workspacePath === join(worktrees, jobId) && request.promptPath === join(jobRoots, jobId, "prompt.md"), "native_owner_binding");
+      check(request.modelBackend === provider.CodexModelBackend.XiaomiMimoTokenPlan && request.model === provider.codexMimoDefaultModel &&
+        request.hostedProfile === provider.HostedMimoProfile.CodingV1 && request.maxGoalTurns === 64 && request.projectId === runId &&
+        request.accounts.length === 1 && request.accounts[0] === "account-q" && request.maxAccountCycles === 1 && request.prewarmOnStart === false &&
+        request.authRootDir === config.authRootDir && request.codexBinaryPath === config.codexBinaryPath &&
+        request.taskTimeoutMs === 6 * 60_000 && request.appServerStartupTimeoutMs === 330_000 &&
+        binding.registeredExecution?.accountId === "account-q" && binding.requestSha256 === contract.researchHashRequest(request) &&
+        contract.researchRunConfig(request).workerReportMode === "structured-output", "native_fixed_coding_lifetime");
       check(current.spec.runtimeDirectory === config.runtimeDirectory && current.spec.artifactSha256 === config.expectedArtifactSha256, "native_artifact_binding");
       const start: NativeStart = { jobId, startId: current.spec.startId, unit: current.spec.unit, directory: current.directory,
         specSha256: files.researchHash(current.bytes), requestSha256: current.spec.requestSha256, artifactSha256: current.spec.artifactSha256,
@@ -185,7 +196,7 @@ async function main(configPath: string): Promise<void> {
       const value = (index + 1) * 17, proof = sha256(runId + ":input:" + index); expectedSum += value; inputProofs.push(proof);
       writeFileSync(join(source, "inputs", `item-${String(index).padStart(2, "0")}.txt`), `value=${value}\nproof=${proof}\n`, { mode: 0o600 });
     }
-    report.siblingTask = { inputFiles: 40, enabledTools: "workspace-MCP", expectedSum, orderedProofsSha256: sha256(inputProofs.join(",")) };
+    report.siblingTask = { inputFiles: 40, enabledTools: "CodingV1-native-exec_command", expectedSum, orderedProofsSha256: sha256(inputProofs.join(",")) };
     git(source, ["add", "."]); git(source, ["commit", "--quiet", "-m", "test: initialize isolated runtime admission smoke"]);
     const revision = git(source, ["rev-parse", "HEAD"]);
     git(source, ["init", "--bare", "--quiet", join(root, "origin.git")]);
@@ -203,13 +214,13 @@ async function main(configPath: string): Promise<void> {
       sourceWorkspacePath: source, baseBranch: "main", expectedSourceCommit: revision, newBranch: "test/" + workspaceId,
       accounts: ["account-q"], authRootDir: config.authRootDir, codexBinaryPath: config.codexBinaryPath,
       modelBackend: provider.CodexModelBackend.XiaomiMimoTokenPlan, model: provider.codexMimoDefaultModel,
-      executionEngine: "app-server", workerReportMode: "structured-output", reasoningEffort: "high", serviceTier: "default", maxAccountCycles: 1,
+      executionEngine: "app-server", reasoningEffort: "high", serviceTier: "default", maxAccountCycles: 1,
       prewarmOnStart: false, requireGitWorkspace: true, taskTimeoutMs: 6 * 60_000, appServerStartupTimeoutMs: 330_000,
       accessBoundary: core.AccessBoundary.IsolatedWorkspaceWrite, networkAccess: core.NetworkAccessMode.Unrestricted,
       editMode: "allow-edits", providerSandboxMode: "workspace-write", workerRole: "producer",
       dependencyBootstrap: "off", executionMode: "sync", confirmRefill: true, startWorker,
       promptBody: (aggregateInputs
-        ? `Read each of the 40 inputs/item-00.txt through inputs/item-39.txt files using the enabled workspace MCP tools. Use a read call for each file; batch independent reads within tool turns when supported. Process each value and proof. Create output.txt with exactly three lines: '${jobId}', then 'sum=' followed by the sum of all integer values, then 'proofs=' followed by all proof fields joined with commas in ascending input filename order. End with a newline. `
+        ? `Read each of the 40 inputs/item-00.txt through inputs/item-39.txt files using the native exec_command tool. Inspect each file separately, then process its value and proof. Create output.txt with exactly three lines: '${jobId}', then 'sum=' followed by the sum of all integer values, then 'proofs=' followed by all proof fields joined with commas in ascending input filename order. End with a newline. `
         : `Create output.txt containing exactly '${jobId}'. `) +
         "Do not commit. Finish successfully with the structured runtime result after writing the file. This is a NEW TEST project; edit only output.txt.\n",
       confirmPreStartAdmission: true, preStartAdmission: { mode: "serial-builtin", contract: {
@@ -231,7 +242,10 @@ async function main(configPath: string): Promise<void> {
     const idleWorkspace = join(worktrees, idleId);
     const createdWorktree = await ok("codex_goal_project_create_worktree", { ...base, sourceWorkspacePath: source, path: idleWorkspace, baseBranch: "main", expectedSourceCommit: revision, newBranch: "test/" + idleId, confirmCreateWorktree: true });
     const worktreeAdvisory = summary(createdWorktree, "result");
-    const createdJob = await ok("codex_goal_project_create_job", { ...base, jobId: idleId, taskId: idleId, jobRootDir: join(jobRoots, idleId), workspacePath: idleWorkspace, promptPath: join(jobRoots, idleId, "prompt.md"), accounts: ["account-q"], confirmCreate: true, workerRole: "producer" });
+    const createdJob = await ok("codex_goal_project_create_job", { ...base, jobId: idleId, taskId: idleId, jobRootDir: join(jobRoots, idleId), workspacePath: idleWorkspace, promptPath: join(jobRoots, idleId, "prompt.md"),
+      accounts: ["account-q"], authRootDir: config.authRootDir, modelBackend: provider.CodexModelBackend.XiaomiMimoTokenPlan,
+      model: provider.codexMimoDefaultModel, executionEngine: "app-server", maxAccountCycles: 1, prewarmOnStart: false,
+      confirmCreate: true, workerRole: "producer" });
     // Stage prompt only after public create_job has proved and created its fresh root.
     writeFileSync(join(jobRoots, idleId, "prompt.md"), "NEW TEST never-started worker; no execution requested.\n", { mode: 0o600, flag: "wx" });
     observe("public-create-routes-with-retained-backlog", { worktreeAdvisory, createJobAdvisory: summary(createdJob, "result") });
@@ -285,7 +299,7 @@ async function main(configPath: string): Promise<void> {
       jobRootDir: collisionJobRoot, workspacePath: join(worktrees, aId), promptPath: join(collisionJobRoot, "prompt.md"),
       accounts: ["account-q"], workerRole: "producer", confirmCreate: true,
       modelBackend: provider.CodexModelBackend.XiaomiMimoTokenPlan, model: provider.codexMimoDefaultModel,
-      executionEngine: "app-server", workerReportMode: "structured-output", maxAccountCycles: 1, prewarmOnStart: false });
+      executionEngine: "app-server", maxAccountCycles: 1, prewarmOnStart: false });
     const denial = record(collision.admission);
     check(collision.ok === false && denial.allowed === false && denial.resource === join(worktrees, aId), "collision_missing_targeted_admission_denial");
     check(typeof denial.action === "string" && Array.isArray(denial.examples) && denial.examples.length <= 2, "collision_unreadable_denial");
@@ -325,7 +339,8 @@ async function main(configPath: string): Promise<void> {
         check(current.spec.startId === start.startId && files.researchHash(current.bytes) === start.specSha256, "cleanup_identity_changed");
         const terminal = existsSync(join(start.directory, "mimo-candidate.json"))
           ? await lifecycle.finalizeOwnedMimoWorker(jobId, start.startId, start.specSha256)
-          : lifecycle.cancelResearchLaunch(jobId);
+          : await lifecycle.cancelRegisteredResearchLaunch({ jobId, startId: start.startId,
+            specSha256: start.specSha256, requestSha256: start.requestSha256 });
         cleanup.push({ jobId, startId: start.startId, terminal });
       } catch (error) { cleanup.push({ jobId, code: code(error), retainedForReconciliation: true }); process.exitCode = 1; report.outcome = "failed"; }
     }

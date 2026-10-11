@@ -675,7 +675,9 @@ export function bindResearchMimoWritableFootprint(plan: ResearchProviderRootPlan
  * immutable extent. Pending reservations therefore need no heartbeat/plan. */
 export function observeResearchMimoAllocationWritableRoots(spec: ResearchStartSpec): readonly ResearchProviderWritableRoot[] {
   assertResearchInitialRoot(true);
-  if (spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || spec.registeredHandoff) researchInvalid();
+  if (spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+      (spec.registeredHandoff && (!researchMimoCodingRoot(spec.request) || spec.request.maxGoalTurns !== 64 ||
+        !spec.registeredHandoff.registeredExecution))) researchInvalid();
   const directory = join(researchAuthorityRoot, researchName(spec.request.jobId), "starts", spec.startId);
   const path = join(directory, "mimo-writable-footprint.json"), bytes = researchRead(path);
   const record = researchRecord(researchJson(bytes), "schemaVersion,profile,specSha256,artifactSha256,homeSha256,roots,unit,planSha256");

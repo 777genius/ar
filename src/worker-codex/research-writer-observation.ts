@@ -6,6 +6,7 @@ import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-run
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
+import { assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchHash, researchJson, researchRead, assertResearchDirectory, researchCustody, researchAuthorityRoot } from "./research-launch-files";
@@ -47,8 +48,9 @@ async function observeNativeResearchJobWriterAuthority(manifest: CodexGoalJobMan
       if (researchHash(grantBytes) !== spec.grantSha256 || grant.jobId !== manifest.jobId ||
           grant.jobRootDir !== manifest.jobRootDir || grant.workspacePath !== manifest.workspacePath) return { status: "unknown" };
     }
-    const assertProjectBytes = spec.projectLaunchBinding
-      ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request) : undefined;
+    const assertAuthorityBytes = spec.registeredHandoff
+      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, request)
+      : spec.projectLaunchBinding ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request) : undefined;
     const assertCurrent = (): boolean => sameOptionalBytes(active, optionalPrivateRecord(activePath)) &&
       sameOptionalBytes(grantBytes, optionalPrivateRecord(grantPath));
     // The installed path must match the protected first-plan profile provenance;
@@ -66,7 +68,8 @@ async function observeNativeResearchJobWriterAuthority(manifest: CodexGoalJobMan
       .map(({ device, backingPath }) => ({ device, backingPath }));
     if (!researchCurrentStart(manifest.jobId).bytes.equals(current.bytes) || !assertCurrent() ||
         JSON.stringify(researchProviderUnits(current.directory)) !== JSON.stringify(units)) return { status: "unknown" };
-    assertProjectBytes?.();
+    assertAuthorityBytes?.();
+    if (!researchCurrentStart(manifest.jobId).bytes.equals(current.bytes) || !assertCurrent()) return { status: "unknown" };
     return { status: "allocated", roots };
   } catch {
     return { status: "unknown" };
@@ -84,18 +87,21 @@ async function prepareNativeResearchJobWriterObservation(manifest: CodexGoalJobM
     const terminalPath = join(authority, "last-terminal.json"), grantPath = join(authority, "grant.json");
     const terminalBytes = researchRead(terminalPath), grantBytes = researchRead(grantPath);
     const current = terminalResearchStart(manifest.jobId), { spec } = current;
-    const binding = spec.projectLaunchBinding;
-    if (!binding || spec.request.jobId !== manifest.jobId || spec.request.taskId !== manifest.taskId ||
+    if ((!spec.projectLaunchBinding && !spec.registeredHandoff) || spec.request.jobId !== manifest.jobId || spec.request.taskId !== manifest.taskId ||
         spec.request.jobRootDir !== manifest.jobRootDir || spec.request.workspacePath !== manifest.workspacePath ||
         spec.request.promptPath !== manifest.promptPath || spec.request.modelBackend !== manifest.modelBackend ||
         researchHash(grantBytes) !== spec.grantSha256 || spec.runtimeDirectory !== installedResearchRuntimeDirectory()) return unknown;
-    const assertProjectBytes = await assertResearchProjectLaunchBindingCurrent(binding, spec.request);
+    const assertAuthorityBytes = spec.registeredHandoff
+      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request)
+      : await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding!, spec.request);
     const read = async (): Promise<ProjectAdmissionWriterObservation> => {
       try {
         assertResearchInitialRoot(true);
         if (optionalPrivateRecord(activePath) !== undefined || !researchRead(terminalPath).equals(terminalBytes) ||
             !researchRead(grantPath).equals(grantBytes) || !researchRead(join(current.directory, "spec.json")).equals(current.bytes)) return { status: "unknown" };
-        assertProjectBytes();
+        assertAuthorityBytes();
+        if (optionalPrivateRecord(activePath) !== undefined || !researchRead(terminalPath).equals(terminalBytes) ||
+            !researchRead(grantPath).equals(grantBytes) || !researchRead(join(current.directory, "spec.json")).equals(current.bytes)) return { status: "unknown" };
         return { status: "released" };
       } catch { return { status: "unknown" }; }
     };

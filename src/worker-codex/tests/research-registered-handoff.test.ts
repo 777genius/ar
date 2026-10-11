@@ -1,7 +1,8 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture, enterResearchOperatorScope } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, rmdirSync, statSync, cpSync, chmodSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope, buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -12,10 +13,12 @@ import { prepareProjectResearchLaunch } from "../research-project-launch-adapter
 import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorization } from "../research-project-launch-authorization";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
-import { prepareResearchJobWriterObservation } from "../research-writer-observation";
-import { bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
+import { admitResearchProcessFactory, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
 import { cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
-import { researchHash, researchRead, researchPublish } from "../research-launch-files";
+import { researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
+import { bindResearchMimoWritableFootprint, observeResearchMimoAllocationWritableRoots, prepareResearchProviderRoot } from "../research-provider-root";
+import { researchMimoCodingBootstrapPaths } from "../research-mimo-coding-root";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
@@ -657,5 +660,107 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
     expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
     expect(researchRunConfig(r)).toMatchObject({ maxGoalTurns: 64, maxAccountCycles: 1, prewarmOnStart: false });
+  });
+});
+
+/** Real registered authorization, native allocation, root plan and lifetime
+ * witness. Only the shared TEST fixture substitutes Host process/kernel IO. */
+async function registeredCodingAllocation() {
+  state.mimo = true; host.physicalPaths = true;
+  registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
+  mkdirSync(registry, { recursive: true, mode: 0o700 });
+  await initializeRegisteredFixture();
+  for (const path of researchMimoCodingBootstrapPaths("/TEST-artifact")) {
+    mkdirSync(local(dirname(path)), { recursive: true, mode: 0o700 });
+    writeFileSync(local(path), path.endsWith("package.json") ? '{"type":"module"}' : "export {};", { mode: 0o644 });
+  }
+  await grantAndRequest(); const started = await start(), current = researchCurrentStart(started.jobId);
+  host.group = `/system.slice/${started.unit}`;
+  await bindRegisteredResearchRuntime(started.jobId, started.startId);
+  const home = join(current.spec.request.jobRootDir, "home/mimo-TEST/codex-home");
+  mkdirSync(local(home), { recursive: true, mode: 0o700 });
+  researchPublish(join(current.directory, "mimo-home.json"), { schemaVersion: 1,
+    specSha256: researchHash(current.bytes), identity: researchDirectoryIdentity(home) }, true);
+  const helper = admitResearchProcessFactory(current.spec.request)({ command: current.spec.request.codexBinaryPath,
+    args: ["app-server"], cwd: current.spec.request.workspacePath, env: { HOME: dirname(home), CODEX_HOME: home } });
+  const provider = readdirSync(local(join(current.directory, "providers")))[0]!.slice(0, -5);
+  const plan = prepareResearchProviderRoot(current.spec, provider, home);
+  bindResearchMimoWritableFootprint(plan);
+  for (const stream of [helper.stdin, helper.stdout, helper.stderr]) {
+    if (!(stream instanceof PassThrough)) throw new Error("Expected disposable TEST provider stream");
+    stream.destroy();
+  }
+  return { ...started, ...current, provider,
+    manifest: await readCodexGoalJob({ registryRootDir: registry, jobId: started.jobId }) };
+}
+
+describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census", () => {
+  it("counts the actual one-workspace allocation before provider heartbeat with no omitted caches", async () => {
+    const current = await registeredCodingAllocation();
+    const plan = JSON.parse(researchRead(join(current.directory, "provider-roots", current.provider, "plan.json")).toString());
+    expect(plan.captured.omittedCaches).toEqual([]);
+    const roots = observeResearchMimoAllocationWritableRoots(current.spec);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]).toMatchObject({ source: join(current.directory, "pins/workspace"), target: current.manifest.workspacePath });
+    expect(host.units.has(current.provider)).toBe(false);
+    const calls = host.calls.filter(call => call.command === "/usr/bin/systemctl").length;
+    expect(await observeResearchJobWriterAuthority(current.manifest)).toEqual({ status: "allocated",
+      roots: roots.map(({ device, backingPath }) => ({ device, backingPath })) });
+    expect(host.calls.filter(call => call.command === "/usr/bin/systemctl")).toHaveLength(calls);
+    expect(host.authReads).toBe(0);
+  });
+  it.each(["claim", "scope", "receipt", "late-receipt", "pin", "plan", "active"] as const)("retains Unknown on allocated %s drift", async fault => {
+    const current = await registeredCodingAllocation();
+    if (fault === "scope") state.scope = { ...state.scope!, allowedAccountIds: [] };
+    if (fault === "receipt") mutateReceipt();
+    let changedDuringPinRead = false;
+    if (fault === "late-receipt") {
+      const fs = await import("node:fs"), stat = fs.lstatSync;
+      vi.spyOn(fs, "lstatSync").mockImplementation(((path: string) => {
+        const result = stat(path);
+        if (path === join(current.directory, "pins/workspace") && !changedDuringPinRead) {
+          changedDuringPinRead = true; mutateReceipt();
+        }
+        return result;
+      }) as typeof stat);
+    }
+    if (fault === "pin") host.pins.set(join(current.directory, "pins/workspace"), current.spec.request.jobRootDir);
+    if (fault === "plan") {
+      const path = join(current.directory, "provider-roots", current.provider, "plan.json"), plan = JSON.parse(researchRead(path).toString());
+      researchPublish(path, { ...plan, captured: { ...plan.captured, omittedCaches: [{}] } });
+    }
+    if (fault === "active") writeFileSync(local(join(researchJobAuthority(current.jobId), "active.json")), "{}", { mode: 0o600 });
+    const manifest = fault === "claim" ? { ...current.manifest, taskId: "TEST-unrelated-claim" } : current.manifest;
+    expect(await observeResearchJobWriterAuthority(manifest)).toEqual({ status: "unknown" });
+    if (fault === "late-receipt") expect(changedDuringPinRead).toBe(true);
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(true);
+    expect(host.authReads).toBe(0);
+  });
+  it.each(["receipt", "controller", "grant", "active", "spec"] as const)("releases only its prepared exact terminal start and cold-checks %s", async fault => {
+    const current = await registeredCodingAllocation(), authority = researchJobAuthority(current.jobId);
+    const active = researchRead(join(authority, "active.json"));
+    // Terminal capture sees actual clean Git state in this allocated TEST
+    // workspace. No terminal reader or publication guard is replaced.
+    const git = async (args: string[]) => await promisify(execFile)("git", ["-C", current.manifest.workspacePath, ...args], { env: {
+      ...process.env, GIT_AUTHOR_NAME: "iliya", GIT_AUTHOR_EMAIL: "iliyazelenkog@gmail.com",
+      GIT_COMMITTER_NAME: "iliya", GIT_COMMITTER_EMAIL: "iliyazelenkog@gmail.com",
+    } });
+    await git(["init"]); writeFileSync(join(current.manifest.workspacePath, "proof.txt"), "TEST registered Coding census\n");
+    await git(["add", "proof.txt"]); await git(["commit", "-m", "test: initialize registered Coding census"]);
+    enterResearchOperatorScope(current.unit);
+    await cancelRegisteredResearchLaunch({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: current.spec.requestSha256 });
+    const read = await prepareResearchJobWriterObservation(current.manifest), calls = host.calls.filter(call => call.command === "/usr/bin/systemctl").length;
+    expect(await read()).toEqual({ status: "released" }); expect(host.calls.filter(call => call.command === "/usr/bin/systemctl")).toHaveLength(calls);
+    if (fault === "receipt") mutateReceipt();
+    if (fault === "controller") writeFileSync(local(codexGoalJobManifestPath({ registryRootDir: registry, jobId: "TEST-controller" })), '{"revoked":true}', { mode: 0o600 });
+    if (fault === "grant") {
+      const path = join(authority, "grant.json"), grant = JSON.parse(researchRead(path).toString());
+      researchPublish(path, { ...grant, grantId: "00000000-0000-4000-8000-000000000001" });
+    }
+    if (fault === "active") writeFileSync(local(join(authority, "active.json")), active, { mode: 0o600 });
+    if (fault === "spec") researchPublish(join(current.directory, "spec.json"), { ...current.spec, artifactSha256: "e".repeat(64) });
+    expect(await read()).toEqual({ status: "unknown" }); expect(host.calls.filter(call => call.command === "/usr/bin/systemctl")).toHaveLength(calls);
+    expect(host.authReads).toBe(0);
   });
 });
