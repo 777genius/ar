@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { access, open, readFile, writeFile, statfs, stat, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readlinkSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { prepareManagedJobLayout, captureManagedStoragePin, requireManagedPinCapability, readManagedPinFile, MANAGED_STORAGE_LIFETIME_CONFIG } from '../host-jobs/storage-policy.mjs';
 import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
@@ -122,7 +122,7 @@ export function parseInvocation(request) {
   if (!['job', 'provider'].includes(operation) || typeof request.jobId !== 'string' || request.jobId !== request.jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId) ||
       !Array.isArray(payload) || !payload.length || payload.length > 4096 ||
       payload.some(x => typeof x !== 'string' || x.includes('\0')) || !safePath(payload[0])) denied();
-  const allowed = ['operation', 'unit', 'jobId', 'payload', ...(operation === 'job' ? ['fingerprint', 'limits'] : ['readonlyPaths', 'ordinaryJobRoot'])];
+  const allowed = ['operation', 'unit', 'jobId', 'payload', ...(operation === 'job' ? ['fingerprint', 'limits'] : ['readonlyPaths', 'storageContext', 'ordinaryJobRoot'])];
   if (Object.keys(request).some(key => !allowed.includes(key))) denied();
   let trusted = [];
   if (operation === 'job') {
@@ -148,7 +148,26 @@ export function parseInvocation(request) {
     if (!Array.isArray(request.readonlyPaths) || request.readonlyPaths.length > 256 ||
         request.readonlyPaths.some(path => !safePath(path) || path === '/')) denied();
   }
+  if (request.storageContext !== undefined) {
+    const context = request.storageContext;
+    if (operation !== 'provider' || payload.length !== 2 || request.readonlyPaths !== undefined ||
+        !context || typeof context !== 'object' || Array.isArray(context) ||
+        !['codexHome,home,workspace', 'agentTemp,codexHome,home,workspace'].includes(Object.keys(context).sort().join(',')) ||
+        Object.values(context).some(path => !safePath(path) || path === '/' || path !== path.trim() || path.endsWith('/') || path.length > 4096)) denied();
+  }
   return { ...request, trusted };
+}
+
+async function captureProviderStorage(request, policy, trust) {
+  if (request.storageContext === undefined) return undefined;
+  if (governedFdProfile(request)) denied();
+  // The helper is fixed beside the already trusted ORIGINAL bootstrap. An old
+  // context-absent SDK keeps its existing installed-launcher path unchanged.
+  const helper = `${dirname(request.payload[1])}/original-provider-storage-context.js`;
+  if (helper === policy.storageRoot || helper.startsWith(policy.storageRoot + '/')) denied();
+  await trust(helper);
+  const { captureOriginalProviderStorage } = await import(pathToFileURL(helper).href);
+  return captureOriginalProviderStorage(policy.storageRoot, request.storageContext);
 }
 
 export function managedLauncherInvocation(request) {
@@ -184,45 +203,53 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   for (const path of [nodePath, guardPath, launcherPath, ...trusted]) {
     if (path === policy.storageRoot || path.startsWith(policy.storageRoot + '/')) denied();
   }
-  const properties = [
-    'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
-    `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
-    ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
-      `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
-      ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
-    ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
-    'ProtectControlGroups=yes',
-    ...profileProperties(),
-    ...(governedFdProfile(request) ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`,
-      'SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS',
-      'SystemCallArchitectures=native', 'NoNewPrivileges=yes'] : []),
-    ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
-    'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
-    'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',
-    'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
-    ...readonlyPaths.map(path => `BindReadOnlyPaths=${path}:${path}:norbind`),
-    ...(storagePin ? ['MountFlags=private', 'RemainAfterExit=yes',
-      `OpenFile=/proc/${process.pid}/fd/${storagePin.pin.handle.fd}:storage-pin:read-only`,
-      `OpenFile=/proc/${process.pid}/fd/${storagePin.receipt.fd}:storage-acquisition`,
-      `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
-      `InaccessiblePaths=${storagePin.binding.directory}`] : []),
-  ];
   assertMemoryAdmission(request, memoryInfo);
-  return { command: '/usr/bin/systemd-run', args: [
-    ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
-    `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
-    `--setenv=HOME=${policy.home}`,
-    ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
-    ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
-    `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
-    '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
-    `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
-    ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
-      '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
-        generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
-      '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
-    '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload,
-  ] };
+  const providerStorage = await captureProviderStorage(request, policy, trust);
+  try {
+    const providerPayload = providerStorage ? [...payload, '--provider-storage-v1',
+      Buffer.from(JSON.stringify(providerStorage.witness)).toString('base64url')] : payload;
+    const properties = [
+      'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
+      `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
+      ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
+        `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
+        ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
+      ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
+      'ProtectControlGroups=yes',
+      ...profileProperties(),
+      ...(governedFdProfile(request) ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`,
+        'SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS',
+        'SystemCallArchitectures=native', 'NoNewPrivileges=yes'] : []),
+      ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
+      'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
+      ...(providerStorage ? [`BindReadOnlyPaths=${policy.storageRoot}:${policy.storageRoot}:norbind`,
+        ...[...new Set(Object.values(providerStorage.witness.context))].map(path => `ReadWritePaths=${path}`),
+        ...[policy.jobRoot, ...new Set(Object.values(providerStorage.witness.context))].map(path => `BindPaths=${path}:${path}:norbind`)] : []),
+      'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',
+      'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
+      ...readonlyPaths.map(path => `BindReadOnlyPaths=${path}:${path}:norbind`),
+      ...(storagePin ? ['MountFlags=private', 'RemainAfterExit=yes',
+        `OpenFile=/proc/${process.pid}/fd/${storagePin.pin.handle.fd}:storage-pin:read-only`,
+        `OpenFile=/proc/${process.pid}/fd/${storagePin.receipt.fd}:storage-acquisition`,
+        `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
+        `InaccessiblePaths=${storagePin.binding.directory}`] : []),
+    ];
+    return { command: '/usr/bin/systemd-run', ...(providerStorage ? { providerStorage } : {}), args: [
+      ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
+      `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
+      `--setenv=HOME=${policy.home}`,
+      ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
+      ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
+      `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
+      '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
+      `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
+      ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
+        '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
+          generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
+        '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
+      '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...providerPayload,
+    ] };
+  } catch (error) { providerStorage?.close(); throw error; }
 }
 
 // Optional transport deadlines only narrow an existing job. They are never
@@ -570,7 +597,9 @@ async function main() {
   // Every real asynchronous admission has completed. No await, callback or
   // renewed timeout lies between this original monotonic sample and birth.
   if (ends) assertOriginalReservation(ends, reservation, anchor, process.hrtime.bigint());
-  const child = spawn(command, childArgs, options);
+  let child;
+  try { invocation.providerStorage?.revalidate(); child = spawn(command, childArgs, options); }
+  finally { invocation.providerStorage?.close(); }
   const handlers = new Map(['SIGINT', 'SIGTERM', 'SIGHUP'].map(signal => [signal, () => child.kill(signal)]));
   for (const [signal, handler] of handlers) process.on(signal, handler);
   child.on('error', () => { process.exitCode = 70; });

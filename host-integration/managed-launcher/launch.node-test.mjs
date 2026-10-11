@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
+import { buildSystemdInvocation, managedLauncherInvocation, parseInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
@@ -49,6 +49,19 @@ const build = (request, options = {}, admission = admit) => buildSystemdInvocati
 });
 const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'a'.repeat(36)}.service`, jobId: job.jobId,
   payload: ['/usr/bin/node', '/opt/runtime/hosted-app-server-launcher.js'] };
+test('original provider accepts only finite materialized storage roles and keeps other envelopes closed', () => {
+  const storageContext = { workspace: '/scratch/workspace', home: '/scratch/session/home', codexHome: '/scratch/session/codex-home' };
+  assert.deepEqual(parseInvocation({ ...provider, storageContext }).storageContext, storageContext);
+  const tempContext = { ...storageContext, agentTemp: '/scratch/task/tmp/agent' };
+  assert.deepEqual(parseInvocation({ ...provider, storageContext: tempContext }).storageContext, tempContext);
+  assert.equal(parseInvocation(provider).storageContext, undefined);
+  for (const request of [{ ...job, storageContext }, { ...provider, storageContext, readonlyPaths: [] },
+    { ...provider, storageContext, payload: [...provider.payload, '--provider-storage-v1', 'caller-witness'] },
+    { ...provider, storageContext: { ...storageContext, writablePaths: ['/etc'] } },
+    { ...provider, storageContext: { ...tempContext, extraTemp: '/scratch/state' } },
+    { ...provider, storageContext: { ...storageContext, home: storageContext.home + '\n' } },
+    { ...provider, storageContext: { ...storageContext, workspace: '/' } }]) assert.throws(() => parseInvocation(request));
+});
 test('job and provider mask journal IPC without replacing provider pipes', async () => {
   for (const request of [job, provider]) {
     const { args } = await build(request);

@@ -1,3 +1,4 @@
+import { resolveCodexGoalRunInput } from "./application/codex-goal-storage-paths";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
@@ -117,6 +118,7 @@ export type CodexGoalRunConfig = {
   readonly childLifetime?: ChildLifetime;
   readonly maxGoalTurns?: number;
   readonly jobId?: string;
+  readonly storageRootDir?: string;
   readonly jobRootDir: string;
   readonly durableHandoffRootDir?: string;
   readonly stateRootDir?: string;
@@ -133,6 +135,8 @@ export type CodexGoalRunConfig = {
   readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
   readonly outputPath?: string;
   readonly progressPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
   readonly progressHeartbeatMs?: number;
   readonly executorId?: string;
   readonly codexBinaryPath?: string;
@@ -171,6 +175,12 @@ export type CodexGoalRunConfig = {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
 };
 
+export type CodexGoalRunInput = CodexGoalRunConfig | (Omit<CodexGoalRunConfig, "jobRootDir" | "workspacePath" | "storageRootDir"> & {
+  readonly storageRootDir: string;
+  readonly jobRootDir?: string;
+  readonly workspacePath?: string;
+});
+
 export type CodexGoalWorkerReportMode = "runtime-only" | "structured-output";
 
 export const codexGoalLinkedWorktreeHandoffSystemPrompt = [
@@ -205,9 +215,10 @@ export type CodexGoalProgressSnapshot = {
 };
 
 export async function runCodexGoal(
-  config: CodexGoalRunConfig,
+  input: CodexGoalRunInput,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  let config = resolveCodexGoalRunInput(input);
   if (requiresCurrentHostedDependencyRootPurpose()) {
     // Before layout/config IO or any optional adapter callback. The actual
     // protected route uses only fixed composition, including inherited ports.
@@ -219,7 +230,6 @@ export async function runCodexGoal(
   }
   // Reference purpose is a separate closed CLI entry, never a fabricated task.
   assertHostedDependencyExecutionWorkspace(undefined);
-  config = mapManagedGoalLayout({ config }).config;
   config = withHostedGoalIdentity(config);
   if (config.storage) config = snapshotCodexGoalStorageConfig(config);
   assertCodexGoalRunConfig(config);
@@ -674,9 +684,9 @@ export function codexGoalOutputPath(
 }
 
 export function codexGoalRuntimeEventsPath(
-  config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "outputPath">,
+  config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "outputPath" | "runtimeEventsPath">,
 ): string {
-  return join(usesManagedJobLayout(config as CodexGoalRunConfig) && config.outputPath
+  return config.runtimeEventsPath ?? join(usesManagedJobLayout(config as CodexGoalRunConfig) && config.outputPath
     ? dirname(config.outputPath) : config.jobRootDir, `${config.taskId}.events.jsonl`);
 }
 
@@ -745,10 +755,10 @@ function codexGoalWorkerSystemPrompt(taskId: string, tempRoot = "/tmp"): string 
 }
 
 function codexGoalRunSystemPrompt(
-  config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode">,
+  config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode" | "agentTempRootDir">,
   options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string; readonly openWorkerInstruction?: string } = {},
 ): string {
-  const prompts = [codexGoalWorkerSystemPrompt(config.taskId, options.openWorkerInstruction ? "$TMPDIR" : "/tmp")];
+  const prompts = [codexGoalWorkerSystemPrompt(config.taskId, options.openWorkerInstruction ? "$TMPDIR" : config.agentTempRootDir ?? "/tmp")];
   if (options.dependencyToolInstruction) prompts.push(options.dependencyToolInstruction);
   if (options.openWorkerInstruction) prompts.push(options.openWorkerInstruction);
   else if (options.linkedWorktreeHandoff === true) {

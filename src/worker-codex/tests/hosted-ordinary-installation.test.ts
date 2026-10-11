@@ -788,7 +788,7 @@ describe("real default provider primitive under ordinary activation", () => {
     await expect(admitHostedTestEgress({ ...identity, ...(fault === "engine" ? { executionEngine: "plain-exec" as const } : {}) })).rejects.toThrow();
     expect(fixture.spawn).not.toHaveBeenCalled();
   });
-  it.each([false, true])("the default primitive reserves before real mocked OS submission; npm=%s", npm => {
+  it.each([false, true])("the default primitive reserves and excludes baseline storage context; npm=%s", npm => {
     const { store, input } = runtime(npm);
     fixture.spawn.mockImplementation(() => {
       expect(store.read().ordinaryStarts).toHaveLength(2);
@@ -796,7 +796,9 @@ describe("real default provider primitive under ordinary activation", () => {
       expect(() => store.enterExclusive()).toThrow();
       return fixture.child;
     });
-    const child = spawnCodexAppServerProcess(input);
+    const child = spawnCodexAppServerProcess({ ...input, storageContext: {
+      workspace: input.cwd, home: "/TEST/session/home", codexHome: "/TEST/session/codex-home",
+    } });
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = fixture.spawn.mock.calls[0]!;
     expect(command).toBe(process.execPath);
@@ -993,8 +995,6 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
 
 registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
 registerOrdinaryWriterExtentTests({ fixture, creator, read, put, runtimeDirectory });
-
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
-
 registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });

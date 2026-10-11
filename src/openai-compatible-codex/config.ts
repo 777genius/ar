@@ -1,5 +1,6 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deriveRuntimeStorageRoots } from "../core/runtime-storage-paths.js";
 import type {
   CodexReasoningEffort,
   CodexServiceTier,
@@ -27,6 +28,9 @@ export type OpenAiCompatibleCodexBridgeConfig = {
 export function loadOpenAiCompatibleCodexBridgeConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): OpenAiCompatibleCodexBridgeConfig {
+  const storageRootDir = env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_STATE_DIR === undefined
+    ? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined;
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
   const codexModel = env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_CODEX_MODEL ?? "gpt-5.5";
   const authRootDir =
     env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_AUTH_ROOT ??
@@ -46,6 +50,7 @@ export function loadOpenAiCompatibleCodexBridgeConfigFromEnv(
     authRootDir,
     stateDir:
       env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_STATE_DIR ??
+      (roots ? join(roots.stateRootDir, "openai-codex-bridge") : undefined) ??
       join(tmpdir(), "subscription-runtime-openai-codex-bridge"),
     ...(accountNames === undefined ? {} : { accountNames }),
     ...(env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_API_KEY
