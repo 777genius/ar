@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope, buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
-import { bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard, researchJobAuthority } from "../research-launch-admission";
+import { assertOwnedMimoWorkerConfig, bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard, researchJobAuthority } from "../research-launch-admission";
 import { cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
 import { researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
@@ -512,13 +512,22 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
       reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow("hosted_research_registered_execution_unsupported");
     expect(existsSync(local(join(researchJobAuthority(r.jobId), "grant.json")))).toBe(false);
   });
-  it("seals CodingV1/64 in its grant while native activation stays closed", async () => {
+  it("seals CodingV1/64 in its grant and requires an owned factory before native activation", async () => {
     state.mimo = true; await initializeRegisteredFixture();
     const r = await grantAndRequest();
     expect(r).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 });
     const grant = JSON.parse(researchRead(join(researchJobAuthority(r.jobId), "grant.json")).toString());
     expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
-    expect(() => researchRunConfig(r)).toThrow("hosted_mimo_coding_activation_closed");
+    const config = researchRunConfig(r);
+    expect(config).toMatchObject({ modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      executionEngine: "app-server", workerReportMode: "structured-output", maxGoalTurns: 64,
+      maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 0,
+      safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
+        retryOnAccountUnavailable: false, retryOnReconnectRequired: false } });
+    // Config/grant DATA cannot mint the independently retained process factory.
+    expect(() => assertOwnedMimoWorkerConfig(undefined, config)).toThrow("hosted_mimo_activation_closed");
+    expect(host.calls.filter(call => call.command === "/usr/bin/mount" || call.command === "/usr/bin/systemd-run")).toEqual([]);
+    expect(host.authReads).toBe(0);
   });
 });

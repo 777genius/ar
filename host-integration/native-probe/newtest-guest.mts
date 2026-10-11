@@ -106,7 +106,7 @@ async function runGuest():Promise<void>{
       const name=`managed-command-${managedIndex++}`;
       try{
         const beforeLaunch=process.hrtime.bigint();
-        if(launch&&(beforeLaunch+360_000_000_000n>=work||beforeLaunch+370_000_000_000n>=end))throw new Error("original managed preparation reservation expired");
+        if(launch&&(beforeLaunch+660_000_000_000n>=work||beforeLaunch+670_000_000_000n>=end))throw new Error("original managed preparation reservation expired");
         let actualArgs=args;
         if(launch){
           unwrapManagedJob(command,args,expectedLauncher);
@@ -115,7 +115,7 @@ async function runGuest():Promise<void>{
         const now=process.hrtime.bigint(),cutoff=launch?work:minimum(work,now+2_000_000_000n);
         // Direct custody is the installed Node launcher and its inherited raw
         // channels. It owns real default admission and the final effect veto.
-        const r=await boundedCommand(command,actualArgs,cutoff,undefined,{XDG_RUNTIME_DIR:"/run/user/0"},end,launch?{workNs:360_000_000_000n,cleanupNs:370_000_000_000n}:undefined);
+        const r=await boundedCommand(command,actualArgs,cutoff,undefined,{XDG_RUNTIME_DIR:"/run/user/0"},end,launch?{workNs:660_000_000_000n,cleanupNs:670_000_000_000n}:undefined);
         durable(join(state,name+".stdout"),r.stdout);durable(join(state,name+".stderr"),r.stderr);durable(join(state,name+".json"),{command,args,actualCommand:command,actualArgs,code:r.code,signal:r.signal,custody:r.custody,naturalClose:r.naturalClose});
         const stdout=r.stdout.toString();
         if(r.signal!==null||(r.code!==0&&!(command==="/usr/bin/systemctl"&&args.includes("show")&&r.code===4&&stdout.includes("LoadState=not-found"))))throw Object.assign(new Error("installed managed command refused"),{code:r.code,stdout,stderr:r.stderr.toString()});
@@ -128,8 +128,8 @@ async function runGuest():Promise<void>{
     };
     const manager=new Constructor({stateDir:join(state,"host-jobs"),run:managedRun});
     const reserve=process.hrtime.bigint();
-    if(reserve+360_000_000_000n>=work||reserve+370_000_000_000n>=end)throw new Error("insufficient original ordinary lifetime reservation");
-    durable(join(state,"ordinary-request.json"),{jobId,machineId:c.machineId,argv:[node,join(artifact,"admin/host-integration/native-probe/newtest-guest.mjs"),"--ordinary-refusal"],reservedAtNs:reserve.toString(),workEndNs:work.toString(),cleanupEndNs:end.toString(),startupSeconds:300,runtimeSeconds:60,stopSeconds:10});
+    if(reserve+660_000_000_000n>=work||reserve+670_000_000_000n>=end)throw new Error("insufficient original ordinary lifetime reservation");
+    durable(join(state,"ordinary-request.json"),{jobId,machineId:c.machineId,argv:[node,join(artifact,"admin/host-integration/native-probe/newtest-guest.mjs"),"--ordinary-refusal"],reservedAtNs:reserve.toString(),workEndNs:work.toString(),cleanupEndNs:end.toString(),startupSeconds:600,runtimeSeconds:60,stopSeconds:10});
     const started=await manager.start(startRequest);
     if(managedLost)throw new Error("original managed launch UNKNOWN_HELD");durable(join(state,"ordinary-start.json"),started);
     for(;;){

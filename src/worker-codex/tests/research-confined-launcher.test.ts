@@ -19,10 +19,13 @@ beforeAll(() => {
   // Only the module invocation is observed; no admission/service/provider runs.
   writeFileSync(join(helper, "dist/worker-codex/research-provider-service.js"),
     'export async function runResearchProviderService(...args) { process.stdout.write(JSON.stringify(args)); }');
-  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors", "hosted-fd-prelude", "hosted-blocking-output", "managed-provider-scratch-environment"]) {
-    const source = readFileSync(join(process.cwd(), "src/provider-codex/app-server/adapters", name + ".ts"), "utf8");
+  // Closed runtime dependency set; launch-frame is only a type import here.
+  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame-decoder", "hosted-process-descriptors", "hosted-fd-prelude", "hosted-blocking-output", "managed-provider-scratch-environment", "hosted-mimo-coding-bootstrap"]) {
+    const sourceDirectory = name === "hosted-mimo-coding-bootstrap" ? "src/provider-codex" : "src/provider-codex/app-server/adapters";
+    const source = readFileSync(join(process.cwd(), sourceDirectory, name + ".ts"), "utf8");
     const translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText
-      .replace(/from "\.\/((?:hosted-|managed-provider-scratch-)[a-z-]+)"/g, 'from "./$1.mjs"');
+      .replace(/from "\.\/((?:hosted-|managed-provider-scratch-)[a-z-]+)"/g, 'from "./$1.mjs"')
+      .replace(/from "\.\.\/\.\.\/hosted-mimo-coding-bootstrap"/g, 'from "./hosted-mimo-coding-bootstrap.mjs"');
     writeFileSync(join(root, name + ".mjs"), translated);
   }
   const testClockSource = readFileSync(join(process.cwd(), "src/worker-codex/tests/research-confined-launcher-test-clock.ts"), "utf8");

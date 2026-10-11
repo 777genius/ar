@@ -4,7 +4,9 @@ vi.mock("node:child_process", async original => ({ ...await original<object>(), 
 vi.mock("node:fs", async original => ({ ...await original<object>(), lstatSync: () => ({ isDirectory: () => true, isFile: () => true, nlink: 1 }), readdirSync: () => [], readFileSync: () => "[core]\n bare = false\n", existsSync: (p: string) => state.files.has(p), mkdirSync: (p: string) => state.files.set(p, "DIR"), writeFileSync: (p: string, data: string) => state.files.set(p, data) }));
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
-vi.mock("../codex-goal-jobs", () => ({ createCodexGoalJob: state.create }));
+vi.mock("../codex-goal-jobs", async original => ({
+  ...await original<typeof import("../codex-goal-jobs")>(), createCodexGoalJob: state.create,
+}));
 vi.mock("../hosted-mimo-project-bridge-onboard", () => ({ onboardHostedMimoProject: state.onboard }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ hostedMimoBridgeMetadataBytes: (p: string) => { const bytes = state.files.get(p); if (bytes === undefined) throw new Error("TEST mandatory file missing"); return Buffer.from(bytes); },
   assertHostedMimoProjectRouteOpen: state.route, parseHostedMimoProjectBinding: (value: unknown) => value }));
