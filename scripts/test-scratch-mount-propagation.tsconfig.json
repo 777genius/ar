@@ -3,6 +3,7 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "noEmit": true,
+    "rootDirs": ["../dist", "../src"],
     "types": ["node"]
   },
   "include": ["./test-scratch-mount-propagation.mts"]
