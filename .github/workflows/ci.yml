@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
       - name: Install encrypted checkpoint restore test dependency
         run: |
           if ! command -v restic >/dev/null 2>&1; then
@@ -41,12 +41,18 @@ jobs:
             sudo apt-get install -y --no-install-recommends restic
           fi
           restic version
+      # The helper uses strict enums, which Node cannot execute directly. Compile
+      # it with the lock-pinned project TypeScript; no lifecycle scripts run.
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
       - name: Verify reusable PR lane proofs
         id: proof
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
-        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts detect
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" detect
 
   quality:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
@@ -54,7 +60,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
@@ -85,7 +91,7 @@ jobs:
       - &unit_test_node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
@@ -97,6 +103,10 @@ jobs:
             sudo apt-get install -y --no-install-recommends restic
           fi
           restic version
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
       - name: Capture CI proof identity before source execution
         id: capture
         continue-on-error: true
@@ -105,7 +115,7 @@ jobs:
           CI_PROOF_FAMILY: unit
           CI_PROOF_LANE: ${{ matrix.shard }}
           CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
-        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
       - &unit_test_install
         run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - name: Run unit shard in a private TEST home
@@ -241,7 +251,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       - name: Require genuine runner identity and disposable namespace capabilities
         shell: bash
@@ -257,7 +267,7 @@ jobs:
           test "$(id -g)" -gt 0
           test "$(stat -c %u -- "$GITHUB_WORKSPACE")" = "$(id -u)"
           grep -q '^VERSION_ID="24\.04"$' /etc/os-release
-          node -e 'if (!process.versions.node.startsWith("22.")) process.exit(1)'
+          node -e 'if (process.versions.node !== "26.11.1") process.exit(1)'
           sudo -n -l
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
             /usr/bin/unshare --user --map-root-user --mount --pid --fork \
@@ -319,7 +329,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
@@ -392,7 +402,7 @@ jobs:
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
             --security-opt "seccomp=$owned/ci-source-seccomp.json" \
             --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
-            node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+            node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 \
             /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
             HOME=/native-probe-source-workspace/home \
             TMPDIR=/native-probe-source-workspace/tmp \
@@ -485,8 +495,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
       - name: Capture CI proof identity before source execution
         id: capture
         continue-on-error: true
@@ -495,7 +509,7 @@ jobs:
           CI_PROOF_FAMILY: crash
           CI_PROOF_LANE: ${{ matrix.lane }}
           CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-crash-${{ matrix.lane }}/receipt.json
-        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.

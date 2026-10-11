@@ -61,7 +61,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and the ARC runners'
       # egress to the registry mirrors is intermittently flaky. Gates are never
@@ -115,7 +115,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
           registry-url: https://npm.pkg.github.com
           scope: "@vioxen"

@@ -9,6 +9,10 @@ ephemeral checkout. Both `RUNNER_TOOL_CACHE` and `AGENT_TOOLSDIRECTORY` point to
 `/opt/hostedtoolcache`. Keep the existing pinned `actions/setup-node` action:
 it selects the preinstalled version and still supports a future version change.
 
+Default CI and publish workflows select Node 26.11.1. Until the runner image
+carries `/opt/hostedtoolcache/node/26.11.1/x64`, `actions/setup-node` downloads
+it (no cache hit), and the image change below is still outstanding.
+
 After changing the runner image or producer profile, qualify both pools with
 the automations `Qualify ARC Node cache` workflow. Its before/after assertions
 require the same executable path, version and binary checksum; the setup-node
