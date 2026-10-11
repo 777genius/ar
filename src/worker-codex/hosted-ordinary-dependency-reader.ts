@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { closeSync, constants, fsyncSync, openSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -176,7 +177,7 @@ export function consumeHostedOrdinaryDependencyPreclaim(context:CurrentHostedDep
 function readReservedOrdinaryDependencyReader(fence:HostedActivationFence,startId:string) {
   assertHostedActivationFence(fence); const original=pin(startName(startId)),start=parseHostedOrdinaryStart(decodeHostedActivationBytes(original.bytes));
   const actual=readHostedOrdinaryBirth(start.jobId),binding=readHostedDependencyBinding(start.jobId); if (binding?.version!==2) return undefined;
-  const kernel=new HostedReadonlyHostKernel(),group=readFileSync("/proc/self/cgroup","utf8").trim();
+  const kernel=new HostedReadonlyHostKernel(),group=observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   const session=group===`0::${start.controlGroup}` ? kernel.ordinaryRuntimeSession(start) : kernel.operatorSession();
   const row=actual.activation.ordinaryStarts.find(value=>value.startId===startId);
   if (actual.activation.phase!==HostedActivationPhase.Ordinary || !row || row.state!==HostedCustodyReservationState.Reserved ||
