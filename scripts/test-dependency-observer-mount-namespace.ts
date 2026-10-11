@@ -59,7 +59,7 @@ try {
   assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.match(String(common.sourceSha), /^[a-f0-9]{40}$/);
   assert.equal(realpathSync(process.env.GITHUB_WORKSPACE ?? ""), source);
   assert.match(readFileSync("/etc/os-release", "utf8"), /VERSION_ID="24\.04"/);
-  assert.match(process.versions.node, /^22\./);
+  assert.match(process.versions.node, /^26\./);
   assert.equal(process.getuid?.(), 0); assert.equal(process.geteuid?.(), 0);
   assert.equal(process.getgid?.(), 0); assert.equal(process.getegid?.(), 0);
   const lockBytes = read(join(source, "package-lock.json"), 512 * 1024), lock: unknown = JSON.parse(lockBytes.toString("utf8"));
