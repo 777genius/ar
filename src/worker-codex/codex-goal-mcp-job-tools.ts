@@ -152,7 +152,7 @@ export function registerCodexGoalJobTools(server: McpServer): void {
     "codex_goal_status_by_id",
     {
       title: "Codex Goal Status By Job",
-      description: "Inspect a stored Codex goal job using only jobId.",
+      description: "Inspect a stored Codex goal job using only jobId. For a configured remote MiMo project, add mimoProjectId and mimoWorkstreamId and omit registryRootDir/cwd. Returns owned operation states and canonical worker status when available; pending submission is not worker completion.",
       inputSchema: jobIdInputSchema(),
     },
     async (args) => withMcpErrors(async () =>

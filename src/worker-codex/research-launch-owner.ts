@@ -22,7 +22,7 @@ export function grantResearchLaunch(jobId: string, jobRootDir: string, workspace
 }
 /** Explicit standalone worker authority. Never grants controller or registered execution. */
 export function grantOwnedMimoWorkerLaunch(jobId: string, jobRootDir: string, workspacePath: string): void {
-  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, true), true);
+  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, HostedMimoProfile.Worker), true);
 }
 /** Separate capability-only port; the legacy operator CLI has no free sink arg. */
 export async function grantRegisteredResearchLaunch(authorization: RegisteredResearchHandoffAuthorization): Promise<void> {
@@ -37,10 +37,11 @@ async function grantRegisteredResearchLaunchUnlocked(authorization: RegisteredRe
     assertResearchDurableDirectory(registry);
     await assertRegisteredResearchHandoffCurrent(binding, authorization.request);
     const { request } = authorization;
-    publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding);
+    publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding,
+      request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? request.hostedProfile ?? HostedMimoProfile.Worker : undefined);
   } });
 }
-function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff, mimoWorker = false): void {
+function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff, mimoProfile?: HostedMimoProfile.Worker | HostedMimoProfile.CodingV1): void {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   researchId(jobId);
   const jobDirectory = researchDirectoryIdentity(jobRootDir), workspaceDirectory = researchDirectoryIdentity(workspacePath);
@@ -53,11 +54,23 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
   // A unique grant identity makes revoke/regrant different even for the same tuple.
   researchPublish(join(job, "grant.json"), { schemaVersion: 1, jobId, jobRootDir, workspacePath,
     ...(registeredHandoff ? { registeredHandoff } : {}),
-    profileId: mimoWorker ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
-    ...(mimoWorker ? { hostedProfile: HostedMimoProfile.Worker } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
+    profileId: mimoProfile ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
+    ...(mimoProfile ? { hostedProfile: mimoProfile } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
 }
 export function revokeResearchLaunch(jobId: string): void {
   withResearchJobMutation(jobId, () => revokeResearchLaunchUnlocked(jobId));
+}
+/** Idempotent enrolled standalone revocation cannot revoke a replacement grant. */
+export function revokeEnrolledResearchLaunch(jobId: string, expectedGrantSha256: string): void {
+  withResearchJobMutation(jobId, () => {
+    assertResearchInitialRoot(true);
+    if (!/^[a-f0-9]{64}$/.test(expectedGrantSha256)) researchInvalid();
+    const path = join(researchJobAuthority(jobId), "grant.json");
+    if (!existsSync(path)) return;
+    const bytes = researchRead(path), grant = parseResearchGrant(researchJson(bytes));
+    if (grant.registeredHandoff || researchHash(bytes) !== expectedGrantSha256) researchInvalid();
+    unlinkSync(path); // Retain active ownership for verified cancellation.
+  });
 }
 function revokeResearchLaunchUnlocked(jobId: string): void {
   assertResearchInitialRoot(true);
@@ -86,6 +99,14 @@ async function revokeRegisteredResearchLaunchUnlocked(jobId: string, expectedGra
 export function startResearchLaunch(requestPath: string, expectedRequestSha256: string): { jobId: string; unit: string; startId: string; specSha256: string } {
   const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
   return withResearchJobMutation(jobId, () => prepareResearchLaunchInternal(requestPath, expectedRequestSha256).submit());
+}
+/** Enrollment's exact grant is rechecked inside the original submission fence. */
+export function startEnrolledResearchLaunch(requestPath: string, expectedRequestSha256: string, expectedGrantSha256: string): ReturnType<typeof startResearchLaunch> {
+  const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);
+  return withResearchJobMutation(jobId, () => {
+    if (researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== expectedGrantSha256) researchInvalid();
+    return prepareResearchLaunchInternal(requestPath, expectedRequestSha256).submit();
+  });
 }
 export async function startRegisteredResearchLaunch(requestPath: string, expectedRequestSha256: string): Promise<ReturnType<typeof startResearchLaunch>> {
   const jobId = researchStartMutationJobId(requestPath, expectedRequestSha256);

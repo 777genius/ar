@@ -619,7 +619,9 @@ await runProjectControlOperationFile({
           enum: ["workspace-write", "danger-full-access"],
         },
       });
-      expect(refillTool?.inputSchema.required).toContain("workspacePath");
+      // Hosted MiMo resolves workspace paths from its protected binding;
+      // local requests still validate these paths in the handler below.
+      expect(refillTool?.inputSchema.required ?? []).not.toContain("workspacePath");
       expect(verifierTool?.inputSchema.properties).toMatchObject({
         mergeBinding: {
           type: "object",

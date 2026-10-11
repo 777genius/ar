@@ -1,3 +1,5 @@
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import { childConfigFromRecord } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { join } from "node:path";
@@ -44,12 +46,15 @@ const defaultAuthRoot = defaultCodexGoalAuthRoot;
 const defaultTimeoutMs = CODEX_GOAL_DEFAULT_TIMEOUT_MS;
 
 export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGoalJobManifestInput {
+  assertCodexGoalStorageTransportSupported(args);
   const cwd = resolvePath(process.cwd(), args.cwd ?? process.cwd());
   const jobId = requiredRawString(args.jobId, "jobId");
   const jobRootDir = resolvePath(
     cwd,
     args.jobRootDir ?? defaultCodexGoalJobRoot(jobId),
   );
+  const modelBackend = optionalCodexGoalModelBackend(args.modelBackend);
+  const mimo = modelBackend.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const controlModes = goalControlModesFromRecord(args as unknown as JsonObject);
   const accessBoundary = optionalCodexGoalAccessBoundary(args.accessBoundary);
   const projectAccessScope = parseCodexGoalProjectAccessScope(
@@ -57,6 +62,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
   );
   const networkAccess = optionalCodexGoalNetworkAccess(args.networkAccess);
   return {
+    ...parseCodexGoalStorageData(args),
     ...childConfigFromRecord(args as unknown as JsonObject),
     jobId,
     ...(stringValue(args.description) ? { description: stringValue(args.description) as string } : {}),
@@ -76,18 +82,18 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
     ...(args.progressPath ? { progressPath: resolvePath(cwd, args.progressPath) } : {}),
     progressHeartbeatMs: args.progressHeartbeatMs ?? 60_000,
     ...(args.codexBinaryPath ? { codexBinaryPath: args.codexBinaryPath } : {}),
-    model: args.model ?? CODEX_WORKER_DEFAULT_MODEL,
+    model: args.model ?? (mimo ? codexMimoDefaultModel : CODEX_WORKER_DEFAULT_MODEL),
     reasoningEffort: args.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     serviceTier: args.serviceTier ?? "default",
-    executionEngine: args.executionEngine ?? "app-server-goal",
+    executionEngine: args.executionEngine ?? (mimo ? "app-server" : "app-server-goal"),
     ...(args.checkpointRequired === true ? { checkpointRequired: true } : {}),
-    ...optionalCodexGoalModelBackend(args.modelBackend),
+    ...modelBackend,
     taskTimeoutMs: args.taskTimeoutMs ?? defaultTimeoutMs,
     ...(args.appServerStartupTimeoutMs
       ? { appServerStartupTimeoutMs: args.appServerStartupTimeoutMs }
       : {}),
     ...(args.staleLockMs ? { staleLockMs: args.staleLockMs } : {}),
-    maxAccountCycles: args.maxAccountCycles ?? 5,
+    maxAccountCycles: args.maxAccountCycles ?? (mimo ? 1 : 5),
     ...controlModes,
     ...(accessBoundary === undefined ? {} : { accessBoundary }),
     ...(projectAccessScope === undefined ? {} : { projectAccessScope }),
@@ -108,7 +114,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
 
 export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGoalJobManifestPatch {
   const cwd = resolvePath(process.cwd(), args.cwd ?? process.cwd());
-  const patch: Record<string, unknown> = {};
+  const patch: Record<string, unknown> = { ...parseCodexGoalStorageData(args) };
   putIfDefined(patch, "description", stringValue(args.description));
   const tags = tagValues(args.tags);
   if (args.tags !== undefined) patch.tags = tags;

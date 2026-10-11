@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "root-producer-native.h"
+#include "root-managed-launch.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -48,6 +49,70 @@ static pid_t wait_original(pid_t child,int *status) {
     (void)nanosleep(&nap,NULL);
   }
 }
+static int cgroup_data_read(const void *bytes,size_t length,const char *group) {
+  int fd=memfd_create("scope-cgroup-DATA",MFD_CLOEXEC);
+  assert(fd>=0&&write(fd,bytes,length)==(ssize_t)length&&lseek(fd,0,SEEK_SET)==0);
+  int result=np_managed_cgroup_read_v1(fd,group);
+  close(fd);
+  return result;
+}
+static void cgroup_data_contract(void) {
+  /* Red: the old whole-file comparison refuses a healthy mixed hierarchy,
+   * or a prefix read/NUL accepts incomplete, ambiguous or foreign DATA.
+   * These actual decoder/descriptor reads construct no Root success. */
+  const char *group="/system.slice/native-original-data.scope";
+  const char *valid[]={"0::/system.slice/native-original-data.scope\n",
+    "1:name=systemd:/\n0::/system.slice/native-original-data.scope\n",
+    "0::/system.slice/native-original-data.scope\n2:cpu,cpuacct:/\n1:name=systemd:/init.scope\n"};
+  for(size_t i=0;i<sizeof valid/sizeof *valid;i++){
+    assert(!np_managed_cgroup_bytes_v1(valid[i],strlen(valid[i]),group));
+    assert(!cgroup_data_read(valid[i],strlen(valid[i]),group));
+  }
+  const char *invalid[]={"", "1:name=systemd:/system.slice/native-original-data.scope\n",
+    "0::/system.slice/native-original-data.scope\n0::/system.slice/native-original-data.scope\n",
+    "0::/system.slice/native-original-data.scope\n0::/\n",
+    "0::/\n0::/system.slice/native-original-data.scope\n",
+    "1:name=systemd:/system.slice/native-original-data.scope\n0::/foreign.scope\n",
+    "0::/system.slice/native-original-data.scope/payload\n",
+    "0::/system.slice/native-original-data.scope.other\n",
+    "0::/system.slice/../system.slice/native-original-data.scope\n",
+    "0:name=systemd:/system.slice/native-original-data.scope\n",
+    "0::\n", "0::relative\n", "00::/system.slice/native-original-data.scope\n",
+    "1::/\n0::/system.slice/native-original-data.scope\n",
+    "1:cpu,,cpuacct:/\n0::/system.slice/native-original-data.scope\n",
+    "1:cpu,:/\n0::/system.slice/native-original-data.scope\n",
+    "1:name=:/\n0::/system.slice/native-original-data.scope\n",
+    "1:name=systemd\n0::/system.slice/native-original-data.scope\n",
+    "0::/system.slice/native-original-data.scope\n\n",
+    "0::/system.slice/native-original-data.scope\r\n",
+    "0::/system.slice/native-original-data.scope", /* Truncated final row. */
+    "0::/system.slice/native-original-data.scope\n1:name=systemd"};
+  for(size_t i=0;i<sizeof invalid/sizeof *invalid;i++){
+    assert(np_managed_cgroup_bytes_v1(invalid[i],strlen(invalid[i]),group)==-1);
+    assert(cgroup_data_read(invalid[i],strlen(invalid[i]),group)==-1);
+  }
+  const char nul[]="0::/system.slice/native-original-data.scope\n\0hidden\n";
+  assert(np_managed_cgroup_bytes_v1(nul,sizeof nul-1,group)==-1);
+  assert(cgroup_data_read(nul,sizeof nul-1,group)==-1);
+  assert(np_managed_cgroup_bytes_v1(valid[0],strlen(valid[0]),"/system.slice/other.scope")==-1);
+  assert(np_managed_cgroup_read_v1(-1,group)==-1);
+  /* A full buffer is admissible only after the original descriptor EOF. */
+  unsigned char capacity[NP_MANAGED_CGROUP_BYTES];
+  size_t at=strlen(valid[0]);memcpy(capacity,valid[0],at);
+  const char named[]="1:name=systemd:/";
+  memcpy(capacity+at,named,sizeof named-1);at+=sizeof named-1;
+  memset(capacity+at,'x',sizeof capacity-at);capacity[sizeof capacity-1]='\n';
+  assert(!np_managed_cgroup_bytes_v1(capacity,sizeof capacity,group));
+  assert(!cgroup_data_read(capacity,sizeof capacity,group));
+  unsigned char large[NP_MANAGED_CGROUP_BYTES+64];
+  size_t used=strlen(valid[0]);memcpy(large,valid[0],used);
+  const char supplement[]="1:name=systemd:/\n";
+  while(used<=NP_MANAGED_CGROUP_BYTES){
+    memcpy(large+used,supplement,sizeof supplement-1);used+=sizeof supplement-1;
+  }
+  assert(np_managed_cgroup_bytes_v1(large,used,group)==-1);
+  assert(cgroup_data_read(large,used,group)==-1);
+}
 int main(int argc,char **argv) {
   fixture_end=now()+4*NP_ORIGIN_SECOND;
   /* Test-only real orphaned pipe holder: the MTS runner must bound this
@@ -61,6 +126,8 @@ int main(int argc,char **argv) {
   }
   assert(argc==1);
   alarm(6);
+  fputs("gate-stage: cgroup-membership-DATA\n",stderr);
+  cgroup_data_contract();
   pid_t parent=getpid();
   fputs("gate-stage: robust-owner-death\n",stderr);
   /* Red if the selected actual fork path loses robust owner-death state or

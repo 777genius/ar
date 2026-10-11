@@ -19,6 +19,7 @@ export * from "./file-backend-codex-worker";
 export * from "./node-process-runner";
 export * from "./observability";
 export * from "./project-integration-mcp";
+export { enterScratchPrivateMountNamespace, hostNamespaceInvocation, launchTmuxInHostNamespace } from "./scratch-mount-namespace";
 export * from "./temp-workspace";
 export * from "./application/project-control/codex-goal-consumed-output-ledger-epoch";
 export * from "./application/project-control/codex-goal-legacy-job-summary-retirement";

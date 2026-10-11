@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mapManagedGoalLayout } from "./managed-goal-admission";
+import { enterScratchPrivateMountNamespace, isScratchHelpInvocation } from "./scratch-mount-namespace";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
 import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-reference";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
@@ -920,6 +921,7 @@ const defaultIo: CodexGoalCliIo = {
 };
 
 if (await isMainModule()) {
+  if (!isScratchHelpInvocation(process.argv.slice(2))) enterScratchPrivateMountNamespace();
   installBrokenPipeHandlers();
   process.exitCode = await runCodexGoalCli();
 }

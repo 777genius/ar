@@ -1,12 +1,14 @@
+import { HostedMimoProfile } from "./hosted-mimo-profile";
+import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome } from "./hosted-mimo-coding-proxy-material";
 import { readTaskGoalObjective, readTaskManagedRunId } from "./codex-task-metadata";
 import { snapshotSessionUpdate } from "./codex-session-update-snapshot";
 import { SessionExecutionUseDisposition } from "@vioxen/subscription-runtime/core";
 import { safeNativeWebFromError } from "./app-server/domain/app-server-usage-error";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
-import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained } from "./hosted-mimo-worker-origin";
+import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained, assertHostedMimoCodingWorkerHomeRetained, readHostedMimoWorkerProfileOrigin } from "./hosted-mimo-worker-origin";
 import { join } from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import {
   assertProviderTaskSystemPrompt,
   type AgentDriver,
@@ -48,7 +50,6 @@ import {
   sessionArtifactHash,
 } from "./codex-session-materializer";
 import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
-import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import {
   CodexApiKeyCredentialMissingError,
   codexApiKeyCredentialIdentity,
@@ -114,6 +115,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   readonly #pendingReleases = new Map<CodexMaterializedSession, Promise<void>>();
   readonly #materializations = new Set<Promise<CodexMaterializedSession>>();
   readonly #activeRuns = new Set<Promise<ProviderTaskResult>>();
+  readonly #codingProxyOwner = new HostedMimoCodingProxyOwner();
   readonly #activeManagedResumes = new Set<string>();
   readonly #managedRunFinalizations = new Map<string,{readonly session:CodexMaterializedSession;result?:Extract<ProviderTaskResult,{status:"failed"}>;pending?:Promise<Extract<ProviderTaskResult,{status:"failed"}>>;completion?:Promise<void>}>();
   readonly #terminalSessions = new Map<SessionExecutionUse,{readonly session:CodexMaterializedSession;readonly previous:SessionArtifact;readonly redactor:RedactorPort;readonly original:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>;result?:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>;pending?:Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>>;released?:true}>();
@@ -421,21 +423,22 @@ export class CodexJsonAgentDriver implements AgentDriver {
           redactor: input.redactor,
         });
     const egressPolicy = codexMimoTokenPlanEgressPolicy();
-    const workerOrigin = hosted ? readHostedMimoWorkerOrigin() : null;
-    const tempRoot = workerOrigin
-      ? await mkdtemp(join(workerOrigin.homeRoot, "mimo-"))
-      : await createCodexRuntimeTempRoot({
-      prefix: "subscription-runtime-codex-mimo-",
-      ...(this.#sourceEnv === undefined ? {} : { sourceEnv: this.#sourceEnv }),
-    });
+    const profileOrigin = hosted ? readHostedMimoWorkerProfileOrigin() : null;
+    if (profileOrigin?.profile === HostedMimoProfile.CodingV1 && !this.#executionLifetime) throw new Error("hosted_mimo_coding_lifetime_required");
+    const codingMaterial = profileOrigin?.profile === HostedMimoProfile.CodingV1 && this.#executionLifetime
+      ? await this.#codingProxyOwner.acquire({ model: this.#model, origin: profileOrigin.origin, envKeyName: this.#mimoApiKeyEnvVarName, lifetime: this.#executionLifetime, redactor: input.redactor }) : null;
+    const workerOrigin = profileOrigin?.origin ?? null;
+    const tempRoot = await allocateHostedMimoAdmissionHome(workerOrigin, codingMaterial, this.#sourceEnv);
     const home = join(tempRoot, "home");
     const codexHome = join(tempRoot, "codex-home");
     const localSession: CodexMaterializedSession = {
       home, codexHome, env: {},
       release: once(async () => {
+        await codingMaterial?.close();
         if (workerOrigin && this.#options.mimoHomeLifecycle) {
           await this.#options.mimoHomeLifecycle.retainHome(codexHome);
-          assertHostedMimoWorkerHomeRetained(codexHome);
+          if (codingMaterial) assertHostedMimoCodingWorkerHomeRetained(codingMaterial.origin, codexHome);
+          else assertHostedMimoWorkerHomeRetained(codexHome);
           return; // The outside owner reconciles service namespaces and retained storage.
         }
         if (this.#executionLifetime) {
@@ -457,7 +460,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
       this.#executionLifetime?.assertActive();
       if (workerOrigin) await this.#options.mimoHomeLifecycle?.prepareHome(codexHome);
       this.#executionLifetime?.assertActive();
-      await writeFile(
+      if (!codingMaterial) await writeFile(
         join(codexHome, "config.toml"),
         this.#mimoConfigToml ??
           codexJsonHomeConfigToml({
@@ -483,6 +486,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
           get: () => {
             this.#executionLifetime?.assertActive();
             this.#options.assertProviderAdmission?.();
+            if (codingMaterial) {
+              codingMaterial.assertCurrent();
+              return codingMaterial.capability;
+            }
             const credential = resolveAuthorizedHostedMimoCredential(input.redactor);
             this.#executionLifetime?.assertActive();
             return credential;
@@ -491,7 +498,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
       }
       return {
         ...localSession,
-        sessionHash: credential ? codexApiKeyCredentialIdentity(credential) : "mimo:shared-source",
+        sessionHash: codingMaterial ? `mimo:coding-start:${codingMaterial.origin.digest}` : credential ? codexApiKeyCredentialIdentity(credential) : "mimo:shared-source",
         env,
         // No snapshotSession: MiMo never refreshes and never updates its
         // credential from a completed run.
@@ -899,6 +906,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
 
   async dispose(): Promise<void> {
     this.#disposed = true;
+    this.#codingProxyOwner.revoke();
     this.#executionLifetime?.close();
     if (this.#executionLifetime && this.#resourcesDisposed) return;
     if (this.#disposing) return await this.#disposing;
@@ -912,9 +920,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
     if (!this.#executionLifetime) return await this.#disposeOrdinary();
     // The engine owns startup flights and failed process cleanup. Never erase
     // their configuration/home before its disposal succeeds.
+    await this.#codingProxyOwner.close();
     await this.#engine.dispose?.();
     if (this.#materializations.size || this.#pendingReleases.size || (this.#executionLifetime && this.#activeRuns.size)) throw new Error("codex_driver_materialization_pending");
-    if (!(this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && this.#options.mimoHomeLifecycle && readHostedMimoWorkerOrigin()) &&
+    if (!(this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && this.#options.mimoHomeLifecycle && (this.#codingProxyOwner.retained || readHostedMimoWorkerOrigin())) &&
         this.#executionLifetime && (!this.#executionLifetime.childBudget ||
         (this.#sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") &&
         ([...this.#retainedSessions].some(session => !this.#unusedSessions.has(session)) || this.#managedRunSessions.size)) {
