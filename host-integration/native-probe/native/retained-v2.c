@@ -1,5 +1,9 @@
 #define _GNU_SOURCE
 #include "retained-v2.h"
+#ifdef NP_RETAINED_V2_B1A
+#include "retained-v2-actors.h"
+#include "root-managed-launch.h"
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -29,6 +33,10 @@ struct np_retained_v2 {
   char target[65], resource[65], association[65], obligation[65];
   uint64_t sequence, epoch, creation_epoch;
   bool slots, dispatched, retained, adopted, closed, uncertain;
+#ifdef NP_RETAINED_V2_B1A
+  bool actor_context_taken;
+  struct np_managed_original *references;
+#endif
 };
 static struct np_retained_v2 *original;
 static const char *const namespaces[NP_V2_RECORDS] = {
@@ -113,7 +121,7 @@ int np_retained_v2_create(struct np_root_origin *origin, struct np_retained_v2 *
   v->fragment.file = -1; v->manager_socket = -1;
   if (np_origin_retained_context_v2(origin, &v->context)) goto fail;
   const unsigned char *fund = (const unsigned char *)v->context.funded_bytes;
-  if (v->context.funded_length < 276 || memcmp(fund, "NPV2FD01", 8)) goto fail;
+  if (v->context.funded_length < 276 || memcmp(fund, NP_V2_FUND_MAGIC, 8)) goto fail;
   char *fields[] = { v->target, v->resource, v->association, v->obligation };
   for (unsigned i = 0; i < 4; i++) {
     memcpy(fields[i], fund + 20 + i*64, 64); fields[i][64] = 0;
@@ -153,6 +161,21 @@ int np_retained_v2_create(struct np_root_origin *origin, struct np_retained_v2 *
   *out = v; return 0;
 fail: v->uncertain = true; return -1;
 }
+#ifdef NP_RETAINED_V2_B1A
+int np_retained_v2_actor_context(struct np_retained_v2 *v,struct np_actor_context *out) {
+  if(!out || member(v) || !v->adopted || v->actor_context_taken || np_origin_retained_lock_v2(v->origin))return -1;
+  int failed=0;
+  for(unsigned i=0;i<NP_V2_RECORDS;i++)if(!v->records[i].committed || np_v2_file_verify(&v->records[i].body) || np_v2_file_verify(&v->records[i].events))failed=1;
+  if(!failed && (np_resource_pair_check_v1(&v->pair) || np_fragment_verify_v1(&v->fragment) || np_birth_associate_v1(v->context.clock,&v->manager_birth) || np_manager_current_v2(v->manager) || np_origin_effect_check_v1(v->origin,false,v->context.ends->work)))failed=1;
+  if(!failed && np_manager_actor_observer_v2(v->manager,v->records[2].digest))failed=1;
+  if(!failed){
+    v->actor_context_taken=true;
+    *out=(struct np_actor_context){.origin=v->origin,.original=v->context,.resources=&v->pair,.fragment=&v->fragment,.resource_manager=v->manager,.manager=&v->manager_birth,.references=v->references};
+    memcpy(out->reservation,v->records[2].digest,sizeof out->reservation);memcpy(out->slice,v->pair.slice,sizeof out->slice);
+  }
+  np_origin_retained_unlock_v2(v->origin);return failed?-1:0;
+}
+#endif
 static int manager_connect(struct np_retained_v2 *v) {
   struct np_directory *parent = &v->manager_socket_parent;
   struct stat named;
@@ -176,10 +199,19 @@ static int manager_connect(struct np_retained_v2 *v) {
   }
   struct stat after;
   if (np_directory_check_v1(parent) || fstatat(np_directory_fd_v1(parent), "private", &after, AT_SYMLINK_NOFOLLOW) || after.st_dev != named.st_dev || after.st_ino != named.st_ino || member(v) || np_manager_connect_v1(&v->manager, socket_fd, &v->manager_birth, &v->gate, v->resource, v->context.ends->generation, 1024)) goto done;
+#ifdef NP_RETAINED_V2_B1A
+  if(np_origin_retained_reference_open_v2(v->origin,&v->references,&v->manager_birth))goto done;
+#endif
   result = 0;
 done: return result; /* Both original socket and all pinned parents remain owned. */
 }
 static int request(struct np_retained_v2 *v, enum np_manager_step step) {
+#ifdef NP_RETAINED_V2_B1A
+  if(step==NP_SLICE_REF || step==NP_TARGET_REF){
+    if(member(v) || !v->references || np_manager_reference_v2(v->manager,step,v->origin,v->references,v->resource)){v->uncertain=true;return -1;}
+    return 0;
+  }
+#endif
   if (member(v) || np_origin_retained_lock_v2(v->origin)) return -1;
   /* The stock manager owns one original request slot for each fixed step. */
   v->dispatched = true;

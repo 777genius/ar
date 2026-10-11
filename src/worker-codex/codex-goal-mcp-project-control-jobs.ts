@@ -197,6 +197,7 @@ export async function projectControlRefillWorkerView(
     throw new Error("project_control_child_boundary_denied");
   }
   const accounts = await projectControlRefillAccountNames({
+    ...(requested.modelBackend === undefined ? {} : { modelBackend: requested.modelBackend }),
     ...(requested.authRootDir === undefined
       ? {}
       : { authRootDir: requested.authRootDir }),

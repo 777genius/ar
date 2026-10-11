@@ -3,10 +3,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fstatSync, constants, closeSync, writeSync, fsyncSync, readSync, ftruncateSync } from 'node:fs';
 import { mkdir, lstat, open, readlink } from 'node:fs/promises';
-import { requireFinalJobStorage, requireAcquiredStoragePin } from '../host-jobs/storage-policy.mjs';
+import { requireFinalJobStorage, requireAcquiredStoragePin, MINIMUM_FREE_BYTES, MINIMUM_FREE_INODES } from '../host-jobs/storage-policy.mjs';
 import { managedBootstrap } from './launch.mjs';
+import { prepareScratchPressureGuard, ScratchPressureError } from './storage-pressure-guard.mjs';
 
 export const PAYLOAD_GUARD_PATH = '/opt/subscription-runtime/managed-launcher/payload-guard.mjs';
+const pressureGuards = new WeakMap();
 /** Namespace authority is a string identity, never a Buffer/encoding operation.
  * @param {string} path
  */
@@ -127,19 +129,19 @@ export async function openJobLogs(directory, unit, device, probe = { mkdir, lsta
 // namespace. A missing external mount must never expose a root-backed cwd.
 export async function runGuardedPayload(args, { cwd = process.cwd(), admit = requireFinalJobStorage, launch = spawn,
   fstat = fd => fstatSync(fd, { bigint: true }),
-  owner = async () => BigInt(process.geteuid()), jobId, jobUnit, logs = openJobLogs } = {}) {
+  owner = async () => BigInt(process.geteuid()), jobId, jobUnit, logs = openJobLogs,
+  pressure = prepareScratchPressureGuard, forceExit = () => process.exit(70) } = {}) {
   if (!Array.isArray(args) || !args[0]?.startsWith('/') || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) {
     throw new Error('managed payload: invalid command');
   }
   const expectedUid = await owner();
   const { layout, device } = await admit({ cwd, jobId });
+  let handles = [];
+  let stdio = 'inherit';
   if (jobUnit !== undefined) {
-    const handles = await logs(layout.payloadLogs, jobUnit, device, undefined, expectedUid);
-    try { return launch(args[0], args.slice(1), { cwd, stdio: ['ignore', ...handles.map(handle => handle.fd)] }); }
-    // spawn duplicates the descriptors synchronously. Do not await close here:
-    // the caller must attach child error listeners before the next I/O turn.
-    finally { void Promise.all(handles.map(handle => handle.close())).catch(() => {}); }
-  }
+    handles = await logs(layout.payloadLogs, jobUnit, device, undefined, expectedUid);
+    stdio = ['ignore', ...handles.map(handle => handle.fd)];
+  } else {
   // These are the only inherited descriptors: spawn closes every other FD.
   // Bound the check to actual payload inheritance, never scan the job tree.
   for (const fd of [0, 1, 2]) {
@@ -149,7 +151,23 @@ export async function runGuardedPayload(args, { cwd = process.cwd(), admit = req
       throw new Error('managed payload: output outside external storage');
     }
   }
-  return launch(args[0], args.slice(1), { cwd, stdio: 'inherit' });
+  }
+  // Keep the validated job stderr descriptor for a finite, sanitized pressure
+  // reason. The outer job service intentionally discards its own stderr.
+  const report = reason => writeSync(handles[1]?.fd ?? 2, `managed payload: ${reason}\n`);
+  const closeLogs = () => { void Promise.all(handles.map(handle => handle.close())).catch(() => {}); };
+  let guard;
+  try {
+    guard = await pressure({ directory: layout.jobRoot, device, uid: expectedUid,
+      minimumBytes: MINIMUM_FREE_BYTES, minimumInodes: MINIMUM_FREE_INODES, report, forceExit });
+    const child = launch(args[0], args.slice(1), { cwd, stdio });
+    guard.attach(child); pressureGuards.set(child, guard);
+    child.once('exit', closeLogs); child.once('error', closeLogs);
+    return child;
+  } catch (error) {
+    if (error instanceof ScratchPressureError) { try { report(error.reason); } catch { /* Full filesystem. */ } }
+    guard?.close(); closeLogs(); throw error;
+  }
 }
 
 async function main() {
@@ -176,7 +194,8 @@ function supervise(child) {
   child.once('error', () => { cleanup(); process.exitCode = 70; });
   child.once('exit', (code, signal) => {
     cleanup();
-    if (signal) process.kill(process.pid, signal);
+    if (pressureGuards.get(child)?.reason) process.exit(70);
+    else if (signal) process.kill(process.pid, signal);
     else process.exitCode = code ?? 70;
   });
 }

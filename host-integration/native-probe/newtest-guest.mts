@@ -6,6 +6,7 @@ import { retainedResourceDigest } from "../../src/core/scoped-retained-resource-
 import { assembleNewtest, digest, durable, measured, nativeInstallation, verifyTree } from "./assemble-newtest.mjs";
 import { boundedCommand, NewtestCommandFailure, type CommandResult, type CommandCustody } from "./newtest-bootstrap.mjs";
 import { originalA0Inventory, originalA0Profile } from "./root-origin-operator.mjs";
+import { isNewtestGuestCgroup } from "./newtest-cgroup.mjs";
 const artifact="/opt/native-newtest/artifact",node="/opt/subscription-runtime/runtime/node",state="/var/lib/native-newtest";
 interface GuestConfig {readonly version:1;readonly kind:"NativeOriginalNewtestGuest";readonly name:string;readonly machineId:string;readonly sourceCommit:string;readonly artifactDigest:string;readonly timeNamespace:string;readonly preparationEndNs:string;readonly cleanupEndNs:string}
 const minimum=(a:bigint,b:bigint):bigint=>a<b?a:b;
@@ -52,7 +53,7 @@ export async function ordinaryRefusal():Promise<void>{
 function readGuestConfig():GuestConfig{
   const c=JSON.parse(measured("/etc/native-newtest.json",16384).toString()) as GuestConfig;
   if(c.version!==1||c.kind!=="NativeOriginalNewtestGuest"||!/^sr-native-newtest-[a-f0-9]{16}$/.test(c.name)||!/^[a-f0-9]{32}$/.test(c.machineId)||!/^[a-f0-9]{40}$/.test(c.sourceCommit)||!/^[a-f0-9]{64}$/.test(c.artifactDigest)||!/^time:\[[0-9]+\]$/.test(c.timeNamespace)||![c.preparationEndNs,c.cleanupEndNs].every(n=>/^[1-9][0-9]{0,18}$/.test(n)))throw new Error("wrong original guest config");
-  if(process.argv.length!==2||process.getuid?.()!==0||process.getgid?.()!==0||readFileSync("/etc/machine-id","utf8").trim()!==c.machineId||readFileSync("/etc/hostname","utf8").trim()!==c.name||readFileSync("/proc/1/comm","utf8").trim()!=="systemd"||readFileSync("/run/systemd/container","utf8").trim()!=="systemd-nspawn"||readlinkSync("/proc/self/ns/time")!==c.timeNamespace||readlinkSync("/proc/self/ns/time_for_children")!==c.timeNamespace||readFileSync("/proc/self/cgroup","utf8").trim()!=="0::/system.slice/native-newtest.service")throw new Error("not original private NEWTEST guest");
+  if(process.argv.length!==2||process.getuid?.()!==0||process.getgid?.()!==0||readFileSync("/etc/machine-id","utf8").trim()!==c.machineId||readFileSync("/etc/hostname","utf8").trim()!==c.name||readFileSync("/proc/1/comm","utf8").trim()!=="systemd"||readFileSync("/run/systemd/container","utf8").trim()!=="systemd-nspawn"||readlinkSync("/proc/self/ns/time")!==c.timeNamespace||readlinkSync("/proc/self/ns/time_for_children")!==c.timeNamespace||!isNewtestGuestCgroup(readFileSync("/proc/self/cgroup","utf8")))throw new Error("not original private NEWTEST guest");
   // No caller path can bind a real host project/control socket into the guest.
   const mounts=readFileSync("/proc/self/mountinfo","utf8");
   if(mounts.split("\n").some(line=>{const fields=line.split(" ");return ["/opt","/run/dbus","/run/user","/var/lib/subscription-runtime-host-policy"].includes(fields[4]??"");}))throw new Error("foreign guest bind");

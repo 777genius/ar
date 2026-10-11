@@ -544,6 +544,8 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
           throw new Error("task finished before worker.run entered");
         }),
       ]);
+      expect(aborted).toBe(false);
+      expect(disposed).toBe(false);
       await vi.advanceTimersByTimeAsync(5);
       const exitCode = await execution;
 
