@@ -25,6 +25,7 @@ import { readEvictRestoreReady, readEvictRestoreAbsent, assertPathAbsent, assert
   assertSameRootFinalGateRestore, assertSameRootReadonlyFinalGateRestore } from "./current-evict-restore-readback.js";
 import { command, node, runtime, directory, json } from "./common.ts";
 import { FullH1Case, captureOriginalH1Checkpoint, requestOriginalH1 } from "./current-removal-h1-fixture.js";
+import { captureCompletedRuntimePreservation } from "./current-result-preservation-TEST.js";
 const policyPath="/var/lib/subscription-runtime-host-policy/dependency-retention-policy.json";
 export enum EvictRestorePhase { Cold="cold", Hot="hot", RootPolicyInput="root_policy_input", Evict="evict",
   Provenance="provenance_before_unlink", Remove="committed_trash_remove", Restore="same_root_final_gate_restore", Close="close" }
@@ -91,7 +92,7 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
     // Remove while original owner is released RetiredEvicting, BEFORE new Active
     // generation. The existing global legacy-writer denial is left intact.
     progress(EvictRestorePhase.Remove);
-    if(removalCase===FullH1Case.ParentCrash){captureOriginalH1Checkpoint(roots,sentinels,proof);await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
+    if(removalCase===FullH1Case.ParentCrash){captureOriginalH1Checkpoint(roots,sentinels,proof,await captureCompletedRuntimePreservation(roots,hot.result));await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
     const removed=await store.removeDependencyCommittedTrash(roots.candidateJobId,proof.absent.receipt.revision);
     assert.equal(removalCase,FullH1Case.Positive,"TEST_H1_original_parent_not_killed_at_proven_boundary_HOLD");
     assert.equal(removed.outcome,HostedDependencyTransactionOutcome.TrashRemoved);

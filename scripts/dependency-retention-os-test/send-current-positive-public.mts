@@ -19,7 +19,7 @@ function verify(h:Input):void{check(h);const b=Buffer.alloc(1024*1024),sha=creat
 const args=process.argv.slice(2),status=args[0]==='--status';fact(args.length===(status?3:2),'argv');const pin=args[status?1:0]!,cellPin=args[status?2:1]!;fact(/^[a-f0-9]{64}$/.test(pin),'delivery_pin');
 const delivery=open(BASE+'/delivery.json',pin,16384),bytes=fs.readFileSync(delivery.fd),d=JSON.parse(bytes.toString()) as {files:{name:string;bytes:number;sha256:string}[]};
 const cell=open(dirname(fileURLToPath(import.meta.url))+'/'+(status?'inspect':'bootstrap')+'-current-positive-public.mts',cellPin,2*1024**2),source=fs.readFileSync(cell.fd).toString('utf8');
-const remote=['/usr/bin/sudo','-n','--','/usr/bin/env','-i','--chdir=/','PATH=/usr/bin:/bin','LANG=C','LC_ALL=C','HOME=/srv/workers','TMPDIR=/srv/workers',NODE,'--input-type=module-typescript','--eval',source,pin].map(quote).join(' ');
+const remote=['/usr/bin/sudo','-n','--','/usr/bin/env','-i','--chdir=/','PATH=/usr/bin:/bin','LANG=C','LC_ALL=C','HOME=/srv/workers','TMPDIR=/srv/workers','/bin/sh','-c','ulimit -Sn 65536 && exec "$@"','--',NODE,'--input-type=module-typescript','--eval',source,pin].map(quote).join(' ');
 let primary=false;
 try{
  const key=spawnSync('/usr/bin/ssh-keygen',['-F','176.9.7.209','-f','/Users/belief/.ssh/known_hosts'],{encoding:'utf8',timeout:5000,maxBuffer:65536,stdio:['ignore','pipe','pipe']});fact(!key.error&&!key.signal&&key.status===0,'known_host_lookup');const keys=key.stdout.split('\n').filter(line=>!line.startsWith('#')&&line.split(/\s+/)[1]==='ssh-ed25519');fact(keys.length===1&&'SHA256:'+createHash('sha256').update(Buffer.from(keys[0]!.split(/\s+/)[2]!,'base64')).digest('base64').replace(/=+$/,'')==='SHA256:Gk6uGoQOgblNFYao/ItTapfVtkR05X0MUBIpwxXoTWQ','expected_host_key');
