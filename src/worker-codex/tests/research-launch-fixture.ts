@@ -206,7 +206,8 @@ vi.mock("node:child_process", async original => {
       // check runner while dropping inherited credentials and Node preload flags.
       return real.spawn(command, argv, { ...options, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
     }
-    const batch = command === "git" && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch";
+    const batch = command === "git" && ((argv.length === 2 && argv.join("\0") === "cat-file\0--batch") ||
+      (argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch"));
     const apply = command === "git" && argv.length === 9 &&
       argv.slice(0, 4).join("\0") === "--literal-pathspecs\0-c\0core.quotepath=false\0-C" &&
       argv.slice(5).join("\0") === "apply\0--cached\0--whitespace=nowarn\0-";
