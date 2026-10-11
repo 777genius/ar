@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend } from "../provider-codex/codex-model-backend";
 import { codexGoalObjectiveMaxChars } from "./codex-goal-jobs";
 import { CODEX_GOAL_EXECUTION_ENGINE_SCHEMA } from "./codex-goal-mcp-decision-contracts";
 import {
@@ -22,6 +22,7 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     jobId: z.string().optional(),
     configPath: z.string().optional(),
     jobRootDir: z.string().optional(),
+    durableHandoffRootDir: z.string().optional(),
     authRootDir: z.string().optional(),
     stateRootDir: z.string().optional(),
     workspacePath: z.string().optional(),
