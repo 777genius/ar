@@ -247,6 +247,7 @@ function retainOriginalH1ObserverInputs(parent:originalProfile.FullParentSession
 /** Query program stays fixed SOURCE and performs no fanotify work before the
  * constructor consumes actual private query attribution and closes its gates. */
 const stagedQuery=String.raw`
+print('python_fixture:'+json.dumps({'executable':sys.executable,'prefix':sys.prefix,'execPrefix':sys.exec_prefix,'path':sys.path,'isolated':sys.flags.isolated,'noSite':sys.flags.no_site,'dontWriteBytecode':sys.dont_write_bytecode,'cache':sys.pycache_prefix,'origArgv':sys.orig_argv[:7],'modules':sorted([[name,getattr(getattr(module,'__spec__',None),'origin',None)] for name,module in sys.modules.items() if name!='__main__'])},separators=(',',':')),flush=True)
 qr,qw=os.pipe();er,ew=os.pipe();ar,aw=os.pipe()
 query=os.fork()
 if query==0:

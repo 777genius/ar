@@ -1,3 +1,4 @@
+import {H1ConstructorHeld,h1HeldError,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
 import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
 import { managedSystemdRunExecutable, fullPositiveTestRoot, fullPositiveTestJob, fullPositiveTestEntry, parseNativeUnitProperties } from "./launch.mjs";
 import {H1CatalogKind,H1MountOrigin,H1StagedSlotState,H1StagedActorRole,h1StagedObserverBootstrap,h1StagedSubjectData,retainH1StagedCatalogData,requireQualifiedH1StagedConstructor,type H1StagedSubject,type H1StagedObserverPrepared} from "./dependency-full-h1-staged-tools-TEST.js";
@@ -16,6 +17,10 @@ const fullPositiveTestCohort = Object.freeze([
   ["host-jobs/full-positive-manager-TEST.mjs", "host-jobs/full-positive-manager-TEST.mjs"],
   ["managed-launcher/dependency-full-native-TEST.js", "managed-launcher/dependency-full-native-TEST.mjs"],
   ["managed-launcher/dependency-full-h1-staged-tools-TEST.js", "managed-launcher/dependency-full-h1-staged-tools-TEST.js"],
+  ["managed-launcher/dependency-full-h1-constructor-closure-TEST.js", "managed-launcher/dependency-full-h1-constructor-closure-TEST.js"],
+  ["managed-launcher/dependency-full-h1-rooted-reader-TEST.js", "managed-launcher/dependency-full-h1-rooted-reader-TEST.js"],
+  ["managed-launcher/dependency-full-h1-elf-role-TEST.js", "managed-launcher/dependency-full-h1-elf-role-TEST.js"],
+  ["managed-launcher/dependency-full-python-envelope-TEST.js", "managed-launcher/dependency-full-python-envelope-TEST.js"],
   ["managed-launcher/dependency-full-positive-copy-TEST.js", "managed-launcher/dependency-full-positive-copy-TEST.js"],
 ] as const);
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
@@ -558,7 +563,7 @@ export function readFullPositiveStartedHeld(){const c=acquire(),birthPins=new Pi
     const processJoin=()=>{
       const stat=readFileSync(held+"/stat","utf8"),end=stat.lastIndexOf(") "),parts=stat.slice(end+2).trim().split(/\s+/);
       check(end>0 && stat.startsWith(u.MainPID+" (") && parts[19]===a.startTicks && !["Z","X","x"].includes(parts[0]??""));
-      check(readlinkSync(held+"/exe")===c.tuple.node && readFileSync(held+"/cmdline").equals(Buffer.from([...argvFor(c),""].join("\0"))) && readFileSync(held+"/cgroup","utf8").trim()==="0::"+fullNativeControlGroup);
+      check(readlinkSync(held+"/exe")===c.tuple.node && readFileSync(held+"/cmdline").equals(Buffer.from([...argvFor(c),""].join("\0"))));checkH1OwnedCgroupData(readFileSync(held+"/cgroup","utf8"),fullNativeControlGroup);
       check(readlinkSync(held+"/ns/user")==="user:[4026531837]" && readlinkSync(held+"/ns/pid")==="pid:[4026531836]" && readlinkSync(held+"/ns/mnt")===selectedMount);
       const fd=openSync(held+"/exe",constants.O_RDONLY);try{const actual=fstatSync(fd);check(actual.dev===executable.dev && actual.ino===executable.ino);}finally{closeSync(fd);}
     };
@@ -618,7 +623,7 @@ export function retainFullNativeLaunch(request:unknown){
           const raw=readFileSync(held+"/stat","utf8"),end=raw.lastIndexOf(") "),parts=raw.slice(end+2).trim().split(/\s+/),ticks=parts[19];
           check(end>0 && raw.startsWith(values.MainPID+" (") && !["Z","X","x"].includes(parts[0]??"") && /^[1-9][0-9]*$/.test(ticks??""));
           check(readlinkSync(held+"/exe")===c.tuple.node && readFileSync(held+"/cmdline").equals(Buffer.from([...argvFor(c),""].join("\u0000"))));
-          check(readFileSync(held+"/cgroup","utf8").trim()==="0::"+fullNativeControlGroup);
+          checkH1OwnedCgroupData(readFileSync(held+"/cgroup","utf8"),fullNativeControlGroup);
           check(readlinkSync(held+"/ns/user")==="user:[4026531837]" && readlinkSync(held+"/ns/pid")==="pid:[4026531836]");
           const mount=readlinkSync(held+"/ns/mnt");check(/^mnt:\[[1-9][0-9]*\]$/.test(mount) && mount!==readlinkSync("/proc/1/ns/mnt"));
           const executable=fstatSync(c.pins.hold(c.tuple.node)),exeFd=openSync(held+"/exe",constants.O_RDONLY);
@@ -735,7 +740,7 @@ export function readOriginalH1StagedTask(parent:object,task:FullMonitorTaskAncho
 
 /** The original parent's private once-only slot. Expected manifest mount IDs
  * and synthetic boot ID remain DATA; only fresh proc objects enter this slot. */
-function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSession,selectedGuest:()=>string|undefined){
+function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSession,selectedGuest:()=>string|undefined,originalDeadline:()=>bigint){
   let state=H1StagedSlotState.Unconstructed,prepared:H1StagedObserverPrepared|undefined,child:ChildProcess|undefined;
   let done:Promise<void>|undefined,worker:H1ActualActor|undefined,query:H1ActualActor|undefined;
   let querySourceSeen=false,systemctlSourceSeen=false,queryComplete=false,effectAccepted=false,queryFailure:unknown;
@@ -743,7 +748,11 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
   let guestSources:readonly Readonly<{dev:bigint;ino:bigint}>[]=[];
   let parentDead=false;const queryPipes:Readonly<{dev:bigint;ino:bigint;mode:bigint}>[]=[];
   let closePromise:Promise<void>|undefined,closing=false;
-  let lifetimeDeadline:number|undefined;
+  let lifetimeDeadline:number|undefined,absoluteDeadline:bigint|undefined,loadFacts:ReturnType<typeof retainH1ConstructorLoadFacts>|undefined;
+  let expectedWorkerCommand:Buffer|undefined;let bootstrapRoutes=false,fixtureRoutes=false;let notifyObject:Readonly<{dev:bigint;ino:bigint}>|undefined;const setupBirths=new Map<number,H1ActualActor>();const actualMountTables=new Map<string,string>();
+  const parentStatus=readFileSync("/proc/self/status","utf8");const parentCaps=["Inh","Prm","Eff","Bnd","Amb"].map(key=>{const value=new RegExp("^Cap"+key+":\\s+([0-9a-f]{16})$","m").exec(parentStatus)?.[1];check(value);return value;});
+  function remaining(){check(absoluteDeadline!==undefined);if(process.hrtime.bigint()>=absoluteDeadline-180000000000n)h1HeldError(H1ConstructorHeld.Deadline);}
+  function rejoinDeadline(){remaining();check(originalDeadline()===absoluteDeadline);remaining();}
   const validatePrepared=()=>{if(parentDead)prepared?.revalidateSources();else prepared?.revalidate();};
   const actors:H1ActualActor[]=[],owned:number[]=[],stdout=new PassThrough(),stderr=new PassThrough();
   const phases:FullH1PrearmPhase[]=[],actorFacts:FullH1PrearmActorFact[]=[];
@@ -765,7 +774,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       const monitor=c.monitorSources.map(row=>fstatSync(row.fd,{bigint:true})),staged=(c.h1Catalog?.descriptors()??[]).map(fd=>fstatSync(fd,{bigint:true}));
       const same=(a:Readonly<{dev:bigint;ino:bigint}>,b:Readonly<{dev:bigint;ino:bigint}>)=>a.dev===b.dev && a.ino===b.ino;
       const sourceObjects:Readonly<{dev:string;ino:string;source:FullH1SourceJoin}>[]=[];
-      const source=(dev:bigint,ino:bigint):FullH1SourceJoin=>{const actual={dev,ino};const join=actor.role===H1StagedActorRole.Monitor && monitor.some(row=>same(actual,row))?FullH1SourceJoin.Monitor:actor.role!==H1StagedActorRole.Monitor && actor.role!==H1StagedActorRole.Systemctl && staged.some(row=>row.isFile() && same(actual,row))?FullH1SourceJoin.Staged:actor.role===H1StagedActorRole.Systemctl && guestSources.some(row=>same(actual,row))?FullH1SourceJoin.Guest:FullH1SourceJoin.Unknown;if(join!==FullH1SourceJoin.Unknown && !sourceObjects.some(row=>row.dev===String(dev) && row.ino===String(ino))){if(sourceObjects.length<64)sourceObjects.push(Object.freeze({dev:String(dev),ino:String(ino),source:join}));else observationIncomplete=true;}return join;};
+      const source=(dev:bigint,ino:bigint):FullH1SourceJoin=>{const actual={dev,ino};const join=(actor.role===H1StagedActorRole.Monitor || actor.role===H1StagedActorRole.Setup) && monitor.some(row=>same(actual,row))?FullH1SourceJoin.Monitor:actor.role!==H1StagedActorRole.Monitor && actor.role!==H1StagedActorRole.Setup && actor.role!==H1StagedActorRole.Systemctl && staged.some(row=>row.isFile() && same(actual,row))?FullH1SourceJoin.Staged:actor.role===H1StagedActorRole.Systemctl && guestSources.some(row=>same(actual,row))?FullH1SourceJoin.Guest:FullH1SourceJoin.Unknown;if(join!==FullH1SourceJoin.Unknown && !sourceObjects.some(row=>row.dev===String(dev) && row.ino===String(ino))){if(sourceObjects.length<64)sourceObjects.push(Object.freeze({dev:String(dev),ino:String(ino),source:join}));else observationIncomplete=true;}return join;};
       const namespace=(name:string)=>{try{tick();const value=readlinkSync(base+"/ns/"+name);check(new RegExp("^"+name+":\\[[1-9][0-9]*\\]$").test(value));return value;}catch{observationIncomplete=true;return null;}};
       const namespaces=Object.freeze({mnt:namespace("mnt"),pid:namespace("pid"),user:namespace("user"),cgroup:namespace("cgroup")});
       const mounts=table(()=>{const raw=bytes("/mountinfo",256*1024),lines=raw.trimEnd().split("\n");check(raw.endsWith("\n") && lines.length<=128);
@@ -803,18 +812,29 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     check(actualBirth(base,pid).birth===first.birth);actors.push(actor);phase(FullH1PrearmPhase.ActorCaptured);return actor;
   }
   function rejoin(actor:H1ActualActor){
-    c.validate();validatePrepared();const base=`/proc/self/fd/${actor.anchor}`;
+    remaining();c.validate();validatePrepared();const base=`/proc/self/fd/${actor.anchor}`;
     check(identity(fstatSync(actor.anchor))===actor.identity && identity(statSync("/proc/"+actor.pid))===actor.identity && actualBirth(base,actor.pid).birth===actor.birth);
     check(readFileSync(base+"/cmdline").equals(actor.command) && identity(statSync(base+"/exe"))===identity(fstatSync(actor.exe)));
     check(identity(statSync(base+"/root"))===identity(fstatSync(actor.root)) && identity(statSync(base+"/ns/mnt"))===identity(fstatSync(actor.mount)));
   }
   function physicalWorker(actor:H1ActualActor){
     check(c.h1Subject && c.h1Catalog && child?.pid);rejoin(actor);const base=`/proc/self/fd/${actor.anchor}`;
+    checkH1ActorStatusData(readFileSync(base+"/status","utf8"),actor.pid,parentCaps);
     const parentGroup=readFileSync("/proc/self/cgroup","utf8"),originalMount=readlinkSync("/proc/self/ns/mnt");
-    check(parentGroup==="0::"+fullNativeControlGroup+"\n");
-    const group=readFileSync(base+"/cgroup","utf8");check((group===parentGroup || group==="0::"+fullNativeControlGroup+"/payload\n") && readlinkSync(base+"/ns/mnt")!==originalMount);
-    const monitorGroup=readFileSync("/proc/"+child.pid+"/cgroup","utf8");check(monitorGroup===parentGroup || monitorGroup==="0::"+fullNativeControlGroup+"/supervisor\n");
+    checkH1OwnedCgroupData(parentGroup,fullNativeControlGroup);
+    const group=readFileSync(base+"/cgroup","utf8");checkH1OwnedCgroupData(group,fullNativeControlGroup,fullNativeControlGroup+"/payload");check(readlinkSync(base+"/ns/mnt")!==originalMount);
+    const monitorGroup=readFileSync("/proc/"+child.pid+"/cgroup","utf8");checkH1OwnedCgroupData(monitorGroup,fullNativeControlGroup,fullNativeControlGroup+"/supervisor");
     for(const name of ["pid","user","cgroup"])check(readlinkSync(base+"/ns/"+name)===readlinkSync("/proc/self/ns/"+name));
+    const environment=readFileSync(base+"/environ");checkH1HostReleaseData(environment,c.h1Subject.hostRelease.cells);
+    if(environment.toString("utf8").split("\0").includes("NOTIFY_SOCKET=/run/systemd/nspawn/notify")){
+      const socket=statSync(base+"/root/run/systemd/nspawn/notify",{bigint:true});check(socket.isSocket() && socket.uid===0n && socket.gid===0n);
+      const monitor=actors.find(row=>row.role===H1StagedActorRole.Monitor);check(monitor);rejoin(monitor);
+      const network=readFileSync(`/proc/self/fd/${monitor.anchor}/net/unix`,"utf8");check(Buffer.byteLength(network)<=65536);
+      const records=network.trimEnd().split("\n").slice(1).map(line=>line.trim().split(/\s+/)).filter(row=>row.length===8 && row[7]==="/run/systemd/nspawn/notify");check(records.length===1 && /^[1-9][0-9]*$/.test(records[0]![6]??""));
+      const expected="socket:["+records[0]![6]+"]",names=readdirSync(`/proc/self/fd/${monitor.anchor}/fd`);check(names.length<=64);
+      const matches=names.filter(name=>readlinkSync(`/proc/self/fd/${monitor.anchor}/fd/${name}`)===expected);check(matches.length===1);const descriptor=statSync(`/proc/self/fd/${monitor.anchor}/fd/${matches[0]}`,{bigint:true});check(descriptor.isSocket() && descriptor.uid===0n);if(notifyObject)check(notifyObject.dev===descriptor.dev && notifyObject.ino===descriptor.ino);else notifyObject={dev:descriptor.dev,ino:descriptor.ino};
+      check(readFileSync(`/proc/self/fd/${monitor.anchor}/net/unix`,"utf8")===network && statSync(base+"/root/run/systemd/nspawn/notify",{bigint:true}).ino===socket.ino);rejoin(monitor);
+    }
     const rootStat=fstatSync(actor.root,{bigint:true});check(String(rootStat.dev)===c.h1Subject.rootIdentity.dev && String(rootStat.ino)===c.h1Subject.rootIdentity.ino);
     const source=c.h1Subject.catalog.find(row=>row.path==="usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2");check(source?.kind===H1CatalogKind.File);
     const exe=fstatSync(actor.exe,{bigint:true});check(String(exe.dev)===source.identity.dev && String(exe.ino)===source.identity.ino);
@@ -823,15 +843,18 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     // Actual complete mount rows, never equality with another namespace's IDs.
     const mounts=readFileSync(base+"/mountinfo","utf8");check(Buffer.byteLength(mounts)<=fullMountTableBytes);
     const allowed=new Set(["/","/proc","/proc/sys","/proc/sysrq-trigger","/proc/sys/kernel/random/boot_id","/proc/kmsg","/sys","/sys/fs/cgroup","/dev","/dev/pts","/dev/ptmx","/dev/shm","/dev/console","/run","/tmp","/run/host","/run/host/incoming"]);
-    const rows=mounts.trimEnd().split("\n");check(rows.length<=fullMountTableRows);let roots=0;const seen=new Set<string>();
+    const rows=mounts.trimEnd().split("\n");check(rows.length<=fullMountTableRows && mounts.endsWith("\n"));let roots=0;const seen=new Set<string>(),actualIds=new Set<string>();
     for(const row of rows){check(Buffer.byteLength(row)<=fullMountLineBytes);const cells=row.split(" "),at=cells.indexOf("-");check(at>=6 && cells[4] && cells[5]);
+      check(/^[1-9][0-9]*$/.test(cells[0]??"") && /^[1-9][0-9]*$/.test(cells[1]??"") && !actualIds.has(cells[0]!));actualIds.add(cells[0]!);
       const path=fullMountPath(cells[4]);check(allowed.has(path) && !seen.has(path));seen.add(path);
       const expected=c.h1Subject.mounts.find(mount=>mount.path===path);check(expected && cells[2] && cells[3] && cells[at+1] && cells[at+2]);
+      const object=statSync(base+"/root"+path,{bigint:true}),kind=object.isDirectory()?H1ApiKind.Directory:object.isFile()?H1ApiKind.Regular:object.isCharacterDevice()?H1ApiKind.Character:object.isFIFO()?H1ApiKind.Pipe:object.isSocket()?H1ApiKind.Socket:H1ApiKind.Unknown;
+      checkH1ApiObjectData(path,kind,object.uid,object.gid,object.mode);
       const flags=cells[5].split(","),expectedFlags=expected.flags.split(",");check(flags.length===expectedFlags.length && flags.every(flag=>expectedFlags.includes(flag)));
       const sourceToken=cells[at+2];check(sourceToken!==undefined && !/\\(?!040|011|012|134)/.test(sourceToken));
       const sourceLabel=sourceToken.replace(/\\(040|011|012|134)/g,(_,digits:string)=>String.fromCharCode(parseInt(digits,8)));
       check(fullMountPath(cells[3])===expected.mountRoot && cells[at+1]===expected.filesystem && sourceLabel===expected.source);
-      const propagation=cells.slice(6,at);check((propagation.length===0?"private":propagation.join(" "))===expected.propagation);
+      const propagation=cells.slice(6,at);check(!propagation.some(value=>value.startsWith("shared:") || value.startsWith("master:")));check((propagation.length===0?"private":propagation.join(" "))===expected.propagation);
       // Persisted IDs never enroll future namespaces. Stable backing devices
       // remain exact; generated/kernel devices are observed and retained in
       // this constructor's fresh namespace instead of borrowing old IDs.
@@ -839,11 +862,32 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       else check(/^[0-9]+:[0-9]+$/.test(cells[2]));
       if(path==="/"){check(flags.includes("ro"));roots++;}}
     check(roots===1 && seen.size===c.h1Subject.mounts.length && readFileSync(base+"/mountinfo","utf8")===mounts);
+    // IDs/device values come only from this retained actor's actual kernel table.
+    // Protected recipe IDs never enroll or identify the newly constructed namespace.
+    const namespace=readlinkSync(base+"/ns/mnt"),commitment=hash(mounts),priorTable=actualMountTables.get(namespace);
+    check(priorTable===undefined || priorTable===commitment);actualMountTables.set(namespace,commitment);
     // nspawn's short-lived setup is admitted only through the actual monitor's
     // causal chain; an announcement PID is never enrollment authority.
     let cursor=actor.pid;const chain=new Set<number>();
     while(cursor!==child.pid){check(chain.size<4 && !chain.has(cursor));chain.add(cursor);const actual=actualBirth("/proc/"+cursor,cursor);cursor=actual.ppid;check(cursor>1);}
     check(actualBirth("/proc/"+child.pid,child.pid).ppid===process.pid);rejoin(actor);
+  }
+  // Original-only live table read before a causal phase is released. This
+  // supplies no admission: the unconditional qualification guard stays below.
+  function checkActualActorTables(actor:H1ActualActor){
+    check(!closing && lifetimeDeadline!==undefined && performance.now()<lifetimeDeadline);
+    rejoin(actor);const base=`/proc/self/fd/${actor.anchor}`;
+    const names=readdirSync(base+"/task").sort();
+    check(names.length>0 && names.length<=32 && names.every(name=>/^[1-9][0-9]*$/.test(name)));
+    for(const name of names){
+      const path=base+"/task/"+name,tid=Number(name),birth=actualBirth(path,tid).birth;
+      const task=Object.freeze({path,processPid:actor.pid,processBirth:actor.birth,birth,revalidate(){
+        check(!closing && lifetimeDeadline!==undefined && performance.now()<lifetimeDeadline);
+        rejoin(actor);check(actualBirth(path,tid).birth===birth);
+      }});
+      check(read(task)!==undefined);
+    }
+    check(JSON.stringify(readdirSync(base+"/task").sort())===JSON.stringify(names));rejoin(actor);
   }
   function close():Promise<void>{
     if(closePromise)return closePromise;if(state===H1StagedSlotState.Closed)return Promise.resolve();
@@ -868,14 +912,27 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));absence.push({role:actor.role,pid:actor.pid,birth:actor.birth,absent:true});}}
     for(const [pid,birth] of descendants){try{check(actualBirth("/proc/"+pid,pid).birth!==birth);descendantAbsence.push({pid,birth,absent:true});}
       catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));descendantAbsence.push({pid,birth,absent:true});}}
-    prepared?.close();for(const fd of owned.reverse())closeSync(fd);owned.length=0;descriptorsClosed=true;state=H1StagedSlotState.Closed;c.validate();closeState=FullH1ObservationState.Complete;phase(FullH1PrearmPhase.Closed);
+    loadFacts?.close();prepared?.close();for(const fd of owned.reverse())closeSync(fd);owned.length=0;descriptorsClosed=true;state=H1StagedSlotState.Closed;c.validate();if(absoluteDeadline!==undefined)check(originalDeadline()===absoluteDeadline && process.hrtime.bigint()<absoluteDeadline);closeState=FullH1ObservationState.Complete;phase(FullH1PrearmPhase.Closed);
     })().catch(error=>{phase(FullH1PrearmPhase.CloseHeld);throw error;});return closePromise;
   }
   async function construct():Promise<FullH1StagedObserver>{
     assertRetainedCurrentFullParent(parent);check(!closing && state===H1StagedSlotState.Unconstructed && c.h1Subject && c.h1Catalog && c.tuple.removalCase===FullRemovalCase.ParentCrashH1);
-    state=H1StagedSlotState.Constructing;phase(FullH1PrearmPhase.Constructing);lifetimeDeadline=performance.now()+32000;
-    try{
-      const guest=selectedGuest();check(guest);c.validate();
+    state=H1StagedSlotState.Constructing;phase(FullH1PrearmPhase.Constructing);
+    try{absoluteDeadline=originalDeadline();remaining();lifetimeDeadline=performance.now()+Math.min(32000,Number(absoluteDeadline-process.hrtime.bigint()-180000000000n)/1e6);
+      const guest=selectedGuest();check(guest);c.validate();rejoinDeadline();
+      const getpath=c.h1Subject.definitions.pythonGetpath;if(typeof getpath!=="string" || !digest(getpath))return h1HeldError(H1ConstructorHeld.Getpath);
+      // Same independently issued Source/build commitment; no live Python probes can issue it.
+      try{c.pins.publicFile(c.tuple.source+"/scripts/dependency-retention-os-test/current-h1-python-getpath-source.py",getpath);}catch{h1HeldError(H1ConstructorHeld.Getpath);}
+      const rootFd=c.h1Catalog.descriptors()[0];check(rootFd!==undefined);const rootStat=fstatSync(rootFd,{bigint:true});check(String(rootStat.dev)===c.h1Subject.rootIdentity.dev && String(rootStat.ino)===c.h1Subject.rootIdentity.ino);
+      loadFacts=retainH1ConstructorLoadFacts(c.h1Subject,rootFd,lifetimeDeadline);
+      c.pins.publicFile(c.h1Subject.hostRelease.source,c.h1Subject.hostRelease.sha256);
+      for(const [definition,pin] of Object.entries(c.h1Subject.definitions)){
+        if(definition==="pythonGetpath")continue;
+        // Fixed reviewed constructor routines are delivered as exact source inputs.
+        try{c.pins.publicFile(c.tuple.source+"/scripts/dependency-retention-os-test/h1-constructor-source-"+definition+".c",pin);}catch{h1HeldError(H1ConstructorHeld.Definition);}
+      }
+
+
       const module:typeof import("../../scripts/dependency-retention-os-test/current-removal-h1-fixture.js")=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-removal-h1-fixture.js").href);
       prepared=module.prepareOriginalH1StagedObserver(parent);prepared.revalidate();
       check(prepared.anchors.length===9 && prepared.queryAnchors.length===3 && Buffer.byteLength(prepared.program)<=32768 && Buffer.byteLength(prepared.config)<=16384);
@@ -897,29 +954,63 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       for(const fd of prepared.queryAnchors.slice(0,2))check(retainedFilesystemType(fd)===0x6e736673n);
       const object=(fd:number)=>{const s=fstatSync(fd,{bigint:true});return [String(s.dev),String(s.ino),String(s.mode)];};
       const payload=JSON.stringify({parentPid:process.pid,parentTicks:actualBirth("/proc/self",process.pid).birth,anchors:prepared.anchors,anchorObjects:prepared.anchors.map(object),queryAnchors:prepared.queryAnchors,queryObjects:prepared.queryAnchors.map(object),program:prepared.program,config:prepared.config,bootId:c.tuple.bootId,guestBootId:request.bootId});
-      check(Buffer.byteLength(payload)<=65536);prepared.revalidate();c.validate();
+      check(Buffer.byteLength(payload)<=65536);
+      expectedWorkerCommand=Buffer.from(["/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2","--inhibit-cache","--library-path","/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/systemd","/usr/bin/python3.12","-I","-S","-B","-X","pycache_prefix="+h1ReadonlyCache,"-c",h1StagedObserverBootstrap,payload,""] .join("\0"));
+      prepared.revalidate();c.validate();
       const directory=fullNativeInputBase+"/"+c.tuple.sourceSha+"/h1-tool-root-r1";
       child=spawn("/usr/bin/systemd-nspawn",["--quiet","--directory="+directory,"--read-only","--private-users=no","--settings=no","--register=no","--keep-unit","--share-system","--link-journal=no","--console=pipe","--resolv-conf=off","--timezone=off","--","/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2","--inhibit-cache","--library-path","/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/systemd","/usr/bin/python3.12","-I","-S","-B","-X","pycache_prefix=/nonexistent/TEST-h1-readonly-pycache","-c",h1StagedObserverBootstrap,payload],{stdio:["pipe","pipe","pipe"],env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_NSPAWN_USE_CGNS:"0"}});
-      check(child.pid && child.stdin && child.stdout && child.stderr);await new Promise<void>((resolve,reject)=>{child!.once("spawn",resolve);child!.once("error",reject);});observeActor(capture(H1StagedActorRole.Monitor,child.pid));
+      check(child.pid && child.stdin && child.stdout && child.stderr);await new Promise<void>((resolve,reject)=>{child!.once("spawn",resolve);child!.once("error",reject);});const originalMonitor=capture(H1StagedActorRole.Monitor,child.pid);observeActor(originalMonitor);
+      check(originalMonitor.command.equals(Buffer.from([...child.spawnargs,""] .join("\0"))));
+      const pollSetup=()=>{try{if(closing || worker)return;remaining();rejoin(originalMonitor);
+        const values=readFileSync(`/proc/self/fd/${originalMonitor.anchor}/task/${originalMonitor.pid}/children`,"utf8").trim().split(/\s+/).filter(Boolean);check(values.length<=2);
+        for(const value of values){check(/^[1-9][0-9]*$/.test(value));const pid=Number(value),birth=actualBirth("/proc/"+pid,pid);check(birth.ppid===originalMonitor.pid);const prior=setupBirths.get(pid);if(prior){
+          check(prior.birth===birth.birth && identity(statSync("/proc/"+pid))===prior.identity);
+          // A retained setup may exec the independently pinned worker with the
+          // same proc/birth. The constructor announcement must capture and join
+          // that transition; changed/foreign commands never qualify a setup.
+          const current=readFileSync(`/proc/self/fd/${prior.anchor}/cmdline`);
+          if(!current.equals(prior.command)){check(expectedWorkerCommand && current.equals(expectedWorkerCommand));continue;}
+          rejoin(prior);
+        }else{
+          const setup=capture(H1StagedActorRole.Setup,pid),exe=fstatSync(setup.exe,{bigint:true});check(c.monitorSources.some(row=>{const source=fstatSync(row.fd,{bigint:true});return source.dev===exe.dev && source.ino===exe.ino;}));
+          checkH1OwnedCgroupData(readFileSync(`/proc/self/fd/${setup.anchor}/cgroup`,"utf8"),fullNativeControlGroup);setupBirths.set(pid,setup);observeActor(setup);
+        }}
+        setImmediate(pollSetup);
+      }catch(error){queryFailure=error;child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(pollSetup);
       done=new Promise<void>((resolve,reject)=>{child!.once("close",()=>resolve());child!.once("error",reject);});void done.catch(()=>{});
       child.stdin.on("error",()=>{stderr.write("TEST_H1_staged_gate_HOLD\n");child?.kill("SIGTERM");});
       child.stderr.on("data",(chunk:Buffer)=>stderr.write(chunk));child.stderr.on("end",()=>stderr.end());
       await new Promise<void>((resolve,reject)=>{let pending="";const timer=setTimeout(()=>reject(new Error("TEST H1 staged constructor timeout Held")),2000);
-        const receive=(chunk:Buffer)=>{try{pending+=chunk.toString("utf8");check(Buffer.byteLength(pending)<=4096);const newline=pending.indexOf("\n");if(newline<0)return;
-          const line=pending.slice(0,newline);check(line.startsWith("constructor:"));const announced=fullData(JSON.parse(line.slice(12)),["pid","birth","ppid"]);
-          check(Number.isSafeInteger(announced.pid) && Number(announced.pid)>1);worker=capture(H1StagedActorRole.Worker,Number(announced.pid));check(worker.birth===announced.birth);physicalWorker(worker);observeActor(worker);
+        const receive=(chunk:Buffer)=>{try{pending+=chunk.toString("utf8");check(Buffer.byteLength(pending)<=32768);const newline=pending.indexOf("\n");if(newline<0)return;
+          const line=pending.slice(0,newline);if(line.startsWith("python_bootstrap:")){check(!bootstrapRoutes && c.h1Subject);checkH1PythonRouteData(JSON.parse(line.slice(17)),c.h1Subject.catalog);bootstrapRoutes=true;pending=pending.slice(newline+1);if(pending.length)receive(Buffer.alloc(0));return;}check(bootstrapRoutes && queryFailure===undefined && line.startsWith("constructor:"));const announced=fullData(JSON.parse(line.slice(12)),["pid","birth","ppid"]);
+          check(Number.isSafeInteger(announced.pid) && Number(announced.pid)>1);worker=capture(H1StagedActorRole.Worker,Number(announced.pid));check(worker.birth===announced.birth && expectedWorkerCommand && worker.command.equals(expectedWorkerCommand));physicalWorker(worker);observeActor(worker);
           clearTimeout(timer);child!.stdout!.off("data",receive);child!.stdout!.on("data",protocol);child!.stdout!.on("end",()=>stdout.end());
-          check(pending.slice(newline+1)==="");state=H1StagedSlotState.Constructed;phase(FullH1PrearmPhase.Constructed);child!.stdin!.write("1");resolve();
+          check(pending.slice(newline+1)==="");rejoinDeadline();checkActualActorTables(worker);state=H1StagedSlotState.Constructed;phase(FullH1PrearmPhase.Constructed);child!.stdin!.write("1");resolve();
         }catch(error){clearTimeout(timer);reject(error);}};child!.stdout!.on("data",receive);child!.once("error",reject);child!.once("close",()=>reject(new Error("TEST H1 staged constructor died Held")));});
       return Object.freeze({child,stdout,stderr,closed:done});
     }catch(error){phase(FullH1PrearmPhase.Held);await close();throw error;}
   }
+  // Prepared private gate. The unconditional external guard below remains active.
+  // No public DTO, review boolean or callback can reach this original slot.
+  function requireOriginalH1EffectGate(){
+    check(!closing && state===H1StagedSlotState.Constructed && worker && query && queryComplete && queryFailure===undefined);
+    rejoinDeadline();assertRetainedCurrentFullParent(parent);check(bootstrapRoutes && fixtureRoutes && querySourceSeen && systemctlSourceSeen);
+    if(setupBirths.size===0)h1HeldError(H1ConstructorHeld.Actor);
+    for(const actor of setupBirths.values()){
+      if(actor.pid===worker.pid){
+        check(actor.birth===worker.birth && actor.identity===worker.identity && identity(fstatSync(actor.anchor))===identity(fstatSync(worker.anchor)));rejoin(worker);
+      }else try{const live=actualBirth(`/proc/self/fd/${actor.anchor}`,actor.pid);check(live.birth===actor.birth);rejoin(actor);}
+      catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));}
+    }
+    loadFacts?.revalidate();check(loadFacts);physicalWorker(worker);checkActualActorTables(worker);prepared?.revalidate();c.validate();rejoinDeadline();
+  }
   let protocolBuffer="";
   function protocol(chunk:Buffer){
-    try{protocolBuffer+=chunk.toString("utf8");check(Buffer.byteLength(protocolBuffer)<=4096);
+    try{protocolBuffer+=chunk.toString("utf8");check(Buffer.byteLength(protocolBuffer)<=32768);
       for(;;){const at=protocolBuffer.indexOf("\n");if(at<0)return;const line=protocolBuffer.slice(0,at);protocolBuffer=protocolBuffer.slice(at+1);
-        if(line.startsWith("query:")){
-          check(!query && worker && prepared && child?.stdin && /^[1-9][0-9]*$/.test(line.slice(6)));
+        if(line.startsWith("python_fixture:")){check(bootstrapRoutes && !fixtureRoutes && worker && c.h1Subject);checkH1PythonRouteData(JSON.parse(line.slice(15)),c.h1Subject.catalog);physicalWorker(worker);checkActualActorTables(worker);fixtureRoutes=true;
+        }else if(line.startsWith("query:")){
+          check(fixtureRoutes && !query && worker && prepared && child?.stdin && /^[1-9][0-9]*$/.test(line.slice(6)));
           const pid=Number(line.slice(6)),fact=actualBirth("/proc/"+pid,pid);check(fact.ppid===worker.pid);rejoin(worker);
           query=capture(H1StagedActorRole.Query,pid);physicalWorker(query);
           const pipeGroups=new Map<string,{stat:Stats;worker:boolean;query:boolean}>();
@@ -928,7 +1019,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
           check(pipeGroups.size===3);for(const group of pipeGroups.values()){check(group.worker && group.query);queryPipes.push({dev:BigInt(group.stat.dev),ino:BigInt(group.stat.ino),mode:BigInt(group.stat.mode)});}
           // This byte only releases the original fork into the fixed staged
           // nsenter command. It never releases fanotify/effect admission.
-          observeActor(query);child.stdin.write("2");phase(FullH1PrearmPhase.QueryReleased);observeQueryTransitions();
+          observeActor(query);checkActualActorTables(query);rejoinDeadline();child.stdin.write("2");phase(FullH1PrearmPhase.QueryReleased);observeQueryTransitions();
         }else if(line.startsWith("query_complete:")){
           check(query && !queryComplete && prepared && child?.stdin && queryFailure===undefined);
           const values=fullData(JSON.parse(line.slice(15)),["ActiveState","ControlGroup","Id","InvocationID","Job","MainPID"]);
@@ -937,8 +1028,9 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
           // Complete original-source and actual fork/setns/exec joins, then
           // one private byte+EOF. No reported PID or DTO opens this gate.
           const effectGate=child.stdin;
-          phase(FullH1PrearmPhase.QualificationGuard);requireQualifiedH1StagedConstructor();
-          effectAccepted=true;effectGate.end("3");
+          checkActualActorTables(worker);const monitor=actors.find(actor=>actor.role===H1StagedActorRole.Monitor);check(monitor);checkActualActorTables(monitor);
+          requireOriginalH1EffectGate();phase(FullH1PrearmPhase.QualificationGuard);requireQualifiedH1StagedConstructor();
+          state=H1StagedSlotState.Qualified;effectAccepted=true;effectGate.end("3");
         }else{check(effectAccepted && (line==="armed" || line==="original_parent_dead"));
           if(line==="original_parent_dead"){check(prepared && !parentDead);let dead=false;try{readFileSync(`/proc/self/fd/${prepared.anchors[5]}/stat`);}catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));dead=true;}check(dead);parentDead=true;validatePrepared();}
           stdout.write(line+"\n");}
@@ -948,11 +1040,12 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
   function observeQueryTransitions(){
     check(query && prepared && worker);const original=query,started=performance.now();
     const poll=()=>{try{
-      if(queryComplete || state===H1StagedSlotState.Closed)return;check(performance.now()-started<2000 && queryFailure===undefined);
+      if(queryComplete || state===H1StagedSlotState.Closed)return;remaining();check(performance.now()-started<2000 && queryFailure===undefined);
       const base=`/proc/self/fd/${original.anchor}`;check(actualBirth(base,original.pid).birth===original.birth);
       const mapped=readFileSync(base+"/maps","utf8"),nsenter=c.h1Subject!.catalog.find(row=>row.path==="usr/bin/nsenter");check(nsenter?.kind===H1CatalogKind.File);
       const appears=(raw:string,dev:bigint,ino:bigint)=>raw.trimEnd().split("\n").some(line=>{const cells=/\s([0-9a-f]+):([0-9a-f]+)\s+([0-9]+)(?:\s+.*)?$/.exec(line);if(!cells)return false;const major=BigInt("0x"+cells[1]),minor=BigInt("0x"+cells[2]);return ((minor&255n)|(major<<8n)|((minor&~255n)<<12n))===dev && cells[3]===String(ino);});
-      if(!querySourceSeen && appears(mapped,BigInt(nsenter.identity.dev),BigInt(nsenter.identity.ino))){const actor=capture(H1StagedActorRole.Query,original.pid);querySourceSeen=true;observeActor(actor);}
+      if(!querySourceSeen && appears(mapped,BigInt(nsenter.identity.dev),BigInt(nsenter.identity.ino))){const actor=capture(H1StagedActorRole.Query,original.pid);
+        check(actor.command.equals(Buffer.from(["/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2","--inhibit-cache","--library-path","/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/systemd","/usr/bin/nsenter","--mount=/proc/self/fd/13","--pid=/proc/self/fd/14","--root=/proc/self/fd/15","--wdns=/","--","/usr/bin/systemctl","--system","show","--property=Id,MainPID,InvocationID,ControlGroup,ActiveState,Job","--","TEST-retention-supervisor.service",""] .join("\0"))));checkActualActorTables(actor);querySourceSeen=true;observeActor(actor);}
       const children=readFileSync(base+"/task/"+original.pid+"/children","utf8").trim().split(/\s+/).filter(Boolean);check(children.length<=1);
       const candidates=[original.pid,...children.map(value=>{check(/^[1-9][0-9]*$/.test(value));return Number(value);})];
       for(const pid of candidates){
@@ -962,10 +1055,10 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
         check(identity(statSync(path+"/root"))===identity(fstatSync(prepared!.queryAnchors[2])));
         check(identity(statSync(path+"/ns/mnt"))===identity(fstatSync(prepared!.queryAnchors[0])));
         check(identity(statSync(path+"/ns/pid"))===identity(fstatSync(prepared!.queryAnchors[1])));
-        const actor=capture(H1StagedActorRole.Systemctl,pid),raw=readFileSync(path+"/maps","utf8");
+        const actor=capture(H1StagedActorRole.Systemctl,pid);check(actor.command.equals(Buffer.from(["/usr/bin/systemctl","--system","show","--property=Id,MainPID,InvocationID,ControlGroup,ActiveState,Job","--","TEST-retention-supervisor.service",""] .join("\0"))));const raw=readFileSync(path+"/maps","utf8");
         for(const line of raw.trimEnd().split("\n")){const cells=/\s([0-9a-f]+):([0-9a-f]+)\s+([0-9]+)(?:\s+.*)?$/.exec(line);check(cells);if(cells[3]==="0")continue;
           const major=BigInt("0x"+cells[1]),minor=BigInt("0x"+cells[2]),dev=(minor&255n)|(major<<8n)|((minor&~255n)<<12n);check(guestSources.some(source=>source.dev===dev && String(source.ino)===cells[3]));}
-        rejoin(actor);systemctlSourceSeen=true;observeActor(actor);
+        rejoin(actor);const status=readFileSync(path+"/status","utf8");checkH1ActorStatusData(status,pid,parentCaps,H1PidView.Guest);checkActualActorTables(actor);systemctlSourceSeen=true;observeActor(actor);
       }
       if(!systemctlSourceSeen)setImmediate(poll);
     }catch(error){queryFailure=error;phase(FullH1PrearmPhase.Held);child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(poll);
@@ -979,19 +1072,20 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     const status=readFileSync(task.path+"/status","utf8");check(Buffer.byteLength(status)<=16384);
     const taskPid=/^Pid:\s+([1-9][0-9]*)$/m.exec(status)?.[1],tgid=/^Tgid:\s+([1-9][0-9]*)$/m.exec(status)?.[1];
     check(taskPid && tgid===String(actor.pid) && actualBirth(task.path,Number(taskPid)).birth===task.birth);
-    const sources=actor.role===H1StagedActorRole.Systemctl?guestSources:actor.role===H1StagedActorRole.Monitor?c.monitorSources.map(row=>fstatSync(row.fd,{bigint:true})):
+    const sources=actor.role===H1StagedActorRole.Systemctl?guestSources:(actor.role===H1StagedActorRole.Monitor || actor.role===H1StagedActorRole.Setup)?c.monitorSources.map(row=>fstatSync(row.fd,{bigint:true})):
       c.h1Subject!.catalog.filter(row=>row.kind===H1CatalogKind.File).map(row=>({dev:BigInt(row.identity.dev),ino:BigInt(row.identity.ino)}));
     const matches=(a:Readonly<{dev:bigint;ino:bigint}>,b:Readonly<{dev:bigint;ino:bigint}>)=>a.dev===b.dev && a.ino===b.ino;
     const base=task.path,names=readdirSync(base+"/fd").sort((a,b)=>Number(a)-Number(b));check(names.length<=64 && names.every(value=>/^(0|[1-9][0-9]*)$/.test(value)));
     const original=prepared?[...prepared.anchors,...prepared.queryAnchors].map(fd=>fstatSync(fd,{bigint:true})):[];
-    const constructorObjects=owned.map(fd=>fstatSync(fd,{bigint:true}));let fanotify=0,pidfd=0;
+    const constructorObjects=owned.concat(loadFacts?.descriptors()??[]).map(fd=>fstatSync(fd,{bigint:true}));let fanotify=0,pidfd=0;
     const descriptors=names.map(name=>{const fd=Number(name),path=base+"/fd/"+name,stat=statSync(path,{bigint:true}),link=readlinkSync(path);
       if(fd<3){const known=actor.stdio[fd];check(known && matches(stat,known) && stat.mode===known.mode && stat.uid===known.uid);}
-      else if(actor.role!==H1StagedActorRole.Monitor && ((fd>=3 && fd<=11) || (fd>=13 && fd<=15))){
+      else if((actor.role===H1StagedActorRole.Worker || actor.role===H1StagedActorRole.Query) && ((fd>=3 && fd<=11) || (fd>=13 && fd<=15))){
         const selected=fd<=11?prepared?.anchors[fd-3]:prepared?.queryAnchors[fd-13];check(selected!==undefined && matches(stat,fstatSync(selected,{bigint:true})));
       }else if(sources.some(source=>matches(stat,source)) || original.some(source=>matches(stat,source)) || constructorObjects.some(source=>matches(stat,source))){
         check(stat.isFile() || stat.isDirectory());
-      }else if(actor.role===H1StagedActorRole.Worker && link==="anon_inode:[fanotify]"){check(++fanotify===1);}
+      }else if(actor.role===H1StagedActorRole.Monitor && notifyObject && matches(stat,notifyObject)){check(stat.isSocket());}
+      else if(actor.role===H1StagedActorRole.Worker && link==="anon_inode:[fanotify]"){check(++fanotify===1);}
       else if(actor.role===H1StagedActorRole.Worker && link==="anon_inode:[pidfd]"){check(++pidfd===1 && requestPid!==undefined);const info=readFileSync(base+"/fdinfo/"+name,"utf8"),expected=effectAccepted?requestPid:query?.pid;check(expected!==undefined && Buffer.byteLength(info)<=4096 && new RegExp("^Pid:\\s+(?:"+expected+((effectAccepted?parentDead:queryComplete)?"|-1":"")+")$","m").test(info));}
       else if(!effectAccepted && queryPipes.some(source=>matches(stat,source) && stat.mode===source.mode)){check(stat.isFIFO());}
       else if(actor.role===H1StagedActorRole.Monitor && worker?.stdio.some(source=>matches(stat,source) && stat.mode===source.mode && stat.uid===source.uid)){check(stat.isFIFO() || stat.isSocket());}
@@ -1005,7 +1099,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     check(readFileSync(base+"/maps","utf8")===maps && JSON.stringify(readdirSync(base+"/fd").sort((a,b)=>Number(a)-Number(b)))===JSON.stringify(names));
     rejoin(actor);task.revalidate();return Object.freeze({role:actor.role,pid:actor.pid,birth:actor.birth,mountNamespace:readlinkSync(base+"/ns/mnt"),descriptors:Object.freeze(descriptors),sources:Object.freeze(sources.map(source=>Object.freeze({dev:String(source.dev),ino:String(source.ino)})))});
   };
-  return Object.freeze({construct,close,read,snapshot,descriptors:()=>Object.freeze(state===H1StagedSlotState.Closed?[]:owned.concat(prepared?.descriptors()??[]))});
+  return Object.freeze({construct,close,read,snapshot,descriptors:()=>Object.freeze(state===H1StagedSlotState.Closed?[]:owned.concat(prepared?.descriptors()??[],loadFacts?.descriptors()??[]))});
 }
 const fullParentDescriptors=new WeakMap<object,()=>readonly number[]>();
 export type FullMonitorTaskAnchor=Readonly<{path:string;processPid:number;processBirth:string;birth:string;revalidate():void}>;
@@ -1094,8 +1188,17 @@ export function retainCurrentFullParent():FullParentSession {
     check(typeof values.ControlGroup==="string");
     check(values.Description==="subscription-job:"+fingerprint(c.tuple.machineId,argvFor(c)) && values.ControlGroup===fullNativeControlGroup);
     check(typeof values.InvocationID==="string" && /^[a-f0-9]{32}$/.test(values.InvocationID));check(process.env.INVOCATION_ID===values.InvocationID && process.env.PATH==="/usr/bin:/bin" && process.env.LANG==="C.UTF-8" && process.env.HOME==="/srv/workers/jobs/"+fullNativeJob && process.env.TMPDIR==="/srv/workers/jobs/"+fullNativeJob+"/tmp");if(invocation)check(invocation===values.InvocationID);else invocation=values.InvocationID;
-    check(readFileSync("/proc/self/cgroup","utf8").trim()==="0::"+values.ControlGroup);assertParentKernelPolicy(values.ControlGroup);sourceBirth();liveProc();c.validate();record(c,true);
+    checkH1OwnedCgroupData(readFileSync("/proc/self/cgroup","utf8"),values.ControlGroup);assertParentKernelPolicy(values.ControlGroup);sourceBirth();liveProc();c.validate();record(c,true);
   };
+  let h1CapturedDeadline:bigint|undefined;
+  function originalH1Deadline(){
+    revalidate();const result=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=MainPID,InvocationID,ExecMainStartTimestampMonotonic,RuntimeMaxUSec"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
+    check(!result.error && result.status===0 && result.signal===null);const values:Record<string,string>={};
+    for(const line of result.stdout.trimEnd().split("\n")){const at=line.indexOf("=");check(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}
+    check(Object.keys(values).sort().join(",")==="ExecMainStartTimestampMonotonic,InvocationID,MainPID,RuntimeMaxUSec" && invocation);
+    const deadline=h1OriginalDeadlineData(values,process.pid,invocation);if(h1CapturedDeadline!==undefined)check(deadline===h1CapturedDeadline);else h1CapturedDeadline=deadline;
+    revalidate();check(process.hrtime.bigint()<deadline);return deadline;
+  }
   function monitorState():Readonly<Record<string,string>> {
     check(guestId && guestSubmitted);
     const unit="TEST-retention-os-"+guestId+".service";
@@ -1269,7 +1372,7 @@ export function retainCurrentFullParent():FullParentSession {
       }
       revalidate();closed=true;for(const fd of procFds.reverse())closeSync(fd);c.h1Catalog?.close();c.h1LibcPins.close();c.pins.close();
     }});fullParents.set(session,revalidate);
-    if(c.h1Subject){h1StagedSlot=originalH1StagedSlot(c,session,()=>guestId);fullH1StagedConstructors.set(session,h1StagedSlot.construct);fullH1StagedClosers.set(session,h1StagedSlot.close);fullH1StagedReaders.set(session,h1StagedSlot.read);fullH1PrearmReaders.set(session,h1StagedSlot.snapshot);}
+    if(c.h1Subject){h1StagedSlot=originalH1StagedSlot(c,session,()=>guestId,originalH1Deadline);fullH1StagedConstructors.set(session,h1StagedSlot.construct);fullH1StagedClosers.set(session,h1StagedSlot.close);fullH1StagedReaders.set(session,h1StagedSlot.read);fullH1PrearmReaders.set(session,h1StagedSlot.snapshot);}
     h1ToolReaders.set(session,(executable,callback)=>{
       revalidate();check(c.tuple.removalCase===FullRemovalCase.ParentCrashH1 && c.tuple.restoreConsumer===FullRestoreConsumer.Ordinary);
       const tool=c.h1Tools.get(executable);check(tool);try{const result=callback(tool);check(!types.isPromise(result));return result;}finally{revalidate();}

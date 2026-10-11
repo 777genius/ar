@@ -42,12 +42,12 @@ function mountRow(v:unknown):H1MountRow{const d=record(v,["path","origin","refer
 export type H1HostRelease=Readonly<{source:"/etc/os-release"|"/usr/lib/os-release";sha256:string;cells:Readonly<Record<string,string>>}>;
 function hostRelease(v:unknown):H1HostRelease{const d=record(v,["source","sha256","cells"]);need(d.source==="/etc/os-release" || d.source==="/usr/lib/os-release");const c=d.cells;need(c!==null && typeof c==="object" && !types.isProxy(c) && Object.getPrototypeOf(c)===Object.prototype);const descriptors=Object.getOwnPropertyDescriptors(c);need(Reflect.ownKeys(descriptors).length>0 && Reflect.ownKeys(descriptors).length<=64);const cells:Record<string,string>={};for(const k of Reflect.ownKeys(descriptors)){need(typeof k==="string" && /^container_host_[a-z][a-z0-9_]{0,63}$/.test(k));const item=descriptors[k];need(item && Object.hasOwn(item,"value") && item.enumerable);cells[k]=text(item.value);}return Object.freeze({source:d.source,sha256:hex(d.sha256,64),cells:Object.freeze(cells)});}
 const definitionKeys=["mountAll","mountSysfs","mountCgroups","devSetup","inaccessibleNodes","notify","hostReleaseTransform"] as const;
-export type H1StagedSubject=Readonly<{schemaVersion:1;sourceSha:string;validatorSha256:string;machineId:string;bootId:string;rootIdentity:H1ObjectIdentity;catalog:readonly H1CatalogEntry[];definitions:Readonly<Record<typeof definitionKeys[number],string>>;mounts:readonly H1MountRow[];hostRelease:H1HostRelease;syntheticBootId:string}>;
+export type H1StagedSubject=Readonly<{schemaVersion:1;sourceSha:string;validatorSha256:string;machineId:string;bootId:string;rootIdentity:H1ObjectIdentity;catalog:readonly H1CatalogEntry[];definitions:Readonly<Record<typeof definitionKeys[number],string>&{pythonGetpath?:string}>;mounts:readonly H1MountRow[];hostRelease:H1HostRelease;syntheticBootId:string}>;
 function uuid(v:unknown):string{const s=text(v);need(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(s));return s;}
 /** DATA only. Expected rows in an independently installed record are not run facts. */
 export function h1StagedSubjectData(v:unknown):H1StagedSubject{
   const d=record(v,["schemaVersion","sourceSha","validatorSha256","machineId","bootId","rootIdentity","catalog","definitions","mounts","hostRelease","syntheticBootId"]);need(d.schemaVersion===1);
-  const definitions=record(d.definitions,definitionKeys),parsedDefinitions=Object.freeze({mountAll:hex(definitions.mountAll,64),mountSysfs:hex(definitions.mountSysfs,64),mountCgroups:hex(definitions.mountCgroups,64),devSetup:hex(definitions.devSetup,64),inaccessibleNodes:hex(definitions.inaccessibleNodes,64),notify:hex(definitions.notify,64),hostReleaseTransform:hex(definitions.hostReleaseTransform,64)});
+  need(d.definitions!==null && typeof d.definitions==="object" && !types.isProxy(d.definitions));const getpath=Object.getOwnPropertyDescriptor(d.definitions,"pythonGetpath");need(!getpath || Object.hasOwn(getpath,"value"));const definitions=record(d.definitions,[...definitionKeys,...(getpath?["pythonGetpath"]:[])]),parsedDefinitions=Object.freeze({mountAll:hex(definitions.mountAll,64),mountSysfs:hex(definitions.mountSysfs,64),mountCgroups:hex(definitions.mountCgroups,64),devSetup:hex(definitions.devSetup,64),inaccessibleNodes:hex(definitions.inaccessibleNodes,64),notify:hex(definitions.notify,64),hostReleaseTransform:hex(definitions.hostReleaseTransform,64),...(getpath?{pythonGetpath:hex(definitions.pythonGetpath,64)}:{})});
   const catalog=list(d.catalog).map(catalogEntry),byPath=new Map(catalog.map(e=>[e.path,e]));need(catalog.length>0 && byPath.size===catalog.length);
   for(const entry of catalog){const parent=posix.dirname(entry.path);if(parent!==".")need(byPath.get(parent)?.kind===H1CatalogKind.Directory);if(entry.kind===H1CatalogKind.Alias){const visited=new Set<string>();let current=entry;while(current.kind===H1CatalogKind.Alias){need(!visited.has(current.path));visited.add(current.path);const dest=posix.resolve("/",posix.dirname(current.path),current.target).slice(1),next=byPath.get(dest);need(next);current=next;}}}
   const mounts=list(d.mounts).map(mountRow);need(mounts.length>0 && mounts.some(m=>m.path==="/") && new Set(mounts.map(m=>m.path)).size===mounts.length);
@@ -89,14 +89,15 @@ export interface H1StagedObserverPrepared {
   descriptors():readonly number[];
   close():void;
 }
-export enum H1StagedSlotState {Unconstructed="unconstructed",Constructing="constructing",Constructed="constructed",Closed="closed"}
-export enum H1StagedActorRole {Monitor="h1_staged_monitor",Worker="h1_staged_worker",Query="h1_staged_query",Systemctl="h1_staged_systemctl"}
+export enum H1StagedSlotState {Unconstructed="unconstructed",Constructing="constructing",Constructed="constructed",Qualified="qualified",Closed="closed"}
+export enum H1StagedActorRole {Monitor="h1_staged_monitor",Setup="h1_staged_setup",Worker="h1_staged_worker",Query="h1_staged_query",Systemctl="h1_staged_systemctl"}
 /** No HOST Python/import source, cache, caller program or environment selection.
  * The script itself is retained original SOURCE; aliases are generated solely
  * from the original native parent's nine retained descriptor objects. */
 export const h1StagedObserverBootstrap=String.raw`
 import os,sys,json,stat,select,time,fcntl
 assert os.getuid()==0 and sys.platform=='linux'
+print('python_bootstrap:'+json.dumps({'executable':sys.executable,'prefix':sys.prefix,'execPrefix':sys.exec_prefix,'path':sys.path,'isolated':sys.flags.isolated,'noSite':sys.flags.no_site,'dontWriteBytecode':sys.dont_write_bytecode,'cache':sys.pycache_prefix,'origArgv':sys.orig_argv[:7],'modules':sorted([[name,getattr(getattr(module,'__spec__',None),'origin',None)] for name,module in sys.modules.items() if name!='__main__'])},separators=(',',':')),flush=True)
 p=json.loads(sys.argv[1]); assert set(p)=={'parentPid','parentTicks','anchors','anchorObjects','queryAnchors','queryObjects','program','config','bootId','guestBootId'}
 assert len(p['anchors'])==len(p['anchorObjects'])==9 and len(p['queryAnchors'])==len(p['queryObjects'])==3
 s=open('/proc/'+str(p['parentPid'])+'/stat').read();assert s[s.rfind(')')+2:].split()[19]==p['parentTicks']
