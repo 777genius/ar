@@ -8,7 +8,7 @@ import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPh
 import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { dependencyToolCachePath, parseDependencyToolProfile, type DependencyToolProfile } from "../../../core/dependency-environment/dependency-tool-profile";
-import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 
 export const hostedDependencyPolicyRoot = "/var/lib/subscription-runtime-host-policy";
@@ -165,8 +165,12 @@ export function assertHostedDependencyQualifiedInventory(): void {
     const launch = v.launch as Record<string, unknown>;
     if (launch.command !== process.execPath || launch.cwd !== v.workspacePath || !Array.isArray(launch.args) || launch.args.length < 2 ||
         launch.args[0] !== `${installation.runtimeDirectory}/dist/worker-codex/codex-goal-cli.js` ||
-        launch.args[1] !== "run" || launch.args.some(arg => typeof arg !== "string" ||
+        (launch.args[1] !== "run" && launch.args[1] !== "tool") || launch.args.some(arg => typeof arg !== "string" ||
           /^--(?:tmux|tmux-session|dry-run|print-command|hosted-lifecycle|lifecycle(?:-[^=]+)?)(?:=|$)/.test(arg))) invalid();
+    if (launch.args[1] === "tool") {
+      readHostedDependencyParentRecipe(launch as unknown as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch,
+        String(v.jobRootDir), String(v.workspacePath));
+    }
     for (const [index, arg] of launch.args.entries()) {
       if (arg === "--registry-root" && launch.args[index + 1] !== `${v.jobRootDir}/state/registry`) invalid();
       if (arg.startsWith("--registry-root=")) invalid(); // Not an accepted parser option form.
@@ -177,7 +181,7 @@ export function assertHostedDependencyQualifiedInventory(): void {
       // This executes during enrollment/reservation, before the root CLI. A
       // legacy direct stdin.end(frame) must never reach an opted N3 writer.
       if (!collectorProfile || !readHostedFdProfile()) invalid();
-      assertHostedDependencyParentRecipe(launch.args as string[], binding.jobRootDir, binding.workspace.canonicalPath);
+      readHostedDependencyParentRecipe(launch as unknown as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch, binding.jobRootDir, binding.workspace.canonicalPath);
     }
   }
   // The separately inventoried outer entry cannot provide a legacy bypass.

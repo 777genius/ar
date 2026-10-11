@@ -17,7 +17,7 @@ import { openHostedRetainedToolFiles, assertHostedRetainedToolDescriptors, retai
   revokeHostedRetainedToolFiles, hostedToolFilesForChild, assertHostedToolCapsuleCopy, type HostedRetainedToolFiles } from "./hosted-retained-tool-files";
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
 import { CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
-import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { assertHostedDependencyParentEnvironment, readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 
 type Plan = { readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
   readonly readyReader: DependencyToolReadyReader;
@@ -52,12 +52,12 @@ export function assertHostedDependencyToolParentFrame(fence: HostedActivationFen
   if (rows.length !== 1) fail();
   const launch = rows[0].launch as { command: unknown; cwd: unknown; args: unknown };
   if (!launch || launch.command !== process.execPath || launch.cwd !== binding.workspace.canonicalPath || !Array.isArray(launch.args)) fail();
-  assertHostedDependencyParentRecipe(launch.args, binding.jobRootDir, binding.workspace.canonicalPath);
+  const recipe = readHostedDependencyParentRecipe(launch as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch, binding.jobRootDir, binding.workspace.canonicalPath);
   const data = decodeHostedActivationBytes(Buffer.from(frame)) as Record<string, unknown>;
   if (!data || typeof data !== "object" || Object.keys(data).sort().join(",") !== "env,schemaVersion" || data.schemaVersion !== 1 ||
       !data.env || typeof data.env !== "object" || Array.isArray(data.env)) fail();
   assertHostedDependencyParentEnvironment(data.env as Record<string, string>, binding.jobRootDir);
-  assertParentAuthWriterScope(binding, launch.args as string[]);
+  assertParentAuthWriterScope(binding, recipe.args);
 }
 
 /** Metadata only: never open auth.json or derive authority from a credential.
