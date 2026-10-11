@@ -45,7 +45,7 @@ export function readDefaultTestRequestedModel(rootPrefix = ""): typeof requested
     // host-only native launcher helper. Accept only its exact fixed FULL root.
     assert(rootPrefix === "" ||
       /^\/var\/lib\/subscription-runtime-os-TEST\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/root$/.test(rootPrefix) ||
-      /^\/srv\/workers\/jobs\/TEST-dependency-full-native-20261007-r1\/os-TEST\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/root$/.test(rootPrefix));
+      /^\/srv\/workers\/jobs\/TEST-dependency-full-positive-scoped-20261010-r1\/os-TEST\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/root$/.test(rootPrefix));
     return parseDefaultTestRequestedModel(fixedFileBytes(rootPrefix + runtime + "/scripts/dependency-retention-os-test/default-codex-requested-model.json",512));
   } catch { return invalid(); }
 }

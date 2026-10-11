@@ -3,9 +3,9 @@ import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1/full-positive-installation';
+const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261010-r1/full-positive-installation';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node',NODE_SHA='7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c';
-const HELPER_SHA='d0eefb1d4d8506d56a2dec030a2a60a7012c9c41a97fc080379e9f1a37de2ac2';
+const HELPER_SHA='b27de3fa10cd52e31ab6692e280c8408606410de477ab2063151307b8ac4c76f';
 const names=['preparation-input.json','source.bundle','public-files.payload','stage-current-positive-public.mts','run-current-positive-public.mts','review.json','outer-input.json','public-input.json'] as const;
 const hash=(b:Uint8Array)=>createHash('sha256').update(b).digest('hex');
 function fact(v:unknown,why:string):asserts v{if(!v)throw new Error('PUBLIC_TRANSPORT_HOLD:'+why);}
@@ -48,9 +48,19 @@ const pin=process.argv[1];fact(process.argv.length===2&&digest(pin),'inspector_a
 try{const control=anchor(S+'/.transport'),raw=read('/proc/self/fd/'+control.fd+'/delivery.json',16384),d=parseDelivery(raw,pin);originalRoot(d.bootId);const unit=selectedUnit(d),intent=JSON.parse(read('/proc/self/fd/'+control.fd+'/intent.json',65536).toString()) as Record<string,unknown>;fact(intent.unit===unit&&intent.deliverySha256===pin&&intent.bootId===d.bootId&&intent.cgroup===cgroup(unit),'intent_join');const u=properties(unit);let complete=false;
  if(u.Id===unit&&u.LoadState==='loaded'&&u.Transient==='yes'&&u.MainPID==='0'&&u.Job===''&&((u.ActiveState==='active'&&u.SubState==='exited')||u.ActiveState==='inactive'||u.ActiveState==='failed')){
   const cgParent=anchor('/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice');const cgLeaf='/proc/self/fd/'+cgParent.fd+'/'+unit;let removed=false;try{census(cgroup(unit));}catch(e){try{absent(cgLeaf);check(cgParent);removed=true;}catch{throw e;}}fact(removed||u.ControlGroup===cgroup(unit),'terminal_cgroup');const started=JSON.parse(read('/proc/self/fd/'+control.fd+'/started.json',4096).toString()) as Record<string,unknown>,result=JSON.parse(read('/proc/self/fd/'+control.fd+'/result.json',4096).toString()) as Record<string,unknown>;
-  complete=u.Result==='success'&&u.ExecMainStatus==='0'&&started.unit===unit&&started.deliverySha256===pin&&started.invocationId===u.InvocationID&&result.unit===unit&&result.invocationId===u.InvocationID&&result.deliverySha256===pin&&result.status==='INSTALLED_REQUEST_DATA_UNSUBMITTED'&&result.sourceSha===d.sourceSha&&result.manifestSha256===d.manifestSha256&&digest(result.requestSha256)&&hash(read('/proc/self/fd/'+control.fd+'/request.json',2*1024**2))===result.requestSha256;
+  complete=u.Result==='success'&&u.ExecMainStatus==='0'&&started.unit===unit&&started.deliverySha256===pin&&started.invocationId===u.InvocationID&&result.unit===unit&&result.invocationId===u.InvocationID&&result.deliverySha256===pin&&result.status==='INSTALLED_PARENT_STARTED_HELD'&&result.sourceSha===d.sourceSha&&result.manifestSha256===d.manifestSha256&&digest(result.requestSha256)&&hash(read('/proc/self/fd/'+control.fd+'/request.json',2*1024**2))===result.requestSha256;
+  if(complete){const raw=read('/proc/self/fd/'+control.fd+'/handoff.json',4096),value:unknown=JSON.parse(raw.toString('utf8'));fact(digest(result.handoffSha256)&&hash(raw)===result.handoffSha256&&value!==null&&typeof value==='object'&&!Array.isArray(value),'handoff_digest');const h=value as Record<string,unknown>;
+   fact(Object.keys(h).sort().join(',')==='afterSha256,beforeSha256,completion,invocationId,jobId,pid,sourceSha,startTicks,status,unit'&&h.status==='STARTED_HELD'&&h.completion==='UNPROVEN'&&h.jobId==='TEST-dependency-full-positive-scoped-20261010-r1'&&h.unit==='subscription-job-c5e3da03d465ef9e5f5972331fbb02fab96bed12945546d406718429e34cdd4b.service'&&h.sourceSha===d.sourceSha&&digest(h.beforeSha256)&&digest(h.afterSha256),'handoff_fields');
+   const before=read('/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/full-launch-birth/before.json',4096),after=read('/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/full-launch-birth/after.json',4096);fact(hash(before)===h.beforeSha256&&hash(after)===h.afterSha256,'birth_hashes');const a=JSON.parse(after.toString()) as Record<string,unknown>;fact(a.unit===h.unit&&a.pid===h.pid&&a.startTicks===h.startTicks&&a.invocationId===h.invocationId&&a.beforeSha256===h.beforeSha256,'birth_handoff');
+   // Run only the exact reviewed installed original native reader; JSON is DATA.
+   const reviewBytes=read('/proc/self/fd/'+anchor(S).fd+'/review.json',32768);fact(hash(reviewBytes)===d.reviewSha256,'review_hash');const review=JSON.parse(reviewBytes.toString()) as Record<string,unknown>;fact(digest(review.moduleSha256),'native_pin');
+   const moduleRoot=anchor('/opt/subscription-runtime-full-positive-TEST/managed-launcher'),module=open('/proc/self/fd/'+moduleRoot.fd+'/dependency-full-native-TEST.mjs',false,undefined,review.moduleSha256);check(module);
+   const native=await import(pathToFileURL('/opt/subscription-runtime-full-positive-TEST/managed-launcher/dependency-full-native-TEST.mjs').href);fact(typeof native.readFullPositiveStartedHeld==='function','native_reader');check(module);
+   const actual:unknown=native.readFullPositiveStartedHeld();fact(Buffer.from(JSON.stringify(actual)+'\n').equals(raw),'fresh_original_parent_handoff');check(module);
+
+  }
  }
- for(const h of held)check(h);process.stdout.write(JSON.stringify({status:complete?'OBSERVED_INSTALL_DATA_COMPLETE':'SAME_ATTEMPT_HELD',unit,deliverySha256:pin,unitFacts:u,retry:'HOLD',nativeQualified:'UNPROVEN'})+'\n');if(!complete)process.exitCode=1;
+ for(const h of held)check(h);process.stdout.write(JSON.stringify({status:complete?'OBSERVED_INSTALLER_TERMINAL_PARENT_STARTED_HELD':'SAME_ATTEMPT_HELD',unit,deliverySha256:pin,unitFacts:u,retry:'HOLD',nativeQualified:'UNPROVEN'})+'\n');if(!complete)process.exitCode=1;
 }catch{process.stdout.write('{"status":"SAME_ATTEMPT_UNCERTAIN","retry":"HOLD"}\n');process.exitCode=1;}finally{closeAll();}
 
 }

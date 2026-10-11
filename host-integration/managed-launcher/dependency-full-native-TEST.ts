@@ -1,6 +1,23 @@
 import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
-import { managedSystemdRunExecutable } from "./launch.mjs";
+import { managedSystemdRunExecutable, fullPositiveTestRoot, fullPositiveTestJob, fullPositiveTestEntry, parseNativeUnitProperties } from "./launch.mjs";
 import {h1StagedSubjectData,retainH1StagedCatalogData} from "./dependency-full-h1-staged-tools-TEST.js";
+const fullPositiveTestCohort = Object.freeze([
+  ["host-jobs/manager.mjs", "host-jobs/manager.mjs"],
+  ["host-jobs/contract.mjs", "host-jobs/contract.mjs"],
+  // Existing installedModules pins this DATA leaf; the TEST manager never executes it.
+  ["host-jobs/endpoint.mjs", "host-jobs/endpoint.mjs"],
+  ["host-jobs/storage-policy.mjs", "host-jobs/storage-policy.mjs"],
+  ["managed-launcher/launch.mjs", "managed-launcher/launch.mjs"],
+  ["managed-launcher/profiles.mjs", "managed-launcher/profiles.mjs"],
+  ["managed-launcher/payload-guard.mjs", "managed-launcher/payload-guard.mjs"],
+  ["managed-launcher/hosted-host-policy.mjs", "managed-launcher/hosted-host-policy.mjs"],
+  ["managed-launcher/full-positive-test-profile.mjs", "managed-launcher/full-positive-test-profile.mjs"],
+  ["managed-launcher/launch-full-positive-TEST.mjs", "managed-launcher/launch-full-positive-TEST.mjs"],
+  ["host-jobs/full-positive-manager-TEST.mjs", "host-jobs/full-positive-manager-TEST.mjs"],
+  ["managed-launcher/dependency-full-native-TEST.js", "managed-launcher/dependency-full-native-TEST.mjs"],
+  ["managed-launcher/dependency-full-h1-staged-tools-TEST.js", "managed-launcher/dependency-full-h1-staged-tools-TEST.js"],
+  ["managed-launcher/dependency-full-positive-copy-TEST.js", "managed-launcher/dependency-full-positive-copy-TEST.js"],
+] as const);
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
@@ -10,7 +27,7 @@ import { basename, dirname } from "node:path";
 import { types } from "node:util";
 import {performance} from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
-export const fullNativeJob="TEST-dependency-full-native-20261007-r1";
+export const fullNativeJob=fullPositiveTestJob;
 export const fullNativeInputBase="/srv/workers/jobs/"+fullNativeJob+"/input";
 export const fullNativeTmpDir="/srv/workers/jobs/"+fullNativeJob+"/tmp";
 export const fullNativePublicDownloadBase="/srv/workers/jobs/"+fullNativeJob+"/public-codex-download";
@@ -18,13 +35,13 @@ export const fullNativePublicCapsule="/srv/workers/jobs/"+fullNativeJob+"/public
 export const fullNativeBirthRoot="/srv/workers/jobs/"+fullNativeJob+"/full-launch-birth";
 export const fullNativeLiveRoot="/srv/workers/jobs/"+fullNativeJob+"/full-parent-live";
 export const fullNativeGuestLiveRoot="/var/lib/subscription-runtime-full-parent-live";
-export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST";
+export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/os-TEST";
 /** DATA path contract only; physical root custody is checked separately. */
 export function fullNativeGuestRoot(id:unknown,root:unknown):boolean {
   return typeof id==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) && root===fullNativeOsBase+"/"+id+"/root";
 }
 const bootstrapNode="/opt/nodejs/node-v24.21.0-linux-x64/bin/node";
-const integration="/opt/subscription-runtime", reviewRoot="/srv/worker-state/protected-storage-test/dependency-full-native-activation";
+const integration=fullPositiveTestRoot, reviewRoot="/srv/worker-state/protected-storage-test/dependency-full-positive-scoped-activation";
 const reviewPath=reviewRoot+"/review.json", sourceBase="28511fec3a4796db3b86ac57f376d64c4b9b8d29";
 const hash=(value: string|Buffer)=>createHash("sha256").update(value).digest("hex");
 export const fullNativeUnit="subscription-job-"+hash(fullNativeJob)+".service";
@@ -341,7 +358,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     pins.hold(installing?positiveInstallationStage+"/input":fullNativeInputBase,true,0o700);
     pins.hold(root,true,0o700);
     const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard","hostedHostPolicy"]);
-    for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"],["managed-launcher/hosted-host-policy.mjs","hostedHostPolicy"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
+    for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"],["managed-launcher/hosted-host-policy.mjs","hostedHostPolicy"]] as const)pins.publicFile((installing?source+"/host-integration":integration)+"/"+path,requireDigest(modules[key]));
     const tools=fullHostToolsData(r);
     for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"],["/usr/bin/lsns","lsns"],["/usr/lib/systemd/systemd","systemdPid1"],[bootstrapNode,"bootstrapNode"]] as const)pins.publicFile(path,requireDigest(tools[key]));
     // HOST execution uses the HOST loader/DSOs. Guest signed package hashes
@@ -375,7 +392,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     check(tools.bootstrapNode==="7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c" && tools.lsns==="c9fe8adcfe480c47a052adcde50002c78e8fadd4d124bc337893a0f9a9e8cf3b" && tools.systemdPid1==="b472aadf808bef87c0eb203056a77cb64bd268b71b756306013a53de68a94173");
     const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!systemdVersion.error && systemdVersion.status===0 && systemdVersion.signal===null && systemdVersion.stdout.split("\n")[0]===r.systemdVersion);
-    pins.publicFile(node,requireDigest(r.nodeSha256));pins.hold(node,false,0o755);pins.publicFile(integration+"/managed-launcher/launch.mjs",requireDigest(r.launcherSha256));
+    pins.publicFile(node,requireDigest(r.nodeSha256));pins.hold(node,false,0o755);pins.publicFile((installing?source+"/host-integration":integration)+"/managed-launcher/launch.mjs",requireDigest(r.launcherSha256));
     if(!installing)pins.publicFile(integration+"/managed-launcher/dependency-full-native-TEST.mjs",requireDigest(r.moduleSha256));
     pins.publicFile(source+"/host-integration/managed-launcher/dependency-full-native-TEST.js",requireDigest(r.moduleSha256));
     const parent=source+"/host-integration/managed-launcher/dependency-full-native-parent-TEST.js";pins.publicFile(parent,requireDigest(r.parentSha256));
@@ -403,6 +420,13 @@ function acquire(context:RootContext=RootContext.Launcher){
     let previous="",total=0;const paths=new Set<string>();
     for(const entry of catalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256) && row.path>previous && expected.has(row.path));previous=row.path;
       const fd=pins.publicFile(source+"/"+row.path,row.sha256);total+=fstatSync(fd).size;check(total<=512*1024*1024);paths.add(row.path);}
+    // ALL fixed copied and imported leaves derive from the authenticated catalog.
+    for(const [candidate,target] of fullPositiveTestCohort){
+      const relative="host-integration/"+candidate;check(paths.has(relative));
+      const row=fullData(catalog.files.find((entry:unknown)=>fullData(entry,["path","sha256"]).path===relative),["path","sha256"]);
+      pins.publicFile(source+"/"+relative,requireDigest(row.sha256));
+      if(!installing)pins.publicFile(integration+"/"+target,requireDigest(row.sha256));
+    }
     if(r.schemaVersion===2)for(const relative of ["host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/dependency-full-positive-copy-TEST.js"]){check(paths.has(relative));const row=fullData(catalog.files.find((entry:unknown)=>{const data=fullData(entry,["path","sha256"]);return data.path===relative;}),["path","sha256"]);if(!installing)pins.publicFile(integration+"/managed-launcher/"+basename(relative),requireDigest(row.sha256));}
     for(const path of ["scripts/dependency-retention-os-test/current-full-outer.js","scripts/dependency-retention-os-test/current-full-guest.js","dist/worker-codex/codex-goal-cli.js"])check(paths.has(path));
     for(const [installedPath,key] of [["/run/TEST-full-outer-review/input.json","outerReviewSha256"],["/run/TEST-real-codex-public-review/input.json","publicReviewSha256"]] as const){const path=installing?positiveInstallationStage+(key==="outerReviewSha256"?"/outer-review/input.json":"/public-review/input.json"):installedPath;pins.hold(dirname(path),true,0o700);pins.publicFile(path,requireDigest(r[key]));pins.hold(path,false,0o600);
@@ -434,8 +458,8 @@ export async function installFullPositiveTestAndComposeRequest(){
     check(!unit.error && (unit.status===0 || unit.status===4) && unit.signal===null && unit.stdout.trim()==="not-found");
     const destination=fullNativeInputBase+"/"+c.tuple.sourceSha;
     const absent=(path:string)=>{try{lstatSync(path);refuse();}catch(error){check(error instanceof Error && "code" in error && error.code==="ENOENT");}};
-    for(const path of [destination,reviewRoot,fullNativeBirthRoot,fullNativeLiveRoot,fullNativePublicDownloadBase,dirname(fullNativePublicCapsule),"/run/TEST-full-outer-review","/run/TEST-real-codex-public-review",integration+"/managed-launcher/dependency-full-native-TEST.mjs",integration+"/managed-launcher/dependency-full-h1-staged-tools-TEST.js",integration+"/managed-launcher/dependency-full-positive-copy-TEST.js"])absent(path);
-    const targetParents=[fullNativeInputBase,dirname(reviewRoot),"/run",integration+"/managed-launcher"].map(path=>c.pins.hold(path,true));
+    for(const path of [destination,reviewRoot,fullNativeBirthRoot,fullNativeLiveRoot,fullNativePublicDownloadBase,dirname(fullNativePublicCapsule),"/run/TEST-full-outer-review","/run/TEST-real-codex-public-review",integration+"/managed-launcher/dependency-full-native-TEST.mjs",integration+"/managed-launcher/dependency-full-h1-staged-tools-TEST.js",integration+"/managed-launcher/dependency-full-positive-copy-TEST.js",integration])absent(path);
+    const targetParents=[fullNativeInputBase,dirname(reviewRoot),"/run","/opt"].map(path=>c.pins.hold(path,true));
     const deadline=performance.now()+120000;let count=0,total=0;
     type Copy=FullPositiveCopyRow;
     function snapshot(path:string,name:string):Copy {
@@ -447,20 +471,26 @@ export async function installFullPositiveTestAndComposeRequest(){
       return {sourceFd:fd,sourceIdentity:identity(stat),name,mode:stat.mode&0o777,children};
     }
     const tree=snapshot(c.tuple.root,c.tuple.sourceSha);
-    const native=snapshot(c.tuple.source+"/host-integration/managed-launcher/dependency-full-native-TEST.js","dependency-full-native-TEST.mjs");
-    const stagedHelper=snapshot(c.tuple.source+"/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","dependency-full-h1-staged-tools-TEST.js");
-    const copyHelper=snapshot(c.tuple.source+"/host-integration/managed-launcher/dependency-full-positive-copy-TEST.js","dependency-full-positive-copy-TEST.js");
+    function cohortDirectory(path:string,name:string,children:readonly Copy[]):Copy {
+      check(performance.now()<deadline && ++count<=100000);const stat=lstatSync(path);
+      check(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && !(stat.mode&0o022));
+      const fd=openSync(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);retained.push(fd);check(identity(fstatSync(fd))===identity(stat));
+      return {sourceFd:fd,sourceIdentity:identity(stat),name,mode:0o755,children};
+    }
+    const directories=["host-jobs","managed-launcher"].map(name=>cohortDirectory(c.tuple.source+"/host-integration/"+name,name,
+      fullPositiveTestCohort.filter(([,target])=>target.startsWith(name+"/")).map(([candidate,target])=>snapshot(c.tuple.source+"/host-integration/"+candidate,basename(target)))));
+    const cohort=cohortDirectory(c.tuple.source+"/host-integration",basename(integration),directories);
     const catalog=snapshot(positiveInstallationStage+"/public-installation.json","public-installation.json");
     const outer=snapshot(positiveInstallationStage+"/outer-review","TEST-full-outer-review"),publicReview=snapshot(positiveInstallationStage+"/public-review","TEST-real-codex-public-review");
-    c.validate();recordAbsent();for(const row of [tree,native,stagedHelper,copyHelper,catalog,outer,publicReview])check(identity(fstatSync(row.sourceFd))===row.sourceIdentity);
+    c.validate();recordAbsent();for(const row of [tree,cohort,catalog,outer,publicReview])check(identity(fstatSync(row.sourceFd))===row.sourceIdentity);
     // Only this explicit installer operation loads the copier, from the exact
     // staged source already retained and catalog-joined by acquire(). Schema1
     // launcher/parent admission keeps its original runtime import closure.
     const copyModule=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-positive-copy-TEST.js").href);
     check(typeof copyModule.copyFullPositiveInstallationRow==="function");c.validate();
     const copy=(row:Copy,parent:number)=>copyModule.copyFullPositiveInstallationRow(row,parent,deadline);
-    copy(tree,targetParents[0]!);copy(native,targetParents[3]!);copy(stagedHelper,targetParents[3]!);copy(copyHelper,targetParents[3]!);copy(outer,targetParents[2]!);copy(publicReview,targetParents[2]!);
-    mkdirSync(`/proc/self/fd/${targetParents[1]}/dependency-full-native-activation`,{mode:0o700});fsyncSync(targetParents[1]!);
+    copy(tree,targetParents[0]!);copy(cohort,targetParents[3]!);copy(outer,targetParents[2]!);copy(publicReview,targetParents[2]!);
+    mkdirSync(`/proc/self/fd/${targetParents[1]}/dependency-full-positive-scoped-activation`,{mode:0o700});fsyncSync(targetParents[1]!);
     const reviewDir=openSync(reviewRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);retained.push(reviewDir);copy(catalog,reviewDir);
     // Publish the same strict protected FULL review only after complete
     // original source/tool/native proof; historical ancestry guards stay exact.
@@ -488,6 +518,33 @@ function record(c:ReturnType<typeof acquire>,live:boolean){
     check(r.phase===FullParentPhase.Starting || (live && r.phase===FullParentPhase.Started));check(typeof r.createdAt==="number" && Number.isSafeInteger(r.createdAt) && r.createdAt>0);fresh.validate();return r;
   }finally{fresh.close();}
 }
+/** ParentStartedHeld DATA: independently repeats original live unit/birth/source joins. */
+export function readFullPositiveStartedHeld(){const c=acquire(),birthPins=new Pins();let anchor:number|undefined;
+  try{
+    const current=record(c,true);check(current.phase===FullParentPhase.Started);
+    const before=birthPins.hold(fullNativeBirthRoot+"/before.json",false,0o600),after=birthPins.hold(fullNativeBirthRoot+"/after.json",false,0o600);
+    const b=fullData(JSON.parse(readFd(before).toString("utf8")),["schemaVersion","sourceSha","fingerprint","producerPid","producerStartTicks","machineId","bootId","sourceSnapshotSha256"]);
+    const a=fullData(JSON.parse(readFd(after).toString("utf8")),["schemaVersion","beforeSha256","unit","invocationId","pid","startTicks","sourceSnapshotSha256"]);
+    check(b.schemaVersion===1 && b.sourceSha===c.tuple.sourceSha && b.fingerprint===current.fingerprint && b.machineId===c.tuple.machineId && b.bootId===c.tuple.bootId && b.sourceSnapshotSha256===fullSourceSnapshot(c));
+    check(a.schemaVersion===1 && a.beforeSha256===hash(readFd(before)) && a.unit===fullNativeUnit && a.sourceSnapshotSha256===fullSourceSnapshot(c));
+    const fields=["InvocationID","MainPID","ControlGroup","Description","ActiveState"];
+    const unit=()=>{const r=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property="+fields.join(",")],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});check(!r.error && r.status===0 && r.signal===null);return parseNativeUnitProperties(r.stdout,fields);};
+    const u=unit();check(u.InvocationID===a.invocationId && u.MainPID===String(a.pid) && u.ControlGroup===fullNativeControlGroup && u.Description==="subscription-job:"+current.fingerprint && ["active","activating"].includes(u.ActiveState??""));
+    const path="/proc/"+u.MainPID;anchor=openSync(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);check(retainedFilesystemType(anchor)===0x9fa0n);const id=identity(fstatSync(anchor)),mnt=ancestorMountId(anchor),held=`/proc/self/fd/${anchor}`;
+    const selectedMount=readlinkSync(held+"/ns/mnt");check(/^mnt:\[[1-9][0-9]*\]$/.test(selectedMount) && selectedMount!==readlinkSync("/proc/1/ns/mnt"));
+    const executable=fstatSync(c.pins.hold(c.tuple.node));
+    const processJoin=()=>{
+      const stat=readFileSync(held+"/stat","utf8"),end=stat.lastIndexOf(") "),parts=stat.slice(end+2).trim().split(/\s+/);
+      check(end>0 && stat.startsWith(u.MainPID+" (") && parts[19]===a.startTicks && !["Z","X","x"].includes(parts[0]??""));
+      check(readlinkSync(held+"/exe")===c.tuple.node && readFileSync(held+"/cmdline").equals(Buffer.from([...argvFor(c),""].join("\0"))) && readFileSync(held+"/cgroup","utf8").trim()==="0::"+fullNativeControlGroup);
+      check(readlinkSync(held+"/ns/user")==="user:[4026531837]" && readlinkSync(held+"/ns/pid")==="pid:[4026531836]" && readlinkSync(held+"/ns/mnt")===selectedMount);
+      const fd=openSync(held+"/exe",constants.O_RDONLY);try{const actual=fstatSync(fd);check(actual.dev===executable.dev && actual.ino===executable.ino);}finally{closeSync(fd);}
+    };
+    processJoin();c.validate();birthPins.validate();check(JSON.stringify(unit())===JSON.stringify(u));
+    const fresh=openSync(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{check(identity(fstatSync(fresh))===id && ancestorMountId(fresh)===mnt && identity(fstatSync(anchor))===id && readlinkSync(`/proc/self/fd/${fresh}/ns/mnt`)===selectedMount);}finally{closeSync(fresh);}processJoin();
+    return Object.freeze({status:"STARTED_HELD",completion:"UNPROVEN",jobId:fullNativeJob,unit:fullNativeUnit,invocationId:a.invocationId,pid:a.pid,startTicks:a.startTicks,sourceSha:c.tuple.sourceSha,beforeSha256:hash(readFd(before)),afterSha256:hash(readFd(after))});
+  }finally{if(anchor!==undefined)closeSync(anchor);birthPins.close();c.h1LibcPins.close();c.pins.close();}
+}
 export function fullManagedStartRequest(){const c=acquire();try{recordAbsent();return Object.freeze({operation:FullOperation.Start,jobId:fullNativeJob,machineId:c.tuple.machineId,argv:argvFor(c),...fullNativeLimits});}finally{c.h1LibcPins.close();c.pins.close();}}
 function recordAbsent(){try{lstatSync(ledger);refuse();}catch(e){if(!(e instanceof Error && "code" in e && e.code==="ENOENT"))refuse();}}
 /** Public DATA snapshot, never original admission or launch permission. */
@@ -501,7 +558,7 @@ export function captureFullNativeRequest(value:unknown){
 export function retainFullNativeLaunch(request:unknown){
   const data=captureFullNativeRequest(request),c=acquire();let closed=false,prepared=false,published=false,beforeBytes:Buffer|undefined;
   try{
-    check(process.argv.length===4 && process.argv[0]===bootstrapNode && process.argv[1]===integration+"/managed-launcher/launch.mjs" && process.argv[2]==="job");
+    check(process.argv.length===4 && process.argv[0]===bootstrapNode && process.argv[1]===fullPositiveTestEntry && process.argv[2]==="job");
     check(readlinkSync("/proc/self/exe")===bootstrapNode && readFileSync("/proc/self/cmdline").equals(Buffer.from([...process.argv,""].join("\u0000"))));
     check(JSON.stringify(JSON.parse(process.argv[3]!))===JSON.stringify(request));
     check(data.fingerprint===fingerprint(c.tuple.machineId,argvFor(c)) && JSON.stringify(data.payload)===JSON.stringify(argvFor(c)));

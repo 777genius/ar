@@ -122,16 +122,31 @@ export function parseInvocation(request) {
   return { ...request, trusted };
 }
 
-export function managedLauncherInvocation(request) {
+/** Closed composition option; never selected from request JSON. */
+export const ManagedLauncherProfile = Object.freeze({ Standard: 'standard', FixedFullPositiveTest: 'fixed_full_positive_test' });
+export const fullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261010-r1';
+export const legacyFullTestJob = 'TEST-dependency-full-native-20261007-r1';
+export const fullPositiveTestRoot = '/opt/subscription-runtime-full-positive-TEST';
+export const fullPositiveTestEntry = fullPositiveTestRoot + '/managed-launcher/launch-full-positive-TEST.mjs';
+export function assertManagedLauncherProfile(profile, jobId) {
+  if (profile === ManagedLauncherProfile.Standard) {
+    if (jobId === fullPositiveTestJob || jobId === legacyFullTestJob) denied();
+  } else if (profile !== ManagedLauncherProfile.FixedFullPositiveTest || jobId !== fullPositiveTestJob) denied();
+}
+export function managedLauncherInvocation(request, profile = ManagedLauncherProfile.Standard) {
   parseInvocation(request);
-  return { command: process.execPath, args: [MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
+  assertManagedLauncherProfile(profile, request.jobId);
+  if (profile === ManagedLauncherProfile.FixedFullPositiveTest && request.operation !== "job") denied();
+  return { command: process.execPath, args: [profile === ManagedLauncherProfile.FixedFullPositiveTest ? fullPositiveTestEntry : MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
 }
 
 export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath,
   guardPath = PAYLOAD_GUARD_PATH, launcherPath = MANAGED_LAUNCHER_PATH,
   executable = path => access(path, constants.X_OK), storagePin } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
-  if (request.jobId === 'TEST-dependency-full-native-20261007-r1') {
+  if (request.jobId === legacyFullTestJob) denied();
+  if (request.jobId === fullPositiveTestJob) {
+    if (process.argv[1] !== fullPositiveTestEntry) denied();
     // Fixed protected FULL branch. The original manager's exclusive ledger is
     // already present; the helper retains the reviewed complete source closure.
     const { fullNativeArguments } = await import('./dependency-full-native-TEST.mjs');
@@ -520,7 +535,7 @@ export async function runStorageIssuer(envelopePath, { capabilityPath = MANAGED_
   }
 }
 
-async function main() {
+export async function runManagedLauncherMain() {
   const args = process.argv.slice(2);
   if (args[0] === 'storage-issuer') {
     if (args.length !== 2) denied();
@@ -556,7 +571,7 @@ async function main() {
     else process.exitCode = code ?? 70;
   });
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) main().catch(error => {
+if (process.argv[1] === fileURLToPath(import.meta.url)) runManagedLauncherMain().catch(error => {
   console.error(error.message);
   process.exitCode = 70;
 });
