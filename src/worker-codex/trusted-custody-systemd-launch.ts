@@ -1,3 +1,4 @@
+import { readOriginalUsableGuestFunding } from "./hosted-ordinary-usable-guest-funding";
 import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, lstatSync } from "node:fs";
@@ -58,6 +59,26 @@ export function trustedOrdinaryQualificationWorkerLaunch(workerId: string, workM
     process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-qualification-guest.js", import.meta.url)), "worker"] };
 }
 
+export function trustedOrdinaryUsableGuestWorkerLaunch(workerId: string, workMs: number, stopMs: number): { command: string; args: string[] } {
+  assertOrdinaryRecipeId(workerId);
+  return { command: trustedCustodySystemdRunExecutable, args: [...ordinaryQualificationArgs(`subscription-runtime-hosted-${workerId}.service`, workMs, stopMs),
+    process.execPath, fileURLToPath(new URL("./hosted-ordinary-installation-usable-guest.js", import.meta.url)), "worker"] };
+}
+
+/** Only the fixed original broker owner supplies its retained namespace FDs.
+ * Descriptor numbers are part of this private recipe, never caller DATA. */
+export function trustedOrdinaryGuestSeedReaderLaunch(node: string, runtimeDirectory: string): { command: string; args: string[] } {
+  if (node !== process.execPath || !/^\/srv\/workers\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(runtimeDirectory) ||
+      runtimeDirectory.split("/").some(part => part === "." || part === "..")) throw new Error("ordinary_launcher_qualification_held");
+  return { command: "/usr/bin/nsenter", args: ["--mount=/proc/self/fd/5", "--pid=/proc/self/fd/6", "--net=/proc/self/fd/7",
+    "--root=/proc/self/fd/4", "--wdns=/", "--", node,
+    runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-seed-reader.js", "--capture-original-seed"] };
+}
+export function trustedOrdinaryGuestNetworkLaunch(): { command: string; args: string[] } {
+  return { command: "/usr/bin/slirp4netns", args: ["--configure", "--mtu=65520", "--disable-host-loopback", "--netns-type=path",
+    "--ready-fd=3", "--exit-fd=4", "/proc/self/fd/5", "tap0"] };
+}
+
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
 
 /** Protected original clocks only limit an existing operation. These bytes do
@@ -67,9 +88,10 @@ export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySuper
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(supervisor.operationId)) held();
   const root = "/var/lib/subscription-runtime-host-policy", guestEntry = "/dist/worker-codex/hosted-ordinary-installation-qualification-guest.js";
   const guest = supervisor.bootstrap.path.endsWith(guestEntry);
-  const bytes = readHostedPrivateBytes(guest ? root + "/ordinary-qualification/funded-operation.json" :
+  const usableGuest = supervisor.bootstrap.path.endsWith("/dist/worker-codex/hosted-ordinary-installation-usable-guest.js");
+  const bytes = usableGuest ? readOriginalUsableGuestFunding(supervisor) : readHostedPrivateBytes(guest ? root + "/ordinary-qualification/funded-operation.json" :
     `${root}/ordinary-installations/${supervisor.operationId}/operation.json`, 65536);
-  if (!bytes || !guest && !readHostedPrivateBytes(`${root}/ordinary-installations/${supervisor.operationId}.json`, 65536)?.equals(bytes)) held();
+  if (!bytes || !guest && !usableGuest && !readHostedPrivateBytes(`${root}/ordinary-installations/${supervisor.operationId}.json`, 65536)?.equals(bytes)) held();
   const packet = JSON.parse(bytes.toString("utf8")) as { schemaVersion: number; operationId: string; hostId: string; bootId: string;
     issuedEpochMs: number; issuedMonotonicNs: string; workEndEpochMs: number; cleanupEndEpochMs: number; runtimeDirectory: string;
     node: { path: string; sha256: string }; bootstrap: { path: string; sha256: string };
@@ -87,9 +109,9 @@ export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySuper
         !input || createHash("sha256").update(input).digest("hex") !== fixture.inputSha256) held();
     const projection = JSON.parse(input.toString("utf8")) as { operation?: { operationId: string; workEndEpochMs: number; cleanupEndEpochMs: number } };
     if (projection.operation?.operationId !== packet.operationId || projection.operation.workEndEpochMs !== packet.workEndEpochMs || projection.operation.cleanupEndEpochMs !== packet.cleanupEndEpochMs) held();
-  } else if (supervisor.bootstrap.path !== packet.runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-bootstrap.js" ||
+  } else if (!usableGuest && (supervisor.bootstrap.path !== packet.runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-bootstrap.js" ||
       packet.bootstrap?.path !== supervisor.bootstrap.path || packet.bootstrap.sha256 !== supervisor.bootstrap.sha256 ||
-      readFileSync("/etc/machine-id", "utf8").trim() !== packet.hostId || readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== packet.bootId) held();
+      readFileSync("/etc/machine-id", "utf8").trim() !== packet.hostId || readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== packet.bootId)) held();
   const now = Date.now(), elapsed = Number((process.hrtime.bigint() - BigInt(packet.issuedMonotonicNs)) / 1_000_000n);
   if (!Number.isSafeInteger(elapsed) || elapsed < 0 || now < packet.issuedEpochMs || now < packet.issuedEpochMs + elapsed - 1000) held();
   const end = cleanup ? packet.cleanupEndEpochMs : packet.workEndEpochMs, ms = Math.min(end - now, end - packet.issuedEpochMs - elapsed);

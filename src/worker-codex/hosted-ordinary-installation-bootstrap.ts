@@ -1,3 +1,4 @@
+import { runOriginalUsableGuestQualification } from "./hosted-ordinary-installation-broker-use";
 import { validatePreparedOrdinaryLauncherQualification, runOrdinaryLauncherPairQualification, type OrdinaryLauncherCandidate, type OrdinaryLauncherQualificationFixture } from "./hosted-ordinary-installation-qualification";
 import { OrdinaryLauncherPublication, assertOrdinaryCollectorProfileUpgrade, type OrdinaryCopiedCohort, type OrdinaryPriorCollectorProfile } from "./hosted-ordinary-installation-launcher";
 import { resolveStoredProjectStartPlan } from "./stored-start-planning";
@@ -167,6 +168,11 @@ export async function runQualifiedPairInstallationOperator(operationId: string) 
   const publication = new OrdinaryLauncherPublication(operation, pair, request.copiedCohort, request.preparedCollectorProfile, request.priorCollectorProfile);
   publication.publish(); admitInstalledPair(packet);
   if (!readHostedPrivateBytes(packet.collectorProfile.path, 64 * 1024)?.equals(readHostedPrivateBytes(request.preparedCollectorProfile.path, 64 * 1024)!)) denied();
+  // Optional fixed TEST qualification; a present malformed selection refuses.
+  let usable = true;
+  try { lstatSync(join(operationRoot, operationId + ".usable-fixture.json")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; usable = false; }
+  if (usable) await runOriginalUsableGuestQualification(operation);
   publication.consumeBeforeOriginalSupervisorBirth();
   return runFundedInstallationSupervisor(packet, operation);
 }

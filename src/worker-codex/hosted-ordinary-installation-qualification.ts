@@ -205,6 +205,11 @@ export class QualificationChild {
     }
     qualificationHeld();
   }
+  assertLiveOriginal(): void {
+    if (this.closed || this.failed || !this.original) qualificationHeld();
+    this.association();
+    if (collectUnitShow(this.unit).MainPID === "0") qualificationHeld();
+  }
   private association(): void {
     const original = this.original; if (!original) qualificationHeld();
     if (readFileSync("/etc/machine-id", "utf8").trim() !== original.hostId || collectBootId() !== original.bootId) qualificationHeld();
