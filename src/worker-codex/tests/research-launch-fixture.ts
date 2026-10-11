@@ -197,6 +197,15 @@ vi.mock("node:child_process", async original => {
         options.env?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_RUNNER === "1" &&
         (options.cwd === undefined || typeof options.cwd === "string" && owned(options.cwd))) return real.spawn(command, argv, options);
     const stdio = options?.stdio;
+    if (command === process.execPath && argv.length === 2 && argv[0] === "-e" && argv[1] === "process.exit(0)" &&
+        typeof options.cwd === "string" && owned(options.cwd) && fs.lstatSync(options.cwd).isDirectory() &&
+        options.detached === true && Array.isArray(stdio) && stdio.length === 3 &&
+        stdio[0] === "ignore" && stdio[1] === "pipe" && stdio[2] === "pipe" && typeof options.env === "object" && options.env !== null &&
+        !Array.isArray(options.env) && Object.keys(options).every(key => ["cwd", "detached", "env", "stdio"].includes(key))) {
+      // The integration fixture's fixed no-op retains the real process-group
+      // check runner while dropping inherited credentials and Node preload flags.
+      return real.spawn(command, argv, { ...options, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
+    }
     const batch = command === "git" && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch";
     const apply = command === "git" && argv.length === 9 &&
       argv.slice(0, 4).join("\0") === "--literal-pathspecs\0-c\0core.quotepath=false\0-C" &&
