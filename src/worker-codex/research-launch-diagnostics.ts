@@ -154,3 +154,24 @@ export function normalizeResearchMaterialFailure(error: unknown) {
   }
   return { ...normalizeResearchLaunchFailure(error), materialRole, ...(scratchCapacity ? { scratchCapacity } : {}) };
 }
+
+const nativeErrorStackGetter = Object.getOwnPropertyDescriptor(new Error(), "stack")?.get;
+
+/** Numeric source location only; never serialize an error message, path or stack. */
+export function normalizeResearchAssemblyFailure(error: unknown) {
+  let stack = ownString(error, "stack") ?? "";
+  // Node 24 exposes a native lazy stack accessor. Never invoke a caller getter.
+  if (!stack && error && typeof error === "object" && !types.isProxy(error) && types.isNativeError(error)) {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "stack");
+    if (nativeErrorStackGetter && descriptor?.get === nativeErrorStackGetter) {
+      try { const value: unknown = nativeErrorStackGetter.call(error); if (typeof value === "string") stack = value; } catch { /* Diagnostic only. */ }
+    }
+  }
+  stack = stack.slice(0, 8192);
+  const frame = /\/dist\/worker-codex\/research-provider-root-assembler\.js:([1-9]\d{0,5}):([1-9]\d{0,5})/.exec(stack);
+  const materialFrame = /\/dist\/worker-codex\/research-launch-admission\.js:([1-9]\d{0,5}):([1-9]\d{0,5})/.exec(stack);
+  const material = normalizeResearchMaterialFailure(error);
+  return { legacyCode: material.legacyCode, cause: material.cause, diagnostic: material.diagnostic, materialRole: material.materialRole,
+    ...(frame ? { assemblyLine: Number(frame[1]), assemblyColumn: Number(frame[2]) } : {}),
+    ...(materialFrame ? { materialLine: Number(materialFrame[1]), materialColumn: Number(materialFrame[2]) } : {}) };
+}

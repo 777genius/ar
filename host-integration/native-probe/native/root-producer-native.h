@@ -8,7 +8,15 @@
 #define NP_ORIGIN_SECOND UINT64_C(1000000000)
 #define NP_ORIGIN_FILES 128
 #define NP_ORIGIN_PHASE_MAX 16384
-#ifdef NP_RETAINED_V2_A1
+#ifdef NP_RETAINED_V2_B1A
+#define NP_ORIGIN_ADMIN "/run/subscription-runtime/native-retained-v2-b1a/original"
+#define NP_ORIGIN_INSTALL "/opt/subscription-runtime/native-retained-v2-b1a"
+#define NP_ORIGIN_FRAME "NPB1"
+#define NP_ORIGIN_BOOTSTRAP "NPADB101"
+#define NP_ORIGIN_SNAPSHOT "NPB1SN01"
+#define NP_ORIGIN_ENTRY "/retained-v2-actor-entry"
+#define NP_ORIGIN_OPERATOR "/admin/host-integration/native-probe/retained-v2-actor-operator.mjs"
+#elif defined(NP_RETAINED_V2_A1)
 #define NP_ORIGIN_ADMIN "/run/subscription-runtime/native-retained-v2/original"
 #define NP_ORIGIN_INSTALL "/opt/subscription-runtime/native-retained-v2"
 #define NP_ORIGIN_FRAME "NPV2"
@@ -40,7 +48,11 @@ struct np_admin_operation;
 struct np_root_origin;
 struct np_origin_child;
 struct np_managed_original;
-enum np_origin_effect { NP_ORIGIN_NAMESPACE, NP_ORIGIN_FORK, NP_ORIGIN_HELPER, NP_ORIGIN_CONNECT, NP_ORIGIN_START, NP_ORIGIN_REF, NP_ORIGIN_STOP, NP_ORIGIN_UNREF, NP_ORIGIN_EFFECTS };
+enum np_origin_effect { NP_ORIGIN_NAMESPACE, NP_ORIGIN_FORK, NP_ORIGIN_HELPER, NP_ORIGIN_CONNECT, NP_ORIGIN_START, NP_ORIGIN_REF, NP_ORIGIN_STOP, NP_ORIGIN_UNREF,
+#ifdef NP_RETAINED_V2_B1A
+NP_ORIGIN_SLICE_RETAINED_REF,NP_ORIGIN_TARGET_RETAINED_REF,NP_ORIGIN_ACTOR_RETAINED_REF,
+#endif
+NP_ORIGIN_EFFECTS };
 enum np_origin_loss { NP_ORIGIN_EXPLICIT_STOP, NP_ORIGIN_CUTOFF, NP_ORIGIN_CUSTODY, NP_ORIGIN_PROTOCOL, NP_ORIGIN_SETUP };
 struct np_origin_ends { uint64_t generation, anchor, work, cleanup, cold; };
 struct np_l0_native_data { bool closed, child_wait, streams, helper_wait, manager, shared_unknown; };
@@ -65,6 +77,10 @@ void np_origin_effect_end_v1(struct np_root_origin *);
 const struct np_origin_ends *np_origin_ends_v1(struct np_root_origin *);
 const char *np_origin_unit_v1(struct np_root_origin *);
 const char *np_origin_job_v1(struct np_root_origin *);
+#ifdef NP_RETAINED_V2_B1A
+int np_origin_retained_reference_open_v2(struct np_root_origin *,struct np_managed_original **,const struct np_birth *);
+int np_origin_retained_boundary_v2(struct np_root_origin *);
+#endif
 int np_origin_daemon_fd_v1(struct np_root_origin *);
 int np_origin_daemon_identity_v1(struct np_root_origin *, uid_t *, gid_t *);
 int np_origin_sample_v1(struct np_origin_child *, uint64_t *);

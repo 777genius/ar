@@ -14,7 +14,7 @@ function fixture(t) {
   for (const path of [bin, `${integration}/managed-launcher`, `${integration}/host-jobs`, `${destination}/managed-launcher`, `${destination}/host-jobs`]) mkdirSync(path, { recursive: true });
   // Keep the generated CommonJS commands independent of temporary ancestors.
   writeFileSync(join(bin, 'package.json'), '{"type":"commonjs"}\n');
-  for (const path of ['managed-launcher/host-inventory-codec.cjs', 'managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/profiles.mjs', 'managed-launcher/hosted-host-policy.mjs', 'host-jobs/storage-policy.mjs']) {
+  for (const path of ['managed-launcher/host-inventory-codec.cjs', 'managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/storage-pressure-guard.mjs', 'managed-launcher/profiles.mjs', 'managed-launcher/hosted-host-policy.mjs', 'host-jobs/storage-policy.mjs']) {
     writeFileSync(`${integration}/${path}`, `trusted ${path}\n`);
     writeFileSync(`${destination}/${path}`, path.endsWith('host-inventory-codec.cjs') ? `trusted ${path}\n` : 'old installation\n');
   }
@@ -136,7 +136,7 @@ test('trusted files are installed completely with expected permissions', t => {
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
-    for (const path of ['managed-launcher/host-inventory-codec.cjs', 'managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/profiles.mjs', 'managed-launcher/hosted-host-policy.mjs', 'host-jobs/storage-policy.mjs']) {
+    for (const path of ['managed-launcher/host-inventory-codec.cjs', 'managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/storage-pressure-guard.mjs', 'managed-launcher/profiles.mjs', 'managed-launcher/hosted-host-policy.mjs', 'host-jobs/storage-policy.mjs']) {
       assert.deepEqual(readFileSync(join(f.destination, path)), readFileSync(join(f.integration, path)));
       assert.equal(statSync(join(f.destination, path)).mode & 0o777, 0o644);
     }
