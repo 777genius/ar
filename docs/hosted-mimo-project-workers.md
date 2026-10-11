@@ -97,6 +97,22 @@ Preparation validates enabled routing and proof before creating fresh protected 
 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
 
+## Recovering an unlaunched legacy controller
+
+If a legacy controller reports `controllerWriterAuthority: unknown`, the initial root operator can use the bounded recovery command:
+
+```sh
+node /opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js --recover-controller /etc/subscription-runtime/reviewed-mimo-recovery.json
+```
+
+The strict plan contains `schemaVersion: 1`, project/workstream/machine IDs, `expectedBindingSha256`, `expectedControllerManifestSha256`, `newControllerJobId` and the existing historical attestation fields, excluding `destinationWorkspacePath`. Its confirmation is `I attest complete never-run controller history through this recovery maintenance fence`. Evidence must be protected files with exact SHA-256; the operator must attest complete history, including custom/direct launches and state movement. Missing authority files alone do not establish that history. The replacement ID starts with the old ID followed by `-r`.
+
+Recovery refuses registered children, prior controller execution authority or first effects, active/queued operations, successful mutation receipts, changed source or mismatched plan bytes. It closes ingress with an owned maintenance fence and durable recovery guard, creates a fresh controller through canonical job birth, archives the old registration under `registry/.project-control/superseded-controllers`, and changes only the binding's controller ID. Source, old job root, manifest bytes and retained attempts remain intact; the old controller's writer authority stays unknown. Both cold writer observers must report `released` for the replacement.
+
+A partial transition remains closed. Reconcile or resume the same exact plan; do not submit a replacement plan or delete its guard. Controllers with previously launched child jobs need a separate reviewed migration or isolated workstream. Prepare and recover controllers using the release that will serve their admission: birth provenance is tied to the exact runtime artifact.
+
+If creation was interrupted after the new job root appeared but before canonical manifest publication, exact-plan replay returns `mimo_project_bridge_recovery_reconciliation_required`. Keep the guard and old controller; further reconciliation requires operator review. Recovery never adopts that existing root or publishes an uncertified replacement manifest.
+
 Preparation requires the owner identity exactly `iliya` / `iliyazelenkog@gmail.com`. Before privileged Git inspection it validates the complete local `.git` metadata tree, rejects linked/external Git stores and executable transport/include/filter configuration, and uses inert Git environment/flags that disable fsmonitor, hooks and inherited configuration. The source sandbox must be an actual directory represented by tracked files, and must still exist after clone; an empty or ignored-only directory is refused.
 
 ## Availability across projects

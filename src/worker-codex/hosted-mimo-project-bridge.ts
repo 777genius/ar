@@ -55,7 +55,9 @@ export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = 65536
   } finally { closeSync(fd); }
 }
 export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBinding): void {
-  if (!binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
+  if (existsSync(join(binding.stateRoot, ".controller-recovery.json")) ||
+      existsSync(join(binding.stateRoot, ".controller-maintenance-fence.json")) ||
+      !binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
       existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.route-disabled`))
     throw new Error("mimo_project_bridge_route_closed");
   const yaml = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.yml`).toString("utf8");
