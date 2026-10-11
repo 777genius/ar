@@ -15,6 +15,7 @@ export async function researchProjectLaunchInputs(input: {
   readonly request: ResearchOperatorRequest; readonly preStart?: boolean;
   readonly execution?: ResearchRegisteredExecution;
   readonly bindSupportedRequest: (loaded: Loaded, controller: Controller) => ResearchOperatorRequest;
+  readonly readPromptBytes?: (path: string) => Buffer;
 }): Promise<{ readonly binding: ResearchProjectLaunchBinding; readonly request: ResearchOperatorRequest;
   readonly controller: Controller; readonly assertAuthorityBytes: () => void }> {
   const { registryRootDir, controllerJobId, request, execution } = input;
@@ -45,7 +46,9 @@ export async function researchProjectLaunchInputs(input: {
   const immutableInputs = [[manifest.promptPath, "promptSha256"],
     [manifest.projectPreStartAdmission.contractPath, "contractSha256"],
     [manifest.projectPreStartAdmission.statePath, "stateSha256"]] as const;
-  for (const [path, key] of immutableInputs) if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
+  const readImmutableInput = (path: string, key: string): Buffer => key === "promptSha256" && input.readPromptBytes
+    ? input.readPromptBytes(path) : researchRead(path);
+  for (const [path, key] of immutableInputs) if (researchHash(readImmutableInput(path, key)) !== receipt[key]) researchInvalid();
   const binding = Object.freeze({ registryRootDir, controllerJobId, manifestSha256: digest(manifest),
     scopeSha256: digest(controller.scope), receiptSha256, requestSha256: researchHashRequest(boundRequest),
     ...(execution ? { registeredExecution: execution } : {}) });
@@ -56,7 +59,7 @@ export async function researchProjectLaunchInputs(input: {
   const assertAuthorityBytes = (): void => {
     if (researchHash(researchRead(manifest.projectPreStartAdmission!.receiptPath)) !== receiptSha256 ||
         !researchRead(controllerPath).equals(controllerBytes) || !researchRead(manifestPath).equals(manifestBytes)) researchInvalid();
-    for (const [path, key] of immutableInputs) if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
+    for (const [path, key] of immutableInputs) if (researchHash(readImmutableInput(path, key)) !== receipt[key]) researchInvalid();
   };
   assertAuthorityBytes();
   researchCustody(controllerPath, true); researchCustody(manifestPath, true);

@@ -8,11 +8,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // request/admission records or READY token; this is not full adapter proof.
 // Its operator tuple qualifies the compiled context guard's mechanics only.
 type Prelude = Pick<typeof import("../research-provider-root-assembler"), "researchProviderRootTransition">;
+type AssemblyRecipe = Pick<typeof import("../trusted-custody-systemd-launch"), "researchProviderAssemblyCapabilityBoundingSet">;
 type ContextGuard = Pick<typeof import("../research-launch-host"), "assertResearchProviderInitialRoot">;
 type DescriptorGuard = Pick<typeof import("../../provider-codex/app-server/adapters/hosted-process-descriptors"), "assertHostedFdPreludeDescriptors">;
 type Mode = "clean" | "unmounted" | "file" | "directory";
 type Expected = Readonly<{ schemaVersion: 1; hostUser: string; hostPid: string; initialHostContext: import("../research-launch-host").ResearchInitialHostContext; outside: string; sentinelSha256: string; inside: string }>;
-const phases = ["arguments", "custody", "initial-caps", "no-new-privileges", "provider-context", "import", "bind", "remount", "transition", "child-oracle", "oracle-inputs", "oracle-isolation", "oracle-nested-userns", "oracle-descriptors", "receipt", "userns-capset", "userns-root", "private-proc"] as const;
+const phases = ["arguments", "custody", "initial-caps", "no-new-privileges", "cold-root-witness", "provider-context", "import", "bind", "remount", "transition", "child-oracle", "oracle-inputs", "oracle-isolation", "oracle-nested-userns", "oracle-descriptors", "receipt", "userns-capset", "userns-root", "private-proc"] as const;
 type Target = "none" | "operator" | "root" | "runtime" | "expected" | "proc" | "usr" | "node" | "probe" | "guard" | "bin" | "sbin" | "lib" | "lib64" | "outside-file" | "outside-directory";
 let phase: typeof phases[number] = "arguments", target: Target = "none", role: "operator" | "assembler" | "oracle" = "operator", activeMode: Mode | null = null;
 let failedCommand: ReturnType<typeof spawnSync> | undefined;
@@ -88,13 +89,18 @@ async function assemble(root: string, runtime: string, expectedPath: string, mod
   mark("custody", "root"); trusted(root); mark("custody", "runtime"); trusted(runtime); mark("custody", "expected"); trusted(expectedPath);
   mark("initial-caps", "root");
   const ownStatus = readFileSync("/proc/self/status", "utf8");
-  requireFact(/^CapBnd:\s+0000000080200100$/m.test(ownStatus) && mark("no-new-privileges", "root") && /^NoNewPrivs:\s+1$/m.test(ownStatus));
+  requireFact(/^CapBnd:\s+0000000080280100$/m.test(ownStatus) && mark("no-new-privileges", "root") && /^NoNewPrivs:\s+1$/m.test(ownStatus));
   mark("import", "runtime");
   const transitionModule = join(runtime, "dist/worker-codex/research-provider-root-assembler.js"), transitionSha256 = sha(readFileSync(transitionModule));
   const module = await import(pathToFileURL(transitionModule).href) as Prelude;
   const hostGuardModule = join(runtime, "dist/worker-codex/research-launch-host.js"), hostGuardSha256 = sha(readFileSync(hostGuardModule));
   const guard = await import(pathToFileURL(hostGuardModule).href) as ContextGuard, expected = JSON.parse(readFileSync(expectedPath, "utf8")) as Expected;
   mark("provider-context", "root"); guard.assertResearchProviderInitialRoot(expected.initialHostContext);
+  // Regression: uid0 alone cannot cross PID1's proc magic-link ptrace gate.
+  // The same cold-root route guards registered durable source and pin custody.
+  mark("cold-root-witness", "root");
+  const coldRoot = lstatSync("/proc/1/root" + root), directRoot = lstatSync(root);
+  requireFact(coldRoot.dev === directRoot.dev && coldRoot.ino === directRoot.ino && coldRoot.uid === 0 && coldRoot.isDirectory());
   if (mode !== "unmounted") {
     mark("bind", "root");
     const lower = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -193,6 +199,7 @@ async function run(operator: string, runtime: string, negativesOnly = false): Pr
       namespaces: { user: readlinkSync("/proc/1/ns/user"), mnt: readlinkSync("/proc/1/ns/mnt"), pid: readlinkSync("/proc/1/ns/pid"), net: readlinkSync("/proc/1/ns/net") } },
     outside: sentinel, sentinelSha256: sha(readFileSync(sentinel)), inside: "PUBLIC-TEST-inside-root\n" };
   writeFileSync(expectedPath, JSON.stringify(expected) + "\n", { mode: 0o600, flag: "wx" });
+  const recipe = await import(pathToFileURL(join(runtime, "dist/worker-codex/trusted-custody-systemd-launch.js")).href) as AssemblyRecipe;
   const receipts: unknown[] = [];
   for (const mode of negativesOnly ? ["unmounted", "file", "directory"] as const : ["clean", "unmounted", "file", "directory"] as const) {
     const root = join(directory, mode); mkdirSync(root, { mode: 0o755 });
@@ -212,7 +219,7 @@ async function run(operator: string, runtime: string, negativesOnly = false): Pr
     const result = call("/usr/bin/systemd-run", ["--quiet", "--wait", "--pipe", "--collect", "--service-type=exec", "--expand-environment=no", "--working-directory=/", "--unit=" + unit,
       "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Restart=no", "--property=Delegate=no", "--property=TimeoutStartSec=300s", "--property=RuntimeMaxSec=90s",
       "--property=MemoryMax=1G", "--property=TasksMax=128", "--property=CPUQuota=200%", "--property=MemorySwapMax=0", "--property=LimitCORE=0", "--property=NoNewPrivileges=yes",
-      "--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "--property=AmbientCapabilities=", "--property=DevicePolicy=closed", "--property=SystemCallFilter=~@raw-io @module",
+      "--property=" + recipe.researchProviderAssemblyCapabilityBoundingSet, "--property=AmbientCapabilities=", "--property=DevicePolicy=closed", "--property=SystemCallFilter=~@raw-io @module",
       "--", "/usr/bin/unshare", "--mount", "--propagation", "private", process.execPath, script, "assemble", root, runtime, expectedPath, mode, String(deadline)], deadline);
     const creatorUnchanged = tree(root) === baseline && !readFileSync("/proc/self/mountinfo", "utf8").split("\n").some(row => row.split(" ")[4]?.startsWith(root));
     mark("receipt", "root");

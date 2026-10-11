@@ -1,4 +1,4 @@
-import { prepareProjectResearchLaunch } from "./research-project-launch-adapter";
+import { isProjectMimoWorkerLaunch, launchProjectMimoWorker, stopProjectMimoWorker } from "./project-mimo-worker-launch";
 import { recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
 import { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
 export { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
@@ -253,7 +253,6 @@ function codexProjectControlPorts(
   creationProof: () => ProjectCreationAdmissionProof | undefined,
 ): ProjectControlBrokerPorts {
   let preparedAuthorization: ProjectPreStartAdmissionLaunchAuthorization | undefined;
-  let nativeStart: Awaited<ReturnType<typeof prepareProjectResearchLaunch>>;
   return {
     authority: authorityStore,
     admissionCoordination: {
@@ -404,8 +403,6 @@ function codexProjectControlPorts(
         // exact root before release, so later sibling censuses cannot contend
         // with this already authorized launch's negative-history rechecks.
         recordProtectedCodexGoalJobFirstEffect(input.startManifest.jobRootDir);
-        nativeStart = await prepareProjectResearchLaunch({ registryRootDir: input.registryRootDir,
-          controllerJobId: input.controller.jobId, reservedLaunch: input.startLaunch });
       },
       async startWorker() {
         if (!input.startLaunch) {
@@ -481,19 +478,18 @@ function codexProjectControlPorts(
           }
           // Broker authorization publishes a receipt. Managed broker requests
           // must already be enclosed by the fixed CLI outer command before it.
-          if (nativeStart) {
-            // Grant publication can authorize a later executable effect. Retain
-            // the allocated claim on every uncertain outcome from this point.
-            submissionMayHaveOccurred = true;
-            const started = await nativeStart();
-            return operationResult(`${CodexGoalLaunchState.Scheduled}: ${started.unit}`);
-          }
-          await admitHostedControllerLaunch(startLaunch);
+          if (!isProjectMimoWorkerLaunch(startLaunch)) await admitHostedControllerLaunch(startLaunch);
           const previousBrokeredStart =
             process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START;
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START = "1";
           const launchWorker = async () => {
             submissionMayHaveOccurred = true;
+            if (isProjectMimoWorkerLaunch(startLaunch)) {
+              const launched = await launchProjectMimoWorker({ registryRootDir: input.registryRootDir,
+                controllerJobId: input.controller.jobId, reservedLaunch: input.startLaunch! });
+              return { args: [], preview: `MiMo worker ${launched.jobId} (${launched.startId})`,
+                launchState: CodexGoalLaunchState.Scheduled };
+            }
             const outerStatus = await routeHostedGoalLaunch(startLaunch);
             // Undefined is the router's explicit no-submission/local outcome.
             // An exception remains uncertain and keeps the allocated claim.
@@ -585,6 +581,11 @@ function codexProjectControlPorts(
         });
         if (!stopPolicy.allowed) {
           throw new Error(stopPolicy.reason);
+        }
+        if (isProjectMimoWorkerLaunch(input.stopLaunch)) {
+          const evidence = await stopProjectMimoWorker({ registryRootDir: input.registryRootDir,
+            controllerJobId: input.controller.jobId, launch: input.stopLaunch });
+          return operationResult("MiMo worker stopped with reconciled workspace", evidence);
         }
         if (isHostedActivatedGoalLaunch(input.stopLaunch)) {
           stopHostedGoalLaunch(input.stopLaunch);

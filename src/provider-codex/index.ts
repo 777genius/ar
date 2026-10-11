@@ -50,3 +50,5 @@ export type { CodexSubscriptionPreparationOwner, CodexSubscriptionPreparationInp
   CodexSubscriptionPreparedConsumer } from "./hosted-subscription-session-materializer";
 export { OpenWorkerLayoutErrorCode, assertHostedOpenWorkerLayout, renderHostedOpenWorkerProfilesToml, hostedOpenWorkerReadRoots,
   hostedOpenWorkerExtraDenyDirectories, hostedOpenWorkerForbiddenReadRoots } from "./hosted-open-worker-permissions";
+
+export { prepareHostedMimoCodingEngineAuthority, type HostedMimoCodingEngineAuthority } from "./hosted-mimo-coding-engine-authority";

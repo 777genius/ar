@@ -13,6 +13,10 @@ import type { ResearchStartSpec } from "../research-launch-contract";
 import { parseResearchOperatorRequest } from "../research-launch-contract";
 import { researchDurableDirectory } from "../research-durable-handoff-directory";
 import * as scratchAdapter from "../host-scratch-temp";
+import { CodexModelBackend, codexMimoDefaultModel } from "../../provider-codex/codex-model-backend";
+import { HostedMimoProfile } from "../../provider-codex/hosted-mimo-profile";
+import { researchMimoCodingPublicMaterials } from "../research-mimo-coding-public-materials";
+import { researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome } from "../research-mimo-coding-root";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
@@ -126,7 +130,105 @@ const namespaceMount = (point: string, root = "net:[4026531840]", device = "0:4"
 const deletedMount = (point: string, root = "/jobs/TEST-foreign/.research/.cache/toolchain//deleted", filesystem = "ext4") =>
   `900 1 8:1 ${root} ${point} rw - ${filesystem} /dev/TEST rw`;
 
+function codingCaptured() {
+  const f = captured();
+  // Root-layout preparation only: independent CodingV1 activation stays closed.
+  const request = parseResearchOperatorRequest({ ...f.spec.request, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64, model: codexMimoDefaultModel, accounts: ["account-q"],
+    maxAccountCycles: 1, prewarmOnStart: false });
+  const spec = { ...f.spec, request };
+  researchPublish(join(f.directory, "spec.json"), spec);
+  const specSha256 = researchHash(researchRead(join(f.directory, "spec.json")));
+  researchPublish(join(f.directory, "providers", unit + ".json"), { schemaVersion: 1, unit, runtimeUnit: spec.unit,
+    specSha256, description: `subscription-runtime-research-provider:${spec.startId}:${unit}` });
+  for (const path of researchMimoCodingBootstrapPaths(spec.runtimeDirectory)) {
+    fs.mkdirSync(local(dirname(path)), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(path, path.endsWith("package.json") ? '{"type":"module"}' : 'export {};', { mode: 0o644 });
+  }
+  return { ...f, spec };
+}
+
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
+  it("prepares CodingV1 with only its pinned workspace writable and a finite launcher closure", () => {
+    const f = codingCaptured(), observed = observingHost();
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => [bind.source, bind.target]))
+      .toEqual([[join(f.directory, "pins/workspace"), f.spec.request.workspacePath]]);
+    expect(plan.bindings.some(bind => bind.target === f.spec.request.jobRootDir || bind.target === f.spec.runtimeDirectory ||
+      bind.target === researchMimoCodingHome || bind.target === researchMimoCodingCodexHome)).toBe(false);
+    expect(plan.bindings.filter(bind => bind.target.startsWith(f.spec.runtimeDirectory + "/")).map(bind => bind.target).sort())
+      .toEqual([...researchMimoCodingBootstrapPaths(f.spec.runtimeDirectory)].sort());
+    for (const path of [researchMimoCodingHome, researchMimoCodingCodexHome]) {
+      expect(fs.readdirSync(join(plan.fixedRootDirectory, path.slice(1)))).toEqual(path === researchMimoCodingHome ? [".codex"] : []);
+    }
+    expect(plan.codingBootstrap).toEqual({ schemaVersion: 1, startId: f.spec.startId,
+      specSha256: researchHash(researchRead(join(f.directory, "spec.json"))), workspacePath: f.spec.request.workspacePath });
+    expect(Object.isFrozen(plan.codingBootstrap)).toBe(true);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it("captures only fixed CodingV1 policy bytes despite Host and project config", () => {
+    const f = codingCaptured(), observed = observingHost();
+    fs.mkdirSync(local("/etc/codex"), { recursive: true, mode: 0o755 });
+    fs.writeFileSync("/etc/codex/requirements.toml", "TEST_HOST_POLICY_NEVER_IMPORT", { mode: 0o644 });
+    fs.mkdirSync(local(join(f.spec.request.workspacePath, ".codex")), { mode: 0o755 });
+    fs.writeFileSync(join(f.spec.request.workspacePath, ".codex/config.toml"),
+      'model_catalog_json = "/TEST/foreign-models.json"\n[mcp_servers.TEST]\ncommand = "/TEST/foreign"\n', { mode: 0o644 });
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    for (const file of researchMimoCodingPublicMaterials) {
+      const bind = plan.bindings.find(bind => bind.target === file.target)!;
+      expect(bind.source).toBe(join(f.directory, "provider-roots", unit, file.name));
+      expect(bind.access).toBe(ResearchRootMountAccess.ReadOnly); expect(bind.file).toBe(true);
+      expect(fs.readFileSync(bind.source, "utf8")).toBe(file.bytes);
+      expect(fs.lstatSync(bind.source).mode & 0o7777).toBe(0o444);
+      expect(fs.lstatSync(bind.source).nlink).toBe(1);
+      expect(fs.readFileSync(join(plan.fixedRootDirectory, file.target.slice(1)), "utf8")).toBe("");
+    }
+    expect(fs.lstatSync(join(plan.fixedRootDirectory, "etc/codex")).mode & 0o7777).toBe(0o755);
+    expect(plan.bindings.some(bind => bind.source === "/etc/codex" || bind.source.startsWith("/etc/codex/"))).toBe(false);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each(researchMimoCodingPublicMaterials.flatMap(file => ["bytes", "symlink", "writable", "mount"].map(fault => ({ file, fault }))))(
+    "rejects changed CodingV1 $file.name $fault before a retained root can be used", ({ file, fault }) => {
+      const f = codingCaptured(), observed = observingHost();
+      const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+      const bind = plan.bindings.find(bind => bind.target === file.target)!;
+      if (fault === "bytes") {
+        fs.chmodSync(local(bind.source), 0o644); fs.writeFileSync(bind.source, "X".repeat(Buffer.byteLength(file.bytes))); fs.chmodSync(local(bind.source), 0o444);
+      }
+      if (fault === "symlink") { fs.unlinkSync(bind.source); fs.symlinkSync(f.spec.request.promptPath, local(bind.source)); }
+      if (fault === "writable") fs.chmodSync(local(bind.source), 0o644);
+      if (fault === "mount") observed.extraMounts.push(`900 1 8:1 /TEST-foreign ${bind.source} rw - ext4 /dev/TEST rw`);
+      expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+      expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    });
+  it("rejects a guest home as the Host CodingV1 admission home before creating any root", () => {
+    const f = codingCaptured(), observed = observingHost();
+    expect(() => prepareResearchProviderRoot(f.spec, unit, researchMimoCodingCodexHome, undefined, observed.adapter))
+      .toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it("rejects a symlink in the Host admission home without exposing it to CodingV1", () => {
+    const f = codingCaptured(), observed = observingHost();
+    fs.rmdirSync(local(f.home)); fs.symlinkSync(f.spec.request.workspacePath, local(f.home));
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it("rejects a symlink in the finite CodingV1 launcher closure before root effects", () => {
+    const f = codingCaptured(), observed = observingHost();
+    const path = researchMimoCodingBootstrapPaths(f.spec.runtimeDirectory)[1]!;
+    fs.unlinkSync(path); fs.symlinkSync(f.spec.request.promptPath, path);
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it("revalidates CodingV1 workspace mounts after preparation", () => {
+    const f = codingCaptured(), observed = observingHost();
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    observed.extraMounts.push(`900 1 8:2 / ${f.spec.request.workspacePath}/TEST-foreign rw - ext4 /dev/TEST-other rw`);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   // RED if the creator retains a stale initial Host witness while its other
   // sealed filesystem observations remain unchanged.
   it("re-observes the Host mount namespace before a branded root can be sealed again", () => {
@@ -443,7 +545,7 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(launch.args).toContain("--property=DevicePolicy=closed");
     expect(launch.args).toContain("--property=SystemCallFilter=~@raw-io @module");
     expect(launch.args).toContain("--property=NoNewPrivileges=yes");
-    expect(launch.args).toContain("--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP");
+    expect(launch.args).toContain("--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE");
     const namespaceProperties = /^(?:RootDirectory|RootImage|BindPaths|BindReadOnlyPaths|TemporaryFileSystem|MountFlags|MountAPIVFS|ProtectSystem|PrivateDevices|ProtectControlGroups|ProtectKernelModules|ReadWritePaths|ReadOnlyPaths|InaccessiblePaths|PrivateTmp|PrivateMounts)=/;
     expect(launch.args.filter(arg => arg.startsWith("--property=")).some(arg => namespaceProperties.test(arg.slice("--property=".length)))).toBe(false);
     expect(launch.args.slice(-5, -2)).toEqual([f.spec.request.jobId, unit, f.home]);

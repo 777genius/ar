@@ -4,7 +4,7 @@ import { trustedResearchRuntimeLaunch } from "./trusted-custody-systemd-launch";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { parseResearchGrant, parseResearchOperatorRequest, researchHashRequest, type ResearchProjectLaunchBinding, type ResearchRegisteredHandoff, type ResearchStartSpec } from "./research-launch-contract";
+import { assertResearchMimoProfileMatch, parseResearchGrant, parseResearchOperatorRequest, researchHashRequest, type ResearchProjectLaunchBinding, type ResearchRegisteredHandoff, type ResearchStartSpec } from "./research-launch-contract";
 import { assertResearchProjectGrantNotRevoked, installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand, researchExecutableDigest } from "./research-launch-host";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchDirectoryIdentity,
@@ -25,14 +25,23 @@ export function grantResearchLaunch(jobId: string, jobRootDir: string, workspace
 }
 /** Explicit standalone worker authority. Never grants controller or registered execution. */
 export function grantOwnedMimoWorkerLaunch(jobId: string, jobRootDir: string, workspacePath: string): void {
-  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, true), true);
+  withResearchJobMutation(jobId, () => publishResearchGrant(jobId, jobRootDir, workspacePath, undefined, HostedMimoProfile.Worker), true);
 }
 /** Separate capability-only port; the legacy operator CLI has no free sink arg. */
 export async function grantRegisteredResearchLaunch(authorization: RegisteredResearchHandoffAuthorization): Promise<void> {
-  // Consume the unforgeable token before the independent mutex phase; its live
-  // registered binding is revalidated inside the grant publication fence.
-  const binding = await consumeRegisteredResearchHandoffAuthorization(authorization);
-  await withResearchJobMutationAsync(authorization.request.jobId, () => grantRegisteredResearchLaunchUnlocked(authorization, binding), true);
+  const registryRootDir = researchPath(authorization.registryRootDir), registry = researchDurableDirectory(registryRootDir);
+  await withResearchJobMutationAsync(authorization.request.jobId, async () => {
+    await withCodexGoalRegistryMutation({ registryRootDir, requireExistingRegistryRoot: true, effect: async () => {
+      assertResearchDurableDirectory(registry);
+      await consumeRegisteredResearchHandoffAuthorization(authorization, (binding, assertAuthorityBytes) => {
+        if (binding.registryRootDir !== registryRootDir) researchInvalid();
+        const { request } = authorization;
+        publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding,
+          request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? request.hostedProfile ?? HostedMimoProfile.Worker : undefined,
+          undefined, assertAuthorityBytes);
+      });
+    } });
+  }, true);
 }
 /** Native project authority comes only from the original broker reservation.
  * Consume after both publication mutex waits; no awaited work follows it. */
@@ -45,21 +54,13 @@ export async function grantProjectResearchLaunch(authorization: ResearchProjectL
       const binding = await consumeResearchProjectLaunchAuthorization(authorization);
       if (binding.registryRootDir !== registryRootDir) researchInvalid();
       const { request } = authorization;
-      publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, undefined, true, binding);
+      publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, undefined, HostedMimoProfile.Worker, binding);
     } });
   }, true);
 }
-async function grantRegisteredResearchLaunchUnlocked(authorization: RegisteredResearchHandoffAuthorization, binding: ResearchRegisteredHandoff): Promise<void> {
-  const registry = researchDurableDirectory(binding.registryRootDir);
-  await withCodexGoalRegistryMutation({ registryRootDir: binding.registryRootDir, requireExistingRegistryRoot: true, effect: async () => {
-    assertResearchDurableDirectory(registry);
-    await assertRegisteredResearchHandoffCurrent(binding, authorization.request);
-    const { request } = authorization;
-    publishResearchGrant(request.jobId, request.jobRootDir, request.workspacePath, binding);
-  } });
-}
 function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: string, registeredHandoff?: ResearchRegisteredHandoff,
-  mimoWorker = false, projectLaunchBinding?: ResearchProjectLaunchBinding): void {
+  mimoProfile?: HostedMimoProfile.Worker | HostedMimoProfile.CodingV1, projectLaunchBinding?: ResearchProjectLaunchBinding,
+  assertAuthorityBytes: () => void = () => {}): void {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   researchId(jobId);
   const jobDirectory = researchDirectoryIdentity(jobRootDir), workspaceDirectory = researchDirectoryIdentity(workspacePath);
@@ -67,8 +68,10 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
   assertResearchWritableInputsSafe(jobRootDir, workspacePath);
   assertResearchDirectory(jobDirectory); assertResearchDirectory(workspaceDirectory);
   // Per-root arbitration also covers a different jobId targeting this root.
-  recordRawGoalStateOrigin(jobRootDir);
+  assertAuthorityBytes(); recordRawGoalStateOrigin(jobRootDir);
+  assertAuthorityBytes();
   researchPrivateDirectory(researchAuthorityRoot);
+  assertAuthorityBytes();
   const job = researchJobAuthority(jobId); researchPrivateDirectory(job);
   if (existsSync(join(job, "active.json"))) researchInvalid();
   if (existsSync(join(job, "grant.json"))) {
@@ -77,11 +80,12 @@ function publishResearchGrant(jobId: string, jobRootDir: string, workspacePath: 
         (previous.projectLaunchBinding && (!projectLaunchBinding || previous.projectLaunchBinding.receiptSha256 === projectLaunchBinding.receiptSha256))) researchInvalid();
   }
   // A unique grant identity makes revoke/regrant different even for the same tuple.
+  assertAuthorityBytes();
   researchPublish(join(job, "grant.json"), { schemaVersion: 1, jobId, jobRootDir, workspacePath,
     ...(registeredHandoff ? { registeredHandoff } : {}),
     ...(projectLaunchBinding ? { projectLaunchBinding } : {}),
-    profileId: mimoWorker ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
-    ...(mimoWorker ? { hostedProfile: HostedMimoProfile.Worker } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
+    profileId: mimoProfile ? CodexProviderEgressProfileId.MimoTokenPlan : CodexProviderEgressProfileId.FullInternetV1,
+    ...(mimoProfile ? { hostedProfile: mimoProfile } : {}), grantId: randomUUID(), jobDirectory, workspaceDirectory });
 }
 export function revokeResearchLaunch(jobId: string): void {
   withResearchJobMutation(jobId, () => revokeResearchLaunchUnlocked(jobId));
@@ -195,17 +199,17 @@ async function startRegisteredResearchLaunchUnlocked(requestPath: string, expect
     // critical preparation/submission/readback phase.
     if (!researchRead(join(researchJobAuthority(request.jobId), "grant.json")).equals(grantBytes) ||
         !researchRead(requestPath).equals(bytes)) researchInvalid();
-    await assertRegisteredResearchHandoffCurrent(grant.registeredHandoff!, request);
+    let assertAuthorityBytes = await assertRegisteredResearchHandoffCurrent(grant.registeredHandoff!, request);
     const prepared = prepareResearchLaunchInternal(requestPath, expectedRequestSha256, {
-      binding: grant.registeredHandoff!, grantSha256: researchHash(grantBytes),
+      binding: grant.registeredHandoff!, grantSha256: researchHash(grantBytes), assertAuthorityBytes: () => assertAuthorityBytes(),
     });
     // Retain pins/authority on any registered drift during blocking preparation.
-    await assertRegisteredResearchHandoffCurrent(grant.registeredHandoff!, request);
+    assertAuthorityBytes = await assertRegisteredResearchHandoffCurrent(grant.registeredHandoff!, request);
     return prepared.submit();
   } });
 }
 function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha256: string,
-  registered?: { readonly binding: ResearchRegisteredHandoff; readonly grantSha256: string },
+  registered?: { readonly binding: ResearchRegisteredHandoff; readonly grantSha256: string; readonly assertAuthorityBytes: () => void },
   project?: { readonly binding: ResearchProjectLaunchBinding; readonly grantSha256: string; readonly assertAuthorityBytes: () => void }): { submit: () => ReturnType<typeof startResearchLaunch> } {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   researchPath(requestPath);
@@ -225,18 +229,21 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
       JSON.stringify(grant.projectLaunchBinding) !== JSON.stringify(project.binding))
     : (grant.registeredHandoff !== undefined || grant.projectLaunchBinding !== undefined || request.durableHandoffRootDir !== undefined)) researchInvalid();
   if ((request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
+  assertResearchMimoProfileMatch(request, grant);
   if (grant.jobId !== request.jobId || grant.jobRootDir !== request.jobRootDir || grant.workspacePath !== request.workspacePath) researchInvalid();
   assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
   assertResearchWritableInputsSafe(request.jobRootDir, request.workspacePath, request.authRootDir);
   assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
-  // Old grants must not bypass the newer controller creation fence.
-  recordRawGoalStateOrigin(request.jobRootDir);
-  const assertProjectBytes = (): void => {
-    if (!project) return;
+  const assertOwnerBytes = (): void => {
+    const owner = project ?? registered;
+    if (!owner) return;
     if (!researchRead(join(job, "grant.json")).equals(grantBytes) || !researchRead(requestPath).equals(requestBytes)) researchInvalid();
-    assertResearchProjectGrantNotRevoked(request.jobId, project.grantSha256);
-    project.assertAuthorityBytes();
+    if (project) assertResearchProjectGrantNotRevoked(request.jobId, project.grantSha256);
+    owner.assertAuthorityBytes();
+    if (!researchRead(join(job, "grant.json")).equals(grantBytes) || !researchRead(requestPath).equals(requestBytes)) researchInvalid();
   };
+  // Old grants must not bypass the newer controller creation fence.
+  assertOwnerBytes(); recordRawGoalStateOrigin(request.jobRootDir);
   const runtimeDirectory = installedResearchRuntimeDirectory();
   const artifactSha256 = researchArtifactDigest(runtimeDirectory);
   const nodeSha256 = researchExecutableDigest(process.execPath), codexSha256 = researchExecutableDigest(request.codexBinaryPath);
@@ -247,9 +254,14 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
   assertResearchWritableInputsSafe(request.jobRootDir, request.workspacePath, request.authRootDir);
   assertResearchDirectory(grant.jobDirectory); assertResearchDirectory(grant.workspaceDirectory);
   const startId = randomUUID(), unit = `subscription-runtime-research-${startId}.service`;
+  assertOwnerBytes();
   researchPrivateDirectory(join(job, "starts"));
+  assertOwnerBytes();
   const directory = join(job, "starts", startId); researchPrivateDirectory(directory);
-  researchPrivateDirectory(join(directory, "providers")); researchPrivateDirectory(join(directory, "pins"));
+  assertOwnerBytes();
+  researchPrivateDirectory(join(directory, "providers"));
+  assertOwnerBytes();
+  researchPrivateDirectory(join(directory, "pins"));
   const jobDirectory = researchDirectoryIdentity(request.jobRootDir), workspaceDirectory = researchDirectoryIdentity(request.workspacePath);
   const spec: ResearchStartSpec = { schemaVersion: 1, startId, runtimeDirectory, artifactSha256, nodeSha256, codexSha256,
     ...(registered ? { registeredHandoff: registered.binding } : {}),
@@ -257,39 +269,45 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
     grantSha256: researchHash(grantBytes), request, requestSha256: expectedRequestSha256, unit, jobDirectory, workspaceDirectory };
   // Acquire the per-job active slot exclusively before any mount/service effect.
   const specBytes = Buffer.from(JSON.stringify(spec) + "\n"), specSha256 = researchHash(specBytes);
-  assertProjectBytes();
+  assertOwnerBytes();
   researchPublish(join(directory, "spec.json"), spec, true);
-  assertProjectBytes();
+  assertOwnerBytes();
   researchPublish(join(job, "active.json"), { schemaVersion: 1, startId, specSha256 }, true);
   // Never undo an uncertain launch. The retained active slot identifies exactly
   // what status/cancel must reconcile; no replacement job or shared-scope kill.
   let stage = ResearchLaunchStage.PinPreparation;
   try {
     for (const [name, identity] of [["job", jobDirectory], ["workspace", workspaceDirectory]] as const) {
-      const pin = join(directory, "pins", name); researchPrivateDirectory(pin);
+      const pin = join(directory, "pins", name);
+      assertOwnerBytes();
+      researchPrivateDirectory(pin);
       assertResearchDirectory(identity);
-      assertProjectBytes();
+      assertOwnerBytes();
       researchCommand("/usr/bin/mount", ["--bind", identity.path, pin]);
       assertResearchDirectory(identity); assertResearchDirectory(identity, pin);
-      assertProjectBytes();
+      assertOwnerBytes();
       researchCommand("/usr/bin/mount", ["--make-private", pin]);
     }
     if (registered) {
       const identity = registered.binding.durableDirectory, pin = join(directory, "pins", "durable-handoff");
+      assertOwnerBytes();
       researchPrivateDirectory(pin);
       assertResearchDurableDirectory(identity);
+      assertOwnerBytes();
       researchCommand("/usr/bin/mount", ["--bind", identity.path, pin]);
       assertResearchDurableDirectory(identity);
+      assertOwnerBytes();
       researchCommand("/usr/bin/mount", ["--make-private", pin]);
       const witness = researchDurableDirectory(pin);
       if (!sameResearchDurableBacking(identity, witness)) researchInvalid();
+      assertOwnerBytes();
       researchPublish(join(directory, "durable-pin.json"), { schemaVersion: 1, specSha256, pin: witness }, true);
     }
     stage = ResearchLaunchStage.InputPreparation;
     researchPromptBytes(jobDirectory, request.promptPath, join(directory, "pins", "job"));
     for (const name of ["state", "home", "tmp"]) {
       const path = join(directory, "pins", "job", name);
-      assertProjectBytes();
+      assertOwnerBytes();
       if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
       researchDirectoryIdentity(path);
     }
@@ -303,13 +321,13 @@ function prepareResearchLaunchInternal(requestPath: string, expectedRequestSha25
         const before = researchCurrentStart(request.jobId);
         if (!before.bytes.equals(specBytes) || existsSync(join(directory, "closing.json")) ||
             !researchRead(join(job, "grant.json")).equals(grantBytes)) researchInvalid();
-        assertProjectBytes();
+        assertOwnerBytes();
         researchCommand(launch.command, launch.args);
         // A successful submission is a request, not provider/turn success.
         stage = ResearchLaunchStage.StartReadback;
         const current = researchCurrentStart(request.jobId);
         if (!current.bytes.equals(specBytes)) researchInvalid();
-        assertProjectBytes();
+        assertOwnerBytes();
         return { jobId: request.jobId, unit, startId, specSha256 };
       } catch (error) { throw annotateResearchLaunchStage(error, stage); }
     } };

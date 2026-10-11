@@ -99,8 +99,9 @@ vi.mock("node:fs", async original => {
         : Object.assign(real.fstatSync(fd), { ...(!fixture.nativeBackingFacts ? { dev: 2049 } : {}), gid: 0, uid });
     },
     openSync: (path: string, flags: number | string, mode: number) => {
-      let selected = !fixture.nativeBackingFacts && path === "/proc/self/mountinfo" ? join(fixture.root, "mountinfo") : local(path);
-      if (!fixture.nativeBackingFacts && path === "/proc/self/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
+      const mountInfo = path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo";
+      let selected = !fixture.nativeBackingFacts && mountInfo ? join(fixture.root, "mountinfo") : local(path);
+      if (!fixture.nativeBackingFacts && mountInfo) real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
       if (!fixture.nativeBackingFacts && path.startsWith("/proc/self/fdinfo/")) {
         const sourceFd = Number(path.split("/").at(-1));
         selected = join(fixture.root, `fdinfo-${sourceFd}.txt`);
@@ -111,7 +112,7 @@ vi.mock("node:fs", async original => {
     existsSync: (path: string) => real.existsSync(local(path)),
     readFileSync: (path: string | number, opts: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "string" && path.startsWith("/proc/")) {
-        if (fixture.nativeBackingFacts && (path === "/proc/self/mountinfo" || path.startsWith("/proc/self/fdinfo/"))) return real.readFileSync(path, opts);
+        if (fixture.nativeBackingFacts && (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo" || path.startsWith("/proc/self/fdinfo/"))) return real.readFileSync(path, opts);
         if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") return syntheticMountInfo();
         if (path.startsWith("/proc/self/fdinfo/")) return syntheticFdInfo(Number(path.split("/").at(-1)));
         if (path.endsWith("/uid_map") || path.endsWith("/gid_map")) return fixture.uidMap;
@@ -203,7 +204,11 @@ vi.mock("node:child_process", async original => {
   }, spawnSync: (command: string, args: string[]) => {
     fixture.calls.push({ command, args });
     if (command === "/usr/bin/findmnt") {
+      // util-linux treats explicit table selectors as mutually exclusive.
+      if (args.includes("--task") && args.some(value => ["--kernel", "--mtab", "--fstab"].includes(value)))
+        throw new Error("TEST findmnt mutually exclusive table selectors");
       fixture.findmntHook?.();
+      if (args.includes("--list")) return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: 1, target: "/", uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", fsroot: "/", "maj:min": "8:1" }, ...[...fixture.pins].map(([target, fsroot], index) => ({ id: index + 2, target, fsroot, uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "maj:min": "8:1" }))] }) };
       const path = args[args.indexOf("--target") + 1]!, pins = [...fixture.pins];
       const index = pins.findIndex(([pin]) => path === pin || path.startsWith(pin + "/"));
       return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: index === -1 ? 1 : index + 2,

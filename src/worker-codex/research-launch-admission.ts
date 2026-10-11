@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { existsSync } from "node:fs";
-import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId,
+import { admittedResearchCodexProcessFactory, CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile,
   type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
-import { parseResearchGrant, parseResearchStartSpec, researchRunConfig, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
+import { assertResearchMimoProfileMatch, parseResearchGrant, parseResearchStartSpec, researchRunConfig, type ResearchStartBinding, type ResearchStartSpec } from "./research-launch-contract";
 import { assertResearchDirectory, researchDirectoryIdentity, researchArtifactDigest, researchAuthorityRoot, researchHash,
   researchId, researchInvalid, researchJson, researchName, researchPublish, researchRead, researchRecord, researchCustody, researchPath } from "./research-launch-files";
 import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSharedHost,
@@ -16,6 +16,7 @@ import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoff
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
+import { researchAdmissionObservation, ResearchAdmissionFailureStage } from "./research-launch-admission-diagnostics";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
@@ -60,11 +61,27 @@ export async function prepareResearchProjectLaunchAuthority(jobId: string, start
   projectAuthorityWitnesses.set(initial.directory, { bytes: Buffer.from(initial.bytes), spec: JSON.stringify(initial.spec), assertAuthorityBytes });
 }
 function assertResearchProjectLaunchAuthorityBytes(spec: ResearchStartSpec): void {
-  if (!spec.projectLaunchBinding) return;
+  if (!spec.projectLaunchBinding && !spec.registeredHandoff) return;
   const current = researchCurrentStart(spec.request.jobId), witness = projectAuthorityWitnesses.get(current.directory);
   if (!witness || !current.bytes.equals(witness.bytes) || witness.spec !== JSON.stringify(spec)) researchInvalid();
-  assertResearchProjectGrantNotRevoked(spec.request.jobId, spec.grantSha256);
+  if (spec.projectLaunchBinding) assertResearchProjectGrantNotRevoked(spec.request.jobId, spec.grantSha256);
   witness.assertAuthorityBytes();
+}
+/** Registered workers keep their exact scoped receipt live in each trusted
+ * process. A new process prepares a reader; it inherits no decision or permit. */
+export async function prepareResearchRegisteredHandoffAuthority(jobId: string, startId: string,
+  assertRoot: () => void = assertResearchInitialRoot, allowClosing = false): Promise<void> {
+  assertRoot(); assertResearchSharedHost();
+  const initial = researchCurrentStart(jobId), binding = initial.spec.registeredHandoff;
+  if (initial.spec.startId !== startId || !binding) researchInvalid();
+  const assertAuthorityBytes = await assertRegisteredResearchHandoffCurrent(binding, initial.spec.request, assertRoot);
+  assertRoot(); assertResearchSharedHost();
+  const fresh = researchCurrentStart(jobId), grantBytes = researchRead(join(researchJobAuthority(jobId), "grant.json"));
+  if (!fresh.bytes.equals(initial.bytes) || fresh.directory !== initial.directory || (!allowClosing && existsSync(join(initial.directory, "closing.json"))) ||
+      researchHash(grantBytes) !== initial.spec.grantSha256 ||
+      JSON.stringify(parseResearchGrant(researchJson(grantBytes)).registeredHandoff) !== JSON.stringify(binding)) researchInvalid();
+  assertAuthorityBytes();
+  projectAuthorityWitnesses.set(initial.directory, { bytes: Buffer.from(initial.bytes), spec: JSON.stringify(initial.spec), assertAuthorityBytes });
 }
 /** The exclusive home record bounds later MiMo provider preparations to the
  * original allocation. A same-job path or a parsed caller plan is insufficient. */
@@ -101,13 +118,14 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
       JSON.stringify(grant.projectLaunchBinding) !== JSON.stringify(spec.projectLaunchBinding) ||
       JSON.stringify(grant.workspaceDirectory) !== JSON.stringify(spec.workspaceDirectory)) researchInvalid();
   if ((spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) !== (grant.profileId === CodexProviderEgressProfileId.MimoTokenPlan)) researchInvalid();
+  assertResearchMimoProfileMatch(spec.request, grant);
   assertResearchDirectory(spec.jobDirectory); assertResearchDirectory(spec.workspaceDirectory);
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
   assertRegisteredResearchHandoffPin(spec, join(pins, ".."));
-  if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
   assertResearchProjectLaunchAuthorityBytes(spec);
+  if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
 }
 function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
   if (spec.runtimeDirectory !== installedResearchRuntimeDirectory()) researchInvalid();
@@ -133,11 +151,11 @@ export function assertResearchProviderStartMaterial(root: ResearchProviderAssemb
 /** Blocking Host observations can overlap a separate operator's revoke/cancel.
  * Recheck only mutable documents and pinned identities at the effect boundary. */
 function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
+  assertResearchProjectLaunchAuthorityBytes(initial.spec);
   const fresh = researchCurrentStart(jobId);
   if ((!allowClosing && existsSync(join(initial.directory, "closing.json"))) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
       (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
       researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== initial.spec.grantSha256) researchInvalid();
-  assertResearchProjectLaunchAuthorityBytes(initial.spec);
 }
 export function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   assertResearchCurrentAuthorityInternal(jobId, initial, bindingBytes, allowClosing, assertResearchInitialRoot);
@@ -162,7 +180,7 @@ export function bindResearchRuntime(jobId: string, startId: string): ResearchSta
 export async function bindRegisteredResearchRuntime(jobId: string, startId: string): Promise<ResearchStartSpec> {
   const initial = researchCurrentStart(jobId);
   if (initial.spec.startId !== startId || !initial.spec.registeredHandoff) researchInvalid();
-  await assertRegisteredResearchHandoffCurrent(initial.spec.registeredHandoff, initial.spec.request);
+  await prepareResearchRegisteredHandoffAuthority(jobId, startId);
   return bindResearchRuntimeInternal(jobId, startId, initial.bytes);
 }
 export async function bindProjectResearchRuntime(jobId: string, startId: string): Promise<ResearchStartSpec> {
@@ -220,6 +238,7 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   const binding = readResearchStartBinding(initial.directory), { spec } = initial;
   if (spec.request.jobRootDir !== identity.jobRootDir || spec.request.workspacePath !== identity.workspacePath ||
       binding.specSha256 !== researchHash(initial.bytes) || binding.process.pid !== ownerPid || binding.service.unit !== spec.unit) researchInvalid();
+  const observe = researchAdmissionObservation(initial.directory, initial.bytes, bindingBytes);
   // The confined startup holds bootstrap/auth while systemd may be busy
   // constructing its namespace. Poll fresh authority and kernel identity here;
   // this check grants no effect permission and deliberately avoids the manager.
@@ -230,20 +249,20 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
   };
-  const assertAuthorityCurrent = (): void => {
+  const assertAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
     assertInertAuthorityCurrent();
     const service = researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(binding.process, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(service) !== JSON.stringify(binding.service)) researchInvalid();
     assertInertAuthorityCurrent();
-  };
+  });
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
-  const assertCurrent = (): void => {
+  const assertCurrent = (): void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
     assertAuthorityCurrent();
     assertResearchMaterialBytes(spec);
     assertAuthorityCurrent();
-  };
+  });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
   return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent, assertInertAuthorityCurrent });
@@ -258,7 +277,11 @@ export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexP
 }
 export function admitResearchProcessFactory(identity: HostedTestEgressIdentity): CodexAppServerProcessFactory {
   const captured = captureResearchRuntime(identity);
-  const spawn = admittedResearchCodexProcessFactory({ jobId: identity.jobId,
+  const factory = admittedResearchCodexProcessFactory({ jobId: identity.jobId,
+    ...(captured.spec.request.hostedProfile === HostedMimoProfile.CodingV1
+      ? { hostedProfile: HostedMimoProfile.CodingV1 } : {}),
+    launchValidation: { codexBinaryPath: captured.spec.request.codexBinaryPath,
+      workspacePath: identity.workspacePath, homeRoot: join(identity.jobRootDir, "home") },
     launcherPath: join(captured.spec.runtimeDirectory, "host-integration", "research-provider-launch.mjs"),
     submit: (unit, effect) => {
       captured.assertCurrent();
@@ -274,14 +297,6 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
     },
     signal: (unit, signal) => signalResearchProvider(captured.directory, unit, signal),
   });
-  const factory: CodexAppServerProcessFactory = launch => {
-    const cwd = researchPath(launch.cwd), home = researchPath(launch.env.CODEX_HOME);
-    const runtimeHome = join(identity.jobRootDir, "home");
-    if (launch.command !== captured.spec.request.codexBinaryPath ||
-        (cwd !== identity.workspacePath && !cwd.startsWith(runtimeHome + "/")) ||
-        !home.startsWith(runtimeHome + "/")) researchInvalid();
-    return spawn(launch);
-  };
   factoryGuards.set(factory, captured.assertCurrent);
   if (captured.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) mimoWorkerFactories.set(factory, captured.spec);
   return factory;

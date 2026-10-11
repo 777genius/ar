@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { codexAccountCapacityStore } from "../application/codex-account-capacity-store";
 import { reserveCodexProjectAccount } from "../application/project-control/codex-goal-project-account-reservation";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
@@ -13,8 +13,14 @@ import { projectControlRefillAccountNames } from "../codex-goal-mcp-project-acco
 import { fixture } from "./codex-goal-project-account-reservation-fixture";
 import { callToolJson } from "./codex-goal-mcp-test-support";
 
+// Admit only trusted source readiness metadata; capacity remains file-backed.
+vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
+  ...await original<object>(),
+  hostedMimoCredentialSourceReady: () => true,
+}));
+
 describe("MiMo project refill account selection", () => {
-  it("preserves scoped configured slots through the public refill preview without OAuth discovery", async () => {
+  it("preserves the scoped account-q through the public refill preview without OAuth discovery", async () => {
     const root = await mkdtemp(join(tmpdir(), "TEST-project-refill-mimo-"));
     const authRootDir = join(root, "auth");
     const registryRootDir = join(root, "jobs", "registry");
@@ -26,7 +32,7 @@ describe("MiMo project refill account selection", () => {
     try {
       await mkdir(authRootDir, { recursive: true });
       await mkdir(sourceWorkspacePath, { recursive: true });
-      // OAuth-only catalog metadata must not reinterpret a configured MiMo pool.
+      // OAuth-only catalog metadata must not reinterpret the fixed MiMo account.
       // No auth.json, provider credential, or live authority is manufactured.
       await writeFile(join(authRootDir, "account-labels.json"), JSON.stringify({
         "account-q": { quarantined: true },
@@ -63,7 +69,7 @@ describe("MiMo project refill account selection", () => {
         workspacePath: join(root, "worktrees", "test-child"),
         promptBody: "TEST preview only.\n",
         taskId: "test-child",
-        accounts: ["account-q", "account-outside", "account-q"],
+        accounts: ["account-q"],
         modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
         workerRole: "producer",
         startWorker: false,
@@ -87,7 +93,7 @@ describe("MiMo project refill account selection", () => {
         modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
         requestedAccounts: [],
         allowedAccountIds: ["account-q"],
-      })).resolves.toEqual([]);
+      })).resolves.toEqual(["account-q"]);
     } finally {
       await client.close();
       await server.close();
@@ -101,7 +107,9 @@ describe("MiMo project refill account selection", () => {
       const base = fixture(root, "test-child");
       const authRootDir = base.launch.config.authRootDir;
       const now = new Date();
-      codexAccountCapacityStore(authRootDir).observe({
+      codexAccountCapacityStore(authRootDir, {
+        modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      }).observe({
         accountId: "account-q",
         observedAt: now,
         capacity: {

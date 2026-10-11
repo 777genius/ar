@@ -1,11 +1,11 @@
 import { closeSync, constants, existsSync, fsyncSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease } from "./research-launch-admission";
+import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease, prepareResearchRegisteredHandoffAuthority } from "./research-launch-admission";
 import { parseResearchGrant, parseResearchStartSpec } from "./research-launch-contract";
 import { assertResearchInitialRoot, assertResearchServiceOwner, researchCommand, researchDescription,
   researchControlGroup, researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
 import { researchHash, researchInvalid, researchJson, researchRead, researchRecord, researchPublish } from "./research-launch-files";
-import { assertRegisteredResearchHandoffPin } from "./research-registered-handoff";
+import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin } from "./research-registered-handoff";
 import { materializeReconciledTerminalCodexGoalHandoff } from "./codex-goal-terminal-handoff-materialization";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { changedFilesFromWorkspace } from "./codex-goal-workspace-changes";
@@ -29,7 +29,14 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
     current = terminalResearchStart(jobId); released = true;
   }
   if (current.spec.startId !== startId || researchHash(current.bytes) !== specSha256 ||
-      current.spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || current.spec.registeredHandoff) researchInvalid();
+      current.spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) researchInvalid();
+  const registered = current.spec.registeredHandoff;
+  let assertRegisteredBytes: (() => void) | undefined;
+  if (registered) {
+    if (!released) await prepareResearchRegisteredHandoffAuthority(jobId, startId, assertResearchInitialRoot, true);
+    assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    assertRegisteredResearchHandoffPin(current.spec, current.directory);
+  }
   const candidateBytes = researchRead(join(current.directory, "mimo-candidate.json"));
   const candidate = readResearchMimoCandidate(current), publicationPath = join(current.directory, "mimo-publication.json");
   const assertTerminal = (): void => {
@@ -37,21 +44,40 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
     if (!fresh.bytes.equals(current.bytes) || !researchRead(join(current.directory, "mimo-candidate.json")).equals(candidateBytes) ||
         !inactiveResearchUnit(current.spec.unit, researchDescription(jobId, specSha256))) researchInvalid();
     readResearchMimoCandidate(current); assertResearchMimoResultDirectories(current);
+    assertRegisteredResearchHandoffPin(current.spec, current.directory);
     for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
+    assertRegisteredBytes?.();
   };
-  if (!released) stopResearchStartForCancellation(jobId, current);
+  if (!released) {
+    if (registered) await withCodexGoalRegistryMutation({ registryRootDir: registered.registryRootDir,
+      requireExistingRegistryRoot: true, effect: async () => {
+        await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+        stopResearchStartForCancellation(jobId, current);
+      } });
+    else stopResearchStartForCancellation(jobId, current);
+  }
   assertTerminal();
+  const guard = async (): Promise<void> => {
+    if (registered) assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    assertTerminal();
+  };
+  const publicationLease = registered && !released ? researchHandoffPublicationLease(jobId, startId) : undefined;
+  const publishTerminal = async (): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> => {
   if (!existsSync(publicationPath)) {
     if (released) researchInvalid();
     const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
     if (workspace.warning !== undefined) researchInvalid();
     const reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
-      publicationAuthority: { assertPublicationAuthorized: async () => assertTerminal() } });
-    assertTerminal();
+      publicationAuthority: { assertPublicationAuthorized: guard } });
+    await guard();
     const result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reconciled.changedPaths,
       artifacts: reconciled.artifacts, evidence: candidate.evidence.filter(value => value !== "patch_preserve_unavailable"),
       details: { ...candidate.details, ...terminalCodexGoalHandoffResultDetails(reconciled.handoff) }, updatedAt: new Date(candidate.updatedAt!) });
-    researchPublish(publicationPath, { schemaVersion: 1, specSha256, candidateSha256: researchHash(candidateBytes), result }, true);
+    const publish = async (): Promise<void> => {
+      await guard();
+      researchPublish(publicationPath, { schemaVersion: 1, specSha256, candidateSha256: researchHash(candidateBytes), result }, true);
+    };
+    await publish();
   }
   const publication = researchRecord(researchJson(researchRead(publicationPath)), "schemaVersion,specSha256,candidateSha256,result");
   const result = publication.result as RuntimeResultEnvelope;
@@ -59,12 +85,20 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       result.status !== candidate.status || result.runId !== jobId || result.taskId !== current.spec.request.taskId) researchInvalid();
   assertTerminal();
   if (!released) {
-    publishResearchMimoJobArtifact(current, "latest-result", result);
-    publishResearchMimoJobArtifact(current, "progress", { schemaVersion: 1, taskId: result.taskId,
-      status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 });
-    assertTerminal(); releaseTerminalResearchStart(jobId, current); // Reservation release is always last.
+    const publish = async (): Promise<void> => {
+      await guard();
+      assertRegisteredBytes?.();
+      publishResearchMimoJobArtifact(current, "latest-result", result);
+      assertRegisteredBytes?.();
+      publishResearchMimoJobArtifact(current, "progress", { schemaVersion: 1, taskId: result.taskId,
+        status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 });
+      assertTerminal(); releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
+    };
+    await publish();
   }
   return { jobId, startId, status: result.status };
+  };
+  return publicationLease ? await publicationLease(publishTerminal) : await publishTerminal();
 }
 
 function inactiveResearchUnit(unit: string, description?: string): boolean {
@@ -259,13 +293,13 @@ function cancelResearchLaunchUnlocked(jobId: string): { jobId: string; startId: 
 export type RegisteredResearchStartIdentity = Readonly<{ jobId: string; startId: string; specSha256: string; requestSha256: string }>;
 export async function cancelRegisteredResearchLaunch(expected: RegisteredResearchStartIdentity): Promise<{
   jobId: string; startId: string; unit: string; terminal: true;
-  handoffPacketPath?: string; handoffManifestSha256?: string;
+  handoffPacketPath?: string; handoffManifestSha256?: string; cleanWorkspace?: true;
 }> {
   return await withResearchJobMutationAsync(expected.jobId, () => cancelRegisteredResearchLaunchUnlocked(expected));
 }
 async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResearchStartIdentity): Promise<{
   jobId: string; startId: string; unit: string; terminal: true;
-  handoffPacketPath?: string; handoffManifestSha256?: string;
+  handoffPacketPath?: string; handoffManifestSha256?: string; cleanWorkspace?: true;
 }> {
   assertResearchInitialRoot(true);
   researchRecord(expected, "jobId,startId,specSha256,requestSha256");
@@ -279,6 +313,13 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
     if (!researchCurrentStart(jobId).bytes.equals(current.bytes)) researchInvalid();
     stopResearchStartForCancellation(jobId, current);
   } });
+  if (current.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      existsSync(join(current.directory, "mimo-candidate.json"))) {
+    throw new Error("hosted_mimo_worker_finalization_pending");
+  }
+  // Containment above remains possible for a revoked receipt. Publication
+  // requires a fresh process-local reader after the exact owner is stopped.
+  await prepareResearchRegisteredHandoffAuthority(jobId, current.spec.startId, assertResearchInitialRoot, true);
   const guard = researchCancellationHandoffGuard(jobId, current.spec.startId);
   await guard();
   const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
@@ -293,11 +334,13 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
   for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
   await withCodexGoalRegistryMutation({ registryRootDir: current.spec.registeredHandoff.registryRootDir, requireExistingRegistryRoot: true, effect: async () => {
     await guard();
-    releaseTerminalResearchStart(jobId, current);
+    const assertAuthorityBytes = await assertRegisteredResearchHandoffCurrent(current.spec.registeredHandoff!, current.spec.request);
+    releaseTerminalResearchStart(jobId, current, assertAuthorityBytes);
   } });
   return { jobId, startId: current.spec.startId, unit: current.spec.unit, terminal: true,
     ...(preserved.handoff?.packetPath ? { handoffPacketPath: preserved.handoff.packetPath,
-      handoffManifestSha256: preserved.handoff.manifestSha256! } : {}) };
+      handoffManifestSha256: preserved.handoff.manifestSha256! } : {}),
+    ...(!preserved.handoff && preserved.changedPaths.length === 0 ? { cleanWorkspace: true as const } : {}) };
 }
 function stopResearchStartForCancellation(jobId: string, current: ReturnType<typeof researchCurrentStart>): void {
   researchPublish(join(current.directory, "closing.json"), { schemaVersion: 1, specSha256: researchHash(current.bytes) });
@@ -317,9 +360,10 @@ function stopResearchStartForCancellation(jobId: string, current: ReturnType<typ
   if (uncertain) researchInvalid();
   for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
 }
-function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof researchCurrentStart>): void {
+function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof researchCurrentStart>, assertAuthorityBytes: () => void = () => {}): void {
   if (!researchCurrentStart(jobId).bytes.equals(current.bytes)) researchInvalid();
   assertRegisteredResearchHandoffPin(current.spec, current.directory);
+  assertAuthorityBytes();
   researchPublish(join(researchJobAuthority(jobId), "last-terminal.json"), {
     schemaVersion: 1, startId: current.spec.startId, specSha256: researchHash(current.bytes),
   });
@@ -327,6 +371,7 @@ function releaseTerminalResearchStart(jobId: string, current: ReturnType<typeof 
   // evidence remain until root explicitly unmounts the named TEST pins.
   if (!researchCurrentStart(jobId).bytes.equals(current.bytes)) researchInvalid();
   const job = researchJobAuthority(jobId);
+  assertAuthorityBytes();
   unlinkSync(join(job, "active.json"));
   const fd = openSync(job, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }

@@ -1,9 +1,10 @@
+import { observeResearchProviderBootstrapDiagnostics } from "./research-provider-bootstrap-diagnostics";
 import { trustedResearchProviderLaunch } from "./trusted-custody-systemd-launch";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
-import { assertResearchMimoProviderHome, captureResearchRuntime, researchCurrentStart, prepareResearchProjectLaunchAuthority } from "./research-launch-admission";
+import { assertResearchMimoProviderHome, captureResearchRuntime, researchCurrentStart, prepareResearchProjectLaunchAuthority, prepareResearchRegisteredHandoffAuthority } from "./research-launch-admission";
 import { copyResearchHostCommandFailure, researchHostCommandFailure, isResearchDenialObservation, researchHash, researchInvalid,
   researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
@@ -117,6 +118,7 @@ export async function runResearchProviderService(jobId: string, unit: string, se
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const { directory, spec, bytes } = researchCurrentStart(jobId);
   if (spec.projectLaunchBinding) await prepareResearchProjectLaunchAuthority(jobId, spec.startId);
+  if (spec.registeredHandoff) await prepareResearchRegisteredHandoffAuthority(jobId, spec.startId);
   const state: { phase: ResearchProviderLaunchPhase } = { phase: "runtime-capture" };
   const scopes: { scope: RootTimingScope; outcome: RootTimingOutcome; elapsedMs: number; checks: readonly ResearchProviderRootTiming[] }[] = [];
   const capture = <T>(scope: RootTimingScope, operation: () => T): T => {
@@ -162,7 +164,7 @@ type ResearchProviderLaunchPhase = "runtime-capture" | "reservation" | "service-
   "submission-custody" | "systemd-submission" | "ready-and-owner" | "native-forwarding";
 async function runAdmittedResearchProvider(jobId: string, unit: string, selectedCodexHome: string,
   phase: (next: ResearchProviderLaunchPhase) => void, capture: RootTimingCapture, publishTiming: () => void): Promise<void> {
-  const { spec, directory } = researchCurrentStart(jobId), request = spec.request;
+  const { spec, directory, bytes } = researchCurrentStart(jobId), request = spec.request;
   const captured = captureResearchRuntime(request, process.ppid);
   phase("reservation");
   const reservation = readResearchProviderReservation(directory, unit);
@@ -211,6 +213,13 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       proxy.stdin.on("error", error => {
         if (!inputReleased || (error as NodeJS.ErrnoException).code !== "EPIPE") failed();
       });
+    });
+    observeResearchProviderBootstrapDiagnostics(proxy.stderr, safeMessage => {
+      // Protected finite observation independent of client exit/abort delivery.
+      // Never persist raw provider stderr or use this record as launch authority.
+      try { researchPublish(join(directory, "provider-root-bootstrap.json"), {
+        schemaVersion: 1, unit, specSha256: researchHash(bytes), safeMessage,
+      }); } catch { /* Observation failure never changes launch semantics. */ }
     });
     proxy.stderr.pipe(process.stderr);
     void terminal.catch(() => {}); // Observed below; never an unhandled early exit.
