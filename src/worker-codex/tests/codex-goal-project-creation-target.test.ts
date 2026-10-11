@@ -71,6 +71,7 @@ describe("scoped creation targets", () => {
       checkpointRequired: true, projectPreStartAdmission: plan.descriptor,
       projectAccessScope: { projectId: scope.projectId, isolatedWorkspaceRoot: f.workspacePath,
         allowedAccountIds: f.manifest.accounts, authRoot: authRootDir } } });
+    await writeFile(manifest.promptPath, "bounded prompt\n", { mode: 0o600 });
     await prepareProjectPreStartAdmission({ plan, manifest, scope });
     const receiptBefore = await readFile(plan.descriptor.receiptPath);
     const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
