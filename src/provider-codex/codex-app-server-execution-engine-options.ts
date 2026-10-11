@@ -1,3 +1,5 @@
+import { HostedMimoProfile } from "./hosted-mimo-profile";
+import { assertHostedMimoCodingEngineAuthority, type HostedMimoCodingEngineAuthority } from "./hosted-mimo-coding-engine-authority";
 import {
   AgentRuntimeBudgetEnforcement,
   AgentRuntimeBudgetMetric,
@@ -25,6 +27,7 @@ import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hos
 
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
+  readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
   readonly childBudget?: ChildExecutionBudget;
   readonly executionLifetime?: AppServerExecutionLifetime;
   /**
@@ -71,18 +74,27 @@ function isOwnedMimoContainedTurn(options: CodexAppServerExecutionEngineOptions)
     readHostedMimoWorkerOrigin() !== null;
 }
 
+function isOwnedMimoCodingTurn(options: CodexAppServerExecutionEngineOptions): boolean {
+  if (options.nativeToolSurface !== HostedMimoProfile.CodingV1) return false;
+  assertHostedMimoCodingEngineAuthority(options.hostedCodingAuthority, {
+    processFactory: options.processFactory, executionLifetime: options.executionLifetime, codexBinaryPath: options.codexBinaryPath });
+  return options.executionLifetime !== undefined && options.goalMode === false &&
+    options.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && options.childBudget === undefined &&
+    options.hostedControllerTools === undefined && options.hostedPermissionProfiles === true;
+}
 /** MiMo's wire lacks json_schema; the registered report still validates locally. */
 export function appServerWireOutputSchema(options: CodexAppServerExecutionEngineOptions,
   schema: Readonly<Record<string, unknown>> | undefined): Readonly<Record<string, unknown>> | undefined {
-  return schema !== undefined && isOwnedMimoContainedTurn(options) ? undefined : schema;
+  return schema !== undefined && (isOwnedMimoCodingTurn(options) || isOwnedMimoContainedTurn(options)) ? undefined : schema;
 }
 
 /** Resolve and validate the original bounded execution fence before admission. */
 export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionEngineOptions): AppServerExecutionLifetime | undefined {
   const lifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
-  const ownedMimoTurn = isOwnedMimoContainedTurn(options);
+  const coding = isOwnedMimoCodingTurn(options);
+  const ownedMimoTurn = coding || isOwnedMimoContainedTurn(options);
   if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
-        (!ownedMimoTurn && options.goalMode !== true) || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
+        (!ownedMimoTurn && options.goalMode !== true) || (coding ? options.nativeToolSurface !== HostedMimoProfile.CodingV1 : options.nativeToolSurface !== "disabled") || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
         options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
   return lifetime;
 }

@@ -20,7 +20,7 @@ export const qualificationRoot = "/var/lib/subscription-runtime-host-policy/ordi
 export const qualificationLauncher = "/opt/subscription-runtime/managed-launcher/launch.mjs";
 export const qualificationCodec = "/opt/subscription-runtime/managed-launcher/host-inventory-codec.cjs";
 const fixedCopiedCohort = ["managed-launcher/launch.mjs", "managed-launcher/host-inventory-codec.cjs",
-  "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs"] as const;
+  "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs", "managed-launcher/storage-pressure-guard.mjs"] as const;
 export const qualificationProfile = "/var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json";
 export const qualificationBootUnit = "ordinary-qualification.service";
 export function qualificationBootRecipe(node: string, entry: string): Buffer {
@@ -205,6 +205,11 @@ export class QualificationChild {
     }
     qualificationHeld();
   }
+  assertLiveOriginal(): void {
+    if (this.closed || this.failed || !this.original) qualificationHeld();
+    this.association();
+    if (collectUnitShow(this.unit).MainPID === "0") qualificationHeld();
+  }
   private association(): void {
     const original = this.original; if (!original) qualificationHeld();
     if (readFileSync("/etc/machine-id", "utf8").trim() !== original.hostId || collectBootId() !== original.bootId) qualificationHeld();
@@ -282,7 +287,8 @@ export function qualificationCandidate(candidate: OrdinaryLauncherCandidate, pre
     "dist/worker-codex/hosted-installation-activation.js", "dist/worker-codex/hosted-ordinary-installation-census.js",
     "dist/core/host-infrastructure/host-inventory.js", "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
     ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-prelude", "hosted-process-activation", "hosted-process-descriptors",
-      "hosted-dependency-tool-plan", "system-bus-infrastructure", "systemd-service-arrays"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
+      "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
+      "system-bus-infrastructure", "systemd-service-arrays"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
     ...fixedCopiedCohort.map(path => "host-integration/" + path)]) if (!seen.has(required)) qualificationHeld();
   for (const [name, sha] of [["launch.mjs", candidate.launcherSha256], ["host-inventory-codec.cjs", candidate.codecSha256]]) {
     if (qualificationSha(qualificationRead(prefix + join(candidate.candidateArtifactPath, "host-integration/managed-launcher", name!))) !== sha) qualificationHeld();
