@@ -1,11 +1,14 @@
+import { CodexModelBackend, hostedMimoCredentialSourceReady } from "@vioxen/subscription-runtime/provider-codex";
 import { listCodexGoalAccountStatuses } from "./codex-goal-ops";
 import { uniqueProjectControlStrings } from "./codex-goal-mcp-project-utils";
 
 export async function projectControlDefaultAccountNames(input: {
+  readonly modelBackend?: CodexModelBackend;
   readonly authRootDir?: string;
   readonly requestedAccounts: readonly string[];
   readonly allowedAccountIds: readonly string[];
 }): Promise<readonly string[]> {
+  if (input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) return projectMimoAccountNames(input);
   if (!input.authRootDir) return input.requestedAccounts;
   const allowed = new Set(input.allowedAccountIds);
   if (
@@ -37,11 +40,13 @@ export async function projectControlDefaultAccountNames(input: {
 }
 
 export async function projectControlCreateAccountNames(input: {
+  readonly modelBackend?: CodexModelBackend;
   readonly authRootDir?: string;
   readonly requestedAccounts: readonly string[];
   readonly allowedAccountIds: readonly string[];
   readonly jobId: string;
 }): Promise<readonly string[]> {
+  if (input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) return projectMimoAccountNames(input);
   const requested = input.requestedAccounts;
   if (requested.length > 0) {
     const allowed = new Set(input.allowedAccountIds);
@@ -72,11 +77,13 @@ export async function projectControlCreateAccountNames(input: {
 }
 
 export async function projectControlRefillAccountNames(input: {
+  readonly modelBackend?: CodexModelBackend;
   readonly authRootDir?: string;
   readonly requestedAccounts: readonly string[];
   readonly allowedAccountIds: readonly string[];
   readonly rotationKey?: string;
 }): Promise<readonly string[]> {
+  if (input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) return projectMimoAccountNames(input);
   const requestedAccounts = input.requestedAccounts.length
     ? uniqueProjectControlStrings(input.requestedAccounts)
     : await projectControlDefaultAccountNames(input);
@@ -132,4 +139,16 @@ function stableRotationOffset(rotationKey: string, accountCount: number): number
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0) % accountCount;
+}
+
+/** A shared MiMo credential is not a ChatGPT auth slot. Check only trusted
+ * metadata; provider launch independently admits the origin before key bytes. */
+function projectMimoAccountNames(input: {
+  readonly requestedAccounts: readonly string[]; readonly allowedAccountIds: readonly string[];
+}): readonly string[] {
+  if (!input.allowedAccountIds.includes("account-q")) throw new Error("project_control_mimo_account_scope_denied");
+  if (input.requestedAccounts.length > 0 && (input.requestedAccounts.length !== 1 || input.requestedAccounts[0] !== "account-q"))
+    throw new Error("project_control_mimo_account_invalid");
+  if (!hostedMimoCredentialSourceReady()) throw new Error("project_control_mimo_credential_unavailable");
+  return ["account-q"];
 }

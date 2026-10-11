@@ -1,3 +1,4 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -36,18 +37,27 @@ export function codexAccountCapacityRootDir(authRootDir: string): string {
 export function codexAccountCapacityStore(
   authRootDir: string,
   options: {
+    readonly modelBackend?: CodexModelBackend;
     readonly assertProviderAdmission?: () => void;
     readonly authJsonPaths?: Readonly<Record<string, string>>;
     readonly authJsonByAlias?: Readonly<Record<string, string>>;
     readonly observability?: ObservabilityPort;
   } = {},
 ): WorkerAccountCapacityStore {
+  const backend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (backend !== CodexModelBackend.OpenAiChatGpt && backend !== CodexModelBackend.XiaomiMimoTokenPlan)
+    throw new Error("codex_account_capacity_model_backend_invalid");
   const store = new LocalFileWorkerAccountCapacityStore({
-    rootDir: codexAccountCapacityRootDir(authRootDir),
+    rootDir: backend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? join(codexAccountCapacityRootDir(authRootDir), "mimo-token-plan")
+      : codexAccountCapacityRootDir(authRootDir),
     ...(options.observability
       ? { observability: options.observability }
       : {}),
   });
+  // MiMo slots represent the fixed shared provider identity, never ChatGPT
+  // auth files. Keep their persisted quota/recheck state provider-separated.
+  if (backend === CodexModelBackend.XiaomiMimoTokenPlan) return store;
   return new CodexAccountCapacityAliasStore({
     ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
     authRootDir,
