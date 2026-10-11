@@ -27,6 +27,8 @@ export const codexMimoApiKeyEnvVarDefault = "MIMO_TOKEN_PLAN_API_KEY";
 
 const reservedMimoCredentialEnvVars = new Set([
   "PATH", "HOME", "CI", "CODEX_HOME", "TMPDIR", "TMP", "TEMP",
+  "GOTMPDIR", "XDG_CACHE_HOME", "npm_config_cache", "COREPACK_HOME", "YARN_CACHE_FOLDER",
+  "PIP_CACHE_DIR", "UV_CACHE_DIR", "GOCACHE", "GOMODCACHE",
   "OPENAI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "NODE_OPTIONS",
   "BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH",
 ]);

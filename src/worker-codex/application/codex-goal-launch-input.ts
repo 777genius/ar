@@ -1,3 +1,4 @@
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import { optionalWorkerMode } from "../project-control-worker-mode";
 import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
@@ -83,6 +84,8 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
     optionalCodexGoalMimoAccountSlots(merged.mimoAccounts).mimoAccounts,
   );
   if (!accounts.length) throw new Error("accounts are required");
+  const modelBackend = optionalCodexGoalModelBackend(merged.modelBackend);
+  const mimo = modelBackend.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const controlModes = goalControlModesFromRecord(merged);
   const accessBoundary = optionalCodexGoalAccessBoundary(merged.accessBoundary);
   const projectAccessScope = parseCodexGoalProjectAccessScope(
@@ -104,7 +107,7 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
   const maxAccountCycles = positiveIntegerValue(
     merged.maxAccountCycles,
     "maxAccountCycles",
-  ) ?? 5;
+  ) ?? (mimo ? 1 : 5);
   const config: CodexGoalRunConfig = {
     ...storageData,
     ...childConfigFromRecord(merged),
@@ -139,15 +142,15 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
       stringValue(merged.progressPath) ??
         (storageData.storage ? join(jobRootDir, "output", `${taskId}.progress.json`) : codexGoalProgressPath({ jobRootDir, taskId })),
     ),
-    model: stringValue(merged.model) ?? CODEX_WORKER_DEFAULT_MODEL,
+    model: stringValue(merged.model) ?? (mimo ? codexMimoDefaultModel : CODEX_WORKER_DEFAULT_MODEL),
     reasoningEffort:
       (stringValue(merged.reasoningEffort) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as NonNullable<CodexGoalRunConfig["reasoningEffort"]>,
     serviceTier:
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:
-      (stringValue(merged.executionEngine) ?? "app-server-goal") as NonNullable<CodexGoalRunConfig["executionEngine"]>,
+      (stringValue(merged.executionEngine) ?? (mimo ? "app-server" : "app-server-goal")) as NonNullable<CodexGoalRunConfig["executionEngine"]>,
     ...(booleanValue(merged.checkpointRequired) ? { checkpointRequired: true } : {}),
-    ...optionalCodexGoalModelBackend(merged.modelBackend),
+    ...modelBackend,
     codexBinaryPath: stringValue(merged.codexBinaryPath) ?? "codex",
     ...controlModes,
     ...(accessBoundary === undefined ? {} : { accessBoundary }),

@@ -29,7 +29,7 @@ export function registerCodexGoalProjectControlJobTools(server: McpServer): void
     {
       title: "Project Control Create Codex Goal Job",
       description:
-        "Create a child Codex goal job through a ProjectScopedControl controller manifest and broker policy.",
+        "Create a child Codex goal job through a ProjectScopedControl controller manifest and broker policy. For a configured hosted MiMo route, supply mimoProjectId, mimoWorkstreamId, jobId, promptBody, exact enrolled sourceCommit and confirmCreate; omit local paths and controllerJobId. Creation returns a pending owned operation.",
       inputSchema: {
         ...goalInputSchema(),
         ...jobRegistryInputSchema(),
@@ -39,6 +39,8 @@ export function registerCodexGoalProjectControlJobTools(server: McpServer): void
         workerRole: z.enum(projectAdmissionWorkerRoleSchemaValues).optional(),
         overwrite: z.boolean().optional(),
         confirmCreate: z.boolean().optional(),
+        promptBody: z.string().optional(),
+        sourceCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
       },
     },
     async (args) => withMcpErrors(async () =>
@@ -51,10 +53,10 @@ export function registerCodexGoalProjectControlJobTools(server: McpServer): void
     {
       title: "Project Control Refill Worker",
       description:
-        "Create a scoped worktree, write a prompt, create a child job and optionally start it through one ProjectScopedControl broker flow.",
+        "Create a scoped worktree, write a prompt, create a child job and optionally start it through one ProjectScopedControl broker flow. Configured remote MiMo uses mimoProjectId, mimoWorkstreamId, jobId, promptBody, expectedSourceCommit and confirmRefill without local paths; inspect pending creation via codex_goal_status_by_id before starting.",
       inputSchema: {
         ...goalInputSchema(),
-        workspacePath: z.string(),
+        workspacePath: z.string().optional(),
         ...jobRegistryInputSchema(),
         controllerJobId: z.string().optional(),
         sourceWorkspacePath: z.string().optional(),

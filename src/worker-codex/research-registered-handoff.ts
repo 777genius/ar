@@ -5,8 +5,8 @@ import { readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjec
 import { AccessBoundary, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
 import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord } from "./research-launch-files";
-import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
+import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord, researchRegisteredPromptBytes } from "./research-launch-files";
+import { assertResearchDurableDirectory, researchDurableDirectory, researchDurableDirectories, sameResearchDurableBacking } from "./research-durable-handoff-directory";
 import type { ResearchStartSpec } from "./research-launch-contract";
 import { codexGoalJobManifestPath } from "./codex-goal-jobs";
 import { withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
@@ -15,7 +15,8 @@ import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revisio
 import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
-import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { assertFreshRegisteredResearchProfile, assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 
 /** Root adapters must already hold the registered action's activity/workspace
@@ -40,6 +41,8 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
   const controller = await loadProjectControlController({ registryRootDir, controllerJobId });
   const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
   const { manifest, launch } = loaded;
+  if ((request.modelBackend ?? CodexModelBackend.OpenAiChatGpt) !==
+      (launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt)) researchInvalid();
   researchCustody(registryRootDir);
   if (controller.registryRootDir !== registryRootDir || loaded.registryRootDir !== registryRootDir ||
       !manifest.projectPreStartAdmission || manifest.jobId !== request.jobId) researchInvalid();
@@ -71,7 +74,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
   for (const [path, key] of [[manifest.promptPath, "promptSha256"],
     [manifest.projectPreStartAdmission.contractPath, "contractSha256"],
     [manifest.projectPreStartAdmission.statePath, "stateSha256"]] as const) {
-    if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
+    if (researchHash(key === "promptSha256" ? researchRegisteredPromptBytes(request.jobRootDir, path) : researchRead(path)) !== receipt[key]) researchInvalid();
   }
   const boundRequest = parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
   const binding = Object.freeze({ registryRootDir, controllerJobId,
@@ -88,7 +91,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
     for (const [path, key] of [[manifest.promptPath, "promptSha256"],
       [manifest.projectPreStartAdmission!.contractPath, "contractSha256"],
       [manifest.projectPreStartAdmission!.statePath, "stateSha256"]] as const) {
-      if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
+      if (researchHash(key === "promptSha256" ? researchRegisteredPromptBytes(request.jobRootDir, path) : researchRead(path)) !== receipt[key]) researchInvalid();
     }
   };
   assertAuthorityBytes();
@@ -112,8 +115,10 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
   catch (error) { if (!preStart || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const sinkMount = existing ?? parentBacking;
   const sinkBacking = join(sinkMount.mountRoot, relative(sinkMount.mountPoint, sink));
-  for (const source of current.protectedSources) {
-    const witness = researchDurableDirectory(source, false);
+  const sources = [...new Set(current.protectedSources)];
+  const sourceWitnesses = researchDurableDirectories(sources.map(path => ({ path, privateLeaf: false })));
+  for (const [index, source] of sources.entries()) {
+    const witness = sourceWitnesses[index]!;
     if (sinkMount.mountDevice === witness.mountDevice && sinkMount.filesystemUuid === witness.filesystemUuid &&
         overlaps(sinkBacking, join(witness.mountRoot, relative(witness.mountPoint, source)))) researchInvalid();
   }
@@ -165,6 +170,7 @@ export async function authorizeRegisteredResearchHandoff(input: {
     const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
     const reserved = { manifest: loaded.manifest, sourceLaunch: loaded.launch, reservedLaunch: input.reservedLaunch };
     const authority = assertCodexProjectReservedLaunchAuthority(reserved);
+    assertFreshRegisteredResearchProfile(request);
     const execution = researchRegisteredExecutionFromReservation(authority, input.reservedLaunch);
     const current = await currentRegisteredHandoff(registryRootDir, controllerJobId, request, true, execution,
       () => { consumeCodexProjectReservedLaunchAuthority(reserved); });
@@ -220,9 +226,10 @@ export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, dire
     if (spec.request.durableHandoffRootDir !== undefined) researchInvalid();
     return;
   }
-  assertResearchDurableDirectory(binding.durableDirectory);
+  const [source, pin] = researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }]);
+  if (digest(source) !== digest(binding.durableDirectory)) researchInvalid();
   const r = researchRecord(JSON.parse(researchRead(join(directory, "durable-pin.json")).toString("utf8")), "schemaVersion,specSha256,pin");
   if (r.schemaVersion !== 1 || r.specSha256 !== researchHash(researchRead(join(directory, "spec.json")))) researchInvalid();
-  const pin = researchDurableDirectory(join(directory, "pins", "durable-handoff"));
-  if (digest(pin) !== digest(r.pin) || !sameResearchDurableBacking(binding.durableDirectory, pin)) researchInvalid();
+
+  if (digest(pin) !== digest(r.pin) || !sameResearchDurableBacking(binding.durableDirectory, pin!)) researchInvalid();
 }

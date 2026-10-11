@@ -1,3 +1,4 @@
+import type { HostedMimoProfile } from "../../hosted-mimo-profile";
 import type { NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { codexProviderEgressNetworkAccessFromEnv } from "../../codex-provider-egress-policy";
@@ -65,7 +66,7 @@ export type CodexThreadGoal = {
   readonly usage?: AgentUsage;
 };
 
-export type CodexAppServerNativeToolSurface = "default" | "disabled";
+export type CodexAppServerNativeToolSurface = "default" | "disabled" | HostedMimoProfile.CodingV1;
 
 export type CodexAppServerCommandApprovalInput = {
   readonly source:

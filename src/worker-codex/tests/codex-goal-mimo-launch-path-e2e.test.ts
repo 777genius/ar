@@ -41,6 +41,9 @@ describe("MiMo backend — real launch path (MCP/CLI) through to execution", () 
       accounts: ["mimo-a"],
       mimoAccounts: [{ name: "mimo-a", envVarName: "MIMO_TOKEN_PLAN_API_KEY_MCP" }],
       modelBackend: "xiaomi-mimo-token-plan",
+      // This legacy FileBackend worker exercises the explicit goal protocol.
+      // Native contained turns require the separate owned Worker authority.
+      executionEngine: "app-server-goal",
     };
 
     // Prove the real MCP tool schema (shared by every codex_goal_* tool
@@ -53,8 +56,7 @@ describe("MiMo backend — real launch path (MCP/CLI) through to execution", () 
 
     const launch = await goalLaunchInput(parsed as never);
     expect(launch.config.modelBackend).toBe(CodexModelBackend.XiaomiMimoTokenPlan);
-    // executionEngine still defaults to app-server-goal on its own —
-    // modelBackend didn't have to force it, the two defaults just agree.
+    // Preserve the explicitly requested legacy goal engine.
     expect(launch.config.executionEngine).toBe("app-server-goal");
 
     const fakeFactory = new FakeAppServerFactory();
