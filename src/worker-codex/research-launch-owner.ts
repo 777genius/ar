@@ -113,7 +113,7 @@ export async function startRegisteredResearchLaunch(requestPath: string, expecte
   return await withResearchJobMutationAsync(jobId, () => startRegisteredResearchLaunchUnlocked(requestPath, expectedRequestSha256));
 }
 function researchStartMutationJobId(requestPath: string, expectedRequestSha256: string): string {
-  assertResearchInitialRoot(true);
+  assertResearchInitialRoot(true); assertResearchSharedHost();
   const bytes = researchRead(researchPath(requestPath));
   if (researchHash(bytes) !== expectedRequestSha256) researchInvalid();
   return parseResearchOperatorRequest(researchJson(bytes)).jobId;
