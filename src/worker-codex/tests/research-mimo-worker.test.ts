@@ -146,9 +146,17 @@ describe("owned standalone MiMo worker", () => {
   // RED: mutable account/model/cycle values or controller handoff bags widen a Worker request.
   it.each([{ accounts: ["account-s"] }, { accounts: ["account-q", "account-s"] }, { model: "gpt-6.1-sol" },
     { modelBackend: "unknown" }, { maxAccountCycles: 2 }, { maxAccountCycles: undefined }, { prewarmOnStart: true },
-    { taskTimeoutMs: Infinity }, { durableHandoffRootDir: "/TEST-registry/durable-handoffs" },
+    { taskTimeoutMs: Infinity },
     { sourceEnv: { MIMO_TOKEN_PLAN_API_KEY: "TEST-only" } }])("refuses widened operator inputs %j", changed => {
     expect(() => parseResearchOperatorRequest({ ...mimoRequest(), ...changed })).toThrow();
+  });
+
+  it("refuses a durable handoff without registered authority before owned submission", () => {
+    const selected = parseResearchOperatorRequest({ ...mimoRequest(), durableHandoffRootDir: "/TEST-registry/durable-handoffs" });
+    grantOwnedMimoWorkerLaunch(selected.jobId, selected.jobRootDir, selected.workspacePath);
+    writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(selected) + "\n", { mode: 0o600 });
+    expect(() => startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")))).toThrow();
+    expect(host.calls.some(call => call.command === "/usr/bin/systemd-run")).toBe(false);
   });
 
   // RED: profile labels alone or stale private records could authorize key bytes.

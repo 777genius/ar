@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "erasableSyntaxOnly": false,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["cohort-audit.mts", "audit-helper.test.mts", "audit-helper.namespace.test.mts", "run-owned-ci-test.mts", "mount-table-text-bound.test.mts", "proc-root-identity.test.mts", "proc-view-lifecycle.test.mts"]
+}

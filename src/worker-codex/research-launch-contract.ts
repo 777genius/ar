@@ -15,6 +15,8 @@ export type ResearchOperatorRequest = Readonly<{
   schemaVersion: 1; jobId: string; taskId: string; jobRootDir: string; workspacePath: string;
   promptPath: string; authRootDir: string; accounts: readonly string[]; codexBinaryPath: string;
   modelBackend?: CodexModelBackend;
+  hostedProfile?: HostedMimoProfile.CodingV1;
+  maxGoalTurns?: number;
   model: string; reasoningEffort: CodexReasoningEffort; serviceTier: CodexServiceTier; taskTimeoutMs: number;
   durableHandoffRootDir?: string;
   projectId?: string;
@@ -36,12 +38,15 @@ export const researchHashRequest = (request: ResearchOperatorRequest): string =>
 };
 export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRequest {
   const has = (key: string): boolean => value !== null && typeof value === "object" && Object.hasOwn(value, key);
-  const optional = ["modelBackend", "durableHandoffRootDir", "projectId", "maxAccountCycles", "prewarmOnStart", "appServerStartupTimeoutMs"].filter(has);
+  const optional = ["modelBackend", "durableHandoffRootDir", "projectId", "maxAccountCycles", "prewarmOnStart", "appServerStartupTimeoutMs", "hostedProfile", "maxGoalTurns"].filter(has);
   const r = researchRecord(value, "schemaVersion,jobId,taskId,jobRootDir,workspacePath,promptPath,authRootDir,accounts,codexBinaryPath,model,reasoningEffort,serviceTier,taskTimeoutMs" + optional.map(key => "," + key).join(""));
   for (const [key, max] of [["maxAccountCycles", 256], ["appServerStartupTimeoutMs", 86400000]] as const) {
     if (has(key) && (!Number.isSafeInteger(r[key]) || (r[key] as number) < 1 || (r[key] as number) > max)) researchInvalid();
   }
   if (has("prewarmOnStart") && typeof r.prewarmOnStart !== "boolean") researchInvalid();
+  if (has("hostedProfile") && (r.hostedProfile !== HostedMimoProfile.CodingV1 || r.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan)) researchInvalid();
+  if (has("maxGoalTurns") && (r.hostedProfile !== HostedMimoProfile.CodingV1 || !Number.isSafeInteger(r.maxGoalTurns) ||
+      (r.maxGoalTurns as number) < 1 || (r.maxGoalTurns as number) > 256)) researchInvalid();
   if (r.schemaVersion !== 1 || typeof r.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(r.model) ||
       !["none", "minimal", "low", "medium", "high", "xhigh"].includes(r.reasoningEffort as string) ||
       !["default", "fast", "flex", "priority"].includes(r.serviceTier as string) ||
@@ -50,7 +55,7 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
   if (has("modelBackend") && r.modelBackend !== CodexModelBackend.OpenAiChatGpt && r.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) researchInvalid();
   if (r.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
       (r.model !== codexMimoDefaultModel || r.accounts.length !== 1 || r.accounts[0] !== "account-q" ||
-       r.maxAccountCycles !== 1 || r.prewarmOnStart !== false || has("durableHandoffRootDir"))) researchInvalid();
+       r.maxAccountCycles !== 1 || r.prewarmOnStart !== false)) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath), promptPath = researchPath(r.promptPath);
   const authRootDir = researchPath(r.authRootDir);
   const durableHandoffRootDir = has("durableHandoffRootDir") ? researchPath(r.durableHandoffRootDir) : undefined;
@@ -62,6 +67,7 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
   return Object.freeze({ schemaVersion: 1, jobId: researchId(r.jobId), taskId: researchId(r.taskId), jobRootDir, workspacePath,
     promptPath, authRootDir, ...(durableHandoffRootDir === undefined ? {} : { durableHandoffRootDir }),
     ...(has("projectId") ? { projectId: researchId(r.projectId) } : {}),
+    ...(has("hostedProfile") ? { hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: (r.maxGoalTurns ?? 64) as number } : {}),
     ...(has("maxAccountCycles") ? { maxAccountCycles: r.maxAccountCycles as number } : {}),
     ...(has("prewarmOnStart") ? { prewarmOnStart: r.prewarmOnStart as boolean } : {}),
     ...(has("appServerStartupTimeoutMs") ? { appServerStartupTimeoutMs: r.appServerStartupTimeoutMs as number } : {}),
@@ -71,7 +77,7 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
 }
 export type ResearchGrant = Readonly<{
   schemaVersion: 1; profileId: CodexProviderEgressProfileId.PublicResearchV1 | CodexProviderEgressProfileId.FullInternetV1 | CodexProviderEgressProfileId.MimoTokenPlan;
-  hostedProfile?: HostedMimoProfile.Worker;
+  hostedProfile?: HostedMimoProfile.Worker | HostedMimoProfile.CodingV1;
   jobId: string; jobRootDir: string; workspacePath: string; grantId: string;
   jobDirectory: ResearchDirectoryIdentity; workspaceDirectory: ResearchDirectoryIdentity;
   registeredHandoff?: ResearchRegisteredHandoff;
@@ -111,13 +117,13 @@ export function parseResearchGrant(value: unknown): ResearchGrant {
   const optional = value !== null && typeof value === "object" && Object.hasOwn(value, "registeredHandoff");
   const mimo = value !== null && typeof value === "object" && "profileId" in value && value.profileId === CodexProviderEgressProfileId.MimoTokenPlan;
   const r = researchRecord(value, "schemaVersion,profileId,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory" + (optional ? ",registeredHandoff" : "") + (mimo ? ",hostedProfile" : ""));
-  if (mimo && (optional || r.hostedProfile !== HostedMimoProfile.Worker)) researchInvalid();
+  if (mimo && r.hostedProfile !== HostedMimoProfile.Worker && r.hostedProfile !== HostedMimoProfile.CodingV1) researchInvalid();
   if (r.schemaVersion !== 1 || (r.profileId !== CodexProviderEgressProfileId.PublicResearchV1 && r.profileId !== CodexProviderEgressProfileId.FullInternetV1 && r.profileId !== CodexProviderEgressProfileId.MimoTokenPlan) ||
       typeof r.grantId !== "string" || !/^[a-f0-9-]{36}$/.test(r.grantId)) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath);
   return Object.freeze({ schemaVersion: 1, profileId: r.profileId,
     jobId: researchId(r.jobId), jobRootDir, workspacePath, grantId: r.grantId,
-    ...(mimo ? { hostedProfile: HostedMimoProfile.Worker } : {}),
+    ...(mimo ? { hostedProfile: r.hostedProfile as HostedMimoProfile.Worker | HostedMimoProfile.CodingV1 } : {}),
     ...(optional ? { registeredHandoff: parseResearchRegisteredHandoff(r.registeredHandoff) } : {}),
     jobDirectory: parseResearchDirectory(r.jobDirectory, jobRootDir), workspaceDirectory: parseResearchDirectory(r.workspaceDirectory, workspacePath) });
 }
@@ -161,11 +167,13 @@ function parseResearchDirectory(value: unknown, path: string): ResearchDirectory
   return Object.freeze({ path, device: dir.device as number, inode: dir.inode as number });
 }
 export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRunConfig {
+  // Frozen profile selection is not authority: independent registered grant,
+  // credential proxy and sealed root checks remain required before execution.
   // Match the CLI's fixed temp contract; scratch remains logically jobRoot/tmp.
   const runtimeTempRoot = join(request.jobRootDir, "tmp"), agentTempRoot = join(runtimeTempRoot, "agent");
   return { ...request, accounts: request.accounts.map(name => ({ name })),
     executionEngine: request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? "app-server" : "app-server-goal", modelBackend: request.modelBackend ?? CodexModelBackend.OpenAiChatGpt,
-    ...(request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? { workerReportMode: "structured-output", maxGoalTurns: 8,
+    ...(request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? { workerReportMode: "structured-output", maxGoalTurns: request.hostedProfile === HostedMimoProfile.CodingV1 ? request.maxGoalTurns ?? 64 : 8,
       maxReconnectRetriesPerAccount: 0, safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" as const,
         retryOnCapacity: false, retryOnAccountUnavailable: false, retryOnReconnectRequired: false } } : {}),
     stateRootDir: join(request.jobRootDir, "state"), runtimeHomeRootDir: join(request.jobRootDir, "home"),
@@ -178,4 +186,10 @@ export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRu
       SUBSCRIPTION_RUNTIME_JOB_ROOT: request.jobRootDir, SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
       TMPDIR: agentTempRoot, TMP: agentTempRoot, TEMP: agentTempRoot,
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
+}
+
+/** Shared owner contract; the provider repeats it independently. */
+export function assertResearchMimoProfileMatch(request: ResearchOperatorRequest, grant: ResearchGrant): void {
+  if (request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      grant.hostedProfile !== (request.hostedProfile ?? HostedMimoProfile.Worker)) researchInvalid();
 }
