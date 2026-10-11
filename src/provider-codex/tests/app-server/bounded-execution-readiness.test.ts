@@ -79,6 +79,21 @@ describe("original allocation deadline and actual execution readiness", () => {
     await f.engine.dispose();
   });
 
+  it("retains the initialize failure before startup cleanup closes the lifetime", async () => {
+    const f = fixture(), result = f.engine.run(f.input).catch((error: unknown) => error);
+    try {
+      f.peer.fail(await f.peer.next("initialize"));
+      const error = await result;
+      expect(error).toMatchObject({ message: "codex_app_server_initialize_failed:TEST failure" });
+      expect(f.lifetime.signal.reason).toBe(error);
+      await f.engine.dispose();
+      expect(f.peer.ended).toBe(true);
+      expect(f.submissions()).toBe(1);
+      expect(f.peer.requests.some(request => request.method === "thread/start")).toBe(false);
+      await expect(f.engine.run(f.input)).rejects.toBe(error);
+    } finally { await f.engine.dispose(); }
+  });
+
   it("rejects a non-ACTIVE setup response", async () => {
     const f = fixture(), settled = f.engine.run(f.input).then(() => "completed", () => "failed");
     await f.peer.initialize(); await f.peer.thread();

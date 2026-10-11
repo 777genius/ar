@@ -16,13 +16,25 @@ export function researchCommand(command: string, args: readonly string[]): strin
   const ownedRuntimeStart = isSystemdRun && args.some(arg => arg.startsWith("--unit=") &&
     researchRuntimeUnitPattern.test(arg.slice("--unit=".length)));
   const timeout = ownedRuntimeStart ? researchProviderSetupTimeoutMs + 30_000
-    : command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
+    : command === "/usr/bin/systemctl" && args[0] === "show" ? 60_000
+    : command === "/usr/bin/systemctl" && args[0] === "list-jobs" ? 30_000
     : isSystemdRun ? 60_000 : 15_000;
   let started: number | undefined;
   try { started = performance.now(); } catch { /* Observation only. */ }
-  const result = spawnSync(command, [...args], { encoding: "utf8", timeout, maxBuffer: 1024 * 1024,
+  const showRead = command === "/usr/bin/systemctl" && args[0] === "show";
+  const readDeadline = showRead ? process.hrtime.bigint() + 120_000_000_000n : undefined;
+  const execute = (budget: number) => spawnSync(command, [...args], { encoding: "utf8", timeout: budget, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.status !== 0) {
+  let result = execute(timeout);
+  // Only this idempotent manager read may recover from intermittent PID1
+  // starvation. A timed-out response is discarded; callers still validate the
+  // fresh manager identity and recheck mutable authority before any effect.
+  if (readDeadline !== undefined && (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    const left = Number((readDeadline - process.hrtime.bigint()) / 1_000_000n);
+    if (left > 0) result = execute(Math.min(timeout, left));
+  }
+  const readExpired = readDeadline !== undefined && process.hrtime.bigint() >= readDeadline;
+  if (readExpired || result.error || result.status !== 0) {
     let operation = ResearchHostCommandOperation.Unknown, unitRole = ResearchHostCommandUnitRole.Unknown, elapsedMs = 0;
     try {
       const elapsed = started === undefined ? 0 : performance.now() - started;
@@ -40,7 +52,7 @@ export function researchCommand(command: string, args: readonly string[]): strin
       unitRole = unit && researchRuntimeUnitPattern.test(unit) ? ResearchHostCommandUnitRole.Runtime
         : unit && researchProviderUnitPattern.test(unit) ? ResearchHostCommandUnitRole.Provider : ResearchHostCommandUnitRole.Unknown;
     } catch { /* Diagnostic failure never changes command admission. */ }
-    researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+    researchInvalid(readExpired || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
       ? "host-command-timeout" : "host-command-failed", operation, unitRole, elapsedMs);
   }
   return result.stdout;

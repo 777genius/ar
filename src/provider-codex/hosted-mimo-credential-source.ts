@@ -1,4 +1,4 @@
-import { readHostedMimoWorkerOrigin } from "./hosted-mimo-worker-origin";
+import { assertHostedMimoCodingWorkerOriginCurrent, type HostedMimoCodingWorkerOrigin, readHostedMimoWorkerOrigin } from "./hosted-mimo-worker-origin";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
@@ -55,6 +55,15 @@ export function resolveAuthorizedHostedMimoCredential(redactor: RedactorPort): s
     }
     return resolveHostedMimoCredential(redactor);
   });
+}
+
+/** Coding keys go only to the outside owned proxy, never session.env. A plain
+ * DTO cannot substitute for the independently minted retained-origin proof. */
+export function resolveHostedMimoCodingProxyCredential(proof: HostedMimoCodingWorkerOrigin, redactor: RedactorPort): string {
+  assertHostedMimoCodingWorkerOriginCurrent(proof);
+  const credential = readHostedMimoCredentialAtPath(hostedMimoCredentialPath, redactor);
+  assertHostedMimoCodingWorkerOriginCurrent(proof);
+  return credential;
 }
 
 /** Narrow filesystem seam for synthetic tests. Production uses the fixed path above. */
