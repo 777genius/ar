@@ -5,9 +5,7 @@ import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-
 import { researchCustody, researchHash, researchPath, researchRecord } from "./research-launch-files";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
-import { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob } from "./codex-goal-mcp-project-control-tool-handlers";
-import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
-import { collectRegisteredCodexGoalJobStatus } from "./application/codex-goal-registered-job-observation";
+import { hostedMimoProjectRuntime } from "./hosted-mimo-project-runtime-routing";
 import { hostedMimoSealedSourcePort } from "./hosted-mimo-project-source";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 
@@ -91,6 +89,8 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
   assertResearchInitialRoot(true); assertResearchSharedHost();
   if (readFileSync("/etc/machine-id", "utf8").trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   const bytes = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`), binding = parseHostedMimoProjectBinding(JSON.parse(bytes.toString("utf8")), request);
+  const { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob,
+    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await hostedMimoProjectRuntime(binding);
   const args: ProjectControlMcpArgs = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId, jobId: request.jobId };
   const controller = await loadProjectControlController(args);
   if (controller.scope.projectId !== request.projectId ||
