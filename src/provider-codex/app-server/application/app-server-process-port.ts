@@ -1,9 +1,21 @@
-export type CodexAppServerProcessFactory = (input: {
+/** Materialized original-provider paths. Only the installed baseline adapter
+ * may turn these three roles into a managed storage request. */
+export type OriginalProviderStorageContext = {
+  readonly workspace: string;
+  readonly home: string;
+  readonly codexHome: string;
+};
+
+export type CodexAppServerProcessFactory = ((input: {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
-}) => CodexAppServerChildProcess;
+  readonly storageContext?: OriginalProviderStorageContext;
+}) => CodexAppServerChildProcess) & {
+  /** Describes input support only; installed physical admission remains required. */
+  readonly originalProviderStorageContext?: true;
+};
 
 export type CodexAppServerChildProcess = {
   readonly pid?: number | undefined;

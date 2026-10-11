@@ -12,6 +12,7 @@ import type {
   CodexAppServerChildProcess,
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
+  OriginalProviderStorageContext,
 } from "../application/app-server-process-port";
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
@@ -127,6 +128,7 @@ export function codexAppServerProcessInvocation(input: {
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
+  readonly storageContext?: OriginalProviderStorageContext;
 }, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
@@ -147,6 +149,9 @@ export function codexAppServerProcessInvocation(input: {
   if (typeof jobId !== "string" || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId)) {
     throw new Error("hosted_managed_job_identity_required");
   }
+  const storageContext = !admittedMounts &&
+    input.env[codexProviderEgressProfileEnvVar] !== CodexProviderEgressProfileId.MimoTokenPlan
+    ? input.storageContext : undefined;
   return {
     command: managedLauncherNodePath,
     systemdUnit,
@@ -163,16 +168,18 @@ export function codexAppServerProcessInvocation(input: {
       JSON.stringify({ operation: "provider", jobId, unit: systemdUnit,
         payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
         ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
+        ...(storageContext ? { storageContext } : {}),
       }),
     ],
   };
 }
 
-export function spawnCodexAppServerProcess(input: {
+export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppServerProcess(input: {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  readonly storageContext?: OriginalProviderStorageContext;
 }, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
   const contained = isHostedContainment(input.env);
   if (contained &&
@@ -190,6 +197,7 @@ export function spawnCodexAppServerProcess(input: {
   }
   const invocation = codexAppServerProcessInvocation({
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
+    ...(input.storageContext ? { storageContext: input.storageContext } : {}),
     ...(reservedSystemdUnit ? { systemdUnit: reservedSystemdUnit } : {}),
   }, admittedMounts);
   if (invocation.systemdUnit !== undefined) {
@@ -211,7 +219,7 @@ export function spawnCodexAppServerProcess(input: {
     assertHostedBaselineIdentity(input.env.SUBSCRIPTION_RUNTIME_JOB_ID);
   }
   return spawnInvocation(input, invocation);
-}
+}, { originalProviderStorageContext: true as const });
 
 /** Trusted worker composition captures established Ready history. The worker
  * executor separately brands this exact returned factory; accepting this port
@@ -234,7 +242,8 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     }
     let args = invocation.args;
     if (invocation.command === process.execPath && args[0] === managedLauncherPath) {
-      const request = JSON.parse(args[2]!) as { payload: string[] };
+      const request = JSON.parse(args[2]!) as { payload: string[]; storageContext?: OriginalProviderStorageContext };
+      delete request.storageContext;
       request.payload = [...request.payload, "--fd-ready-v1"];
       args = [args[0]!, args[1]!, JSON.stringify(request)];
     }

@@ -210,6 +210,8 @@ export class CodexAppServerClient {
       args: codexAppServerProcessArgs(this.options),
       cwd: coding ? this.options.workspacePath : this.options.session.home,
       env,
+      ...(!coding && this.options.processFactory.originalProviderStorageContext ? { storageContext: { workspace: this.options.workspacePath,
+        home: this.options.session.home, codexHome: this.options.session.codexHome } } : {}),
     });
     this.options.onProcessCreated?.(this.child);
     this.child.stdout.setEncoding("utf8");
