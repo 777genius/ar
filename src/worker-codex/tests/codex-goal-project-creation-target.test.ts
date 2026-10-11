@@ -28,6 +28,7 @@ import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../codex-goal-project-workspace-lock";
 import { codexProjectAdmissionGate } from "../application/project-control/codex-goal-project-admission";
 import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
+import { createCommittedTestRepository } from "./codex-goal-mcp-project-broker-test-support";
 import { assertCodexProjectReservedLaunchAuthority, reserveCodexProjectAccount } from "../application/project-control/codex-goal-project-account-reservation";
 
 afterEach(cleanupProjectPreStartAdmissionFixtures);
@@ -58,13 +59,15 @@ describe("scoped creation targets", () => {
   it("keeps a prepared job released when its required checkpoint publisher is missing", async () => {
     const f = await createBuiltinFixture({ temporaryRoot: tmpdir() }), registryRootDir = join(f.root, "registry");
     const worktreeRoot = join(f.root, "worktrees"), authRootDir = join(f.root, "TEST-auth");
+    const controllerWorkspace = join(f.root, "TEST-controller-workspace");
+    await createCommittedTestRepository(controllerWorkspace, "TEST checkpoint controller\n");
     await mkdir(registryRootDir, { mode: 0o700 }); await mkdir(worktreeRoot, { mode: 0o700 });
-    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath],
+    const scope = { ...f.scope, registryRoot: registryRootDir, workspaceRoots: [f.workspacePath, controllerWorkspace],
       worktreeRoots: [worktreeRoot], jobIdPrefixes: ["project-"], allowedAccountIds: f.manifest.accounts };
     const controllerRoot = join(f.root, "jobs", "project-controller");
     const controller = await createCodexGoalJob({ registryRootDir, manifest: { ...f.manifest,
       jobId: "project-controller", taskId: "project-controller", jobRootDir: controllerRoot,
-      promptPath: join(controllerRoot, "prompt.md"), authRootDir, accessBoundary: AccessBoundary.ProjectScopedControl,
+      workspacePath: controllerWorkspace, promptPath: join(controllerRoot, "prompt.md"), authRootDir, accessBoundary: AccessBoundary.ProjectScopedControl,
       projectAccessScope: scope } });
     const plan = f.plan();
     await rm(f.manifest.jobRootDir, { recursive: true });
@@ -79,7 +82,8 @@ describe("scoped creation targets", () => {
     const deps = { listJobs: listCodexGoalJobs, readJob: readCodexGoalJob,
       readWriterWritableRoots: observeProtectedCodexGoalJobBirth,
       buildOverviewItems: async (inputs: readonly { jobId: string }[]) => inputs.map(({ jobId }) => ({
-        ok: true, jobId, workspacePath: f.workspacePath, workerAlive: false, workerProcessAlive: false,
+        ok: true, jobId, workspacePath: jobId === controller.jobId ? controller.workspacePath : manifest.workspacePath,
+        workerAlive: false, workerProcessAlive: false,
         progressProcessAlive: false, workspaceDirty: false, resultExists: false, activeWriterRisk: "none",
         progressExists: false, workerSupervisorKind: "none" })) };
     const oldSocket = process.env.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET;
