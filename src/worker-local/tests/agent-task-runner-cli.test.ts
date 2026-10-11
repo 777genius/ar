@@ -1,9 +1,9 @@
+import { fakeFactory, fakeIo } from "./agent-task-runner-cli-test-support";
 import {
   access,
   chmod,
   mkdir,
   mkdtemp,
-  readFile,
   realpath,
   rm,
   symlink,
@@ -14,12 +14,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   runSubscriptionAgentTaskCli,
-  type RuntimeAgentTaskWorker,
-  type RuntimeAgentTaskWorkerFactory,
   type RuntimeAgentTaskWorkerFactoryInput,
   type RuntimeAgentTaskWorkerJob,
   type RuntimeAgentTaskWorkerResult,
-  type SubscriptionAgentTaskCliIo,
 } from "../agent-task-runner-cli";
 
 describe("subscription runtime agent-task runner CLI", () => {
@@ -843,62 +840,6 @@ describe("subscription runtime agent-task runner CLI", () => {
   });
 });
 
-function fakeFactory(calls: {
-  factory?: RuntimeAgentTaskWorkerFactoryInput;
-  seed?: string;
-  job?: RuntimeAgentTaskWorkerJob;
-}): RuntimeAgentTaskWorkerFactory {
-  return (input) => {
-    calls.factory = input;
-    const worker: RuntimeAgentTaskWorker = {
-      async start() {},
-      async seedClaudeOAuth(seed) {
-        calls.seed = seed.oauthToken;
-      },
-      async seedCodexAuthJsonFile(path) {
-        calls.seed = path;
-      },
-      async run(job) {
-        calls.job = job;
-        return {
-          outputText: `worker:${job.prompt}`,
-          structuredOutput: { ok: true },
-          telemetry: { finishReason: "completed" },
-          warnings: [],
-        };
-      },
-      async dispose() {},
-    };
-    return worker;
-  };
-}
-
-function fakeIo(input: {
-  readonly stdin: string;
-  readonly stdout?: string[];
-  readonly stderr?: string[];
-  readonly env: Readonly<Record<string, string | undefined>>;
-  readonly cwd?: string;
-}): SubscriptionAgentTaskCliIo {
-  return {
-    async readStdin() {
-      return input.stdin;
-    },
-    writeStdout(chunk) {
-      input.stdout?.push(chunk);
-    },
-    writeStderr(chunk) {
-      input.stderr?.push(chunk);
-    },
-    cwd() {
-      return input.cwd ?? process.cwd();
-    },
-    env() {
-      return input.env;
-    },
-  };
-}
-
 function validCodexAuthJson(): string {
   return JSON.stringify({
     auth_mode: "chatgpt",
@@ -1026,51 +967,3 @@ function runAppServer() {
   );
   await chmod(path, 0o700);
 }
-
-
-describe("common storage CLI precedence and owned cleanup", () => {
-  it("allocates unique ephemeral roots ahead of state env, preserves explicit state and durable siblings", async () => {
-    const root = await mkdtemp(join(tmpdir(), "TEST-common-agent-storage-"));
-    const sibling = join(root, "tmp", "owned-by-other-job");
-    await mkdir(sibling, { recursive: true });
-    await writeFile(join(sibling, "sentinel"), "retained");
-    const envState = join(root, "existing-state"), explicitState = join(root, "explicit-state");
-    await mkdir(envState); await mkdir(explicitState);
-    await writeFile(join(explicitState, "sentinel"), "retained");
-    const observed: string[] = [];
-    const request = JSON.stringify({ protocolVersion: 1, task: { kind: "review", prompt: "TEST review" } });
-    const env = { SUBSCRIPTION_RUNTIME_STORAGE_ROOT: root, SUBSCRIPTION_RUNTIME_STATE_ROOT: envState,
-      SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" };
-    const run = async (flags: string[], sourceEnv: Readonly<Record<string, string | undefined>> = env) => {
-      const calls: { factory?: RuntimeAgentTaskWorkerFactoryInput } = {};
-      const delegate = fakeFactory(calls);
-      return runSubscriptionAgentTaskCli(["--provider", "codex", ...flags], fakeIo({ stdin: request, cwd: root, env: sourceEnv }), input => {
-        observed.push(input.stateRootDir);
-        return delegate(input);
-      });
-    };
-    try {
-      expect(await Promise.all([run(["--ephemeral"]), run(["--ephemeral"])] )).toEqual([0, 0]);
-      const temporary = [...observed];
-      expect(new Set(temporary).size).toBe(2);
-      for (const path of temporary) {
-        expect(path.startsWith(join(root, "tmp", "subscription-runtime-agent-task-"))).toBe(true);
-        await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
-      }
-      expect(await run(["--ephemeral", "--state-root", explicitState])).toBe(0);
-      expect(observed.at(-1)).toBe(explicitState);
-      expect(await readFile(join(explicitState, "sentinel"), "utf8")).toBe("retained");
-      expect(await run([])).toBe(0);
-      expect(observed.at(-1)).toBe(envState);
-      expect(await run([], { ...env, SUBSCRIPTION_RUNTIME_STATE_ROOT: undefined })).toBe(0);
-      expect(observed.at(-1)).toBe(join(root, "state", "agent-task", "codex"));
-      expect(await readFile(join(sibling, "sentinel"), "utf8")).toBe("retained");
-      const stderr: string[] = [];
-      expect(await runSubscriptionAgentTaskCli(["--provider", "codex", "--storage-root", "/", "--state-root", explicitState,
-        "--input", join(root, "missing-request.json")], fakeIo({ stdin: request, cwd: root, env, stderr }), fakeFactory({}))).toBe(2);
-      expect(stderr.join("")).toContain("Invalid runtime storageRootDir");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});

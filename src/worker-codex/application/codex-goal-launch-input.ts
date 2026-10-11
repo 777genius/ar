@@ -63,12 +63,13 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   // must not disappear behind an override and silently become a legacy run.
   parseCodexGoalStorageData(fileConfig);
   const merged = mergeDefined(fileConfig, argumentSnapshot);
-  return goalLaunchInputFromRecord(merged, cwd, argumentSnapshot.sourceEnv ?? process.env);
+  return goalLaunchInputFromRecord(merged, cwd, argumentSnapshot.sourceEnv);
 }
 
 /** Stored manifests have no config-file transport. Keep their planning pure,
  * sharing every resolved default with the asynchronous public loader. */
-export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string, sourceEnv: Readonly<Record<string, string | undefined>> = process.env): CodexGoalLaunchInput {
+export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string, sourceEnv?: Readonly<Record<string, string | undefined>>): CodexGoalLaunchInput {
+  const env = sourceEnv ?? process.env;
   const storageData = parseCodexGoalStorageData(merged);
   assertCodexGoalStorageTransportSupported(merged);
   const taskId = requiredRawString(merged.taskId, "taskId");
@@ -79,9 +80,9 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string, sourc
   };
   const paths = resolveCodexGoalPaths({
     taskId, ...(jobId === undefined ? {} : { jobId }),
-    storageRootDir: resolveCodexGoalStorageRoot(merged.storageRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_STORAGE_ROOT, cwd),
-    jobRootDir: optionalPath("jobRootDir", sourceEnv.SUBSCRIPTION_RUNTIME_JOB_ROOT),
-    workspacePath: optionalPath("workspacePath", sourceEnv.SUBSCRIPTION_RUNTIME_WORKSPACE_PATH),
+    storageRootDir: resolveCodexGoalStorageRoot(merged.storageRootDir ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT, cwd),
+    jobRootDir: optionalPath("jobRootDir", env.SUBSCRIPTION_RUNTIME_JOB_ROOT),
+    workspacePath: optionalPath("workspacePath", env.SUBSCRIPTION_RUNTIME_WORKSPACE_PATH),
     stateRootDir: optionalPath("stateRootDir"),
     runtimeHomeRootDir: optionalPath("runtimeHomeRootDir"),
     encryptionKeyPath: optionalPath("encryptionKeyPath"),

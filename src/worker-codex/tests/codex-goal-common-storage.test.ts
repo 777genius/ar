@@ -1,3 +1,5 @@
+import { withProjectContinuationAccounts } from "../application/project-control/codex-goal-project-continuation-accounts";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { withCodexGoalMcpStorage } from "../codex-goal-mcp-inputs";
 import { callToolJson } from "./codex-goal-mcp-test-support";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -41,6 +43,8 @@ describe("Goal common storage boundaries", () => {
   it("keeps explicit grouped defaults and no-root errors, and validates both filename IDs", () => {
     const legacy = { jobRootDir: "/TEST/legacy", workspacePath: "/TEST/workspace", taskId: "task", sourceEnv: {} };
     expect(resolveCodexGoalPaths(legacy)).toEqual(legacy);
+    const legacyLaunch = goalLaunchInputFromRecord({ ...legacy, promptPath: "/TEST/prompt.md", accounts: ["TEST-account"] }, "/TEST");
+    expect(legacyLaunch.config).not.toHaveProperty("sourceEnv");
     expect(() => goalLaunchInputFromRecord({ storageRootDir: "", taskId: "task" }, "/TEST/cwd")).toThrow("storageRootDir");
     expect(resolveCodexGoalPaths({ ...legacy, storageRootDir: "/TEST/generic" })).toEqual({ ...legacy, storageRootDir: "/TEST/generic" });
     expect(() => resolveCodexGoalPaths({ taskId: "task", sourceEnv: {} })).toThrow("jobRootDir is required");
@@ -49,6 +53,22 @@ describe("Goal common storage boundaries", () => {
       expect(() => resolveCodexGoalPaths({ storageRootDir: "/TEST/root", jobId: "valid-job", taskId, sourceEnv: {} })).toThrow("taskId");
     }
     expect(() => resolveCodexGoalPaths({ storageRootDir: "/TEST/root", jobId: "job\n", taskId: "task", sourceEnv: {} })).toThrow("jobId");
+  });
+
+  it("keeps storage environment out of OpenAI capacity dependencies and retains MiMo credentials", async () => {
+    const sourceEnv = { TEST_SECRET: "TEST-private", MIMO_TOKEN_PLAN_API_KEY: "TEST-key" };
+    const launch = goalLaunchInputFromRecord({ storageRootDir: "/TEST/root", taskId: "task", promptPath: "/TEST/prompt.md",
+      accounts: ["worker"] }, "/TEST", sourceEnv);
+    for (const modelBackend of [undefined, CodexModelBackend.XiaomiMimoTokenPlan]) {
+      const selected = { ...launch, config: { ...launch.config, ...(modelBackend === undefined ? {} : { modelBackend }) } };
+      await expect(withProjectContinuationAccounts({ launch: selected, requestedAccounts: ["worker"],
+        verifiedAdmittedInputPatchContinuation: true, immutableManifestAccountIds: ["worker"],
+        excludedAccountIds: [], allowedAccountIds: ["worker"], listAccountStatuses: async args => {
+          if (modelBackend === undefined) expect(args).not.toHaveProperty("sourceEnv");
+          else expect(args.sourceEnv).toBe(selected.config.sourceEnv);
+          return [];
+        } })).rejects.toThrow("account_auth_unavailable");
+    }
   });
 
   it("uses managed authority before generic defaults and rejects caller writable overrides", () => {
