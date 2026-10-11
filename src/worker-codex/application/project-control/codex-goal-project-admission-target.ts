@@ -15,6 +15,9 @@ import { readBoundedFile } from "./codex-goal-project-pre-start-artifact-io";
 import { parseWorkerLaunchSpec } from "./worker-launch-spec";
 import { assertProjectControlledRuntimeInPlaceContinuation, type ProjectControlledRuntimeInPlaceContinuation } from "./codex-goal-project-in-place-continuation";
 import { LocalConsumedOutputLedgerSource } from "./codex-goal-consumed-output-ledger-io";
+import { assertResearchInitialRoot } from "../../research-launch-host";
+import { assertResearchDirectory, researchCustody, researchDirectoryIdentity } from "../../research-launch-files";
+import { prospectiveAdmissionResourceBacking } from "./codex-goal-project-admission-paths";
 
 // Only the broker's already-bound mutation ports supply these values. They are
 // not transport request fields and cannot be replaced by a caller's exemption flag.
@@ -110,7 +113,11 @@ export async function revalidateAdmissionCreatedWorktree(input: {
 }
 
 export async function admissionCreationTargetIdentity(input: TargetInput): Promise<string | undefined> {
-  try { return await futureCreationIdentity(input); } catch { return undefined; }
+  try {
+    // A standalone worktree creates no child writer. Bound ownership is still
+    // exact when the refill carries it, rather than a required public field.
+    return await futureCreationIdentity(input, input.binding?.createWorktree?.ownedPaths !== undefined || input.request?.ownedPaths !== undefined);
+  } catch { return undefined; }
 }
 
 export async function boundCreationTargetIdentity(input: {
@@ -259,9 +266,53 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
 export async function admissionCreateJobTargetIdentity(input: TargetInput): Promise<string | undefined> {
   try {
     const jobId = input.request?.jobId;
-    if (!jobId || !await trustedUnpublishedStage(input, jobId)) return undefined;
+    if (!jobId) return undefined;
+    if (!input.binding?.createManifest?.projectPreStartAdmission) return await freshCreateJobTargetIdentity(input);
+    if (!await trustedUnpublishedStage(input, jobId)) return undefined;
     return await projectControlCanonicalWorkspacePath(input.binding!.createManifest!.workspacePath, input.scope);
   } catch { return undefined; }
+}
+
+/** Absence selects a fresh-target check; it is never a release/profile proof.
+ * Existing legacy staging keeps its original admission route and cannot be
+ * adopted merely because it contains only a prompt. */
+export async function admissionNeedsFreshCreateJobTarget(binding: ProjectAdmissionTargetBinding | undefined): Promise<boolean> {
+  return Boolean(binding?.createManifest && !binding.createManifest.projectPreStartAdmission &&
+    await absent(binding.createManifest.jobRootDir));
+}
+
+async function freshCreateJobTargetIdentity(input: TargetInput): Promise<string | undefined> {
+  const manifest = input.binding?.createManifest, request = input.request;
+  if (!manifest || !request || request.operation !== ProjectOperation.CreateJob ||
+    input.scope.preStartAdmission?.required || request.jobId !== manifest.jobId ||
+    request.workspacePath !== manifest.workspacePath ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(manifest.jobId) ||
+    !isAbsolute(manifest.jobRootDir) || resolve(manifest.jobRootDir) !== manifest.jobRootDir ||
+    !await absent(manifest.jobRootDir) || !await absent(join(input.registryRootDir, manifest.jobId))) return undefined;
+  // Reuse the protected create owner's actual host and directory qualification.
+  // No role, caller marker or supplied profile can select this positive branch.
+  assertResearchInitialRoot(true);
+  const workspace = await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope);
+  const registry = resolve(input.registryRootDir);
+  if (await realpath(registry) !== registry ||
+    input.scope.registryRoot !== undefined && resolve(input.scope.registryRoot) !== registry ||
+    await prospectiveDirectoryIdentity(manifest.jobRootDir) !== manifest.jobRootDir) return undefined;
+  let ancestor = dirname(manifest.jobRootDir);
+  while (await absent(ancestor)) ancestor = dirname(ancestor);
+  const directories = [workspace, registry, ancestor].map(path => {
+    researchCustody(path);
+    return researchDirectoryIdentity(path);
+  });
+  const paths = [workspace, manifest.jobRootDir];
+  const before = await Promise.all(paths.map(prospectiveAdmissionResourceBacking));
+  if (before.some(roots => !roots?.length)) return undefined;
+  const after = await Promise.all(paths.map(prospectiveAdmissionResourceBacking));
+  if (!isDeepStrictEqual(before, after) || !await absent(manifest.jobRootDir) ||
+    !await absent(join(registry, manifest.jobId)) ||
+    await projectControlCanonicalWorkspacePath(manifest.workspacePath, input.scope) !== workspace) return undefined;
+  assertResearchInitialRoot(true);
+  directories.forEach(identity => { researchCustody(identity.path); assertResearchDirectory(identity); });
+  return workspace;
 }
 
 async function consumedOutputInfrastructure(input: TargetInput, path: string): Promise<boolean> {

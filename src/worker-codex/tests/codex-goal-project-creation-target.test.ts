@@ -1,0 +1,145 @@
+import { access, chmod, mkdir, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { expect, it } from "vitest";
+import { AccessBoundary, ProjectOperation, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { createCodexGoalMcpServer } from "../codex-goal-mcp";
+import { readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
+import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
+import {
+  admissionCreationTargetIdentity, admissionCreateJobTargetIdentity, admissionNeedsFreshCreateJobTarget,
+} from "../application/project-control/codex-goal-project-admission-target";
+import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
+import { host } from "./research-launch-fixture";
+import { git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
+
+async function fixture() {
+  const root = join(tmpdir(), "TEST-creation-target");
+  const registryRootDir = join(root, "registry");
+  const workspacePath = join(root, "workspaces", "child");
+  for (const path of [registryRootDir, workspacePath, join(root, "jobs"), join(root, "worktrees")]) {
+    await mkdir(path, { recursive: true, mode: 0o700 });
+  }
+  const scope: ProjectAccessScope = {
+    projectId: "TEST-creation", registryRoot: registryRootDir, authRoot: join(tmpdir(), "auth"),
+    workspaceRoots: [join(root, "workspaces")], worktreeRoots: [join(root, "worktrees")],
+    jobIdPrefixes: ["TEST-"], tmuxSessionPrefixes: ["TEST-"], allowedAccountIds: ["TEST-a"],
+  };
+  const manifest: CodexGoalJobManifestInput = {
+    jobId: "TEST-child", taskId: "TEST-child", workspacePath,
+    jobRootDir: join(root, "jobs", "TEST-child"), promptPath: join(root, "jobs", "TEST-child", "prompt.md"),
+    accounts: ["TEST-a"], authRootDir: join(tmpdir(), "auth"),
+  };
+  const input = { registryRootDir, scope, binding: { createManifest: manifest },
+    request: { operation: ProjectOperation.CreateJob, jobId: manifest.jobId, workspacePath } };
+  return { root, registryRootDir, workspacePath, scope, manifest, input };
+}
+
+describe("scoped creation targets", () => {
+  it("publishes a fresh job through the public controller route with actual physical target facts", async () => {
+    const f = await fixture();
+    const controllerWorkspace = join(f.root, "workspaces", "controller");
+    await mkdir(controllerWorkspace, { mode: 0o700 });
+    for (const workspace of [controllerWorkspace, f.workspacePath]) {
+      await gitInitRepository(workspace);
+      await writeFile(join(workspace, "README.md"), "TEST base\n");
+      await git(workspace, ["add", "README.md"]);
+      await git(workspace, ["commit", "-m", "test: creation target base"]);
+    }
+    const server = createCodexGoalMcpServer();
+    const client = new Client({ name: "TEST-creation-target", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const controllerRoot = join(f.root, "jobs", "TEST-controller");
+      await expect(callToolJson(client, "codex_goal_create_job", {
+        registryRootDir: f.registryRootDir, jobId: "TEST-controller", taskId: "TEST-controller",
+        workspacePath: controllerWorkspace, jobRootDir: controllerRoot, promptPath: join(controllerRoot, "prompt.md"),
+        authRootDir: f.scope.authRoot,
+        accounts: ["TEST-a"], accessBoundary: AccessBoundary.ProjectScopedControl, projectAccessScope: f.scope,
+      })).resolves.toMatchObject({ ok: true });
+      const physical = await Promise.all([f.workspacePath, f.manifest.jobRootDir].map(prospectiveAdmissionResourceBacking));
+      expect(physical.every(roots => Boolean(roots?.length))).toBe(true);
+      const created = await callToolJson(client, "codex_goal_project_create_job", {
+        registryRootDir: f.registryRootDir, controllerJobId: "TEST-controller", ...f.manifest,
+        workerRole: "producer", confirmCreate: true,
+      });
+      expect(created).toMatchObject({ ok: true, result: { admission: {
+        scope: "target", target: { canonicalPath: f.workspacePath, physicalWritableRoots: physical.flat() },
+        backlog: { count: 0 },
+      } } });
+      const stored = await readCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: f.manifest.jobId });
+      expect(stored.projectPreStartAdmission).toBeUndefined();
+      expect(await observeProtectedCodexGoalJobBirth(stored)).toEqual({ status: "released" });
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it("keeps an existing prompt-only legacy root on its original admission route", async () => {
+    const f = await fixture();
+    expect(await admissionNeedsFreshCreateJobTarget(f.input.binding)).toBe(true);
+    await mkdir(f.manifest.jobRootDir, { mode: 0o700 });
+    await writeFile(f.manifest.promptPath, "TEST existing prompt\n");
+    expect(await admissionNeedsFreshCreateJobTarget(f.input.binding)).toBe(false);
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+  });
+
+  it("requires initial host identity and current custody even for an absent root", async () => {
+    const f = await fixture();
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBe(f.workspacePath);
+    host.namespaceRoot = true;
+    expect(await admissionNeedsFreshCreateJobTarget(f.input.binding)).toBe(true);
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+    host.namespaceRoot = false;
+    host.foreign.add(f.workspacePath);
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+    host.foreign.delete(f.workspacePath);
+    await chmod(join(f.root, "jobs"), 0o777);
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+    await expect(access(f.manifest.jobRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects required pre-start policy, request mismatch and registry collision", async () => {
+    const f = await fixture();
+    expect(await admissionCreateJobTargetIdentity({ ...f.input,
+      scope: { ...f.scope, preStartAdmission: { required: true, mode: "serial-builtin" } },
+    })).toBeUndefined();
+    expect(await admissionCreateJobTargetIdentity({ ...f.input,
+      request: { ...f.input.request, jobId: "TEST-other" },
+    })).toBeUndefined();
+    await mkdir(join(f.registryRootDir, f.manifest.jobId), { mode: 0o700 });
+    expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+    await expect(access(f.manifest.jobRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a future job-root alias even when its workspace is canonical", async () => {
+    const f = await fixture();
+    const alias = join(f.root, "alias-jobs");
+    await symlink(join(f.root, "jobs"), alias);
+    expect(await admissionCreateJobTargetIdentity({ ...f.input, binding: { createManifest: {
+      ...f.manifest, jobRootDir: join(alias, f.manifest.jobId), promptPath: join(alias, f.manifest.jobId, "prompt.md"),
+    } } })).toBeUndefined();
+  });
+
+  it("admits a pinned standalone worktree without granting mismatched child ownership", async () => {
+    const f = await fixture();
+    await gitInitRepository(f.workspacePath);
+    await writeFile(join(f.workspacePath, "README.md"), "TEST pinned base\n");
+    await git(f.workspacePath, ["add", "README.md"]);
+    await git(f.workspacePath, ["commit", "-m", "test: standalone worktree target"]);
+    const path = join(f.root, "worktrees", "TEST-standalone");
+    const target = { sourceWorkspacePath: f.workspacePath, expectedSourceRealPath: f.workspacePath,
+      path, expectedRevision: (await gitStdout(f.workspacePath, ["rev-parse", "HEAD"])).trim(), sourceRevisionPinned: true };
+    const request = { operation: ProjectOperation.CreateWorktree, workspacePath: path };
+    const input = { registryRootDir: f.registryRootDir, scope: f.scope, binding: { createWorktree: target }, request };
+    expect(await admissionCreationTargetIdentity(input)).toBe(path);
+    expect(await admissionCreationTargetIdentity({ ...input, request: { ...request, ownedPaths: ["src/"] } })).toBeUndefined();
+    const child = { ...target, jobId: "TEST-child", ownedPaths: ["src/"] };
+    expect(await admissionCreationTargetIdentity({ ...input, binding: { createWorktree: child },
+      request: { ...request, jobId: child.jobId, ownedPaths: ["other/"] } })).toBeUndefined();
+    expect(await admissionCreationTargetIdentity({ ...input, binding: { createWorktree: child },
+      request: { ...request, jobId: child.jobId, ownedPaths: ["src/"] } })).toBe(path);
+    await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});

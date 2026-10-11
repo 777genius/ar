@@ -4,6 +4,7 @@ import { buildCodexProjectAdmissionSnapshot, type CodexProjectMutationAdmissionI
 import { withoutCapacityContinuationSiblingDebt, withoutInPlaceContinuationSelfDebt } from "./codex-goal-project-admission-normalization";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { prepareCodexProjectScopedAdmission } from "./codex-goal-project-scoped-admission";
+import { admissionNeedsFreshCreateJobTarget } from "./codex-goal-project-admission-target";
 
 export function codexProjectAdmissionGate(
   input: CodexProjectMutationAdmissionInput,
@@ -46,6 +47,7 @@ export function codexProjectAdmissionGate(
   ) => {
       const hasScopedBinding = Boolean(input.targetBinding?.createWorktree ||
         input.targetBinding?.createManifest?.projectPreStartAdmission ||
+        await admissionNeedsFreshCreateJobTarget(input.targetBinding) ||
         input.targetBinding?.start?.manifest.projectPreStartAdmission);
       const scoped = hasScopedBinding ? await prepareCodexProjectScopedAdmission({
         registryRootDir: input.registryRootDir,
