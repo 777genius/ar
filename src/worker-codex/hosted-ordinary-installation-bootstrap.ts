@@ -37,7 +37,7 @@ export type QualifiedPairInstallationRequest = Readonly<{ schemaVersion: 1; pack
   preparedCollectorProfile: HostedInventoryFile; priorCollectorProfile: OrdinaryPriorCollectorProfile }>;
 type FundedQualifiedPacket = Omit<OrdinaryInstallationPacket, "schemaVersion"> & Omit<QualifiedPairInstallationRequest, "schemaVersion" | "packet"> &
   Readonly<{ schemaVersion: 2; qualificationRequestSha256: string }>;
-const packetKeys = "bootId,bootstrap,collectorProfile,copiedCodec,copiedLauncher,creator,hostId,issuedEpochMs,issuedMonotonicNs,operationId,runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion,systemBusInfrastructure,workEndEpochMs,cleanupEndEpochMs";
+const packetKeys = "bootId,bootstrap,collectorProfile,copiedCodec,copiedLauncher,creator,hostId,issuedEpochMs,issuedMonotonicNs,node,operationId,runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion,systemBusInfrastructure,workEndEpochMs,cleanupEndEpochMs";
 const qualificationKeys = "candidate,copiedCohort,preparedCollectorProfile,preparedFixture,priorCollectorProfile,qualificationRequestSha256";
 const copiedNames = ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs"] as const;
 function closed(value: unknown, keys: string): asserts value is Record<string, unknown> {
