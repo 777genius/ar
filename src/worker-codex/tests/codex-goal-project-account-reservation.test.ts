@@ -72,8 +72,10 @@ describe("project account reservation", () => {
     // Model only the protected owner principal; physical identity, links, modes
     // and selected FD bytes remain native in this portable TEST boundary.
     const lstat = fs.lstatSync, fstat = fs.fstatSync;
-    vi.spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof lstat>) =>
-      Object.assign(lstat(...args), { uid: args[1]?.bigint ? 0n : 0 })) as typeof lstat);
+    vi.spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof lstat>) => {
+      const metadata = lstat(...args);
+      return metadata === undefined ? undefined : Object.assign(metadata, { uid: args[1]?.bigint ? 0n : 0 });
+    }) as typeof lstat);
     vi.spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fstat>) =>
       Object.assign(fstat(...args), { uid: args[1]?.bigint ? 0n : 0 })) as typeof fstat);
     await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(registryRootDir), scope,
