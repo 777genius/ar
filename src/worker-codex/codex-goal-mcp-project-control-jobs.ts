@@ -171,6 +171,8 @@ export async function projectControlRefillWorkerView(
   deps: CodexGoalMcpProjectControlJobsDeps,
   boundedToolName: ProjectControlOperationToolName = "codex_goal_project_refill_worker",
 ): Promise<JsonObject> {
+  if (deps.sealedSource && (args.mergeBinding !== undefined || args.requireCanonicalRemoteHead === true ||
+      args.executionMode !== "sync" || args.startWorker !== false)) throw new Error("project_control_sealed_source_mode_invalid");
   const executionMode =
     args.executionMode ??
     (booleanValue(args.startWorker) === false ? "sync" : "bounded");
@@ -328,7 +330,7 @@ export async function projectControlRefillWorkerView(
     scope: controller.scope,
     remoteVerificationRequired:
       canonicalSourceWorkspacePath !== undefined ||
-      expectedSourceCommit !== undefined,
+      (expectedSourceCommit !== undefined && deps.sealedSource === undefined),
   });
   const worktreeAccessInput = sourceReference.remoteVerified
     ? {
@@ -336,9 +338,15 @@ export async function projectControlRefillWorkerView(
         sourceRef: sourceReference.worktreeSourceRef,
       }
     : requestedWorktreeAccessInput;
+  const sealedRevision = await deps.sealedSource?.resolveRevision({ sourceWorkspacePath,
+    sourceRef: sourceRef ?? baseBranch, expectedSourceCommit: expectedSourceCommit ?? "" });
   const resolvedSource =
     await resolverBroker.resolveWorktreeRevision(worktreeAccessInput);
-  const finalizedSource = await finalizeProjectMergeBoundSource({
+  if (sealedRevision && (resolvedSource.revision !== sealedRevision.revision || resolvedSource.sourceRealPath !== sealedRevision.sourceRealPath))
+    throw new Error("project_control_sealed_source_changed");
+  const finalizedSource = sealedRevision
+    ? { sourceRevision: sealedRevision, admission: args.preStartAdmission, promptSuffix: "", merge: undefined }
+    : await finalizeProjectMergeBoundSource({
     binding: mergeBinding,
     jobRootDir: baseCreateManifest.jobRootDir,
     admission: args.preStartAdmission,
