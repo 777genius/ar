@@ -45,7 +45,9 @@ vi.mock("node:fs", async original => {
       return Object.assign(real.lstatSync(local(path)), { uid: 0 });
     },
     openSync: (path: string, flags: number, permissions?: number) => real.openSync(local(path), flags, permissions),
-    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { uid: 0 }),
+    fstatSync: (fd: number, options?: { bigint?: boolean }) => options?.bigint
+      ? Object.assign(real.fstatSync(fd, { bigint: true }), { uid: 0n })
+      : Object.assign(real.fstatSync(fd), { uid: 0 }),
   };
 });
 vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({

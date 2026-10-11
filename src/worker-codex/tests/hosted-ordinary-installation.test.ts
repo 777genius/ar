@@ -1,3 +1,4 @@
+import { registerOrdinaryWriterExtentTests } from "./hosted-ordinary-writer-extent-test-support";
 import { registerOrdinaryAccountRotationTests } from "./hosted-ordinary-account-rotation-test-support";
 import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
@@ -15,7 +16,7 @@ import { spawnCodexAppServerProcess, signalCodexAppServerChildGroup } from "../.
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
@@ -36,6 +37,8 @@ const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
 function local(path: string): string {
+  const researchAuthority = "/run/user/subscription-runtime-research-v1";
+  if (path === researchAuthority || path.startsWith(researchAuthority + "/")) return join(fixture.root, "research-authority", path.slice(researchAuthority.length));
   if (path === "/etc/subscription-runtime/host-activation-mode") return join(fixture.root, "host-activation-mode");
   if (path === "/etc/subscription-runtime") return fixture.root;
   if (path === manifestScratch || path.startsWith(manifestScratch + "/")) return join(fixture.root, "manifest-scratch", path.slice(manifestScratch.length));
@@ -52,6 +55,7 @@ function local(path: string): string {
   for (const workspace of ["/managed/W", "/jobs/ordinary-job/workspace"]) {
     if (path === workspace || path.startsWith(workspace + "/")) return join(fixture.root, "managed-W", path.slice(workspace.length));
   }
+  if (path.startsWith("/jobs/ordinary-job/")) return join(fixture.root, path.slice("/jobs/ordinary-job/".length));
   if (path === stages || path.startsWith(stages + "/")) return join(fixture.root, "stages", path.slice(stages.length));
   if (path.startsWith(root + "/")) return join(fixture.root, path.slice(root.length + 1));
   if (path === "/etc/systemd/system/trusted.service") return join(fixture.root, "fragment");
@@ -60,7 +64,8 @@ function local(path: string): string {
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   return { ...real,
-    readFileSync: (path: string, options: Parameters<typeof real.readFileSync>[1]) => {
+    readFileSync: (path: string | number, options: Parameters<typeof real.readFileSync>[1]) => {
+      if (typeof path === "number") return real.readFileSync(path, options);
       if (path === "/proc/self/uid_map") return "0 0 4294967295\n";
       if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot;
       if (path === "/etc/machine-id") return "a".repeat(32);
@@ -84,12 +89,7 @@ vi.mock("node:fs", async original => {
     },
     readlinkSync: (path: string) => path.startsWith("/proc/") ? "host" : real.readlinkSync(local(path)),
     realpathSync: (path: string) => {
-      if (path === "/etc/systemd/system/trusted.service") return path;
-      if (path === manifestScratch || path.startsWith(manifestScratch + "/")) {
-        const physical = local(path), actual = real.realpathSync(physical); return physical === actual ? path : actual;
-      }
-      if (path.startsWith(root + "/")) { real.realpathSync(local(path)); return path; }
-      return real.realpathSync(path);
+      const physical = local(path), actual = real.realpathSync(physical); return physical !== path && actual === physical ? path : actual;
     },
     statfsSync: (path: string, options?: { bigint?: boolean }) => path === "/proc/self/fd"
       ? real.statfsSync(path, options?.bigint ? { bigint: true } : undefined)
@@ -119,16 +119,74 @@ vi.mock("node:fs/promises", async original => {
       }
       return physical === actual ? path : actual;
     },
-    lstat: (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => real.lstat(projected(path), options),
+    lstat: async (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => Object.assign(await real.lstat(projected(path), options), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     open: async (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => {
       const handle = await real.open(projected(path), flags, mode);
       captureProjection.retainCapturePath(handle.fd,path,fixture);
+      const stat = handle.stat.bind(handle);
+      // Match the sync Host principal while retaining the actual descriptor facts.
+      handle.stat = (async (options?: { bigint?: boolean }) => {
+        if (options?.bigint) return Object.assign(await stat({ bigint: true }), { uid: 0n, gid: 0n });
+        return Object.assign(await stat(), { uid: 0, gid: 0 });
+      }) as typeof handle.stat;
       return handle;
     },
   };
 });
-vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpected external command"); },
-  spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
+vi.mock("node:child_process", async original => {
+  const real = await original<typeof import("node:child_process")>(); const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const { promisify } = await import("node:util");
+  const execute = (command: string, args: readonly string[], options: import("node:child_process").ExecFileOptions | undefined,
+    callback: (error: import("node:child_process").ExecFileException | null, stdout: string | Buffer, stderr: string | Buffer) => void) => {
+    const workspace = args.includes("-C") ? args[args.indexOf("-C") + 1] : options?.cwd;
+    const currentProcessIdentity = command === "ps" && args.length === 4 && args[0] === "-p" &&
+      args[1] === String(process.pid) && args[2] === "-o" && args[3] === "lstart=";
+    if (!currentProcessIdentity && (command !== "git" || typeof workspace !== "string" ||
+        !workspace.startsWith("/dev/shm/TEST-ordinary-extent-"))) throw new Error("unexpected external command");
+    return real.execFile(command, args, options ?? {}, callback);
+  };
+  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options?: import("node:child_process").ExecFileOptions) =>
+    new Promise((resolve, reject) => execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }),
+  spawn: (...args: unknown[]) => {
+    const [command, argv, options] = args as [string, string[], import("node:child_process").SpawnOptions];
+    const batch = command === "git" && Array.isArray(argv) && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch";
+    const apply = command === "git" && Array.isArray(argv) && argv.length === 9 && argv.slice(0, 4).join("\0") === "--literal-pathspecs\0-c\0core.quotepath=false\0-C" &&
+      argv.slice(5).join("\0") === "apply\0--cached\0--whitespace=nowarn\0-";
+    if (!batch && !apply) return fixture.spawn(...args);
+    const cwd = apply ? argv[4] : options?.cwd, stdio = options?.stdio;
+    const allocated = typeof cwd === "string" ? /^\/dev\/shm\/TEST-ordinary-extent-[A-Za-z0-9]{6}(?=\/)/.exec(cwd)?.[0] : undefined;
+    const inventory = JSON.parse(fs.readFileSync(join(fixture.root, "readonly-inventory.json"), "utf8")) as { ordinaryCreators: readonly { workspacePath: string }[] };
+    if (typeof cwd !== "string" || !allocated || !inventory.ordinaryCreators.some(creator => creator.workspacePath === cwd) ||
+        fs.realpathSync(cwd) !== cwd || !fs.lstatSync(cwd).isDirectory() || fs.lstatSync(cwd).uid !== fs.lstatSync(fixture.root).uid ||
+        fs.realpathSync(allocated) !== allocated || fs.lstatSync(allocated).uid !== fs.lstatSync(fixture.root).uid ||
+        (fs.lstatSync(allocated).mode & 0o777) !== 0o700 || fs.lstatSync(cwd).dev !== fs.lstatSync(allocated).dev ||
+        !Array.isArray(stdio) || stdio.length !== 3 || !stdio.every(value => value === "pipe") ||
+        Object.keys(options).some(key => !(apply ? ["env", "stdio"] : ["cwd", "env", "stdio"]).includes(key)) ||
+        options.env?.GIT_NO_REPLACE_OBJECTS !== "1" || (!apply && options.env?.GIT_GRAFT_FILE !== "/dev/null") ||
+        fs.realpathSync(join(cwd, ".git")) !== join(cwd, ".git") || !fs.lstatSync(join(cwd, ".git")).isDirectory() ||
+        fs.realpathSync(join(cwd, ".git/objects")) !== join(cwd, ".git/objects") ||
+        fs.existsSync(join(cwd, ".git/objects/info/alternates"))) throw new Error("unexpected TEST Git operation");
+    const environment: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+    const keys = ["GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"] as const;
+    if (apply || keys.some(key => options.env?.[key] !== undefined)) {
+      const [index, objects, alternates] = keys.map(key => options.env?.[key]);
+      if (typeof index !== "string" || typeof objects !== "string" || typeof alternates !== "string" ||
+          [index, objects, alternates].some(path => /[\x00-\x1f\x7f]/.test(path)) || /[:"]/.test(alternates)) throw new Error("unexpected TEST private Git environment");
+      const owned = (path: string): boolean => path.startsWith(allocated + "/") && fs.realpathSync(path) === path &&
+        fs.lstatSync(path).dev === fs.lstatSync(allocated).dev && fs.lstatSync(path).uid === fs.lstatSync(fixture.root).uid;
+      const temporary = dirname(index);
+      if (dirname(temporary) !== dirname(cwd) || !/\/\.secret-scan-[A-Za-z0-9]{6}$/.test(temporary) ||
+          !owned(temporary) || !fs.lstatSync(temporary).isDirectory() || (fs.lstatSync(temporary).mode & 0o777) !== 0o700 ||
+          ![join(temporary, "index"), join(temporary, "prefix-index")].includes(index) ||
+          !owned(index) || !fs.lstatSync(index).isFile() || fs.lstatSync(index).nlink !== 1 ||
+          objects !== join(temporary, "objects") || !owned(objects) || !fs.lstatSync(objects).isDirectory() ||
+          alternates !== join(cwd, ".git/objects") || !owned(alternates)) throw new Error("unexpected TEST private Git paths");
+      for (const key of keys) environment[key] = options.env![key];
+    }
+    // Only the captured patch's private index/objects can be written; provider births remain inert.
+    return real.spawn("/usr/bin/git", argv, { ...options, env: environment });
+  }, spawnSync: (command: string, args: string[]) => {
   if (command !== "/usr/bin/systemctl") throw new Error("unexpected external command");
   if (args[0] === "kill" || args[0] === "stop") {
     fixture.stops.push(args.at(-1)!); fixture.onStop?.();
@@ -143,7 +201,7 @@ vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpe
   if (args[0] === "list-units") return { status: 0, stdout: args.includes("--type=socket,timer") ? "" : "trusted.service loaded active running trusted\n" };
   if (args[0] === "list-jobs") return { status: 0, stdout: fixture.jobs };
   throw new Error("unexpected service mutation");
-} }));
+} }; });
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const runtimeDirectory = fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
 const stageName = "stages/" + hash(runtimeDirectory) + ".json";
@@ -153,6 +211,7 @@ function creator() { return { creatorId: "ordinary-creator", jobId: "ordinary-jo
   workspacePath: "/jobs/ordinary-job/workspace", launch: { command: process.execPath, args: [join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js"), "start", "ordinary-job"], cwd: "/jobs/ordinary-job/workspace" } }; }
 beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
+  vi.spyOn(process, "geteuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
   writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
   fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
@@ -933,6 +992,7 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
 });
 
 registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
+registerOrdinaryWriterExtentTests({ fixture, creator, read, put, runtimeDirectory });
 
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });

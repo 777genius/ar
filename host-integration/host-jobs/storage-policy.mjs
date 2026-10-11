@@ -45,9 +45,10 @@ export async function prepareManagedJobLayout(jobId, options = {}) {
   return admission.layout;
 }
 async function prepareAnchoredLayout(jobId, { configPath = MANAGED_STORAGE_ROOT_CONFIG, probe = storageProbe, create = mkdir,
-  openDirectory = path => open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), expectedUid = 0n } = {}, retain = false) {
+  openDirectory = path => open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), expectedUid = 0n, expectedJobRoot } = {}, retain = false) {
   const config = await loadManagedStorageRoot(configPath, probe, expectedUid);
   const layout = deriveManagedJobLayout(config.storageRoot, jobId);
+  if (expectedJobRoot && layout.jobRoot !== expectedJobRoot.path) throw denied('ordinary job root changed');
   const root = await probe.stat(config.storageRoot);
   if (root.dev === (await probe.stat('/')).dev) throw denied('root filesystem forbidden');
   const handles = new Map();
@@ -65,12 +66,19 @@ async function prepareAnchoredLayout(jobId, { configPath = MANAGED_STORAGE_ROOT_
       const parent = handles.get(dirname(path));
       validate(await parent.stat({ bigint: true }));
       const anchored = `/proc/self/fd/${parent.fd}/${path.slice(dirname(path).length + 1)}`;
-      await create(anchored, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+      // A sealed ordinary job already exists. Never recreate its parent/root
+      // before proving the exact opened anchor; only its bounded children prepare.
+      if (!expectedJobRoot || path !== `${config.storageRoot}/jobs` && path !== layout.jobRoot) {
+        await create(anchored, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+      }
       // Every component is opened relative to a retained directory descriptor.
       // Mount loss or ancestor replacement cannot redirect creation onto root.
       const child = await openDirectory(anchored);
       handles.set(path, child);
-      validate(await child.stat({ bigint: true }));
+      const metadata = await child.stat({ bigint: true });
+      validate(metadata);
+      if (expectedJobRoot && path === layout.jobRoot && (metadata.dev !== BigInt(expectedJobRoot.device) ||
+          metadata.ino !== BigInt(expectedJobRoot.inode))) throw denied('ordinary job root changed');
     }
     const final = await anchor.stat({ bigint: true });
     validate(final);

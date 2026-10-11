@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryLifecycleStart } from "./hosted-ordinary-writer-authority";
 import type { RunCommand } from "./codex-goal-cli";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { flag, option, requiredOption, writeJsonOrText, type ParsedFlags, type CodexGoalCliIo } from "./codex-goal-cli-support";
@@ -39,6 +40,7 @@ export async function runHostedGoalLifecycleCommand(
   }
   const outerStatus = await routeHostedGoalLaunch(launch, request);
   if (outerStatus !== undefined) return outerStatus;
+  assertHostedOrdinaryLifecycleStart(launch.config, command.registryRootDir);
   // Admission precedes manifest reload and all operation effects. Each use
   // case repeats its checks, including admission of the reloaded identity.
   const result = request.operation === HostedGoalLifecycleOperation.Start

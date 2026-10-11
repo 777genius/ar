@@ -18,6 +18,7 @@ import {
   assertCodexProjectReservedLaunchAuthority,
   consumeCodexProjectReservedLaunchAuthority,
   codexProjectAccountLeaseMode,
+  assertCodexProjectReservedAccountReceiptCurrent,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
 } from "../application/project-control/codex-goal-project-account-reservation";
@@ -677,7 +678,7 @@ describe("project account reservation", () => {
 
     const firstReservation = await reserveCodexProjectAccount({ ...first, deps });
     const secondReservation = await reserveCodexProjectAccount({ ...second, deps });
-    const firstReplay = await reserveCodexProjectAccount({ ...first, deps });
+    const firstReplay = await reserveCodexProjectAccount({ ...first, deps: { ...deps, now: new Date(now.getTime() + 1_000) } });
     expect(firstReservation.mode).toBe("exclusive");
     expect(firstReplay.mode).toBe("exclusive");
     if (firstReservation.mode !== "exclusive" || firstReplay.mode !== "exclusive") {
@@ -694,6 +695,16 @@ describe("project account reservation", () => {
       accountId: firstReservation.accountId,
       fencingToken: firstReservation.fencingToken,
     });
+
+    // The first start must not clean the renewed successor's receipt after
+    // losing the workspace lease during an admission handoff.
+    await expect(assertCodexProjectReservedAccountReceiptCurrent({ manifest: first.manifest, reservedLaunch: firstReservation.launch }))
+      .rejects.toThrow("project_control_account_reservation_changed_before_start");
+    await expect(releaseCodexProjectAccount({
+      manifest: first.manifest, launch: firstReservation.launch, reason: "stale start failed", deps: { leaseStore, now },
+    })).resolves.toBe(false);
+    await expect(assertCodexProjectReservedAccountReceiptCurrent({ manifest: first.manifest, reservedLaunch: firstReplay.launch }))
+      .resolves.toBeUndefined();
 
     await expect(releaseCodexProjectAccount({
       ...first,
