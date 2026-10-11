@@ -1,3 +1,4 @@
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { access, chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -7,13 +8,13 @@ import { AccessBoundary, ProjectOperation, type ProjectAccessScope } from "@viox
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
+import { researchAuthorityRoot, researchHash } from "../research-launch-files";
 import {
   admissionCreationTargetIdentity, admissionCreateJobTargetIdentity, admissionNeedsFreshCreateJobTarget,
 } from "../application/project-control/codex-goal-project-admission-target";
 import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
-import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { host } from "./research-launch-fixture";
-import { git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
+import { callToolJson as invokeTool, git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
 
 async function fixture() {
   const root = join(tmpdir(), "TEST-creation-target");
@@ -83,6 +84,47 @@ describe("scoped creation targets", () => {
     await writeFile(f.manifest.promptPath, "TEST existing prompt\n");
     expect(await admissionNeedsFreshCreateJobTarget(f.input.binding)).toBe(false);
     expect(await admissionCreateJobTargetIdentity(f.input)).toBeUndefined();
+  });
+
+  it.each([false, true])("keeps legacy enforcement and refuses fallback for malformed modern birth=%s", async modern => {
+    const f = await fixture(), controllerWorkspace = join(f.root, "workspaces", "controller");
+    await mkdir(controllerWorkspace, { mode: 0o700 });
+    for (const workspace of [controllerWorkspace, f.workspacePath]) {
+      await gitInitRepository(workspace);
+      await writeFile(join(workspace, "README.md"), "TEST base\n");
+      await git(workspace, ["add", "README.md"]);
+      await git(workspace, ["commit", "-m", "test: controller route provenance"]);
+    }
+    const controllerRoot = join(f.root, "jobs", "TEST-controller");
+    if (!modern) await mkdir(controllerRoot, { mode: 0o700 });
+    const server = createCodexGoalMcpServer(), client = new Client({ name: "TEST-owner-route", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      await expect((modern ? callToolJson : invokeTool)(client, "codex_goal_create_job", {
+        registryRootDir: f.registryRootDir, jobId: "TEST-controller", taskId: "TEST-controller",
+        workspacePath: controllerWorkspace, jobRootDir: controllerRoot, promptPath: join(controllerRoot, "prompt.md"),
+        authRootDir: f.scope.authRoot, accounts: ["TEST-a"],
+        accessBoundary: AccessBoundary.ProjectScopedControl, projectAccessScope: f.scope,
+      })).resolves.toMatchObject({ ok: true });
+      if (modern) await writeFile(join(researchAuthorityRoot, "job-births", researchHash(controllerRoot) + ".json"), "{");
+      const controller = await readCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: "TEST-controller" });
+      expect(await observeProtectedCodexGoalJobBirth(controller)).toEqual({ status: "unknown" });
+      const result = await callToolJson(client, "codex_goal_project_create_job", {
+        registryRootDir: f.registryRootDir, controllerJobId: controller.jobId, ...f.manifest,
+        workerRole: "producer", confirmCreate: true,
+      });
+      if (modern) {
+        expect(result).toMatchObject({ ok: false, admission: { allowed: false, resource: f.workspacePath,
+          examples: expect.arrayContaining([{ reason: "active_writer_conflict" }]) } });
+        await expect(access(f.manifest.jobRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(access(join(f.registryRootDir, f.manifest.jobId))).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        expect(result).toMatchObject({ ok: true, result: { status: "applied" } });
+        expect((result.result as Record<string, unknown>).admission).toBeUndefined();
+        expect((await readCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: f.manifest.jobId })).jobId).toBe(f.manifest.jobId);
+      }
+    } finally { await client.close(); await server.close(); }
   });
 
   it("requires initial host identity and current custody even for an absent root", async () => {

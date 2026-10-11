@@ -5,6 +5,7 @@ import { withoutCapacityContinuationSiblingDebt, withoutInPlaceContinuationSelfD
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { prepareCodexProjectScopedAdmission } from "./codex-goal-project-scoped-admission";
 import { admissionNeedsFreshCreateJobTarget } from "./codex-goal-project-admission-target";
+import { researchJobWriterOwnerNamespacePresent } from "../../research-writer-observation";
 
 export function codexProjectAdmissionGate(
   input: CodexProjectMutationAdmissionInput,
@@ -45,9 +46,17 @@ export function codexProjectAdmissionGate(
     continuationSnapshot: ProjectAdmissionSnapshot,
     deps = input.deps,
   ) => {
+      let freshControlledTarget = false;
+      if (await admissionNeedsFreshCreateJobTarget(input.targetBinding) && input.controllerJobId &&
+        deps.readJob && deps.readWriterWritableRoots) {
+        try {
+          const controller = await deps.readJob({ registryRootDir: input.registryRootDir, jobId: input.controllerJobId });
+          freshControlledTarget = controller.jobId !== input.controllerJobId || researchJobWriterOwnerNamespacePresent(controller);
+        } catch { freshControlledTarget = true; }
+      }
       const hasScopedBinding = Boolean(input.targetBinding?.createWorktree ||
         input.targetBinding?.createManifest?.projectPreStartAdmission ||
-        await admissionNeedsFreshCreateJobTarget(input.targetBinding) ||
+        freshControlledTarget ||
         input.targetBinding?.start?.manifest.projectPreStartAdmission);
       const scoped = hasScopedBinding ? await prepareCodexProjectScopedAdmission({
         registryRootDir: input.registryRootDir,

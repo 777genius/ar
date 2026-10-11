@@ -1,6 +1,6 @@
-import { lstatSync } from "node:fs";
-import { observeHostedOrdinaryJobWriterAuthority, hostedOrdinaryWriterAuthorityAbsent } from "./hosted-ordinary-writer-authority";
-import { observeProtectedCodexGoalJobBirth } from "./protected-job-birth";
+import { lstatSync, readFileSync } from "node:fs";
+import { observeHostedOrdinaryJobWriterAuthority, hostedOrdinaryWriterAuthorityAbsent, isHostedOrdinaryRuntime } from "./hosted-ordinary-writer-authority";
+import { observeProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthNamespacePresent } from "./protected-job-birth";
 import { dirname, join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
@@ -22,6 +22,23 @@ function optionalPrivateRecord(path: string): Buffer | undefined {
 }
 function sameOptionalBytes(left: Buffer | undefined, right: Buffer | undefined): boolean {
   return left === undefined ? right === undefined : right !== undefined && left.equals(right);
+}
+
+/** A private owner namespace selects cold scoped admission; it does not assert
+ * a positive profile or release. Retained/malformed/revoked owners cannot fall
+ * back to the legacy global gate merely because their positive reader fails. */
+export function researchJobWriterOwnerNamespacePresent(manifest: CodexGoalJobManifest): boolean {
+  if (process.platform !== "linux") return false;
+  try {
+    // Controlled namespaces hide the private roots. Kernel routing facts still
+    // force cold qualification; they never supply positive writer authority.
+    if (isHostedOrdinaryRuntime() || /^0::\/system\.slice\/subscription-runtime-research-[a-f0-9-]{36}\.service$/m
+      .test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
+    try { lstatSync(researchJobAuthority(manifest.jobId)); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    return !hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ||
+      protectedCodexGoalJobBirthNamespacePresent(manifest.jobRootDir);
+  } catch { return true; }
 }
 
 /** Trusted host composition only. Mapped providers cannot read owner authority.

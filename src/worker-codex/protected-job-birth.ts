@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, readSync,
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync,
   realpathSync, rmdirSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +66,25 @@ function physicalPaths(identity: ResearchDirectoryIdentity): { birth: string; ef
 function optionalRecord(path: string): Buffer | undefined {
   try { return researchRead(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
+}
+
+/** Routing only: any retained birth/first-effect namespace keeps its controlled
+ * route, including corrupt bytes. Presence never proves release or grants a
+ * profile; only the cold owner reader below can supply positive authority. */
+export function protectedCodexGoalJobBirthNamespacePresent(jobRootDir: string): boolean {
+  const present = (path: string): boolean => {
+    try { lstatSync(path); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  };
+  try {
+    const lexical = paths(jobRootDir);
+    if (present(lexical.birth) || present(lexical.effect)) return true;
+    let identity: ResearchDirectoryIdentity;
+    try { identity = firstEffectDirectoryIdentity(jobRootDir); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    const physical = physicalPaths(identity);
+    return present(physical.birth) || present(physical.effect);
+  } catch { return true; }
 }
 
 /** Negative history must also cover legacy lexical spellings, including bind
