@@ -3,7 +3,7 @@ import "./absent-host-scratch-fixture";
 import { AgentRuntimeTool, ChildContinuationMode } from "@vioxen/subscription-runtime/core";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
-import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
+import { buildCodexGoalExecutorOptions, runCodexGoal } from "../codex-goal-runner";
 import { runCodexGoalCli, parseCodexGoalCliArgs } from "../codex-goal-cli";
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,21 +44,26 @@ async function fixture(mode: Parameters<typeof createChildForegroundTestProcess>
     "--edit-mode", "read-only", "--access-boundary", "read_only", "--network-access", "restricted", "--project-access-scope-json", JSON.stringify({ projectId: "test-child", readRoots: [workspace] }),
     "--codex-binary", transport, "--no-require-git-workspace", "--format", "json"];
   const output: string[] = [];
-  const io = { cwd: () => root, env: () => ({ SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1", PATH: process.env.PATH, MIMO_TOKEN_PLAN_API_KEY: sentinel }),
+  const io = { cwd: () => root, env: () => ({ PATH: process.env.PATH, MIMO_TOKEN_PLAN_API_KEY: sentinel }),
     writeStdout: (s: string) => output.push(s), writeStderr: (s: string) => output.push(s) };
   return { root, argv, io, output, lifetime, log, resource, fake,
     rows: async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)),
     close: () => rm(root, { recursive: true, force: true }) };
 }
+async function runParsedChild(f: Awaited<ReturnType<typeof fixture>>) {
+  const parsed = parseCodexGoalCliArgs(f.argv, f.io);
+  if (parsed.kind !== "run") throw new Error("expected production run command");
+  return await runCodexGoal(parsed.config);
+}
 
 describe("production foreground child lifetime", () => {
   // Bug: slice exhaustion starts another foreground invocation/account cycle with a fresh N.
-  it("runs real CLI -> runner -> executor -> factory -> client; N=2 never submits N+1", async () => {
+  it("runs real CLI parser -> runner -> executor -> factory -> client; N=2 never submits N+1", async () => {
     const f = await fixture();
     try {
-      const status = await runCodexGoalCli(f.argv, f.io); expect(status, f.output.join("")).toBe(1);
-      expect(JSON.parse(f.output.at(-1)!).attempts).toHaveLength(1);
-      expect(JSON.parse(f.output.at(-1)!).reason).toBe("budget_exceeded");
+      const result = await runParsedChild(f);
+      expect(result).toMatchObject({ status: "failed", reason: "budget_exceeded" });
+      expect(result.attempts).toHaveLength(1);
       const rows = await f.rows();
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(2);
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
@@ -68,7 +73,7 @@ describe("production foreground child lifetime", () => {
       const starts = rows.filter(r => r.method === "turn/start" || r.method === "thread/start");
       for (const start of starts) expect(start.params.environments).toEqual([]);
       expect(starts.find(r => r.method === "thread/start")?.params.dynamicTools).toEqual([]);
-      expect(f.output.join("")).not.toContain(sentinel);
+      expect(JSON.stringify(result)).not.toContain(sentinel);
       const files = await allFiles(f.root);
       expect(files.filter(p => p.endsWith("auth.json"))).toEqual([]);
       for (const p of files) expect(await readFile(p, "utf8")).not.toContain(sentinel);
@@ -78,8 +83,9 @@ describe("production foreground child lifetime", () => {
   it("does not retry a retryable first turn failure", async () => {
     const f = await fixture("retryable");
     try {
-      const status = await runCodexGoalCli(f.argv, f.io); expect(status, f.output.join("")).toBe(1);
-      expect(JSON.parse(f.output.at(-1)!).attempts).toHaveLength(1);
+      const result = await runParsedChild(f);
+      expect(result.status).not.toBe("completed");
+      expect(result.attempts).toHaveLength(1);
       const rows = await f.rows();
       expect(rows.filter(r => r.type === "provider-start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
@@ -94,13 +100,24 @@ describe("production foreground child lifetime", () => {
     try { const status = await runCodexGoalCli(f.argv, f.io); expect(status, f.output.join("")).toBe(2); expect(await f.rows()).toEqual([]); }
     finally { await f.close(); }
   });
+  // Bug: an inherited marker reopens the raw CLI route for project-owned children.
+  it("rejects raw project child CLI with a broker marker before provider start", async () => {
+    const f = await fixture();
+    try {
+      const io = { ...f.io, env: () => ({ ...f.io.env(), SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1" }) };
+      expect(await runCodexGoalCli(f.argv, io)).toBe(2);
+      expect(f.output.join("")).toContain("project_control_broker_required");
+      expect(await f.rows()).toEqual([]);
+    } finally { await f.close(); }
+  });
   // Bug: delayed start acknowledgment receives a fresh full wait timeout and revives late work.
   it("expires during the wait and requests scoped cleanup", async () => {
     const f = await fixture("delayed", 900);
     try {
-      const status = await runCodexGoalCli(f.argv, f.io); expect(status, f.output.join("")).toBe(1);
+      const result = await runParsedChild(f);
+      expect(result.status).toBe("failed");
       const rows = await f.rows();
-      expect(JSON.parse(f.output.at(-1)!).attempts).toHaveLength(1);
+      expect(result.attempts).toHaveLength(1);
       expect(rows.filter(r => r.type === "provider-start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(1);

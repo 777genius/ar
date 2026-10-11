@@ -131,6 +131,12 @@ vi.mock("node:fs/promises", async original => {
     open: async (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => {
       const handle = await real.open(projected(path), flags, mode);
       captureProjection.retainCapturePath(handle.fd,path,fixture);
+      const stat = handle.stat.bind(handle);
+      // Match the sync Host principal while retaining the actual descriptor facts.
+      handle.stat = (async (options?: { bigint?: boolean }) => {
+        if (options?.bigint) return Object.assign(await stat({ bigint: true }), { uid: 0n, gid: 0n });
+        return Object.assign(await stat(), { uid: 0, gid: 0 });
+      }) as typeof handle.stat;
       return handle;
     },
   };
