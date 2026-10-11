@@ -17,7 +17,7 @@ vi.mock("node:child_process", async original => ({ ...await original<typeof impo
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), mkdir: f.mkdir,
   open: vi.fn(async () => ({ stat: async () => ({ isFile: () => true, nlink: 1, uid: process.getuid?.() }),
     chmod: async () => {}, close: async () => {} })) }));
-vi.mock("../hosted-readonly-controller-admission", () => ({ admitHostedControllerLaunch: f.admit }));
+vi.mock("../hosted-readonly-controller-admission", () => ({ admitHostedControllerLaunch: f.admit, admitHostedRawGoalLaunch: f.admit }));
 vi.mock("../codex-goal-runner", async original => ({ ...await original<typeof import("../codex-goal-runner")>(), runCodexGoal: f.run }));
 vi.mock("../hosted-readonly-supervisor-host", () => ({ HostedReadonlySupervisorHost: class {
   runtimeRole = f.role;

@@ -404,6 +404,83 @@ describe("evaluateProjectAdmission", () => {
   });
 });
 
+describe("scoped project admission", () => {
+  it("refuses scoped permission when the target or its authority scope is unproved", () => {
+    for (const scoped of [
+      { target: {}, scope: "target" as const },
+      { target: { canonicalPath: "/work/target" }, scope: "unknown" as const },
+    ]) {
+      expect(evaluateProjectAdmission({
+        request: { operation: ProjectOperation.StartWorker },
+        snapshot: snapshot([]),
+        scoped: { ...scoped, safetyDebt: [], backlog: { count: 0, preview: [] } },
+      })).toMatchObject({
+        allowed: false,
+        reason: ProjectAdmissionDecisionReason.UnreadableProjectState,
+      });
+    }
+  });
+
+  it("allows an independent target while retaining unrelated backlog in the bounded summary", () => {
+    const backlog = {
+      reason: ProjectDebtReason.UnconsumedCompletedJob,
+      subject: "foreign-worker",
+      severity: "blocking" as const,
+      evidence: ["foreign output remains unconsumed"],
+    };
+    const decision = evaluateProjectAdmission({
+      request: {
+        operation: ProjectOperation.StartWorker,
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+      },
+      snapshot: snapshot([backlog]),
+      scoped: {
+        target: { canonicalPath: "/work/target", ownedPaths: ["src/target/"] },
+        safetyDebt: [],
+        backlog: { count: 1, preview: [backlog] },
+        scope: "unrelated_history",
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      status: ProjectAdmissionDecisionStatus.Allowed,
+      debt: [],
+      summary: {
+        scope: "unrelated_history",
+        backlog: { count: 1 },
+      },
+    });
+  });
+
+  it("keeps unknown overlapping writer authority blocking for every writing role", () => {
+    const unknownWriter = {
+      reason: ProjectDebtReason.ActiveWriterConflict,
+      subject: "unknown-writer",
+      severity: "blocking" as const,
+      evidence: ["unknown writer authority"],
+    };
+    for (const workerRole of [
+      ProjectAdmissionWorkerRole.Producer,
+      ProjectAdmissionWorkerRole.Reviewer,
+    ]) {
+      expect(evaluateProjectAdmission({
+        request: { operation: ProjectOperation.StartWorker, workerRole },
+        snapshot: snapshot([unknownWriter]),
+        scoped: {
+          target: { canonicalPath: "/work/target" },
+          safetyDebt: [unknownWriter],
+          backlog: { count: 0, preview: [] },
+          scope: "target",
+        },
+      })).toMatchObject({
+        allowed: false,
+        reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
+      });
+    }
+  });
+});
+
 function snapshot(
   debt: ProjectAdmissionSnapshot["debt"],
   extra: Partial<ProjectAdmissionSnapshot> = {},

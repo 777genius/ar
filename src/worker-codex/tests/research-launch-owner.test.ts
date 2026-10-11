@@ -87,6 +87,69 @@ describe("authority changes during blocking Host observations", () => {
 });
 
 describe("closed installed research launch owner (real TEST files; proc, mounts and systemd substituted)", () => {
+  it.skipIf(process.platform !== "linux").each(["different-job-grant", "legacy-grant-start"] as const)("denies controller-root reuse by %s before native effects", phase => {
+    const r = request(), origin = join(r.jobRootDir, ".controller-state-origin.json");
+    const grantPath = join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId), "grant.json");
+    let priorGrant: Buffer | undefined;
+    if (phase === "legacy-grant-start") {
+      grantResearchLaunch(r.jobId, r.jobRootDir, r.workspacePath);
+      priorGrant = researchRead(grantPath);
+      // Reconstruct a pre-v2 retained grant: it originally had no origin leaf.
+      unlinkSync(origin);
+    }
+    writeFileSync(origin, JSON.stringify({ schemaVersion: 2, jobId: "TEST-controller", createdAt: "2026-10-10T00:00:00.000Z" }), { flag: "wx", mode: 0o600 });
+    const before = readFileSync(origin);
+    expect(() => phase === "different-job-grant"
+      ? grantResearchLaunch(r.jobId + "-other", r.jobRootDir, r.workspacePath)
+      : startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json"))))
+      .toThrow("controller_origin_raw_launch_denied");
+    expect(readFileSync(origin)).toEqual(before);
+    if (priorGrant) expect(researchRead(grantPath)).toEqual(priorGrant);
+    expect(existsSync(join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId + "-other"), "grant.json"))).toBe(false);
+    expect(existsSync(join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId), "active.json"))).toBe(false);
+    expect(host.calls).toEqual([]); expect(host.pins.size).toBe(0);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+
+  it.skipIf(process.platform !== "linux").each(["job-alias-grant", "workspace-alias-grant", "descendant-grant", "retained-start", "material-drift"] as const)(
+    "vetoes protected writable backing at %s before owner publication", async phase => {
+      const r = request(), authority = "/run/user/subscription-runtime-research-v1";
+      const privateRoot = join(authority, "TEST-private"), job = join(authority, researchHash(r.jobId));
+      mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+      const starting = phase === "retained-start" || phase === "material-drift";
+      if (starting) grantResearchLaunch(r.jobId, r.jobRootDir, r.workspacePath);
+      const grantPath = join(job, "grant.json"), priorGrant = starting ? researchRead(grantPath) : undefined;
+      const origin = join(r.jobRootDir, ".controller-state-origin.json"), priorOrigin = starting ? readFileSync(origin) : undefined;
+      const jobRootDir = phase === "job-alias-grant" ? "/TEST-project/TEST-private-job" : r.jobRootDir;
+      const workspacePath = phase === "workspace-alias-grant" ? "/TEST-project/TEST-private-workspace" : r.workspacePath;
+      const alias = phase === "job-alias-grant" ? jobRootDir : phase === "workspace-alias-grant" ? workspacePath
+        : join(phase === "retained-start" ? r.jobRootDir : r.workspacePath, "TEST-protected");
+      const expose = (): void => { host.pins.set(alias, privateRoot); };
+      let drifted = false;
+      if (phase === "material-drift") {
+        const fs = await import("node:fs"), read = fs.readSync;
+        const future = new Date(Date.now() + 2000);
+        fs.utimesSync(local("/TEST-artifact/dist/main.js"), future, future);
+        vi.spyOn(fs, "readSync").mockImplementation((...args: Parameters<typeof fs.readSync>) => {
+          const count = read(...args);
+          if (!drifted && host.fdPaths.get(args[0]) === "/TEST-artifact/dist/main.js") { drifted = true; expose(); }
+          return count;
+        });
+      } else expose();
+      expect(() => starting
+        ? startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")))
+        : grantResearchLaunch(r.jobId, jobRootDir, workspacePath)).toThrow("hosted_research_launch_denied");
+      expect(drifted).toBe(phase === "material-drift");
+      if (priorGrant) expect(researchRead(grantPath)).toEqual(priorGrant);
+      else expect(existsSync(grantPath)).toBe(false);
+      if (priorOrigin) expect(readFileSync(origin)).toEqual(priorOrigin);
+      else expect(existsSync(join(jobRootDir, ".controller-state-origin.json"))).toBe(false);
+      expect(existsSync(join(privateRoot, ".controller-state-origin.json"))).toBe(false);
+      expect(existsSync(join(job, "starts"))).toBe(false); expect(existsSync(join(job, "active.json"))).toBe(false);
+      expect([...host.pins]).toEqual([[alias, privateRoot]]); expect(host.calls).toEqual([]);
+      expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    });
+
   it.each([undefined, null, 42, "TEST-FAKE-secret"])("rethrows opaque pin failure %s unchanged", async original => {
     const processes = await import("node:child_process"), sync = processes.spawnSync;
     vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {

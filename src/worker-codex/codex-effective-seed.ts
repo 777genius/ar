@@ -1,5 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { createCodexRuntimeTempRoot } from "@vioxen/subscription-runtime/provider-codex";
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { join } from "node:path";
 import { FileBackendCodexSeedWriteback } from "./file-backend-codex-seed-writeback";
 
@@ -27,18 +28,20 @@ export async function publishCodexEffectiveSeed(seed: CodexEffectiveSeed, next: 
  * refresh through the same custody contract before deleting that home. If
  * publication fails, leave this 0700/0600 recovery home and propagate failure.
  */
-export async function materializeCodexEffectiveSeed(sourcePath: string): Promise<{
+export async function materializeCodexEffectiveSeed(sourcePath: string, sourceEnv?: Readonly<Record<string, string | undefined>>): Promise<{
   readonly seed: CodexEffectiveSeed;
   readonly home: string;
   readonly authJsonPath: string;
   readonly finish: (successful: boolean) => Promise<void>;
 }> {
   const seed = await readCodexEffectiveSeed(sourcePath);
-  const home = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-effective-"));
+  const home = await createCodexRuntimeTempRoot({ prefix: "subscription-runtime-codex-effective-", sourceEnv });
   const authJsonPath = join(home, "auth.json");
+  assertHostedOrdinaryEffectPaths([home, authJsonPath]);
   await writeFile(authJsonPath, seed.bytes, { mode: 0o600 });
   return { seed, home, authJsonPath, finish: async successful => {
     if (successful) await publishCodexEffectiveSeed(seed, await readFile(authJsonPath, "utf8"));
+    assertHostedOrdinaryEffectPaths([home]);
     await rm(home, { recursive: true, force: true });
   } };
 }
