@@ -1,3 +1,6 @@
+import { delegateMimoProjectOperation } from "../mimo-project-bridge-client";
+import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
+import { collectRegisteredCodexGoalJobStatus } from "./codex-goal-registered-job-observation";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -9,7 +12,6 @@ import {
   updateCodexGoalJob,
 } from "../codex-goal-jobs";
 import {
-  collectCodexGoalStatus,
   listCodexGoalAccountStatuses,
   resolveCodexGoalWorkerLiveness,
 } from "../codex-goal-ops";
@@ -47,9 +49,6 @@ import {
 import {
   goalLaunchInput,
 } from "./codex-goal-launch-input";
-import {
-  codexGoalStatusInputFromLaunch as statusInput,
-} from "./codex-goal-status-input";
 import {
   continueStoredJobLifecycle,
   maintenancePauseStoredJobLifecycle,
@@ -186,13 +185,15 @@ export async function updateCodexGoalJobUseCase(
 export async function getCodexGoalStatusByIdUseCase(
   args: CodexGoalJobIdInput,
 ): Promise<JsonObject> {
+  const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Status, args);
+  if (remote !== undefined) return remote;
   const registryRootDir = registryRootFromInput(args);
   const manifest = await readCodexGoalJob({
     registryRootDir,
     jobId: requiredRawString(args.jobId, "jobId"),
   });
   const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
-  const status = await collectCodexGoalStatus(statusInput(launch));
+  const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir, launch });
   return {
     ok: true,
     registryRootDir,
@@ -206,7 +207,7 @@ export async function recommendCodexGoalNextActionUseCase(
   args: CodexGoalJobIdInput,
 ): Promise<JsonObject> {
   const loaded = await loadJobLaunch(args);
-  const status = await collectCodexGoalStatus(statusInput(loaded.launch));
+  const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir: loaded.registryRootDir, launch: loaded.launch });
   return {
     ok: true,
     registryRootDir: loaded.registryRootDir,
@@ -221,7 +222,7 @@ export async function assertSingleCodexWriterUseCase(
   args: CodexGoalJobIdInput & Readonly<Record<string, unknown>>,
 ): Promise<JsonObject> {
   const loaded = await loadJobLaunch(args);
-  const status = await collectCodexGoalStatus(statusInput(loaded.launch));
+  const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir: loaded.registryRootDir, launch: loaded.launch });
   const progressStale = status.progressHeartbeatAgeMs !== undefined &&
     status.progressHeartbeatAgeMs >
       (numberValue(args.staleAfterMs) ?? 10 * 60_000);
@@ -313,7 +314,7 @@ export async function buildCodexGoalBriefUseCase(
   args: CodexGoalJobBriefInput,
 ): Promise<JsonObject> {
   const loaded = await loadJobLaunch(args);
-  const status = await collectCodexGoalStatus(statusInput(loaded.launch));
+  const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir: loaded.registryRootDir, launch: loaded.launch });
   const accounts = await listCodexGoalAccountStatuses({
     authRootDir: loaded.launch.config.authRootDir,
     accounts: loaded.launch.config.accounts.map((account) => account.name),
@@ -342,7 +343,7 @@ export async function buildCodexGoalDecisionUseCase(
   args: CodexGoalJobDecisionInput,
 ): Promise<JsonObject> {
   const loaded = await loadJobLaunch(args);
-  const status = await collectCodexGoalStatus(statusInput(loaded.launch));
+  const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir: loaded.registryRootDir, launch: loaded.launch });
   const accounts = await listCodexGoalAccountStatuses({
     authRootDir: loaded.launch.config.authRootDir,
     accounts: loaded.launch.config.accounts.map((account) => account.name),

@@ -4,7 +4,26 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { sessionArtifactFromCodexAuthJson } from "../codex-auth-json-codec";
-import { CodexWorkerCacheSessionPoolMaterializer } from "../codex-session-materializer";
+import { CodexWorkerCacheSessionPoolMaterializer, codexJsonHomeConfigToml } from "../codex-session-materializer";
+
+describe("hosted native tool cache environment", () => {
+  it("passes finite tool cache defaults to native tools only for named permissions", () => {
+    const keys = (namedPermissions: boolean): string[] => {
+      const text = codexJsonHomeConfigToml({ namedPermissions });
+      const match = /^include_only = (\[[^\n]+\])$/m.exec(text);
+      expect(match).not.toBeNull();
+      return JSON.parse(match![1]!) as string[];
+    };
+    const hosted = keys(true), legacy = keys(false);
+    for (const key of ["GOTMPDIR", "XDG_CACHE_HOME", "npm_config_cache", "COREPACK_HOME", "YARN_CACHE_FOLDER",
+      "PIP_CACHE_DIR", "UV_CACHE_DIR", "GOCACHE", "GOMODCACHE"]) {
+      expect(hosted).toContain(key); expect(legacy).not.toContain(key);
+    }
+    for (const key of ["OPENAI_API_KEY", "GITHUB_TOKEN", "SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH", "RUSTUP_HOME", "CARGO_HOME"]) {
+      expect(hosted).not.toContain(key);
+    }
+  });
+});
 
 const input = () => ({
   session: sessionArtifactFromCodexAuthJson(JSON.stringify({
@@ -15,7 +34,7 @@ const input = () => ({
 });
 
 describe("worker-cache home preparation", () => {
-  it("prepares the existing home before auth/config writes and preserves the prepared cache across reuse", async () => {
+  it("prepares the home before auth/config writes, re-prepares on every reuse and preserves the prepared cache", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-prepare-home-test-"));
     let preparationCount = 0;
     const materializer = new CodexWorkerCacheSessionPoolMaterializer({
@@ -26,7 +45,7 @@ describe("worker-cache home preparation", () => {
       prepareHome: async (codexHome) => {
         preparationCount += 1;
         expect((await stat(codexHome)).isDirectory()).toBe(true);
-        expect(await readdir(codexHome)).toEqual([]);
+        if (preparationCount === 1) expect(await readdir(codexHome)).toEqual([]);
         await mkdir(join(codexHome, "plugins", "cache"), { recursive: true });
         await writeFile(join(codexHome, "plugins", "cache", "prepared"), "synthetic-cache");
       },
@@ -44,7 +63,8 @@ describe("worker-cache home preparation", () => {
       const reused = await materializer.materialize(input());
       try {
         expect(reused.codexHome).toBe(firstHome);
-        expect(preparationCount).toBe(1);
+        // Preparation is idempotent and runs again on every reuse (resume after a host-side release).
+        expect(preparationCount).toBe(2);
         expect(await readFile(join(reused.codexHome, "plugins", "cache", "prepared"), "utf8"))
           .toBe("synthetic-cache");
       } finally {

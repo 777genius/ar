@@ -6,6 +6,11 @@
 #define NP_V2_POLICY "{\"kind\":\"NativeRetainedV2ExpectedLeafV1\",\"postExec\":\"np_helper_filter_v1\",\"preExec\":\"np_helper_preexec_filter_v1\",\"source\":false,\"work\":false}\n"
 #define NP_V2_LIMIT 8192
 #define NP_V2_RECORDS 4
+#ifdef NP_RETAINED_V2_B1A
+#define NP_V2_FUND_MAGIC "NPB1FD01"
+#else
+#define NP_V2_FUND_MAGIC "NPV2FD01"
+#endif
 /* Internal C-only original association. No NAPI/JSON/descriptor importer. */
 struct np_retained_v2;
 struct np_v2_context {
@@ -14,6 +19,9 @@ struct np_v2_context {
   const struct np_directory *operation;
   const char *boot, *machine, *operation_digest, *installation, *profile, *manifest, *allocation;
   int delegation, mount_namespace, cgroup_namespace;
+#ifdef NP_RETAINED_V2_B1A
+  int boot_fd, observer_pidfd, principal_pidfd, pid_namespace;
+#endif
   const char *funded_bytes; size_t funded_length; uint64_t admitted_epoch, work_epoch;
 };
 struct np_v2_stamp { uint64_t sequence, epoch; };

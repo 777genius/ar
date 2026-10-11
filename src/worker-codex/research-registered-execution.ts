@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { AccessBoundary, NetworkAccessMode } from "@vioxen/subscription-runtime/worker-core";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { defaultStartupTimeoutMs } from "../provider-codex/app-server/domain/app-server-types";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
@@ -12,6 +12,14 @@ export class RegisteredResearchExecutionUnsupported extends Error {
   constructor() { super("hosted_research_registered_execution_unsupported"); }
 }
 const unsupported = (): never => { throw new RegisteredResearchExecutionUnsupported(); };
+/** Fresh project workers have one source-owned coding policy; caller flags,
+ * environment and manifest turn fields cannot select it. Retained legacy
+ * research workers remain supported by the current-authority validator below. */
+export function assertFreshRegisteredResearchProfile(request: ResearchOperatorRequest): void {
+  if (request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      (request.hostedProfile !== HostedMimoProfile.CodingV1 || request.maxGoalTurns !== 64)) unsupported();
+}
+
 
 /** Source-owned finite compatibility gate. Run before sink preparation; an
  * operator adapter's earlier preflight cannot replace this effect boundary. */
@@ -23,6 +31,16 @@ export function assertRegisteredResearchExecutionSupported(input: {
   const { config: c } = input.launch, r = input.request;
   if (!input.execution || r.projectId === undefined || r.maxAccountCycles === undefined || r.prewarmOnStart === undefined || r.appServerStartupTimeoutMs === undefined) return unsupported();
   const e = input.execution;
+  const backend = c.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const mimo = backend === CodexModelBackend.XiaomiMimoTokenPlan;
+  if (mimo ? (r.hostedProfile === undefined ? r.maxGoalTurns !== undefined :
+      r.hostedProfile !== HostedMimoProfile.CodingV1 || r.maxGoalTurns !== 64) :
+      r.hostedProfile !== undefined || r.maxGoalTurns !== undefined) unsupported();
+  if ((r.modelBackend ?? CodexModelBackend.OpenAiChatGpt) !== backend ||
+      (backend !== CodexModelBackend.OpenAiChatGpt && !mimo) ||
+      (mimo && (c.model !== codexMimoDefaultModel || r.model !== codexMimoDefaultModel ||
+        e.accountId !== "account-q" || c.accounts.length !== 1 || c.accounts[0]?.name !== "account-q" ||
+        c.maxAccountCycles !== 1 || c.prewarmOnStart !== false))) unsupported();
   let checkpoint: CodexGoalLaunchInput;
   try { checkpoint = bindProjectChildCheckpointPublisher({ launch: input.launch,
     controllerCheckpointRequired: input.controller.checkpointRequired === true,
@@ -30,7 +48,7 @@ export function assertRegisteredResearchExecutionSupported(input: {
   catch { return unsupported(); }
   if (checkpoint.config.checkpointRequired || checkpoint.config.checkpointPublisherSocketPath || c.checkpointPublisherSocketPath) unsupported();
   if (c.accessBoundary !== AccessBoundary.IsolatedWorkspaceWrite || c.networkAccess !== NetworkAccessMode.Unrestricted ||
-      c.executionEngine !== "app-server-goal" || (c.modelBackend ?? CodexModelBackend.OpenAiChatGpt) !== CodexModelBackend.OpenAiChatGpt ||
+      c.executionEngine !== (mimo ? "app-server" : "app-server-goal") ||
       c.allowDangerFullAccess === true || c.allowDuplicateAccountIdentities === true || c.requireGitWorkspace !== true ||
       c.outputPath !== join(c.jobRootDir, `${c.taskId}.latest-result.json`) ||
       c.progressPath !== join(c.jobRootDir, `${c.taskId}.progress.json`) || c.progressHeartbeatMs !== 60_000 ||

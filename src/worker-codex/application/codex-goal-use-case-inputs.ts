@@ -1,3 +1,4 @@
+import { assertNoUnsupportedMimoRemoteRoute } from "../mimo-project-bridge-client";
 import type {
   WorkerControlActor,
   WorkerControlDeliveryMode,
@@ -12,6 +13,8 @@ import type { CodexGoalMimoAccountSlot } from "../codex-goal-mimo-account-slots"
 export type CodexGoalInput = {
   readonly jobId?: string;
   readonly configPath?: string;
+  readonly sessionHomeProfile?: CodexGoalRunConfig["sessionHomeProfile"];
+  readonly storage?: CodexGoalRunConfig["storage"];
   readonly jobRootDir?: string;
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
@@ -57,6 +60,8 @@ export type CodexGoalInput = {
 };
 
 export type CodexGoalJobRegistryInput = {
+  readonly mimoProjectId?: string;
+  readonly mimoWorkstreamId?: string;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -143,6 +148,7 @@ export type CodexGoalWorkerControlInput = CodexGoalJobIdInput & {
 };
 
 export function registryRootFromInput(args: CodexGoalJobRegistryInput): string {
+  assertNoUnsupportedMimoRemoteRoute(args);
   return resolveCodexGoalJobRegistryRoot({
     ...(args.registryRootDir ? { registryRootDir: args.registryRootDir } : {}),
     ...(args.cwd ? { cwd: args.cwd } : {}),

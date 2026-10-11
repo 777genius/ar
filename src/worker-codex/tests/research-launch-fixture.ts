@@ -87,8 +87,8 @@ vi.mock("node:fs", async original => {
     statSync: (path: string) => Object.assign(real.statSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
     fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
     openSync: (path: string, flags: number | string, mode: number) => {
-      const selected = path === "/proc/self/mountinfo" ? join(fixture.root, "mountinfo") : local(path);
-      if (path === "/proc/self/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
+      const selected = (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") ? join(fixture.root, "mountinfo") : local(path);
+      if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
       const fd = real.openSync(selected, flags, mode); fixture.fdPaths.set(fd, path); return fd;
     },
     existsSync: (path: string) => real.existsSync(local(path)),
@@ -161,7 +161,11 @@ vi.mock("node:child_process", async original => {
   return { ...real, spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
     fixture.calls.push({ command, args });
     if (command === "/usr/bin/findmnt") {
+      // util-linux treats explicit table selectors as mutually exclusive.
+      if (args.includes("--task") && args.some(value => ["--kernel", "--mtab", "--fstab"].includes(value)))
+        throw new Error("TEST findmnt mutually exclusive table selectors");
       fixture.findmntHook?.();
+      if (args.includes("--list")) return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: 1, target: "/", uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", fsroot: "/", "maj:min": "8:1" }, ...[...fixture.pins].map(([target, fsroot], index) => ({ id: index + 2, target, fsroot, uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "maj:min": "8:1" }))] }) };
       const path = args[args.indexOf("--target") + 1]!, pins = [...fixture.pins];
       const index = pins.findIndex(([pin]) => path === pin || path.startsWith(pin + "/"));
       return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: index === -1 ? 1 : index + 2,
