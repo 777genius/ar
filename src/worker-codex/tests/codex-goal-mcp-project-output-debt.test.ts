@@ -283,7 +283,7 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("admits only contract-path-disjoint producer refill past completed output", async () => {
+  it("admits physically independent producer refill and fences the retained output workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-disjoint-output-debt-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -376,9 +376,13 @@ describe("codex goal MCP server", () => {
         taskId: heldJobId, status: "completed", resultStatus: "done", pid: stoppedPid,
       }));
       await writeFile(heldResultPath, `${JSON.stringify({ status: "completed" })}\n`);
+      const rawHeldPaths = [heldResultPath, join(heldJobRoot, `${heldJobId}.progress.json`),
+        join(heldWorkspace, "src", "held", "output.ts")];
+      const rawHeldBytes = await Promise.all(rawHeldPaths.map(path => readFile(path)));
       await expect(refill("infinity-context-disjoint-v1", ["src/disjoint/"])).resolves.toMatchObject({
-        ok: false, error: "project_control_admission_denied:output_debt_present",
+        ok: true,
       });
+      expect(await Promise.all(rawHeldPaths.map(path => readFile(path)))).toEqual(rawHeldBytes);
       const handoff = await materializeCodexGoalHandoffArtifacts({ workerJobId: heldJobId,
         taskId: heldJobId, workspacePath: heldWorkspace, jobRootDir: heldJobRoot });
       if (!handoff) throw new Error("native held output required");
@@ -390,15 +394,60 @@ describe("codex goal MCP server", () => {
       await expect(
         refill("infinity-context-disjoint-v1", ["src/disjoint/"]),
       ).resolves.toMatchObject({ ok: true });
-      const overlapping = await refill(
-        "infinity-context-overlap-v1",
-        ["src/held/"],
-      );
+      // Relative path names in another physical workspace cannot confer a
+      // collision with the retained writer's original workspace.
+      await expect(refill("infinity-context-relative-overlap-v1", ["src/held/"]))
+        .resolves.toMatchObject({ ok: true });
+      // Keep the original controller's required builtin refill admission. A
+      // separate protected legacy controller exercises public direct creation
+      // at the actual retained workspace, before any new job is published.
+      const overlapControllerId = "infinity-context-overlap-controller-v1";
+      await expect(callToolJson(client, "codex_goal_create_job", {
+        registryRootDir,
+        jobId: overlapControllerId,
+        jobRootDir: join(root, "worker-jobs", overlapControllerId),
+        workspacePath: sourceWorkspacePath,
+        promptPath: join(root, "worker-jobs", overlapControllerId, "prompt.md"),
+        taskId: overlapControllerId,
+        accounts: ["account-a"],
+        accessBoundary: AccessBoundary.ProjectScopedControl,
+        networkAccess: NetworkAccessMode.Restricted,
+        projectAccessScope: {
+          projectId: "infinity-context",
+          workspaceRoots: [join(root, "workspaces")],
+          worktreeRoots: [worktreeRoot],
+          registryRoot: registryRootDir,
+          jobIdPrefixes: ["infinity-context-"],
+          tmuxSessionPrefixes: ["infinity-context-"],
+          allowedAccountIds: ["account-a"],
+        },
+      })).resolves.toMatchObject({ ok: true });
+      const overlapJobRoot = join(root, "worker-jobs", "infinity-context-overlap-v1");
+      const overlapping = await callToolJson(client, "codex_goal_project_create_job", {
+        registryRootDir,
+        controllerJobId: overlapControllerId,
+        jobId: "infinity-context-overlap-v1",
+        jobRootDir: overlapJobRoot,
+        workspacePath: heldWorkspace,
+        promptPath: join(overlapJobRoot, "prompt.md"),
+        taskId: "infinity-context-overlap-v1",
+        accounts: ["account-a"],
+        workerRole: "producer",
+        confirmCreate: true,
+      });
       expect(overlapping).toMatchObject({
         ok: false,
         error: "project_control_admission_denied:output_debt_present",
+        admission: {
+          allowed: false,
+          reason: "output_debt_present",
+          resource: heldWorkspace,
+          examples: expect.arrayContaining([{ reason: "unconsumed_completed_job" }]),
+        },
       });
-      await expect(access(join(worktreeRoot, "infinity-context-overlap-v1")))
+      await expect(access(overlapJobRoot))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(registryRootDir, "infinity-context-overlap-v1")))
         .rejects.toMatchObject({ code: "ENOENT" });
       expect(await Promise.all(retainedPaths.map((path) => readFile(path)))).toEqual(retainedBytes);
     } finally {

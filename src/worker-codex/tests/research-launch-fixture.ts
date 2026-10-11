@@ -168,7 +168,11 @@ vi.mock("node:fs/promises", async original => {
   },
   readlink: async (path: string) => path.startsWith("/proc/") ? "TEST-host" : real.readlink(local(path)),
   open: async (path: string, flags: string | number) => {
-    const file = await real.open(local(path), flags), stat = file.stat.bind(file);
+    // The custody adapter's fixed read-only FD walk starts at the native root.
+    // Its final canonical binding still has to reach the owned TEST directory.
+    const nativeRootRead = fixture.nativeBackingFacts && path === "/" &&
+      flags === (nativeFs.constants.O_RDONLY | nativeFs.constants.O_DIRECTORY);
+    const file = await real.open(nativeRootRead ? path : local(path), flags), stat = file.stat.bind(file);
     file.stat = (async (...args: Parameters<typeof file.stat>) => Object.assign(await stat(...args), { uid: fixture.foreign.has(path) ? 999 : 0 })) as typeof file.stat;
     return file;
   },
@@ -184,8 +188,8 @@ vi.mock("node:child_process", async original => {
       const selected = researchScratchBackingPath(path);
       return selected === path && fs.realpathSync(path) === path && fs.lstatSync(path).dev === ownedRoot?.device;
     };
-    // Only the existing offline operation fake and descriptor-relative GNU mv
-    // may run. Provider runtimes never pass this TEST-only effect boundary.
+    // Only fixed offline readers/operations may run. Provider runtimes never
+    // pass this TEST-only effect boundary.
     if (command === process.execPath && argv.length === 6 && argv[1] === "project-control-operation-run" &&
         argv[2] === "--operation-file" && argv[4] === "--format" && argv[5] === "json" &&
         argv[0]?.endsWith("/fake-operation-runner.mjs") && owned(argv[0]) && owned(argv[3]!) &&
@@ -193,6 +197,17 @@ vi.mock("node:child_process", async original => {
         options.env?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_RUNNER === "1" &&
         (options.cwd === undefined || typeof options.cwd === "string" && owned(options.cwd))) return real.spawn(command, argv, options);
     const stdio = options?.stdio;
+    if (command === "git" && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch" &&
+        Array.isArray(stdio) && stdio.length === 3 && stdio.every(value => value === "pipe") &&
+        Object.keys(options).every(key => ["cwd", "env", "stdio"].includes(key)) &&
+        typeof options.cwd === "string" && owned(options.cwd) && fs.lstatSync(options.cwd).isDirectory() &&
+        options.env?.GIT_NO_REPLACE_OBJECTS === "1" && options.env?.GIT_GRAFT_FILE === "/dev/null") {
+      return real.spawn("/usr/bin/git", argv, { ...options, env: {
+        PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null",
+        GIT_TERMINAL_PROMPT: "0",
+      } });
+    }
     if (command === "/usr/bin/mv" && argv.length === 6 &&
         argv.slice(0, 4).join("\0") === "--no-copy\0--no-clobber\0--no-target-directory\0--" &&
         argv.slice(4).every(path => /^\/proc\/self\/fd\/3\/[A-Za-z0-9_.-]+$/.test(path) && !path.endsWith("/.") && !path.endsWith("/..")) &&
