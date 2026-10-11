@@ -76,17 +76,17 @@ test("optional deadline CLI preserves exact job identity and legacy envelope", (
 // passes, or a reversed monotonic sample extends the original allowance.
 test("actual fixed job limits fund startup runtime and stop with strict original ends", () => {
   const reservation = launcher.originalJobReservation(job);
-  assert.deepEqual(reservation, { workNs: 360_000_000_000n, cleanupNs: 370_000_000_000n });
+  assert.deepEqual(reservation, { workNs: 660_000_000_000n, cleanupNs: 670_000_000_000n });
   const anchor = 1_000_000_000n, now = anchor + 1n;
-  const fit = launcher.parseOriginalEnds(transport(now + 360_000_000_001n, now + 370_000_000_001n), namespace);
+  const fit = launcher.parseOriginalEnds(transport(now + 660_000_000_001n, now + 670_000_000_001n), namespace);
   assert.doesNotThrow(() => launcher.assertOriginalReservation(fit, reservation, anchor, now));
   assert.throws(() => launcher.assertOriginalReservation(fit, reservation, anchor, anchor - 1n));
-  for (const ends of [launcher.parseOriginalEnds(transport(now + 360_000_000_000n, now + 370_000_000_001n), namespace),
-    launcher.parseOriginalEnds(transport(now + 360_000_000_001n, now + 370_000_000_000n), namespace)]) {
+  for (const ends of [launcher.parseOriginalEnds(transport(now + 660_000_000_000n, now + 670_000_000_001n), namespace),
+    launcher.parseOriginalEnds(transport(now + 660_000_000_001n, now + 670_000_000_000n), namespace)]) {
     assert.throws(() => launcher.assertOriginalReservation(ends, reservation, anchor, now));
   }
   const longer = { ...job, limits: { ...job.limits, runtimeSeconds: 61, stopSeconds: 11 } };
-  assert.deepEqual(launcher.originalJobReservation(longer), { workNs: 361_000_000_000n, cleanupNs: 372_000_000_000n });
+  assert.deepEqual(launcher.originalJobReservation(longer), { workNs: 661_000_000_000n, cleanupNs: 672_000_000_000n });
   assert.throws(() => launcher.assertOriginalReservation(fit, launcher.originalJobReservation(longer), anchor, now));
 });
 
@@ -95,13 +95,13 @@ test("actual fixed job limits fund startup runtime and stop with strict original
 // ordering; that stronger no-manager-effect fixture remains a physical gate.
 test("real asynchronous preparation consumes the same original deadline margin", async () => {
   const anchor = process.hrtime.bigint(), reservation = launcher.originalJobReservation(job);
-  const ends = launcher.parseOriginalEnds(transport(anchor + 360_100_000_000n, anchor + 370_100_000_000n), namespace);
+  const ends = launcher.parseOriginalEnds(transport(anchor + 660_100_000_000n, anchor + 670_100_000_000n), namespace);
   assert.doesNotThrow(() => launcher.assertOriginalReservation(ends, reservation, anchor, anchor));
   const prepared = await boundedCommand(process.execPath, ["-e", "setTimeout(()=>process.stdout.write('prepared'),250)"],
     anchor + 5_000_000_000n, undefined, {}, anchor + 10_000_000_000n);
   assert.equal(prepared.code, 0); assert.equal(prepared.signal, null);
   assert.equal(prepared.naturalClose, true); assert.equal(prepared.stdout.toString(), "prepared");
   assert.throws(() => launcher.assertOriginalReservation(ends, reservation, anchor, process.hrtime.bigint()));
-  assert.equal(ends.workEndNs, anchor + 360_100_000_000n);
-  assert.equal(ends.cleanupEndNs, anchor + 370_100_000_000n);
+  assert.equal(ends.workEndNs, anchor + 660_100_000_000n);
+  assert.equal(ends.cleanupEndNs, anchor + 670_100_000_000n);
 });

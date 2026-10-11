@@ -7,6 +7,7 @@ import { readHostedInstallationActivation, readHostedOrdinaryBirth, readRetained
 export { readHostedInstallationActivation, readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
 import { readHostedOrdinaryForegroundResultOwner } from "./hosted-ordinary-foreground-result-facts";
 import { ChildProcess } from "node:child_process";
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { inspectedInstallation, assertInspectedInstallation, assertActivationSession } from "./hosted-installation-physical-facts";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
 import { readOriginalHostedOrdinaryProviderTerminal } from "./hosted-current-dependency-origin";
@@ -907,7 +908,7 @@ export function readHostedOrdinaryRuntime(fence: HostedActivationFence) {
 /** Stop authenticates the retained actual origin; it does not grant scheduling. */
 function readRetainedOrdinaryRuntime(fence: HostedActivationFence) {
   assertHostedActivationFence(fence);
-  const group = readFileSync("/proc/self/cgroup", "utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8"));
   const match = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.service$/.exec(group);
   if (!match) invalid();
   const bytes = required(`ordinary-starts/${match[1]}.json`), start = parseHostedOrdinaryStart(decodeHostedActivationBytes(bytes));
@@ -971,7 +972,7 @@ function assertNoManagedOrigin(birth: HostedOrdinaryBirth): string | null {
  * cgroup prefix or caller identity, authorizes the selected ordinary route. */
 export function isHostedOrdinaryRuntime(): boolean {
   return process.platform === "linux" && /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-/.test(
-    readFileSync("/proc/self/cgroup", "utf8").trim());
+    observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")));
 }
 export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string }): CodexProviderEgressProfileId {
   return withHostedActivationFence(fence => {
