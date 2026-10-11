@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
 import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -204,7 +205,7 @@ export function assertHostedDependencyToolRelease(child: ChildProcess, fence: Ho
   assertHostedActivationFence(fence);
   // The separate managed custody route does not have an ordinary origin. Only
   // actual self cgroup facts, never an env/profile flag, select this boundary.
-  if (!/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(readFileSync("/proc/self/cgroup", "utf8").trim())) {
+  if (!/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")))) {
     if (children.has(child)) fail(); return;
   }
   const plan = children.get(child);
