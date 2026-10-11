@@ -48,7 +48,9 @@ const selected = () => parseResearchOperatorRequest({ ...request(), ...(state.mi
   prewarmOnStart: false, appServerStartupTimeoutMs: 330_000 });
 const receiptPath = () => join(selected().jobRootDir, "pre-start-admission/receipt.json");
 beforeEach(async () => {
-  setupResearchFixture(); state.mimo = false; registry = state.registry = "/TEST-project/registry"; sink = join(registry, "durable-handoffs");
+  // CodingV1 protects /tmp and /dev. Allocate real TEST bytes beneath the
+  // canonical unit runner workspace; retain the labelled Host namespace port.
+  setupResearchFixture({ allocationParent: process.cwd() }); state.mimo = false; registry = state.registry = "/TEST-project/registry"; sink = join(registry, "durable-handoffs");
   await initializeRegisteredFixture();
 });
 async function initializeRegisteredFixture() {

@@ -197,16 +197,54 @@ vi.mock("node:child_process", async original => {
         options.env?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_RUNNER === "1" &&
         (options.cwd === undefined || typeof options.cwd === "string" && owned(options.cwd))) return real.spawn(command, argv, options);
     const stdio = options?.stdio;
-    if (command === "git" && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch" &&
+    const batch = command === "git" && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch";
+    const apply = command === "git" && argv.length === 9 &&
+      argv.slice(0, 4).join("\0") === "--literal-pathspecs\0-c\0core.quotepath=false\0-C" &&
+      argv.slice(5).join("\0") === "apply\0--cached\0--whitespace=nowarn\0-";
+    const workspace = apply ? argv[4] : options?.cwd;
+    if ((batch || apply) &&
         Array.isArray(stdio) && stdio.length === 3 && stdio.every(value => value === "pipe") &&
-        Object.keys(options).every(key => ["cwd", "env", "stdio"].includes(key)) &&
-        typeof options.cwd === "string" && owned(options.cwd) && fs.lstatSync(options.cwd).isDirectory() &&
-        options.env?.GIT_NO_REPLACE_OBJECTS === "1" && options.env?.GIT_GRAFT_FILE === "/dev/null") {
-      return real.spawn("/usr/bin/git", argv, { ...options, env: {
+        Object.keys(options).every(key => (apply ? ["env", "stdio"] : ["cwd", "env", "stdio"]).includes(key)) &&
+        typeof workspace === "string" && owned(workspace) && fs.lstatSync(workspace).isDirectory() &&
+        options.env?.GIT_NO_REPLACE_OBJECTS === "1" && (apply || options.env?.GIT_GRAFT_FILE === "/dev/null")) {
+      const environment: NodeJS.ProcessEnv = {
         PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null",
         GIT_TERMINAL_PROMPT: "0",
-      } });
+      };
+      const keys = ["GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"] as const;
+      if (apply || keys.some(key => options.env?.[key] !== undefined)) {
+        const [index, objects, alternates] = keys.map(key => options.env?.[key]);
+        if (typeof index !== "string" || typeof objects !== "string" || typeof alternates !== "string" ||
+            [index, objects, alternates].some(path => /[\x00-\x1f\x7f]/.test(path)) || /[:"]/.test(alternates))
+          throw new Error("unexpected TEST private Git environment");
+        const temporary = dirname(index), indexInfo = fs.lstatSync(index);
+        if (!/\/\.secret-scan-[A-Za-z0-9]{6}$/.test(temporary) || !owned(temporary) ||
+            !fs.lstatSync(temporary).isDirectory() || (fs.lstatSync(temporary).mode & 0o777) !== 0o700 ||
+            ![join(temporary, "index"), join(temporary, "prefix-index")].includes(index) ||
+            !owned(index) || !indexInfo.isFile() || indexInfo.nlink !== 1 ||
+            objects !== join(temporary, "objects") || !owned(objects) || !fs.lstatSync(objects).isDirectory() ||
+            !owned(alternates) || !fs.lstatSync(alternates).isDirectory())
+          throw new Error("unexpected TEST private Git paths");
+        let common = join(workspace, ".git");
+        const gitInfo = fs.lstatSync(common);
+        if (gitInfo.isFile() && gitInfo.nlink === 1 && gitInfo.size <= 4096 && owned(common)) {
+          const link = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(fs.readFileSync(common, "utf8"));
+          if (!link) throw new Error("unexpected TEST Git worktree link");
+          common = resolve(workspace, link[1]!);
+          if (!owned(common) || !fs.lstatSync(common).isDirectory()) throw new Error("unexpected TEST Git worktree directory");
+          const commonLink = join(common, "commondir"), commonLinkInfo = fs.lstatSync(commonLink);
+          if (!owned(commonLink) || !commonLinkInfo.isFile() || commonLinkInfo.nlink !== 1 || commonLinkInfo.size > 4096)
+            throw new Error("unexpected TEST Git common directory link");
+          const relativeCommon = fs.readFileSync(commonLink, "utf8");
+          if (!/^[^\r\n]+\r?\n?$/.test(relativeCommon)) throw new Error("unexpected TEST Git common directory");
+          common = resolve(common, relativeCommon.trimEnd());
+        }
+        if (!owned(common) || !fs.lstatSync(common).isDirectory() ||
+            alternates !== fs.realpathSync(join(common, "objects"))) throw new Error("unexpected TEST Git object source");
+        for (const key of keys) environment[key] = options.env![key];
+      }
+      return real.spawn("/usr/bin/git", argv, { ...options, env: environment });
     }
     if (command === "/usr/bin/mv" && argv.length === 6 &&
         argv.slice(0, 4).join("\0") === "--no-copy\0--no-clobber\0--no-target-directory\0--" &&
@@ -268,10 +306,14 @@ export function configureResearchFixtureTaskTimeout(taskTimeoutMs: number): void
   writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n", { mode: 0o600 });
 }
 export function setupResearchFixture(): void;
-export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean }): void;
-export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean } = {}): void {
+export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string }): void;
+export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string } = {}): void {
   fixture.nativeBackingFacts = options.nativeBackingFacts === true;
-  fixture.root = nativeFs.mkdtempSync(join(fixture.nativeBackingFacts ? "/dev/shm" : tmpdir(), "TEST-research-launch-r7-"));
+  const parent = options.allocationParent ?? (fixture.nativeBackingFacts ? "/dev/shm" : tmpdir());
+  if (options.allocationParent !== undefined && (resolve(parent) !== parent || nativeFs.realpathSync(parent) !== parent ||
+      !nativeFs.lstatSync(parent).isDirectory() || nativeFs.lstatSync(parent).isSymbolicLink()))
+    throw new Error("Expected a canonical TEST fixture allocation parent");
+  fixture.root = nativeFs.mkdtempSync(join(parent, "TEST-research-launch-r7-"));
   const allocated = nativeFs.lstatSync(fixture.root);
   ownedRoot = { path: fixture.root, device: allocated.dev, inode: allocated.ino };
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
