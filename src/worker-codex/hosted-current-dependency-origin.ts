@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { assertHostedDependencyRetirementOwnerFacts, assertHostedDependencyRetirementSuccessorFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
@@ -109,7 +110,7 @@ function assertSelectedDescriptors(scope:HostedRetainedToolFiles|undefined, purp
 }
 function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedToolFiles, rootPurpose?: RootPurposeState) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   if (/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(group)) {
     assertSelectedDescriptors(scope,rootPurpose);
     const before = collectCurrentHostedOrdinaryDependencyOrigin(fence);
