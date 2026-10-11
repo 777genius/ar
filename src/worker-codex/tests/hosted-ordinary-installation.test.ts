@@ -995,8 +995,6 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
 
 registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
 registerOrdinaryWriterExtentTests({ fixture, creator, read, put, runtimeDirectory });
-
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
-
 registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });
