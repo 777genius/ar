@@ -2,7 +2,7 @@ import { host, local, setupResearchFixture, cleanupResearchFixture } from "./res
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
-import { researchArtifactDigest, researchFileDigest, researchRead } from "../research-launch-files";
+import { researchArtifactDigest, researchFileDigest, researchRead, researchRegisteredPromptBytes } from "../research-launch-files";
 import { researchExecutableDigest } from "../research-launch-host";
 
 beforeEach(setupResearchFixture);
@@ -177,5 +177,53 @@ describe("research byte witnesses (real sized TEST files under substituted root 
     expect(flags & fs.constants.O_NONBLOCK).toBe(fs.constants.O_NONBLOCK);
     stats.mockRestore();
     expect(researchFileDigest(path, freshOptions())).toMatch(/^[a-f0-9]{64}$/);
+  });
+});
+
+
+describe("registered prompt private custody", () => {
+  const jobRoot = "/TEST-project/jobs/TEST-research-r7", prompt = jobRoot + "/prompt.md";
+  it.each([0o700, 0o701])("reads unchanged 0600 prompt bytes with admitted job root mode %o", mode => {
+    fs.chmodSync(local(jobRoot), mode);
+    expect(researchRegisteredPromptBytes(jobRoot, prompt).toString()).toBe("TEST public research prompt");
+    if (mode === 0o701) expect(() => researchRead(prompt)).toThrow();
+    expect(fs.statSync(local(prompt)).mode & 0o7777).toBe(0o600);
+  });
+  it.each(["public-file", "read-only-file", "public-parent", "writable-ancestor", "foreign-parent", "foreign-file", "symlink", "hardlink", "directory"] as const)("rejects %s prompt custody", fault => {
+    fs.chmodSync(local(jobRoot), 0o701);
+    if (fault === "public-file") fs.chmodSync(local(prompt), 0o644);
+    if (fault === "read-only-file") fs.chmodSync(local(prompt), 0o400);
+    if (fault === "public-parent") fs.chmodSync(local(jobRoot), 0o755);
+    if (fault === "writable-ancestor") fs.chmodSync(local("/TEST-project/jobs"), 0o722);
+    if (fault === "foreign-parent") host.foreign.add(jobRoot);
+    if (fault === "foreign-file") host.foreign.add(prompt);
+    if (fault === "symlink") { fs.renameSync(local(prompt), local(prompt) + "-old"); fs.symlinkSync(local(prompt) + "-old", local(prompt)); }
+    if (fault === "hardlink") fs.linkSync(local(prompt), local(prompt) + "-copy");
+    if (fault === "directory") { fs.unlinkSync(local(prompt)); fs.mkdirSync(local(prompt)); }
+    expect(() => researchRegisteredPromptBytes(jobRoot, prompt)).toThrow();
+  });
+  it("keeps nested private prompt and authority directories strict", () => {
+    fs.chmodSync(local(jobRoot), 0o701);
+    const nested = jobRoot + "/admission";
+    fs.mkdirSync(local(nested), { mode: 0o700 }); fs.writeFileSync(local(nested + "/prompt.md"), "TEST nested", { mode: 0o600 });
+    expect(researchRegisteredPromptBytes(jobRoot, nested + "/prompt.md").toString()).toBe("TEST nested");
+    fs.chmodSync(local(nested), 0o701);
+    expect(() => researchRegisteredPromptBytes(jobRoot, nested + "/prompt.md")).toThrow();
+    expect(() => researchRead(nested + "/prompt.md")).toThrow();
+  });
+  it.each(["file-bytes", "path-replacement", "file-mode", "parent-mode"] as const)("rejects %s changes during descriptor read", fault => {
+    fs.chmodSync(local(jobRoot), 0o701);
+    const read = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      const bytes = read(...args);
+      if (typeof args[0] === "number" && host.fdPaths.get(args[0]) === prompt) {
+        if (fault === "file-bytes") fs.writeFileSync(local(prompt), "TEST changed bytes");
+        if (fault === "path-replacement") { fs.renameSync(local(prompt), local(prompt) + "-old"); fs.writeFileSync(local(prompt), "TEST replacement", { mode: 0o600 }); }
+        if (fault === "file-mode") fs.chmodSync(local(prompt), 0o644);
+        if (fault === "parent-mode") fs.chmodSync(local(jobRoot), 0o755);
+      }
+      return bytes;
+    }) as typeof fs.readFileSync);
+    expect(() => researchRegisteredPromptBytes(jobRoot, prompt)).toThrow();
   });
 });

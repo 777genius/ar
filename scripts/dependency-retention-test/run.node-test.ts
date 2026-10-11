@@ -301,6 +301,37 @@ function privateJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value) + "\n", { flag: "wx", mode: 0o600 });
 }
 
+type ReadableCanary = { readonly source: string; readonly path: string; readonly sha256: string; readonly ino: string };
+function readableCanaries(plan: HostedDependencyInstallerPlan, targets: readonly string[]): readonly ReadableCanary[] {
+  const directory = artifact + "/readable-canaries-TEST-" + randomUUID();
+  mkdirSync(directory, { mode: 0o755 });
+  return targets.map((path, index) => {
+    assert(path.startsWith(policy + "/") && !path.split("/").some(part => part === "." || part === ".."));
+    const source = directory + "/canary-" + index;
+    writeFileSync(source, `TEST readable canary ${index}\n`, { flag: "wx", mode: 0o644 });
+    // Validate actual source readability without changing protected policy or
+    // privileged sentinels. Only the disposable artifact owns these canaries.
+    for (let parent = dirname(source);; parent = dirname(parent)) {
+      const stat = lstatSync(parent);
+      assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o7777) === 0o755);
+      if (parent === "/") break;
+    }
+    // Create only missing target directories in the synthetic RootDirectory.
+    // The actual Host policy ancestry remains private and is never chmod'ed.
+    mkdirSync(plan.rootDirectory + dirname(path), { recursive: true, mode: 0o755 });
+    for (let parent = plan.rootDirectory + dirname(path);; parent = dirname(parent)) {
+      assert(parent === plan.rootDirectory || parent.startsWith(plan.rootDirectory + "/"));
+      const stat = lstatSync(parent);
+      assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o7777) === 0o755);
+      if (parent === plan.rootDirectory) break;
+    }
+    assert(!existsSync(plan.rootDirectory + path));
+    const stat = lstatSync(source);
+    assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o7777) === 0o644);
+    return { source, path, sha256: hash(readFileSync(source)), ino: String(stat.ino) };
+  });
+}
+
 function initialBindCanaryNamespaces(): { mount: string; user: string } {
   assert.equal(process.getuid?.(), 0); assert.equal(process.geteuid?.(), 0);
   const mount = readlinkSync("/proc/self/ns/mnt"), user = readlinkSync("/proc/self/ns/user");
@@ -562,26 +593,39 @@ async function run(): Promise<void> {
       installedOwnership,
       inputSha256: plan.inputSha256, toolchainSha256: hash(JSON.stringify(plan.profile)),
       manifestDigest: installed.status === DependencyTreeObservationStatus.Complete ? installed.digest : null });
-    // A dependency-reading process uses the production installer's exact finite
-    // RootDirectory mount properties. It is not the production provider enclosure.
-    const probeUnit = `subscription-runtime-installer-${randomUUID()}.service`;
-    // The only addition to the production recipe is this trusted, typed TEST
-    // reader file. It does not broaden a directory or policy-state grant.
+    // Both runs retain the installer's finite RootDirectory properties. The
+    // exposure control adds seven exact read-only TEST files, never directories.
+    // No production provider enclosure or ordinary authority is qualified here.
+    const canaries = readableCanaries(plan, sentinels);
     writeFileSync(plan.rootDirectory + "/runtime/test-probe.ts", "", { flag: "wx", mode: 0o644 });
     const probeCommand = hostedDependencyInstallerBootstrapCommand(plan);
-    const probe = await runObservedProbe(["--quiet", "--wait", "--pipe", `--unit=${probeUnit}`, "--service-type=exec", "--working-directory=/",
-      "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
-      ...hostedDependencyInstallerProperties(plan).map(p => "--property=" + p),
-      `--property=BindReadOnlyPaths=${artifact}/scripts/dependency-retention-test/probe.ts:/runtime/test-probe.ts:norbind`,
-      "--", ...probeCommand.slice(0, -2), plan.profile.nodePath, "--experimental-strip-types", "/runtime/test-probe.ts",
-      plan.stagingDirectory, JSON.stringify(sentinels)], probeUnit, plan.rootDirectory, plan.profile.nodePath);
-    const probeEvidence: unknown = JSON.parse(probe.output.trim());
-    assert.deepEqual(probeEvidence, { schemaVersion: 1, scenario: "typed_installer_root_probe",
-      observedIds: { uid: 65532, euid: 65532, gid: 65532, egid: 65532 }, dependencyRead: "passed", sentinelDenial: "passed" });
-    assertInstallerTerminalUnit(probeUnit);
-    observeInstallerCgroupEmpty("/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + probeUnit);
-    results.push({ scenario: "installer_root_dependency_read_and_sentinel_denial", result: "passed", unit: probeUnit, probeEvidence,
-      actualCredentials: probe.credentials });
+    const probeProperties = hostedDependencyInstallerProperties(plan);
+    const expectedIds = { uid: 65532, euid: 65532, gid: 65532, egid: 65532 };
+    // Run absence first: systemd may create a target mountpoint for the later
+    // positive bind. Such a placeholder must not influence the negative run.
+    for (const mode of ["hidden", "exposed"] as const) {
+      const probeUnit = `subscription-runtime-installer-${randomUUID()}.service`;
+      const exposure = mode === "exposed" ? canaries.map(canary =>
+        `--property=BindReadOnlyPaths=${canary.source}:${canary.path}:norbind`) : [];
+      const probe = await runObservedProbe(["--quiet", "--wait", "--pipe", `--unit=${probeUnit}`, "--service-type=exec", "--working-directory=/",
+        "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
+        ...probeProperties.map(p => "--property=" + p),
+        `--property=BindReadOnlyPaths=${artifact}/scripts/dependency-retention-test/probe.ts:/runtime/test-probe.ts:norbind`,
+        ...exposure,
+        "--", ...probeCommand.slice(0, -2), plan.profile.nodePath, "--experimental-strip-types", "/runtime/test-probe.ts",
+        plan.stagingDirectory, mode, JSON.stringify(canaries.map(({ path, sha256 }) => ({ path, sha256 })))],
+      probeUnit, plan.rootDirectory, plan.profile.nodePath);
+      const probeEvidence: unknown = JSON.parse(probe.output.trim());
+      assert.deepEqual(probeEvidence, { schemaVersion: 1, scenario: "typed_installer_root_probe",
+        observedIds: expectedIds, dependencyRead: "passed", canaryCount: 7,
+        canaryObservation: mode === "exposed" ? "readable_hashes_matched" : "absent_ENOENT", targetAncestry: "traversable_755" });
+      assertInstallerTerminalUnit(probeUnit);
+      const probeDrainDigest = observeInstallerCgroupEmpty("/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + probeUnit);
+      results.push({ scenario: mode === "exposed" ? "installer_root_readable_canary_exposure_control" : "installer_root_dependency_read_and_canary_absence",
+        result: "passed", unit: probeUnit, drainDigest: probeDrainDigest, probeEvidence, actualCredentials: probe.credentials });
+    }
+    assert.deepEqual(canaries.map(({ source, sha256, ino }) => ({ source, sha256, ino })),
+      canaries.map(({ source }) => ({ source, sha256: hash(readFileSync(source)), ino: String(lstatSync(source).ino) })));
     for (const relative of ["mount-workspace/node_modules/mounted", "mount-external", "mount-trash"]) privateDirectory(root + "/" + relative);
     writeFileSync(root + "/mount-workspace/node_modules/original", "original TEST tree\n", { flag: "wx", mode: 0o600 });
     writeFileSync(root + "/mount-external/sentinel", "external TEST original\n", { flag: "wx", mode: 0o600 });
