@@ -57,7 +57,7 @@ const emptyArrays = [SystemdArrayProperty.ExecStartPre, SystemdArrayProperty.Exe
 function show(name: "dbus.service" | "dbus.socket", properties: string, remaining: SystemdObservationRemaining): Record<string, string> {
   const result: Record<string, string> = {};
   const expected = properties.split(","), unresolved = name === "dbus.service" ? emptyArrays : [];
-  for (const line of command("/usr/bin/systemctl", ["show", `--property=${properties}`, "--", name], remaining).split("\n")) {
+  for (const line of command("/usr/bin/systemctl", ["show", "--all", `--property=${properties}`, "--", name], remaining).split("\n")) {
     const at = line.indexOf("="), key = line.slice(0, at);
     if (at < 1 || key in result || !expected.includes(key)) invalid();
     result[key] = line.slice(at + 1);
