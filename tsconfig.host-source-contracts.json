@@ -20,7 +20,9 @@
     "src/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.ts",
     "src/provider-codex/app-server/adapters/hosted-fd-unit-policy.ts",
     "src/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.ts",
-    "src/provider-codex/app-server/adapters/hosted-host-policy.ts"
+    "src/provider-codex/app-server/adapters/hosted-host-policy.ts",
+    "src/provider-codex/app-server/adapters/hosted-project-control-source-catalog.ts",
+    "src/provider-codex/app-server/adapters/hosted-signed-tool-elf.ts"
   ],
   "exclude": []
 }

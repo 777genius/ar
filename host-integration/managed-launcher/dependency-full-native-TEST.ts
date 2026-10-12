@@ -1,3 +1,4 @@
+import { OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths } from "./hosted-project-control-source-catalog.js";
 import { originalFullGuestNativeSourcePaths } from "./hosted-full-guest-source-inventory.js";
 import { H1ElfRole, validateH1ElfRole } from "./dependency-full-h1-elf-role-TEST.js";
 import {H1ConstructorHeld,h1HeldError,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
@@ -29,6 +30,8 @@ const fullPositiveTestCohort = Object.freeze([
   ["host-integration/managed-launcher/dependency-full-provider-setup-TEST.js", "managed-launcher/dependency-full-provider-setup-TEST.js"],
   ["dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js", "managed-launcher/hosted-fd-unit-lifecycle.js"],
   ["dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js", "managed-launcher/hosted-fd-unit-policy.js"],
+  ["dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js", "managed-launcher/hosted-project-control-source-catalog.js"],
+  ["dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js", "managed-launcher/hosted-signed-tool-elf.js"],
   ["dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js", "managed-launcher/hosted-full-guest-source-inventory.js"],
 ] as const);
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
@@ -1181,6 +1184,7 @@ export function retainCurrentFullParent():FullParentSession {
   let providerSetupSlot:ReturnType<typeof originalProviderSetupSlot>|undefined;
   const guestSourceFiles=new Map<string,number>();
   let registeredGuestRoot:string|undefined;
+  let rejoinGuestPeerPreload:(()=>void)|undefined;
   // The HOST query tool is independently selected DATA, physically retained
   // by this original constructor BEFORE guest submission. Current tool hashes
   // and a payload's request cannot substitute for a missing original closure.
@@ -1244,7 +1248,7 @@ export function retainCurrentFullParent():FullParentSession {
       }finally{closeSync(fresh);}}
     check(birth(readFileSync(procRoot+"/stat","utf8"))===parentStartTicks);
   }
-  const revalidate=()=>{check(!closed);liveProc();c.validate();
+  const revalidate=()=>{check(!closed);liveProc();c.validate();rejoinGuestPeerPreload?.();
     const ackDeadline=process.hrtime.bigint()+5000000000n;
     while(record(c,true).phase!==FullParentPhase.Started){check(process.hrtime.bigint()<ackDeadline);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}
     const envKeys=Object.keys(process.env);check(envKeys.length<=32 && envKeys.every(key=>["PATH","LANG","LC_ALL","HOME","TMPDIR","USER","LOGNAME","SHELL","INVOCATION_ID","SYSTEMD_EXEC_PID","JOURNAL_STREAM","SUBSCRIPTION_RUNTIME_HOST_JOB_ID","TEST_SOURCE_SHA","TEST_FULL_RESTORE_CONSUMER"].includes(key)));
@@ -1397,7 +1401,30 @@ export function retainCurrentFullParent():FullParentSession {
           guestSources.push({path:"/opt/subscription-runtime-dependency-os-TEST/"+relative,sha256:requireDigest(row.sha256)});
         }
       }
-      check(guestSources.length===(c.tuple.removalCase===FullRemovalCase.ParentCrashH1?10:8));c.validate();
+      // These finite SDK entry/helper bytes join the same original pre-submit
+      // FD catalog. Planned/missing/duplicate modules cannot qualify a guest.
+      for(const relative of originalFullProjectControlSourcePaths){
+        const rows=publicCatalog.files.filter(value=>fullData(value,["path","sha256"]).path===relative);check(rows.length===1);
+        const row=fullData(rows[0],["path","sha256"]),path="/opt/subscription-runtime-dependency-os-TEST/"+relative;
+        check(guestSourceFiles.has(path));guestSources.push({path,sha256:requireDigest(row.sha256)});
+      }
+      // Original signed extraction metadata is held and sealed by this actual
+      // pre-submit constructor; no late guest hash or caller DTO enrolls it.
+      const peerMetadata=new Map<string,Buffer>();
+      for(const relative of originalFullProjectControlPeerMetadataPaths){const path="/opt/subscription-runtime-dependency-os-TEST/"+relative,fd=c.pins.hold(root+path),bytes=readFd(fd);
+        check(bytes.length>0 && bytes.length<=256*1024);const value:unknown=JSON.parse(bytes.toString("utf8"));check(bytes.equals(Buffer.from(JSON.stringify(value)+"\n")));
+        peerMetadata.set(relative,bytes);guestSourceFiles.set(path,fd);guestSources.push({path,sha256:hash(bytes)});}
+      const packages=fullData(JSON.parse(peerMetadata.get("os-packages.json")!.toString("utf8")),["schemaVersion","release","releases","packages","usrLayout","pinnedNode"]),aliases=fullData(JSON.parse(peerMetadata.get("os-signed-tool-aliases.json")!.toString("utf8")),["schemaVersion","packages","aliases"]);
+      check(packages.schemaVersion===1 && packages.release==="ubuntu-noble" && Array.isArray(packages.packages) && packages.packages.length>0 && packages.packages.length<=256 && aliases.schemaVersion===1 && JSON.stringify(packages.packages)===JSON.stringify(aliases.packages) && Array.isArray(aliases.aliases) && aliases.aliases.length<=1024);
+      const preload=originalFullProjectControlPreloadData(JSON.parse(peerMetadata.get("os-signed-peer-preload.json")!.toString("utf8"))),parentFd=c.pins.hold(root+"/etc",true),parent=fstatSync(parentFd,{bigint:true});
+      check(String(parent.dev)===preload.parent.dev && String(parent.ino)===preload.parent.ino);
+      const emptyFd=preload.kind===OriginalFullPeerPreloadSelectionKind.Empty?c.pins.hold(root+"/etc/ld.so.preload"):undefined;
+      rejoinGuestPeerPreload=()=>{const held=fstatSync(parentFd,{bigint:true}),named=lstatSync(root+"/etc",{bigint:true});check(held.isDirectory() && !named.isSymbolicLink() && held.dev===parent.dev && held.ino===parent.ino && named.dev===parent.dev && named.ino===parent.ino);
+        const child="/proc/self/fd/"+parentFd+"/ld.so.preload";
+        if(preload.kind===OriginalFullPeerPreloadSelectionKind.Absent){let absent=false;try{lstatSync(child);}catch(error){check(error instanceof Error && "code" in error && error.code==="ENOENT");absent=true;}check(absent);}
+        else{check(emptyFd!==undefined && preload.file);const file=fstatSync(emptyFd,{bigint:true}),current=lstatSync(child,{bigint:true});check(file.isFile() && !current.isSymbolicLink() && file.uid===0n && file.gid===0n && file.nlink===1n && !(file.mode&0o022n) && file.size===0n && String(file.dev)===preload.file.dev && String(file.ino)===preload.file.ino && current.dev===file.dev && current.ino===file.ino && current.size===0n && readFd(emptyFd).length===0);}};
+      rejoinGuestPeerPreload();
+      check(guestSources.length===(c.tuple.removalCase===FullRemovalCase.ParentCrashH1?10:8)+originalFullProjectControlSourcePaths.length+originalFullProjectControlPeerMetadataPaths.length);c.validate();
       const data={schemaVersion:2,...(c.tuple.removalCase===FullRemovalCase.ParentCrashH1?{removalCase:c.tuple.removalCase,restoreConsumer:c.tuple.restoreConsumer}:{}),jobId:fullNativeJob,parentUnit:fullNativeUnit,parentInvocationId:invocation,guestMachineId,parentProc:{pid:process.pid,startTicks:parentStartTicks,stat:procFiles[0]!.identity,status:procFiles[1]!.identity,capabilities:parentCapabilities},guestSources,unit,fragmentSha256,root,rootDev:String(rootStat.dev),rootIno:String(rootStat.ino),machineId:c.tuple.machineId,bootId:c.tuple.bootId,sourceSha:c.tuple.sourceSha};
       guestHash=hash(JSON.stringify(data)+"\n");seal("current-full-pair.json",data);guestId=id;
     },

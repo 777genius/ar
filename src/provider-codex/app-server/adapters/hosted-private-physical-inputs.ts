@@ -73,3 +73,17 @@ function canonicalPath(path: string): boolean {
     !path.split("/").some(part => part === "." || part === "..");
 }
 function invalid(): never { throw new Error("hosted_readonly_policy_invalid"); }
+
+/** Factual read of a caller-held regular object. It preserves the shared cursor
+ * and creates no source identity, path selection or custody authority. */
+export function readHostedHeldRegularBytes(fd: number, maximum: number): Buffer {
+  if (!Number.isSafeInteger(fd) || fd < 0 || !Number.isSafeInteger(maximum) || maximum < 0 || maximum > 128 * 1024 * 1024) invalid();
+  const before = fstatSync(fd, { bigint: true });
+  if (!before.isFile() || before.size < 0n || before.size > BigInt(maximum)) invalid();
+  const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
+  while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (count <= 0) invalid(); offset += count; }
+  const after = fstatSync(fd, { bigint: true });
+  if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mode !== before.mode || after.uid !== before.uid ||
+    after.gid !== before.gid || after.nlink !== before.nlink || after.ctimeNs !== before.ctimeNs || after.mtimeNs !== before.mtimeNs) invalid();
+  return bytes;
+}

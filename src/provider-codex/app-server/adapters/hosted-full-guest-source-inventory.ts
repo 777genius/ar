@@ -13,6 +13,8 @@ export const originalFullGuestNativeSourcePaths: readonly string[] = Object.free
   "host-integration/managed-launcher/hosted-fd-unit-lifecycle.js",
   "host-integration/managed-launcher/hosted-fd-unit-policy.js",
   "host-integration/managed-launcher/hosted-full-guest-source-inventory.js",
+  "host-integration/managed-launcher/hosted-project-control-source-catalog.js",
+  "host-integration/managed-launcher/hosted-signed-tool-elf.js",
   "host-integration/managed-launcher/launch.mjs",
   "host-integration/managed-launcher/hosted-host-policy.mjs",
   "host-integration/managed-launcher/profiles.mjs",

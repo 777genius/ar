@@ -1,3 +1,5 @@
+import { OriginalFullPeerPreloadSelectionKind } from "../../dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js";
+import { parseHostedSignedToolElf } from "../../dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js";
 import { emitSignedPythonEnvelopeCatalog } from "./current-full-python-envelope-catalog.ts";
 import type { EnvelopeLimits, SignedPackage } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 import { composeCurrentRealCodex } from "./compose-current-real-codex.js";
@@ -10,8 +12,8 @@ import { CurrentBackingGeometry, currentBackingStorage, currentGeometryMarker } 
 import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
-  readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
-import { basename, dirname, join } from "node:path";
+  readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
+import { basename, dirname, join, posix } from "node:path";
 import { FullRemovalCase, FullRestoreConsumer, fullNativeRemovalCase, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeGuestRoot, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
@@ -128,6 +130,19 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   directory(root + runtime, 0o755);
   assert(Buffer.byteLength(JSON.stringify(signedElfPins)) <= 128 * 1024);
   json(root + runtime + "/os-signed-elf-pins.json", { schemaVersion: 1, pins: signedElfPins });
+  // Selected only from the original authenticated extraction, before any
+  // runtime/configuration copy. Later observer discovery cannot enroll aliases.
+  const peerAliases = captureSignedPeerAliases(root, signedElfPins, requirements.map(row => row.soname), checkBudget);
+  json(root + runtime + "/os-signed-tool-aliases.json", { schemaVersion: 1, packages, aliases: peerAliases });
+  const preloadParent = lstatSync(root + "/etc", { bigint: true });
+  assert(preloadParent.isDirectory() && !preloadParent.isSymbolicLink() && preloadParent.uid === 0n && preloadParent.gid === 0n && !(preloadParent.mode & 0o022n));
+  const parentIdentity = { dev: String(preloadParent.dev), ino: String(preloadParent.ino) };
+  let preloadSelection: { schemaVersion: 1; kind: OriginalFullPeerPreloadSelectionKind; parent: typeof parentIdentity; file: typeof parentIdentity | null };
+  try { const file = lstatSync(root + "/etc/ld.so.preload", { bigint: true });
+    assert(file.isFile() && !file.isSymbolicLink() && file.uid === 0n && file.gid === 0n && file.nlink === 1n && !(file.mode & 0o022n) && file.size === 0n);
+    preloadSelection = { schemaVersion: 1, kind: OriginalFullPeerPreloadSelectionKind.Empty, parent: parentIdentity, file: { dev: String(file.dev), ino: String(file.ino) } };
+  } catch (error) { assert(error instanceof Error && "code" in error && error.code === "ENOENT"); preloadSelection = { schemaVersion: 1, kind: OriginalFullPeerPreloadSelectionKind.Absent, parent: parentIdentity, file: null }; }
+  json(root + runtime + "/os-signed-peer-preload.json", preloadSelection);
   // Optional SOURCE proposal: no H1 enrollment/guard change. Omitted or failed
   // input never qualifies Python. Limits require actual signed-image measurement.
   if (pythonEnvelopeLimits !== undefined) {
@@ -266,6 +281,60 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   assert(existsSync(root + "/usr/bin/systemd-nspawn"));
   assert(existsSync(root + "/usr/lib/systemd/systemd"));
   checkBudget();
+}
+
+/** Private original assembly fact collector, not an enrollment factory. */
+function captureSignedPeerAliases(root: string, pins: readonly { path: string; sha256: string }[], nodeRequirements: readonly string[], checkBudget: () => number): readonly { path: string; target: string }[] {
+  const selected = new Map(pins.map(row => [row.path, row.sha256])), aliases = new Map<string, string>(), seen = new Set<string>();
+  let bytes = 0; const deadline = process.hrtime.bigint() + 30000000000n;
+  const bound = () => { checkBudget(); assert(process.hrtime.bigint() < deadline); };
+  const resolveSigned = (input: string): string => {
+    assert(input.startsWith("/") && /^[A-Za-z0-9_+./-]+$/.test(input)); let path = posix.normalize(input);
+    for (let links = 0; links <= 16; links++) {
+      bound(); const parts = path.slice(1).split("/"); let changed = false;
+      for (let index = 0; index < parts.length; index++) {
+        const name = "/" + parts.slice(0, index + 1).join("/"), stat = lstatSync(root + name, { bigint: true });
+        assert(stat.uid === 0n && stat.gid === 0n && (stat.isSymbolicLink() || !(stat.mode & 0o022n)));
+        if (stat.isSymbolicLink()) {
+          const target = readlinkSync(root + name); assert(target.length > 0 && Buffer.byteLength(target) <= 4096 && /^[A-Za-z0-9_+./-]+$/.test(target));
+          const previous = aliases.get(name); assert(previous === undefined || previous === target); aliases.set(name, target); assert(aliases.size <= 1024);
+          path = posix.normalize((target.startsWith("/") ? target : posix.dirname(name) + "/" + target) + "/" + parts.slice(index + 1).join("/"));
+          assert(path.startsWith("/usr/lib/") || path.startsWith("/usr/lib64/") || path === "/usr/bin/ss" || ["/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64"].includes(path));
+          changed = true; break;
+        }
+        assert(index === parts.length - 1 || stat.isDirectory());
+      }
+      if (!changed) return path;
+    }
+    assert.fail("signed peer alias cycle/depth");
+  };
+  for (const name of ["bin", "sbin", "lib", "lib64"]) {
+    const path = "/" + name; assert(lstatSync(root + path).isSymbolicLink()); assert.equal(readlinkSync(root + path), "usr/" + name); aliases.set(path, "usr/" + name);
+  }
+  const visit = (input: string) => {
+    bound(); const path = resolveSigned(input); if (seen.has(path)) return;
+    assert(seen.size < 32); seen.add(path); assert(path === "/usr/bin/ss" || path.startsWith("/usr/lib/x86_64-linux-gnu/"));
+    const expected = selected.get(path); assert(expected); const stat = lstatSync(root + path, { bigint: true });
+    assert(stat.isFile() && stat.nlink === 1n && stat.size > 0n && stat.size <= 32n * 1024n * 1024n && (bytes += Number(stat.size)) <= 256 * 1024 * 1024);
+    const fd = openSync(root + path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try { const held = fstatSync(fd, { bigint: true }); assert(held.dev === stat.dev && held.ino === stat.ino); const content = readFileSync(fd); assert.equal(createHash("sha256").update(content).digest("hex"), expected);
+      const facts = parseHostedSignedToolElf(content); assert(facts.rpath.length === 0 && facts.runpath.length === 0);
+      if (facts.interpreter) { assert.equal(resolveSigned(facts.interpreter), "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"); visit(facts.interpreter); }
+      for (const needed of facts.needed) visit("/usr/lib/x86_64-linux-gnu/" + needed);
+      assert.equal(fileDigest(root + path), expected); assert(fstatSync(fd, { bigint: true }).ino === held.ino);
+    } finally { closeSync(fd); }
+  };
+  visit("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"); visit("/usr/bin/ss");
+  // The original selected Node requirement roots use the same signed image
+  // closure. Node-only soname aliases cannot be inferred from the ss graph.
+  assert(nodeRequirements.length > 1 && nodeRequirements.length <= 32 && new Set(nodeRequirements).size === nodeRequirements.length);
+  for (const soname of nodeRequirements) {
+    assert(/^[A-Za-z0-9_.+-]+$/.test(soname) && Object.hasOwn(elfPackages, soname));
+    visit("/usr/lib/x86_64-linux-gnu/" + soname);
+  }
+  bound();
+  const rows = [...aliases].map(([path, target]) => ({ path, target })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  assert(Buffer.byteLength(JSON.stringify(rows)) <= 256 * 1024); return Object.freeze(rows.map(row => Object.freeze(row)));
 }
 
 function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {

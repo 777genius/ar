@@ -13,6 +13,8 @@ for (const [canonical, name] of [
   ["hosted-fd-unit-lifecycle.js", "hosted-fd-unit-lifecycle.js"],
   ["hosted-fd-unit-policy.js", "hosted-fd-unit-policy.js"],
   ["hosted-full-guest-source-inventory.js", "hosted-full-guest-source-inventory.js"],
+  ["hosted-project-control-source-catalog.js", "hosted-project-control-source-catalog.js"],
+  ["hosted-signed-tool-elf.js", "hosted-signed-tool-elf.js"],
 ] as const) {
   const source = resolve(root, "dist/provider-codex/app-server/adapters", canonical);
   assert.equal(realpathSync(source), source);

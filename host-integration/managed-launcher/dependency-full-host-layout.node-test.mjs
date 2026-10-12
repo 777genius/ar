@@ -49,3 +49,17 @@ test('checkpoint5 relative HOST imports fail in actual copied layout',()=>{
 test('omitted canonical lifecycle or policy copied leaf refuses before module execution',()=>{
  for(const name of ['hosted-fd-unit-lifecycle','hosted-fd-unit-policy']){const root=install(native);try{rmSync(join(root,'managed-launcher/'+name+'.js'));assert.throws(()=>staticClosure(root,'managed-launcher/dependency-full-native-TEST.mjs'),/missing installed dependency/);}finally{rmSync(root,{recursive:true,force:true});}}
 });
+
+test('SDK catalog and shared ELF copied leaves refuse omission or escaping facade before execution',()=>{
+ for(const name of ['hosted-project-control-source-catalog','hosted-signed-tool-elf']){
+  const root=install(native);try{
+   const path=join(root,'managed-launcher/'+name+'.js');
+   assert.ok(staticClosure(root,'managed-launcher/dependency-full-native-TEST.mjs').has(path));
+   const bytes=readFileSync(path);rmSync(path);
+   assert.throws(()=>staticClosure(root,'managed-launcher/dependency-full-native-TEST.mjs'),/missing installed dependency/);
+   writeFileSync(path,'export * from "../../dist/provider-codex/app-server/adapters/'+name+'.js";\n');
+   assert.throws(()=>staticClosure(root,'managed-launcher/dependency-full-native-TEST.mjs'),/escapes cohort/);
+   writeFileSync(path,bytes);staticClosure(root,'managed-launcher/dependency-full-native-TEST.mjs');
+  }finally{rmSync(root,{recursive:true,force:true});}
+ }
+});

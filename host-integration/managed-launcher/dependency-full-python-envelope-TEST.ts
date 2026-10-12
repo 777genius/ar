@@ -1,3 +1,4 @@
+import { parseHostedSignedToolElf } from "./hosted-signed-tool-elf.js";
 /** SOURCE proposal. Only the original private H1 reader may supply ReviewAuthority.
  * No launch capability; authentication/namespace integration remains mandatory. */
 import { createHash } from "node:crypto";
@@ -168,23 +169,12 @@ function captureEnvelope(location:EnvelopeLocation,prefix:string,packages:readon
 }
 /** Narrow ELF64 little-endian x86-64 parser. Unsupported audited/config/filter/auxiliary code-selection routes refuse. */
 export function parsePythonEnvelopeElf(bytes:Buffer):ElfFacts {
- requireThat(bytes.length>=64&&bytes.subarray(0,4).equals(Buffer.from([127,69,76,70]))&&bytes[4]===2&&bytes[5]===1&&bytes[6]===1&&bytes.readUInt16LE(18)===62,"ELF target");
- const number=(n:bigint)=>{requireThat(n<=BigInt(Number.MAX_SAFE_INTEGER),"ELF integer");return Number(n);};
- const range=(offset:number,size:number)=>requireThat(integer(offset)&&integer(size)&&offset+size<=bytes.length,"ELF range");
- const ph=number(bytes.readBigUInt64LE(32)),width=bytes.readUInt16LE(54),count=bytes.readUInt16LE(56);requireThat(width===56&&count>0&&count!==65535,"ELF program table");range(ph,width*count);
- const loads:{va:number;offset:number;size:number}[]=[],dynamic:{offset:number;size:number}[]=[];let interpreter:string|null=null;
- const text=(offset:number,max:number)=>{range(offset,max);const end=bytes.indexOf(0,offset);requireThat(end>=offset&&end<offset+max,"ELF string terminator");const raw=bytes.subarray(offset,end);requireThat(raw.every(b=>b>=0x20&&b<=0x7e),"ELF string encoding");return raw.toString("ascii");};
- for(let i=0;i<count;i++){const p=ph+i*width,type=bytes.readUInt32LE(p),offset=number(bytes.readBigUInt64LE(p+8)),va=number(bytes.readBigUInt64LE(p+16)),size=number(bytes.readBigUInt64LE(p+32));range(offset,size);
- if(type===1)loads.push({va,offset,size});if(type===2)dynamic.push({offset,size});if(type===3){requireThat(interpreter===null,"ELF multiple interpreters");interpreter=text(offset,size);requireThat(interpreter==="/lib64/ld-linux-x86-64.so.2","ELF interpreter escape");}}
- requireThat(dynamic.length<=1,"ELF dynamic table");if(dynamic.length===0)return Object.freeze({needed:Object.freeze([]),runpath:Object.freeze([]),rpath:Object.freeze([]),interpreter});
- const table=dynamic[0]!;requireThat(table.size%16===0,"ELF dynamic size");let strVa:number|undefined,strSize:number|undefined,ended=false;const rows:{tag:bigint;value:number}[]=[];
- for(let at=table.offset;at<table.offset+table.size;at+=16){const tag=bytes.readBigInt64LE(at),value=number(bytes.readBigUInt64LE(at+8));if(tag===0n){ended=true;break;}if(tag===5n){requireThat(strVa===undefined,"ELF duplicate strtab");strVa=value;}if(tag===10n){requireThat(strSize===undefined,"ELF duplicate strsize");strSize=value;}
- requireThat(![0x6ffffefan,0x6ffffefbn,0x6ffffefcn,0x7ffffffdn,0x7fffffffn].includes(tag),"ELF audit/filter/auxiliary route");rows.push({tag,value});}
- requireThat(ended&&strVa!==undefined&&strSize!==undefined&&strSize>0,"ELF dynamic completeness");const segments=loads.filter(s=>strVa!>=s.va&&strVa!+strSize!<=s.va+s.size);requireThat(segments.length===1,"ELF string mapping");const s=segments[0]!,base=s.offset+strVa-s.va;range(base,strSize);
- const values=(tag:bigint)=>rows.filter(r=>r.tag===tag).map(r=>{requireThat(r.value<strSize!,"ELF string offset");return text(base+r.value,strSize!-r.value);});
- const needed=values(1n);for(const name of [...needed,...values(14n)])requireThat(/^[A-Za-z0-9_+.-]+$/.test(name),"ELF dependency/soname escape");
- const paths=(tag:bigint)=>{const v=values(tag);requireThat(v.length<=1,"ELF duplicate search path");return v.length?v[0]!.split(":"):[];};
- return Object.freeze({needed:Object.freeze(needed),runpath:Object.freeze(paths(29n)),rpath:Object.freeze(paths(15n)),interpreter});
+ try { return parseHostedSignedToolElf(bytes); }
+ catch (error) {
+  const prefix = "hosted_signed_tool_elf_held: ";
+  if (error instanceof Error && error.message.startsWith(prefix)) fail(error.message.slice(prefix.length));
+  return fail("ELF decoding");
+ }
 }
 function aliasTarget(path:string,catalog:ReadonlyMap<string,EnvelopeEntry>):string {
  const seen=new Set<string>();while(true){requireThat(!seen.has(path),"alias cycle");seen.add(path);const row=catalog.get(path);requireThat(row,"missing alias target");if(row.kind!==PythonEnvelopeKind.Alias)return path;path=row.target;}
