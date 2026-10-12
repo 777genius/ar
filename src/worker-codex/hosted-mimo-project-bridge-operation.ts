@@ -9,6 +9,34 @@ import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstre
 import { readdirSync } from "node:fs";
 
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
+const approvedErrorCodes = new Set([
+  "safe_execution_workspace_locked",
+  "protected_job_birth_publication_busy",
+  "protected_job_birth_authority_invalid",
+  "evidence_custody_bootstrap_evidence_basename_invalid",
+  "evidence_custody_bootstrap_root_unsafe",
+  "evidence_custody_bootstrap_anchor_unsafe",
+  "hosted_ordinary_writer_extent_invalid",
+  "controller_maintenance_fence_active",
+  "controller_maintenance_activity_active",
+]);
+function operationErrorCode(error: unknown): string {
+  if (!(error instanceof Error)) return "mimo_project_bridge_operation_failed";
+  // Errors can originate in another immutable release, with a different class identity.
+  const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
+  if (typeof typedCode === "string" && approvedErrorCodes.has(typedCode)) return typedCode;
+  const code = error.message.split(":", 1)[0]!;
+  if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
+  switch (typedCode) {
+    case "ENOENT": return "mimo_project_bridge_fs_not_found";
+    case "EACCES": return "mimo_project_bridge_fs_access_denied";
+    case "EPERM": return "mimo_project_bridge_fs_permission_denied";
+    case "EEXIST": return "mimo_project_bridge_fs_already_exists";
+  }
+  if (error instanceof TypeError) return "mimo_project_bridge_type_error";
+  if (error instanceof SyntaxError) return "mimo_project_bridge_parse_error";
+  return "mimo_project_bridge_operation_failed";
+}
 function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));
 }
@@ -227,15 +255,18 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   const service = researchCommand("/usr/bin/systemctl", ["show", current.value.unit as string, "--property=MainPID,Description"]);
   if (!service.split("\n").includes("MainPID=" + process.pid) || !service.split("\n").includes("Description=" + current.value.description))
     throw new Error("mimo_project_bridge_operation_invalid");
-  let result: unknown;
-  try { result = { ok: true, result: await handleHostedMimoProjectBridge(request) }; }
-  catch (error) {
-    const code = error instanceof Error ? error.message.split(":", 1)[0]! : "";
-    result = { ok: false, error: /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_)[a-z0-9_]{1,100}$/.test(code)
-      ? code : "mimo_project_bridge_operation_failed" };
+  let result: unknown, serialized: string;
+  try {
+    result = { ok: true, result: await handleHostedMimoProjectBridge(request) };
+    serialized = JSON.stringify(result) + "\n";
+    if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
   }
-  const serialized = JSON.stringify(result) + "\n";
-  if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
+  catch (error) {
+    result = { ok: false, error: operationErrorCode(error) };
+    serialized = JSON.stringify(result) + "\n";
+  }
+  // Publication failures remain uncertain; never replace them with a failure
+  // envelope or replay a handler whose effects may already have happened.
   const temp = current.resultPath + ".tmp";
   writeFileSync(temp, serialized, { flag: "wx", mode: 0o600 }); renameSync(temp, current.resultPath);
   const outcome = result as { ok: boolean; result?: { ok?: boolean } };

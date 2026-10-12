@@ -118,7 +118,7 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
   if (readFileSync("/etc/machine-id", "utf8").trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   const bytes = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`), binding = parseHostedMimoProjectBinding(JSON.parse(bytes.toString("utf8")), request);
   const { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob,
-    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await hostedMimoProjectRuntime(binding);
+    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await hostedMimoProjectRuntime(binding, request);
   const args: ProjectControlMcpArgs = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId, jobId: request.jobId };
   const controller = await loadProjectControlController(args);
   if (controller.scope.projectId !== request.projectId ||
