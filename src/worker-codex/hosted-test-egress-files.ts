@@ -17,9 +17,8 @@ import {
   type HostedTestEgressIdentity,
 } from "./hosted-test-egress-contract";
 
-// Already hidden by InaccessiblePaths=-/run/user in older hosted installations.
-export const hostedTestEgressGrantRoot =
-  "/run/user/0/subscription-runtime-host-policy/codex-egress";
+import { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
+export { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
 
 export async function assertHostedTestEgressOperator(): Promise<void> {
   try {
