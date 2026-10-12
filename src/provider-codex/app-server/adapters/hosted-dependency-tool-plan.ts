@@ -1,6 +1,6 @@
-import { readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -58,14 +58,17 @@ export function assertHostedDependencyToolParentFrame(fence: HostedActivationFen
   if (!data || typeof data !== "object" || Object.keys(data).sort().join(",") !== "env,schemaVersion" || data.schemaVersion !== 1 ||
       !data.env || typeof data.env !== "object" || Array.isArray(data.env)) fail();
   assertHostedDependencyParentEnvironment(data.env as Record<string, string>, binding.jobRootDir);
-  assertParentAuthWriterScope(binding, recipe.args, launch as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch);
+  assertParentAuthWriterScope(binding, recipe.args, launch as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch,
+    fence.parentRecipeReader);
 }
 
 /** Metadata only: never open auth.json or derive authority from a credential.
  * Generic writers stay in the root-owned job namespace. The original Usable
  * producer alone selects its sealed broker and registry metadata scope. */
-function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: readonly string[], raw?: import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch): void {
-  const original = raw ? readHostedOriginalUsableParentRoots(raw, binding.jobRootDir, binding.workspace.canonicalPath) : null;
+function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: readonly string[],
+  raw: import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch | undefined,
+  reader: DependencyParentRecipeReader | undefined): void {
+  const original = raw && reader ? reader.readOriginalUsableParentRoots(raw, binding.jobRootDir, binding.workspace.canonicalPath) : undefined;
   assertHostedDependencyPhysicalWorkspace(binding); // Includes all bind/mount aliases.
   const job = lstatSync(binding.jobRootDir, { bigint: true });
   const authPath = original?.auth ?? `${binding.jobRootDir}/auth`, auth = lstatSync(authPath, { bigint: true });
@@ -111,7 +114,8 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
   const after = lstatSync(authPath, { bigint: true }), parent = lstatSync(binding.jobRootDir, { bigint: true });
   if (after.dev !== auth.dev || after.ino !== auth.ino || after.ctimeNs !== auth.ctimeNs ||
       parent.dev !== job.dev || parent.ino !== job.ino) fail();
-  if (original && (!raw || JSON.stringify(readHostedOriginalUsableParentRoots(raw, binding.jobRootDir, binding.workspace.canonicalPath)) !== JSON.stringify(original))) fail();
+  if (original && (!raw || !reader ||
+      JSON.stringify(reader.readOriginalUsableParentRoots(raw, binding.jobRootDir, binding.workspace.canonicalPath)) !== JSON.stringify(original))) fail();
 }
 
 /** Only a live enrolled origin and its reserved provider can prepare the plan.
