@@ -614,8 +614,8 @@ jobs:
           grep -Eq '^ok [0-9]+ - actual invalid literal alias bytes refuse including equal encoded-size case$' "$TAP"
           grep -Eq '^ok [0-9]+ - unsupported H1 stdlib closure cannot reach private tool callbacks$' "$TAP"
           grep -Eq '^ok [0-9]+ - source package contract keeps legacy and binds selected Positive package bytes$' "$TAP"
-          grep -Fxq '# tests 35' "$TAP"
-          grep -Fxq '# pass 35' "$TAP"
+          grep -Fxq '# tests 37' "$TAP"
+          grep -Fxq '# pass 37' "$TAP"
           grep -Fxq '# fail 0' "$TAP"
           grep -Fxq '# skipped 0' "$TAP"
           if grep -q ' # SKIP ' "$TAP"; then exit 1; fi
