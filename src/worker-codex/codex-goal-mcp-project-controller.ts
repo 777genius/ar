@@ -1,6 +1,7 @@
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
 import { resolve } from "node:path";
 import { RunEventProviderKind } from "@vioxen/subscription-runtime/worker-core";
+import { withProjectAdmissionPublicationLock } from "./codex-goal-project-workspace-lock";
 import { bindControllerStateLocation } from "./application/project-control/codex-goal-controller-state-location";
 import { withLocalControllerActivityLease } from "@vioxen/subscription-runtime/store-local-file";
 import {
@@ -129,8 +130,24 @@ export async function projectControllerStartView(
           throw new Error("project_control_controller_auth_root_outside_scope");
         }
       }
+      // Publish the existing admitted-start marker before runtime preparation
+      // can allocate. Activity leases are shared and cannot serialize a census.
+      const canonicalStateDir = await withProjectAdmissionPublicationLock({
+        registryRootDir: controller.registryRootDir,
+        owner: `controller-start:${controller.controller.jobId}`,
+        effect: async () => {
+          const current = await deps.loadProjectControlController(args);
+          if (current.registryRootDir !== controller.registryRootDir ||
+              JSON.stringify(current.controller) !== JSON.stringify(controller.controller) ||
+              JSON.stringify(current.scope) !== JSON.stringify(controller.scope)) {
+            throw new Error("controller_start_manifest_drift");
+          }
+          return await bindControllerStateLocation(controller.controller, state.stateDir);
+        },
+      });
+      // Release topology before manager/provider preparation. On uncertainty the
+      // immutable marker remains; absence of a process must not imply never-run.
       if (profile.kind === RunEventProviderKind.Codex) await admitHostedControllerLaunch(launch);
-      const canonicalStateDir = await bindControllerStateLocation(controller.controller, state.stateDir);
       state = projectControllerState({ ...options, stateDir: canonicalStateDir }, controller, deps.providerRuntimeRegistry);
       profile = state.profile;
       const providerInput = await projectControllerProvider({

@@ -1,3 +1,6 @@
+import { spawnCodexAppServerProcess } from "../provider-codex/app-server/adapters/node-app-server-process";
+import { hostedDependencyParentRecipeReader } from "./hosted-dependency-parent-recipe";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { startCurrentHostedOrdinaryDependencyProvider } from "./hosted-ordinary-dependency-provider";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -16,7 +19,7 @@ import { readonlyCustodyRoot, readonlyCustodySnapshot, readonlyRevokedRoot,
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import { admitResearchProcessFactory, admitResearchRuntime, assertResearchRuntimeEngine } from "./research-launch-admission";
 import { assertHostedBaselineIdentity, isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
-import { withHostedActivationFence, readHostedOrdinaryProcessOrigin, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readHostedOrdinaryProcessOrigin, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { captureHostedDependencyToolReadyReader } from "./hosted-dependency-tool-ready-reader";
 import type { HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
@@ -174,7 +177,10 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
     }
     return withHostedActivationFence(fence => {
       const captured = captureHostedDependencyToolReadyReader(fence, input, toolEntry);
-      if (!captured) return undefined; // V1 keeps genuine default admission.
+      if (!captured) {
+        if (readHostedDependencyBinding(input.jobId)?.version !== 1) return undefined;
+        return launch => spawnCodexAppServerProcess(launch, undefined, undefined, undefined, hostedDependencyParentRecipeReader);
+      } // V1 keeps the genuine default adapter and admission, with its recipe reader.
       if (!toolEntry) throw new Error("hosted_readonly_dependency_factory_denied");
       const actual=readCurrentHostedManagedDependencyProviderParent(captured.origin,fence);
       if (actual.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary) throw new Error("hosted_readonly_dependency_factory_denied");

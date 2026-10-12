@@ -3,7 +3,7 @@ import { closeSync, constants, openSync } from "node:fs";
 import { afterEach, test, vi } from "vitest";
 import * as fs from "node:fs";
 import * as child from "node:child_process";
-import { inspectVisibleScratchMount, readKernelMountTable, selectVisibleScratchMount } from "../host-scratch-mount";
+import { inspectVisibleScratchMount, readKernelMountTable, selectVisibleScratchMount, selectKernelPathBacking } from "../host-scratch-mount";
 
 // Builtin ESM namespace exports are nonconfigurable; expose mutable TEST exports
 // while retaining the native functions for all unoverridden FD/anonymous-file work.
@@ -147,4 +147,26 @@ test.runIf(process.platform === "linux")("adapter queries the untouched original
     assert.throws(() => inspectVisibleScratchMount("/"));
   }
   assert.ok(execute.mock.calls.length >= 1);
+});
+
+// RED: realpath/longest-prefix comparison misses two names of the same backing.
+// The held FD selects the visible mount even when a hidden row has that name.
+test("admission backing compares bind aliases using the FD-selected device/root", () => {
+  const table = [row(1, "/"), row(10, "/worktree-a", "/repository"),
+    row(20, "/worktree-b", "/hidden"), row(30, "/worktree-b", "/repository")].join("\n");
+  const dev = 2049; // Linux makedev(8, 1), independently specified kernel fixture.
+  assert.deepEqual(selectKernelPathBacking("/worktree-a/src", 10, dev, table),
+    selectKernelPathBacking("/worktree-b/src", 30, dev, table));
+  assert.notDeepEqual(selectKernelPathBacking("/worktree-b/src", 20, dev, table),
+    selectKernelPathBacking("/worktree-b/src", 30, dev, table));
+  for (const corrupt of [row(30, "/worktree-b", "/repository//deleted"),
+    row(30, "/worktree-b", "/repository") + "\n" + row(30, "/worktree-b"),
+    row(30, "/worktree-other", "/repository")]) {
+    assert.throws(() => selectKernelPathBacking("/worktree-b/src", 30, dev, corrupt), /Ambiguous/);
+  }
+  assert.throws(() => selectKernelPathBacking("/worktree-b/src", 30, 2050, table), /Ambiguous/);
+  for (const filesystem of ["overlay", "fuse", "nfs", "btrfs"]) {
+    assert.throws(() => selectKernelPathBacking("/worktree-b/src", 30, dev,
+      table.replaceAll(" - ext4 ", ` - ${filesystem} `)), /Ambiguous/);
+  }
 });

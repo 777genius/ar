@@ -2,7 +2,8 @@ import type { RunCommand } from "./codex-goal-cli";
 import type { CodexGoalRunDeps } from "./codex-goal-runner";
 import type { buildCodexGoalCliLaunchInput } from "./hosted-readonly-lifecycle-cli";
 import { isHostedGoalLaunch } from "./hosted-readonly-goal-launch";
-import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
+import type { CodexGoalLaunchInput } from "./codex-goal-ops";
+import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 
 export function assertInProcessRunComposition(command: RunCommand, deps: CodexGoalRunDeps | undefined, launchInput: () => ReturnType<typeof buildCodexGoalCliLaunchInput>): void {
   const hasStorageData = command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined;
@@ -39,5 +40,16 @@ export function assertStorageRegistrySupported(command: RunCommand): void {
   if (command.registryRootDir !== undefined &&
       (command.config.storage !== undefined || command.config.sessionHomeProfile !== undefined)) {
     throw new Error("codex_goal_cli_storage_registry_unsupported");
+  }
+}
+
+/** Read-only routing for in-process NEW storage. Allocation belongs exclusively
+ * to the original runner port, which holds the admitted storage lifetime. */
+export function assertInProcessStorageOwner(input: CodexGoalLaunchInput): void {
+  if (isHostedOrdinaryRuntime()) {
+    const c = input.config;
+    admitHostedOrdinaryIdentity({ jobId: c.jobId ?? c.taskId, jobRootDir: c.jobRootDir, workspacePath: c.workspacePath });
+  } else if (isHostedGoalLaunch(input)) {
+    throw new Error("codex_goal_cli_trusted_run_process_boundary_unsupported");
   }
 }

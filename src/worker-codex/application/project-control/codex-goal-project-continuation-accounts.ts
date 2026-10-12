@@ -118,7 +118,7 @@ export async function withProjectContinuationAccounts(input: {
       : input.launch.config.mimoAccounts === undefined
         ? {}
         : { mimoAccounts: input.launch.config.mimoAccounts }),
-    ...(input.launch.config.sourceEnv === undefined
+    ...(input.launch.config.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || input.launch.config.sourceEnv === undefined
       ? {}
       : { sourceEnv: input.launch.config.sourceEnv }),
   });

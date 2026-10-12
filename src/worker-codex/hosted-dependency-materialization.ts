@@ -9,10 +9,10 @@ import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, Depend
   DependencyTreeObservationStatus, DependencyOwnerPhase, sameDependencyTree,
   sameDependencyAttempt, type DependencyAttempt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
 import { observeDependencyTree, observeDependencyTreeWithPhysicalExposure, assertDependencySourceExposureCurrent, assertDependencyLocalRegistrySelectionAbsent, closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
-import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { readHostedDependencyBinding, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedDependencyInstaller, assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";

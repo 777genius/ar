@@ -148,6 +148,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: options.nativeToolSurface }),
+      ...(options.nativeGoalControls === undefined ? {} : { nativeGoalControls: options.nativeGoalControls }),
       ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
       ...(options.rolloutBudget === undefined
         ? {}

@@ -1,3 +1,4 @@
+import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./application/codex-goal-storage-paths";
 import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
 import { parseChildLifetimeJson } from "@vioxen/subscription-runtime/core";
 import { assertChildGoalConfig } from "./child-execution-confinement";
@@ -37,9 +38,27 @@ export function runConfigFromFlags(
   values: ParsedFlags,
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
-  jobRootDir: string,
+  jobRootDir: string | undefined,
   taskId: string,
+  resolvedPaths?: ReturnType<typeof resolveCodexGoalPaths>,
 ): CodexGoalRunConfig {
+  if (values.flags.has("--storage-root")) throw new Error("--storage-root requires a value");
+  const pathOption = (flagName: string, envNames: readonly string[] = []): string | undefined => {
+    const value = option(values, env, flagName, envNames);
+    return value === undefined ? undefined : resolvePath(cwd, value);
+  };
+  const paths = resolvedPaths ?? resolveCodexGoalPaths({
+    taskId, jobId: option(values, env, "--job-id", ["SUBSCRIPTION_RUNTIME_JOB_ID"]),
+    storageRootDir: resolveCodexGoalStorageRoot(option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]), cwd),
+    jobRootDir: jobRootDir === undefined ? undefined : resolvePath(cwd, jobRootDir),
+    workspacePath: pathOption("--workspace", ["SUBSCRIPTION_RUNTIME_WORKSPACE_PATH", "MEMO_STACK_GOAL_WORKSPACE_PATH"]),
+    stateRootDir: pathOption("--state-root"), runtimeHomeRootDir: pathOption("--runtime-home-root"),
+    encryptionKeyPath: pathOption("--encryption-key-path"),
+    durableHandoffRootDir: pathOption("--durable-handoff-root", ["SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT"]),
+    outputPath: pathOption("--output"), progressPath: pathOption("--progress"),
+    runtimeEventsPath: pathOption("--runtime-events"), agentTempRootDir: pathOption("--agent-temp-root"),
+    logPath: pathOption("--log"), sourceEnv: env,
+  });
   const authRootDir = resolvePath(
     cwd,
     option(values, env, "--auth-root", [
@@ -117,12 +136,12 @@ export function runConfigFromFlags(
     ]),
     "--network-access",
   );
-  const resolvedJobRootDir = resolvePath(cwd, jobRootDir);
+  const resolvedJobRootDir = paths.jobRootDir;
   const runtimeTempRoot =
-    env.SUBSCRIPTION_RUNTIME_TMPDIR ?? join(resolvedJobRootDir, "tmp");
-  const agentTempRoot = join(runtimeTempRoot, "agent");
+    paths.sourceEnv?.SUBSCRIPTION_RUNTIME_TMPDIR ?? env.SUBSCRIPTION_RUNTIME_TMPDIR ?? join(resolvedJobRootDir, "tmp");
+  const agentTempRoot = paths.agentTempRootDir ?? join(runtimeTempRoot, "agent");
   const sourceEnv = {
-    ...env,
+    ...(paths.sourceEnv ?? env),
     SUBSCRIPTION_RUNTIME_JOB_ROOT: resolvedJobRootDir,
     SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
     TMPDIR: agentTempRoot,
@@ -132,8 +151,10 @@ export function runConfigFromFlags(
   const childLifetimeJson = option(values, env, "--child-lifetime-json", []);
   const childLifetime = childLifetimeJson === undefined ? undefined : parseChildLifetimeJson(childLifetimeJson);
   const storageData = parseStorageData(values);
+  const { logPath: _logPath, ...configPaths } = paths;
   const config: CodexGoalRunConfigWithAppServerStartupTimeout = {
     ...storageData,
+    ...configPaths,
     ...(childLifetime ? { childLifetime } : {}),
     ...(option(values, env, "--max-goal-turns", []) === undefined ? {} : { maxGoalTurns: parseOptionalPositiveInteger(option(values, env, "--max-goal-turns", []), "--max-goal-turns")! }),
     ...(option(values, env, "--max-attempts", []) === undefined && option(values, env, "--continuation-mode", []) === undefined ? {} : { safeExecutionPolicy: {
@@ -155,13 +176,7 @@ export function runConfigFromFlags(
       ]) ?? join(resolvedJobRootDir, "durable-handoffs"),
     ),
     authRootDir,
-    workspacePath: resolvePath(
-      cwd,
-      requiredOption(values, env, "--workspace", [
-        "SUBSCRIPTION_RUNTIME_WORKSPACE_PATH",
-        "MEMO_STACK_GOAL_WORKSPACE_PATH",
-      ]),
-    ),
+    workspacePath: paths.workspacePath,
     promptPath: resolvePath(
       cwd,
       requiredOption(values, env, "--prompt", [
@@ -182,12 +197,12 @@ export function runConfigFromFlags(
     accounts,
     outputPath: resolvePath(
       cwd,
-      option(values, env, "--output", []) ??
+      paths.outputPath ??
         join(resolvedJobRootDir, ...(storageData.storage ? ["output"] : []), `${taskId}.latest-result.json`),
     ),
     progressPath: resolvePath(
       cwd,
-      option(values, env, "--progress", []) ??
+      paths.progressPath ??
         join(resolvedJobRootDir, ...(storageData.storage ? ["output"] : []), `${taskId}.progress.json`),
     ),
     model: option(values, env, "--model", ["CODEX_MODEL"]) ?? CODEX_WORKER_DEFAULT_MODEL,
@@ -236,10 +251,7 @@ export function runConfigFromFlags(
   };
   assertVerifiedHostedChildConfig(config);
   assertChildGoalConfig(config);
-  const stateRoot = option(values, env, "--state-root", []);
-  return stateRoot
-    ? { ...config, stateRootDir: resolvePath(cwd, stateRoot) }
-    : config;
+  return config;
 }
 
 /** Data only: reconstruct closed runner variants, never receipts or ports. */

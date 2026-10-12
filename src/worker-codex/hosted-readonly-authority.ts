@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { assertHostedTestEgressIdentity, parseHostedTestEgressGrant,
   type HostedTestEgressIdentity } from "./hosted-test-egress-contract";
-import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
+import { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
 import { assertHostedReadonlyPolicyBinding, hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy,
   readHostedPrivateBytes, type HostedReadonlyPolicy } from "./hosted-readonly-inputs";
 

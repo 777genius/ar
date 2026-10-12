@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createCodexGoalMcpServer } from "./codex-goal-mcp";
+import { type CodexGoalMcpServerOptions, createCodexGoalMcpServer } from "./codex-goal-mcp";
 
 type JsonRecord = Record<string, unknown>;
 type SuperviseEvent =
@@ -547,14 +547,14 @@ function controllerSupervisorSafeMessage(result: unknown): string {
   );
 }
 
-export async function listCodexGoalMcpResources(): Promise<unknown> {
-  return withCodexGoalMcpClient((client) => client.listResources());
+export async function listCodexGoalMcpResources(options: CodexGoalMcpServerOptions = {}): Promise<unknown> {
+  return withCodexGoalMcpClient((client) => client.listResources(), options);
 }
 
-export async function readCodexGoalMcpResource(input: {
+export async function readCodexGoalMcpResource(input: CodexGoalMcpServerOptions & {
   readonly uri: string;
 }): Promise<unknown> {
-  return withCodexGoalMcpClient((client) => client.readResource({ uri: input.uri }));
+  return withCodexGoalMcpClient((client) => client.readResource({ uri: input.uri }), input);
 }
 
 export async function listCodexGoalMcpPrompts(): Promise<unknown> {
@@ -616,8 +616,9 @@ export async function doctorCodexGoalControlSurface(): Promise<{
 
 async function withCodexGoalMcpClient<T>(
   action: (client: Client) => Promise<T>,
+  options: CodexGoalMcpServerOptions = {},
 ): Promise<T> {
-  const server = createCodexGoalMcpServer();
+  const server = createCodexGoalMcpServer(options);
   const client = new Client({
     name: "subscription-runtime-codex-goal-cli",
     version: "0.0.0",

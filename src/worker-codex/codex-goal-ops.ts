@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 export { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 import { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
@@ -124,6 +125,7 @@ export type CodexGoalStatusInput = {
   readonly tmuxSession?: string;
   readonly logPath?: string;
   readonly progressPath?: string;
+  readonly runtimeEventsPath?: string;
   readonly accessBoundary?: AccessBoundary;
 };
 
@@ -362,9 +364,11 @@ export async function prepareCodexGoalLaunchPaths(
       .map((path) => (path === input.config.jobRootDir ? path : dirname(path))),
   );
 
-  await Promise.all(
-    [...dirs].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
-  );
+  await Promise.all([...dirs].map((dir) => {
+    assertHostedOrdinaryGoalExtent(input.config, [dir], input.registryRootDir);
+    return mkdir(dir, { recursive: true, mode: 0o700 });
+  }));
+  assertHostedOrdinaryGoalExtent(input.config, [input.logPath], input.registryRootDir);
   const log = await open(input.logPath,
     constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY |
       constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -376,6 +380,7 @@ export async function prepareCodexGoalLaunchPaths(
         (currentUid !== undefined && info.uid !== currentUid)) {
       throw new Error("codex_goal_log_file_invalid");
     }
+    assertHostedOrdinaryGoalExtent(input.config, [input.logPath], input.registryRootDir);
     await log.chmod(0o600);
   } finally {
     await log.close();
@@ -474,13 +479,13 @@ export async function collectCodexGoalStatus(
     workerAlive: currentAttemptWorkerAlive,
   });
   if (visibleResult.warning) warnings.push(visibleResult.warning);
-  const runtimeEventsPath =
+  const runtimeEventsPath = input.runtimeEventsPath ?? (
     input.jobRootDir && input.taskId
       ? codexGoalRuntimeEventsPath({
           jobRootDir: input.jobRootDir,
           taskId: input.taskId,
         })
-      : undefined;
+      : undefined);
   const runtimeEventsStatus = runtimeEventsPath
     ? await logFileStatus(runtimeEventsPath)
     : {};
