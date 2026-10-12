@@ -13,9 +13,9 @@ import { claimDependencyConsumer, fenceDependencyConsumer, markDependencyConsume
   claimDependencyMaintenance, isDependencyConsumerOwner, DependencyOwnerKind, DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
-import { hostedDependencyBindingName, hostedDependencyJobRoot, hostedDependencyOwnerRoot, parseHostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import * as dependencyWorkspace from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { HostedDependencyReferenceKind } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedDependencyBindingName, hostedDependencyJobRoot, hostedDependencyOwnerRoot, parseHostedDependencyBinding } from "../hosted-dependency-workspace";
+import * as dependencyWorkspace from "../hosted-dependency-workspace";
+import { HostedDependencyReferenceKind } from "../hosted-dependency-workspace";
 import { tryRunHostedLegacyReference } from "../hosted-dependency-legacy-reference";
 import * as referenceRecords from "../hosted-dependency-legacy-reference-records";
 import { CodexSessionHomeProfileKind } from "../codex-session-home-profile";

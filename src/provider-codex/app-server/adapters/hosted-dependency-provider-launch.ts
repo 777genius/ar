@@ -33,7 +33,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   // Refuse the v2 default/injected route before any dependency read or root
   // construction. Only the worker-branded factory retains the genuine reader.
   if (binding.version === 2 && !readyReader) invalid();
-  readHostedDependencyAttempt(binding, start, String(reservation.startId));
+  readHostedDependencyAttempt(binding, start, String(reservation.startId), undefined, fence.parentRecipeReader);
   if (binding.version === 2 && !fdProfile) invalid();
   if (start.workspacePath !== binding.workspace.canonicalPath || start.jobRootDir !== binding.jobRootDir ||
       !/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit)) invalid();

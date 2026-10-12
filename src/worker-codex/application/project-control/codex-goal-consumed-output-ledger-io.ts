@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { inspectRetainedTerminalArchive } from "@vioxen/subscription-runtime/worker-local";
 import { type Stats } from "node:fs";
 import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises";
@@ -196,7 +197,8 @@ export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSour
           continue;
         }
         try {
-          const value: unknown = JSON.parse(await readFile(ledgerPath, "utf8"));
+          const ledgerBytes = await readFile(ledgerPath);
+          const value: unknown = JSON.parse(ledgerBytes.toString("utf8"));
           if (!ledgerFilenameMatchesPayload(entry.name, value)) {
             failures.push({
               subject: ledgerPath,
@@ -209,6 +211,7 @@ export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSour
           await this.assertPublicationIncorporation(value);
           entries.push({
             ledgerPath,
+            ledgerSha256: createHash("sha256").update(ledgerBytes).digest("hex"),
             value,
           });
         } catch (error) {

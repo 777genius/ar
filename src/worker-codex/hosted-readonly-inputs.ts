@@ -3,8 +3,8 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSyn
 import { basename, dirname, join } from "node:path";
 import { admittedReadonlyCodexProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 
-export const hostedReadonlyPolicyRoot =
-  "/run/user/0/subscription-runtime-host-policy/codex-readonly";
+import { hostedReadonlyPolicyRoot } from "./hosted-readonly-policy-path";
+export { hostedReadonlyPolicyRoot } from "./hosted-readonly-policy-path";
 const maxPolicyBytes = 64 * 1024;
 
 export type HostedReadonlyPolicy = {

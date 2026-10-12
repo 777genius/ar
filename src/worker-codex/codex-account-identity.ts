@@ -119,3 +119,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+/** Default pool identity shared by allocation planning and worker creation. */
+export function codexSafeExecutorId(workspacePath: string): string {
+  return `file-backend-codex-safe:${hashText(workspacePath).slice(0, 12)}`;
+}

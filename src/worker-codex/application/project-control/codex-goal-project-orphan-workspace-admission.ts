@@ -40,6 +40,7 @@ export async function orphanDirtyWorkspaceDebt(input: {
   readonly orphanWorkspaceBindings:
     readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
   readonly deniedRoots: readonly string[];
+  readonly guardedGitRead?: { readonly workspacePath: string; readonly recipe: import("../../codex-goal-runtime-result-io").WorkspacePatchGitReadRecipe };
 }): Promise<readonly ProjectDebtItem[]> {
   const root = resolve(input.root);
   const gitStatusTimeoutMs = normalizeOrphanGitStatusTimeoutMs(
@@ -79,7 +80,7 @@ export async function orphanDirtyWorkspaceDebt(input: {
       debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
       continue;
     }
-    const status = await gitStatusShort(workspacePath, gitStatusTimeoutMs);
+    const status = await gitStatusShort(workspacePath, gitStatusTimeoutMs, input.guardedGitRead && resolved === input.guardedGitRead.workspacePath ? input.guardedGitRead.recipe : undefined);
     if (status.ok && status.lines.length === 0) continue;
     const binding = input.orphanWorkspaceBindings.find((candidate) =>
       candidate.state === "quarantined" &&
@@ -154,14 +155,14 @@ async function optionalRealPath(path: string): Promise<string | undefined> {
   }
 }
 
-async function gitStatusShort(path: string, timeoutMs: number): Promise<
+async function gitStatusShort(path: string, timeoutMs: number, recipe?: import("../../codex-goal-runtime-result-io").WorkspacePatchGitReadRecipe): Promise<
   | { readonly ok: true; readonly lines: readonly string[] }
   | { readonly ok: false; readonly error: string }
 > {
   try {
-    const result = await execFileAsync("git", [
-      "-C", path, "status", "--short", "--untracked-files=all",
-    ], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+    const result = await execFileAsync(recipe?.binaryPath ?? "git", [
+      ...(recipe?.flags ?? []), "-C", path, "status", "--short", "--untracked-files=all",
+    ], { timeout: timeoutMs, maxBuffer: 1024 * 1024, ...(recipe ? { env: recipe.env } : {}) });
     return {
       ok: true,
       lines: result.stdout.split(/\n/).filter((line) => line.length > 0),

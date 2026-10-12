@@ -6,7 +6,8 @@ import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/s
 import type { LocalControllerMaintenanceFence } from "@vioxen/subscription-runtime/store-local-file";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
-import { projectControlWorkspaceLocks } from "./codex-goal-project-workspace-lock";
+import { projectControlWorkspaceLocks, projectControlWorkspaceLockRoot } from "./codex-goal-project-workspace-lock";
+import { currentHostedOrdinaryWriterExtent, assertHostedOrdinaryRegistryPublication } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 
 /** Fingerprint persisted bytes, including fields unknown to this version. */
 export async function codexGoalManifestRevision(path: string): Promise<string> {
@@ -19,17 +20,25 @@ export async function withCodexGoalRegistryMutation<T>(input: {
   /** Trusted registered callers already witnessed an existing registry. Never
    * recreate a lost root or its ancestors before their qualified lock/effect. */
   readonly requireExistingRegistryRoot?: true;
-  readonly effect: () => Promise<T>;
+  readonly effect: (assertPublicationCurrent: (paths: readonly string[], jobRootDir?: string) => void) => Promise<T>;
 }): Promise<T> {
+  const original = currentHostedOrdinaryWriterExtent();
+  const assertOrdinaryPublication = (paths: readonly string[] = [], jobRootDir?: string) => {
+    if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
+    assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), paths, jobRootDir);
+  };
+  assertOrdinaryPublication();
   if (!input.requireExistingRegistryRoot) await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
   const registryRootDir = await realpath(input.registryRootDir);
-  const locks = projectControlWorkspaceLocks(registryRootDir);
+  assertOrdinaryPublication();
+  const locks = projectControlWorkspaceLocks(registryRootDir, assertOrdinaryPublication);
   const lease = await locks.acquire({
     workspacePath: join(registryRootDir, ".manifest-mutation"),
     owner: "job-registry-mutation",
   });
   try {
-    return await input.effect();
+    assertOrdinaryPublication();
+    return await input.effect(assertOrdinaryPublication);
   } finally {
     await locks.release(lease);
   }
@@ -39,8 +48,10 @@ export async function withCodexGoalManifestUpdate<T>(input: {
   readonly registryRootDir: string;
   readonly manifestPath: string;
   readonly expectedManifestSha256?: string;
-  readonly effect: () => Promise<T>;
+  readonly effect: (assertPublicationCurrent: (paths: readonly string[], jobRootDir?: string) => void) => Promise<T>;
 }): Promise<T> {
+  const original = currentHostedOrdinaryWriterExtent();
+  assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), [input.manifestPath]);
   // Read the job identity before taking the registry mutex. The job admission
   // stays held through the caller's final manifest publication.
   const initialBytes = await readFile(input.manifestPath);
@@ -54,9 +65,11 @@ export async function withCodexGoalManifestUpdate<T>(input: {
     throw new Error("job_manifest_activity_identity_invalid");
   }
   const jobRootDir = initial.jobRootDir.trim();
+  if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
+  assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), [input.manifestPath], jobRootDir);
   return new LocalTerminalCheckpointAdmission(jobRootDir).withWriter(() => withCodexGoalRegistryMutation({
     registryRootDir: input.registryRootDir,
-    effect: async () => {
+    effect: async assertPublicationCurrent => {
       if (input.expectedManifestSha256 !== undefined &&
         await codexGoalManifestRevision(input.manifestPath) !== input.expectedManifestSha256) {
         throw new Error("job_manifest_revision_mismatch");
@@ -75,7 +88,7 @@ export async function withCodexGoalManifestUpdate<T>(input: {
       return await withLocalControllerActivityLease({
         controllerJobRootDir: manifest.jobRootDir.trim(),
         owner: "job-manifest-update",
-        effect: input.effect,
+        effect: () => input.effect(assertPublicationCurrent),
       });
     },
   }));

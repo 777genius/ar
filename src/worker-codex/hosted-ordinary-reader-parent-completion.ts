@@ -12,7 +12,7 @@ import { assertHostedActivationFence, assertHostedActivationOperator, decodeHost
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { assertHostedForegroundResult, readHostedForegroundLaunchObservation, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { hostedDependencyOwnerRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { HostedOrdinaryDependencyReaderKind } from "./hosted-ordinary-dependency-reader";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
@@ -63,7 +63,7 @@ function selection(fence:HostedActivationFence,startId:string) {
   const inventory=readHostedReadonlyHostInventory(),inventoryBytes=readHostedActivationBytes("readonly-inventory.json");
   const creators=inventory.ordinaryCreators.filter(value=>value.creatorId===start.creatorId && value.jobId===start.jobId && value.workspacePath===start.workspacePath && value.jobRootDir===start.jobRootDir);
   if (!inventoryBytes || hash(inventoryBytes)!==installation.inventorySha256 || creators.length!==1 || claim.recipeSha256!==hash(encode(creators[0]!.launch))) held();
-  assertHostedDependencyParentRecipe(creators[0]!.launch.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(creators[0]!.launch,binding.jobRootDir,binding.workspace.canonicalPath);
   return {actual,startPin,start,row,binding,bindingPin,producer,attempt,kernel};
 }
 function native(fence:HostedActivationFence,facts:ReturnType<typeof selection>,receipt:HostedOrdinaryReaderParentCompletion,allowCollected:boolean):void {
@@ -71,7 +71,7 @@ function native(fence:HostedActivationFence,facts:ReturnType<typeof selection>,r
   try {lstatSync(`/proc/${pid}`);held();} catch(error) {if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error;}
   if (collectUnitNotFound(receipt.unit)) {if (!allowCollected && receipt.waitStatus!==0) held();}
   else {
-    const result=spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",receipt.unit],
+    const result=spawnSync("/usr/bin/systemctl",["show","--all","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",receipt.unit],
       {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
     if (result.error || result.status!==0 || !matchesManagedProviderProxyWait(parseHostedOrdinaryReaderTerminalFacts(receipt.unit,result.stdout),receipt.invocationId,receipt.waitStatus) ||
         receipt.terminal!==null && !encode(parseHostedOrdinaryReaderTerminalFacts(receipt.unit,result.stdout)).equals(encode(receipt.terminal))) held();
@@ -92,7 +92,7 @@ export function collectHostedOrdinaryReaderParentCompletion(fence:HostedActivati
   assertHostedForegroundResult(result);const observed=readHostedForegroundLaunchObservation(result),facts=selection(fence,observed.startId);
   if (observed.unit!==facts.row.unit || observed.closeStatus!==result.exitCode || result.exitCode<0 || result.exitCode>255) held();
   const collected=collectUnitNotFound(observed.unit);if (collected && observed.closeStatus!==0) held();
-  const manager=collected ? undefined : spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",observed.unit],
+  const manager=collected ? undefined : spawnSync("/usr/bin/systemctl",["show","--all","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",observed.unit],
     {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
   if (manager && (manager.error || manager.status!==0)) held();const terminal=manager ? parseHostedOrdinaryReaderTerminalFacts(observed.unit,manager.stdout) : null;
   const receipt:HostedOrdinaryReaderParentCompletion=Object.freeze({schemaVersion:1,start:facts.startPin.reference,preclaim:facts.producer.reference,binding:facts.bindingPin.reference,

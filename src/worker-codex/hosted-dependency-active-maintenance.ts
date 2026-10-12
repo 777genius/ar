@@ -5,7 +5,7 @@ import { HostedActivationPhase, HostedCustodyPhase, DependencyReceiptState as St
   releaseDependencyMaintenance } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyOwnerRoot, readHostedDependencyBinding, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace,
-  assertHostedDependencyQualifiedInventory } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+  assertHostedDependencyQualifiedInventory } from "./hosted-dependency-workspace";
 import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
 import { HostedInstallationActivationStore } from "./hosted-installation-activation";
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";

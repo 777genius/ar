@@ -8,13 +8,14 @@ import { assertCurrentHostedDependencyAttempt, findOriginalHostedDependencyColdS
 import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdReady, type HostedDependencyColdResult } from "./hosted-dependency-cold-materialization-state";
 import { OriginalHostedDependencyColdHandoff } from "./hosted-dependency-cold-handoff-view";
 import { assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs, type HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
-import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { readHostedDependencyBinding, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
 import { assertDependencySourceExposureCurrent, assertDependencyLocalRegistrySelectionAbsent, closeDependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { closeDependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { DependencyAdmissionError, DependencyAdmissionFailure, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { DependencyOwnerPhase, sameDependencyProtectedReference, sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
-import { withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
+import { type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { freezeFacts } from "./hosted-dependency-immutable-facts";
 const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)+"\n");

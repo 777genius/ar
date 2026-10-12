@@ -3,8 +3,8 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { assertHostedActivationFence, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace,
-  readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+  readHostedDependencyBinding } from "./hosted-dependency-workspace";
+import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { readHostedReadonlyHostInventory, HostedReadonlyHostKernel, ordinaryCompletionBytes,
   ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
 import { readHostedInstallationActivation } from "./hosted-installation-origin-facts";

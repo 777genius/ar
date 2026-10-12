@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { assertHostedTestEgressIdentity, parseHostedTestEgressGrant,
   type HostedTestEgressIdentity } from "./hosted-test-egress-contract";
-import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
+import { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
 import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-stage";
-import { assertHostedReadonlyPolicyBinding, hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy,
+import { assertHostedReadonlyPolicyBinding, parseHostedReadonlyPolicy,
   readHostedPrivateBytes, type HostedReadonlyPolicy } from "./hosted-readonly-inputs";
+
+import { hostedReadonlyPolicyRoot } from "./hosted-readonly-policy-path";
 
 const authorityRoot = dirname(hostedReadonlyPolicyRoot);
 // Derived from the module supplying this code, never from cwd, job JSON or env.

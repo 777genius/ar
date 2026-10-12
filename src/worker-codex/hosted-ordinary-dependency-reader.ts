@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { closeSync, constants, fsyncSync, openSync, writeFileSync, readFileSync, lstatSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,8 +8,8 @@ import { assertDependencyPreclaimedConsumer, captureDependencyConsumerPreclaim, 
   HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart, DependencyReceiptState, DependencyUnverifiedReason, type DependencyReceipt, type DependencyConsumerPreclaim } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot,
-  hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+  hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "./hosted-dependency-workspace";
+import { readHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "./hosted-dependency-parent-recipe";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -99,7 +100,7 @@ export function readHostedOrdinaryDependencyReaderProducerFacts(fence:HostedActi
   const creators = inventory.ordinaryCreators.filter(value => value.creatorId === start.creatorId && value.jobId === start.jobId &&
     value.workspacePath === start.workspacePath && value.jobRootDir === start.jobRootDir);
   if (creators.length !== 1) invalid(); const recipe = creators[0]!.launch;
-  assertHostedDependencyParentRecipe(recipe.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(recipe,binding.jobRootDir,binding.workspace.canonicalPath);
   const bindingPin = pin(hostedDependencyBindingName(binding.jobId)); if (!bindingPin.bytes.equals(encode(binding))) invalid();
   return Object.freeze({original,start,actual,binding,recipe,bindingPin});
 }
@@ -246,7 +247,7 @@ export function consumeHostedOrdinaryDependencyPreclaim(context:CurrentHostedDep
 function readReservedOrdinaryDependencyReader(fence:HostedActivationFence,startId:string) {
   assertHostedActivationFence(fence); const original=pin(startName(startId)),start=parseHostedOrdinaryStart(decodeHostedActivationBytes(original.bytes));
   const actual=readHostedOrdinaryBirth(start.jobId),binding=readHostedDependencyBinding(start.jobId); if (binding?.version!==2) return undefined;
-  const kernel=new HostedReadonlyHostKernel(),group=readFileSync("/proc/self/cgroup","utf8").trim();
+  const kernel=new HostedReadonlyHostKernel(),group=observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   const session=group===`0::${start.controlGroup}` ? kernel.ordinaryRuntimeSession(start) : kernel.operatorSession();
   const row=actual.activation.ordinaryStarts.find(value=>value.startId===startId);
   if (actual.activation.phase!==HostedActivationPhase.Ordinary || !row || row.state!==HostedCustodyReservationState.Reserved ||
@@ -264,7 +265,7 @@ function readReservedOrdinaryDependencyReader(fence:HostedActivationFence,startI
   const creators=inventory.ordinaryCreators.filter(value=>value.creatorId===start.creatorId && value.jobId===binding.jobId &&
     value.jobRootDir===binding.jobRootDir && value.workspacePath===binding.workspace.canonicalPath);
   if (creators.length!==1) invalid(); const launch=creators[0]!.launch;
-  assertHostedDependencyParentRecipe(launch.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(launch,binding.jobRootDir,binding.workspace.canonicalPath);
   if (!sameDependencyProtectedReference(record.origin,original.reference) || !sameDependencyProtectedReference(record.binding,bindingPin.reference) ||
       !bindingPin.bytes.equals(encode(binding)) || record.recipeSha256!==hash(encode(launch)) ||
       record.preclaim.attempt.launch.startId!==startId || record.preclaim.attempt.launch.unit!==row.unit ||

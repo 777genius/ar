@@ -1,4 +1,5 @@
 import { resolveManagedDependencyGitContext, runManagedDependencyGitBuffer,
+  managedDependencyGitEnvironment, managedDependencyGitFlags,
   type HostedDependencyRootPurposeContext } from "./managed-dependency-git";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -16,12 +17,15 @@ export function changedFilesFromSafeExecutionResult(
 
 export async function changedFilesFromWorkspace(
   workspacePath: string,
-  managedContext?: HostedDependencyRootPurposeContext,
+  selection?: HostedDependencyRootPurposeContext | boolean,
 ): Promise<{
   readonly changedFiles: readonly string[];
   readonly warning?: string;
 }> {
-  const context = resolveManagedDependencyGitContext(workspacePath, managedContext);
+  // The existing native host route keeps its fixed executable/environment;
+  // a boolean never substitutes for the managed dependency purpose context.
+  const trustedHost = selection === true;
+  const context = resolveManagedDependencyGitContext(workspacePath, typeof selection === "boolean" ? undefined : selection);
   if (context !== undefined) {
     const { stdout } = await runManagedDependencyGitBuffer(context,
       ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], { timeoutMs: gitStatusTimeoutMs });
@@ -37,13 +41,14 @@ export async function changedFilesFromWorkspace(
     return { changedFiles };
   }
   try {
-    const { stdout } = await execFileAsync("git", [
+    const { stdout } = await execFileAsync(trustedHost ? "/usr/bin/git" : "git", [
+      ...(trustedHost ? managedDependencyGitFlags : []),
       "-C",
       workspacePath,
       "status",
       "--porcelain",
       "--untracked-files=all",
-    ], { timeout: gitStatusTimeoutMs });
+    ], { timeout: gitStatusTimeoutMs, ...(trustedHost ? { env: managedDependencyGitEnvironment() } : {}) });
     const changedFiles = stdout
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)

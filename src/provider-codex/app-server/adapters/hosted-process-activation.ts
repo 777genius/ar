@@ -1,5 +1,9 @@
 import { parseHostedReadonlyHostInventory } from "../../../core/host-infrastructure/readonly-host-inventory";
 import { HostedRemovalRetirementMutex, type HostedRemovalRetirementReferences, type HostedRemovalRetirementWitness } from "./hosted-removal-retirement-mutex";
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
+import { readHostedFdProfile } from "./hosted-fd-observation";
+import { assertHostedOrdinaryWriterPaths, readHostedOrdinaryWriterExtent, assertHostedOrdinaryProviderNamespace, type HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { hostedFdLaunch } from "./hosted-fd-launch";
 import type { ChildProcess } from "node:child_process";
@@ -32,7 +36,7 @@ export function isHostedActivationFenceBusy(error: unknown): boolean {
 }
 // Not a configurable policy root or a public arbitrary filesystem reader.
 const recordName = /^(?:readonly-dependency-bindings\/[0-9]{1,20}-[0-9]{1,20}\.json|readonly-dependency-starts\/[a-f0-9-]{36}\.json|dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
-export type HostedActivationFence = Readonly<{ readonly held: true }>;
+export type HostedActivationFence = Readonly<{ readonly held: true; readonly parentRecipeReader?: DependencyParentRecipeReader }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
 export function assertHostedActivationOperator(): void {
@@ -92,7 +96,7 @@ export function decodeHostedActivationBytes(bytes: Buffer): unknown {
 
 /** Same boot-specific mkdir mutex as the managed epoch. No stale lock removal,
  * second lock or missing-epoch fallback. Acquisition can precede enrollment. */
-export function withHostedActivationFence<T>(action: (fence: HostedActivationFence) => T): T {
+export function withHostedActivationFence<T>(action: (fence: HostedActivationFence) => T, parentRecipeReader?: DependencyParentRecipeReader): T {
   if (readHostedActivationBytes("readonly-epoch.lock")) throw new Error("hosted_custody_legacy_lock_recovery_required");
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(boot)) {
@@ -104,7 +108,7 @@ export function withHostedActivationFence<T>(action: (fence: HostedActivationFen
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const busy = new Error("hosted_activation_fence_busy"); acquisitionBusy.add(busy); throw busy;
   }
-  const fence = Object.freeze({ held: true as const });
+  const fence = Object.freeze({ held: true as const, ...(parentRecipeReader ? { parentRecipeReader } : {}) });
   activeFences.add(fence);
   try {
     const result = action(fence);
@@ -224,7 +228,7 @@ const installationKeys = "schemaVersion,installationId,hostId,runtimeDirectory,r
  * Every use rereads the same-artifact stage, grant and retained managed history. */
 function collectHostedOrdinaryProcessFacts(fence: HostedActivationFence) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
-  const group = readFileSync("/proc/self/cgroup", "utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8"));
   const match = new RegExp(`^0::${unitGroup(`subscription-runtime-ordinary-(${uuid}).service`).replace(/\./g, "\\.")}$`).exec(group);
   if (!match) invalid();
   for (const pending of ["host-activation.next", "ordinary-origins.next", "readonly-epoch.next"]) {
@@ -469,7 +473,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const creator = creators.find(row => row.creatorId === start.creatorId);
   if (!creator) invalid(); same(creator, start, "jobId,jobRootDir,workspacePath");
   const show = (name: string) => {
-    const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name], {
+    const result = spawnSync("/usr/bin/systemctl", ["show", "--all", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000, maxBuffer: 256 * 1024,
       env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" },
     });
@@ -510,7 +514,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   }
   const creatorPid = str(start.creatorPidBirth).split(":")[0]!;
   if (pidBirth(creatorPid) !== start.creatorPidBirth ||
-      readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+      observedProcessCgroup(readFileSync(`/proc/${creatorPid}/cgroup`, "utf8")) !== `0::${owner.controlGroup}`) invalid();
   if (systemBusInfrastructure) verifySystemBusInfrastructure(systemBusInfrastructure);
   return creator;
 }
@@ -522,7 +526,7 @@ function pidBirth(pid: string): string {
 }
 
 const failedOrdinaryWaits = new WeakSet<object>();
-const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void }>();
+const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void; namespace?: (pid: number) => void; parentRecipeReader?: DependencyParentRecipeReader }>();
 export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess): void {
   failedOrdinaryWaits.add(child); revokeHostedToolFilesForChild(child);
 }
@@ -539,7 +543,15 @@ export function releaseHostedOrdinaryProcess(child: CodexAppServerChildProcess, 
       retained.revalidate(fence);
     });
     retained.released = true;
-  });
+  }, ordinaryReleases.get(child)?.parentRecipeReader);
+}
+
+export function assertHostedOrdinaryProviderRelease(child: object, fence: HostedActivationFence, pid: number): void {
+  assertHostedActivationFence(fence);
+  const retained = ordinaryReleases.get(child);
+  if (!retained) return;
+  if (retained.released || failedOrdinaryWaits.has(child)) invalid();
+  retained.namespace?.(pid);
 }
 
 /** Production default primitive calls this with its private synchronous spawn.
@@ -557,7 +569,7 @@ export function reserveHostedOrdinaryProviderFacts(fence:HostedActivationFence,
     const dependency = readHostedDependencyBinding(str(start.jobId));
     if (dependency) {
       if (dependency.jobRootDir !== jobRoot || dependency.workspace.canonicalPath !== workspacePath) invalid();
-      readHostedDependencyAttempt(dependency, start, str(parentReservation.startId));
+      readHostedDependencyAttempt(dependency, start, str(parentReservation.startId), undefined, fence.parentRecipeReader);
     }
     if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
         workspacePath !== `${jobRoot}/workspace`) invalid();
@@ -608,7 +620,7 @@ export function reserveHostedOrdinaryProviderFacts(fence:HostedActivationFence,
       createActivationRecord(`ordinary-starts/${startId}.json`, bytes);
       if (companion) createActivationRecord(`ordinary-correlations/${startId}.json`, Buffer.from(JSON.stringify(companion) + "\n"));
       if (dependency) {
-        const attempt = readHostedDependencyAttempt(dependency, start, parentId);
+        const attempt = readHostedDependencyAttempt(dependency, start, parentId, undefined, fence.parentRecipeReader);
         createActivationRecord(`dependency-provider-attempts/${startId}.json`, Buffer.from(JSON.stringify({
           version: 1, parentStartId: parentId, attemptId: attempt.attemptId, epoch: attempt.epoch,
           providerStartId: startId, startDigest: sha256(bytes), unit,
@@ -640,7 +652,7 @@ export function readHostedOrdinaryProviderFacts(fence:HostedActivationFence,star
   const parentId=str(parent.reservation.startId), dependency=readHostedDependencyBinding(str(parent.start.jobId));
   let relation:Wire|undefined;
   if (dependency) {
-    const attempt=readHostedDependencyAttempt(dependency,parent.start,parentId);
+    const attempt=readHostedDependencyAttempt(dependency,parent.start,parentId,undefined,fence.parentRecipeReader);
     const bytes=readHostedActivationBytes(`dependency-provider-attempts/${startId}.json`); if (!bytes) invalid();
     relation=wire(decodeHostedActivationBytes(bytes),"version,parentStartId,attemptId,epoch,providerStartId,startDigest,unit");
     if (relation.version!==1 || relation.parentStartId!==parentId || relation.attemptId!==attempt.attemptId || relation.epoch!==attempt.epoch ||
@@ -662,28 +674,45 @@ export function readHostedOrdinaryProviderFacts(fence:HostedActivationFence,star
 }
 
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string; readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot }, fence: HostedActivationFence) => CodexAppServerChildProcess, parentRecipeReader?: DependencyParentRecipeReader): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
-    readHostedOrdinaryProcessOrigin(fence); // Generic strict descriptor ingress stays mandatory.
+    const extentOrigin = readHostedOrdinaryProcessOrigin(fence); // Generic strict descriptor ingress stays mandatory.
+    const extentJobRoot = canonical(extentOrigin.start.jobRootDir), extentWorkspacePath = canonical(extentOrigin.start.workspacePath);
+    const extentStartId = str(extentOrigin.reservation.startId), extentStartBytes = readHostedActivationBytes(`ordinary-starts/${extentStartId}.json`);
+    if (!extentStartBytes) invalid();
+    const extent = readHostedOrdinaryWriterExtent(fence, extentStartId, extentStartBytes,
+      extentOrigin.installation as { runtimeSha: unknown; runtimeManifestSha256: unknown; inventorySha256: unknown });
+    const assertExtent = () => {
+      if (!extent) return;
+      if (!extent.homes.some(row => row.home === input.env.HOME && row.codexHome === input.env.CODEX_HOME)) invalid();
+      assertHostedOrdinaryWriterPaths(extent, [extentJobRoot, extentWorkspacePath, input.env.HOME!, input.env.CODEX_HOME!,
+        join(input.env.CODEX_HOME!, "plugins/cache"), join(input.env.CODEX_HOME!, "cache/remote_plugin_catalog"),
+        ...["TMPDIR", "TMP", "TEMP", "SUBSCRIPTION_RUNTIME_TMPDIR"].flatMap(key => input.env[key] ? [input.env[key]!] : [])]);
+    };
+    assertExtent();
+    if (extent && !readHostedFdProfile()) throw new Error("hosted_ordinary_provider_namespace_unqualified");
+    const jobIdentity = extent ? lstatSync(extentJobRoot) : undefined;
+    const ordinaryJobRoot = jobIdentity ? { path: extentJobRoot, device: jobIdentity.dev, inode: jobIdentity.ino } : undefined;
     const actual=reserveHostedOrdinaryProviderFacts(fence,input);
     const {parent:{activation,start,reservation:parentReservation,childBound},startId,unit,parentId,bytes,reservation,dependency,companion}=actual;
     const workspacePath=canonical(start.workspacePath), generation=positive(reservation.generation);
     const next={...activation,generation,ordinaryStarts:[...rows(activation.ordinaryStarts)]};
     try {
-      const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath, ...(ordinaryJobRoot ? { ordinaryJobRoot } : {}) }, fence);
       const descriptorScope = hostedToolFilesForChild(child);
-      ordinaryReleases.set(child, { released: false, revalidate: held => {
+      ordinaryReleases.set(child, { released: false, ...(fence.parentRecipeReader ? { parentRecipeReader: fence.parentRecipeReader } : {}), ...(extent ? { namespace: (pid: number) => assertHostedOrdinaryProviderNamespace(extent, pid, ordinaryJobRoot!) } : {}), revalidate: held => {
         const fresh = readHostedOrdinaryProcessOrigin(held, descriptorScope);
         if (JSON.stringify(fresh.start) !== JSON.stringify(start) ||
             JSON.stringify(fresh.reservation) !== JSON.stringify(parentReservation) ||
             fresh.activation.installationId !== activation.installationId || fresh.activation.bootId !== activation.bootId ||
             fresh.activation.supervisorId !== activation.supervisorId) invalid();
         assertHostedScopedAdmission(held, parentId);
+        assertExtent();
         const retained = readHostedActivationBytes(`ordinary-starts/${startId}.json`);
         const current = requiredWire("host-activation.json", activationKeys).value;
         const row = rows(current.ordinaryStarts).find(row => !!row && typeof row === "object" && "startId" in row && row.startId === startId);
         if (!retained?.equals(bytes) || JSON.stringify(row) !== JSON.stringify(reservation)) invalid();
-        if (dependency) readHostedDependencyAttempt(dependency, fresh.start, parentId);
+        if (dependency) readHostedDependencyAttempt(dependency, fresh.start, parentId, undefined, held.parentRecipeReader);
         if (companion && companion.identity.deadlineEpochMs <= Date.now()) invalid();
         const inventoryBytes = readHostedActivationBytes("readonly-inventory.json")!;
         const inventory = decodeHostedInventoryBytes(inventoryBytes);
@@ -734,7 +763,7 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
       if (!childBound) publishOrdinaryActivation(fence, { ...next, generation: generation + 1, phase: "CLOSED" });
       throw error;
     }
-  });
+  }, parentRecipeReader);
 }
 /** Same synchronous fence checked by every producer immediately before enqueue. */
 export function assertHostedScopedAdmission(fence: HostedActivationFence, parentStartId: string): void {
@@ -785,8 +814,8 @@ export function retainHostedScopedSubmitter(fence: HostedActivationFence, correl
   const c = parseScopedStartCorrelation(correlation);
   if (!child.pid) invalid();
   const submitter = { schemaVersion: 1, correlationDigest: scopedDigest(c),
-    pidBirth: pidBirth(String(child.pid)), controlGroup: readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim().replace(/^0::/, "") };
-  if (!/^0::\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim())) invalid();
+    pidBirth: pidBirth(String(child.pid)), controlGroup: observedProcessCgroup(readFileSync(`/proc/${child.pid}/cgroup`, "utf8")).replace(/^0::/, "") };
+  if (!/^0::\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(observedProcessCgroup(readFileSync(`/proc/${child.pid}/cgroup`, "utf8")))) invalid();
   const bytes = Buffer.from(JSON.stringify(submitter) + "\n");
   createActivationRecord(`ordinary-submitters/${c.startId}.json`, bytes);
   // Wrapper exit is an observation only. The separately owned launcher must
@@ -878,7 +907,7 @@ export function retainHostedScopedActorChain(fence: HostedActivationFence, corre
   const end = performance.now() + 1000;
   const observe = () => chain.actors.map(actor => {
     const pid = actor.pidBirth.split(":")[0]!;
-    if (pidBirth(pid) !== actor.pidBirth || readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}`) invalid();
+    if (pidBirth(pid) !== actor.pidBirth || observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8")) !== `0::${actor.controlGroup}`) invalid();
     const stat = scopedTaskStat(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
     if (actor.parentPidBirth && stat.parent !== actor.parentPidBirth.split(":")[0]) invalid();
     // Creator siblings belong to separately retained scopes. Only the admitted
@@ -924,7 +953,7 @@ export function observeHostedScopedActorChildren(actor: ScopedEnqueueActor, end:
     const stat = scopedTaskStat(tid, readFileSync(path + "/stat", "utf8"));
     const status = readFileSync(path + "/status", "utf8"), raw = readFileSync(path + "/children", "utf8");
     if (status.length > 65536 || status.match(/^Tgid:\s+([0-9]+)$/m)?.[1] !== pid || status.match(/^Pid:\s+([0-9]+)$/m)?.[1] !== tid ||
-        readFileSync(path + "/cgroup", "utf8").trim() !== `0::${actor.controlGroup}` || raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) throw new Error("scoped_actor_tasks_ambiguous");
+        observedProcessCgroup(readFileSync(path + "/cgroup", "utf8")) !== `0::${actor.controlGroup}` || raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) throw new Error("scoped_actor_tasks_ambiguous");
     const children = raw.trim() ? raw.trim().split(/\s+/).sort() : [];
     if (children.length > 64 || new Set(children).size !== children.length) throw new Error("scoped_actor_tasks_ambiguous");
     return { ...stat, children };
@@ -933,7 +962,7 @@ export function observeHostedScopedActorChildren(actor: ScopedEnqueueActor, end:
   // A child appearing under two different tasks is ambiguous, not a union proof.
   if (children.length > 64 || new Set(children).size !== children.length || JSON.stringify(ids) !== JSON.stringify(taskIds()) ||
       scopedDigest(tasks) !== scopedDigest(observe()) || pidBirth(pid) !== actor.pidBirth ||
-      readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}` || JSON.stringify(ids) !== JSON.stringify(taskIds())) throw new Error("scoped_actor_membership_changed");
+      observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8")) !== `0::${actor.controlGroup}` || JSON.stringify(ids) !== JSON.stringify(taskIds())) throw new Error("scoped_actor_membership_changed");
   check(); return { children, tasks };
 }
 function scopedTaskStat(tid: string, raw: string): { birth: string; parent: string } {

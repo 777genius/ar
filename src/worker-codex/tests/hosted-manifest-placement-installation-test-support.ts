@@ -28,7 +28,6 @@ export function registerManifestPlacementInstallationTests({ fixture, root, mani
   describe.skipIf(process.platform !== "linux")("actual fresh installation manifest-placement hook", () => {
     async function prepareScratch(configured: boolean) {
       const real = await vi.importActual<typeof import("node:fs")>("node:fs");
-      fixture.manifestMountInfo = real.readFileSync("/proc/self/mountinfo", "utf8");
       mkdirSync(local(manifestScratch), { mode: 0o700 });
       const jobId = "TEST-manifest-placement", jobRootDir = root + "/dependency-test-jobs/jobs/" + jobId;
       const launch = { command: process.execPath, args: [runtimeDirectory + "/dist/worker-codex/codex-goal-cli.js", "run",
@@ -40,6 +39,17 @@ export function registerManifestPlacementInstallationTests({ fixture, root, mani
         const stat = fstatSync(fd, { bigint: true });
         const mountId = /^mnt_id:\s+([1-9][0-9]*)$/m.exec(real.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"))?.[1];
         if (!mountId) throw new Error("TEST scratch mount identity unavailable");
+        const mounts = real.readFileSync("/proc/self/mountinfo", "utf8").trimEnd().split("\n")
+          .map(line => line.split(" ")).filter(parts => parts[0] === mountId);
+        const device = mounts[0]?.[2];
+        if (mounts.length !== 1 || !device || !/^[0-9]+:[0-9]+$/.test(device)) throw new Error("TEST scratch device unavailable");
+        // The paths already belong to a synthetic host namespace. Project its
+        // root and scratch binds together, retaining the real descriptor's mount
+        // ID/device/inode. Ambient sandbox aliases are not fixture host facts;
+        // this does not qualify an actual kernel bind or production placement.
+        const rootMountId = mountId === "1" ? "2" : "1";
+        fixture.manifestMountInfo = `${rootMountId} 0 ${device} /TEST-host-root / rw - ext4 /dev/TEST rw\n` +
+          `${mountId} ${rootMountId} ${device} /TEST-private-manifests ${manifestScratch} rw - ext4 /dev/TEST rw\n`;
         const scratchRoot = { canonicalPath: manifestScratch, dev: String(stat.dev), ino: String(stat.ino), mountId };
         if (configured) put("dependency-manifest-storage-policy.json", { version: 1, scratchRoot, bootId: fixture.boot,
           limitsRevision: HostedManifestLimitsRevision.TestUnqualifiedV1 });
@@ -114,6 +124,16 @@ export function registerManifestPlacementInstallationTests({ fixture, root, mani
         expect(reads).toBe(2); expect(readFileSync(path)).toEqual(canonical);
         expect(() => read("host-installation.json")).toThrow(); expect(() => read("readonly-epoch.json")).toThrow();
       } finally { spy.mockRestore(); }
+      });
+    it("rejects a same-device scratch alias in a granted family before placement publication", async () => {
+      const scratchRoot = await prepareScratch(true);
+      const rootMountId = fixture.manifestMountInfo.split(" ")[0];
+      const scratchMount = fixture.manifestMountInfo.trimEnd().split("\n").at(-1)!.split(" ");
+      fixture.manifestMountInfo += `${BigInt(scratchRoot.mountId) + 2n} ${rootMountId} ${scratchMount[2]} ` +
+        `${scratchMount[3]} /home/TEST-manifest-alias rw - ext4 /dev/TEST rw\n`;
+      expect(() => new HostedInstallationActivationStore().install()).toThrow(`dependency_manifest_placement:${HostedManifestPlacementFailure.Unsupported}`);
+      expect(() => read("dependency-manifest-placement.json")).toThrow();
+      expect(readdirSync(local(manifestScratch))).toEqual([]);
     });
     it("preserves unmanaged install without manufacturing placement or falling back to legacy blobs", async () => {
       await prepareScratch(false); new HostedInstallationActivationStore().install();

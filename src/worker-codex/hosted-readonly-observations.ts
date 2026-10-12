@@ -20,6 +20,8 @@ export function observedProcessBirth(pid: string, stat: string): string {
   return `${pid}:${birth}`;
 }
 
+export { observedProcessCgroup } from "../core/host-infrastructure/process-cgroup";
+
 export function parseUnitShow(name: string, raw: string): Record<string, string> {
   if (name.length > 200 || !unitName.test(name)) invalid();
   const result: Record<string, string> = {};

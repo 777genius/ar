@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const launcher = 'host-integration/managed-launcher/launch.mjs';
 const trustedCustodyLauncher = 'src/worker-codex/trusted-custody-systemd-launch.ts';
+// Closed initial-root TEST operator: one qualified builtin harness, exact owned service.
+// Its contained host-job alternative cannot satisfy the native operator namespaces.
+const trustedLinkedNativeTestOperator = 'host-integration/runtime-admission/linked-native-mimo-operator.mts';
 // Closed producer: requires the live host fence, retained origin and Running
 // dependency owner before building one finite provider root. No directory exemption.
 const trustedDependencyProviderLauncher = 'src/provider-codex/app-server/adapters/hosted-dependency-provider-launch.ts';
@@ -118,7 +121,7 @@ export async function checkManagedLaunchBoundary(root = repositoryRoot) {
         if (!excludedDirectories.has(entry.name)) await walk(path);
       } else if (entry.isFile() && sourceExtension.test(entry.name) && !testFile.test(entry.name)) {
         const name = relative(root, path).replaceAll('\\', '/');
-        if (name === launcher || name === trustedCustodyLauncher || name === trustedDependencyProviderLauncher ||
+        if (name === launcher || name === trustedCustodyLauncher || name === trustedDependencyProviderLauncher || name === trustedLinkedNativeTestOperator ||
             name === 'scripts/check-managed-launch-boundary.mjs') continue;
         scanned++;
         const bytes = await readFile(path), source = bytes.toString('utf8');

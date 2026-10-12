@@ -12,7 +12,7 @@ import { assertHostedActivationFence, assertHostedActivationOperator, decodeHost
 import { HostedDependencyRootOriginKind } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { hostedDependencyBindingName, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
 import { readHostedOrdinaryBirth } from "./hosted-installation-activation";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
@@ -191,7 +191,7 @@ function readCompletionForFinal(fence:HostedActivationFence,startId:string,start
   const creators=inventory.ordinaryCreators.filter(value=>value.creatorId===parent.creatorId && value.jobId===binding.jobId &&
     value.jobRootDir===binding.jobRootDir && value.workspacePath===binding.workspace.canonicalPath);
   if (creators.length!==1) held(); const recipe=creators[0]!.launch;
-  assertHostedDependencyParentRecipe(recipe.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(recipe,binding.jobRootDir,binding.workspace.canonicalPath);
   if (!isDependencyCustodyObject(claim,"binding,kind,origin,preclaim,receipt,recipeSha256,version") || claim.version!==1 ||
       claim.kind!==HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1 || claim.recipeSha256!==hash(encode(recipe)) ||
       !isDependencyCustodyObject(claim.preclaim,"attempt,ownerRevision,ownerSha256,version,workspace") || claim.preclaim.version!==1 ||
@@ -225,7 +225,7 @@ function readCompletionForFinal(fence:HostedActivationFence,startId:string,start
   const pid=receipt.proxyBirth.slice(0,receipt.proxyBirth.indexOf(":"));
   try {lstatSync(`/proc/${pid}`);held();} catch(error) {if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error;}
   if (!collectUnitNotFound(row.unit)) {
-    const observation=spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",row.unit],
+    const observation=spawnSync("/usr/bin/systemctl",["show","--all","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",row.unit],
       {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
     if (observation.error || observation.status!==0 || !matchesManagedProviderProxyWait(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout),receipt.invocationId,receipt.waitStatus) ||
         receipt.terminal!==null && !encode(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout)).equals(encode(receipt.terminal))) held();

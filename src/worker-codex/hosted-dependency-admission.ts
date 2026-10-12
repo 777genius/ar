@@ -4,7 +4,8 @@ import { lstatSync } from "node:fs";
 import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError,
   DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
-import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { armCurrentHostedDependencyGenerationBarrier, markCurrentHostedDependencyGenerationRunning, enterCurrentHostedOrdinaryDependencyReader, consumeCurrentHostedOrdinaryDependencyExecution, readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
   isCurrentHostedDependencyManagedReadonlyOrigin, isHostedManagedReadonlyOuterRuntime, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 import { consumeHostedReadonlyDependencyPreclaim, readHostedReadonlyDependencyPreclaim, publishHostedReadonlyDependencyReaderReady } from "./hosted-readonly-dependency-reader-entry";
@@ -12,7 +13,7 @@ import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-rece
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace,
-  readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+  readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed } from "./hosted-dependency-workspace";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { qualifyHostedDependencyToolClosure, assertHostedDependencyQualifiedToolEntry, markHostedDependencyQualifiedToolEntryRunning,

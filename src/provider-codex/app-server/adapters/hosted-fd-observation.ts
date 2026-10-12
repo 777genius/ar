@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -128,7 +129,7 @@ export function observeHostedFdProcess(pid: number): HostedFdProcess {
   const parentPid = Number(stat.slice(at + 2).trim().split(/\s+/)[1]);
   if (!Number.isSafeInteger(parentPid) || parentPid < 0) invalid();
   const observed = Object.freeze({ pid, parentPid, birth: `${pid}:${tick}`, argv: Object.freeze(argv), exe: readlinkSync(`/proc/${pid}/exe`),
-    group: readFileSync(`/proc/${pid}/cgroup`, "utf8").trim(), net: readlinkSync(`/proc/${pid}/ns/net`),
+    group: observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8")), net: readlinkSync(`/proc/${pid}/ns/net`),
     user: readlinkSync(`/proc/${pid}/ns/user`), mount: readlinkSync(`/proc/${pid}/ns/mnt`), pidNamespace: readlinkSync(`/proc/${pid}/ns/pid`),
     uidMap: readFileSync(`/proc/${pid}/uid_map`, "utf8").trim().replace(/\s+/g, " "),
     gidMap: readFileSync(`/proc/${pid}/gid_map`, "utf8").trim().replace(/\s+/g, " "),
@@ -182,7 +183,7 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (!installed) invalid();
   const bus = readSystemBusInfrastructureField(installed.inventory);
   if (!bus || bus.version !== 2) invalid();
-  const result = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+  const result = spawnSync("/usr/bin/systemctl", ["show", "--all", `--property=${unitProperties.join(",")}`, "--", unit],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
   observationTimeout(5000, remaining);
@@ -206,7 +207,7 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}` &&
       group !== `/system.slice/${unit}`) invalid();
   // Bind the policy bracket to the same launch instance, not merely its name.
-  const after = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+  const after = spawnSync("/usr/bin/systemctl", ["show", "--all", `--property=${unitProperties.join(",")}`, "--", unit],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
   observationTimeout(5000, remaining);

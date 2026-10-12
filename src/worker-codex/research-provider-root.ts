@@ -1,4 +1,6 @@
+import { assertResearchMimoProviderHome } from "./research-launch-admission";
 import { researchMimoCodingGitReadPaths } from "./research-mimo-coding-git";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { X509Certificate } from "node:crypto";
@@ -7,9 +9,9 @@ import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex
 import { resolvePreparedHostScratchBinds, resolvePreparedHostScratchCacheBinds, type ScratchTempHost } from "./host-scratch-temp";
 import { parseResearchStartSpec, researchProviderSetupAllowanceMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchAuthorityRoot, researchHash, researchId, researchInvalid, researchJson, researchName, researchPath, researchPublish, researchRead, researchRecord } from "./research-launch-files";
-import { assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
-import { readResearchProviderReservation } from "./research-launch-lifecycle";
-import { readKernelMountTable } from "./host-scratch-mount";
+import { assertResearchInitialRoot, assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
+import { researchProviderUnits, readResearchProviderReservation } from "./research-launch-lifecycle";
+import { inspectKernelPathBackings, readKernelMountTable } from "./host-scratch-mount";
 import { researchMimoCodingPublicMaterials } from "./research-mimo-coding-public-materials";
 import { assertResearchMimoCodingRootBindings, researchMimoCodingBootstrapBinding, researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
 
@@ -157,7 +159,8 @@ const rootPlanBrand: unique symbol = Symbol("research-provider-root");
 /** Opaque retained receipt; its DTO fields cannot confer execution authority. */
 export type ResearchProviderRootPlan = Readonly<{ fixedRootDirectory: string; bindings: readonly Binding[]; codingBootstrap?: HostedMimoCodingExpectedBinding; [rootPlanBrand]: true }>;
 type Retained = { spec: ResearchStartSpec; unit: string; home: string; scratchHost: ScratchTempHost | undefined; host: ResearchProviderRootHost;
-  directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string; assemblyDeadline?: number };
+  directory: string; snapshot: string; skeleton: string; custody: string; record: string; materialized: string; assemblyDeadline?: number;
+  omittedCaches: readonly (OmittedCache & { baseIdentity: readonly [number, number] })[] };
 const retained = new WeakMap<ResearchProviderRootPlan, Retained>();
 function freezeFacts<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freezeFacts(child); Object.freeze(value); }
@@ -168,10 +171,10 @@ const contains = (parent: string, child: string): boolean => parent === "/" || c
 const overlaps = (a: string, b: string): boolean => contains(a, b) || contains(b, a);
 const sameBacking = (a: Backing, b: Backing): boolean => a.device === b.device && a.path === b.path;
 const backingOverlap = (a: Backing, b: Backing): boolean => a.device === b.device && overlaps(a.path, b.path);
-export function researchProviderProtectedPaths(authRoot: string): string[] {
+export function researchProviderProtectedPaths(authRoot?: string): string[] {
   return ["/run/systemd/private", "/run/systemd/journal", "/dev/log", "/run/dbus", "/run/user",
     "/var/lib/subscription-runtime-host-policy", "/var/lib/subscription-runtime-full-parent-live", "/srv/workers/public-intake", "/run/TEST-full-flow-outbox", researchAuthorityRoot, "/run/docker.sock", "/run/containerd/containerd.sock",
-    "/run/podman/podman.sock", "/etc/subscription-runtime/secrets", authRoot];
+    "/run/podman/podman.sock", "/etc/subscription-runtime/secrets", ...(authRoot === undefined ? [] : [authRoot])];
 }
 function mountTable(host: ResearchProviderRootHost): Mount[] {
   return observeRootFailure(ResearchProviderRootCheck.MountTable, () => {
@@ -224,6 +227,30 @@ function backing(path: string, mounts: Mount[], intentionalAlias = false): Backi
 function nativeDevice(info: Info): string {
   const device = BigInt(info.dev), major = (device >> 8n & 0xfffn) | (device >> 32n & 0xfffff000n), minor = (device & 0xffn) | (device >> 12n & 0xffffff00n);
   return `${major}:${minor}`;
+}
+/** Negative initial-host check only: no writable input may expose a protected
+ * physical base. Owner pins below /run/user are deliberately not a new census. */
+export function assertResearchWritableInputsSafe(jobRootDir: string, workspacePath: string, authRootDir?: string): void {
+  if (process.platform !== "linux") researchInvalid();
+  researchPath(jobRootDir); researchPath(workspacePath);
+  if (authRootDir !== undefined) researchPath(authRootDir);
+  const namespace = nativeHost.link("/proc/self/ns/mnt"), mounts = mountTable(nativeHost);
+  const protectedPaths = ["/etc", ...researchProviderProtectedPaths(authRootDir)];
+  const protectedBackings = protectedPaths.map(path => backing(path, mounts));
+  const roots = [jobRootDir, workspacePath];
+  const paths = [...new Set([...roots, ...mounts.filter(mount => roots.some(root =>
+    mount.point !== root && contains(root, mount.point))).map(mount => mount.point)])];
+  // Descendant aliases are observed for exclusion, never admitted as RW scope.
+  const observe = (): string => JSON.stringify(paths.map(path => {
+    const nominal = roots.includes(path), info = nativeHost.info(path), physical = backing(path, mounts, !nominal);
+    if (info.isSymbolicLink() || (nominal && !info.isDirectory()) || nativeHost.canonical(path) !== path ||
+        nativeDevice(info) !== physical.device || protectedPaths.some(protectedPath => overlaps(path, protectedPath)) ||
+        protectedBackings.some(protectedBacking => backingOverlap(physical, protectedBacking))) researchInvalid();
+    return [path, leafSignature(info), physical];
+  }));
+  const identities = observe();
+  if (observe() !== identities || JSON.stringify(mountTable(nativeHost)) !== JSON.stringify(mounts) ||
+      nativeHost.link("/proc/self/ns/mnt") !== namespace) researchInvalid();
 }
 function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home: string,
   host: ResearchProviderRootHost, scratchHost?: ScratchTempHost): Snapshot {
@@ -583,10 +610,221 @@ export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: stri
   host.publish(join(unitDirectory, "plan.json"), JSON.parse(record));
   const plan: ResearchProviderRootPlan = freezeFacts({ fixedRootDirectory: root, bindings: materialized,
     ...(codingBootstrap ? { codingBootstrap } : {}), [rootPlanBrand]: true as const });
-  retained.set(plan, { spec, unit, home, scratchHost, host, directory, snapshot: serialized, skeleton, custody, record, materialized: materializedBytes });
+  const omittedCaches = captured.omittedCaches.map(entry => {
+    const base = host.info(join(directory, "pins/job", relative(spec.request.jobRootDir, entry.target)));
+    return { ...entry, baseIdentity: [base.dev, base.ino] as const };
+  });
+  retained.set(plan, { spec, unit, home, scratchHost, host, directory, snapshot: serialized, skeleton, custody, record,
+    materialized: materializedBytes, omittedCaches: freezeFacts(omittedCaches) });
   assertResearchProviderRoot(plan, spec, unit, home); return plan;
   });
 }
+/** Facts from an owner-retained allocated plan, not a serializable launch permit.
+ * Both nominal paths and kernel backing are needed when comparing bind aliases. */
+export type ResearchProviderWritableRoot = Readonly<{
+  source: string; target: string; device: string; backingPath: string;
+}>;
+
+/** Lightweight census observation. The opaque plan is retained by its actual
+ * owner; callers cannot supply a parsed plan.json as authority. Revocation does
+ * not imply release: these allocated roots remain conservatively reserved.
+ * This avoids executable/public-file walks and all manager/provider waits. */
+export function observeResearchProviderWritableRoots(plan: ResearchProviderRootPlan): readonly ResearchProviderWritableRoot[] {
+  const state = retained.get(plan);
+  if (!state) researchInvalid();
+  return observeAllocatedResearchRoots({ ...state, bindings: plan.bindings });
+}
+
+enum ResearchWriterFootprintProfile { MimoLifetimeV1 = "mimo-lifetime-rw-v1" }
+const footprintRoots = (roots: readonly ResearchProviderWritableRoot[]): readonly ResearchProviderWritableRoot[] =>
+  [...roots].sort((left, right) => left.target.localeCompare(right.target));
+
+/** First enforced MiMo plan fixes the allocation's writable extent. Later
+ * provider preparations cannot widen it, even when a new unit is reserved.
+ * This private witness grants no launch authority and is not a registry lease. */
+export function bindResearchMimoWritableFootprint(plan: ResearchProviderRootPlan): void {
+  const state = retained.get(plan);
+  if (!state) researchInvalid();
+  if (state.spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) return;
+  assertResearchMimoProviderHome(state.spec, state.home);
+  const roots = footprintRoots(observeResearchProviderWritableRoots(plan));
+  const path = join(state.directory, "mimo-writable-footprint.json");
+  const binding = { schemaVersion: 1, profile: ResearchWriterFootprintProfile.MimoLifetimeV1,
+    specSha256: researchHash(researchRead(join(state.directory, "spec.json"))),
+    artifactSha256: state.spec.artifactSha256,
+    homeSha256: researchHash(researchRead(join(state.directory, "mimo-home.json"))), roots };
+  try { researchRead(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // A successor must never replace a lost lifetime witness with wider roots.
+    const units = researchProviderUnits(state.directory);
+    if (units.length !== 1 || units[0] !== state.unit) researchInvalid();
+    try { researchPublish(path, { ...binding, unit: state.unit, planSha256: researchHash(state.record) }, true); }
+    catch (publicationError) { if ((publicationError as NodeJS.ErrnoException).code !== "EEXIST") throw publicationError; }
+  }
+  const record = researchRecord(researchJson(researchRead(path)), "schemaVersion,profile,specSha256,artifactSha256,homeSha256,roots,unit,planSha256");
+  // The first unit remains the immutable index; subsequent units only compare.
+  if (typeof record.unit !== "string" || !researchProviderUnitPattern.test(record.unit) ||
+      record.planSha256 !== researchHash(researchRead(join(state.directory, "provider-roots", record.unit, "plan.json"))) ||
+      JSON.stringify({ schemaVersion: record.schemaVersion, profile: record.profile, specSha256: record.specSha256,
+        artifactSha256: record.artifactSha256, homeSha256: record.homeSha256, roots: record.roots }) !== JSON.stringify(binding)) researchInvalid();
+}
+
+/** Cheap private binding plus actual source-pin observation. The sealed first
+ * plan covers future providers because their effect path enforces this same
+ * immutable extent. Pending reservations therefore need no heartbeat/plan. */
+export function observeResearchMimoAllocationWritableRoots(spec: ResearchStartSpec): readonly ResearchProviderWritableRoot[] {
+  assertResearchInitialRoot(true);
+  if (spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+      (spec.registeredHandoff && (!researchMimoCodingRoot(spec.request) || spec.request.maxGoalTurns !== 64 ||
+        !spec.registeredHandoff.registeredExecution))) researchInvalid();
+  const directory = join(researchAuthorityRoot, researchName(spec.request.jobId), "starts", spec.startId);
+  const path = join(directory, "mimo-writable-footprint.json"), bytes = researchRead(path);
+  const record = researchRecord(researchJson(bytes), "schemaVersion,profile,specSha256,artifactSha256,homeSha256,roots,unit,planSha256");
+  if (record.schemaVersion !== 1 || record.profile !== ResearchWriterFootprintProfile.MimoLifetimeV1 ||
+      record.specSha256 !== researchHash(researchRead(join(directory, "spec.json"))) || record.artifactSha256 !== spec.artifactSha256 ||
+      record.homeSha256 !== researchHash(researchRead(join(directory, "mimo-home.json"))) ||
+      typeof record.unit !== "string" || !researchProviderUnitPattern.test(record.unit)) researchInvalid();
+  const planPath = join(directory, "provider-roots", record.unit, "plan.json");
+  if (record.planSha256 !== researchHash(researchRead(planPath))) researchInvalid();
+  const homeRecord = researchRecord(researchJson(researchRead(join(directory, "mimo-home.json"))), "schemaVersion,specSha256,identity");
+  const homeIdentity = researchRecord(homeRecord.identity, "path,device,inode");
+  if (typeof homeIdentity.path !== "string") researchInvalid();
+  assertResearchMimoProviderHome(spec, homeIdentity.path);
+  const roots = footprintRoots(observeRetainedResearchProviderWritableRoots(spec, record.unit));
+  if (JSON.stringify(roots) !== JSON.stringify(record.roots) || !researchRead(path).equals(bytes) ||
+      record.planSha256 !== researchHash(researchRead(planPath)) ||
+      record.homeSha256 !== researchHash(researchRead(join(directory, "mimo-home.json")))) researchInvalid();
+  return roots;
+}
+
+type AllocatedRootObservation = Pick<Retained, "host" | "spec" | "unit" | "directory" | "record" | "omittedCaches"> & {
+  readonly bindings: readonly Binding[];
+};
+
+/** Initial-host owner read model. A protected retained record supplies facts,
+ * never an opaque launch permit; no parsed DTO is adopted into the WeakMap.
+ * Source pins are observed in the host namespace, never nominal child targets.
+ */
+export function observeRetainedResearchProviderWritableRoots(value: ResearchStartSpec, unit: string): readonly ResearchProviderWritableRoot[] {
+  assertResearchInitialRoot(true);
+  const spec = parseResearchStartSpec(value);
+  if (!researchProviderUnitPattern.test(unit)) researchInvalid();
+  const directory = join(researchAuthorityRoot, researchName(spec.request.jobId), "starts", spec.startId);
+  const reservation = readResearchProviderReservation(directory, unit);
+  if (JSON.stringify(reservation.spec) !== JSON.stringify(spec)) researchInvalid();
+  const unitDirectory = join(directory, "provider-roots", unit), record = nativeHost.record(join(unitDirectory, "plan.json"));
+  const parsed = researchRecord(researchJson(Buffer.from(record)), "schemaVersion,unit,specSha256,artifactSha256,captured,materialized,skeleton,custody");
+  if (parsed.schemaVersion !== 1 || parsed.unit !== unit || parsed.specSha256 !== reservation.specSha256 ||
+      parsed.artifactSha256 !== spec.artifactSha256 || parsed.custody !== rootCustody(unitDirectory, nativeHost)) researchInvalid();
+  const captured = researchRecord(parsed.captured, "omittedCaches,bindings,aliases,fileLinks,observations,files");
+  if (!Array.isArray(parsed.materialized) || !Array.isArray(captured.bindings) ||
+      !Array.isArray(captured.omittedCaches) || !Array.isArray(captured.observations) ||
+      parsed.materialized.length > 128 || captured.bindings.length > 128 || captured.omittedCaches.length > 30 ||
+      captured.observations.length > 512) researchInvalid();
+  const bindings = parsed.materialized as Binding[];
+  for (const bind of bindings) {
+    researchRecord(bind, "source,target,access,identity,backing,file");
+    researchPath(bind.source); researchPath(bind.target);
+    if (!Object.values(ResearchRootMountAccess).includes(bind.access) || typeof bind.file !== "boolean" ||
+        !Array.isArray(bind.identity) || bind.identity.length !== 2 ||
+        !bind.identity.every(id => Number.isSafeInteger(id) && id >= 0)) researchInvalid();
+  }
+  const writable = bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite);
+  const coding = researchMimoCodingRoot(spec.request);
+  if (coding ? writable.length !== 1 || captured.omittedCaches.length !== 0 : writable.length < 2 || writable.length > 5) researchInvalid();
+  if (JSON.stringify(writable) !== JSON.stringify((captured.bindings as Binding[])
+      .filter(bind => bind.access === ResearchRootMountAccess.ReadWrite))) researchInvalid();
+  const jobBind = writable.find(bind => bind.target === spec.request.jobRootDir);
+  const workspaceBind = writable.find(bind => bind.target === spec.request.workspacePath);
+  if ((!coding && (!jobBind || jobBind.source !== join(directory, "pins/job") ||
+      jobBind.identity[0] !== spec.jobDirectory.device || jobBind.identity[1] !== spec.jobDirectory.inode)) ||
+      (coding && jobBind !== undefined) || !workspaceBind ||
+      workspaceBind.source !== join(directory, "pins/workspace") ||
+      workspaceBind.identity[0] !== spec.workspaceDirectory.device || workspaceBind.identity[1] !== spec.workspaceDirectory.inode) researchInvalid();
+  // The closed recipe binds these explicit nonrecursive sources. Its nominal
+  // targets live in another namespace; only source pins are compared here.
+  const observe = (): ResearchProviderWritableRoot[] => writable.map(bind => {
+    const before = nativeHost.info(bind.source);
+    if (bind.file || !before.isDirectory() || before.isSymbolicLink() ||
+        nativeHost.canonical(bind.source) !== bind.source || before.dev !== bind.identity[0] || before.ino !== bind.identity[1]) researchInvalid();
+    const roots = inspectKernelPathBackings(bind.source), root = roots[0];
+    if (roots.length !== 1 || !root || root.device !== bind.backing.device || root.backingPath !== bind.backing.path) researchInvalid();
+    const after = nativeHost.info(bind.source);
+    if (after.dev !== before.dev || after.ino !== before.ino) researchInvalid();
+    return { source: bind.source, target: bind.target, device: root.device, backingPath: root.backingPath };
+  });
+  const roots = observe();
+  const fresh = readResearchProviderReservation(directory, unit);
+  if (JSON.stringify(fresh.spec) !== JSON.stringify(spec) || nativeHost.record(join(unitDirectory, "plan.json")) !== record ||
+      JSON.stringify(observe()) !== JSON.stringify(roots) || rootCustody(unitDirectory, nativeHost) !== parsed.custody) researchInvalid();
+  return Object.freeze(roots.map(root => Object.freeze(root)));
+}
+
+function observeAllocatedResearchRoots(state: AllocatedRootObservation): readonly ResearchProviderWritableRoot[] {
+  const { host, spec, unit, directory } = state;
+  const recordPath = join(directory, "provider-roots", unit, "plan.json");
+  const assertBinding = (): void => {
+    const reservation = readResearchProviderReservation(directory, unit);
+    if (JSON.stringify(reservation.spec) !== JSON.stringify(spec) ||
+        host.record(recordPath) !== state.record) researchInvalid();
+  };
+  assertBinding();
+  const mounts = mountTable(host);
+  const writable = state.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite);
+  if (researchMimoCodingRoot(spec.request) ?
+      writable.length !== 1 || state.omittedCaches.length !== 0 || writable[0]!.target !== spec.request.workspacePath ||
+        writable[0]!.source !== join(directory, "pins/workspace") ||
+        writable[0]!.identity[0] !== spec.workspaceDirectory.device || writable[0]!.identity[1] !== spec.workspaceDirectory.inode :
+      writable.length < 2 || writable.length > 5 || state.omittedCaches.length > 30) researchInvalid();
+  const assertOmissions = (): void => {
+    for (const omitted of state.omittedCaches) {
+      const basePath = join(directory, "pins/job", relative(spec.request.jobRootDir, omitted.target));
+      const source = host.info(omitted.source), target = host.info(omitted.target), base = host.info(basePath);
+      if ([source, target, base].some(info => !info.isDirectory() || info.isSymbolicLink()) ||
+          source.dev !== omitted.identity[0] || source.ino !== omitted.identity[1] ||
+          target.dev !== source.dev || target.ino !== source.ino ||
+          base.dev !== omitted.baseIdentity[0] || base.ino !== omitted.baseIdentity[1] ||
+          host.canonical(omitted.source) !== omitted.source || host.canonical(omitted.target) !== omitted.target ||
+          host.canonical(basePath) !== basePath || host.entries(basePath).length ||
+          JSON.stringify(backing(omitted.source, mounts)) !== JSON.stringify(omitted.backing) ||
+          JSON.stringify(backing(omitted.target, mounts, true)) !== JSON.stringify(omitted.mounted) ||
+          JSON.stringify(backing(basePath, mounts, true)) !== JSON.stringify(omitted.base) ||
+          mounts.some(m => m.point !== omitted.source && contains(omitted.source, m.point)) ||
+          mounts.some(m => m.point !== basePath && contains(basePath, m.point))) researchInvalid();
+    }
+  };
+  const observe = (): ResearchProviderWritableRoot[] => writable.map(bind => {
+    const source = host.info(bind.source), target = host.info(bind.target);
+    if (!source.isDirectory() || source.isSymbolicLink() || !target.isDirectory() || target.isSymbolicLink() ||
+        host.canonical(bind.source) !== bind.source || host.canonical(bind.target) !== bind.target ||
+        source.dev !== bind.identity[0] || source.ino !== bind.identity[1] ||
+        target.dev !== source.dev || target.ino !== source.ino) researchInvalid();
+    const current = backing(bind.source, mounts, true), nominal = backing(bind.target, mounts, true);
+    if (nativeDevice(source) !== current.device || JSON.stringify(current) !== JSON.stringify(bind.backing) ||
+        !sameBacking(current, nominal)) researchInvalid();
+    // A new descendant bind could redirect writes outside the retained graph.
+    for (const mount of mounts.filter(m => m.point !== bind.target && contains(bind.target, m.point))) {
+      const child = state.bindings.find(candidate => candidate.target === mount.point);
+      if (child && sameBacking(child.backing, backing(mount.point, mounts, true))) continue;
+      // A retained foreign cache is absent from the nonrecursive job pin. Its
+      // empty underlying anchor is covered by job RW; the foreign source is not.
+      if (state.omittedCaches.some(omitted => omitted.target === mount.point &&
+          sameBacking(omitted.mounted, backing(mount.point, mounts, true)))) continue;
+      researchInvalid();
+    }
+    return { source: bind.source, target: bind.target, device: current.device, backingPath: current.path };
+  });
+  assertOmissions();
+  const roots = observe();
+  assertBinding();
+  if (JSON.stringify(mountTable(host)) !== JSON.stringify(mounts) ||
+      JSON.stringify(observe()) !== JSON.stringify(roots)) researchInvalid();
+  assertOmissions();
+  assertBinding();
+  return Object.freeze(roots.map(root => Object.freeze(root)));
+}
+
 export function assertResearchProviderRoot(plan: ResearchProviderRootPlan, value: ResearchStartSpec, unit: string, home: string): void {
   return observeRootFailure(ResearchProviderRootCheck.Assert, () => {
   const state = retained.get(plan), spec = parseResearchStartSpec(value);

@@ -24,6 +24,7 @@ import {
 import { CommandPolicyRunner } from "./command-policy-runner";
 import { LocalFileManagedRunStore } from "./file-backend-codex-managed-run-store";
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput } from "./file-backend-codex-worker-options";
 
 export type CodexWorkerExecutionEngine =
   | "app-server"
@@ -47,13 +48,13 @@ export type FileBackendCodexWorkerRuntimeParts = {
 export { openWorkerFactorySecretRoots } from "./file-backend-codex-agent-driver-factory";
 
 export function createFileBackendCodexWorkerRuntime(input: {
-  readonly options: FileBackendCodexWorkerOptions;
+  readonly options: FileBackendCodexWorkerInput;
   readonly workerId: string;
   readonly observability: ObservabilityPort;
   readonly redactor: RedactorPort;
   readonly clock: ClockPort;
 }): FileBackendCodexWorkerRuntimeParts {
-  const { options } = input;
+  const options = resolveFileBackendCodexWorkerOptions(input.options);
   // A v2 caller cannot construct adapters through a substituted public process
   // factory. Actual protected ordinary origin, not options, selects this gate.
   assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);

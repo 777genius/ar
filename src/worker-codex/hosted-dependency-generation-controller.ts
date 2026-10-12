@@ -1,7 +1,7 @@
 import { closeOriginalHostedDependencyContentObservation, openOriginalHostedDependencyContentObservation } from "./hosted-dependency-content-observation";
 import { DependencyToolExecutionBasis } from "../core/dependency-environment/dependency-tool-execution";
 import { readOriginalHostedDependencyQualifiedColdSourceUse, readOriginalHostedDependencyQualifiedBaselineSourceUse } from "./hosted-dependency-tool-profile";
-import { withHostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { readHostedDependencyKeyInputs, sameHostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
 import { readOriginalHostedDependencyGenerationNativeCensus } from "./hosted-dependency-generation-native-census";
 import { createHash } from "node:crypto";

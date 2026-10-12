@@ -10,7 +10,7 @@ export function collectHostedManagedProviderDrain(unit: string) {
   if (!match || match[0] !== unit) invalid();
   let terminal: ReturnType<typeof parseHostedManagedProviderTerminalFacts> | undefined;
   if (!collectUnitNotFound(unit)) {
-    const result = spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",unit],
+    const result = spawnSync("/usr/bin/systemctl",["show","--all","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",unit],
       {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,
         env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
     if (result.error || result.status !== 0) invalid(); terminal = parseHostedManagedProviderTerminalFacts(unit,result.stdout);
