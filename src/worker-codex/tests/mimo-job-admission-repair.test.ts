@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRepairedAdmission, exchangeAdmissionDirectories, parseRepairPlan, publishRepairedAdmission, finalizeRetainedAdmissionArchive, resolveRetainedAdmissionArchive, relocateAdmissionArchive, verifyAdmissionRepairStartRearmProof } from "../../../host-integration/runtime-admission/mimo-job-admission-repair.mjs";
+import { assertPreviousAdmissionDeniedStartTerminal, buildRepairedAdmission, exchangeAdmissionDirectories, parseRepairPlan, publishRepairedAdmission, finalizeRetainedAdmissionArchive, resolveRetainedAdmissionArchive, relocateAdmissionArchive, verifyAdmissionRepairStartRearmProof } from "../../../host-integration/runtime-admission/mimo-job-admission-repair.mjs";
 import { materializeBuiltinWorkerLaunchSpec } from "../application/project-control/codex-goal-project-builtin-pre-start-admission";
 import { parseWorkerLaunchSpec, parseWorkerLaunchState } from "../application/project-control/worker-launch-spec";
 import { createBuiltinFixture, cleanupProjectPreStartAdmissionFixtures } from "../tests/codex-goal-project-pre-start-admission-fixture";
@@ -28,6 +28,20 @@ async function artifactRoot() {
 }
 const operationSha256 = "a".repeat(64);
 describe("never-started admission ownedPaths repair", () => {
+  it("accepts a collected admission-denied Start only with empty process ownership and no queued job", () => {
+    const unit = "owned-start.service", description = "owned description";
+    const collected = { Id: unit, LoadState: "not-found", MainPID: "0", ControlGroup: "", Description: unit };
+    expect(() => assertPreviousAdmissionDeniedStartTerminal(collected, unit, description, [])).not.toThrow();
+    const loaded = { ...collected, LoadState: "loaded", ActiveState: "failed", Description: description };
+    expect(() => assertPreviousAdmissionDeniedStartTerminal(loaded, unit, description, [])).not.toThrow();
+    for (const state of [collected, loaded]) {
+      expect(() => assertPreviousAdmissionDeniedStartTerminal(state, unit, description, [unit])).toThrow("previous_start_queued");
+      for (const drift of [{ LoadState: "unknown" }, { Id: "other.service" }, { MainPID: "42" }, { ControlGroup: "/populated" }])
+        expect(() => assertPreviousAdmissionDeniedStartTerminal({ ...state, ...drift }, unit, description, [])).toThrow("previous_start_not_terminal");
+    }
+    expect(() => assertPreviousAdmissionDeniedStartTerminal({ ...loaded, Description: "other" }, unit, description, [])).toThrow("previous_start_not_terminal");
+    expect(() => assertPreviousAdmissionDeniedStartTerminal({ ...loaded, ActiveState: "activating" }, unit, description, [])).toThrow("previous_start_not_terminal");
+  });
   it("rebinds canonical ownership work key and preserves every other contract/state field", async () => {
     const input = await fixture(), ownedPaths = ["src/WindowsNativeRunControl.hpp", "src/.task-reports/windows-run-control/"];
     const result = buildRepairedAdmission({ ...input, ownedPaths });

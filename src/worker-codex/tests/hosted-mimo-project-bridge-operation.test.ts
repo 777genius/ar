@@ -162,16 +162,36 @@ it.each(["proof-denied", "receipt-drift", "existing-archive", "provider-error", 
   if (fault === "semantic-error") state.files.set(startPrefix + ".result.json", JSON.stringify({ ok: true, result: { ok: false, error: "project_control_admission_denied" } }));
   if (fault === "collected") state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive");
   if (fault === "pending-unit") state.command.mockImplementation((executable: string, args: string[]) => executable === "/usr/bin/systemctl" ? args[0] === "list-jobs" ? `123 ${JSON.parse(oldOwner!).unit} start waiting` : terminalShow(args[1]!) : "");
-  if (["provider-error", "semantic-error", "collected"].includes(fault)) await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).resolves.toMatchObject({ state: "settled" });
+  if (["provider-error", "semantic-error"].includes(fault)) await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).resolves.toMatchObject({ state: "settled" });
   else await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow();
   expect(state.files.get(startPrefix + ".owner.json")).toBe(oldOwner);
   expect(state.files.has(startPrefix + ".request.json.generation-0")).toBe(false);
+});
+it.each(["exact", "queued", "missing-proof", "nonzero-pid", "nonempty-cgroup", "missing-cgroup", "foreign-id"])("rearms collected admission-denied Start only with exact terminal evidence and immutable proof: %s", async condition => {
+  const startPrefix = await failedStartThenFinalized(), previousOwner = state.files.get(startPrefix + ".owner.json")!, unit = JSON.parse(previousOwner).unit;
+  state.command.mockImplementation((executable: string, args: string[]) => {
+    if (executable !== "/usr/bin/systemctl") return "";
+    if (args[0] === "list-jobs") return condition === "queued" ? `123 ${unit} start waiting` : "";
+    if (args[1] !== unit) return terminalShow(args[1]!);
+    return `Id=${condition === "foreign-id" ? "foreign.service" : unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=${condition === "nonzero-pid" ? "123" : "0"}${condition === "missing-cgroup" ? "" : "\nControlGroup=" + (condition === "nonempty-cgroup" ? "/TEST/foreign" : "")}`;
+  });
+  if (condition === "missing-proof") state.files.delete("/srv/worker-state/mimo-projects/test-project/test-stream/admission-repair-archives/test-job.finalization.json");
+  if (condition === "exact") {
+    await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).resolves.toMatchObject({ pending: true });
+    expect(JSON.parse(state.files.get(startPrefix + ".owner.json")!).generation).toBe(1);
+    expect(state.files.get(startPrefix + ".owner.json.generation-0")).toBe(previousOwner);
+    expect(state.rearm).toHaveBeenCalledOnce();
+  } else {
+    await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow();
+    expect(state.files.get(startPrefix + ".owner.json")).toBe(previousOwner);
+    expect(state.files.has(startPrefix + ".request.json.generation-0")).toBe(false);
+  }
 });
 function terminalShow(unit: string) {
   const retained = [...state.files.entries()].find(([path, bytes]) => path.endsWith(".owner.json") && JSON.parse(bytes).unit === unit);
   if (!retained) return "LoadState=not-found\nActiveState=inactive";
   const value = JSON.parse(retained[1]);
-  return `Id=${value.unit}\nDescription=${value.description}\nLoadState=loaded\nActiveState=failed\nMainPID=0`;
+  return `Id=${value.unit}\nDescription=${value.description}\nLoadState=loaded\nActiveState=failed\nMainPID=0\nControlGroup=`;
 }
 it.each(["prompt", "sourceCommit"])("rejects changed retained Create %s instead of returning another request receipt", async field => {
   await submitHostedMimoProjectBridge(request);
@@ -308,12 +328,12 @@ it("recovery accepts exact collected failed operations and refuses pending/succe
   await submitHostedMimoProjectBridge(request);
   const saved = JSON.parse(state.files.get(prefix + ".owner.json")!);
   state.files.set(prefix + ".result.json", JSON.stringify({ ok: false, error: "project_control_admission_denied" }));
-  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n`);
+  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\n`);
   const b = { stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream", projectId: request.projectId, workstreamId: request.workstreamId, machineId: request.machineId };
   await expect(assertHostedMimoRecoveryOperationsSettled(b)).resolves.toBeUndefined();
-  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? `19 ${saved.unit} start waiting` : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n`);
+  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? `19 ${saved.unit} start waiting` : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\n`);
   await expect(assertHostedMimoRecoveryOperationsSettled(b)).rejects.toThrow();
-  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n`);
+  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\n`);
   state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } }));
   await expect(assertHostedMimoRecoveryOperationsSettled(b)).rejects.toThrow();
 });

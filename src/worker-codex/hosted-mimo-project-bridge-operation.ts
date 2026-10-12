@@ -81,7 +81,7 @@ function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller
   const fields = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
   if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== current.value.description))
     throw new Error("mimo_project_bridge_operation_invalid");
-  if (mode === "controller-recovery" && (fields.MainPID !== "0" || (fields.ControlGroup ?? "") !== "")) return false;
+  if (mode === "controller-recovery" && (fields.MainPID !== "0" || fields.ControlGroup !== "")) return false;
   if (!(fields.LoadState === "not-found" || fields.LoadState === "loaded" &&
       ["inactive", "failed"].includes(fields.ActiveState ?? "") && fields.MainPID === "0")) return false;
   const jobs = researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]);
@@ -164,7 +164,10 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
       if (finalized.state !== "absent" && (finalized.state !== "settled" || finalResult?.ok !== true || finalResult.result?.ok !== true))
         throw new Error("mimo_project_bridge_control_pending");
       const prior = observation(request);
-      if (finalized.state === "settled" && prior.state === "settled" && prior.terminalVerified === true && admissionDenied(prior.result)) {
+      if (finalized.state === "settled" && prior.state === "settled" && admissionDenied(prior.result)) {
+        // Only this exact failed Start may reconcile a collected unit. The
+        // shared observer below requires exact Id, zero PID, empty cgroup and
+        // no queued job; Stop's loaded-only replay rule remains unchanged.
         if (!recoverableStatus(request, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
         const old = owner(request), previousStart = { ownerSha256: researchHash(hostedMimoBridgeMetadataBytes(old.ownerPath)),
           requestSha256: researchHash(hostedMimoBridgeMetadataBytes(old.requestPath)), resultSha256: researchHash(hostedMimoBridgeMetadataBytes(old.resultPath)) };

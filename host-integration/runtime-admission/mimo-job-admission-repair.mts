@@ -302,10 +302,9 @@ async function operateHostedMimoJobAdmission(planPath: string | RepairPlan, expe
                     startRequest.operation === "start" && startRequest.jobId === job.jobId && startRequest.projectId === binding.projectId &&
                     startRequest.workstreamId === binding.workstreamId && startRequest.machineId === plan.machineId &&
                     startResult.ok === false && startResult.error === "project_control_admission_denied", "previous_start_not_admission_denied");
-                  const unitState = Object.fromEntries(host.researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID"]).trim().split("\n").map(line => { const index = line.indexOf("="); return [line.slice(0, index), line.slice(index + 1)]; }));
-                  check(unitState.Id === unit && unitState.Description === startOwner.description && unitState.LoadState === "loaded" &&
-                    ["inactive", "failed"].includes(unitState.ActiveState ?? "") && unitState.MainPID === "0", "previous_start_not_terminal");
-                  check(!host.researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]).trim().split("\n").some(line => line.trim().split(/\s+/)[1] === unit), "previous_start_queued");
+                  const unitState = Object.fromEntries(host.researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID,ControlGroup"]).trim().split("\n").map(line => { const index = line.indexOf("="); return [line.slice(0, index), line.slice(index + 1)]; }));
+                  const queuedUnits = host.researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]).trim().split("\n").map(line => line.trim().split(/\s+/)[1]).filter((value): value is string => typeof value === "string");
+                  assertPreviousAdmissionDeniedStartTerminal(unitState, unit, String(startOwner.description), queuedUnits);
                   previousStart = { ownerSha256: hash(start.owner), requestSha256: hash(start.request), resultSha256: hash(start.result), terminalVerified: true };
                 }
                 const birthWitnesses = [controller.controller, job].map(manifest => {
@@ -362,6 +361,16 @@ async function operateHostedMimoJobAdmission(planPath: string | RepairPlan, expe
 export async function repairHostedMimoJobAdmission(planPath: string | RepairPlan, expectedPlanSha256: string,
   runtimeDirectory: string, expectedArtifactSha256: string): Promise<unknown> {
   return operateHostedMimoJobAdmission(planPath, expectedPlanSha256, runtimeDirectory, expectedArtifactSha256);
+}
+
+/** Durable admission-denied records and original no-effect authority are checked
+ * by the caller; collection may remove the unit's loaded description. */
+export function assertPreviousAdmissionDeniedStartTerminal(state: Readonly<Record<string, string | undefined>>,
+  unit: string, description: string, queuedUnits: readonly string[]): void {
+  check(state.Id === unit && state.MainPID === "0" && state.ControlGroup === "" &&
+    (state.LoadState === "not-found" || state.LoadState === "loaded" && state.Description === description &&
+      ["inactive", "failed"].includes(state.ActiveState ?? "")), "previous_start_not_terminal");
+  check(!queuedUnits.includes(unit), "previous_start_queued");
 }
 
 export async function finalizeHostedMimoJobAdmissionRepair(identity: AdmissionRepairIdentity, runtimeDirectory: string,
