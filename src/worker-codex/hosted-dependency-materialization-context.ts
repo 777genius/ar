@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyOwnerPhase, sameDependencyAttempt,
   sameDependencyTree, DependencyPreservationKind, DependencyReceiptState, type DependencyReceipt, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";

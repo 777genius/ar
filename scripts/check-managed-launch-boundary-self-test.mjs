@@ -32,6 +32,15 @@ try {
   for (const directory of ['src/provider-codex/app-server/adapters', 'packages', 'scripts', 'host-integration']) {
     await mkdir(join(root, directory), { recursive: true });
   }
+  const testOperators = join(root, 'host-integration/runtime-admission');
+  await mkdir(testOperators);
+  await writeFile(join(testOperators, 'linked-native-mimo-operator.mts'), 'const command = \"/usr/bin/systemd-run\";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  const unapprovedOperator = join(testOperators, 'unapproved-operator.mts');
+  await writeFile(unapprovedOperator, 'const command = \"/usr/bin/systemd-run\";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['host-integration/runtime-admission/unapproved-operator.mts:1']);
+  await writeFile(unapprovedOperator, 'const command = trustedCommand;\n');
   const adapters = join(root, 'src/provider-codex/app-server/adapters');
   await writeFile(join(adapters, 'hosted-dependency-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
   assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);

@@ -1,3 +1,5 @@
+import * as installation from "../hosted-installation-activation";
+import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +19,7 @@ vi.mock("node:child_process", async original => ({ ...await original<typeof impo
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), mkdir: f.mkdir,
   open: vi.fn(async () => ({ stat: async () => ({ isFile: () => true, nlink: 1, uid: process.getuid?.() }),
     chmod: async () => {}, close: async () => {} })) }));
-vi.mock("../hosted-readonly-controller-admission", () => ({ admitHostedControllerLaunch: f.admit }));
+vi.mock("../hosted-readonly-controller-admission", () => ({ admitHostedControllerLaunch: f.admit, admitHostedRawGoalLaunch: f.admit }));
 vi.mock("../codex-goal-runner", async original => ({ ...await original<typeof import("../codex-goal-runner")>(), runCodexGoal: f.run }));
 vi.mock("../hosted-readonly-supervisor-host", () => ({ HostedReadonlySupervisorHost: class {
   runtimeRole = f.role;
@@ -39,8 +41,13 @@ function child() {
   f.spawn.mockReturnValue(processChild);
   return processChild;
 }
+// Replace the existing installation read after the transport import graph loads.
+// The real installation/dispatch contract has its own activation fixture.
 beforeEach(() => {
   vi.resetAllMocks(); f.events.length = 0;
+  vi.spyOn(installation, "readHostedInstallationActivation").mockReturnValue({
+    activation: { phase: HostedActivationPhase.Exclusive },
+  } as ReturnType<typeof installation.readHostedInstallationActivation>);
   f.activationEnabled = true;
   vi.spyOn(process, "platform", "get").mockReturnValue("linux"); vi.spyOn(process, "getuid").mockReturnValue(0);
   f.role.mockReturnValue("supervisor");
@@ -147,10 +154,3 @@ vi.mock("node:fs", async original => {
       path === "/proc/self/cgroup" ? "0::/user.slice/offline-control.service\n" : real.readFileSync(path, options),
   };
 });
-
-// The managed transport fixture has a separately substituted EXCLUSIVE host.
-// Actual installation/dispatch composition lives in hosted-ordinary-installation.
-vi.mock("../hosted-installation-activation", async original => ({
-  ...await original<typeof import("../hosted-installation-activation")>(),
-  readHostedInstallationActivation: () => ({ activation: { phase: "EXCLUSIVE" } }),
-}));

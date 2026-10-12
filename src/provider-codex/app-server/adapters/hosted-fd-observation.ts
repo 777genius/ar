@@ -1,4 +1,4 @@
-import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";

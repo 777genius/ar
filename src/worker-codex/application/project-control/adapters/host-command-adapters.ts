@@ -32,8 +32,9 @@ const DISK_USAGE_MAX_BUFFER = 256 * 1024;
  * (behavior-neutral with the previous inline calls).
  */
 export class ExecFileProjectControlGitAdapter implements ProjectControlGitPort {
+  constructor(private readonly binaryPath = "git") {}
   async run(input: ProjectControlGitRunInput): Promise<HostCommandResult> {
-    const { stdout, stderr } = await execFileAsync("git", [...input.args], {
+    const { stdout, stderr } = await execFileAsync(this.binaryPath, [...input.args], {
       encoding: "utf8",
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),
@@ -46,7 +47,7 @@ export class ExecFileProjectControlGitAdapter implements ProjectControlGitPort {
   async runBuffered(
     input: ProjectControlGitRunInput,
   ): Promise<HostCommandBufferResult> {
-    const { stdout, stderr } = await execFileAsync("git", [...input.args], {
+    const { stdout, stderr } = await execFileAsync(this.binaryPath, [...input.args], {
       encoding: "buffer",
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),

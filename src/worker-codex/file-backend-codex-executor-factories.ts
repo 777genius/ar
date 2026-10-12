@@ -1,18 +1,13 @@
 import { CodexSessionHomeProfileKind } from "./codex-session-home-profile";
 import {
   FileBackendCodexSafeExecutor,
-  type FileBackendCodexSafeExecutorOptions,
+  type FileBackendCodexSafeExecutorInput,
 } from "./file-backend-codex-safe-executor";
 
-export type FileBackendCodexOneShotExecutorOptions = Omit<
-  FileBackendCodexSafeExecutorOptions,
-  "sessionHomeProfile"
->;
+type WithoutSessionHomeProfile<T> = T extends unknown ? Omit<T, "sessionHomeProfile"> : never;
+export type FileBackendCodexOneShotExecutorOptions = WithoutSessionHomeProfile<FileBackendCodexSafeExecutorInput>;
 
-export type FileBackendCodexContinuationExecutorOptions = Omit<
-  FileBackendCodexSafeExecutorOptions,
-  "sessionHomeProfile"
-> & {
+export type FileBackendCodexContinuationExecutorOptions = WithoutSessionHomeProfile<FileBackendCodexSafeExecutorInput> & {
   readonly sessionId: string;
 };
 

@@ -59,7 +59,7 @@ export function createLocalFileSafeExecutionStores(
 }
 
 export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
-  constructor(private readonly rootDir: string) {}
+  constructor(private readonly rootDir: string, private readonly assertPublicationCurrent?: (paths: readonly string[]) => void) {}
 
   async acquire(input: {
     readonly taskId: TaskRunId;
@@ -74,10 +74,12 @@ export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
     const lockDir = join(this.rootDir, "workspace-locks", key);
     const lockFile = join(lockDir, "lock.json");
     const now = input.now ?? new Date();
+    this.assertPublicationCurrent?.([dirname(lockDir)]);
     await mkdir(dirname(lockDir), { recursive: true, mode: 0o700 });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
+        this.assertPublicationCurrent?.([lockDir]);
         await mkdir(lockDir, { mode: 0o700 });
         const record: WorkspaceLockRecord = {
           taskId: input.taskId,
@@ -89,11 +91,11 @@ export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
             ? {}
             : { staleLockMs: input.staleLockMs }),
         };
-        await atomicWriteJson(lockFile, serializeLockRecord(record));
+        await atomicWriteJson(lockFile, serializeLockRecord(record), this.assertPublicationCurrent);
         return {
           ...record,
           release: async () => {
-            await releaseFileLock(lockDir, lockFile, record);
+            await releaseFileLock(lockDir, lockFile, record, this.assertPublicationCurrent);
           },
         };
       } catch (error) {
@@ -106,6 +108,7 @@ export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
             record: existing,
             workspacePath,
             now,
+            ...(this.assertPublicationCurrent ? { assertPublicationCurrent: this.assertPublicationCurrent } : {}),
           });
           continue;
         }
@@ -358,11 +361,13 @@ async function releaseFileLock(
   lockDir: string,
   lockFile: string,
   record: WorkspaceLockRecord,
+  assertPublicationCurrent?: (paths: readonly string[]) => void,
 ): Promise<void> {
   const current = await readLockRecord(lockFile, record.workspacePath).catch(
     () => null,
   );
   if (current && sameWorkspaceLock(current, record)) {
+    assertPublicationCurrent?.([lockDir]);
     await rm(lockDir, { recursive: true, force: true });
   }
 }
@@ -373,9 +378,11 @@ async function removeReplaceableFileLock(input: {
   readonly record: WorkspaceLockRecord;
   readonly workspacePath: string;
   readonly now: Date;
+  readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 }): Promise<void> {
   const staleDir = `${input.lockDir}.${process.pid}.${randomUUID()}.stale`;
   try {
+    input.assertPublicationCurrent?.([input.lockDir, staleDir]);
     await rename(input.lockDir, staleDir);
   } catch (error) {
     if (isNodeErrorCode(error, "ENOENT")) return;
@@ -391,15 +398,18 @@ async function removeReplaceableFileLock(input: {
     sameWorkspaceLock(current, input.record) &&
     canReplaceLock(current, input.now)
   ) {
+    input.assertPublicationCurrent?.([staleDir]);
     await rm(staleDir, { recursive: true, force: true });
     return;
   }
 
   try {
+    input.assertPublicationCurrent?.([staleDir, input.lockDir]);
     await rename(staleDir, input.lockDir);
   } catch (error) {
     if (isNodeErrorCode(error, "ENOENT")) return;
     if (isNodeErrorCode(error, "EEXIST")) {
+      input.assertPublicationCurrent?.([staleDir]);
       await rm(staleDir, { recursive: true, force: true });
       return;
     }
@@ -605,18 +615,24 @@ function parseAttemptPatchStats(value: unknown): AttemptPatchStats | undefined {
 async function atomicWriteJson(
   path: string,
   value: Readonly<Record<string, unknown>>,
+  assertPublicationCurrent?: (paths: readonly string[]) => void,
 ): Promise<void> {
   const targetDir = dirname(path);
+  assertPublicationCurrent?.([targetDir]);
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  assertPublicationCurrent?.([join(targetDir, ".tmp-")]);
   const tempDir = await mkdtemp(join(targetDir, ".tmp-"));
   const tempPath = join(tempDir, basename(path));
   try {
+    assertPublicationCurrent?.([tempPath]);
     await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
+    assertPublicationCurrent?.([tempPath, path]);
     await rename(tempPath, path);
   } finally {
+    assertPublicationCurrent?.([tempDir]);
     await rm(tempDir, { recursive: true, force: true });
   }
 }

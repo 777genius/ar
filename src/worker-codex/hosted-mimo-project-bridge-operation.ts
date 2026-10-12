@@ -5,6 +5,8 @@ import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } 
 import { researchCustody, researchHash, researchRecord } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding } from "./hosted-mimo-project-bridge";
+import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
+import { readdirSync } from "node:fs";
 
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
 function canonical(request: MimoProjectBridgeRequest): string {
@@ -53,18 +55,28 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
 }
 /** Status may reconcile an existing publication, but never submits a provider.
  * Recover only after the exact prior observer cannot execute any further work. */
-function recoverableStatus(request: MimoProjectBridgeRequest): boolean {
+function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller-recovery"): boolean {
   const current = owner(request), unit = current.value.unit as string;
-  const output = researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID"]);
+  const output = researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID,ControlGroup"]);
   const fields = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
   if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== current.value.description))
     throw new Error("mimo_project_bridge_operation_invalid");
+  if (mode === "controller-recovery" && (fields.MainPID !== "0" || (fields.ControlGroup ?? "") !== "")) return false;
   if (!(fields.LoadState === "not-found" || fields.LoadState === "loaded" &&
       ["inactive", "failed"].includes(fields.ActiveState ?? "") && fields.MainPID === "0")) return false;
   const jobs = researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]);
   return !jobs.trim().split("\n").some(line => line.trim().split(/\s+/)[1] === unit);
 }
 export async function submitHostedMimoProjectBridge(value: unknown): Promise<unknown> {
+  const request = parseMimoProjectBridgeRequest(value);
+  assertResearchInitialRoot(true); assertResearchSharedHost();
+  const binding = parseHostedMimoProjectBinding(JSON.parse(hostedMimoBridgeMetadataBytes(
+    `/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`).toString()), request);
+  if (hostedMimoBridgeMetadataBytes("/etc/machine-id").toString().trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
+  researchCustody(binding.stateRoot, true);
+  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => submitHostedMimoProjectBridgeUnfenced(value));
+}
+async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
   assertResearchInitialRoot(true); assertResearchSharedHost();
   const binding = parseHostedMimoProjectBinding(JSON.parse(hostedMimoBridgeMetadataBytes(
@@ -133,6 +145,14 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
 /** Only the installed owned service invokes this fixed execution mode. */
 export async function executeHostedMimoProjectBridgeOperation(requestPath: string): Promise<boolean> {
   assertResearchInitialRoot(true); assertResearchSharedHost();
+  const request = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(requestPath).toString()));
+  const binding = parseHostedMimoProjectBinding(JSON.parse(hostedMimoBridgeMetadataBytes(
+    `/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`).toString()), request);
+  researchCustody(binding.stateRoot, true);
+  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => executeHostedMimoProjectBridgeOperationUnfenced(requestPath));
+}
+async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: string): Promise<boolean> {
+  assertResearchInitialRoot(true); assertResearchSharedHost();
   const request = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(requestPath).toString())), current = owner(request);
   if (current.requestPath !== requestPath || current.value.entry !== realpathSync(process.argv[1]!) || current.value.node !== realpathSync(process.execPath))
     throw new Error("mimo_project_bridge_operation_invalid");
@@ -152,4 +172,30 @@ export async function executeHostedMimoProjectBridgeOperation(requestPath: strin
   writeFileSync(temp, serialized, { flag: "wx", mode: 0o600 }); renameSync(temp, current.resultPath);
   const outcome = result as { ok: boolean; result?: { ok?: boolean } };
   return outcome.ok && outcome.result?.ok !== false;
+}
+
+/** Recovery consumes the same exact owner/digest observer as normal ingress.
+ * Collected units require a durable failure and no queued unit job. */
+export async function assertHostedMimoRecoveryOperationsSettled(binding: { stateRoot: string; projectId: string; workstreamId: string; machineId: string }): Promise<void> {
+  const root = join(binding.stateRoot, "mimo-bridge-operations");
+  if (!existsSync(root)) { researchCustody(binding.stateRoot); return; }
+  researchCustody(root, true);
+  const names = readdirSync(root);
+  for (const name of names) {
+    if (/\.generation-\d+$/.test(name)) continue;
+    if (name.endsWith(".request.json") || name.endsWith(".result.json")) {
+      if (!names.includes(name.replace(/\.(?:request|result)\.json$/, ".owner.json"))) throw new Error("mimo_project_bridge_recovery_denied");
+    } else if (!name.endsWith(".owner.json")) throw new Error("mimo_project_bridge_recovery_denied");
+  }
+  for (const name of readdirSync(root).filter(name => name.endsWith(".owner.json"))) {
+    const requestPath = join(root, name.replace(/\.owner\.json$/, ".request.json"));
+    const request = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(requestPath).toString()));
+    if (request.projectId !== binding.projectId || request.workstreamId !== binding.workstreamId || request.machineId !== binding.machineId)
+      throw new Error("mimo_project_bridge_recovery_denied");
+    const current = owner(request), observed = observation(request);
+    const result = observed.result as { ok?: boolean; result?: { ok?: boolean } } | undefined;
+    if (current.ownerPath !== join(root, name) || observed.state !== "settled" || !recoverableStatus(request, "controller-recovery") ||
+        (request.operation !== MimoProjectBridgeOperation.Status && result?.ok !== false && result?.result?.ok !== false))
+      throw new Error("mimo_project_bridge_recovery_denied");
+  }
 }
