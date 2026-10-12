@@ -15,10 +15,11 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
 // Select genuine root before the shared synthetic OS fixture installs mocks.
 (process.getuid?.() === 0 ? describe : describe.skip)("original public SDK physical N3 workspace", () => {
   it("creates a standalone repository through public controller/refill and passes the unchanged physical gate", async () => {
-    // Allocate real backing in the fixture's disposable Linux scratch parent;
-    // CI does not need an installed host-policy tree for this physical gate.
+    // The owned root container provides the original canonical TEST parent.
+    // This configuration selects standalone metadata; admission stays unchanged.
     cleanupResearchFixture();
-    setupResearchFixture({ nativeBackingFacts: true });
+    setupResearchFixture({ nativeBackingFacts: true,
+      allocationParent: "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs" });
     for (const [name, value] of Object.entries({ GIT_AUTHOR_NAME: "iliya", GIT_AUTHOR_EMAIL: "iliyazelenkog@gmail.com",
       GIT_COMMITTER_NAME: "iliya", GIT_COMMITTER_EMAIL: "iliyazelenkog@gmail.com", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" })) vi.stubEnv(name, value);
     const job = host.root, jobId = basename(job), workspace = join(job, "workspace"), registry = join(job, "state/registry"), auth = join(job, "auth"),
