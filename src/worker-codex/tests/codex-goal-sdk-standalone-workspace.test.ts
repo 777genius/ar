@@ -12,7 +12,8 @@ import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
-describe("original public SDK physical N3 workspace", () => {
+// Select genuine root before the shared synthetic OS fixture installs mocks.
+(process.getuid?.() === 0 ? describe : describe.skip)("original public SDK physical N3 workspace", () => {
   it("creates a standalone repository through public controller/refill and passes the unchanged physical gate", async () => {
     // Allocate real backing in the fixture's disposable Linux scratch parent;
     // CI does not need an installed host-policy tree for this physical gate.
