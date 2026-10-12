@@ -38,8 +38,9 @@ function boundedCommand(file: string, args: readonly string[], deadline: bigint,
 
 // This NEW route consumes fixed ROOT-staged TEST inputs. Historical GitHub
 // assertions/dispatch in registration-outer remain byte-for-byte unchanged.
-assert.equal(process.argv.length,2);
 const managedParent=retainCurrentFullParent();
+assert.equal(process.argv.length,managedParent.removalCase===FullRemovalCase.ParentCrashH1?3:2);
+if(managedParent.removalCase===FullRemovalCase.ParentCrashH1)assert.equal(process.argv[2],"--parent-crash-h1");
 const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
