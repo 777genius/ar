@@ -11,7 +11,7 @@ vi.mock("node:url", async original => {
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["existsSync", "mkdirSync", "rmdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
+  for (const name of ["existsSync", "mkdirSync", "rmdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "linkSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => unknown>)[name]!;
     result[name] = (...args: unknown[]) => {
       const answer = fn(...args.map(boundary.map));

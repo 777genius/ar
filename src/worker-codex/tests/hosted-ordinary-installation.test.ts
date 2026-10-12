@@ -100,6 +100,8 @@ vi.mock("node:fs", async original => {
     openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
+    linkSync: (from: string, to: string) => real.linkSync(local(from), local(to)),
+    unlinkSync: (path: string) => real.unlinkSync(local(path)),
     renameSync: (from: string, to: string) => {
       if (fixture.failRename && from.endsWith(fixture.failRename)) throw new Error("synthetic publication interruption");
       real.renameSync(local(from), local(to));
