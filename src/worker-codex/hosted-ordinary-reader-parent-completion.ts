@@ -12,7 +12,7 @@ import { assertHostedActivationFence, assertHostedActivationOperator, decodeHost
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { assertHostedForegroundResult, readHostedForegroundLaunchObservation, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { hostedDependencyOwnerRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 import { HostedOrdinaryDependencyReaderKind } from "./hosted-ordinary-dependency-reader";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
@@ -63,7 +63,7 @@ function selection(fence:HostedActivationFence,startId:string) {
   const inventory=readHostedReadonlyHostInventory(),inventoryBytes=readHostedActivationBytes("readonly-inventory.json");
   const creators=inventory.ordinaryCreators.filter(value=>value.creatorId===start.creatorId && value.jobId===start.jobId && value.workspacePath===start.workspacePath && value.jobRootDir===start.jobRootDir);
   if (!inventoryBytes || hash(inventoryBytes)!==installation.inventorySha256 || creators.length!==1 || claim.recipeSha256!==hash(encode(creators[0]!.launch))) held();
-  assertHostedDependencyParentRecipe(creators[0]!.launch.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(creators[0]!.launch,binding.jobRootDir,binding.workspace.canonicalPath);
   return {actual,startPin,start,row,binding,bindingPin,producer,attempt,kernel};
 }
 function native(fence:HostedActivationFence,facts:ReturnType<typeof selection>,receipt:HostedOrdinaryReaderParentCompletion,allowCollected:boolean):void {

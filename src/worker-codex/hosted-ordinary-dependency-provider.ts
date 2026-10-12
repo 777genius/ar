@@ -1,6 +1,7 @@
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import type { CodexAppServerChildProcess } from "@vioxen/subscription-runtime/provider-codex";
 import { codexProviderEgressProfileEnvVar } from "../provider-codex/codex-provider-egress-policy";
-import { reserveHostedOrdinaryProviderFacts, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { reserveHostedOrdinaryProviderFacts, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { CurrentHostedDependencyOriginKind, readCurrentHostedManagedDependencyProviderParent,
   readCurrentHostedDependencySessionRefreshParent, publishCurrentHostedManagedDependencyProvider,

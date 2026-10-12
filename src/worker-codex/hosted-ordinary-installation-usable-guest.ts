@@ -120,7 +120,7 @@ async function worker():Promise<void>{
   const plan=resolveStoredProjectStartPlan(input.creator.launch.args[4]!,input.creator.workspacePath);
   if(plan.jobId!==input.creator.jobId||plan.jobRoot!==input.creator.jobRootDir||plan.workspace!==input.creator.workspacePath||
       plan.launch.config.authRootDir!==qualificationRoot+"/broker"||plan.launch.config.accounts?.length!==1||plan.launch.config.accounts[0]?.name!=="account-test"||
-      plan.launch.config.accounts[0].authJsonPath!==qualificationRoot+"/broker/account-test/auth.json"||plan.launch.config.accounts[0].envVarName!==undefined)qualificationHeld();
+      (plan.launch.config.accounts[0].authJsonPath??qualificationRoot+"/broker/account-test/auth.json")!==qualificationRoot+"/broker/account-test/auth.json"||plan.launch.config.accounts[0].envVarName!==undefined)qualificationHeld();
   const tree=lstatSync(input.creator.workspacePath+"/node_modules");if(!tree.isDirectory()||tree.isSymbolicLink()||tree.uid!==0||tree.mode&0o022)qualificationHeld();
   const inventory=collectOrdinaryInstallationDraft({supervisorUnit:unit,supervisor:{birth,executable:profile.node,
       bootstrap:{path:entry,sha256:input.fixture.guestEntrySha256},operationId:input.operation.operationId,

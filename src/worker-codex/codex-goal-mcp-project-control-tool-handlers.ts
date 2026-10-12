@@ -1,3 +1,4 @@
+import type { ProjectSealedSourcePort } from "./codex-goal-mcp-project-control-jobs-types";
 import { delegateMimoProjectOperation } from "./mimo-project-bridge-client";
 import { MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
 import { projectControlRelocateControllerWorkspaceView } from "./codex-goal-mcp-project-controller-relocation";
@@ -245,6 +246,12 @@ export async function projectControlRefillWorker(args: ProjectControlMcpArgs) {
   if (remote !== undefined) return mcpJson({ ...remote, requestedStartWorker: args.startWorker !== false,
     nextOperation: "status", safeMessage: "Wait for creation to settle successfully, then start the same job through the project start tool." });
   return mcpJson(await projectControlRefillWorkerView(args, projectControlJobsDeps()));
+}
+
+/** Fixed Host composition; never registered as an MCP tool. */
+export async function projectControlRefillWorkerFromSealedSource(args: ProjectControlMcpArgs,
+  sealedSource: ProjectSealedSourcePort) {
+  return mcpJson(await projectControlRefillWorkerView(args, { ...projectControlJobsDeps(), sealedSource }));
 }
 
 export async function projectControlPrepareVerifier(args: ProjectControlMcpArgs) {

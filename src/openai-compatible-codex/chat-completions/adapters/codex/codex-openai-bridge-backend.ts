@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { DefaultRedactor } from "../../../../core/index.js";
+import { DefaultRedactor, deriveRuntimeStorageRoots } from "../../../../core/index.js";
 import {
   PackagedCodexJsonExecutionEngine,
   classifyCodexRuntimeFailure,
@@ -29,6 +29,7 @@ import {
 export { discoverCodexBridgeAccounts, type CodexOpenAiBridgeAccount };
 
 export type CodexOpenAiBridgeBackendOptions = {
+  readonly storageRootDir?: string;
   readonly codexBinaryPath: string;
   readonly authRootDir: string;
   readonly stateDir: string;
@@ -41,6 +42,21 @@ export type CodexOpenAiBridgeBackendOptions = {
   readonly serviceTier?: CodexServiceTier;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
 };
+
+export type CodexOpenAiBridgeBackendInput = CodexOpenAiBridgeBackendOptions |
+  (Omit<CodexOpenAiBridgeBackendOptions, "stateDir" | "storageRootDir"> & {
+    readonly storageRootDir: string;
+    readonly stateDir?: string;
+  });
+
+export function resolveCodexOpenAiBridgeBackendOptions(input: CodexOpenAiBridgeBackendInput): CodexOpenAiBridgeBackendOptions {
+  const storageRootDir = input.storageRootDir ??
+    (input.stateDir === undefined ? input.sourceEnv?.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined);
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
+  const stateDir = input.stateDir ?? (roots ? join(roots.stateRootDir, "openai-codex-bridge") : undefined);
+  if (stateDir === undefined) throw new Error("openai_bridge_state_dir_required");
+  return { ...input, stateDir };
+}
 
 type AccountState = CodexOpenAiBridgeAccount &
   IsolatedCodexOpenAiBridgeAccount & {
@@ -57,7 +73,11 @@ export class CodexOpenAiBridgeBackend implements OpenAiBridgeChatBackend {
   private activeRequests = 0;
   private readonly waiters: (() => void)[] = [];
 
-  constructor(private readonly options: CodexOpenAiBridgeBackendOptions) {
+  private readonly options: CodexOpenAiBridgeBackendOptions;
+
+  constructor(input: CodexOpenAiBridgeBackendInput) {
+    const options = resolveCodexOpenAiBridgeBackendOptions(input);
+    this.options = options;
     this.engine = new PackagedCodexJsonExecutionEngine({
       codexBinaryPath: options.codexBinaryPath,
       timeoutMs: options.timeoutMs,

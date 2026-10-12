@@ -1,12 +1,12 @@
 import { types } from "node:util";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
-import { assertHostedDependencyBindingInventoryRevision, HostedDependencyReferenceKind } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { assertHostedDependencyBindingInventoryRevision, HostedDependencyReferenceKind } from "./hosted-dependency-workspace";
 import { HostedCustodyReservationState, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
-import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "./hosted-dependency-workspace";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, lstatSync, mkdirSync, unlinkSync, openSync, fsyncSync, closeSync, fstatSync, readdirSync } from "node:fs";
@@ -21,9 +21,8 @@ import {
   type HostedTestEgressIdentity,
 } from "./hosted-test-egress-contract";
 
-// Already hidden by InaccessiblePaths=-/run/user in older hosted installations.
-export const hostedTestEgressGrantRoot =
-  "/run/user/0/subscription-runtime-host-policy/codex-egress";
+import { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
+export { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
 
 export async function assertHostedTestEgressOperator(): Promise<void> {
   try {

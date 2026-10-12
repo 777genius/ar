@@ -10,8 +10,8 @@ export type Fixture = {
   readonly phaseStartSha: string;
 };
 
-export async function createFixture(): Promise<Fixture> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "subscription-runtime-project-worktree-")));
+export async function createFixture(rootDir: string = tmpdir()): Promise<Fixture> {
+  const root = await realpath(await mkdtemp(join(rootDir, "subscription-runtime-project-worktree-")));
   const sourceWorkspacePath = join(root, "source");
   await mkdir(sourceWorkspacePath, { recursive: true });
   await gitInitRepository(sourceWorkspacePath);
