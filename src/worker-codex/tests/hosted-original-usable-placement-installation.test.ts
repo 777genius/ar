@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {closeSync,constants,fstatSync,lstatSync,mkdirSync,mkdtempSync,openSync,readFileSync,readlinkSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";import {basename,dirname,join} from "node:path";import {fileURLToPath} from "node:url";
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
-import {buildOriginalUsableRecipe,originalUsablePaths as P} from "../../provider-codex/tests/hosted-original-usable-recipe.fixture";
+import {buildOriginalUsableRecipe,originalUsablePaths as P} from "./hosted-original-usable-recipe.fixture";
 import {FdCollectorRenderer,parseFdCollectorProfile,parseSystemBusInfrastructure,SYSTEM_BUS_ARGUMENTS,SYSTEM_BUS_CONFIG,SYSTEM_BUS_SERVICE_FRAGMENT,SYSTEM_BUS_SOCKET_FRAGMENT} from "@vioxen/subscription-runtime/core";
 import {HostedInstallationActivationStore} from "../hosted-installation-activation";
 import {HostedManifestLimitsRevision,openHostedDependencyManifestPlacement} from "../hosted-dependency-manifest-placement";

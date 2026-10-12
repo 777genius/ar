@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
-import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
+import { AccessBoundary } from "../../worker-core";
 import { HostedInventoryCategory, parseHostedInventoryV5 } from "../../core/host-infrastructure/host-inventory";
-import { planStoredProjectStart } from "../../worker-codex/stored-start-planning";
+import { planStoredProjectStart } from "../stored-start-planning";
 import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SystemBusQueryRenderer } from "../../core/host-infrastructure/system-bus-infrastructure";
 import { parseDependencyToolRegistration, DependencyToolTransformCache } from "../../core/dependency-environment/dependency-tool-profile";
 import { parseHostedInstallation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
