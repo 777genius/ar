@@ -11,6 +11,7 @@ import type { HostedDependencyBinding } from "../app-server/adapters/hosted-depe
 import type { HostedActivationFence } from "../app-server/adapters/hosted-process-activation";
 import type { HostedInventoryLaunch } from "../../core/host-infrastructure/host-inventory";
 import * as activationFiles from "../app-server/adapters/hosted-process-activation";
+import * as workspaceFiles from "../app-server/adapters/hosted-dependency-workspace";
 import { readHostedOriginalUsableInstallationRecipe } from "../app-server/adapters/hosted-original-usable-parent-recipe";
 import { parseHostedInstallation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
 
@@ -34,10 +35,6 @@ vi.mock("node:url", async original => {
 });
 vi.mock("../../worker-codex/hosted-ordinary-dependency-reader", () => ({
   readHostedOrdinaryDependencyParentFrame: f.parentRead,
-}));
-vi.mock("../app-server/adapters/hosted-dependency-workspace", async original => ({
-  ...await original<typeof import("../app-server/adapters/hosted-dependency-workspace")>(),
-  assertHostedDependencyPhysicalWorkspace: vi.fn(),
 }));
 vi.mock("../../worker-codex/hosted-readonly-inputs", async original => ({
   ...await original<typeof import("../../worker-codex/hosted-readonly-inputs")>(),
@@ -119,6 +116,7 @@ beforeEach(() => {
   for (const map of [f.privateBytes, f.activationBytes, f.qualificationBytes, f.procBytes, f.procLinks, f.namespaces]) map.clear();
   f.metadata.clear(); f.selected = undefined; f.parentRead.mockReset();
   f.reads.length = 0; f.birth = ""; f.group = ""; f.unit = ""; f.invocation = "";
+  vi.spyOn(workspaceFiles, "assertHostedDependencyPhysicalWorkspace").mockImplementation(() => undefined);
   vi.spyOn(activationFiles, "readHostedActivationBytes").mockImplementation(name => {
     f.reads.push(name); return f.activationBytes.get(name) ?? null;
   });
