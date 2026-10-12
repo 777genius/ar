@@ -31,6 +31,7 @@ import {
   AgentRuntimeAccessBoundary,
   AgentRuntimeBudgetMetric,
   AgentRuntimeExecutionMode,
+  deriveRuntimeStorageRoots,
   isProviderFailureCode,
 } from "@vioxen/subscription-runtime/core";
 import {
@@ -126,6 +127,20 @@ export { AuthSourceKind, ClaudeAgentRuntimeBackend };
 export type {
   AgentRuntimeTaskRunnerRunOptions,
 };
+
+type ResolvedLocalAgentRuntimeTaskRunnerInput = CreateLocalAgentRuntimeTaskRunnerInput & {
+  readonly stateRootDir: string;
+};
+
+export function resolveLocalAgentRuntimeTaskRunnerInput(input: CreateLocalAgentRuntimeTaskRunnerInput): ResolvedLocalAgentRuntimeTaskRunnerInput {
+  const storageRootDir = input.storageRootDir ??
+    (input.stateRootDir === undefined ? input.env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined);
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
+  const stateRootDir = input.stateRootDir ??
+    (roots ? join(roots.stateRootDir, "agent-runtime-task", input.provider) : undefined);
+  if (stateRootDir === undefined) throw new Error("agent_runtime_task_state_root_required");
+  return { ...input, stateRootDir };
+}
 export type { LocalAgentRuntimeTaskRunnerAuthSource } from "./auth-source";
 
 export type CreateLocalAgentRuntimeTaskRunnerInput =
@@ -144,7 +159,7 @@ export function createLocalAgentRuntimeTaskRunner(
   input: CreateLocalAgentRuntimeTaskRunnerInput,
 ): AgentRuntimeTaskRunner {
   assertAgentRuntimeTaskExecutionProfile(input.provider, input);
-  return new LocalAgentRuntimeTaskRunner(input);
+  return new LocalAgentRuntimeTaskRunner(resolveLocalAgentRuntimeTaskRunnerInput(input));
 }
 
 export function createDefaultAgentRuntimeTaskWorker(
@@ -224,7 +239,7 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
   private readonly logicalThreadCoordinator: LogicalThreadCoordinator;
 
   constructor(
-    private readonly input: CreateLocalAgentRuntimeTaskRunnerInput,
+    private readonly input: ResolvedLocalAgentRuntimeTaskRunnerInput,
   ) {
     this.codexRuntimeFeatureProbe =
       input.codexRuntimeFeatureProbe ?? new CodexCliRuntimeFeatureProbe();

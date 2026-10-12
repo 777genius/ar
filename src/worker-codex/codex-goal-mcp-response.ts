@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ProjectAdmissionDecisionReason, ProjectControlAdmissionDeniedError } from "@vioxen/subscription-runtime/worker-core";
 import { DurableHandoffPostStopError, DurableHandoffStopError } from "./codex-goal-preserve-before-stop";
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -21,6 +22,21 @@ export async function withMcpErrors(
       ok: false,
       error: error instanceof Error ? error.message : "codex_goal_mcp_error",
       ...handoff,
+      ...(error instanceof ProjectControlAdmissionDeniedError ? {
+        admission: {
+          allowed: false,
+          reason: error.decision.reason,
+          ...(error.decision.summary?.target.canonicalPath ? {
+            resource: error.decision.summary.target.canonicalPath
+              .replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 240),
+          } : {}),
+          examples: error.decision.debt.slice(0, 2).map((item) => ({
+            reason: item.reason,
+            subject: item.subject.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 240),
+          })),
+          action: admissionDeniedAction(error.decision.reason),
+        },
+      } : {}),
     };
     return {
       ...mcpJson(value),
@@ -50,4 +66,18 @@ function durableHandoffErrorEvidence(
           : {}),
       }
     : {};
+}
+
+function admissionDeniedAction(reason: ProjectAdmissionDecisionReason): string {
+  switch (reason) {
+    case ProjectAdmissionDecisionReason.DiskPressure:
+      return "Free space on the reported storage before retrying.";
+    case ProjectAdmissionDecisionReason.SnapshotStale:
+    case ProjectAdmissionDecisionReason.SnapshotUnavailable:
+      return "Refresh project state before retrying; the current observation cannot authorize this operation.";
+    case ProjectAdmissionDecisionReason.UnreadableProjectState:
+      return "Inspect the reported target or control registry and restore readable state before retrying.";
+    default:
+      return "Inspect the reported resource and owner; use an independent sibling workspace for conflicting writes.";
+  }
 }

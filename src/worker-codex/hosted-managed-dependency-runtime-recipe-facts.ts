@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import type { DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
-import { decodeHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes, parseHostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { parseFlags, option, resolvePath } from "./codex-goal-cli-support";
 import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
@@ -42,11 +43,13 @@ function fixed(name: string, maximum = 65536) { return selectedFile(`${root}/${n
 export function prepareOriginalHostedSessionRuntimeFacts(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,
   options:Parameters<typeof createFixedCodexAgentDriver>[0]["options"]) {
   const actual = readCurrentHostedManagedDependencyProviderParent(context,fence);
-    const bytes = fixed("readonly-inventory.json"), inventory = parseHostedReadonlyHostInventory(decodeHostedActivationBytes(bytes.bytes));
+    const bytes = fixed("readonly-inventory.json", hostedInventoryMaximumBytes), decoded = decodeHostedInventoryBytes(bytes.bytes);
+    const inventory = decoded && typeof decoded === "object" && "schemaVersion" in decoded && decoded.schemaVersion === 5
+      ? parseHostedInventoryV5(decoded) : parseHostedReadonlyHostInventory(decoded);
     const installation = actual.facts.kind === CurrentHostedDependencyOriginKind.Ordinary ? actual.facts.ordinary.installation : actual.facts.installation;
     if (hash(bytes.bytes) !== installation.inventorySha256) invalid();
-    const launch = readCurrentHostedDependencySignedParentRecipe(actual.facts);
-    assertHostedDependencyParentRecipe(launch.args,actual.binding.jobRootDir,actual.binding.workspace.canonicalPath);
+    const original = readCurrentHostedDependencySignedParentRecipe(actual.facts);
+    const launch = readHostedDependencyParentRecipe(original,actual.binding.jobRootDir,actual.binding.workspace.canonicalPath);
     const flags = parseFlags(launch.args.slice(2));
     const signedRoot = option(flags,{},"--state-root",[]) ?? actual.binding.jobRootDir+"/state";
     const model = option(flags,{},"--model",[]);
