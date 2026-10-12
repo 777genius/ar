@@ -17,7 +17,10 @@ import { SystemdArrayProperty, SystemdArraySignature, type SystemdEmptyArrayFact
 export type HostedFdProcess = Readonly<{ pid: number; parentPid: number; birth: string; argv: readonly string[]; exe: string; group: string;
   net: string; user: string; mount: string; pidNamespace: string; uidMap: string; gidMap: string; status: string;
   descriptors: readonly HostedFdFact[] }>;
-export type HostedFdUnit = Readonly<{ unit: string; invocation: string; group: string; mainPid: number; root: string }>;
+import { decodeHostedFdUnitLifecycle, type HostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle";
+export { decodeHostedFdUnitLifecycle, type HostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle";
+export type HostedFdUnit = Readonly<{ unit: string; invocation: string; group: string; mainPid: number; root: string;
+  lifecycle: HostedFdUnitLifecycle }>;
 const cleanEnv = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" };
 function invalid(): never { throw new Error("hosted_fd_boundary_unresolved"); }
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -144,7 +147,9 @@ export function observeHostedFdProcess(pid: number): HostedFdProcess {
 
 const unitProperties = ["Id", "InvocationID", "ControlGroup", "MainPID", "ActiveState", "FileDescriptorStoreMax",
   "NFileDescriptorStore", "TriggeredBy", "UnsetEnvironment", "PassEnvironment", "EnvironmentFiles", "ExecStart",
-  "ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "RootDirectory"] as const;
+  "ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "RootDirectory",
+  "Type", "ExitType", "RemainAfterExit", "KillMode", "SendSIGKILL", "Restart", "Delegate", "ProtectControlGroups",
+  "TimeoutStopUSec", "KillSignal", "FinalKillSignal"] as const;
 const unitArrays = [SystemdArrayProperty.ExecCondition, SystemdArrayProperty.ExecStartPre, SystemdArrayProperty.ExecStartPost,
   SystemdArrayProperty.ExecReload, SystemdArrayProperty.ExecStop, SystemdArrayProperty.ExecStopPost, SystemdArrayProperty.EnvironmentFiles] as const;
 
@@ -193,7 +198,8 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   decodeHostedFdUnitFields(result.stdout);
   const facts = observeSystemBusFdEmptyArrays(bus, unit, remaining);
   const rows = decodeHostedFdUnitFields(result.stdout, facts);
-  if (rows.size !== 19 || rows.get("Id") !== unit || !/^[a-f0-9]{32}$/.test(rows.get("InvocationID") ?? "") ||
+  const lifecycle = decodeHostedFdUnitLifecycle(rows);
+  if (rows.size !== unitProperties.length || rows.get("Id") !== unit || !/^[a-f0-9]{32}$/.test(rows.get("InvocationID") ?? "") ||
       rows.get("ActiveState") !== "active" || rows.get("FileDescriptorStoreMax") !== "0" ||
       rows.get("NFileDescriptorStore") !== "0" || rows.get("TriggeredBy") !== "" || rows.get("PassEnvironment") !== "" ||
       rows.get("EnvironmentFiles") !== "" || hostedFdUnsetEnvironment.split(" ").some(key =>
@@ -216,7 +222,8 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (!current || !current.inventoryBytes.equals(installed.inventoryBytes) ||
       !current.installationBytes.equals(installed.installationBytes)) invalid();
   observationTimeout(5000, remaining);
-  return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")), root: rows.get("RootDirectory")! });
+  return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")),
+    root: rows.get("RootDirectory")!, lifecycle });
 }
 
 export function collectHostedFdPeers(profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): ReadonlyMap<string, FdCollectorPeer> {

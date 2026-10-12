@@ -134,7 +134,7 @@ function assertMemoryAdmission(request, memoryInfo) {
 }
 
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
-export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
+export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--mount', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '--', UNSHARE_PATH, '--user', '--map-user=65532', '--map-group=65532', '--keep-caps', '--', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
 
 // The request contains identity and payload data, never systemd options.
 export function parseInvocation(request) {

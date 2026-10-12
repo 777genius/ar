@@ -11,6 +11,9 @@ import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-p
 import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-provider-launch";
 import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
+import { hostedFdNamespacePrefix, hostedFdNamespaceStage, assertHostedFdNamespaceAncestry } from "./hosted-fd-namespace-stages";
+import { retainOriginalFullSetupIntent, type OriginalFullSetup } from "./hosted-full-setup-channel";
+import { readHostedFdUnitPolicy, assertHostedFdUnitPolicy, sameHostedFdUnitLifecycle, type HostedFdUnitPolicy } from "./hosted-fd-unit-policy";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
@@ -51,6 +54,13 @@ const socket = (fd: HostedFdFact): string => {
   return match[1]!;
 };
 type Proof = Readonly<{ unit: HostedFdUnit; proxy: HostedFdProcess; bootstrap: HostedFdProcess; endpoints: readonly string[] }>;
+function serviceRecipe(profile:FdCollectorProfile,command:string,args:readonly string[]) {
+  if(command===hostedDependencySystemdRunExecutable){const at=args.indexOf("--"),roots=args.filter(arg=>arg.startsWith("--property=RootDirectory="));
+    if(at<0 || roots.length>1)invalid();return {argv:Object.freeze(args.slice(at+1)),root:roots[0]?.slice("--property=RootDirectory=".length)??"",job:undefined};}
+  const request=JSON.parse(args[2]!) as {jobId:string;payload:string[]};
+  if(args[0]!=="/opt/subscription-runtime/managed-launcher/launch.mjs" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId))invalid();
+  return {argv:Object.freeze([...hostedFdNamespacePrefix,profile.node.path,"/opt/subscription-runtime/managed-launcher/payload-guard.mjs","--job-id",request.jobId,"--",...request.payload]),root:"",job:request.jobId};
+}
 
 /** Owns the real streams from this exact fixed spawn. No serialized object can
  * reconstruct the launch, endpoint ownership or a successful release. */
@@ -60,13 +70,16 @@ export class HostedFdLaunch {
   readonly #input: Writable;
   readonly #output: NodeJS.ReadableStream | null;
   readonly #errorOutput: NodeJS.ReadableStream | null;
-  readonly #started = process.hrtime.bigint();
+  readonly #started:bigint;
+  readonly #fullSetup:OriginalFullSetup|undefined;
+  #fullSetupBorn=false;
   readonly #proxyBirth: string;
   readonly #profile: FdCollectorProfile;
   readonly #originalParentSockets: ReadonlySet<string>;
   readonly #serviceArgv: readonly string[];
   readonly #managedJobId: string | undefined;
   readonly #root: string;
+  readonly #originalUnitPolicy: HostedFdUnitPolicy;
   #proof: Proof | undefined;
   #released = false;
   #invalidated = false;
@@ -83,25 +96,13 @@ export class HostedFdLaunch {
   readonly outputPaths: readonly string[];
 
   private constructor(readonly child: ChildProcess, readonly unit: string, readonly kind: HostedFdLaunchKind,
-    profile: FdCollectorProfile, before: readonly HostedFdFact[], command: string, args: readonly string[]) {
+    profile: FdCollectorProfile, before: readonly HostedFdFact[], command: string, args: readonly string[], started:bigint, fullSetup:OriginalFullSetup|undefined, originalUnitPolicy:HostedFdUnitPolicy) {
+    this.#started=started;this.#fullSetup=fullSetup;this.#originalUnitPolicy=originalUnitPolicy;
     this.#physicalChild = child;
     if (!child.pid || !child.stdin) invalid();
     this.#profile = profile; this.#input = child.stdin; this.#output = child.stdout; this.#errorOutput = child.stderr;
     this.#proxyBirth = readHostedFdProcessBirth(child, unit, kind, command, args);
-    if (command === hostedDependencySystemdRunExecutable) {
-      const at = args.indexOf("--"); if (at < 0) invalid(); this.#serviceArgv = Object.freeze(args.slice(at + 1));
-      const roots = args.filter(arg => arg.startsWith("--property=RootDirectory="));
-      if (roots.length > 1) invalid(); this.#root = roots[0]?.slice("--property=RootDirectory=".length) ?? "";
-    } else {
-      const request = JSON.parse(args[2]!) as { jobId: string; payload: string[] };
-      if (args[0] !== "/opt/subscription-runtime/managed-launcher/launch.mjs" ||
-          !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId)) invalid();
-      this.#managedJobId = request.jobId;
-      this.#root = "";
-      this.#serviceArgv = Object.freeze(["/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
-        "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--",
-        profile.node.path, "/opt/subscription-runtime/managed-launcher/payload-guard.mjs", "--job-id", request.jobId, "--", ...request.payload]);
-    }
+    const recipe=serviceRecipe(profile,command,args);this.#serviceArgv=recipe.argv;this.#root=recipe.root;this.#managedJobId=recipe.job;
     this.#originalParentSockets = new Set(before.filter(fd => fd.socket).map(socket));
     const logs: { path: string; fd: number; dev: number; ino: number }[] = [];
     try { if (kind === HostedFdLaunchKind.Foreground) for (const name of ["stdout", "stderr"]) logs.push(this.#createLog(name)); }
@@ -319,7 +320,9 @@ export class HostedFdLaunch {
       this.#remaining();
       try {
         if (this.kind !== HostedFdLaunchKind.Installer && !this.#ready) invalid();
-        this.#proof = this.#collect(); return;
+        this.#proof = this.#collect();
+        if(this.#fullSetup && !this.#fullSetupBorn){this.#fullSetup.born(this.#physicalChild,this.#proof,()=>this.#remaining());this.#fullSetupBorn=true;}
+        return;
       } catch {
         this.#remaining(); await new Promise(resolve => setTimeout(resolve, 20));
       }
@@ -333,6 +336,8 @@ export class HostedFdLaunch {
     const profile = readHostedFdProfile(remaining);
     if (!profile || JSON.stringify(profile) !== JSON.stringify(this.#profile) || !this.child.pid) invalid();
     const unit = observeHostedFdUnit(this.unit, this.#serviceArgv, remaining), proxy = observeHostedFdProcess(this.child.pid);
+    assertHostedFdUnitPolicy(this.#originalUnitPolicy,unit.lifecycle);
+    if (this.#proof && !sameHostedFdUnitLifecycle(this.#proof.unit.lifecycle,unit.lifecycle)) invalid();
     if (unit.root !== this.#root) invalid();
     if (proxy.birth !== this.#proxyBirth || proxy.net !== observeHostedFdProcess(process.pid).net) invalid();
     if (proxy.exe !== profile.node.path && !profile.wrappers.some(pin => pin.path === proxy.exe)) invalid();
@@ -342,11 +347,12 @@ export class HostedFdLaunch {
     const bootstraps = candidates.filter(p => p.exe === profile.node.path &&
       (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || this.kind !== HostedFdLaunchKind.Remover && p.argv[1] === "/runtime/bootstrap.js"));
     if (bootstraps.length !== 1 || !candidates.some(p => p.pid === unit.mainPid)) invalid();
+    assertHostedFdNamespaceAncestry(this.#serviceArgv,candidates,unit.mainPid);
     for (const p of candidates) {
       if (p.group !== `0::${unit.group}`) invalid();
       if (p !== bootstraps[0]) {
         if (profile.wrappers.some(pin => pin.path === p.exe)) {
-          const at = this.#serviceArgv.indexOf(p.exe);
+          const at = this.#serviceArgv[0]==="/usr/bin/unshare" ? hostedFdNamespaceStage(this.#serviceArgv,p) : this.#serviceArgv.indexOf(p.exe);
           if (at < 0 || JSON.stringify(p.argv) !== JSON.stringify(this.#serviceArgv.slice(at))) invalid();
         } else {
           if (!this.#managedJobId) invalid(); assertHostedFdManagedGuard(p, profile, this.#managedJobId, remaining);
@@ -393,6 +399,7 @@ export class HostedFdLaunch {
     const current = this.#collect(), old = this.#proof;
     if (current.unit.invocation !== old.unit.invocation || current.unit.group !== old.unit.group ||
         current.unit.mainPid !== old.unit.mainPid || current.unit.root !== old.unit.root ||
+        !sameHostedFdUnitLifecycle(current.unit.lifecycle,old.unit.lifecycle) ||
         current.bootstrap.birth !== old.bootstrap.birth || current.proxy.birth !== old.proxy.birth ||
         current.bootstrap.exe !== old.bootstrap.exe || current.bootstrap.group !== old.bootstrap.group ||
         current.bootstrap.net !== old.bootstrap.net || current.bootstrap.user !== old.bootstrap.user ||
@@ -421,6 +428,8 @@ export class HostedFdLaunch {
     if (this.kind === HostedFdLaunchKind.Remover && (!end ||
         !Buffer.from(frame).equals(Buffer.from("subscription-runtime-remover-fd-release-v1\n")))) invalid();
     this.#remaining();
+    this.#fullSetup?.revalidate(()=>this.#remaining());
+    revalidateOwner();this.#remaining();
     this.#input.write(frame);
     this.#released = true;
     if (end) this.#input.end();
@@ -434,11 +443,29 @@ export class HostedFdLaunch {
     if (!profile || (command !== profile.node.path && command !== hostedDependencySystemdRunExecutable)) invalid();
     if (command === profile.node.path && !profile.bootstraps.some(pin => pin.path === args[0] &&
         pin.path === "/opt/subscription-runtime/managed-launcher/launch.mjs")) invalid();
+    args=Object.freeze([...args]);
+    // Manager arguments are retained before the HOST intent or physical submit.
+    // A protected managed launcher selects these fixed properties internally;
+    // its exact entrypoint/request is already retained by this constructor.
+    let policyArgs=args;
+    if(command===profile.node.path){
+      const request=JSON.parse(args[2]!) as {operation:unknown;limits?:{stopSeconds:unknown}};
+      if(args[1]!==request.operation || !["provider","job"].includes(String(request.operation)))invalid();
+      const stop=request.operation==="job"?request.limits?.stopSeconds:30;
+      if(!Number.isSafeInteger(stop) || Number(stop)<1)invalid();
+      policyArgs=Object.freeze(["--service-type=exec","--property=KillMode=control-group","--property=SendSIGKILL=yes",
+        "--property=Delegate=no","--property=Restart=no","--property=ProtectControlGroups=yes",
+        "--property=TimeoutStopSec="+String(stop),"--"]);
+    }
+    const originalUnitPolicy=readHostedFdUnitPolicy(policyArgs);
     const before = hostedFdTable(process.pid);
+    const started=process.hrtime.bigint(),remaining=()=>{const value=profile.limits.setupTimeoutMs-Number((process.hrtime.bigint()-started)/1000000n);if(value<1)invalid();return value;};
+    const recipe=serviceRecipe(profile,command,args);
+    const fullSetup=recipe.argv[0]==="/usr/bin/unshare" || recipe.argv[0]===profile.node.path && ["hosted-readonly-host-launch-cli.js","hosted-readonly-runtime-bootstrap.js"].some(name=>recipe.argv[1]?.endsWith("/"+name)) ? retainOriginalFullSetupIntent(unit,command,args,recipe.argv,observeHostedFdProcess(process.pid),kind,remaining) : undefined;
     const child = spawnHostedFdProcess(command, args, options, unit, kind, original);
     child.once("error", () => {}); // A synchronous setup failure must not leave an unhandled spawn error.
     try {
-      const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args);
+      const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args,started,fullSetup,originalUnitPolicy);
       launches.set(child, launch); cleanupUnits.set(child, unit); Object.freeze(launch); return child;
     } catch (error) {
       invalidateHostedFdProcess(child);

@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalFullProviderSetupTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../src/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { H1DescriptorKind, H1ReadinessRecord, parseH1Request, readH1ReadinessRecord, readOriginalH1Observer, readOriginalH1SupervisorAcceptance } from "./current-removal-h1-fixture.js";
@@ -814,6 +814,16 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     if(!devices(prefix+"/root/dev",0))return false;
     return true;
   }
+  /** Only the original provider constructor's retained setup child. The
+   * privileged waiter has precisely the original three FDA stdio endpoints;
+   * no namespace, proc, device, foreign control socket or backing FD is waived. */
+  function originalProviderSetup(anchor:FullProcTaskAnchor,joins:readonly Record<string,unknown>[],exposures:ReadonlySet<FullBackingExposure>):boolean {
+    const fact=readOriginalFullProviderSetupTask(parent,anchor);if(!fact)return false;
+    assert(fact.pid===anchor.processPid && fact.birth===anchor.processBirth && fact.mountNamespace===readlinkSync(anchor.path+"/ns/mnt"));
+    for(const exposure of exposures)assert([FullBackingExposure.PrivilegeCandidate,FullBackingExposure.StorageMount,FullBackingExposure.SocketDescriptor].includes(exposure));
+    for(const join of joins){const fd=fact.descriptors.find(fd=>String(fd.fd)===join.fd);assert(fd && fd.fd<3 && fd.socket && fd.dev===String(join.dev) && fd.ino===String(join.ino));}
+    anchor.revalidate();assert.deepEqual(readOriginalFullProviderSetupTask(parent,anchor),fact);return true;
+  }
   function loopFacts(refusals:Set<FullBackingRefusal>):Record<string,unknown>|null {
     if(loopFd===undefined || !loopStat){refusals.add(FullBackingRefusal.LoopUnavailable);
       return null;
@@ -922,7 +932,9 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
                 // candidate, ALL such inherited routes remain veto checks.
                 if(relevant){assert(owners.length<256);
                   const monitor=originalMonitor(taskAnchor,user,mnt,fdJoins),h1Actor=originalH1(taskAnchor,fdJoins,exposures);
-                  const original=pid===process.pid || (pid===selection!.pid && tid===pid) || monitor || h1Actor || originalGuest(pid,prefix,user);
+                  const providerSetup=originalProviderSetup(taskAnchor,fdJoins,exposures);
+                  const original=pid===process.pid || (pid===selection!.pid && tid===pid) || monitor || h1Actor || providerSetup || originalGuest(pid,prefix,user);
+                  if(providerSetup){const anchored=taskAnchor;memberships.push(()=>assert(originalProviderSetup(anchored,fdJoins,exposures)));}
                   if(h1Actor){const anchored=taskAnchor;memberships.push(()=>assert(originalH1(anchored,fdJoins,exposures)));}
                   if(monitor){const anchored=taskAnchor;memberships.push(()=>{
                     assert(originalMonitor(anchored,readlinkSync(anchored.path+"/ns/user"),readlinkSync(anchored.path+"/ns/mnt"),fdJoins));

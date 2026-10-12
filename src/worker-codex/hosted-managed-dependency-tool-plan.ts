@@ -762,7 +762,7 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
   const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
     args: ["--quiet", "--wait", "--pipe", `--unit=${unit}`, "--service-type=exec",
       "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
-      "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
+      "/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL", "--", "/usr/bin/unshare", "--user", "--map-user=65532", "--map-group=65532", "--keep-caps", "--",
       "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
       "/usr/bin/tini", "--", node, launcher, ...(fdProfile ? ["--fd-ready-v1"] : [])],
     stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...input, command: executable, args: [...input.args] }) };

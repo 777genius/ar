@@ -95,7 +95,7 @@ let deadline = earlier(workDeadline, scenarioStarted + milliseconds(22 * 60 * 10
 const command = (file: string, args: readonly string[], timeout = 30000): string => boundedCommand(file, args, deadline, timeout);
 try {
   remaining(deadline);
-  directory(outbox);directory(outbox+"/current-full-pulses");directory(reviewed);
+  directory(outbox);directory(outbox+"/current-full-pulses");directory(outbox+"/current-full-provider-setups");directory(reviewed);
   assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry,managedParent.removalCase);
   remaining(deadline);
   // Boot replaces guest /run with tmpfs. Keep protected inputs outside it and
@@ -228,6 +228,7 @@ try {
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     remaining(deadline);
+    managedParent.observeProviderSetupRequests();
     if(managedParent.removalCase===FullRemovalCase.ParentCrashH1 && !h1Observer && readH1ReadinessRecord(outbox,H1ReadinessRecord.Request)){
       assert(evidence.backingIntervalQualified);h1Observer=await startOriginalH1StagedObserver(managedParent);await h1Observer.armed;
     }

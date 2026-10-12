@@ -49,7 +49,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   const executable = resolveExecutable(input.command, input.env.PATH);
   const node = trusted(realpathSync(process.execPath));
   const launcher = trusted(fileURLToPath(new URL("./hosted-app-server-launcher.js", import.meta.url)));
-  const operands = ["/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
+  const operands = ["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL", "--", "/usr/bin/unshare", "--user", "--map-user=65532", "--map-group=65532", "--keep-caps", "--",
     "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
     "/usr/bin/tini", "--", node, launcher, ...(fdProfile ? ["--fd-ready-v1"] : [])];
   // A refused capability or literal proof must not create a provider root.

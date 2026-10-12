@@ -201,7 +201,7 @@ async function worker(): Promise<void> {
       if (outputSize > 4096) { outputFailed = true; activeGuard.invalidate(); } else stdout.push(data); });
     child.stdout!.once("end", () => { outputEnded = true; }); child.stdout!.once("error", () => { outputFailed = true; });
     await guard.observe(); clock.remaining();
-    const serviceArgv = ["/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
+    const serviceArgv = ["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL", "--", "/usr/bin/unshare", "--user", "--map-user=65532", "--map-group=65532", "--keep-caps", "--",
       "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--",
       profile.node.path, "/opt/subscription-runtime/managed-launcher/payload-guard.mjs", "--job-id", jobId, "--", ...payload];
     await owned.bind("/usr/bin/unshare", serviceArgv, profile.node.path);

@@ -141,7 +141,7 @@ test('provider bootstrap is constructed internally and trusted before admission'
     '/opt/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv', '/usr/bin/tini']);
   assert.ok(invocation.args.includes(`--property=CapabilityBoundingSet=${bootstrapCaps}`));
   const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
-  assert.deepEqual(command.slice(0, 3), ['/usr/bin/unshare', '--map-user=65532', '--map-group=65532']);
+  assert.deepEqual(command.slice(0, 3), ['/usr/bin/unshare', '--mount', '--pid']);
   assert.ok(command.indexOf('--bounding-set=-all') < command.indexOf(PAYLOAD_GUARD_PATH));
   assert.ok(command.indexOf(PAYLOAD_GUARD_PATH) < command.indexOf(provider.payload[0]));
   assert.ok(invocation.args.includes('--pipe'));
@@ -159,8 +159,8 @@ test('both operations run Tini after dropping capabilities and before Node', asy
     const { args } = await build(request);
     const command = args.slice(args.indexOf('--') + 1);
     assert.deepEqual(command.slice(0, command.indexOf(PAYLOAD_GUARD_PATH)), [
-      '/usr/bin/unshare', '--map-user=65532', '--map-group=65532', '--keep-caps',
-      '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '/usr/bin/setpriv',
+      '/usr/bin/unshare', '--mount', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '--',
+      '/usr/bin/unshare', '--user', '--map-user=65532', '--map-group=65532', '--keep-caps', '--', '/usr/bin/setpriv',
       '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
       '/usr/bin/tini', '--', '/TRUSTED/node',
     ]);

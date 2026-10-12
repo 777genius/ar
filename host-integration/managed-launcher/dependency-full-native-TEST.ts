@@ -1,27 +1,33 @@
+import { H1ElfRole, validateH1ElfRole } from "./dependency-full-h1-elf-role-TEST.js";
 import {H1ConstructorHeld,h1HeldError,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
 import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
+import { originalProviderSetupSlot, providerSetupQueryClosureData, type OriginalSetupTask, type OriginalSetupFact } from "./dependency-full-provider-setup-TEST.js";
 import { managedSystemdRunExecutable, fullPositiveTestRoot, fullPositiveTestJob, fullPositiveTestEntry, parseNativeUnitProperties } from "./launch.mjs";
 import {H1CatalogKind,H1MountOrigin,H1StagedSlotState,H1StagedActorRole,h1StagedObserverBootstrap,h1StagedSubjectData,retainH1StagedCatalogData,requireQualifiedH1StagedConstructor,type H1StagedSubject,type H1StagedObserverPrepared} from "./dependency-full-h1-staged-tools-TEST.js";
 const fullPositiveTestCohort = Object.freeze([
-  ["host-jobs/manager.mjs", "host-jobs/manager.mjs"],
-  ["host-jobs/contract.mjs", "host-jobs/contract.mjs"],
+  ["host-integration/host-jobs/manager.mjs", "host-jobs/manager.mjs"],
+  ["host-integration/host-jobs/contract.mjs", "host-jobs/contract.mjs"],
   // Existing installedModules pins this DATA leaf; the TEST manager never executes it.
-  ["host-jobs/endpoint.mjs", "host-jobs/endpoint.mjs"],
-  ["host-jobs/storage-policy.mjs", "host-jobs/storage-policy.mjs"],
-  ["managed-launcher/launch.mjs", "managed-launcher/launch.mjs"],
-  ["managed-launcher/profiles.mjs", "managed-launcher/profiles.mjs"],
-  ["managed-launcher/payload-guard.mjs", "managed-launcher/payload-guard.mjs"],
-  ["managed-launcher/hosted-host-policy.mjs", "managed-launcher/hosted-host-policy.mjs"],
-  ["managed-launcher/full-positive-test-profile.mjs", "managed-launcher/full-positive-test-profile.mjs"],
-  ["managed-launcher/launch-full-positive-TEST.mjs", "managed-launcher/launch-full-positive-TEST.mjs"],
-  ["host-jobs/full-positive-manager-TEST.mjs", "host-jobs/full-positive-manager-TEST.mjs"],
-  ["managed-launcher/dependency-full-native-TEST.js", "managed-launcher/dependency-full-native-TEST.mjs"],
-  ["managed-launcher/dependency-full-h1-staged-tools-TEST.js", "managed-launcher/dependency-full-h1-staged-tools-TEST.js"],
-  ["managed-launcher/dependency-full-h1-constructor-closure-TEST.js", "managed-launcher/dependency-full-h1-constructor-closure-TEST.js"],
-  ["managed-launcher/dependency-full-h1-rooted-reader-TEST.js", "managed-launcher/dependency-full-h1-rooted-reader-TEST.js"],
-  ["managed-launcher/dependency-full-h1-elf-role-TEST.js", "managed-launcher/dependency-full-h1-elf-role-TEST.js"],
-  ["managed-launcher/dependency-full-python-envelope-TEST.js", "managed-launcher/dependency-full-python-envelope-TEST.js"],
-  ["managed-launcher/dependency-full-positive-copy-TEST.js", "managed-launcher/dependency-full-positive-copy-TEST.js"],
+  ["host-integration/host-jobs/endpoint.mjs", "host-jobs/endpoint.mjs"],
+  ["host-integration/host-jobs/storage-policy.mjs", "host-jobs/storage-policy.mjs"],
+  ["host-integration/managed-launcher/launch.mjs", "managed-launcher/launch.mjs"],
+  ["host-integration/managed-launcher/profiles.mjs", "managed-launcher/profiles.mjs"],
+  ["host-integration/managed-launcher/storage-pressure-guard.mjs", "managed-launcher/storage-pressure-guard.mjs"],
+  ["host-integration/managed-launcher/payload-guard.mjs", "managed-launcher/payload-guard.mjs"],
+  ["host-integration/managed-launcher/hosted-host-policy.mjs", "managed-launcher/hosted-host-policy.mjs"],
+  ["host-integration/managed-launcher/full-positive-test-profile.mjs", "managed-launcher/full-positive-test-profile.mjs"],
+  ["host-integration/managed-launcher/launch-full-positive-TEST.mjs", "managed-launcher/launch-full-positive-TEST.mjs"],
+  ["host-integration/host-jobs/full-positive-manager-TEST.mjs", "host-jobs/full-positive-manager-TEST.mjs"],
+  ["host-integration/managed-launcher/dependency-full-native-TEST.js", "managed-launcher/dependency-full-native-TEST.mjs"],
+  ["host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js", "managed-launcher/dependency-full-h1-staged-tools-TEST.js"],
+  ["host-integration/managed-launcher/dependency-full-h1-constructor-closure-TEST.js", "managed-launcher/dependency-full-h1-constructor-closure-TEST.js"],
+  ["host-integration/managed-launcher/dependency-full-h1-rooted-reader-TEST.js", "managed-launcher/dependency-full-h1-rooted-reader-TEST.js"],
+  ["host-integration/managed-launcher/dependency-full-h1-elf-role-TEST.js", "managed-launcher/dependency-full-h1-elf-role-TEST.js"],
+  ["host-integration/managed-launcher/dependency-full-python-envelope-TEST.js", "managed-launcher/dependency-full-python-envelope-TEST.js"],
+  ["host-integration/managed-launcher/dependency-full-positive-copy-TEST.js", "managed-launcher/dependency-full-positive-copy-TEST.js"],
+  ["host-integration/managed-launcher/dependency-full-provider-setup-TEST.js", "managed-launcher/dependency-full-provider-setup-TEST.js"],
+  ["dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js", "managed-launcher/hosted-fd-unit-lifecycle.js"],
+  ["dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js", "managed-launcher/hosted-fd-unit-policy.js"],
 ] as const);
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
  * capabilities, roots or commands. Protected reviews are independently issued. */
@@ -33,6 +39,7 @@ import { types } from "node:util";
 import {performance} from "node:perf_hooks";
 import {PassThrough} from "node:stream";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 export const fullNativeJob=fullPositiveTestJob;
 export const fullNativeInputBase="/srv/workers/jobs/"+fullNativeJob+"/input";
 export const fullNativeTmpDir="/srv/workers/jobs/"+fullNativeJob+"/tmp";
@@ -281,7 +288,7 @@ export function fullHostToolsData(review:Record<string,unknown>) {
     else {const subject=h1StagedSubjectData(review.h1StagedSubject);check(subject.sourceSha===review.sourceSha && subject.machineId===review.machineId && subject.bootId===review.bootId);}}
   if(exceptional && !stagedH1){check(review.schemaVersion===2 && review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);fullPositiveAccountData(review.accountName);}
   if(stagedH1)check(libcSelected && sharedSelected);
-  const tools=fullData(review.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(review.removalCase===FullRemovalCase.ParentCrashH1 && !stagedH1?["h1PythonClosure","h1NsenterClosure"]:[]),...(libcSelected?["positiveHostLibc"]:[]),...(sharedSelected?["positiveHostSystemdShared"]:[])]);
+  const tools=fullData(review.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(Object.hasOwn(review.hostTools as object,"namespaceSetupQueryClosure")?["namespaceSetupQueryClosure"]:[]),...(review.removalCase===FullRemovalCase.ParentCrashH1 && !stagedH1?["h1PythonClosure","h1NsenterClosure"]:[]),...(libcSelected?["positiveHostLibc"]:[]),...(sharedSelected?["positiveHostSystemdShared"]:[])]);
   const positive=libcSelected?fullPositiveHostLibcData(tools.positiveHostLibc):undefined,shared=sharedSelected?fullPositiveHostSystemdSharedData(tools.positiveHostSystemdShared):undefined;
   if(positive||shared){
     const input=tools.systemdNspawnClosure;check(Array.isArray(input) && !types.isProxy(input) && Object.getPrototypeOf(input)===Array.prototype);
@@ -476,7 +483,7 @@ function acquire(context:RootContext=RootContext.Launcher){
       const fd=pins.publicFile(source+"/"+row.path,row.sha256);total+=fstatSync(fd).size;check(total<=512*1024*1024);paths.add(row.path);}
     // ALL fixed copied and imported leaves derive from the authenticated catalog.
     for(const [candidate,target] of fullPositiveTestCohort){
-      const relative="host-integration/"+candidate;check(paths.has(relative));
+      const relative=candidate;check(paths.has(relative));
       const row=fullData(catalog.files.find((entry:unknown)=>fullData(entry,["path","sha256"]).path===relative),["path","sha256"]);
       pins.publicFile(source+"/"+relative,requireDigest(row.sha256));
       if(!installing)pins.publicFile(integration+"/"+target,requireDigest(row.sha256));
@@ -532,7 +539,7 @@ export async function installFullPositiveTestAndComposeRequest(){
       return {sourceFd:fd,sourceIdentity:identity(stat),name,mode:0o755,children};
     }
     const directories=["host-jobs","managed-launcher"].map(name=>cohortDirectory(c.tuple.source+"/host-integration/"+name,name,
-      fullPositiveTestCohort.filter(([,target])=>target.startsWith(name+"/")).map(([candidate,target])=>snapshot(c.tuple.source+"/host-integration/"+candidate,basename(target)))));
+      fullPositiveTestCohort.filter(([,target])=>target.startsWith(name+"/")).map(([candidate,target])=>snapshot(c.tuple.source+"/"+candidate,basename(target)))));
     const cohort=cohortDirectory(c.tuple.source+"/host-integration",basename(integration),directories);
     const catalog=snapshot(positiveInstallationStage+"/public-installation.json","public-installation.json");
     const outer=snapshot(positiveInstallationStage+"/outer-review","TEST-full-outer-review"),publicReview=snapshot(positiveInstallationStage+"/public-review","TEST-real-codex-public-review");
@@ -1138,6 +1145,11 @@ export type FullMonitorTaskAnchor=Readonly<{path:string;processPid:number;proces
 export type FullMonitorTaskFact=Readonly<{pid:number;birth:string;taskBirth:string;invocationId:string;
   sourceBeforeSubmitSha256:string;mountNamespace:string;namespaceDevice:string;namespaceInode:string}>;
 const fullMonitorReaders=new WeakMap<object,(task:FullMonitorTaskAnchor)=>FullMonitorTaskFact|undefined>();
+const fullProviderSetupReaders=new WeakMap<object,(task:OriginalSetupTask)=>OriginalSetupFact|undefined>();
+/** Only the original parent's constructor-owned slot can designate setup. */
+export function readOriginalFullProviderSetupTask(parent:object,task:OriginalSetupTask):OriginalSetupFact|undefined {
+  check(fullParents.has(parent));return fullProviderSetupReaders.get(parent)?.(task);
+}
 /** Facts of ONE causally submitted original monitor, never PID/unit enrollment. */
 export function readOriginalFullMonitorTask(parent:object,task:FullMonitorTaskAnchor):FullMonitorTaskFact|undefined {
   check(fullParents.has(parent));const read=fullMonitorReaders.get(parent);check(read);return read(task);
@@ -1155,6 +1167,7 @@ export interface FullParentSession {
   registerGuest(id:string,root:string,fragmentSha256:string):void;
   submitGuest(id:string):void;
   observeGuestInvocation(id:string,guestInvocationId:string):void;
+  observeProviderSetupRequests():void;
   close(terminal:unknown):Promise<void>;
 }
 let retainedFullParent:FullParentSession|undefined;
@@ -1163,6 +1176,31 @@ export function retainCurrentFullParent():FullParentSession {
   if(retainedFullParent){assertRetainedCurrentFullParent(retainedFullParent);return retainedFullParent;}
   const c=acquire(RootContext.Parent);let closed=false,invocation:string|undefined,guestId:string|undefined,guestHash:string|undefined;
   let h1StagedSlot:ReturnType<typeof originalH1StagedSlot>|undefined;
+  let providerSetupSlot:ReturnType<typeof originalProviderSetupSlot>|undefined;
+  const guestSourceFiles=new Map<string,number>();
+  let registeredGuestRoot:string|undefined;
+  // The HOST query tool is independently selected DATA, physically retained
+  // by this original constructor BEFORE guest submission. Current tool hashes
+  // and a payload's request cannot substitute for a missing original closure.
+  const namespaceQueryFiles:number[]=[];let namespaceQueryTool:ReturnType<typeof providerSetupQueryClosureData>|undefined;
+  const namespaceTools=fullHostToolsData(fullReviewData(c.pins.json(reviewPath,32768)));
+  if(namespaceTools.namespaceSetupQueryClosure!==undefined){const rows=namespaceTools.namespaceSetupQueryClosure;check(Array.isArray(rows) && rows.length>1 && rows.length<=64);let previous="",executables=0;const facts:{path:string;soname:string;needed:readonly string[];interpreter:string|null}[]=[];
+    for(const value of rows){const row=fullData(value,["path","sha256","soname"]);check(typeof row.soname==="string" && typeof row.path==="string" && (row.path==="/usr/bin/nsenter" || /^\/usr\/lib\/[A-Za-z0-9_.+/-]+$/.test(row.path)) && !row.path.split("/").some(part=>part==="." || part==="..") && row.path>previous);previous=row.path;
+      const expected=requireDigest(row.sha256),fd=row.path===h1LibcPath && namespaceTools.positiveHostLibc!==undefined?c.h1LibcPins.holdPositive(c.pins,namespaceTools.positiveHostLibc):row.path===positiveHostSystemdSharedPath && namespaceTools.positiveHostSystemdShared!==undefined?c.h1LibcPins.holdPositiveSystemdShared(c.pins,namespaceTools.positiveHostSystemdShared):c.pins.publicFile(row.path,expected),bytes=readFd(fd);check(hash(bytes)===expected);check(bytes.length>=64 && bytes.subarray(0,4).equals(Buffer.from([127,69,76,70])) && bytes[4]===2 && bytes[5]===1 && bytes.readUInt16LE(18)===62);const role=row.path==="/usr/bin/nsenter"?H1ElfRole.Program:row.path==="/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"?H1ElfRole.Loader:row.path===h1LibcPath?H1ElfRole.Libc:H1ElfRole.SharedObject,elf=validateH1ElfRole(bytes,role,role===H1ElfRole.Libc||role===H1ElfRole.SharedObject?row.soname:undefined,role===H1ElfRole.Libc?h1LibcPath:undefined);check((elf.soname??"")===row.soname);facts.push({path:row.path,soname:row.soname,needed:elf.needed,interpreter:elf.interpreter});namespaceQueryFiles.push(fd);if(row.path==="/usr/bin/nsenter"){check((fstatSync(fd).mode&0o111)!==0);executables++;}}
+    check(executables===1);namespaceQueryTool=providerSetupQueryClosureData(facts);c.validate();}
+  // Negative loader configuration fact, captured before guest submission and
+  // repeated before every query. A current executable hash is never admission.
+  const preloadPath="/etc/ld.so.preload";
+  const emptyPreload=()=>{let file:Stats|undefined;try{file=lstatSync(preloadPath);}catch(error){check((error as NodeJS.ErrnoException).code==="ENOENT");}
+    if(file){check(file.isFile() && !file.isSymbolicLink() && file.uid===0 && file.gid===0 && file.nlink===1 && !(file.mode&0o022) && file.size<=4096);check(readFileSync(preloadPath).toString("utf8").trim()==="");return {dev:file.dev,ino:file.ino,mode:file.mode,ctime:file.ctimeMs,mtime:file.mtimeMs};}return null;};
+  const preloadFact=emptyPreload();
+  function checkQueryPreload(){check(JSON.stringify(emptyPreload())===JSON.stringify(preloadFact));}
+  function guestRecipeSources(paths:readonly string[]){revalidate();check(registeredGuestRoot && paths.length>0 && paths.length<=4);const root=registeredGuestRoot,seen=new Set<string>();
+    const canonical=(path:string)=>{const physical=realpathSync(root+path);check(physical.startsWith(root+"/"));const name=physical.slice(root.length);const fd=guestSourceFiles.get(name);check(fd!==undefined);const actual=statSync(physical),held=fstatSync(fd);check(actual.dev===held.dev && actual.ino===held.ino);return {name,fd};};
+    const dependency=(name:string)=>{check(/^[A-Za-z0-9_.+-]+$/.test(name));const targets=new Map<string,string>();for(const directory of ["/usr/lib/x86_64-linux-gnu","/usr/lib/x86_64-linux-gnu/systemd","/usr/lib64"]){let physical:string;try{physical=realpathSync(root+directory+"/"+name);}catch(error){check((error as NodeJS.ErrnoException).code==="ENOENT");continue;}check(physical.startsWith(root+"/"));const st=statSync(physical);targets.set(st.dev+":"+st.ino,physical.slice(root.length));}check(targets.size===1);return [...targets.values()][0]!;};
+    function visit(path:string,soname?:string){const selected=canonical(path);if(seen.has(selected.name))return;check(seen.size<64);seen.add(selected.name);const bytes=readFd(selected.fd),role=selected.name==="/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"?H1ElfRole.Loader:soname==="libc.so.6"?H1ElfRole.Libc:soname?H1ElfRole.SharedObject:H1ElfRole.Program;
+      const elf=validateH1ElfRole(bytes,role,role===H1ElfRole.Libc||role===H1ElfRole.SharedObject?soname:undefined,role===H1ElfRole.Libc?h1LibcPath:undefined);if(elf.interpreter)visit(elf.interpreter);for(const name of elf.needed)visit(dependency(name),name);}
+    for(const path of paths)visit(path);const guestPreload=root+preloadPath;try{const file=lstatSync(guestPreload);check(file.isFile() && !file.isSymbolicLink() && file.uid===0 && file.gid===0 && !(file.mode&0o022) && file.size<=4096 && readFileSync(guestPreload).toString("utf8").trim()==="");}catch(error){check((error as NodeJS.ErrnoException).code==="ENOENT");}c.validate();revalidate();}
   let guestSubmitted=false,monitorSourceBeforeSubmit:string|undefined;
   let monitorCaptureStarted=false;
   let monitor:Readonly<{pid:number;start:string;anchor:number;exe:number;mnt:number;user:number;pidNamespace:number;
@@ -1326,6 +1364,7 @@ export function retainCurrentFullParent():FullParentSession {
     registerGuest(id:string,root:string,fragmentSha256:string){
       revalidate();check(!guestId && fullNativeGuestRoot(id,root) && digest(fragmentSha256));
       c.pins.hold(dirname(root),true,0o700);const rootFd=c.pins.hold(root,true,0o755),rootStat=fstatSync(rootFd),unit="TEST-retention-os-"+id+".service";
+      registeredGuestRoot=root;
       c.pins.publicFile("/run/systemd/system/"+unit,fragmentSha256);
       // Original source is retained BEFORE this exclusive guest submission.
       // Current hashes after birth are never substituted for this causal hold.
@@ -1333,14 +1372,14 @@ export function retainCurrentFullParent():FullParentSession {
       const publicCatalog=fullData(c.pins.json(reviewRoot+"/public-installation.json",2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
       check(Array.isArray(publicCatalog.files));
       for(const entry of publicCatalog.files){const row=fullData(entry,["path","sha256"]);check(fullPublicRelative(row.path) && digest(row.sha256));
-        if(!row.path.startsWith("host-integration/") || ["host-integration/managed-launcher/dependency-full-native-TEST.js","host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/hosted-host-policy.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
+        if(!row.path.startsWith("host-integration/") || ["host-integration/managed-launcher/dependency-full-native-TEST.js","host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/hosted-host-policy.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))guestSourceFiles.set("/opt/subscription-runtime-dependency-os-TEST/"+row.path,c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256));
         if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/hosted-host-policy.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
       }
-      c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullReviewData(c.pins.json(reviewPath,32768)).nodeSha256));
+      guestSourceFiles.set("/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullReviewData(c.pins.json(reviewPath,32768)).nodeSha256)));
       const elfFd=c.pins.hold(guestRuntime+"/os-signed-elf-pins.json"),elfBytes=readFd(elfFd);check(elfBytes.length<=256*1024);
       const os=fullData(JSON.parse(elfBytes.toString("utf8")),["schemaVersion","pins"]);check(os.schemaVersion===1 && Array.isArray(os.pins));
       const guestSources:{path:string;sha256:string}[]=[{path:"/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",sha256:hash(readFd(c.pins.hold(guestRuntime+"/toolchain/bin/node")))}];
-      for(const entry of os.pins){const row=fullData(entry,["path","sha256"]);check(typeof row.path==="string" && /^\/usr\/(?:lib|bin)\/[A-Za-z0-9_.+/-]+$/.test(row.path) && !row.path.split("/").includes("..") && digest(row.sha256));c.pins.publicFile(root+row.path,row.sha256);
+      for(const entry of os.pins){const row=fullData(entry,["path","sha256"]);check(typeof row.path==="string" && /^\/usr\/(?:lib|bin)\/[A-Za-z0-9_.+/-]+$/.test(row.path) && !row.path.split("/").includes("..") && digest(row.sha256));guestSourceFiles.set(row.path,c.pins.publicFile(root+row.path,row.sha256));
         if(["/usr/lib/systemd/systemd","/usr/bin/dbus-daemon"].includes(row.path))guestSources.push({path:row.path,sha256:row.sha256});}
       for(const entry of publicCatalog.files){const row=fullData(entry,["path","sha256"]);if(typeof row.path==="string" && /^(?:scripts\/dependency-retention-os-test\/current-full-(?:supervisor|guest)\.js|dist\/worker-codex\/hosted-readonly-(?:host-launch-cli|runtime-bootstrap)\.js)$/.test(row.path)){check(digest(row.sha256));guestSources.push({path:"/opt/subscription-runtime-dependency-os-TEST/"+row.path,sha256:row.sha256});}}
       const supervisor="/etc/systemd/test-units/TEST-retention-supervisor.service",supervisorFd=c.pins.hold(root+supervisor,false,0o644);
@@ -1382,12 +1421,26 @@ export function retainCurrentFullParent():FullParentSession {
       const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=InvocationID","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
       check(!result.error && result.status===0 && result.signal===null && result.stdout.trim()===guestInvocationId);revalidate();
       captureMonitor(guestInvocationId);
-      seal("current-full-pair-invocation.json",{schemaVersion:1,pairSha256:guestHash,parentInvocationId:invocation,unit,guestInvocationId});
-    },async close(terminal:unknown){
+      const invocationData={schemaVersion:1,pairSha256:guestHash,parentInvocationId:invocation,unit,guestInvocationId};
+      seal("current-full-pair-invocation.json",invocationData);
+      const require=createRequire(import.meta.url);
+      const fdModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-fd-table.js") as typeof import("../../src/provider-codex/app-server/adapters/hosted-fd-table.js");
+      const peerModule=require(c.tuple.source+"/dist/core/host-infrastructure/fd-collector-profile.js") as typeof import("../../src/core/host-infrastructure/fd-collector-profile.js");
+      const parentRecipeModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-dependency-parent-recipe.js") as typeof import("../../src/provider-codex/app-server/adapters/hosted-dependency-parent-recipe.js");
+      const namespaceModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-fd-namespace-stages.js") as typeof import("../../src/provider-codex/app-server/adapters/hosted-fd-namespace-stages.js");
+      check(typeof fdModule.hostedFdTable==="function" && typeof peerModule.parseFdCollectorRows==="function" && typeof peerModule.knownFdCollectorPeer==="function");c.validate();
+      check(registeredGuestRoot);providerSetupSlot=originalProviderSetupSlot({root:registeredGuestRoot,group:"/system.slice/"+unit,pairSha256:guestHash,invocationSealSha256:hash(JSON.stringify(invocationData)+"\n"),outbox:dirname(registeredGuestRoot)+"/policy-request-outbox",revalidate,
+        systemdRunExecutable:managedSystemdRunExecutable,recipeSources:guestRecipeSources,source(path){revalidate();const fd=guestSourceFiles.get(path);check(fd!==undefined);return fd;},queryTool(){revalidate();checkQueryPreload();check(namespaceQueryFiles.length>1 && namespaceQueryTool);c.validate();return namespaceQueryTool;},
+        seal(name,data){revalidate();check(/^current-full-provider-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.(?:intent|birth)\.json$/.test(name));
+          const rootFd=c.pins.hold(fullNativeLiveRoot,true,0o700),fd=openSync(`/proc/self/fd/${rootFd}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{writeFileSync(fd,JSON.stringify(data)+"\n");fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(rootFd);revalidate();},
+        fdTable:fdModule.hostedFdTable,parsePeers:peerModule.parseFdCollectorRows,peer:peerModule.knownFdCollectorPeer,namespacePrefix:namespaceModule.hostedFdNamespacePrefix,parentRecipe:parentRecipeModule.assertHostedDependencyParentRecipe});
+      fullProviderSetupReaders.set(session,providerSetupSlot.read);
+    },observeProviderSetupRequests(){revalidate();check(providerSetupSlot);providerSetupSlot.observe();revalidate();},async close(terminal:unknown){
       check(!closed);revalidate();
       const module=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-full-backing-collector.js").href);
       module.assertFullBackingTerminal(session,terminal);revalidate();
       if(h1StagedSlot)await h1StagedSlot.close();
+      providerSetupSlot?.close();
       if(monitor){
         // A recursive terminal brand does not turn a live proc anchor into dead
         // custody. Reopen the original object: kernel death must be observable.
@@ -1429,7 +1482,7 @@ export function retainCurrentFullParent():FullParentSession {
       const namespace=fstatSync(monitor.mnt);rejoinMonitor();task.revalidate();
       return Object.freeze({pid:monitor.pid,birth:monitor.start,taskBirth:task.birth,invocationId:monitor.invocation,
         sourceBeforeSubmitSha256:monitorSourceBeforeSubmit!,mountNamespace:monitor.mountNamespace,namespaceDevice:String(namespace.dev),namespaceInode:String(namespace.ino)});
-    });fullParentDescriptors.set(session,()=>{check(!closed);return c.pins.descriptors().concat(c.h1LibcPins.descriptors(),c.h1Catalog?.descriptors()??[],h1StagedSlot?.descriptors()??[],procFds);});retainedFullParent=session;return session;}catch{for(const fd of procFds.reverse())closeSync(fd);c.h1Catalog?.close();c.h1LibcPins.close();c.pins.close();refuse();}
+    });fullParentDescriptors.set(session,()=>{check(!closed);return c.pins.descriptors().concat(c.h1LibcPins.descriptors(),c.h1Catalog?.descriptors()??[],h1StagedSlot?.descriptors()??[],providerSetupSlot?.descriptors()??[],procFds);});retainedFullParent=session;return session;}catch{for(const fd of procFds.reverse())closeSync(fd);c.h1Catalog?.close();c.h1LibcPins.close();c.pins.close();refuse();}
 }
 
 // Complete mount-table bounds, independent of cumulative collector admission caps.
