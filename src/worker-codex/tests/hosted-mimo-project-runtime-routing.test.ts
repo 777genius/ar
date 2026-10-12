@@ -63,7 +63,7 @@ beforeEach(async () => {
   lexical = join(researchAuthorityRoot, "job-births", researchHash(job.jobRootDir) + ".json");
   physical = join(researchAuthorityRoot, "job-births", `physical-${stat.dev}-${stat.ino}.json`);
 });
-afterEach(cleanupResearchFixture);
+afterEach(() => { vi.useRealTimers(); cleanupResearchFixture(); });
 describe("trusted controller runtime routing", () => {
   it("keeps the local composition when operator routing metadata is absent", async () => {
     const port = loader();
@@ -209,10 +209,57 @@ describe("explicit shared current activation", () => {
     expect(port.invoke).not.toHaveBeenCalled();
     expect(existsSync("/TEST-project/mimo-runtime-starts/" + job.jobId + ".json")).toBe(false);
   });
-  it("refuses current metadata without a matching protected purpose pointer", async () => {
+  it("waits for a coherent trusted v2 pair before selecting or importing once", async () => {
+    retainedBirth(); publishCurrent();
+    publishMetadata({ schemaVersion: 2, currentRuntimeDirectory: original, currentArtifactSha256: researchArtifactDigest(original) });
+    vi.useFakeTimers({ toFake: ["setTimeout", "performance"] });
+    const port = loader(), pending = hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Create), port.imports);
+    expect(port.imports).not.toHaveBeenCalled(); expect(port.invoke).not.toHaveBeenCalled();
+    publishMetadata({ schemaVersion: 2, currentRuntimeDirectory: current, currentArtifactSha256: researchArtifactDigest(current) });
+    await vi.advanceTimersByTimeAsync(50);
+    const runtime = await pending;
+    expect(port.imports).toHaveBeenCalledTimes(3);
+    expect(port.imports.mock.calls.every(([url]) => fileURLToPath(url).startsWith(current + "/dist/"))).toBe(true);
+    await runtime.projectControlRefillWorkerFromSealedSource({ jobId: "TEST-new", reasoningEffort: "none" }, { resolveRevision: vi.fn() });
+    expect(port.invoke).toHaveBeenCalledOnce();
+  });
+  it("refuses an overdue wakeup even when the trusted pair has become coherent", async () => {
+    retainedBirth(); publishCurrent();
+    publishMetadata({ schemaVersion: 2, currentRuntimeDirectory: original, currentArtifactSha256: researchArtifactDigest(original) });
+    vi.useFakeTimers({ toFake: ["setTimeout", "performance"] });
+    const port = loader(), pending = hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Create), port.imports);
+    const rejected = expect(pending).rejects.toThrow("routing_invalid");
+    publishMetadata({ schemaVersion: 2, currentRuntimeDirectory: current, currentArtifactSha256: researchArtifactDigest(current) });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10001);
+    try { await vi.advanceTimersByTimeAsync(50); await rejected; }
+    finally { clock.mockRestore(); }
+    expect(port.imports).not.toHaveBeenCalled(); expect(port.invoke).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("bounds a persistent trusted v2 mismatch without importing or effects", async () => {
     retainedBirth(); publishCurrent(); unlinkSync(pointer); symlinkSync("releases/" + "a".repeat(40), pointer);
-    const port = loader(); await expect(hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Create), port.imports)).rejects.toThrow();
-    expect(port.imports).not.toHaveBeenCalled();
+    vi.useFakeTimers({ toFake: ["setTimeout", "performance"] });
+    const port = loader(), pending = hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Create), port.imports);
+    const rejected = expect(pending).rejects.toThrow("routing_invalid");
+    await vi.advanceTimersByTimeAsync(10000); await rejected;
+    expect(port.imports).not.toHaveBeenCalled(); expect(port.invoke).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["malformed", "custody", "artifact", "pointer", "pointer-file"])("refuses invalid %s during mismatch immediately", async fault => {
+    retainedBirth(); publishCurrent(); unlinkSync(pointer); symlinkSync("releases/" + "a".repeat(40), pointer);
+    if (fault === "malformed") publishMetadata({ schemaVersion: 2, currentRuntimeDirectory: current, currentArtifactSha256: researchArtifactDigest(current), unexpected: true });
+    if (fault === "custody") chmodSync(local(metadata), 0o644);
+    if (fault === "artifact") writeFileSync(join(current, "dist/TEST.js"), "TEST tamper");
+    if (fault === "pointer") host.foreign.add(pointer);
+    if (fault === "pointer-file") {
+      const target = "/opt/subscription-runtime/releases/" + "d".repeat(40);
+      writeFileSync(target, "TEST invalid target", { mode: 0o600 });
+      unlinkSync(pointer); symlinkSync(target, pointer);
+    }
+    vi.useFakeTimers({ toFake: ["setTimeout", "performance"] });
+    const port = loader();
+    await expect(hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Create), port.imports)).rejects.toThrow();
+    expect(port.imports).not.toHaveBeenCalled(); expect(port.invoke).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
   });
 });
 

@@ -23,11 +23,16 @@ function metadataBytes(): Buffer {
       before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs || before.mode !== after.mode) invalid();
   return bytes;
 }
-function pointerWitness(directory: string): () => void {
+function pointerWitness(directory: string): (() => void) | undefined {
   const path = "/opt/subscription-runtime/mimo-project-bridge-current";
   researchCustody(dirname(path));
   const info = lstatSync(path), signature = [info.dev, info.ino, info.uid, info.mode, info.ctimeMs, info.mtimeMs].join(":");
-  if (info.uid !== 0 || (!info.isSymbolicLink() && !info.isDirectory()) || realpathSync(path) !== directory) invalid();
+  if (info.uid !== 0 || (!info.isSymbolicLink() && !info.isDirectory())) invalid();
+  const target = realpathSync(path);
+  if (target !== directory) {
+    if (!/^\/opt\/subscription-runtime\/releases\/[a-f0-9]{40}$/.test(target) || !lstatSync(target).isDirectory()) invalid();
+    researchCustody(target); return undefined;
+  }
   return () => {
     const current = lstatSync(path);
     if (signature !== [current.dev, current.ino, current.uid, current.mode, current.ctimeMs, current.mtimeMs].join(":") ||
@@ -45,15 +50,27 @@ export async function hostedMimoProjectRuntime(binding: Readonly<{ registryRootD
   let bytes: Buffer;
   try { bytes = metadataBytes(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return local; throw error; }
-  const parsed = JSON.parse(bytes.toString("utf8")) as { schemaVersion?: unknown };
-  const config = researchRecord(parsed, "schemaVersion,legacyRuntimeDirectory,legacyArtifactSha256" +
-    (parsed.schemaVersion === 2 ? ",currentRuntimeDirectory,currentArtifactSha256" : ""));
-  if ((config.schemaVersion !== 1 && config.schemaVersion !== 2) || typeof config.legacyRuntimeDirectory !== "string" || typeof config.legacyArtifactSha256 !== "string" ||
-      config.schemaVersion === 2 && (typeof config.currentRuntimeDirectory !== "string" || typeof config.currentArtifactSha256 !== "string")) return invalid();
-  const { legacyRuntimeDirectory, legacyArtifactSha256 } = config;
-  assertQualifiedResearchRuntimeArtifact(legacyRuntimeDirectory, legacyArtifactSha256);
-  const assertPointer = config.schemaVersion === 2 ? pointerWitness(config.currentRuntimeDirectory as string) : () => {};
-  if (config.schemaVersion === 2) assertQualifiedResearchRuntimeArtifact(config.currentRuntimeDirectory as string, config.currentArtifactSha256 as string);
+  const deadline = performance.now() + 10000;
+  let config: Record<string, unknown>, assertPointer: () => void;
+  for (;;) {
+    const parsed = JSON.parse(bytes.toString("utf8")) as { schemaVersion?: unknown };
+    config = researchRecord(parsed, "schemaVersion,legacyRuntimeDirectory,legacyArtifactSha256" +
+      (parsed.schemaVersion === 2 ? ",currentRuntimeDirectory,currentArtifactSha256" : ""));
+    if ((config.schemaVersion !== 1 && config.schemaVersion !== 2) || typeof config.legacyRuntimeDirectory !== "string" || typeof config.legacyArtifactSha256 !== "string" ||
+        config.schemaVersion === 2 && (typeof config.currentRuntimeDirectory !== "string" || typeof config.currentArtifactSha256 !== "string")) return invalid();
+    assertQualifiedResearchRuntimeArtifact(config.legacyRuntimeDirectory, config.legacyArtifactSha256);
+    if (config.schemaVersion === 2) assertQualifiedResearchRuntimeArtifact(config.currentRuntimeDirectory as string, config.currentArtifactSha256 as string);
+    const witness = config.schemaVersion === 2 ? pointerWitness(config.currentRuntimeDirectory as string) : () => {};
+    if (witness) { assertPointer = witness; break; }
+    // Only a valid, protected v2 pair in transition can wait. Re-read both
+    // witnesses before selection; no import, handler or first effect is retried.
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return invalid();
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(50, remaining)));
+    if (performance.now() >= deadline) return invalid();
+    assertResearchInitialRoot(true);
+    bytes = metadataBytes();
+  }
   const selectedOrigin = await selectHostedMimoProjectRuntime(binding, selection, config as HostedMimoRuntimeRouting);
   const { directory, digest } = selectedOrigin;
   const assertCurrent = (): void => {
