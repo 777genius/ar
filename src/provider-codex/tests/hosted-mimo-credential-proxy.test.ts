@@ -205,6 +205,55 @@ it("redacts a key split across normal Responses delta events while preserving se
   } finally { await f.proxy.close(); }
 });
 
+it("uses heartbeat text outside the credential alphabet even for the valid key keepalive", async () => {
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from("keepalive"), model: "mimo-v2.6-pro", limits: limits(),
+    fetchUpstream: async () => new Response(': keepalive\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+      authorization: `Bearer ${proxy.capability}`, "content-type": "application/json" }, body: JSON.stringify({ model: "mimo-v2.6-pro" }) });
+    const text = await response.text();
+    expect(text).toBe(": ***\n\n");
+    expect(text).not.toContain("keepalive");
+  } finally { await proxy.close(); }
+});
+
+it.each(["output_text", "function_call_arguments"])("releases a completed %s chain before terminal and forwards only a fixed heartbeat", async kind => {
+  let upstream!: ReadableStreamDefaultController<Uint8Array>;
+  const transport = vi.fn<typeof fetch>(async () => new Response(new ReadableStream({ start(controller) { upstream = controller; } }),
+    { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport);
+  let output = ""; let reading: Promise<void> | undefined;
+  const emit = (data: Record<string, unknown>) => upstream.enqueue(Buffer.from("data: " + JSON.stringify(data) + "\n\n"));
+  const identity = { item_id: "item-1", output_index: 0, ...(kind === "output_text" ? { content_index: 0 } : {}) };
+  try {
+    const posted = f.post();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledOnce());
+    emit({ type: "response.created" });
+    const response = await posted;
+    reading = (async () => {
+      const reader = response.body!.getReader();
+      try { for (;;) { const part = await reader.read(); if (part.done) break; output += Buffer.from(part.value).toString("utf8"); } }
+      finally { reader.releaseLock(); }
+    })();
+    emit({ type: `response.${kind}.delta`, ...identity, delta: "prefix " + key.slice(0, 10) });
+    emit({ type: `response.${kind}.done`, ...identity, item_id: "other-item" });
+    upstream.enqueue(Buffer.from(`: ${key}\n\n`));
+    await vi.waitFor(() => expect(output).toContain(": ***\n\n"));
+    expect(output).not.toContain("prefix ");
+    emit({ type: `response.${kind}.delta`, ...identity, delta: key.slice(10) + " suffix" });
+    emit({ type: `response.${kind}.done`, ...identity });
+    emit({ type: "response.output_item.added", item: { id: "tool-1", type: "function_call" } });
+    await vi.waitFor(() => expect(output).toContain('"id":"tool-1"'));
+    expect(output).not.toContain("response.completed");
+    expect(output).not.toContain(key);
+    const events = output.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)) as Record<string, unknown>);
+    expect(events.filter(event => typeof event.delta === "string").map(event => event.delta).join("")).toBe("prefix *** suffix");
+    expect(events.map(event => event.type)).toEqual(["response.created", `response.${kind}.delta`, `response.${kind}.done`,
+      `response.${kind}.delta`, `response.${kind}.done`, "response.output_item.added"]);
+    emit({ type: "response.completed" }); upstream.close(); await reading;
+  } finally { await f.proxy.close(); await reading?.catch(() => {}); }
+});
+
 it("releases done chains before response completion while redacting split secrets in the following chain", async () => {
   let upstreamController!: ReadableStreamDefaultController<Uint8Array>;
   const transport = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({

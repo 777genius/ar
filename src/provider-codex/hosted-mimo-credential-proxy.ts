@@ -233,9 +233,10 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
   };
   const frame = (text: string): Buffer[] => {
     if (Buffer.byteLength(text) > frameLimit) throw new Error("response_frame_limit");
-    const data: string[] = []; let event: string | undefined;
+    const data: string[] = []; let event: string | undefined; let comment = false;
     for (const line of text.split(/\r\n|\n|\r/)) {
-      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith(":")) { comment = true; continue; }
+      if (!line) continue;
       const separator = line.indexOf(":");
       const name = separator < 0 ? line : line.slice(0, separator);
       const raw = separator < 0 ? "" : line.slice(separator + 1);
@@ -247,7 +248,9 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
       } else if (name !== "id" && name !== "retry") throw new Error("response_event_invalid");
       // Responses does not need event IDs/retry metadata; never echo arbitrary fields.
     }
-    if (!data.length) return [];
+    // Comments have no Responses semantics and may contain secrets. Forward only
+    // a fixed heartbeat, without releasing any pending credential lookahead.
+    if (!data.length) return comment ? [Buffer.from(": ***\n\n")] : [];
     const textData = data.join("\n");
     const safeData: unknown = textData === "[DONE]" ? textData : redactJson(JSON.parse(textData), secrets);
     const safeEvent = event ? String(redactJson(event, secrets)) : undefined;
