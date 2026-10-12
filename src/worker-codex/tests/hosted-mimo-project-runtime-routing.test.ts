@@ -11,6 +11,8 @@ import { researchJobRuntimeProvenance } from "../research-job-runtime-provenance
 import { researchJobAuthority } from "../research-launch-admission";
 import { observeResearchJobWriterAuthority, prepareOriginalNativeWriterObservation } from "../research-writer-observation";
 import { hostedMimoProjectRuntime } from "../hosted-mimo-project-runtime-routing";
+import { recoverHostedMimoProjectPreEffectStartIntent, type HostedMimoRuntimeRouting } from "../hosted-mimo-project-runtime-selection";
+import * as ordinaryWriter from "../hosted-ordinary-writer-authority";
 import { createCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import { protectedCodexGoalJobRuntimeProvenance, observeProtectedCodexGoalJobBirth, observeCompatibleProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthPublicationActive, withProtectedCodexGoalJobBirthPublication, recordProtectedCodexGoalJobFirstEffect } from "../protected-job-birth";
 import { researchArtifactDigest, researchAuthorityRoot, researchHash } from "../research-launch-files";
@@ -312,6 +314,82 @@ describe("retained native origin", () => {
     retainedBirth(); publishCurrent(); chmodSync(local(researchAuthorityRoot), 0o777);
     const port = loader(); await expect(hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Start), port.imports)).rejects.toThrow();
     expect(port.imports).not.toHaveBeenCalled();
+  });
+});
+
+describe("explicit pre-effect Start intent recovery", () => {
+  async function recoveryFixture() {
+    retainedBirth(); publishCurrent();
+    const runtime = await hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Start), loader().imports);
+    await runtime.projectControlStartStoredJob({ jobId: job.jobId });
+    const path = "/TEST-project/mimo-runtime-starts/" + job.jobId + ".json", bytes = readFileSync(path);
+    const next = "/opt/subscription-runtime/releases/" + "e".repeat(40);
+    artifact(next); unlinkSync(pointer); symlinkSync("releases/" + "e".repeat(40), pointer);
+    publishMetadata({ schemaVersion: 2, currentRuntimeDirectory: next, currentArtifactSha256: researchArtifactDigest(next) });
+    const config = JSON.parse(readFileSync(metadata, "utf8")) as HostedMimoRuntimeRouting;
+    const metadataBytes = readFileSync(metadata);
+    const witness = () => {
+      if (!readFileSync(metadata).equals(metadataBytes)) throw new Error("TEST current drift");
+    };
+    const expected = { intentSha256: researchHash(bytes), manifestSha256: researchHash(readFileSync(join(binding.registryRootDir, job.jobId, "job.json"))) };
+    return { path, bytes, next, config, witness, expected };
+  }
+  it("explicitly recovers only unexecuted intent, preserving exact audit bytes and routing the next Start to current", async () => {
+    const input = await recoveryFixture();
+    const proof = await recoverHostedMimoProjectPreEffectStartIntent(binding, select(MimoProjectBridgeOperation.Start), input.expected, input.config, input.witness);
+    expect(readFileSync(proof.archivePath).equals(input.bytes)).toBe(true);
+    expect(lstatSync(proof.archivePath).mode & 0o777).toBe(0o600);
+    expect(proof.priorIntentSha256).toBe(input.expected.intentSha256);
+    expect(JSON.parse(readFileSync(input.path, "utf8")).runtimeDirectory).toBe(input.next);
+    expect(protectedCodexGoalJobRuntimeProvenance(job, binding.registryRootDir)?.runtimeDirectory).toBe(original);
+    const port = loader(); await hostedMimoProjectRuntime(binding, select(MimoProjectBridgeOperation.Start), port.imports);
+    expect(port.imports.mock.calls.every(([url]) => fileURLToPath(url).startsWith(input.next + "/dist/"))).toBe(true);
+    expect(port.invoke).not.toHaveBeenCalled();
+    await expect(recoverHostedMimoProjectPreEffectStartIntent(binding, select(MimoProjectBridgeOperation.Start), input.expected, input.config, input.witness)).rejects.toThrow();
+  });
+  it.each(["native-active", "native-terminal", "native-incomplete", "ordinary", "lexical-effect", "physical-effect", "missing-birth", "intent-drift", "manifest-drift", "current-drift", "non-start"])("refuses %s recovery and retains the prior intent", async fault => {
+    const input = await recoveryFixture();
+    if (fault === "native-active") nativeOrigin();
+    if (fault === "native-terminal") nativeOrigin(true);
+    if (fault === "native-incomplete") mkdirSync(researchJobAuthority(job.jobId), { recursive: true, mode: 0o700 });
+    const ordinary = fault === "ordinary" ? vi.spyOn(ordinaryWriter, "hostedOrdinaryWriterAuthorityAbsent").mockReturnValue(false) : undefined;
+    if (fault === "lexical-effect") writeFileSync(lexical.replace(/\.json$/, ".first-effect.json"), "{}", { mode: 0o600 });
+    if (fault === "physical-effect") writeFileSync(physical.replace(/\.json$/, ".first-effect.json"), "{}", { mode: 0o600 });
+    if (fault === "missing-birth") unlinkSync(lexical);
+    if (fault === "intent-drift") writeFileSync(input.path, input.bytes.toString() + " ");
+    if (fault === "manifest-drift") writeFileSync(join(binding.registryRootDir, job.jobId, "job.json"), "{}");
+    if (fault === "current-drift") publishMetadata();
+    const before = readFileSync(input.path);
+    try {
+      await expect(recoverHostedMimoProjectPreEffectStartIntent(binding,
+        select(fault === "non-start" ? MimoProjectBridgeOperation.Status : MimoProjectBridgeOperation.Start),
+        input.expected, input.config, input.witness)).rejects.toThrow();
+      expect(readFileSync(input.path).equals(before)).toBe(true);
+      expect(existsSync("/TEST-project/mimo-runtime-starts/pre-effect-history")).toBe(false);
+    } finally { ordinary?.mockRestore(); }
+  });
+  it("refuses an owner arriving under the publication guard without rewriting intent", async () => {
+    const input = await recoveryFixture(); let checks = 0;
+    await expect(recoverHostedMimoProjectPreEffectStartIntent(binding, select(MimoProjectBridgeOperation.Start), input.expected, input.config, () => {
+      input.witness(); if (++checks === 3) mkdirSync(researchJobAuthority(job.jobId), { recursive: true, mode: 0o700 });
+    })).rejects.toThrow();
+    expect(readFileSync(input.path).equals(input.bytes)).toBe(true);
+    expect(readFileSync("/TEST-project/mimo-runtime-starts/pre-effect-history/" + job.jobId + "." + input.expected.intentSha256 + ".json").equals(input.bytes)).toBe(true);
+  });
+  it.each([false, true])("reconciles interrupted exact history and refuses conflicting history=%s", async conflicting => {
+    const input = await recoveryFixture(), archiveRoot = "/TEST-project/mimo-runtime-starts/pre-effect-history";
+    mkdirSync(archiveRoot, { mode: 0o700 });
+    const archive = archiveRoot + "/" + job.jobId + "." + input.expected.intentSha256 + ".json";
+    writeFileSync(archive, conflicting ? "{}" : input.bytes, { mode: 0o600 });
+    const recovery = recoverHostedMimoProjectPreEffectStartIntent(binding, select(MimoProjectBridgeOperation.Start), input.expected, input.config, input.witness);
+    if (conflicting) {
+      await expect(recovery).rejects.toThrow();
+      expect(readFileSync(input.path).equals(input.bytes)).toBe(true);
+      expect(readFileSync(archive, "utf8")).toBe("{}");
+    } else {
+      await expect(recovery).resolves.toMatchObject({ archivePath: archive });
+      expect(readFileSync(archive).equals(input.bytes)).toBe(true);
+    }
   });
 });
 
