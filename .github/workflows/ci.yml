@@ -190,7 +190,22 @@ jobs:
               # Every shard needs dist fixtures; retain the configured two
               # isolated forks and the full default test selection.
               npm run build
-              npm run test:unit -- --shard="$CI_TEST_TARGET"
+              if npm run test:unit -- --shard="$CI_TEST_TARGET"; then
+                :
+              else
+                subscription_original_unit_status=$?
+                if [[ "$CI_TEST_TARGET" == "2/4" ]]; then
+                  subscription_lifecycle_diag_root="$RUNNER_TEMP/subscription-unit2-SOURCE-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+                  # Observe only in a disposable source copy, before private HOME cleanup.
+                  # Preserve the original unit failure even on diagnostic error/timeout.
+                  if /usr/bin/timeout --signal=TERM --kill-after=10s 300s node scripts/ci-source-diagnostics/diagnose-unit2-lifecycle.mts "$GITHUB_WORKSPACE" "$subscription_lifecycle_diag_root"; then
+                    :
+                  else
+                    :
+                  fi
+                fi
+                exit "$subscription_original_unit_status"
+              fi
               ;;
             ancillary)
               npm run test:before-unit
@@ -204,6 +219,18 @@ jobs:
         env:
           CI_TEST_TARGET: ${{ matrix.shard }}/4
           SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+      - name: Retain failure-only Unit 2 SOURCE diagnosis
+        if: ${{ failure() && matrix.shard == 2 }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit2-lifecycle-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/subscription-unit2-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence/manifest.json
+            ${{ runner.temp }}/subscription-unit2-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence/events.jsonl
+            ${{ runner.temp }}/subscription-unit2-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence/summary.json
+          if-no-files-found: warn
+          retention-days: 2
       - name: Publish successful CI lane proof
         continue-on-error: true
         if: ${{ success() && steps.capture.outcome == 'success' && github.event_name == 'pull_request' }}
