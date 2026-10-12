@@ -48,6 +48,11 @@ export const publicTestCa = "-----BEGIN CERTIFICATE-----\nMIIFazCCA1OgAwIBAgIRAI
 export const publicTestLeaf = "-----BEGIN CERTIFICATE-----\nMIID6DCCAtCgAwIBAgIUFH02wcL3Qgben6tfIibXitsApCYwDQYJKoZIhvcNAQEL\nBQAwejELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAkNBMQswCQYDVQQHDAJTRjEPMA0G\nA1UECgwGSm95ZW50MRAwDgYDVQQLDAdOb2RlLmpzMQwwCgYDVQQDDANjYTExIDAe\nBgkqhkiG9w0BCQEWEXJ5QHRpbnljbG91ZHMub3JnMCAXDTIyMDkwMzIxNDAzN1oY\nDzIyOTYwNjE3MjE0MDM3WjB9MQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExCzAJ\nBgNVBAcMAlNGMQ8wDQYDVQQKDAZKb3llbnQxEDAOBgNVBAsMB05vZGUuanMxDzAN\nBgNVBAMMBmFnZW50MTEgMB4GCSqGSIb3DQEJARYRcnlAdGlueWNsb3Vkcy5vcmcw\nggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDUVjIK+yDTgnCT3CxChO0E\n37q9VuHdrlKeKLeQzUJW2yczSfNzX/0zfHpjY+zKWie39z3HCJqWxtiG2wxiOI8c\n3WqWOvzVmdWADlh6EfkIlg+E7VC6JaKDA+zabmhPvnuu3JzogBMnsWl68lCXzuPx\ndeQAmEwNtqjrh74DtM+Ud0ulb//Ixjxo1q3rYKu+aaexSramuee6qJta2rjrB4l8\nB/bU+j1mDf9XQQfSjo9jRnp4hiTFdBl2k+lZzqE2L/rhu6EMjA2IhAq/7xA2MbLo\n9cObVUin6lfoo5+JKRgT9Fp2xEgDOit+2EA/S6oUfPNeLSVUqmXOSWlXlwlb9Nxr\nAgMBAAGjYTBfMF0GCCsGAQUFBwEBBFEwTzAjBggrBgEFBQcwAYYXaHR0cDovL29j\nc3Aubm9kZWpzLm9yZy8wKAYIKwYBBQUHMAKGHGh0dHA6Ly9jYS5ub2RlanMub3Jn\nL2NhLmNlcnQwDQYJKoZIhvcNAQELBQADggEBAMM0mBBjLMt9pYXePtUeNO0VTw9y\nFWCM8nAcAO2kRNwkJwcsispNpkcsHZ5o8Xf5mpCotdvziEWG1hyxwU6nAWyNOLcN\nG0a0KUfbMO3B6ZYe1GwPDjXaQnv75SkAdxgX5zOzca3xnhITcjUUGjQ0fbDfwFV5\nix8mnzvfXjDONdEznVa7PFcN6QliFUMwR/h8pCRHtE5+a10OSPeJSrGG+FtrGnRW\nG1IJUv6oiGF/MvWCr84REVgc1j78xomGANJIu2hN7bnD1nEMON6em8IfnDOUtynV\n9wfWTqiQYD5Zifj6WcGa0aAHMuetyFG4lIfMAHmd3gaKpks7j9l26LwRPvI=\n-----END CERTIFICATE-----\n";
 export function local(path: string): string {
   if (path.startsWith("/proc/1/root/")) return local(path.slice("/proc/1/root".length));
+  // A native fixture may be allocated in the canonical TEST jobs namespace.
+  // Preserve only its actual directory ancestry and selected descendants;
+  // sibling Host installation/binding/auth records retain the absent mapping.
+  if (fixture.nativeBackingFacts && fixture.root.startsWith("/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/TEST-") &&
+      (path === fixture.root || path.startsWith(fixture.root + "/") || path === "/" || fixture.root.startsWith(path + "/"))) return path;
   const authority = "/run/user/subscription-runtime-research-v1", artifact = "/TEST-artifact", project = "/TEST-project";
   // This portable TEST fixture has no Host scratch policy. Never inspect or
   // activate a real Host binding through executor home preparation.
@@ -90,7 +95,17 @@ vi.mock("node:url", async original => {
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   return { ...real,
-    lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { ...(!fixture.nativeBackingFacts ? { dev: 2049 } : {}), gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
+    lstatSync: (path: string, options?: { bigint?: boolean }) => {
+      const uid = fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0;
+      const scratch = fixture.scratchNodes.get(path);
+      if (scratch) return scratch;
+      const info = real.lstatSync(local(path), options);
+      if (!info) throw new Error("Expected TEST lstat result");
+      return Object.assign(info, {
+        ...(!fixture.nativeBackingFacts ? { dev: options?.bigint ? 2049n : 2049 } : {}),
+        gid: options?.bigint ? 0n : 0, uid: options?.bigint ? BigInt(uid) : uid,
+      });
+    },
     statSync: (path: string) => Object.assign(real.statSync(local(path)), { ...(!fixture.nativeBackingFacts ? { dev: 2049 } : {}), gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => {
       const uid = fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0;

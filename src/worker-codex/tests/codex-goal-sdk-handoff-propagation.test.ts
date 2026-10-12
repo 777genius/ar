@@ -1,9 +1,9 @@
 import {mkdir,mkdtemp,readFile,rm,symlink,writeFile} from "node:fs/promises";
 import {join} from "node:path";
-import {tmpdir} from "node:os";
 import {Client} from "@modelcontextprotocol/sdk/client/index.js";
 import {InMemoryTransport} from "@modelcontextprotocol/sdk/inMemory.js";
-import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
+import {afterEach,beforeEach,expect,it,vi} from "vitest";
+import {callToolJson as callAllocatedToolJson,describe,tmpdir} from "./codex-goal-mcp-project-admission-test-fixture";
 import {AccessBoundary} from "@vioxen/subscription-runtime/worker-core";
 import {createFixture} from "./codex-goal-project-refill-fixture";
 import {callToolJson,writeFakeAuth} from "./codex-goal-mcp-test-support";
@@ -19,7 +19,7 @@ beforeEach(()=>{vi.stubEnv("GIT_CONFIG_NOSYSTEM","1");vi.stubEnv("GIT_CONFIG_GLO
 afterEach(()=>vi.unstubAllEnvs());
 describe("original public SDK durable handoff propagation",()=>{
  it.each(["canonical","omitted","foreign","registry","auth","worktree","job","prefix","controller","registry-alias","normalized"] as const)("preserves %s selection through public refill, stored manifest and launch config",async mode=>{
-  const fixture=await createFixture(),root=fixture.root,jobId="TEST-sdk-handoff",controllerId="TEST-sdk-control";
+  const fixture=await createFixture(tmpdir()),root=fixture.root,jobId="TEST-sdk-handoff",controllerId="TEST-sdk-control";
   const job=join(root,"jobs",jobId),workspace=join(job,"workspace"),registry=join(job,"state/registry"),auth=join(job,"auth");
   const controllerRoot=join(root,"jobs",controllerId),handoff=mode==="foreign"?join(workspace,"node_modules/handoff"):join(job,"durable-handoffs");
   const server=createCodexGoalMcpServer(),client=new Client({name:"Source-handoff-test",version:"1"});
@@ -34,7 +34,7 @@ describe("original public SDK durable handoff propagation",()=>{
    if(mode==="auth")scope.authRoot=auth+"-foreign";
    if(mode==="worktree")scope.worktreeRoots.push(join(job,"other-workspace"));
    if(mode==="prefix")scope.jobIdPrefixes=[controllerId,"OTHER-"];
-   const controller=await callToolJson(client,"codex_goal_create_job",{jobId:controllerId,taskId:controllerId,registryRootDir:registry,
+   const controller=await callAllocatedToolJson(client,"codex_goal_create_job",{jobId:controllerId,taskId:controllerId,registryRootDir:registry,
     jobRootDir:controllerRoot,workspacePath:fixture.sourceWorkspacePath,promptPath:join(controllerRoot,"prompt.md"),authRootDir:auth,accounts:["account-a"],
     accessBoundary:AccessBoundary.ProjectScopedControl,projectAccessScope:scope});
    if(mode==="registry"){

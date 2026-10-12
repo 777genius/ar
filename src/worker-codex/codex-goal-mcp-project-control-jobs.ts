@@ -501,6 +501,7 @@ export async function projectControlRefillWorkerView(
     controller: controller.controller,
     scope: controller.scope,
     createWorktreeInput,
+    createManifest,
     ...(plannedAdoption ? { plannedAdoption } : {}),
   });
   let worktreeCreated = false;
