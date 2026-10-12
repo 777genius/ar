@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { performance } from "node:perf_hooks";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync,
   realpathSync, rmdirSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -37,15 +38,29 @@ function acquirePublication(): () => void {
   const identity = researchDirectoryIdentity(publicationLock);
   return () => { researchCustody(publicationLock, true); assertResearchDirectory(identity); rmdirSync(publicationLock); };
 }
+async function awaitPublication(): Promise<() => void> {
+  const deadline = performance.now() + 5_000;
+  for (;;) {
+    try { return acquirePublication(); }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== "protected_job_birth_publication_busy") throw error;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(50, remaining)));
+      if (performance.now() >= deadline) throw error;
+    }
+  }
+}
 
 /** Short owner publication mutex, shared by final census/claim publication and
  * every first effect. It is never held for provider/manager work. A crashed
- * publisher retains uncertainty; there is no PID/age-based stale eviction.
+ * publisher retains uncertainty; bounded async acquisition never evicts it.
+ * Only acquisition retries, before the effect is invoked exactly once.
  * Reentrancy is an in-process capability, never a caller-supplied flag. */
 export async function withProtectedCodexGoalJobBirthPublication<T>(effect: () => Promise<T>): Promise<T> {
   if (!initialHost()) return await effect();
   if (publicationContext.getStore()?.active) return await effect();
-  const release = acquirePublication(), context = { active: true };
+  const release = await awaitPublication(), context = { active: true };
   try { return await publicationContext.run(context, effect); }
   finally { context.active = false; release(); }
 }
