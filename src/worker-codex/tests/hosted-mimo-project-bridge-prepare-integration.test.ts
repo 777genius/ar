@@ -82,7 +82,7 @@ import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
 import { observeResearchJobWriterAuthority } from "../research-writer-observation";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
 boundary.root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-")));
-boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt|run|TEST-artifact)(?:\/|$)/.test(value) ? boundary.root + value : value;
+boundary.map = value => typeof value === "string" && value !== boundary.root && !value.startsWith(boundary.root + "/") && /^\/(?:srv|etc|opt|run|TEST-artifact)(?:\/|$)/.test(value) ? boundary.root + value : value;
 boundary.unmap = value => value.startsWith(boundary.root + "/") ? value.slice(boundary.root.length) : value;
 const physical = (path: string) => boundary.map(path) as string;
 function directory(path: string) { fs.mkdirSync(physical(path), { recursive: true, mode: 0o700 }); }
