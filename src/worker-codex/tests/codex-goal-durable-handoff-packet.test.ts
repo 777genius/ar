@@ -44,6 +44,7 @@ describe("durable terminal handoff packet", () => {
     const fixture = await createFixture();
     const sink = join(fixture.root, "TEST-foreign-source");
     await mkdir(sink, { mode: 0o755 });
+    await chmod(sink, 0o755);
     await writeFile(join(sink, "TEST-preserved-source.txt"), "TEST original source");
     await expect(materializeDurableCodexGoalHandoffPacket({ workerJobId: "TEST-worker", taskId: "TEST-task",
       workspacePath: fixture.workspace, durableRootDir: sink,

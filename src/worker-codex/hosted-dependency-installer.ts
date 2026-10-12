@@ -7,7 +7,7 @@ import type { HostedActivationFence } from "@vioxen/subscription-runtime/provide
 import { DependencyOwnerPhase, sameDependencyAttempt, type DependencyAttempt } from "../worker-core/dependency-environment/domain/dependency-owner";
 import type { DependencyWorkspaceIdentity } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyNpmLockName } from "../worker-core/dependency-environment/domain/dependency-install-key";
-import { readHostedDependencyBinding, readHostedDependencyAttempt } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { readHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { assertReadonlyHostOperator, decodePrivateJson, readonlyIdentityName } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";

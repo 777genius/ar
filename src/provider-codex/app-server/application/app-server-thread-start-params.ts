@@ -33,6 +33,7 @@ export function appServerThreadStartParams(input: {
   readonly hostedPermissionProfiles?: boolean;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly nativeGoalControls?: true;
   readonly bypassHookTrust?: boolean;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
   readonly modelBackend?: CodexModelBackend;
@@ -41,6 +42,10 @@ export function appServerThreadStartParams(input: {
   readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly childBudget?: ChildExecutionBudget;
 }) {
+  if (options.nativeGoalControls !== undefined && (options.nativeGoalControls !== true ||
+      input.goalMode !== true || options.nativeToolSurface !== "disabled" || options.hostedControllerTools !== undefined)) {
+    throw new Error("codex_app_server_native_goal_controls_profile_invalid");
+  }
   if (options.hostedControllerTools && (!input.goalMode || options.nativeToolSurface !== "disabled")) {
     throw new Error("hosted_controller_tool_profile_invalid");
   }
@@ -72,6 +77,7 @@ export function appServerThreadStartParams(input: {
     fastMode: input.serviceTier === "fast",
     goalMode: input.goalMode === true,
     trustedHooksEnabled: options.bypassHookTrust === true,
+    ...(options.nativeGoalControls === undefined ? {} : { nativeGoalControls: options.nativeGoalControls }),
   });
   const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const threadModelProvider = codexModelBackendModelProviderName(modelBackend) ?? null;

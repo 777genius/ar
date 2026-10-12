@@ -81,12 +81,17 @@ export type ResearchGrant = Readonly<{
   jobId: string; jobRootDir: string; workspacePath: string; grantId: string;
   jobDirectory: ResearchDirectoryIdentity; workspaceDirectory: ResearchDirectoryIdentity;
   registeredHandoff?: ResearchRegisteredHandoff;
+  projectLaunchBinding?: ResearchProjectLaunchBinding;
 }>;
-export type ResearchRegisteredHandoff = Readonly<{
+export type ResearchProjectLaunchBinding = Readonly<{
   registryRootDir: string; controllerJobId: string; manifestSha256: string;
   scopeSha256: string; receiptSha256: string; requestSha256: string;
-  durableDirectory: ResearchDurableDirectory;
   registeredExecution?: ResearchRegisteredExecution;
+}>;
+/** Keep the existing flattened OpenAI wire format. Native project binding does
+ * not imply a durable publication sink. */
+export type ResearchRegisteredHandoff = ResearchProjectLaunchBinding & Readonly<{
+  durableDirectory: ResearchDurableDirectory;
 }>;
 export type ResearchRegisteredExecution = Readonly<{
   sourceConfigSha256: string; reservedConfigSha256: string; selectedAccountSha256: string;
@@ -113,11 +118,23 @@ export function parseResearchRegisteredHandoff(value: unknown): ResearchRegister
     ...(execution ? { registeredExecution: parseResearchRegisteredExecution(r.registeredExecution) } : {}),
     durableDirectory: parseResearchDurableDirectory(r.durableDirectory, join(registryRootDir, "durable-handoffs")) }) as ResearchRegisteredHandoff;
 }
+/** Native project execution is distinct from the legacy durable sink record. */
+export function parseResearchProjectLaunchBinding(value: unknown): ResearchProjectLaunchBinding {
+  const r = researchRecord(value, "registryRootDir,controllerJobId,manifestSha256,scopeSha256,receiptSha256,requestSha256,registeredExecution");
+  for (const key of ["manifestSha256", "scopeSha256", "receiptSha256", "requestSha256"] as const) {
+    if (typeof r[key] !== "string" || !/^[a-f0-9]{64}$/.test(r[key])) researchInvalid();
+  }
+  return Object.freeze({ ...r, registryRootDir: researchPath(r.registryRootDir), controllerJobId: researchId(r.controllerJobId),
+    registeredExecution: parseResearchRegisteredExecution(r.registeredExecution) }) as ResearchProjectLaunchBinding;
+}
 export function parseResearchGrant(value: unknown): ResearchGrant {
   const optional = value !== null && typeof value === "object" && Object.hasOwn(value, "registeredHandoff");
+  const project = value !== null && typeof value === "object" && Object.hasOwn(value, "projectLaunchBinding");
+  if (optional && project) researchInvalid();
   const mimo = value !== null && typeof value === "object" && "profileId" in value && value.profileId === CodexProviderEgressProfileId.MimoTokenPlan;
-  const r = researchRecord(value, "schemaVersion,profileId,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory" + (optional ? ",registeredHandoff" : "") + (mimo ? ",hostedProfile" : ""));
-  if (mimo && r.hostedProfile !== HostedMimoProfile.Worker && r.hostedProfile !== HostedMimoProfile.CodingV1) researchInvalid();
+  const r = researchRecord(value, "schemaVersion,profileId,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory" + (optional ? ",registeredHandoff" : "") + (project ? ",projectLaunchBinding" : "") + (mimo ? ",hostedProfile" : ""));
+  if ((mimo && r.hostedProfile !== HostedMimoProfile.Worker && r.hostedProfile !== HostedMimoProfile.CodingV1) ||
+      (project && (!mimo || r.hostedProfile !== HostedMimoProfile.Worker))) researchInvalid();
   if (r.schemaVersion !== 1 || (r.profileId !== CodexProviderEgressProfileId.PublicResearchV1 && r.profileId !== CodexProviderEgressProfileId.FullInternetV1 && r.profileId !== CodexProviderEgressProfileId.MimoTokenPlan) ||
       typeof r.grantId !== "string" || !/^[a-f0-9-]{36}$/.test(r.grantId)) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath);
@@ -125,6 +142,7 @@ export function parseResearchGrant(value: unknown): ResearchGrant {
     jobId: researchId(r.jobId), jobRootDir, workspacePath, grantId: r.grantId,
     ...(mimo ? { hostedProfile: r.hostedProfile as HostedMimoProfile.Worker | HostedMimoProfile.CodingV1 } : {}),
     ...(optional ? { registeredHandoff: parseResearchRegisteredHandoff(r.registeredHandoff) } : {}),
+    ...(project ? { projectLaunchBinding: parseResearchProjectLaunchBinding(r.projectLaunchBinding) } : {}),
     jobDirectory: parseResearchDirectory(r.jobDirectory, jobRootDir), workspaceDirectory: parseResearchDirectory(r.workspaceDirectory, workspacePath) });
 }
 export type ResearchStartSpec = Readonly<{
@@ -132,6 +150,7 @@ export type ResearchStartSpec = Readonly<{
   request: ResearchOperatorRequest; requestSha256: string; nodeSha256: string; codexSha256: string;
   unit: string; jobDirectory: ResearchDirectoryIdentity; workspaceDirectory: ResearchDirectoryIdentity;
   registeredHandoff?: ResearchRegisteredHandoff;
+  projectLaunchBinding?: ResearchProjectLaunchBinding;
 }>;
 export type ResearchStartBinding = Readonly<{
   schemaVersion: 1; specSha256: string; process: ResearchProcessIdentity; service: ResearchServiceIdentity;
@@ -140,7 +159,9 @@ export type ResearchStartBinding = Readonly<{
 // are retained and compared; the request parser prevents environment/payload bags.
 export function parseResearchStartSpec(value: unknown): ResearchStartSpec {
   const optional = value !== null && typeof value === "object" && Object.hasOwn(value, "registeredHandoff");
-  const r = researchRecord(value, "schemaVersion,startId,runtimeDirectory,artifactSha256,grantSha256,request,requestSha256,nodeSha256,codexSha256,unit,jobDirectory,workspaceDirectory" + (optional ? ",registeredHandoff" : ""));
+  const project = value !== null && typeof value === "object" && Object.hasOwn(value, "projectLaunchBinding");
+  if (optional && project) researchInvalid();
+  const r = researchRecord(value, "schemaVersion,startId,runtimeDirectory,artifactSha256,grantSha256,request,requestSha256,nodeSha256,codexSha256,unit,jobDirectory,workspaceDirectory" + (optional ? ",registeredHandoff" : "") + (project ? ",projectLaunchBinding" : ""));
   if (r.schemaVersion !== 1 || typeof r.startId !== "string" || !/^[a-f0-9-]{36}$/.test(r.startId) ||
       r.unit !== `subscription-runtime-research-${r.startId}.service`) researchInvalid();
   for (const key of ["artifactSha256", "grantSha256", "requestSha256", "nodeSha256", "codexSha256"]) {
@@ -151,14 +172,17 @@ export function parseResearchStartSpec(value: unknown): ResearchStartSpec {
   if ((request.durableHandoffRootDir !== undefined) !== optional ||
       (registeredHandoff && (request.durableHandoffRootDir !== registeredHandoff.durableDirectory.path ||
         (registeredHandoff.registeredExecution ? researchHashRequest(request) : researchHash(JSON.stringify(request))) !== registeredHandoff.requestSha256))) researchInvalid();
-  const execution = registeredHandoff?.registeredExecution;
+  const projectLaunchBinding = project ? parseResearchProjectLaunchBinding(r.projectLaunchBinding) : undefined;
+  if (projectLaunchBinding && (request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+      researchHashRequest(request) !== projectLaunchBinding.requestSha256)) researchInvalid();
+  const execution = (registeredHandoff ?? projectLaunchBinding)?.registeredExecution;
   if (execution && (request.accounts.length !== 1 || request.accounts[0] !== execution.accountId || request.projectId !== execution.projectId ||
       request.maxAccountCycles !== execution.maxAccountCycles || request.prewarmOnStart !== execution.prewarmOnStart ||
       request.appServerStartupTimeoutMs !== execution.appServerStartupTimeoutMs)) researchInvalid();
   for (const [key, path] of [["jobDirectory", request.jobRootDir], ["workspaceDirectory", request.workspacePath]] as const) {
     parseResearchDirectory(r[key], path);
   }
-  return Object.freeze({ ...r, request, ...(registeredHandoff ? { registeredHandoff } : {}), runtimeDirectory: researchPath(r.runtimeDirectory) }) as ResearchStartSpec;
+  return Object.freeze({ ...r, request, ...(registeredHandoff ? { registeredHandoff } : {}), ...(projectLaunchBinding ? { projectLaunchBinding } : {}), runtimeDirectory: researchPath(r.runtimeDirectory) }) as ResearchStartSpec;
 }
 function parseResearchDirectory(value: unknown, path: string): ResearchDirectoryIdentity {
   const dir = researchRecord(value, "path,device,inode");

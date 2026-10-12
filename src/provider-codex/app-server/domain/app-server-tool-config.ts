@@ -6,6 +6,7 @@ export function codexAppServerToolConfig(input: {
   readonly fastMode: boolean;
   readonly goalMode: boolean;
   readonly trustedHooksEnabled: boolean;
+  readonly nativeGoalControls?: true;
 }): Readonly<Record<string, unknown>> {
   // Pure rendering only: engine and thread boundaries own admission.
   if (input.nativeToolSurface === HostedMimoProfile.CodingV1) {
@@ -25,10 +26,10 @@ export function codexAppServerToolConfig(input: {
       skill_mcp_dependency_install: false,
       ...(nativeToolsDisabled ? { shell_tool: false, unified_exec: false } : {}),
       ...(input.fastMode ? { fast_mode: true } : {}),
-      // External GoalAPI works on persistent threads without exposing native
-      // goal or request-input tools to the model.
+      // Closed profiles retain an external GoalAPI without model goal tools.
+      // Bounded workspace Goal composition separately admits lifecycle controls.
       ...(nativeToolsDisabled
-        ? { goals: false, default_mode_request_user_input: false }
+        ? { goals: input.nativeGoalControls === true && input.goalMode, default_mode_request_user_input: false }
         : input.goalMode
           ? { goals: true }
           : {}),

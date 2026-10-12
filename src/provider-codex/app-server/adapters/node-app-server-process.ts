@@ -1,3 +1,5 @@
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
+import type { HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { join } from "node:path";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, type HostedMimoCodingWorkerOrigin } from "../../hosted-mimo-worker-origin";
@@ -12,6 +14,7 @@ import type {
   CodexAppServerChildProcess,
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
+  OriginalProviderStorageContext,
 } from "../application/app-server-process-port";
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
@@ -127,6 +130,8 @@ export function codexAppServerProcessInvocation(input: {
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
+  readonly storageContext?: OriginalProviderStorageContext;
+  readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot;
 }, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
@@ -147,6 +152,9 @@ export function codexAppServerProcessInvocation(input: {
   if (typeof jobId !== "string" || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId)) {
     throw new Error("hosted_managed_job_identity_required");
   }
+  const storageContext = !admittedMounts &&
+    input.env[codexProviderEgressProfileEnvVar] !== CodexProviderEgressProfileId.MimoTokenPlan
+    ? input.storageContext : undefined;
   return {
     command: managedLauncherNodePath,
     systemdUnit,
@@ -163,17 +171,20 @@ export function codexAppServerProcessInvocation(input: {
       JSON.stringify({ operation: "provider", jobId, unit: systemdUnit,
         payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
         ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
+        ...(storageContext ? { storageContext } : {}),
+        ...(input.ordinaryJobRoot ? { ordinaryJobRoot: input.ordinaryJobRoot } : {}),
       }),
     ],
   };
 }
 
-export function spawnCodexAppServerProcess(input: {
+export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppServerProcess(input: {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
-}, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
+  readonly storageContext?: OriginalProviderStorageContext;
+}, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object, parentRecipeReader?: DependencyParentRecipeReader): CodexAppServerChildProcess {
   const contained = isHostedContainment(input.env);
   if (contained &&
       input.env[codexProviderEgressProfileEnvVar] === CodexProviderEgressProfileId.MimoTokenPlan) {
@@ -182,14 +193,19 @@ export function spawnCodexAppServerProcess(input: {
   if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
   if (!submission && requiresHostedProcessAdmission(input.env)) {
     if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
-    return submitHostedOrdinaryProcess(input, (unit, identity, fence) => spawnInvocation(input,
-      hostedDependencyProviderInvocation(fence, unit, input) ??
-      codexAppServerProcessInvocation({ ...input, env: { ...input.env,
-        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit }),
-      (child, release) => releaseHostedOrdinaryProcess(child, release)));
+    // Ordinary admission owns its existing storage boundary and launch frame,
+    // including without an FD collector. The context extension is baseline-only.
+    const ordinaryInput = { command: input.command, args: input.args, cwd: input.cwd, env: input.env };
+    return submitHostedOrdinaryProcess(ordinaryInput, (unit, identity, fence) => spawnInvocation(ordinaryInput,
+      hostedDependencyProviderInvocation(fence, unit, ordinaryInput) ??
+      codexAppServerProcessInvocation({ ...ordinaryInput, env: { ...ordinaryInput.env,
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit,
+        ...(identity.ordinaryJobRoot ? { ordinaryJobRoot: identity.ordinaryJobRoot } : {}) }),
+      (child, release) => releaseHostedOrdinaryProcess(child, release)), parentRecipeReader);
   }
   const invocation = codexAppServerProcessInvocation({
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
+    ...(input.storageContext ? { storageContext: input.storageContext } : {}),
     ...(reservedSystemdUnit ? { systemdUnit: reservedSystemdUnit } : {}),
   }, admittedMounts);
   if (invocation.systemdUnit !== undefined) {
@@ -211,17 +227,17 @@ export function spawnCodexAppServerProcess(input: {
     assertHostedBaselineIdentity(input.env.SUBSCRIPTION_RUNTIME_JOB_ID);
   }
   return spawnInvocation(input, invocation);
-}
+}, { originalProviderStorageContext: true as const });
 
 /** Trusted worker composition captures established Ready history. The worker
  * executor separately brands this exact returned factory; accepting this port
  * as a public caller option is never sufficient for v2 admission. */
-export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader): CodexAppServerProcessFactory {
+export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader, parentRecipeReader?: DependencyParentRecipeReader): CodexAppServerProcessFactory {
   return input => submitHostedOrdinaryProcess(input, (unit, _identity, fence) => {
     const invocation = hostedDependencyProviderInvocation(fence, unit, input, readyReader);
     if (!invocation) throw new Error("hosted_dependency_tool_binding_required");
     return spawnInvocation(input, invocation, (child, release) => releaseHostedOrdinaryProcess(child, release));
-  });
+  }, parentRecipeReader);
 }
 
 function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
@@ -234,7 +250,8 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     }
     let args = invocation.args;
     if (invocation.command === process.execPath && args[0] === managedLauncherPath) {
-      const request = JSON.parse(args[2]!) as { payload: string[] };
+      const request = JSON.parse(args[2]!) as { payload: string[]; storageContext?: OriginalProviderStorageContext };
+      delete request.storageContext;
       request.payload = [...request.payload, "--fd-ready-v1"];
       args = [args[0]!, args[1]!, JSON.stringify(request)];
     }

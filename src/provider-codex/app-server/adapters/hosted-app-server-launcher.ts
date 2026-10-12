@@ -16,6 +16,11 @@ let launched = false;
 const codingReady = process.argv.length === 4 && process.argv[2] === "--research-coding-ready-v1";
 const researchReady = process.argv.length === 3 && process.argv[2] === "--research-ready-v1";
 const fdReady = process.argv.length === 3 && process.argv[2] === "--fd-ready-v1";
+const originalStorage = process.argv.length === 4 && process.argv[2] === "--provider-storage-v1";
+// Existing research/FD closures do not acquire new modules or launch fields.
+// Load before reading stdin so a second protocol chunk cannot be discarded.
+const originalStorageValidator = originalStorage
+  ? (await import("./original-provider-storage-context")).assertOriginalProviderStorageFrame : undefined;
 let stopFdPrelude: (() => void) | undefined;
 let bootstrapDeadline: ReturnType<typeof setTimeout> | undefined;
 
@@ -52,6 +57,10 @@ function onInput(chunk: Buffer): void {
   catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
 
   if (codingReady !== (frame.coding !== undefined)) fail("hosted_app_server_coding_mode_invalid");
+  if (originalStorageValidator) {
+    try { originalStorageValidator(process.argv[3]!, frame); }
+    catch { fail("original_provider_storage_context_invalid"); }
+  }
   if (codingReady) {
     try {
       // This fixed mode is selected only by the sealed coding root assembler.
@@ -93,7 +102,7 @@ function onInput(chunk: Buffer): void {
   process.stdin.pipe(child.stdin);
 }
 
-if (process.argv.length !== 2 && !researchReady && !codingReady && !fdReady) fail("hosted_app_server_launch_mode_invalid");
+if (process.argv.length !== 2 && !researchReady && !codingReady && !fdReady && !originalStorage) fail("hosted_app_server_launch_mode_invalid");
 if (researchReady || codingReady) {
   // Runs only after the fixed unshare/setpriv/Tini chain has entered confinement.
   // Native provider/user code does not exist yet and cannot emit this frame.

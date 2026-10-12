@@ -8,8 +8,8 @@ import { assertDependencyPreclaimedConsumer, captureDependencyConsumerPreclaim, 
   HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart, DependencyReceiptState, type DependencyConsumerPreclaim } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot,
-  hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+  hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "./hosted-dependency-workspace";
+import { readHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "./hosted-dependency-parent-recipe";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -97,7 +97,7 @@ export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFen
   const creators = inventory.ordinaryCreators.filter(value => value.creatorId === start.creatorId && value.jobId === start.jobId &&
     value.workspacePath === start.workspacePath && value.jobRootDir === start.jobRootDir);
   if (creators.length !== 1) invalid(); const recipe = creators[0]!.launch;
-  assertHostedDependencyParentRecipe(recipe.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(recipe,binding.jobRootDir,binding.workspace.canonicalPath);
   const bindingPin = pin(hostedDependencyBindingName(binding.jobId)); if (!bindingPin.bytes.equals(encode(binding))) invalid();
   // The genuine history store distinguishes factual null from broken history;
   // no project/NM traversal occurs here. Capture before opening the owner store.
@@ -195,7 +195,7 @@ function readReservedOrdinaryDependencyReader(fence:HostedActivationFence,startI
   const creators=inventory.ordinaryCreators.filter(value=>value.creatorId===start.creatorId && value.jobId===binding.jobId &&
     value.jobRootDir===binding.jobRootDir && value.workspacePath===binding.workspace.canonicalPath);
   if (creators.length!==1) invalid(); const launch=creators[0]!.launch;
-  assertHostedDependencyParentRecipe(launch.args,binding.jobRootDir,binding.workspace.canonicalPath);
+  readHostedDependencyParentRecipe(launch,binding.jobRootDir,binding.workspace.canonicalPath);
   if (!sameDependencyProtectedReference(record.origin,original.reference) || !sameDependencyProtectedReference(record.binding,bindingPin.reference) ||
       !bindingPin.bytes.equals(encode(binding)) || record.recipeSha256!==hash(encode(launch)) ||
       record.preclaim.attempt.launch.startId!==startId || record.preclaim.attempt.launch.unit!==row.unit ||
