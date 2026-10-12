@@ -27,7 +27,6 @@ import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host
 import { ordinaryCompletionBytes } from "../hosted-readonly-host-kernel";
 import { readonlyCustodySnapshot } from "../hosted-readonly-custody";
 import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedOrdinaryRuntime } from "../hosted-installation-activation";
-
 // Real private record I/O and real installation/kernel composition. Only finite
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
@@ -232,7 +231,6 @@ beforeEach(() => {
   put(stageName, { schemaVersion: 1, runtimeDirectory, runtimeSha: "a".repeat(40), runtimeManifestSha256: "b".repeat(64) });
 });
 afterEach(() => { rmSync(fixture.root, { recursive: true, force: true }); vi.restoreAllMocks(); });
-
 registerDependencyConsumerAdmissionTests({ fixture, stageName, runtimeDirectory, local, put, read });
 
 registerManifestPlacementInstallationTests({ fixture, root, manifestScratch, runtimeDirectory, local, put, read });
