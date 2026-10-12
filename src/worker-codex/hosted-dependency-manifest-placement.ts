@@ -1,4 +1,4 @@
-import { readHostedOriginalUsableInstallationRecipe, readHostedOriginalUsableParentRoots } from "../provider-codex/app-server/adapters/hosted-original-usable-parent-recipe";
+import { readHostedOriginalUsableInstallationRecipe, readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync,
