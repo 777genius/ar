@@ -27,6 +27,7 @@ vi.mock("../hosted-readonly-inputs", async original => ({
   },
 }));
 
+const tools = { testFiles: ["sdk.test.ts"], optimizerDependencies: ["local-dependency"], transformCache: "persisted" };
 const id = "9fd9ed9e-bea6-4c42-bf27-dc1cd91ee5e6";
 function packet(): OrdinaryInstallationPacket {
   const issuedEpochMs = Date.now();
@@ -54,6 +55,24 @@ describe("original ordinary installation packet admission", () => {
     if (mode === "missing-node") delete value.node;
     if (mode === "unknown-key") value.foreign = true;
     if (mode === "wrong-node") value.node = { path: "/foreign/node", sha256: "c".repeat(64) };
+    request(value);
+    await expect(runQualifiedPairInstallationOperator(id)).rejects.toThrow("hosted_ordinary_installation_held");
+    expect(fixture.fragment).not.toHaveBeenCalled();
+  });
+  it("carries the closed TEST tools registration to the existing source-pin boundary", async () => {
+    const value = packet(), jobId = "TEST-original-sdk";
+    const jobRootDir = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/" + jobId;
+    request({ ...value, creator: { creatorId: jobId, jobId, jobRootDir, workspacePath: jobRootDir + "/workspace" }, testTools: tools });
+    await expect(runQualifiedPairInstallationOperator(id)).rejects.toThrow("source_pin_boundary");
+    expect(fixture.fragment).toHaveBeenCalledExactlyOnceWith(value.node.path, 256 * 1024 * 1024);
+  });
+  it.each(["foreign-job", "foreign-workspace", "unknown-tool-key", "undefined-tools"])("refuses TEST tools %s before source reads", async mode => {
+    const jobId = "TEST-original-sdk", jobRootDir = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/" + jobId;
+    const value = { ...packet(), creator: { creatorId: jobId, jobId, jobRootDir, workspacePath: jobRootDir + "/workspace" }, testTools: tools as unknown };
+    if (mode === "foreign-job") value.creator.jobId = "ordinary-job";
+    if (mode === "foreign-workspace") value.creator.workspacePath = "/foreign/workspace";
+    if (mode === "unknown-tool-key") value.testTools = { ...tools, callback: "foreign" };
+    if (mode === "undefined-tools") value.testTools = null;
     request(value);
     await expect(runQualifiedPairInstallationOperator(id)).rejects.toThrow("hosted_ordinary_installation_held");
     expect(fixture.fragment).not.toHaveBeenCalled();

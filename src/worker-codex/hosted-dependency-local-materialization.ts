@@ -9,7 +9,7 @@ import { DependencyInstallProfile } from "../worker-core/dependency-environment/
 import { assertDependencyLocalOutputEvidence, encodeDependencySourceBindingOutputBody } from "../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import type { DependencyCompletedLocalReady, DependencyLocalOutputEvidence, DependencySourceBindingRecordV2 } from "../worker-core/dependency-environment/ports/dependency-source-binding";
 import { encodeDependencyTreeManifest, type DependencyCapturedTreeObservation } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { capturedDependencySourceBindingOutputBody, openCapturedDependencySourceLinks, closeDependencySourceLinkSession,

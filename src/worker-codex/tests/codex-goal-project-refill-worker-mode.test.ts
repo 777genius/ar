@@ -1,3 +1,4 @@
+import { setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,20 +9,24 @@ import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import * as boundedOperation from "../codex-goal-mcp-project-control-bounded-operation";
 import * as projectScope from "../codex-goal-mcp-project-scope";
 import * as toolRoots from "../worker-tool-root";
-import { callToolJson, git } from "./codex-goal-mcp-test-support";
+import { readCodexGoalJob } from "../codex-goal-jobs";
+import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
+import { observeResearchJobWriterAuthority } from "../research-writer-observation";
+import { callToolJson, git, gitStdout } from "./codex-goal-mcp-test-support";
 import { createFixture, createScope } from "./codex-goal-project-refill-fixture";
 
 beforeEach(() => {
+  setupResearchFixture();
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
 });
 afterEach(() => {
-  vi.restoreAllMocks();
+  cleanupResearchFixture();
   vi.unstubAllEnvs();
 });
 
 // Binding tests drive the MCP refill caller; separate worktree and lifecycle suites explain its boundaries.
-describe("binding: public refill worker mode and tool-root lifecycle", () => {
+describe.skipIf(process.platform !== "linux")("binding: public refill worker mode and tool-root lifecycle", () => {
   it.each([undefined, WorkerMode.Open])("bounded refill preview agrees with sync manifest for scope mode %s", async workerMode => {
     const f = await createPublicRefillFixture(workerMode);
     try {
@@ -43,7 +48,7 @@ describe("binding: public refill worker mode and tool-root lifecycle", () => {
       const result = await callToolJson(f.client, "codex_goal_project_refill_worker", {
         ...f.args, executionMode: "sync",
       });
-      expect(result).toMatchObject({ ok: true });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
       const syncManifest = JSON.parse(await readFile(join(f.registryRootDir, "mode-child", "job.json"), "utf8"));
       expect(previewManifest.workerMode).toBe(syncManifest.workerMode);
       if (workerMode === undefined) {
@@ -62,7 +67,7 @@ describe("binding: public refill worker mode and tool-root lifecycle", () => {
     const f = await createPublicRefillFixture(workerMode);
     try {
       const result = await callToolJson(f.client, "codex_goal_project_refill_worker", f.args);
-      expect(result).toMatchObject({ ok: true });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
       const manifest = JSON.parse(await readFile(join(f.registryRootDir, "mode-child", "job.json"), "utf8"));
       if (workerMode === undefined) {
         expect(manifest).not.toHaveProperty("workerMode");
@@ -103,6 +108,7 @@ describe("binding: public refill worker mode and tool-root lifecycle", () => {
 
 async function createPublicRefillFixture(workerMode?: WorkerMode) {
   const f = await createFixture();
+  const authRootDir = join(f.root, "auth");
   const registryRootDir = join(f.root, "worker-jobs", "registry");
   const controllerJobRoot = join(f.root, "worker-jobs", "mode-controller");
   const workspacePath = join(f.root, "worktrees", "mode-child");
@@ -116,6 +122,16 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
     await rm(f.root, { recursive: true, force: true });
   };
   try {
+    await mkdir(authRootDir, { recursive: true, mode: 0o700 });
+    // The real scoped creation gate requires a declared ownership contract.
+    // Commit its packet/check inputs before binding the source revision.
+    for (const name of ["controller.md", "lane.md", "checks/README.md"]) {
+      await mkdir(join(f.sourceWorkspacePath, name === "checks/README.md" ? "checks" : "."), { recursive: true });
+      await writeFile(join(f.sourceWorkspacePath, name), "TEST admission input.\n");
+    }
+    await git(f.sourceWorkspacePath, ["add", "."]);
+    await git(f.sourceWorkspacePath, ["commit", "-m", "test: prepare scoped refill inputs"]);
+    const phaseStartSha = (await gitStdout(f.sourceWorkspacePath, ["rev-parse", "HEAD"])).trim();
     const remotePath = join(f.root, "origin.git");
     await git(f.root, ["init", "--bare", remotePath]);
     await git(f.sourceWorkspacePath, ["remote", "add", "origin", remotePath]);
@@ -124,24 +140,39 @@ async function createPublicRefillFixture(workerMode?: WorkerMode) {
     const created = await callToolJson(client, "codex_goal_create_job", {
       registryRootDir, jobId: "mode-controller", jobRootDir: controllerJobRoot,
       workspacePath: f.sourceWorkspacePath, promptPath: join(controllerJobRoot, "prompt.md"),
-      taskId: "mode-controller", accounts: ["account-a"],
+      taskId: "mode-controller", accounts: ["account-a"], authRootDir,
       accessBoundary: AccessBoundary.ProjectScopedControl,
       projectAccessScope: {
         ...createScope(f), registryRoot: registryRootDir, jobIdPrefixes: ["mode-"],
         tmuxSessionPrefixes: ["mode-"], allowedBranches: ["main", "test/mode-*"],
         allowedAccountIds: ["account-a"], allowedGitRemotes: ["origin"],
+        preStartAdmission: { required: true, mode: "serial-builtin" },
         ...(workerMode ? { workerMode } : {}),
       },
     });
-    expect(created).toMatchObject({ ok: true });
+    expect(created, JSON.stringify(created)).toMatchObject({ ok: true });
+    const controller = await readCodexGoalJob({ registryRootDir, jobId: "mode-controller" });
+    expect(await observeProtectedCodexGoalJobBirth(controller)).toEqual({ status: "released" });
+    expect(await observeResearchJobWriterAuthority(controller)).toEqual({ status: "released" });
     return {
       root: f.root, registryRootDir, workspacePath, promptPath, client, close,
       args: {
         registryRootDir, controllerJobId: "mode-controller", jobId: "mode-child",
         sourceWorkspacePath: f.sourceWorkspacePath, baseBranch: "main",
-        expectedSourceCommit: f.phaseStartSha, newBranch: "test/mode-child",
+        expectedSourceCommit: phaseStartSha, newBranch: "test/mode-child",
         workspacePath, promptPath, promptBody: "Run a focused test.\n", taskId: "mode-child",
-        accounts: ["account-a"], startWorker: false, confirmRefill: true,
+        accounts: ["account-a"], authRootDir, startWorker: false, confirmRefill: true,
+        confirmPreStartAdmission: true,
+        preStartAdmission: { mode: "serial-builtin", contract: {
+          kind: "worker-launch", format: 1, canonicalSha: phaseStartSha, baseSha: phaseStartSha, phaseStartSha,
+          packetRevision: "test-r1", controllerPacket: "controller.md", lanePacket: "lane.md",
+          phaseId: "phase-01", laneId: "lane-a", inputPatchHash: null, reviewKind: "implementation",
+          ownedPaths: ["output.txt"], mandatoryDocs: ["README.md", "controller.md", "lane.md"],
+          mandatoryScripts: [], mandatoryFixtures: [],
+          requiredChecks: [{ id: "diff", cwd: "checks", command: "git diff --check" }],
+          executionPolicy: { mode: "sandbox-only", sandboxRoot: workspacePath,
+            forbiddenRealProjects: [join(f.root, "FORBIDDEN-real-project")] },
+        } },
       },
     };
   } catch (error) {

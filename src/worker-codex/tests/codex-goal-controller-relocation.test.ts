@@ -1,5 +1,5 @@
 import { defaultHostDiskUsagePort } from "../application/project-control/adapters/host-command-adapters";
-import { bindControllerStateLocation, controllerStateLocationForRelocation } from "../application/project-control/codex-goal-controller-state-location";
+import { bindControllerStateLocation, controllerStateLocationForRelocation, recordRawGoalStateOrigin } from "../application/project-control/codex-goal-controller-state-location";
 import { resolveCanonicalRemoteWorktreeSource } from "../application/project-control/codex-goal-project-git";
 import { ledgerEpochProcessBlocks } from "../application/project-control/codex-goal-ledger-epoch-process-guard";
 import { createHash } from "node:crypto";
@@ -606,7 +606,7 @@ it("legacy assertion rejects dangling custom metadata symlinks instead of treati
   await expect(relocate(f.attestedArgs, f.deps)).rejects.toThrow("state_location_unknown");
 });
 
-it("managed admission failure leaves state unbound and a corrected retry binds only after admission", async () => {
+it("retains admitted controller state through failed preparation and rejects a different retry location", async () => {
   const f = await fixture();
   const launchModule = await import("../codex-goal-mcp-launch-input");
   const providerModule = await import("../codex-goal-mcp-project-controller-provider");
@@ -629,16 +629,41 @@ it("managed admission failure leaves state unbound and a corrected retry binds o
     }) }) } as never,
   };
   try {
-    await expect(projectControllerStartView({ ...f.args, stateDir: join(f.root, "first") }, deps)).rejects.toThrow("missing managed policy");
-    expect(await controllerStateLocationForRelocation(f.controller)).toBeUndefined();
+    const first = join(f.root, "first");
+    await expect(projectControllerStartView({ ...f.args, stateDir: first }, deps)).rejects.toThrow("missing managed policy");
+    expect(await controllerStateLocationForRelocation(f.controller)).toBe(first);
     expect(provider).not.toHaveBeenCalled();
     admission.mockImplementation(async () => {
-      expect(await controllerStateLocationForRelocation(f.controller)).toBeUndefined();
+      expect(await controllerStateLocationForRelocation(f.controller)).toBe(first);
       return {} as never;
     });
-    const corrected = join(f.root, "corrected");
-    await expect(projectControllerStartView({ ...f.args, stateDir: corrected }, deps)).rejects.toThrow("provider boundary reached");
-    expect(await controllerStateLocationForRelocation(f.controller)).toBe(corrected);
+    await expect(projectControllerStartView({ ...f.args, stateDir: join(f.root, "corrected") }, deps)).rejects.toThrow("controller_state_location_conflict");
+    expect(admission).toHaveBeenCalledOnce();
+    expect(provider).not.toHaveBeenCalled();
+    await expect(projectControllerStartView({ ...f.args, stateDir: first }, deps)).rejects.toThrow("provider boundary reached");
+    expect(await controllerStateLocationForRelocation(f.controller)).toBe(first);
     expect(provider).toHaveBeenCalledOnce();
   } finally { launch.mockRestore(); admission.mockRestore(); provider.mockRestore(); }
+});
+
+// Exclusive origin arbitration has no caller-provided permit. Check both real
+// publication orders through the existing controller creation path.
+it.skipIf(process.platform !== "linux").each(["controller-first", "raw-first"] as const)("retains exclusive creation history: %s", async order => {
+  const f = await fixture();
+  if (order === "controller-first") {
+    const path = join(f.controller.jobRootDir, ".controller-state-origin.json");
+    const before = await readFile(path);
+    expect(() => recordRawGoalStateOrigin(f.controller.jobRootDir)).toThrow("controller_origin_raw_launch_denied");
+    expect(await readFile(path)).toEqual(before);
+    expect(await controllerStateLocationForRelocation(f.controller)).toBeUndefined();
+  } else {
+    const jobRootDir = join(f.root, "raw-history");
+    recordRawGoalStateOrigin(jobRootDir);
+    const path = join(jobRootDir, ".controller-state-origin.json"), before = await readFile(path);
+    const created = await createCodexGoalJob({ registryRootDir: f.registryRootDir,
+      manifest: { ...f.controller, jobId: "test-raw-history", jobRootDir } });
+    await expect(controllerStateLocationForRelocation(created)).rejects.toThrow("state_location_unknown");
+    recordRawGoalStateOrigin(jobRootDir); // Retry preserves the same history.
+    expect(await readFile(path)).toEqual(before);
+  }
 });

@@ -4,8 +4,8 @@ import { DependencyGenerationContinuityKind, DependencyOwnerKind, isDependencyCo
   parseDependencyOwner } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { assertHostedDependencyQualifiedInventory, hostedDependencyJobsRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { assertHostedDependencyQualifiedInventory, hostedDependencyJobsRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "./hosted-dependency-workspace";
+import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
 import { readHostedOrdinaryBirth } from "./hosted-installation-activation";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";

@@ -1,7 +1,8 @@
+import { JobStorageCapabilityUnavailableError, JobStorageUnavailableCapability } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { buildCodexGoalForegroundArgv, type HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
-import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
+import { admitHostedRawGoalLaunch } from "./hosted-readonly-controller-admission";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
 import { runHostedReadonlyForeground, runHostedRuntimeForeground } from "./hosted-readonly-foreground";
@@ -45,8 +46,9 @@ export function isHostedActivatedGoalLaunch(input: CodexGoalLaunchInput): boolea
 /** Call after pure launch/scope checks, before writes. Undefined means the
  * caller is admitted locally; a number is the outer foreground wait outcome. */
 export async function routeHostedGoalLaunch(input: CodexGoalLaunchInput, lifecycle?: HostedGoalLifecycleRequest): Promise<number | undefined> {
+  if (input.config.storage) throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.NativeLifetime);
   if (isHostedOrdinaryRuntime()) {
-    await admitHostedControllerLaunch(input);
+    await admitHostedRawGoalLaunch(input);
     return undefined;
   }
   if (isHostedActivatedGoalLaunch(input)) {
@@ -65,7 +67,7 @@ export async function routeHostedGoalLaunch(input: CodexGoalLaunchInput, lifecyc
       return hostedForegroundExitCode(await runHostedReadonlyForeground(command, args, input.cwd, input.config.sourceEnv ?? process.env));
     }
   }
-  await admitHostedControllerLaunch(input);
+  await admitHostedRawGoalLaunch(input);
   return undefined;
 }
 

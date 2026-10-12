@@ -8,7 +8,8 @@ import { DependencyOwnerPhase, sameDependencyProtectedReference, sameDependencyW
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { invalidateDependencyGeneration } from "../worker-core/dependency-environment/application/invalidate-dependency-generation";
-import { assertHostedActivationFence, withHostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { assertHostedDependencyRetirementOwnerFacts, assertHostedDependencyRetirementSuccessorFacts } from "./hosted-dependency-retirement-facts";
 import { readOriginalHostedDependencySourceCleanupAssociation, readOriginalHostedDependencySourceCleanupScope,

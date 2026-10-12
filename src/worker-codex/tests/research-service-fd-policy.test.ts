@@ -42,4 +42,3 @@ describe("research service FD filter contract", () => {
     } finally { profile.mockRestore(); }
   });
 });
-

@@ -14,7 +14,7 @@ import { performance } from "node:perf_hooks";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase, sameDependencyAttempt, sameDependencyProtectedReference,
   DependencyToolReadyProvenanceKind, type DependencyToolReadyFacts, type DependencyToolSourceRoot, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { DependencyInstallProofKind, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { dependencyToolCachePath, dependencyToolGuestConfig, dependencyToolPins, dependencyToolQualificationRecordName,
   parseDependencyToolProfile, parseDependencyToolQualification,
   type DependencyToolGuestConfig, type DependencyToolProfile, type DependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";

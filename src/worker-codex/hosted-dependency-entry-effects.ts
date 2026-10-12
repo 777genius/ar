@@ -1,5 +1,6 @@
 import { DependencyOwnerPhase } from "@vioxen/subscription-runtime/core";
-import { withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind, findOriginalHostedDependencyGenerationEntry,
   type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { beginOriginalHostedDependencyGenerationBarrier } from "./hosted-dependency-generation-controller";

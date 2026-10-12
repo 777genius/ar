@@ -28,7 +28,7 @@ export function parseCodexGoalCliMcpShortcut(
       kind: "mcp-tool",
       name: "codex_goal_overview",
       argsJson: JSON.stringify({
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalNumberArg(values, "--stale-after-ms", "staleAfterMs"),
         ...optionalNumberArg(values, "--tail-lines", "tailLines"),
         ...optionalNumberArg(values, "--limit", "limit"),
@@ -48,7 +48,7 @@ export function parseCodexGoalCliMcpShortcut(
           values.values.get("--provider-kind") ??
           "codex",
         ...(jobId ? { jobId } : {}),
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...(values.values.get("--state-root")
           ? { stateRootDir: values.values.get("--state-root") }
           : {}),
@@ -84,7 +84,7 @@ export function parseCodexGoalCliMcpShortcut(
           values.values.get("--provider-kind") ??
           "codex",
         ...(jobId ? { jobId } : {}),
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalStringArg(values, "--event-root", "eventRootDir"),
         ...optionalStringArg(values, "--cursor", "cursor"),
         ...optionalStringArg(values, "--type", "type"),
@@ -108,7 +108,7 @@ export function parseCodexGoalCliMcpShortcut(
           values.values.get("--provider-kind") ??
           "codex",
         ...(jobId ? { jobId } : {}),
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalStringArg(values, "--event-root", "eventRootDir"),
       }),
       format: outputFormatFromFlags(values, io.env()),
@@ -124,7 +124,7 @@ export function parseCodexGoalCliMcpShortcut(
       kind: "mcp-tool",
       name: "agent_run_event_compaction_plan",
       argsJson: JSON.stringify({
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalStringArg(values, "--event-root", "eventRootDir"),
         ...runEventRetentionPolicyArgs(values),
       }),
@@ -141,7 +141,7 @@ export function parseCodexGoalCliMcpShortcut(
       kind: "mcp-tool",
       name: "agent_run_event_compact",
       argsJson: JSON.stringify({
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalStringArg(values, "--event-root", "eventRootDir"),
         ...runEventRetentionPolicyArgs(values),
         ...(flag(values, "--confirm") ? { confirmCompact: true } : {}),
@@ -164,7 +164,7 @@ export function parseCodexGoalCliMcpShortcut(
           values.values.get("--provider-kind") ??
           "codex",
         ...(jobId ? { jobId } : {}),
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalStringArg(values, "--event-root", "eventRootDir"),
         ...optionalStringArg(values, "--host-id", "hostId"),
         ...optionalNumberArg(values, "--stale-after-ms", "staleAfterMs"),
@@ -183,7 +183,7 @@ export function parseCodexGoalCliMcpShortcut(
       kind: "mcp-tool",
       name: "codex_goal_reconcile_preview",
       argsJson: JSON.stringify({
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...optionalNumberArg(values, "--stale-after-ms", "staleAfterMs"),
         ...optionalNumberArg(values, "--tail-lines", "tailLines"),
         ...optionalNumberArg(values, "--max-continues", "maxContinuesPerRun"),
@@ -440,7 +440,7 @@ export function parseCodexGoalCliMcpShortcut(
       name: "codex_goal_accounts_relogin_instructions",
       argsJson: JSON.stringify({
         jobId,
-        ...registryArg(values),
+        ...registryArg(values, io.env()),
         ...(account ? { account } : {}),
       }),
       format: outputFormatFromFlags(values, io.env()),
@@ -478,16 +478,18 @@ function parseJobShortcut(input: {
     name: input.tool,
     argsJson: JSON.stringify({
       jobId,
-      ...registryArg(values),
+      ...registryArg(values, input.io.env()),
       ...(input.extraArgs?.(values) ?? {}),
     }),
     format: outputFormatFromFlags(values, input.io.env()),
   };
 }
 
-function registryArg(values: ParsedFlags): Record<string, unknown> {
-  const registryRootDir = values.values.get("--registry-root");
-  return registryRootDir ? { registryRootDir } : {};
+function registryArg(values: ParsedFlags, env: Readonly<Record<string, string | undefined>>): Record<string, unknown> {
+  if (values.flags.has("--storage-root")) throw new Error("--storage-root requires a value");
+  const registryRootDir = values.values.get("--registry-root") ?? env.SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT ?? env.CODEX_GOAL_REGISTRY_ROOT;
+  const storageRootDir = values.values.get("--storage-root") ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT;
+  return { ...(registryRootDir ? { registryRootDir } : {}), ...(storageRootDir === undefined ? {} : { storageRootDir }) };
 }
 
 function callerArgs(values: ParsedFlags): Record<string, unknown> {

@@ -33,6 +33,7 @@ import { retireOriginalHostedDependencySourceCleanup } from "./hosted-dependency
 import { openOriginalHostedDependencyRootDescriptorMaterial, openOriginalHostedManagedProviderDescriptorMaterial } from "./hosted-dependency-root-descriptor-opener";
 import { HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { assertHostedDependencyRetirementOwnerFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
@@ -79,8 +80,8 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFi
 import { dirname } from "node:path";
 import { DependencyGenerationContinuityKind, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
-import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, withHostedActivationFence, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { type HostedRetainedToolFiles } from "../provider-codex/app-server/adapters/hosted-retained-tool-files";
 import { observeHostedFdProcess } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { systemdObservationBudget } from "../provider-codex/app-server/adapters/systemd-service-arrays";

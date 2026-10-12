@@ -5,11 +5,12 @@ import { dirname } from "node:path";
 import { sameDependencyProtectedReference, type DependencyProtectedReference, DependencyOwnerPhase, DependencyConsumerLaunchKind, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyWorkspace } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, collectHostedOrdinaryProcessOriginFacts, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { isHostedDependencyWorkspace, readHostedDependencyBinding, hostedDependencyBindingName, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { isHostedDependencyWorkspace, readHostedDependencyBinding, hostedDependencyBindingName, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOriginFacts } from "./hosted-current-dependency-origin";
 import { formHostedOrdinarySelectedParentLineageFacts } from "../provider-codex/app-server/adapters/hosted-ordinary-selected-lineage-facts";
-import { assertHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "./hosted-dependency-parent-recipe";
+import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes, parseHostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { selectHostedDependencyRootTaskArgumentFacts } from "./hosted-dependency-root-record-facts";
 import { type HostedDependencyRootDirectoryPin } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
@@ -63,14 +64,18 @@ export function collectCurrentHostedOrdinaryDependencyOrigin(fence: HostedActiva
  * R keeps its independently authenticated runtimeLaunch. No caller recipe. */
 export function readCurrentHostedDependencySignedParentRecipe(facts:CurrentHostedDependencyOriginFacts) {
   const installation = facts.kind === CurrentHostedDependencyOriginKind.Ordinary ? facts.ordinary.installation : facts.installation;
-  const bytes = fixed("readonly-inventory.json"), inventory = parseHostedReadonlyHostInventory(decodeHostedActivationBytes(bytes.bytes));
+  const bytes = fixed("readonly-inventory.json", hostedInventoryMaximumBytes), decoded = decodeHostedInventoryBytes(bytes.bytes);
+  const inventory = decoded && typeof decoded === "object" && "schemaVersion" in decoded && decoded.schemaVersion === 5
+    ? parseHostedInventoryV5(decoded) : parseHostedReadonlyHostInventory(decoded);
   if (hash(bytes.bytes) !== installation.inventorySha256) invalid();
   if (facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) return inventory.runtimeLaunch;
   const start = facts.ordinary.start;
   const creators = inventory.ordinaryCreators.filter(row => row.creatorId === start.creatorId && row.jobId === start.jobId &&
     row.jobRootDir === start.jobRootDir && row.workspacePath === start.workspacePath);
   if (creators.length !== 1) invalid(); const launch = creators[0]!.launch;
-  assertHostedDependencyParentRecipe(launch.args,String(start.jobRootDir),String(start.workspacePath));
+  readHostedDependencyParentRecipe(launch,String(start.jobRootDir),String(start.workspacePath));
+  // Reader provenance hashes the actual installed tuple. Resolve only when a
+  // consumer needs configuration facts, never when comparing producer bytes.
   assertHostedDependencyParentEnvironment(process.env,String(start.jobRootDir)); return launch;
 }
 /** Routing facts only. */
@@ -149,7 +154,9 @@ export function readHostedDependencyAttemptFacts(facts: CurrentHostedDependencyO
 }
 
 export function rootIdentity(facts: CurrentHostedDependencyOriginFacts, binding: HostedDependencyBinding) {
-  const launch=readCurrentHostedDependencySignedParentRecipe(facts);
+  const original=readCurrentHostedDependencySignedParentRecipe(facts);
+  const launch=facts.kind === CurrentHostedDependencyOriginKind.Ordinary
+    ? readHostedDependencyParentRecipe(original,binding.jobRootDir,binding.workspace.canonicalPath) : original;
   return selectHostedDependencyRootTaskArgumentFacts(launch.args,binding,
     facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ? facts.start.readonlyJobId : binding.jobId,
     process.env.SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT);
