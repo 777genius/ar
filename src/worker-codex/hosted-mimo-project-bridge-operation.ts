@@ -21,8 +21,16 @@ function operationErrorCode(error: unknown): string {
   const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
   if (typeof typedCode === "string" && contentionErrorCodes.has(typedCode)) return typedCode;
   const code = error.message.split(":", 1)[0]!;
-  return contentionErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_)[a-z0-9_]{1,100}$/.test(code)
-    ? code : "mimo_project_bridge_operation_failed";
+  if (contentionErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
+  switch (typedCode) {
+    case "ENOENT": return "mimo_project_bridge_fs_not_found";
+    case "EACCES": return "mimo_project_bridge_fs_access_denied";
+    case "EPERM": return "mimo_project_bridge_fs_permission_denied";
+    case "EEXIST": return "mimo_project_bridge_fs_already_exists";
+  }
+  if (error instanceof TypeError) return "mimo_project_bridge_type_error";
+  if (error instanceof SyntaxError) return "mimo_project_bridge_parse_error";
+  return "mimo_project_bridge_operation_failed";
 }
 function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));

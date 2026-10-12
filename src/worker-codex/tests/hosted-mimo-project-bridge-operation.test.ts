@@ -65,7 +65,21 @@ it.each([
   [Object.assign(new Error("TEST private error"), { code: "safe_execution_workspace_locked_TEST_private" }), "mimo_project_bridge_operation_failed"],
   [new Error("protected_job_birth_TEST_private"), "mimo_project_bridge_operation_failed"],
   [new Error("controller_TEST_private"), "mimo_project_bridge_operation_failed"],
-])("persists only approved contention codes without private detail %#", async (error, expected) => {
+  [new Error("project_mimo_worker_attempt_mismatch: TEST private attempt"), "project_mimo_worker_attempt_mismatch"],
+  [new Error("hosted_mimo_worker_finalization_pending: TEST private prompt"), "hosted_mimo_worker_finalization_pending"],
+  [new Error("codex_project_reserved_launch_authority_invalid: TEST private owner"), "codex_project_reserved_launch_authority_invalid"],
+  [new Error("hosted_stored_project_start_binding_invalid: TEST private binding"), "hosted_stored_project_start_binding_invalid"],
+  [Object.assign(new Error("TEST private missing file"), { code: "ENOENT" }), "mimo_project_bridge_fs_not_found"],
+  [Object.assign(new Error("TEST private access failure"), { code: "EACCES" }), "mimo_project_bridge_fs_access_denied"],
+  [Object.assign(new Error("TEST private permission failure"), { code: "EPERM" }), "mimo_project_bridge_fs_permission_denied"],
+  [Object.assign(new Error("TEST private existing file"), { code: "EEXIST" }), "mimo_project_bridge_fs_already_exists"],
+  [Object.assign(new Error("project_control_source_invalid: TEST private source"), { code: "ENOENT" }), "project_control_source_invalid"],
+  [Object.assign(new Error("TEST private system failure"), { code: "TEST_UNKNOWN" }), "mimo_project_bridge_operation_failed"],
+  [Object.setPrototypeOf(new Error("TEST private inherited code"), Object.assign(Object.create(Error.prototype), { code: "ENOENT" })), "mimo_project_bridge_operation_failed"],
+  [new TypeError("TEST private configuration"), "mimo_project_bridge_type_error"],
+  [new SyntaxError("TEST private JSON"), "mimo_project_bridge_parse_error"],
+  ["TEST private non-Error failure", "mimo_project_bridge_operation_failed"],
+])("persists only approved diagnostic codes without private detail %#", async (error, expected) => {
   await submitHostedMimoProjectBridge(request);
   const owner = JSON.parse(state.files.get(prefix + ".owner.json")!);
   const previous = process.argv[1]; process.argv[1] = entry;
@@ -76,6 +90,21 @@ it.each([
     expect(JSON.parse(state.files.get(prefix + ".result.json")!)).toEqual({ ok: false, error: expected });
     expect(state.files.get(prefix + ".result.json")).not.toContain("TEST private");
     expect(state.handler).toHaveBeenCalledTimes(1);
+  } finally { process.argv[1] = previous!; }
+});
+it("does not invoke a code accessor while retaining a failed operation", async () => {
+  await submitHostedMimoProjectBridge(request);
+  const owner = JSON.parse(state.files.get(prefix + ".owner.json")!);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  const getter = vi.fn(() => { throw new Error("TEST private accessor"); });
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockRejectedValue(Object.defineProperty(new Error("TEST private failure"), "code", { get: getter }));
+    await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).resolves.toBe(false);
+    expect(JSON.parse(state.files.get(prefix + ".result.json")!)).toEqual({ ok: false, error: "mimo_project_bridge_operation_failed" });
+    expect(getter).not.toHaveBeenCalled();
+    expect(state.files.get(prefix + ".result.json")).not.toContain("TEST private");
+    expect(state.handler).toHaveBeenCalledOnce();
   } finally { process.argv[1] = previous!; }
 });
 function control(operation: MimoProjectBridgeOperation) { const { prompt: _prompt, sourceCommit: _commit, ...identity } = request; return { ...identity, operation }; }
