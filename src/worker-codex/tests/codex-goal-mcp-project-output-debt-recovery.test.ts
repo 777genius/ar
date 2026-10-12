@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   LocalFileRunEventStore,
   LocalFileWorkerAccountCapacityStore,
@@ -34,7 +34,6 @@ import {
 } from "../codex-goal-mcp";
 import {
   auditDecision,
-  callToolJson,
   git,
   gitInitRepository,
   gitStdout,

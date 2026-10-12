@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import type {
 import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
+  withProjectAdmissionPublicationLock,
 } from "../codex-goal-project-workspace-lock";
 
 describe("project control workspace lock", () => {
@@ -78,6 +79,65 @@ describe("project control workspace lock", () => {
       expect(launches).toBe(2);
     } finally {
       releaseFirst?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // A writer can change the binding while the leaf is released. Publication
+  // must reject that drift and finally must release the reacquired token.
+  it.each([false, true])("revalidates the ordered handoff and releases the current token (drift=%s)", async (drift) => {
+    const root = await mkdtemp(join(tmpdir(), "project-workspace-handoff-"));
+    const workspacePath = join(root, "worktrees", "target");
+    const registryRootDir = join(root, "worker-jobs", "registry");
+    const bindingPath = join(workspacePath, "binding.txt");
+    const locks = projectControlWorkspaceLocks(registryRootDir);
+    let releases = 0;
+    let published = 0;
+    let submitted = 0;
+    const observedLocks: WorkspaceLockPort = {
+      acquire: async (input) => await locks.acquire(input),
+      release: async (lease) => {
+        await locks.release(lease);
+        releases += 1;
+        if (releases === 1 && drift) await writeFile(bindingPath, "changed");
+      },
+    };
+    try {
+      await mkdir(workspacePath, { recursive: true });
+      await mkdir(registryRootDir, { recursive: true });
+      await writeFile(bindingPath, "expected");
+      const start = withValidatedProjectWorkspaceLock({
+        locks: observedLocks, scope: projectScope(root), requestedWorkspacePath: workspacePath,
+        owner: "project-start:controller:job",
+        effect: async (workspace) => {
+          const originalToken = workspace.lease.lockId;
+          await workspace.withOrderedAdmissionPublication!({
+            registryRootDir,
+            revalidate: async (current) => {
+              expect(current.lease.lockId).not.toBe(originalToken);
+              if (await readFile(bindingPath, "utf8") !== "expected") throw new Error("binding_changed");
+            },
+            effect: async () => {
+              await expect(locks.acquire({ workspacePath, owner: "collision" })).rejects.toMatchObject({ code: "safe_execution_workspace_locked" });
+              await expect(withProjectAdmissionPublicationLock({ registryRootDir, owner: "collision", effect: async () => {} })).rejects.toMatchObject({ code: "safe_execution_workspace_locked" });
+              published += 1;
+            },
+          });
+          // Submission runs after topology release, while the new leaf remains held.
+          await withProjectAdmissionPublicationLock({ registryRootDir, owner: "next-census", effect: async () => {} });
+          await expect(locks.acquire({ workspacePath, owner: "collision" })).rejects.toMatchObject({ code: "safe_execution_workspace_locked" });
+          submitted += 1;
+        },
+      });
+      if (drift) await expect(start).rejects.toThrow("binding_changed");
+      else await start;
+      expect(published).toBe(drift ? 0 : 1);
+      expect(submitted).toBe(drift ? 0 : 1);
+      expect(releases).toBe(2);
+      const next = await locks.acquire({ workspacePath, owner: "next-start" });
+      await locks.release(next);
+      await withProjectAdmissionPublicationLock({ registryRootDir, owner: "next-publication", effect: async () => {} });
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

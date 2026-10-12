@@ -25,6 +25,7 @@ export type CodexAccountCapacityRecheckerOptions = {
   readonly accountId: string;
   readonly authJsonPath: string;
   readonly codexBinaryPath: string;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly inconclusiveCooldownMs?: number;
   readonly appServerLaunchMinIntervalMs?: number;
@@ -60,7 +61,7 @@ export class CodexAccountCapacityRechecker
     readonly accountId: string;
     readonly now: Date;
   }): Promise<WorkerCapacitySnapshot> {
-    const effective = await materializeCodexEffectiveSeed(this.options.authJsonPath);
+    const effective = await materializeCodexEffectiveSeed(this.options.authJsonPath, this.options.sourceEnv);
     let finishing = false;
     let observation: Awaited<ReturnType<CodexAccountObserver["observe"]>>;
     try {

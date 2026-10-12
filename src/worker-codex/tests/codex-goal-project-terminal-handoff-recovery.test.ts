@@ -406,12 +406,21 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
                 closedAt: "2026-07-21T00:00:00.000Z",
                 reason: "Concurrent terminal decision before final admission.",
               });
+              await expect(assertCodexGoalProjectJobNotTerminal({
+                roots: input.scope.consumedOutputLedgerRoots ?? [],
+                evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+                projectId: input.scope.projectId,
+                controllerJobId: input.controller.jobId,
+                jobId: fixture.jobId,
+                taskId: fixture.jobId,
+                workspacePath: fixture.workspacePath,
+              })).rejects.toThrow("project_control_terminal_job_start_denied");
               return await broker.startWorker(startInput);
             },
           } as unknown as ProjectControlBroker;
         },
       }),
-    ).rejects.toThrow("project_control_terminal_job_start_denied");
+    ).rejects.toThrow("project_control_terminal_handoff_already_reviewed");
     expect(admissionCalled).toBe(true);
   });
 
@@ -509,12 +518,21 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
                 closedAt: "2026-07-21T00:00:00.000Z",
                 reason: "Concurrent terminal decision in the active evidence root.",
               });
+              await expect(assertCodexGoalProjectJobNotTerminal({
+                roots: input.scope.consumedOutputLedgerRoots ?? [],
+                evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+                projectId: input.scope.projectId,
+                controllerJobId: input.controller.jobId,
+                jobId: fixture.jobId,
+                taskId: fixture.jobId,
+                workspacePath: fixture.workspacePath,
+              })).rejects.toThrow("project_control_terminal_job_start_denied");
               return await broker.startWorker(startInput);
             },
           } as unknown as ProjectControlBroker;
         },
       }),
-    ).rejects.toThrow("project_control_terminal_job_start_denied");
+    ).rejects.toThrow("project_control_terminal_handoff_already_reviewed");
     expect(admissionCalled).toBe(true);
   });
 

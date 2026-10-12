@@ -1,8 +1,7 @@
 #!/usr/bin/env node
+import { agentCliStorageRoots, agentCliStateRoot } from "../agent-cli-storage";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile, realpath, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   AgentRuntimeTaskEventType,
@@ -80,6 +79,7 @@ type ParsedArgs = {
   readonly inputPath?: string;
   readonly format: "event-ndjson" | "result-json";
   readonly stateRootDir?: string;
+  readonly storageRootDir?: string;
   readonly providerInstanceId?: string;
   readonly encryptionKeyEnv: string;
   readonly ephemeral: boolean;
@@ -115,17 +115,20 @@ export async function runSubscriptionAgentRuntimeTaskCli(
       return 0;
     }
     const args = parseArgs(argv);
+    const env = io.env();
+    const roots = agentCliStorageRoots(args.storageRootDir ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT, io.cwd());
     const request = parseAgentRuntimeTaskRequest(
       JSON.parse(
         args.inputPath ? await readFile(args.inputPath, "utf8") : await io.readStdin(),
       ),
     );
-    const env = io.env();
-    const stateRootDir =
-      args.stateRootDir ??
-      (args.ephemeral
-        ? (tempStateRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-agent-runtime-task-")))
-        : env.SUBSCRIPTION_RUNTIME_STATE_ROOT);
+    const selectedState = await agentCliStateRoot({
+      stateRootDir: args.stateRootDir, ephemeral: args.ephemeral,
+      envStateRootDir: env.SUBSCRIPTION_RUNTIME_STATE_ROOT, roots,
+      consumer: "agent-runtime-task", provider: args.provider,
+    });
+    const stateRootDir = selectedState.stateRootDir;
+    tempStateRoot = selectedState.temporaryRoot ?? null;
     if (!stateRootDir) {
       throw new Error(
         "--state-root is required unless --ephemeral or SUBSCRIPTION_RUNTIME_STATE_ROOT is set",
@@ -290,6 +293,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let inputPath: string | undefined;
   let format: ParsedArgs["format"] = "event-ndjson";
   let stateRootDir: string | undefined;
+  let storageRootDir: string | undefined;
   let providerInstanceId: string | undefined;
   let encryptionKeyEnv = "SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY";
   let ephemeral = false;
@@ -333,6 +337,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         throw new Error("--format must be event-ndjson or result-json");
       }
       format = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--storage-root") {
+      storageRootDir = requiredValue(argv, index, arg);
       index += 1;
       continue;
     }
@@ -456,6 +465,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     ...(inputPath ? { inputPath } : {}),
     format,
     ...(stateRootDir ? { stateRootDir } : {}),
+    ...(storageRootDir === undefined ? {} : { storageRootDir }),
     ...(providerInstanceId ? { providerInstanceId } : {}),
     encryptionKeyEnv,
     ephemeral,
@@ -555,7 +565,7 @@ function usage(): string {
   return [
     "usage: subscription-runtime-run-agent-runtime-task --provider claude|codex [--input request.json]",
     "       subscription-runtime-run-agent-runtime-task --capabilities-json [1]",
-    "       [--format event-ndjson|result-json] [--state-root dir | --ephemeral]",
+    "       [--format event-ndjson|result-json] [--storage-root dir] [--state-root dir | --ephemeral]",
     "       [--provider-instance id] [--model model] [--timeout-ms ms]",
     "       [--reasoning-effort high] [--service-tier default] (Codex only)",
     "       [--claude-backend agent-sdk|claude-background]",

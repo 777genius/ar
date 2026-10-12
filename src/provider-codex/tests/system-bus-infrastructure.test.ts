@@ -54,7 +54,9 @@ vi.mock("node:child_process", () => ({ spawnSync: (executable: string, args: str
   }
   if (executable !== "/usr/bin/systemctl" || args[0] !== "show") throw new Error("unplanned synthetic command");
   const source = args.at(-1) === "dbus.service" ? os.service : os.socket;
-  const keys = args[1]!.slice("--property=".length).split(",");
+  const property = args.find(arg => arg.startsWith("--property="));
+  if (!property) throw new Error("missing synthetic property operand");
+  const keys = property.slice("--property=".length).split(",");
   // v255 omits these genuinely empty structured arrays. Missing ordinary
   // fields are still emitted here only as explicitly synthetic scalar values.
   const rows = keys.filter(key => !arrayFields.includes(key) || source[key]).map(key => `${key}=${source[key] ?? ""}`);

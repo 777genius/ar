@@ -9,12 +9,16 @@ import { readHostedInstallationActivation, readHostedOrdinaryBirth, readRetained
 export { readHostedInstallationActivation, readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
 import { readHostedOrdinaryForegroundResultOwner } from "./hosted-ordinary-foreground-result-facts";
 import { ChildProcess } from "node:child_process";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
+import { assertNoManagedOrigin } from "./hosted-ordinary-origin-isolation";
 import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { inspectedInstallation, assertInspectedInstallation, assertActivationSession } from "./hosted-installation-physical-facts";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
 import { readOriginalHostedOrdinaryProviderTerminal } from "./hosted-current-dependency-origin";
 import { assertHostedOrdinaryDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
 import { assertHostedOrdinaryDependencyWriterBoundary, preclaimHostedOrdinaryDependencyReader } from "./hosted-ordinary-dependency-reader";
+import { sealHostedOrdinaryWriterExtent, assertHostedOrdinaryLaunchExtent, isHostedOrdinaryRuntime } from "./hosted-ordinary-writer-authority";
+import { recordInventoriedRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { assertHostedOrdinaryDependencyNotAdopted } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { parseHostedCustodyEnrollment, managedReservations, ordinaryUnitGroup } from "./hosted-activation-validation";
 import type { HostedForegroundRequest } from "./hosted-foreground-request-custody";
@@ -25,7 +29,7 @@ import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferen
   retainHostedLegacyReferenceRelease } from "./hosted-dependency-legacy-reference";
 import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash,
   type HostedDependencyEvictionCandidate } from "./hosted-dependency-transactions";
-import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "./hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { scopedOrdinaryAuthority } from "./hosted-controller/scoped-termination-validation";
@@ -38,7 +42,7 @@ import { join } from "node:path";
 import { HostedActivationPhase, assertHostedActivationSuccessor, parseHostedActivation, parseHostedInstallation, parseHostedOrdinaryBirth, parseHostedOrdinaryOrigins, parseHostedOrdinaryStart, parseHostedCustodyEpoch, HostedCustodyPhase, HostedCustodyReservationState, HostedOriginKind, type HostedActivation, type HostedInstallation, type HostedOrdinaryBirth, type HostedOrdinaryOrigins, type HostedCustodyEpoch, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
-  withHostedActivationFence, assertHostedActivationOperator, assertHostedScopedAdmission, retainHostedScopedCorrelation, CodexProviderEgressProfileId, type HostedActivationFence,
+  assertHostedActivationOperator, assertHostedScopedAdmission, retainHostedScopedCorrelation, CodexProviderEgressProfileId, type HostedActivationFence,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, ordinaryCompletionBytes, ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
 import { assertHostedForegroundResult, assertHostedForegroundResultForChild, readHostedForegroundLaunchObservation, hostedFdLaunch, HostedFdLaunchKind, type HostedForegroundResult, type HostedFdOriginalSpawnCustody } from "../provider-codex/app-server/adapters/hosted-fd-launch";
@@ -46,7 +50,7 @@ import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "./ho
 import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
-import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
+import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
 import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
 /** Installation, origin and activation persistence under the common host fence.
@@ -340,7 +344,7 @@ export class HostedInstallationActivationStore {
   /** Root dispatcher preparation. The caller must keep this same fence through
    * synchronous OS submission. Reservation precedes birth publication, so a
    * crash at either write remains held and cannot become an untracked creator. */
-  reserveOrdinaryRuntime(fence: HostedActivationFence, command: string, args: readonly string[], cwd: string, correlation?: Readonly<{ startId: string; unit: string; identity?: import("../worker-core/hosted-custody/domain/scoped-termination").RetainedScopeIdentity }>, foregroundRequest?: HostedForegroundRequest) {
+  reserveOrdinaryRuntime(fence: HostedActivationFence, command: string, args: readonly string[], cwd: string, correlation?: Readonly<{ startId: string; unit: string; identity?: import("../worker-core/hosted-custody/domain/scoped-termination").RetainedScopeIdentity }>, foregroundRequest?: HostedForegroundRequest, sourceEnv: Readonly<Record<string, string | undefined>> = process.env) {
     assertHostedActivationFence(fence);
     if (correlation) assertHostedScopedAdmission(fence, correlation.startId);
     const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
@@ -381,6 +385,11 @@ export class HostedInstallationActivationStore {
     this.publish(fence, { ...activation, generation: row.generation, ordinaryStarts: [...activation.ordinaryStarts, row] });
     createReadonlyPrivateRecord(join(readonlySupervisorRoot, "ordinary-starts", startId + ".json"), encoded(start));
     preclaimHostedOrdinaryDependencyReader(fence,startId);
+    if (!isHostedDependencyWorkspace(birth.workspacePath)) {
+      const grantBytes = grantSha256 === null ? null : readHostedPrivateBytes(join(hostedTestEgressGrantRoot, digest(Buffer.from(birth.jobId)) + ".json"), 4096);
+      const profileId = grantBytes ? parseHostedTestEgressGrant(decodeHostedActivationBytes(grantBytes)).profileId : CodexProviderEgressProfileId.FullInternetV1;
+      sealHostedOrdinaryWriterExtent(fence, start, startId, installation, creator.launch, profileId, sourceEnv);
+    }
     const dependencyBinding = readHostedDependencyBinding(birth.jobId);
     if (dependencyBinding?.version === 3) sealHostedLegacyReferenceStart(fence, dependencyBinding, start, row);
     if (correlation?.identity) {
@@ -403,12 +412,16 @@ export class HostedInstallationActivationStore {
   }
 
   runOrdinaryRuntimeLaunch<T>(command: string, args: readonly string[], cwd: string,
-    submit: (launch: { command: string; args: readonly string[] }, fence: HostedActivationFence, original?: HostedFdOriginalSpawnCustody) => T, foregroundRequest?: HostedForegroundRequest): T {
+    submit: (launch: { command: string; args: readonly string[] }, fence: HostedActivationFence, original?: HostedFdOriginalSpawnCustody) => T, foregroundRequest?: HostedForegroundRequest, sourceEnv: Readonly<Record<string, string | undefined>> = process.env): T {
     if (this.ordinaryLaunch) invalid();
     try {
       return this.serialized(fence => {
-        this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd, undefined, foregroundRequest);
+        this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd, undefined, foregroundRequest, sourceEnv);
         try {
+          const origin = readHostedOrdinaryBirth(this.ordinaryLaunch.start.jobId);
+          assertHostedOrdinaryLaunchExtent(fence, this.ordinaryLaunch.start, this.ordinaryLaunch.reservation.startId,
+            origin.installation, this.ordinaryLaunch.launch, sourceEnv);
+          recordInventoriedRawGoalStateOrigin(this.ordinaryLaunch.launch, this.ordinaryLaunch.start.jobRootDir);
           const selectedBinding=readHostedDependencyBinding(this.ordinaryLaunch.start.jobId);
           const originalInvocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd);
           const invocation=selectedBinding?.version===2 ? {command:originalInvocation.command,args:originalInvocation.args.filter(arg=>arg!=="--collect")} : originalInvocation;
@@ -464,6 +477,7 @@ export class HostedInstallationActivationStore {
           installation.installationId !== launch.start.installationId || activation.bootId !== launch.start.bootId ||
           originSha256 !== launch.start.originSha256 || birth.workspacePath !== launch.start.workspacePath ||
           !required(`ordinary-starts/${row.startId}.json`).equals(encoded(launch.start))) invalid();
+      assertHostedOrdinaryLaunchExtent(fence, launch.start, row.startId, installation, launch.launch);
       launch.childBudget?.remainingMs();
       const inventory = readHostedReadonlyHostInventory();
       if (inventory.schemaVersion === 5 && Date.now() >= (inventory as unknown as HostedInventoryV5).supervisor.workEndEpochMs) invalid();
@@ -930,6 +944,7 @@ function readRetainedOrdinaryRuntime(fence: HostedActivationFence) {
   const kernel = new HostedReadonlyHostKernel();
   assertActivationSession(activation, kernel.ordinaryRuntimeSession(start));
   kernel.verifyDescriptorBoundary();
+  assertHostedOrdinaryLaunchExtent(fence, start, row.startId, installation, creator.launch);
   return Object.freeze({ ...origin, start, creator, reservation: row, launch: creator.launch });
 }
 function required(name: string): Buffer {
@@ -941,43 +956,7 @@ function digest(bytes: Buffer): string { return createHash("sha256").update(byte
 function invalid(): never { throw new Error("hosted_activation_evidence_invalid"); }
 
 function encoded(value: unknown): Buffer { return Buffer.from(JSON.stringify(value) + "\n"); }
-function assertNoManagedOrigin(birth: HostedOrdinaryBirth): string | null {
-  const jobId = birth.jobId;
-  const name = digest(Buffer.from(jobId)) + ".json";
-  if (readHostedPrivateBytes(join(hostedReadonlyPolicyRoot, name), 64 * 1024)) invalid();
-  if (readHostedActivationBytes("codex-readonly-custody/" + name) || readHostedActivationBytes("codex-readonly-revoked/" + name)) invalid();
-  const enrollment = readHostedActivationBytes("readonly-enrollment.json");
-  if (enrollment && parseHostedCustodyEnrollment(decodeHostedActivationBytes(enrollment)) === jobId) invalid();
-  const grantBytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, name), 4096);
-  if (grantBytes) {
-    const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(grantBytes));
-    assertHostedTestEgressIdentity(grant, birth);
-    if (grant.profileId === CodexProviderEgressProfileId.TestManagedQualification) invalid();
-  }
-  return grantBytes ? digest(grantBytes) : null;
-}
-
-/** Routing observation only. The positive private origin reader, never this
- * cgroup prefix or caller identity, authorizes the selected ordinary route. */
-export function isHostedOrdinaryRuntime(): boolean {
-  return process.platform === "linux" && /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-/.test(
-    observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")));
-}
-export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string }): CodexProviderEgressProfileId {
-  return withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryRuntime(fence);
-    if (origin.birth.jobId !== identity.jobId || origin.birth.jobRootDir !== identity.jobRootDir ||
-        origin.birth.workspacePath !== identity.workspacePath) invalid();
-    if (origin.start.grantSha256 === null) return CodexProviderEgressProfileId.FullInternetV1;
-    const name = digest(Buffer.from(identity.jobId)) + ".json";
-    const bytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, name), 4096);
-    if (!bytes || digest(bytes) !== origin.start.grantSha256) invalid();
-    const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(bytes));
-    assertHostedTestEgressIdentity(grant, identity);
-    return grant.profileId;
-  });
-}
-
+export { isHostedOrdinaryRuntime, admitHostedOrdinaryIdentity } from "./hosted-ordinary-writer-authority";
 
 /** Scheduling admission supplements, never replaces, managed material/owner
  * checks. Both outer launch and every provider spawn call this production gate. */
@@ -987,4 +966,14 @@ export function assertExclusiveHostedActivation(epoch: HostedCustodyEpoch): void
   if (activation.phase !== HostedActivationPhase.Exclusive || activation.exclusiveEnrollmentSha256 === null ||
       activation.hostId !== epoch.hostId || activation.bootId !== epoch.bootId || activation.supervisorId !== epoch.supervisorId ||
       installation.runtimeSha !== epoch.identity.runtimeSha || installation.runtimeManifestSha256 !== epoch.identity.runtimeManifestSha256) invalid();
+}
+
+export function readHostedOrdinaryObservationOrigin(jobId: string) {
+  const origin = readRetainedOrdinaryBirth(jobId);
+  assertInspectedInstallation(origin.installation);
+  assertNoManagedOrigin(origin.birth);
+  const creators = readHostedReadonlyHostInventory().ordinaryCreators.filter(row => row.jobId === jobId &&
+    row.jobRootDir === origin.birth.jobRootDir && row.workspacePath === origin.birth.workspacePath);
+  if (creators.length !== 1) invalid();
+  return { ...origin, creator: creators[0]! };
 }

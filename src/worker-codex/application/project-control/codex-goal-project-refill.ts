@@ -1,5 +1,6 @@
 import { readdir, readFile, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { removeCreatedStandaloneProjectWorkspace } from "../../project-standalone-workspace";
 import type {
   ProjectAccessScope,
   ProjectAdmissionWorkerRole,
@@ -267,6 +268,7 @@ async function removeFailedProjectWorktreeMaterialization(
   input: CodexGoalProjectCreateWorktreeInput,
 ): Promise<string | null> {
   try {
+    if (await removeCreatedStandaloneProjectWorkspace(input.path)) return "worktree";
     await execGit([
       "-C",
       input.expectedSourceRealPath,
@@ -300,14 +302,16 @@ export async function rollbackProjectRefillPartial(input: {
   await removeEmptyDir(join(input.registryRootDir, input.jobId));
   if (input.worktreeCreated) {
     try {
-      await execGit([
-        "-C",
-        input.expectedSourceRealPath,
-        "worktree",
-        "remove",
-        "--force",
-        input.workspacePath,
-      ]);
+      if (!await removeCreatedStandaloneProjectWorkspace(input.workspacePath)) {
+        await execGit([
+          "-C",
+          input.expectedSourceRealPath,
+          "worktree",
+          "remove",
+          "--force",
+          input.workspacePath,
+        ]);
+      }
       rolledBack.push("worktree");
     } catch {
       rolledBack.push("worktree-remove-failed");

@@ -438,7 +438,7 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
   }
 
   private createSlot(index: number): Slot<Job, Result> {
-    const workerId = `${this.options.poolId}:slot-${index + 1}`;
+    const workerId = workerPoolSlotId(this.options.poolId, index);
     return {
       index,
       worker: this.options.workerFactory({
@@ -798,4 +798,9 @@ async function safeHealth<Job, Result>(
       warnings: [],
     };
   }
+}
+
+/** Stable identity shared with owner lifetime path planning. */
+export function workerPoolSlotId(poolId: string, index: number): string {
+  return `${poolId}:slot-${index + 1}`;
 }

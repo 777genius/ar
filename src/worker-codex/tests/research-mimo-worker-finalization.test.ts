@@ -12,7 +12,7 @@ import { CodexJsonAgentDriver, CodexAppServerExecutionEngine, CodexModelBackend,
   codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
 import { parseResearchOperatorRequest, researchRunConfig } from "../research-launch-contract";
 import { grantOwnedMimoWorkerLaunch, revokeResearchLaunch, startResearchLaunch } from "../research-launch-owner";
-import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart, researchJobAuthority } from "../research-launch-admission";
+import { assertResearchMimoProviderHome, admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart, researchJobAuthority } from "../research-launch-admission";
 import { cancelResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
 import { researchMimoWorkerLifecycle } from "../research-mimo-worker-result";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
@@ -158,6 +158,13 @@ describe("external owned MiMo result publication", () => {
     expect(disposed).toBe(true);
     expect(fs.existsSync(selectedHome)).toBe(true);
     expect(record(current, "mimo-home").identity.path).toBe(selectedHome);
+    expect(() => assertResearchMimoProviderHome(current.spec, selectedHome)).not.toThrow();
+    const foreignHome = join(homeRoot, "mimo-foreign", "codex-home");
+    fs.mkdirSync(foreignHome, { recursive: true, mode: 0o700 });
+    expect(() => assertResearchMimoProviderHome(current.spec, foreignHome)).toThrow("hosted_research_launch_denied");
+    fs.renameSync(selectedHome, selectedHome + "-retained");
+    fs.mkdirSync(selectedHome, { mode: 0o700 });
+    expect(() => assertResearchMimoProviderHome(current.spec, selectedHome)).toThrow("hosted_research_launch_denied");
     expect(host.authReads).toBe(0);
   });
 

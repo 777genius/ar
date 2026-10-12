@@ -1,6 +1,6 @@
 import { projectControlWorkerModeRepairAllowed } from "./project-control-worker-mode";
 import { lstat, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifestInput } from "./codex-goal-jobs";
 import type {
@@ -405,7 +405,20 @@ export function assertProjectControlCreateManifestPaths(input: {
   const jobRootBase = dirname(
     input.scope.registryRoot ?? input.registryRootDir,
   );
-  if (!pathInsideOrEqual(input.manifest.jobRootDir, jobRootBase)) {
+  const jobRoot = input.manifest.jobRootDir;
+  // An explicit controller-owned colocated layout keeps every root finite:
+  // the worker root contains the selected registry and enrolled auth root,
+  // and the controller owns its sole exact worktree. The sibling layout and
+  // the remaining prefix/artifact/workspace/auth guards retain their contract.
+  const colocated = isAbsolute(jobRoot) && resolve(jobRoot) === jobRoot &&
+    input.scope.registryRoot === join(jobRoot, "state", "registry") &&
+    input.registryRootDir === input.scope.registryRoot &&
+    input.scope.authRoot === join(jobRoot, "auth") &&
+    input.manifest.authRootDir === input.scope.authRoot &&
+    input.manifest.workspacePath === join(jobRoot, "workspace") &&
+    input.scope.worktreeRoots?.length === 1 &&
+    input.scope.worktreeRoots[0] === input.manifest.workspacePath;
+  if (!colocated && !pathInsideOrEqual(jobRoot, jobRootBase)) {
     throw new Error("project_control_job_root_outside_scope");
   }
   if (

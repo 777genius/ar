@@ -1,3 +1,4 @@
+import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./codex-goal-storage-paths";
 import { CodexGoalLaunchState } from "../codex-goal-ops";
 import { HostedGoalLifecycleOperation } from "./codex-goal-foreground-command";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
@@ -146,6 +147,9 @@ export async function startCodexGoalLaunch(input: {
 }
 
 export async function inspectCodexGoalStatus(input: {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly storageRootDir?: string | undefined;
+  readonly jobId?: string | undefined;
   readonly cwd: string | undefined;
   readonly jobRootDir: string | undefined;
   readonly taskId: string | undefined;
@@ -155,7 +159,11 @@ export async function inspectCodexGoalStatus(input: {
   readonly progressPath: string | undefined;
 }): Promise<CodexGoalStatus> {
   const cwd = resolvePath(process.cwd(), input.cwd ?? process.cwd());
+  const paths = inspectionStoragePaths(input, cwd);
   return collectCodexGoalStatus({
+    ...(paths ? { jobRootDir: paths.jobRootDir, workspacePath: paths.workspacePath,
+      resultPath: paths.outputPath, progressPath: paths.progressPath, logPath: paths.logPath,
+      runtimeEventsPath: paths.runtimeEventsPath } : {}),
     ...(input.jobRootDir
       ? { jobRootDir: resolvePath(cwd, input.jobRootDir) }
       : {}),
@@ -181,6 +189,9 @@ export async function inspectCodexGoalDoctor(input: {
 }
 
 export async function tailCodexGoalRunLog(input: {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly storageRootDir?: string | undefined;
+  readonly jobId?: string | undefined;
   readonly cwd: string | undefined;
   readonly jobRootDir: string | undefined;
   readonly taskId: string | undefined;
@@ -188,7 +199,8 @@ export async function tailCodexGoalRunLog(input: {
   readonly lines: number | undefined;
 }): Promise<JsonObject> {
   const cwd = resolvePath(process.cwd(), input.cwd ?? process.cwd());
-  const logPath = input.logPath ??
+  const paths = inspectionStoragePaths(input, cwd);
+  const logPath = input.logPath ?? paths?.logPath ??
     (input.jobRootDir && input.taskId
       ? join(resolvePath(cwd, input.jobRootDir), `${input.taskId}.log`)
       : undefined);
@@ -199,4 +211,20 @@ export async function tailCodexGoalRunLog(input: {
     await tailCodexGoalLog(resolvedLogPath, input.lines ?? 100),
   );
   return { ok: true, logPath: resolvedLogPath, text };
+}
+
+function inspectionStoragePaths(input: { readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined; readonly storageRootDir?: string | undefined; readonly jobId?: string | undefined;
+  readonly jobRootDir?: string | undefined; readonly taskId?: string | undefined; readonly workspacePath?: string | undefined;
+  readonly logPath?: string | undefined; readonly progressPath?: string | undefined }, cwd: string) {
+  const sourceEnv = input.sourceEnv ?? process.env;
+  const root = input.storageRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_STORAGE_ROOT;
+  if (root === undefined) return undefined;
+  const storageRootDir = resolveCodexGoalStorageRoot(root, cwd);
+  if (input.taskId === undefined) return undefined;
+  const jobRootDir = input.jobRootDir === undefined ? undefined : resolvePath(cwd, input.jobRootDir);
+  return resolveCodexGoalPaths({ storageRootDir, taskId: input.taskId, jobId: input.jobId,
+    jobRootDir, workspacePath: input.workspacePath === undefined ? jobRootDir : resolvePath(cwd, input.workspacePath),
+    logPath: input.logPath === undefined ? undefined : resolvePath(cwd, input.logPath),
+    progressPath: input.progressPath === undefined ? undefined : resolvePath(cwd, input.progressPath), sourceEnv,
+  });
 }
