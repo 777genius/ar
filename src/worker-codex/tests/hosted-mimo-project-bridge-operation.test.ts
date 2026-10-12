@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { SafeExecutionError } from "../../worker-core/safe-execution/domain/safe-execution-policy";
 vi.mock("../hosted-mimo-project-workstream-fence", () => ({ withHostedMimoWorkstreamActivity: async (_root: string, effect: () => Promise<unknown>) => effect() }));
 const state = vi.hoisted(() => ({ files: new Map<string, string>(), command: vi.fn(), handler: vi.fn(), rearm: vi.fn() }));
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), readdirSync: (p: string) => [...state.files.keys()].filter(x => x.startsWith(p + "/")).map(x => x.slice(p.length + 1)), mkdirSync: (p: string) => state.files.set(p, ""),
@@ -53,6 +54,28 @@ it("checks the service PID and strips private error detail from durable results"
     state.handler.mockRejectedValue(new Error("project_control_source_invalid: TEST private path/prompt"));
     await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).resolves.toBe(false);
     expect(JSON.parse(state.files.get(prefix + ".result.json")!)).toEqual({ ok: false, error: "project_control_source_invalid" });
+  } finally { process.argv[1] = previous!; }
+});
+it.each([
+  [new SafeExecutionError("safe_execution_workspace_locked", "TEST private lock path", { details: { ownerId: "TEST private owner" }, cause: new Error("TEST private cause") }), "safe_execution_workspace_locked"],
+  [new Error("protected_job_birth_publication_busy: TEST private path"), "protected_job_birth_publication_busy"],
+  [new Error("controller_maintenance_fence_active: TEST private owner"), "controller_maintenance_fence_active"],
+  [new Error("controller_maintenance_activity_active"), "controller_maintenance_activity_active"],
+  [new SafeExecutionError("safe_execution_invalid_task", "TEST private invalid task"), "mimo_project_bridge_operation_failed"],
+  [Object.assign(new Error("TEST private error"), { code: "safe_execution_workspace_locked_TEST_private" }), "mimo_project_bridge_operation_failed"],
+  [new Error("protected_job_birth_TEST_private"), "mimo_project_bridge_operation_failed"],
+  [new Error("controller_TEST_private"), "mimo_project_bridge_operation_failed"],
+])("persists only approved contention codes without private detail %#", async (error, expected) => {
+  await submitHostedMimoProjectBridge(request);
+  const owner = JSON.parse(state.files.get(prefix + ".owner.json")!);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockRejectedValue(error);
+    await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).resolves.toBe(false);
+    expect(JSON.parse(state.files.get(prefix + ".result.json")!)).toEqual({ ok: false, error: expected });
+    expect(state.files.get(prefix + ".result.json")).not.toContain("TEST private");
+    expect(state.handler).toHaveBeenCalledTimes(1);
   } finally { process.argv[1] = previous!; }
 });
 function control(operation: MimoProjectBridgeOperation) { const { prompt: _prompt, sourceCommit: _commit, ...identity } = request; return { ...identity, operation }; }

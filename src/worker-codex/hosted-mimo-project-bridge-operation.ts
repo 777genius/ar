@@ -9,6 +9,21 @@ import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstre
 import { readdirSync } from "node:fs";
 
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
+const contentionErrorCodes = new Set([
+  "safe_execution_workspace_locked",
+  "protected_job_birth_publication_busy",
+  "controller_maintenance_fence_active",
+  "controller_maintenance_activity_active",
+]);
+function operationErrorCode(error: unknown): string {
+  if (!(error instanceof Error)) return "mimo_project_bridge_operation_failed";
+  // Errors can originate in another immutable release, with a different class identity.
+  const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
+  if (typeof typedCode === "string" && contentionErrorCodes.has(typedCode)) return typedCode;
+  const code = error.message.split(":", 1)[0]!;
+  return contentionErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_)[a-z0-9_]{1,100}$/.test(code)
+    ? code : "mimo_project_bridge_operation_failed";
+}
 function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));
 }
@@ -230,9 +245,7 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   let result: unknown;
   try { result = { ok: true, result: await handleHostedMimoProjectBridge(request) }; }
   catch (error) {
-    const code = error instanceof Error ? error.message.split(":", 1)[0]! : "";
-    result = { ok: false, error: /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_)[a-z0-9_]{1,100}$/.test(code)
-      ? code : "mimo_project_bridge_operation_failed" };
+    result = { ok: false, error: operationErrorCode(error) };
   }
   const serialized = JSON.stringify(result) + "\n";
   if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
