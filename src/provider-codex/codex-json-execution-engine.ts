@@ -36,6 +36,7 @@ import {
 } from "./codex-structured-output-schema";
 
 export type CodexReasoningEffort =
+  | "none"
   | "minimal"
   | "low"
   | "medium"

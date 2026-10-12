@@ -1,3 +1,4 @@
+import { withCodexGoalMcpStorage, type CodexGoalMcpStorageDefaults } from "./codex-goal-mcp-inputs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ProviderRuntimeRegistry } from "./codex-goal-provider-runtime";
@@ -29,6 +30,7 @@ export type CodexGoalRunEventToolOptions = {
 export function registerCodexGoalRunEventTools(
   server: McpServer,
   options: CodexGoalRunEventToolOptions = {},
+  storageDefaults: CodexGoalMcpStorageDefaults = {},
 ): void {
   const providerRuntimeRegistry = options.providerRuntimeRegistry;
   const agentRunWatchTool = {
@@ -54,13 +56,13 @@ export function registerCodexGoalRunEventTools(
   server.registerTool(
     "agent_run_watch",
     agentRunWatchTool,
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const watch = await watchAgentRuns(
         args as AgentRunWatchMcpArgs,
         providerRuntimeRegistry,
       );
       return mcpJson(watch);
-    }),
+    })),
   );
 
   server.registerTool(
@@ -71,13 +73,13 @@ export function registerCodexGoalRunEventTools(
       description:
         "Codex-scoped read-only run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers. Defaults to 25 runs (max 100) and a 64 KiB complete response; follow nextCursor using cursor with unchanged filters. Summary covers only returned snapshots; oversized snapshots are explicitly omitted.",
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const watch = await watchAgentRuns(
         args as AgentRunWatchMcpArgs,
         providerRuntimeRegistry,
       );
       return mcpJson(watch);
-    }),
+    })),
   );
 
   const agentRunEventsTool = {
@@ -99,10 +101,10 @@ export function registerCodexGoalRunEventTools(
   server.registerTool(
     "agent_run_events",
     agentRunEventsTool,
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const events = await readAgentRunEvents(args as AgentRunEventsMcpArgs);
       return mcpJson(events);
-    }),
+    })),
   );
 
   server.registerTool(
@@ -113,13 +115,13 @@ export function registerCodexGoalRunEventTools(
       description:
         "Read normalized durable Codex goal run events in pages of 100 events by default (maximum 500), with bounded scans and a 64 KiB MCP response. Large payloads use explicit hashed omission envelopes. Pass nextCursor until hasMore is false. This is read-only and does not control workers.",
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const events = await readAgentRunEvents({
         ...(args as AgentRunEventsMcpArgs),
         providerKind: "codex",
       });
       return mcpJson(events);
-    }),
+    })),
   );
 
   const agentRunStateTool = {
@@ -137,10 +139,10 @@ export function registerCodexGoalRunEventTools(
   server.registerTool(
     "agent_run_state",
     agentRunStateTool,
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const state = await readAgentRunState(args as AgentRunStateMcpArgs);
       return mcpJson(state);
-    }),
+    })),
   );
 
   server.registerTool(
@@ -151,13 +153,13 @@ export function registerCodexGoalRunEventTools(
       description:
         "Read projected Codex goal run read-model state from the local event projection store. This is read-only and does not observe, start, stop, continue or recover workers.",
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const state = await readAgentRunState({
         ...(args as AgentRunStateMcpArgs),
         providerKind: "codex",
       });
       return mcpJson(state);
-    }),
+    })),
   );
 
   const agentRunEventCompactionTool = {
@@ -184,12 +186,12 @@ export function registerCodexGoalRunEventTools(
       description:
         "Read-only plan for local RunEvent JSONL compaction. No files are rewritten.",
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const plan = await planAgentRunEventCompaction(
         args as AgentRunEventCompactionMcpArgs,
       );
       return mcpJson(plan);
-    }),
+    })),
   );
 
   server.registerTool(
@@ -200,12 +202,12 @@ export function registerCodexGoalRunEventTools(
       description:
         "Run explicit local RunEvent JSONL compaction. Requires confirmCompact=true and never controls workers.",
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const result = await compactAgentRunEvents(
         args as AgentRunEventCompactionMcpArgs,
       );
       return mcpJson(result);
-    }),
+    })),
   );
 
   const agentRunProjectEventsTool = {
@@ -226,13 +228,13 @@ export function registerCodexGoalRunEventTools(
   server.registerTool(
     "agent_run_project_events",
     agentRunProjectEventsTool,
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const projected = await projectAgentRunEvents(
         args as AgentRunProjectEventsMcpArgs,
         providerRuntimeRegistry,
       );
       return mcpJson(projected);
-    }),
+    })),
   );
 
   server.registerTool(
@@ -243,13 +245,13 @@ export function registerCodexGoalRunEventTools(
       description:
         "Observe Codex goal runs and project normalized durable RunEvent records in one append. limit selects runs; eventLimit returns 100 events by default (maximum 500). Pages use bounded scans and a 64 KiB MCP response; large payloads use explicit hashed omission envelopes. Pass nextCursor until hasMore is false. This writes event/projection state only and does not control workers.",
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const projected = await projectAgentRunEvents({
         ...(args as AgentRunProjectEventsMcpArgs),
         providerKind: "codex",
       }, providerRuntimeRegistry);
       return mcpJson(projected);
-    }),
+    })),
   );
 
 }

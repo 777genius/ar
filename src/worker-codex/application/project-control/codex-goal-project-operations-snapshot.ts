@@ -21,7 +21,7 @@ export async function buildCodexProjectOperationsSnapshot(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
   readonly admissionSnapshot: ProjectAdmissionSnapshot;
-  readonly admissionDecision: ProjectAdmissionDecision;
+  readonly admissionDecision?: ProjectAdmissionDecision;
   readonly deps: CodexProjectAdmissionDeps;
   readonly now?: Date;
   readonly staleAfterMs?: number;
@@ -48,10 +48,14 @@ export async function buildCodexProjectOperationsSnapshot(input: {
       )],
     },
     hostMemory: memory,
-    admission: {
-      allowed: input.admissionDecision.allowed,
-      reason: input.admissionDecision.reason,
-    },
+    ...(input.admissionDecision
+      ? {
+        admission: {
+          allowed: input.admissionDecision.allowed,
+          reason: input.admissionDecision.reason,
+        },
+      }
+      : {}),
   });
 }
 

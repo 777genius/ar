@@ -1,3 +1,4 @@
+import { prepareProtectedCodexGoalJobBirth } from "./protected-job-birth";
 import { projectControlNewChildWorkerMode, projectControlWorkerToolRootRequest } from "./project-control-worker-mode";
 import { WorkerToolRootStatus, type WorkerToolRootOutcome } from "./worker-tool-root";
 import {
@@ -9,9 +10,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   AccessBoundary,
   NetworkAccessMode,
+  ProjectControlSubmissionUncertainError,
   type ProjectControlBroker,
   type ProjectControlOperationResult,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -30,6 +33,8 @@ import {
   type CodexGoalJobManifestInput,
 } from "./codex-goal-jobs";
 import {
+  inspectDependencyBootstrap,
+  bindDependencyPreflightDiagnostic,
   runDependencyBootstrap,
   type DependencyPreflightResult,
 } from "./dependency-bootstrap";
@@ -122,6 +127,8 @@ import {
 } from "./application/project-control/codex-goal-project-verifier-handoff";
 import { codexGoalStatusInputFromLaunch } from "./application/codex-goal-status-input";
 import {
+  assertCodexProjectReservedLaunchAuthority,
+  assertCodexProjectReservedAccountReceiptCurrent,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
   type CodexProjectAccountReservation,
@@ -164,6 +171,8 @@ export async function projectControlRefillWorkerView(
   deps: CodexGoalMcpProjectControlJobsDeps,
   boundedToolName: ProjectControlOperationToolName = "codex_goal_project_refill_worker",
 ): Promise<JsonObject> {
+  if (deps.sealedSource && (args.mergeBinding !== undefined || args.requireCanonicalRemoteHead === true ||
+      args.executionMode !== "sync" || args.startWorker !== false)) throw new Error("project_control_sealed_source_mode_invalid");
   const executionMode =
     args.executionMode ??
     (booleanValue(args.startWorker) === false ? "sync" : "bounded");
@@ -197,7 +206,9 @@ export async function projectControlRefillWorkerView(
     throw new Error("project_control_child_boundary_denied");
   }
   const accounts = await projectControlRefillAccountNames({
-    ...(requested.modelBackend === undefined ? {} : { modelBackend: requested.modelBackend }),
+    ...(requested.modelBackend === undefined
+      ? {}
+      : { modelBackend: requested.modelBackend }),
     ...(requested.authRootDir === undefined
       ? {}
       : { authRootDir: requested.authRootDir }),
@@ -319,7 +330,7 @@ export async function projectControlRefillWorkerView(
     scope: controller.scope,
     remoteVerificationRequired:
       canonicalSourceWorkspacePath !== undefined ||
-      expectedSourceCommit !== undefined,
+      (expectedSourceCommit !== undefined && deps.sealedSource === undefined),
   });
   const worktreeAccessInput = sourceReference.remoteVerified
     ? {
@@ -327,9 +338,15 @@ export async function projectControlRefillWorkerView(
         sourceRef: sourceReference.worktreeSourceRef,
       }
     : requestedWorktreeAccessInput;
+  const sealedRevision = await deps.sealedSource?.resolveRevision({ sourceWorkspacePath,
+    sourceRef: sourceRef ?? baseBranch, expectedSourceCommit: expectedSourceCommit ?? "" });
   const resolvedSource =
     await resolverBroker.resolveWorktreeRevision(worktreeAccessInput);
-  const finalizedSource = await finalizeProjectMergeBoundSource({
+  if (sealedRevision && (resolvedSource.revision !== sealedRevision.revision || resolvedSource.sourceRealPath !== sealedRevision.sourceRealPath))
+    throw new Error("project_control_sealed_source_changed");
+  const finalizedSource = sealedRevision
+    ? { sourceRevision: sealedRevision, admission: args.preStartAdmission, promptSuffix: "", merge: undefined }
+    : await finalizeProjectMergeBoundSource({
     binding: mergeBinding,
     jobRootDir: baseCreateManifest.jobRootDir,
     admission: args.preStartAdmission,
@@ -411,6 +428,11 @@ export async function projectControlRefillWorkerView(
     plan: preStartAdmission,
     sourceRevision: sourceRevision.revision,
   });
+  // Attest the fresh root before prompt/admission/aggregate preparation. Only
+  // the exact internal capability reaches final broker manifest publication.
+  const protectedBirthPreparation = await prepareProtectedCodexGoalJobBirth({
+    registryRootDir: controller.registryRootDir, manifest: createManifest,
+  });
   let aggregateArtifactCreatedPaths: readonly string[] = [];
   let aggregateInputPatch:
     | {
@@ -470,11 +492,16 @@ export async function projectControlRefillWorkerView(
     expectedSourceRealPath: resolvedSource.sourceRealPath,
     ...(producerInputPatch ? { inputPatch: producerInputPatch } : {}),
   };
+  const plannedAdoption = role === "adoption" && preStartAdmission && "mode" in preStartAdmission.descriptor && preStartAdmission.descriptor.mode === "serial-builtin" &&
+    createWorktreeInput.expectedRealPath && !producerInputPatch
+    ? { target: createWorktreeInput, manifest: createManifest, contract: preStartAdmission.contract, preparation: protectedBirthPreparation }
+    : undefined;
   const worktreeBroker = deps.codexProjectControlBroker({
     registryRootDir: controller.registryRootDir,
     controller: controller.controller,
     scope: controller.scope,
     createWorktreeInput,
+    ...(plannedAdoption ? { plannedAdoption } : {}),
   });
   let worktreeCreated = false;
   let workerToolRoot: WorkerToolRootOutcome | undefined;
@@ -556,6 +583,9 @@ export async function projectControlRefillWorkerView(
       controller: controller.controller,
       scope: controller.scope,
       createManifest,
+      ...(protectedBirthPreparation ? { protectedBirthPreparation } : {}),
+      ...(plannedAdoption ? { plannedAdoption } : {}),
+      ...(reviewedOutputAggregate ? { createReviewedOutputAggregate: { aggregate: reviewedOutputAggregate, sourceRealPath: resolvedSource.sourceRealPath } } : {}),
       createOverwrite: booleanValue(args.overwrite) ?? false,
       ...(producerInputPatch
         ? {
@@ -634,7 +664,7 @@ export async function projectControlRefillWorkerView(
       expectedCanonicalWorkspacePath,
       owner: `project-refill-start:${controller.controller.jobId}:${manifest.jobId}`,
       effect: async (workspace) => {
-        dependencyPreflight = await runDependencyBootstrap({
+        const publicationDependencyBaseline = await runDependencyBootstrap({
           workspacePath: workspace.canonicalWorkspacePath,
           jobRootDir: manifest.jobRootDir,
           cacheNamespace: controller.scope.projectId,
@@ -642,7 +672,10 @@ export async function projectControlRefillWorkerView(
           confirmInstall:
             booleanValue(args.confirmDependencyBootstrap) === true,
         });
-        assertProjectControlDependencyBootstrapReady(dependencyPreflight);
+        dependencyPreflight = publicationDependencyBaseline;
+        assertProjectControlDependencyBootstrapReady(publicationDependencyBaseline);
+        const startDependencyPreflightDiagnostic = manifest.projectPreStartAdmission
+          ? bindDependencyPreflightDiagnostic(publicationDependencyBaseline, manifest.jobRootDir) : undefined;
         const startAdmissionWorkspaceMode =
           await validateProjectRefillPreStartAdmissionLocked({
             manifest,
@@ -672,6 +705,30 @@ export async function projectControlRefillWorkerView(
               ? { startAdmissionWorkspaceMode }
               : {}),
             startWorkspaceLease: workspace,
+            ...(startDependencyPreflightDiagnostic !== undefined ? { startDependencyPreflightDiagnostic } : {}),
+            revalidateStartPublication: async (currentWorkspace) => {
+              const freshController = await deps.loadProjectControlController(args);
+              const freshManifest = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: manifest.jobId });
+              if (freshController.registryRootDir !== controller.registryRootDir ||
+                !isDeepStrictEqual(freshController.scope, controller.scope) ||
+                !isDeepStrictEqual(freshController.controller, currentController) ||
+                !isDeepStrictEqual(freshManifest, manifest)) {
+                throw new Error("project_control_start_binding_changed_before_publication");
+              }
+              const currentMode = await validateProjectRefillPreStartAdmissionLocked({
+                manifest: freshManifest, scope: controller.scope, admittedInputPatch: Boolean(producerInputPatch),
+              });
+              if (currentMode !== startAdmissionWorkspaceMode) throw new Error("project_control_start_admission_mode_changed");
+              const dependencies = await inspectDependencyBootstrap(currentWorkspace.canonicalWorkspacePath, publicationDependencyBaseline.mode);
+              assertProjectControlDependencyBootstrapReady(dependencies);
+              if (!isDeepStrictEqual(dependencies.fingerprintInputs, publicationDependencyBaseline.fingerprintInputs) ||
+                !isDeepStrictEqual(dependencies.binaryChecks, publicationDependencyBaseline.binaryChecks) ||
+                dependencies.environmentExists !== publicationDependencyBaseline.environmentExists) {
+                throw new Error("project_control_dependency_environment_changed_before_start");
+              }
+              assertCodexProjectReservedLaunchAuthority({ manifest: freshManifest, sourceLaunch: canonicalLaunch, reservedLaunch });
+              await assertCodexProjectReservedAccountReceiptCurrent({ manifest: freshManifest, reservedLaunch });
+            },
             startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           });
           const startResult = await withCurrentControllerScopeActivity({
@@ -699,11 +756,16 @@ export async function projectControlRefillWorkerView(
             accountReservation: reservedAccount,
           };
         } catch (error) {
-          await releaseCodexProjectAccount({
-            manifest,
-            launch: reservedLaunch,
-            reason: "worker_start_failed",
-          });
+          let leafHeld = false;
+          try { leafHeld = workspace.lease.workspacePath === workspace.canonicalWorkspacePath; }
+          catch { /* Failed handoff: preserve the reservation for reconciliation. */ }
+          if (!(error instanceof ProjectControlSubmissionUncertainError) && leafHeld) {
+            await releaseCodexProjectAccount({
+              manifest,
+              launch: reservedLaunch,
+              reason: "worker_start_failed",
+            });
+          }
           throw error;
         }
       },
@@ -731,6 +793,10 @@ export async function projectControlRefillWorkerView(
     assertProjectControlDependencyBootstrapReady(dependencyPreflight);
   }
 
+  const { admission: worktreeAdmission, ...worktreeView } = worktree;
+  const { admission: createJobAdmission, ...createJobView } = createJob;
+  const { admission: startAdmission, ...startView } = start ?? {};
+  const admission = startAdmission ?? createJobAdmission ?? worktreeAdmission;
   return {
     ok: true,
     mode: "project_control_refill_worker",
@@ -777,10 +843,11 @@ export async function projectControlRefillWorkerView(
       : {}),
     dependencyPreflight: dependencyPreflight as unknown as JsonObject,
     jobId: manifest.jobId,
-    worktree: worktree as unknown as JsonObject,
-    createJob: createJob as unknown as JsonObject,
+    ...(admission ? { admission } : {}),
+    worktree: worktreeView as unknown as JsonObject,
+    createJob: createJobView as unknown as JsonObject,
     ...(start
-      ? { start: start as unknown as JsonObject }
+      ? { start: startView as unknown as JsonObject }
       : { startSkipped: true }),
     manifest,
     summary: summarizeCodexGoalJob(manifest, controller.registryRootDir),

@@ -103,6 +103,32 @@ available/total host memory, active heavy reviewer/fastgate workers and the curr
 admission reason. Missing worker observations make the projection partial instead
 of turning an observability failure into scheduler authority.
 
+### Scoped independent admission
+
+Admission is scoped to the broker-bound target before a producer decision is
+returned. The worker adapter performs a complete registration/writer census,
+including entries outside the human-facing preview limit, and compares canonical
+physical workspace roots. A target with a pinned source/revision and a disjoint
+canonical writable root may be admitted while unrelated dirty, reviewed,
+unconsumed or orphan outputs remain visible as a bounded informational backlog.
+The decision includes an internal trusted `summary` with the target identity and
+backlog count/preview. Scope is never supplied by an MCP flag or caller-owned
+request field.
+
+Same, aliased, nested or otherwise potentially overlapping writable roots, an
+unreadable target, malformed control registry, disk pressure, or unknown writer
+authority fail closed before mutation or provider spawn for every writing role.
+The admission broker coordinates only the fresh census/overlap check and the
+existing registration or launch-authorization publication. It releases that
+short topology section before provider submission or waiting, while preserving
+the existing workspace lease, exact patch/continuation checks, receipts and
+old-output custody.
+
+The targetless admission snapshot remains an inventory. When no operation or
+worker role is requested, it omits the producer verdict and reports the
+operations admission projection as unavailable instead of implying that all
+work is denied.
+
 ## Durable worker handoff and recovery
 
 Use `codex_goal_project_prepare_verifier` for producer-to-verifier handoff. The

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { LocalFileRunEventStore } from "@vioxen/subscription-runtime/store-local-file";
 import {
   RunEventProviderKind,
@@ -17,6 +17,18 @@ import {
   upsertRunCommandManifest,
   type CodexGoalCliIo,
 } from "../codex-goal-cli";
+
+const hostPolicyFixture = vi.hoisted(() => ({ root: "" }));
+// Substitute only an absent policy parent; keep real ancestor custody checks.
+vi.mock("node:fs", async original => {
+  const real = await original<typeof import("node:fs")>();
+  const [{ tmpdir }, { join }] = await Promise.all([import("node:os"), import("node:path")]);
+  hostPolicyFixture.root = real.mkdtempSync(join(tmpdir(), "TEST-codex-goal-cli-host-policy-"));
+  return { ...real, lstatSync: ((path, ...args) => Reflect.apply(real.lstatSync, real, [
+    path === "/etc/subscription-runtime" ? join(hostPolicyFixture.root, "absent-subscription-runtime") : path, ...args,
+  ])) as typeof real.lstatSync };
+});
+afterAll(() => rm(hostPolicyFixture.root, { recursive: true, force: true }));
 
 describe("codex goal cli", () => {
   it("builds a run command from flags with safe defaults", () => {
@@ -246,7 +258,7 @@ describe("codex goal cli", () => {
     }
   });
 
-  it("denies registry-aware CLI run when an existing controller owns the scope", async () => {
+  it("denies raw project CLI run even with a caller-supplied broker marker", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-cli-project-scope-"));
     const registryRoot = join(root, "registry");
     const controllerJobRoot = join(root, "jobs", "infinity-context-controller-v1");
@@ -364,8 +376,11 @@ describe("codex goal cli", () => {
       ], brokeredChildIo);
 
       expect(brokeredChildExitCode).toBe(2);
-      expect(brokeredChildIo.stderr).not.toContain("project_control_broker_required");
-      expect(brokeredChildIo.stderr).toContain("ENOENT");
+      expect(brokeredChildIo.stderr).toContain("project_control_broker_required");
+      expect(brokeredChildIo.stderr).toContain("requiredTool=codex_goal_project_start");
+      expect(brokeredChildIo.stderr).not.toContain("ENOENT");
+      await expect(readFile(childJobJson, "utf8")).rejects.toThrow(/ENOENT/);
+      await expect(readFile(join(childJobRoot, ".controller-state-origin.json"), "utf8")).rejects.toThrow(/ENOENT/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
-import { prepareResearchProviderRoot, assertResearchProviderRoot, researchProviderRootFailureCheck, ResearchProviderRootCheck, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
+import { prepareResearchProviderRoot, assertResearchProviderRoot, observeResearchProviderWritableRoots, researchProviderRootFailureCheck, ResearchProviderRootCheck, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import type { ResearchStartSpec } from "../research-launch-contract";
@@ -251,6 +251,12 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     );
     const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
     assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    const effects = [...observed.effects];
+    const roots = observeResearchProviderWritableRoots(plan);
+    expect(roots.map(root => root.target)).toEqual(
+      plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target));
+    expect(roots.every(root => root.device.length > 0 && root.backingPath.startsWith("/"))).toBe(true);
+    expect(observed.effects).toEqual(effects);
     expect(plan.bindings.some(bind => bind.source.startsWith("/TEST-opaque") || bind.target.startsWith("/TEST-opaque"))).toBe(false);
     expect(fs.existsSync(join(plan.fixedRootDirectory, "TEST-opaque-net"))).toBe(false);
     expect(fs.existsSync(join(plan.fixedRootDirectory, "TEST-opaque-deleted"))).toBe(false);
@@ -258,6 +264,7 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     // Revalidation must still see an opaque child; dropping opaque rows would
     // conceal it from the unchanged nonrecursive bind topology checks.
     observed.extraMounts.push(`902 1 0:45 net:[4026533001] ${f.spec.request.workspacePath}/TEST-opaque rw - nsfs nsfs rw`);
+    expect(() => observeResearchProviderWritableRoots(plan)).toThrow("hosted_research_launch_denied");
     expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
   });
   it.each([
@@ -455,11 +462,18 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
     expect(observed.effects).toEqual(effects); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
+  it.each(["/etc", "/etc/TEST-job"])("denies writable %s at owner admission before launch effects", job => {
+    expect(() => captured(job)).toThrow("hosted_research_launch_denied");
+    const authority = join("/run/user/subscription-runtime-research-v1", researchHash(request().jobId));
+    for (const name of ["grant.json", "active.json", "starts"]) expect(fs.existsSync(join(authority, name))).toBe(false);
+    expect(fs.existsSync(join(job, ".controller-state-origin.json"))).toBe(false);
+    expect(host.calls).toEqual([]); expect(host.pins.size).toBe(0); expect(host.units.size).toBe(0);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   // Regression: an admitted writable equal, child or ancestor path would make
   // an immutable dependency writable or hide it, before systemd ordering helps.
   it.each([
     ["/usr", "/TEST-artifact", false], ["/usr/TEST-job", "/TEST-artifact", false],
-    ["/etc", "/TEST-artifact", false], ["/etc/TEST-job", "/TEST-artifact", false],
     ["/TEST-artifact", "/TEST-artifact", false], ["/TEST-artifact/TEST-job", "/TEST-artifact", false],
     ["/TEST-project", "/TEST-project/immutable/runtime", false],
     ["/opt", "/TEST-artifact", true], ["/opt/codex", "/TEST-artifact", true], ["/opt/codex/TEST-job", "/TEST-artifact", true],

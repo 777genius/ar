@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  mkdir, mkdtemp, readFile, rm, symlink, writeFile,
+  link, mkdir, mkdtemp, readFile, rm, symlink, writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,22 @@ describe("Codex project admission snapshot", () => {
       const rewritten = await readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest);
       expect(rewritten.receipt).toEqual(snapshot.receipt);
       expect(rewritten.receiptSha256).not.toBe(snapshot.receiptSha256);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each(["symlink", "hardlink"] as const)("rejects a %s masquerading as the current authorized receipt", async kind => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-receipt-alias-"));
+    const scope: ProjectAccessScope = { projectId: "test-project", jobIdPrefixes: ["test-"],
+      preStartAdmission: { required: true, mode: "serial-builtin" } };
+    try {
+      const producer = await createAttestedLiveProducer({ root, jobId: "test-alias", ownedPaths: ["src/a/"], scope });
+      const receiptPath = producer.manifest.projectPreStartAdmission!.receiptPath;
+      const outside = join(root, "same-receipt-bytes.json");
+      await writeFile(outside, await readFile(receiptPath));
+      await rm(receiptPath);
+      if (kind === "symlink") await symlink(outside, receiptPath);
+      else await link(outside, receiptPath);
+      await expect(readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest))
+        .rejects.toThrow("project_control_pre_start_receipt_invalid");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("admits a disjoint writer and denies a writer targeting the active workspace", async () => {
