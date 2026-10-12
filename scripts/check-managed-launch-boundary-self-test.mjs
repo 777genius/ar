@@ -69,6 +69,24 @@ try {
   assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
     ['src/provider-codex/app-server/adapters/unapproved-provider-launch.ts:1']);
   await rm(join(adapters, 'unapproved-provider-launch.ts'));
+  // Actual metadata consumer reuses the exact inert command leaf already
+  // sealed above. This grants no executable-file/directory exemption.
+  const peers = join(root, 'src/worker-codex');
+  await mkdir(peers);
+  const peerName = 'src/worker-codex/hosted-project-control-peer-selection.ts';
+  const peerPath = join(root, peerName);
+  const peerSource = await readFile(new URL('../src/worker-codex/hosted-project-control-peer-selection.ts', import.meta.url));
+  await writeFile(peerPath, peerSource);
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  // Literal/concatenated raw commands remain denied in the real consumer.
+  // The lexical checker does not resolve imported identifiers; runtime custody
+  // remains the separate original execution boundary.
+  for (const raw of ['spawn("/usr/bin/systemd-run", args);',
+    'const rawCommand = "systemd-" + "run"; execFile(rawCommand, args);']) {
+    await writeFile(peerPath, Buffer.concat([peerSource, Buffer.from('\n' + raw + '\n')]));
+    assert.ok((await checkManagedLaunchBoundary(root)).violations.some(value => value.startsWith(peerName + ':')));
+  }
+  await writeFile(peerPath, peerSource);
   // Read the actual approved SOURCE bytes; never import or execute the ROOT installer.
   const approved = await readFile(new URL('./dependency-retention-os-test/bootstrap-public-stage-9ca.mts', import.meta.url));
   assert.ok(findRawLaunches(approved.toString('utf8'), 'bootstrap-public-stage-9ca.mts').length > 0);
