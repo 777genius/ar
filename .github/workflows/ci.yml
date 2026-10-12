@@ -419,11 +419,13 @@ jobs:
           npm run typecheck:native-probe
           npm run typecheck:native-probe:root-source
           npm run test:native-probe
-          # Fixed empty TEST namespace exists only inside this disposable root container.
-          test ! -e /var/lib/subscription-runtime-host-policy
+          # Docker owns this empty bounded tmpfs; never use the overlay backing.
+          test -d /var/lib/subscription-runtime-host-policy
           test ! -L /var/lib/subscription-runtime-host-policy
-          install -d -m 0700 /var/lib/subscription-runtime-host-policy \
-            /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
+          [[ "$(stat -c '%u:%a' /var/lib/subscription-runtime-host-policy)" == '0:700' ]]
+          [[ "$(findmnt --noheadings --mountpoint /var/lib/subscription-runtime-host-policy --output FSTYPE)" == tmpfs ]]
+          [[ -z "$(find /var/lib/subscription-runtime-host-policy -mindepth 1 -maxdepth 1 -print -quit)" ]]
+          install -d -m 0700 /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
             /var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs
           SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
@@ -442,6 +444,7 @@ jobs:
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
             --security-opt "seccomp=$owned/ci-source-seccomp.json" \
             --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
+            --tmpfs /var/lib/subscription-runtime-host-policy:rw,noexec,nosuid,nodev,size=64m,mode=0700 \
             node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 \
             /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
             HOME=/native-probe-source-workspace/home \
