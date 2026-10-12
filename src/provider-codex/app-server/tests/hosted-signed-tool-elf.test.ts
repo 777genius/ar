@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { parseHostedSignedToolElf } from "../adapters/hosted-signed-tool-elf";
-import { parsePythonEnvelopeElf } from "../../../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
+import { parsePythonEnvelopeElf } from "../../../../host-integration/managed-launcher/dependency-full-python-envelope-TEST";
 
 // Standard ELF64 PT_LOAD/PT_DYNAMIC geometry; bytes are never executed.
 function image(needed: readonly string[] = [], tagged: readonly [bigint, string][] = []): Buffer {
