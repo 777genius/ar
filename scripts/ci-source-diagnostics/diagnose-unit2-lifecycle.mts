@@ -94,14 +94,14 @@ function main(): void {
   const writerNeedle = 'const real = await original<typeof import("node:fs")>();';
   const bindFixtureWriter = (body: string, fixture: string): string => replaceOnce(body, writerNeedle, `${writerNeedle}\n  ${fixture}.sourceDiagnosticAppend = (payload: string): void => { try { real.appendFileSync(${sink}, payload); } catch { /* finite TEST telemetry only */ } };`);
   save(files[0], body => {
-    body = replaceOnce(body, 'activationEnabled:true}));', 'activationEnabled:true,sourceDiagnosticAppend:(_payload:string):void=>{}}));');
+    body = replaceOnce(body, 'activationEnabled:true,run:vi.fn()}));', 'activationEnabled:true,run:vi.fn(),sourceDiagnosticAppend:(_payload:string):void=>{}}));');
     body = bindFixtureWriter(body, "h");
-    return replaceOnce(body, 'afterEach(()=>vi.unstubAllEnvs());', `afterEach(()=>vi.unstubAllEnvs());\nlet sourceDiagnosticOrdinal = 0;\nafterEach(() => { ${fixtureSink("h", '{ phase: "lifecycle-fixture-end", ordinal: ++sourceDiagnosticOrdinal, goalCalls: h.events.filter(event => event === "goal-effect").length, admits: h.events.filter(event => event === "admit").length, doctors: h.events.filter(event => event === "doctor").length }')} });`);
+    return replaceOnce(body, 'afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs()});', `afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs()});\nlet sourceDiagnosticOrdinal = 0;\nafterEach(() => { ${fixtureSink("h", '{ phase: "lifecycle-fixture-end", ordinal: ++sourceDiagnosticOrdinal, goalCalls: h.events.filter(event => event === "goal-effect").length, admits: h.events.filter(event => event === "admit").length, doctors: h.events.filter(event => event === "doctor").length }')} });`);
   });
   save(files[1], body => {
     body = replaceOnce(body, 'activationEnabled: true }));', 'activationEnabled: true, sourceDiagnosticAppend: (_payload: string): void => {} }));');
     body = bindFixtureWriter(body, "f");
-    body = replaceOnce(body, 'import { beforeEach, describe, expect, it, vi } from "vitest";', 'import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";');
+    body = replaceOnce(body, 'import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";', 'import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";');
     return body + `\nlet sourceDiagnosticOrdinal = 0;\nafterEach(() => { ${fixtureSink("f", '{ phase: "readonly-fixture-end", ordinal: ++sourceDiagnosticOrdinal, goalCalls: f.run.mock.calls.length, admits: f.admit.mock.calls.length }')} });\n`;
   });
   const reporter = join(source, "source-diagnostic-reporter.mts");

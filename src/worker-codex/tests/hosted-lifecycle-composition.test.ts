@@ -1,11 +1,12 @@
 import * as installation from '../hosted-installation-activation';
+import * as goalRunner from '../codex-goal-runner';
 import { HostedActivationPhase } from '@vioxen/subscription-runtime/worker-core';
 // Independent composition: actual use cases, CLI parser, route, foreground and shared ops.
 // Substituted boundaries: host authority/OS process, status/doctor, manifest, goal execution.
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
-const h=vi.hoisted(()=>({role:'supervisor',events:[] as string[], argv:[] as string[], doctorOk:false, status:{} as any, runStatus:'completed', outcome:0, fail:'', clientOk:true,inner:undefined as any,activationEnabled:true}));
+const h=vi.hoisted(()=>({role:'supervisor',events:[] as string[], argv:[] as string[], doctorOk:false, status:{} as any, runStatus:'completed', outcome:0, fail:'', clientOk:true,inner:undefined as any,activationEnabled:true,run:vi.fn()}));
 // Managed lifecycle transport explicitly opts in. Local controls below model a
 // different unenrolled Host; environment clearing cannot disable a Required Host.
 vi.mock('../../provider-codex/app-server/adapters/hosted-host-policy',async original=>{
@@ -33,7 +34,6 @@ vi.mock('../hosted-readonly-controller-admission',()=>{
 vi.mock('../application/codex-goal-job-launch-loader',()=>({loadJobLaunch:async(args:any)=>{h.events.push('reload:'+args.registryRootDir);return {launch,registryRootDir:args.registryRootDir,manifest:{jobId:'TEST'}}}}));
 vi.mock('../codex-goal-launch-manifest',()=>({upsertCodexGoalLaunchManifest:async()=>{h.events.push('manifest');return {jobId:'TEST'}}}));
 vi.mock('../project-control-scope-guard',async original=>({...await original<any>(),projectControlGenericScopeDenial:async()=>undefined,projectControlGenericToolDenial:()=>undefined}));
-vi.mock('../codex-goal-runner',async original=>({...await original<any>(),runCodexGoal:async()=>{h.events.push('goal-effect');return {status:h.runStatus}}}));
 vi.mock('../codex-goal-doctor',async original=>({...await original<any>(),doctorCodexGoal:async(input:any)=>{expect(input.tmuxSession).toBeUndefined();expect(input.config).toMatchObject({promptPath:'/TEST/job/prompt',authRootDir:'/TEST/auth',workspacePath:'/TEST/W',accounts:[{name:'synthetic'}]});h.events.push('doctor');return {ok:h.doctorOk,errors:['TEST missing prerequisite']}}}));
 vi.mock('../application/codex-goal-process-liveness',async original=>({...await original<any>(),resolveCodexGoalWorkerLiveness:()=>({alive:h.status.tmuxAlive === true})}));
 import * as ops from '../codex-goal-ops';
@@ -48,10 +48,15 @@ const start=()=>startCodexGoalLaunch({launch,registryRootDir:'/TEST/registry',jo
 const resume=(skipDoctor=false)=>continueStoredJobLifecycle({confirmContinue:true,forceStart:true,skipDoctor},{mode:'continue',confirmKey:'confirmContinue'},{loadJobLaunch:async()=>({launch,registryRootDir:'/TEST/registry',manifest:{jobId:'TEST'} as any})});
 // Replace the existing installation read after the transport import graph loads.
 // The real installation/dispatch contract has its own activation fixture.
+// Bind goal execution after graph loading so cyclic imports share this spy.
+beforeEach(()=>{
+ h.run.mockImplementation(async()=>{h.events.push('goal-effect');return {status:h.runStatus}});
+ vi.spyOn(goalRunner,'runCodexGoal').mockImplementation(h.run);
+});
 beforeEach(()=>{vi.spyOn(installation,'readHostedInstallationActivation').mockReturnValue({
  activation:{phase:HostedActivationPhase.Exclusive},
 } as ReturnType<typeof installation.readHostedInstallationActivation>);h.activationEnabled=true;vi.spyOn(process,'platform','get').mockReturnValue('linux');vi.spyOn(process,'getuid').mockReturnValue(0);h.role='supervisor';h.events=[];h.argv=[];h.doctorOk=false;h.runStatus='completed';h.fail='';h.status={tmuxAlive:false,recommendedAction:'start_worker',resultExists:true,workspaceDirty:true};h.inner=undefined;h.clientOk=true;vi.spyOn(ops,'collectCodexGoalStatus').mockImplementation(async()=>h.status);vi.spyOn(ops,'reconcileCodexGoalRuntimeResult').mockImplementation(async(input)=>{expect(input.preservePatch).toBe(true);h.events.push('reconcile-preserve-patch');if(h.fail==='reconcile')throw Error('TEST patch preservation failed');return {} as any});});
-afterEach(()=>vi.unstubAllEnvs());
+afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs()});
 for (const role of ['supervisor', 'runtime']) {
   for (const operation of ['start', 'continue', 'recover'] as const) {
     for (const doctorOk of [false, true]) {
