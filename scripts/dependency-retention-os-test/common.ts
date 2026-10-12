@@ -1,3 +1,4 @@
+import { originalFullGuestNativeSourcePaths } from "../../dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js";
 import { mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
 import { once } from "node:events";
 import assert from "node:assert/strict";
@@ -8,16 +9,10 @@ import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, 
 export const runtime = "/opt/subscription-runtime-dependency-os-TEST";
 // Exact load-only static closure of the CurrentDependency backing collector.
 // This runtime-relative catalog is separate from the installed launcher profile.
-export const currentBackingRuntimeModules = [
-  "host-integration/managed-launcher/dependency-full-native-TEST.js",
-  "host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js",
-  "host-integration/managed-launcher/launch.mjs",
-  "host-integration/managed-launcher/hosted-host-policy.mjs",
-  "host-integration/managed-launcher/profiles.mjs",
-  "host-integration/managed-launcher/payload-guard.mjs",
-  "host-integration/host-jobs/storage-policy.mjs",
+export const currentBackingRuntimeModules = Object.freeze([
+  ...originalFullGuestNativeSourcePaths,
   "src/worker-codex/hosted-full-backing-proc.js",
-] as const;
+]);
 export const policy = "/var/lib/subscription-runtime-host-policy";
 export const node = runtime + "/toolchain/bin/node";
 // Closed TEST modes use erasable syntax supported by the existing pinned runner.
