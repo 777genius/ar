@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine, type AppServerCompletedGoalOutputValidator,
-  type CodexAppServerExecutionEngineOptions } from "../../codex-app-server-execution-engine";
-import { CodexModelBackend } from "../../codex-model-backend";
-import type { CodexExecutionInput } from "../../codex-json-execution-engine";
-import { InMemoryManagedRunStore } from "../../codex-app-server-managed-run-store";
-import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
-import { FileBackendCodexWorker } from "../../../worker-codex/file-backend-codex-worker";
-import { StaticRunner } from "../codex-provider-test-support";
+  type CodexAppServerExecutionEngineOptions } from "../../provider-codex/codex-app-server-execution-engine";
+import { CodexModelBackend } from "../../provider-codex/codex-model-backend";
+import type { CodexExecutionInput } from "../../provider-codex/codex-json-execution-engine";
+import { InMemoryManagedRunStore } from "../../provider-codex/codex-app-server-managed-run-store";
+import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
+import { FileBackendCodexWorker } from "../file-backend-codex-worker";
+import { StaticRunner } from "../../provider-codex/tests/codex-provider-test-support";
 
 // Synthetic completed turns only: no real CLI, provider request or credential.
 const candidateIds = ["TEST-a", "TEST-b", "TEST-c", "TEST-d"];
