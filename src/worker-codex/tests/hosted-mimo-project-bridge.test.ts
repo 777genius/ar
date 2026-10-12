@@ -17,7 +17,7 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
 // Admission schema has its own real contracts. Here the independent boundary
 // is ownership/routing/dispatch, never the contents of the operator template.
 vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
-vi.mock("../codex-goal-mcp-project-control-tool-handlers", () => ({ projectControlRefillWorker: state.refill, projectControlStartStoredJob: state.start, projectControlStopStoredJob: state.stop }));
+vi.mock("../codex-goal-mcp-project-control-tool-handlers", () => ({ projectControlRefillWorkerFromSealedSource: state.refill, projectControlStartStoredJob: state.start, projectControlStopStoredJob: state.stop }));
 vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: state.allowed, jobIdPrefixes: state.jobPrefixes, tmuxSessionPrefixes: state.tmuxPrefixes } }), loadJobLaunch: state.load }));
 vi.mock("../project-mimo-worker-launch", () => ({ reconcileProjectMimoWorker: vi.fn(), observeProjectMimoWorker: vi.fn() }));
 vi.mock("../codex-goal-ops", () => ({ collectCodexGoalStatus: async () => ({ state: "done" }) }));
@@ -43,7 +43,7 @@ beforeEach(() => {
 describe("trusted MiMo bridge dispatch and retention", () => {
   it("derives paths and authority, then refuses replay", async () => {
     await handleHostedMimoProjectBridge(request);
-    expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ registryRootDir: root + "/registry", controllerJobId: "test-controller", workspacePath: scratch + "/workspaces/test-job", jobRootDir: root + "/jobs/test-job", sourceRef: "origin/main", accounts: ["account-q"], startWorker: false }));
+    expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ registryRootDir: root + "/registry", controllerJobId: "test-controller", workspacePath: scratch + "/workspaces/test-job", jobRootDir: root + "/jobs/test-job", sourceRef: "origin/main", accounts: ["account-q"], startWorker: false }), expect.anything());
     await expect(handleHostedMimoProjectBridge(request)).rejects.toThrow("TEST retained"); expect(state.refill).toHaveBeenCalledTimes(1);
   });
   it.each(["scope", "machine", "route", "source", "binding"])("refuses %s drift before dispatch", async fault => {
@@ -129,7 +129,7 @@ it("rejects a binding in shared state ancestry while accepting original routing-
   expect(state.refill).not.toHaveBeenCalled();
   state.files.set(config, Buffer.from(JSON.stringify(binding)));
   await expect(handleHostedMimoProjectBridge(request)).resolves.toMatchObject({ ok: true });
-  expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ registryRootDir: root + "/registry", jobRootDir: root + "/jobs/test-job" }));
+  expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ registryRootDir: root + "/registry", jobRootDir: root + "/jobs/test-job" }), expect.anything());
 });
 it("rejects YAML state-root drift even though routing state is separate from protected state", async () => {
   const yamlPath = "/etc/subscription-runtime/projects/test-project.d/test-stream.yml";
@@ -156,7 +156,7 @@ it("rejects shared project scratch authority while preserving routing-only YAML"
   expect(state.refill).not.toHaveBeenCalled();
   state.files.set(config, Buffer.from(JSON.stringify(binding)));
   await expect(handleHostedMimoProjectBridge(request)).resolves.toMatchObject({ ok: true });
-  expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ sourceWorkspacePath: scratch + "/source", workspacePath: scratch + "/workspaces/test-job" }));
+  expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ sourceWorkspacePath: scratch + "/source", workspacePath: scratch + "/workspaces/test-job" }), expect.anything());
 });
 it("rejects original YAML scratch-root drift independently of protected scratch", async () => {
   const yamlPath = "/etc/subscription-runtime/projects/test-project.d/test-stream.yml";

@@ -1,3 +1,4 @@
+import type { ResolvedProjectSourceRevision } from "./application/project-control/codex-goal-project-source-revision";
 import type {
   ProjectAccessScope,
   ProjectControlBroker,
@@ -15,6 +16,7 @@ export type LoadedProjectControlController = {
 };
 
 export type CodexGoalMcpProjectControlJobsDeps = {
+  readonly sealedSource?: ProjectSealedSourcePort;
   readonly loadProjectControlController: (
     args: ProjectControlMcpArgs,
   ) => Promise<LoadedProjectControlController>;
@@ -22,3 +24,10 @@ export type CodexGoalMcpProjectControlJobsDeps = {
     input: Omit<CodexProjectControlBrokerInput, "admissionDeps">,
   ) => ProjectControlBroker;
 };
+
+/** A Host-provided seal validator, never caller-supplied launch arguments. */
+export interface ProjectSealedSourcePort {
+  resolveRevision(input: Readonly<{
+    sourceWorkspacePath: string; sourceRef: string; expectedSourceCommit: string;
+  }>): Promise<ResolvedProjectSourceRevision>;
+}

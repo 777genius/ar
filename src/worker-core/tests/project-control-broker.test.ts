@@ -25,6 +25,56 @@ import {
 } from "../index";
 
 describe("ProjectControlBroker", () => {
+  it("rechecks an allocated writer inside publication instead of reusing a prepared allow", async () => {
+    const calls: string[] = [];
+    let allocated = false;
+    const allowed = allowAdmission();
+    const gate: ProjectAdmissionGate = {
+      async prepare() {
+        // Historical preparation completes before another operation publishes.
+        expect(allocated).toBe(false);
+        return gate;
+      },
+      async evaluate(request) {
+        const decision = await allowed.evaluate(request);
+        return allocated ? {
+          ...decision,
+          allowed: false,
+          status: ProjectAdmissionDecisionStatus.Denied,
+          reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
+          debt: [{
+            reason: ProjectDebtReason.ActiveWriterConflict,
+            subject: "/work/infinity-context-child",
+            severity: "blocking",
+            evidence: ["allocated writer has not published a heartbeat yet"],
+          }],
+        } : decision;
+      },
+    };
+    const broker = new ProjectControlBroker({
+      boundary: AccessBoundary.ProjectScopedControl,
+      scope: scope(),
+    }, {
+      ...ports(calls, [], gate),
+      admissionCoordination: {
+        async withPublication(_input, effect) {
+          allocated = true;
+          return await effect();
+        },
+      },
+    });
+
+    await expect(broker.createJob({
+      jobId: "infinity-context-child-v1",
+      registryRoot: "/var/data/worker-jobs/registry",
+      workspacePath: "/work/infinity-context-child",
+      tmuxSession: "infinity-context-child-v1",
+    })).rejects.toMatchObject({
+      decision: { allowed: false, debt: [{ reason: ProjectDebtReason.ActiveWriterConflict }] },
+    });
+    expect(calls).toEqual([]);
+  });
+
   it("executes allowed project-scoped operations through ports and audits decisions", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];

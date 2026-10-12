@@ -87,6 +87,8 @@ function newStorageArgs() {
 describe("actual CLI trusted storage composition", () => {
   it("reaches the actual local runner admission with immutable parsed data", async () => {
     const { root, io, args } = await testInput();
+    const actualRoute = await vi.importActual<typeof import("../hosted-readonly-goal-launch")>("../hosted-readonly-goal-launch");
+    harness.route.mockImplementationOnce(actualRoute.routeHostedGoalLaunch);
     let requestSeen: Parameters<JobStorageAdmissionPort["withAdmittedLifetime"]>[0] | undefined;
     const port: JobStorageAdmissionPort = { async withAdmittedLifetime(request) {
       requestSeen = request;
@@ -108,7 +110,7 @@ describe("actual CLI trusted storage composition", () => {
     expect(Object.isFrozen(requestSeen)).toBe(true);
     expect(Object.isFrozen(requestSeen?.intent)).toBe(true);
     expect(egress).not.toHaveBeenCalled();
-    expect(harness.route).toHaveBeenCalledOnce();
+    expect(harness.route).not.toHaveBeenCalled();
     expect(io.stdout).toBe("");
     await expect(access(join(root, "job"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -121,15 +123,8 @@ describe("actual CLI trusted storage composition", () => {
       expect(process.platform !== "linux" || process.getuid?.() !== 0).toBe(true);
       const { root, io, args } = await testInput();
       harness.hosted = true; harness.ordinary = true;
-      const actual = await vi.importActual<typeof import("../hosted-installation-activation")>("../hosted-installation-activation");
-      let identitySeen: Parameters<typeof actual.admitHostedOrdinaryIdentity>[0] | undefined;
-      // Discovery is TEST data. Delegate this one CLI route to the real public
-      // ordinary admission guard; this proves no owned origin or native route.
-      harness.route.mockImplementationOnce(async ({ config }) => {
-        identitySeen = { jobId: config.jobId ?? config.taskId, jobRootDir: config.jobRootDir, workspacePath: config.workspacePath };
-        actual.admitHostedOrdinaryIdentity(identitySeen);
-        return undefined;
-      });
+      // The actual CLI read-only owner branch must refuse before the storage
+      // port; the raw router is not a substitute for that original authority.
       const admission = vi.fn(async () => { throw new Error("TEST_unexpected_admission"); });
       const egress = vi.fn(async () => { throw new Error("TEST_unexpected_egress"); });
       expect(await runCodexGoalCli([...args, ...newStorageArgs()], io, { runDeps: {
@@ -137,8 +132,7 @@ describe("actual CLI trusted storage composition", () => {
       } })).toBe(2);
       expect(io.stderr).toBe("hosted_readonly_host_operator_required\n");
       expect(io.stdout).toBe("");
-      expect(harness.route).toHaveBeenCalledOnce();
-      expect(identitySeen).toStrictEqual({ jobId: "TEST-task", jobRootDir: join(root, "job"), workspacePath: join(root, "workspace") });
+      expect(harness.route).not.toHaveBeenCalled();
       expect(admission).not.toHaveBeenCalled(); expect(egress).not.toHaveBeenCalled();
       await expect(access(join(root, "job"))).rejects.toMatchObject({ code: "ENOENT" });
     },

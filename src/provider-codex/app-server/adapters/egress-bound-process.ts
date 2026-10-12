@@ -40,6 +40,7 @@ export function egressBoundCodexProcessFactory(
       namedPermissions ? { namedPermissions: true } : undefined)],
     env: { ...input.env, ...codexProviderEgressEnv(policy) },
   });
+  if (spawn.originalProviderStorageContext) Object.defineProperty(factory, "originalProviderStorageContext", { value: true });
   if (origin) codingEgressFactories.set(factory, Object.freeze({ factory: spawn, origin }));
   return factory;
 }

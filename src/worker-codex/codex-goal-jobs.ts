@@ -1,16 +1,13 @@
+import { resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
+export { defaultCodexGoalJobRegistryRoot, resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageBindingUnchanged, assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./application/codex-goal-storage-data";
 import { optionalWorkerMode } from "./project-control-worker-mode";
 import { childConfigFromRecord } from "./child-execution-confinement";
 import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
-import {
-  lstat,
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-  writeFile,
-} from "node:fs/promises";
+import { publishCodexGoalJobWithProtectedBirth, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
+import { lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -39,6 +36,8 @@ import {
   optionalCodexGoalProviderSandboxMode,
 } from "./codex-goal-control-modes";
 import { withCodexGoalManifestUpdate, withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
+import { currentHostedOrdinaryWriterExtent, assertHostedOrdinaryRegistryPublication } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
+import { projectControlWorkspaceLockRoot } from "./codex-goal-project-workspace-lock";
 import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 import {
@@ -58,7 +57,6 @@ import {
   readStringArray,
   requiredIsoDate,
   requiredString,
-  resolvePath,
   uniqueManifestStrings,
 } from "./codex-goal-job-manifest-parse-primitives";
 export const codexGoalJobManifestSchemaVersion = 1;
@@ -93,6 +91,10 @@ export type CodexGoalJobManifest = {
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
+  readonly encryptionKeyPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
   readonly workspacePath: string;
   readonly promptPath: string;
   readonly codexGoalObjective?: string;
@@ -161,27 +163,9 @@ export type CodexGoalJobSummary = {
   readonly manifestPath: string;
 };
 
-export type CodexGoalJobRegistryInput = {
-  readonly registryRootDir?: string;
-  readonly cwd?: string;
-};
-
-export function defaultCodexGoalJobRegistryRoot(): string {
-  return join(homedir(), ".cache", "subscription-runtime", "codex-goal-jobs");
-}
-
 export function defaultCodexGoalJobRoot(jobId: string): string {
   assertJobId(jobId);
   return join(homedir(), ".cache", "subscription-runtime", jobId);
-}
-
-export function resolveCodexGoalJobRegistryRoot(
-  input: CodexGoalJobRegistryInput = {},
-): string {
-  return resolvePath(
-    input.cwd ?? process.cwd(),
-    input.registryRootDir ?? defaultCodexGoalJobRegistryRoot(),
-  );
 }
 
 export function codexGoalJobManifestPath(input: {
@@ -241,15 +225,21 @@ export async function createCodexGoalJob(input: {
   readonly cwd?: string;
   readonly now?: Date;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
+  readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
 }): Promise<CodexGoalJobManifest> {
+  const original = currentHostedOrdinaryWriterExtent();
   const storageData = parseCodexGoalStorageData(input.manifest);
   const publicationInput = { ...input.manifest, ...storageData };
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
+  const nativeWorker = input.manifest.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    input.manifest.executionEngine === "app-server" && input.manifest.workerReportMode === "structured-output" &&
+    input.manifest.childLifetime === undefined;
   const manifest = parseCodexGoalJobManifest({
     ...publicationInput,
-    durableHandoffRootDir: publicationInput.durableHandoffRootDir ??
-      join(storageData.storage ? publicationInput.jobRootDir : registryRootDir, "durable-handoffs"),
+    ...(!nativeWorker || storageData.storage || publicationInput.durableHandoffRootDir !== undefined
+      ? { durableHandoffRootDir: publicationInput.durableHandoffRootDir ??
+          join(storageData.storage ? publicationInput.jobRootDir : registryRootDir, "durable-handoffs") } : {}),
     schemaVersion: codexGoalJobManifestSchemaVersion,
     createdAt: publicationInput.createdAt ?? now,
     updatedAt: publicationInput.updatedAt ?? now,
@@ -278,7 +268,8 @@ export async function createCodexGoalJob(input: {
   }
   const publish = () => withCodexGoalRegistryMutation({
     registryRootDir,
-    effect: async () => {
+    effect: async assertPublicationCurrent => {
+      assertPublicationCurrent([join(registryRootDir, manifest.jobId), path], manifest.jobRootDir);
       if ((await pathExists(path)) && !existedBeforeAdmission) {
         throw codexGoalJobManifestAlreadyExists(path);
       }
@@ -290,30 +281,40 @@ export async function createCodexGoalJob(input: {
           throw new Error("job_manifest_activity_identity_invalid");
         }
       }
-      if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
-        await initializeControllerStateOrigin(manifest);
-      }
-      const custodyCertification = await bootstrapInitialProjectControlCustody(
-        manifest,
-        input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
-      );
-      try {
-        await mkdir(join(registryRootDir, manifest.jobId), {
-          recursive: true,
-          mode: 0o700,
-        });
-        await custodyCertification?.revalidate();
-        await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-          flag: input.overwrite ? "w" : "wx",
-        });
-        return manifest;
-      } finally {
-        await custodyCertification?.close();
-      }
+      const publishManifest = async (freshJobRoot = false) => {
+        if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
+          await initializeControllerStateOrigin(manifest, freshJobRoot);
+        }
+        const custodyCertification = await bootstrapInitialProjectControlCustody(
+          manifest,
+          input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+        );
+        try {
+          assertPublicationCurrent([join(registryRootDir, manifest.jobId)]);
+          await mkdir(join(registryRootDir, manifest.jobId), {
+            recursive: true,
+            mode: 0o700,
+          });
+          await custodyCertification?.revalidate();
+          assertPublicationCurrent([path]);
+          await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: input.overwrite ? "w" : "wx",
+          });
+          return manifest;
+        } finally {
+          await custodyCertification?.close();
+        }
+      };
+      return existedBeforeAdmission ? await publishManifest() : await publishCodexGoalJobWithProtectedBirth({
+        job: manifest, manifestInput: input.manifest, manifestPath: path, publish: publishManifest,
+        ...(input.protectedBirthPreparation ? { preparation: input.protectedBirthPreparation } : {}),
+      });
     },
   });
+  if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
+  assertHostedOrdinaryRegistryPublication(registryRootDir, projectControlWorkspaceLockRoot(registryRootDir), [path], manifest.jobRootDir);
   // A new manifest has no checkpointable identity yet. Its registry mutex
   // protects initial publication; preserve the absent-root origin attestation.
   return existedBeforeAdmission
@@ -354,7 +355,7 @@ export async function updateCodexGoalJob(input: {
     manifestPath: lockedManifestPath,
     ...(input.expectedManifestSha256 === undefined
       ? {} : { expectedManifestSha256: input.expectedManifestSha256 }),
-    effect: async () => {
+    effect: async assertPublicationCurrent => {
       const existing = await readCodexGoalJob({
         registryRootDir,
         jobId: input.jobId,
@@ -406,6 +407,7 @@ export async function updateCodexGoalJob(input: {
       try {
         await custodyCertification?.revalidate();
         await durableReplaceJsonFile({ path: manifestPath, value: manifest,
+          assertPublicationCurrent,
           beforePublication: async () => {
             await input.beforeManifestPublication?.();
             assertExpectedParsedManifest(await readCodexGoalJob({ registryRootDir, jobId: input.jobId }));
@@ -447,6 +449,10 @@ export function codexGoalJobToArgs(
     durableHandoffRootDir: manifest.durableHandoffRootDir,
     authRootDir: manifest.authRootDir,
     stateRootDir: manifest.stateRootDir,
+    agentTempRootDir: manifest.agentTempRootDir,
+    runtimeEventsPath: manifest.runtimeEventsPath,
+    encryptionKeyPath: manifest.encryptionKeyPath,
+    runtimeHomeRootDir: manifest.runtimeHomeRootDir,
     workspacePath: manifest.workspacePath,
     promptPath: manifest.promptPath,
     codexGoalObjective: manifest.codexGoalObjective,
@@ -587,6 +593,10 @@ function parseCodexGoalJobManifestValue(
     ...(optionalString(value.stateRootDir) === undefined
       ? {}
       : { stateRootDir: optionalString(value.stateRootDir) as string }),
+    ...(optionalString(value.runtimeHomeRootDir) === undefined ? {} : { runtimeHomeRootDir: optionalString(value.runtimeHomeRootDir) as string }),
+    ...(optionalString(value.encryptionKeyPath) === undefined ? {} : { encryptionKeyPath: optionalString(value.encryptionKeyPath) as string }),
+    ...(optionalString(value.runtimeEventsPath) === undefined ? {} : { runtimeEventsPath: optionalString(value.runtimeEventsPath) as string }),
+    ...(optionalString(value.agentTempRootDir) === undefined ? {} : { agentTempRootDir: optionalString(value.agentTempRootDir) as string }),
     workspacePath: requiredString(value.workspacePath, "workspacePath"),
     promptPath: requiredString(value.promptPath, "promptPath"),
     ...(optionalString(value.codexGoalObjective) === undefined

@@ -56,13 +56,17 @@ export function codexGoalLaunchManifestInputFromLaunch(
   return {
     ...parseCodexGoalStorageData(launch.config),
     jobId,
-    ...(launch.config.storage && launch.config.durableHandoffRootDir
+    ...(launch.config.durableHandoffRootDir
       ? { durableHandoffRootDir: launch.config.durableHandoffRootDir } : {}),
     ...(metadata.description ? { description: metadata.description } : {}),
     ...(metadata.tags?.length ? { tags: metadata.tags } : {}),
     jobRootDir: launch.config.jobRootDir,
     authRootDir: launch.config.authRootDir,
     ...(launch.config.stateRootDir ? { stateRootDir: launch.config.stateRootDir } : {}),
+    ...(launch.config.runtimeHomeRootDir ? { runtimeHomeRootDir: launch.config.runtimeHomeRootDir } : {}),
+    ...(launch.config.encryptionKeyPath ? { encryptionKeyPath: launch.config.encryptionKeyPath } : {}),
+    ...(launch.config.runtimeEventsPath ? { runtimeEventsPath: launch.config.runtimeEventsPath } : {}),
+    ...(launch.config.agentTempRootDir ? { agentTempRootDir: launch.config.agentTempRootDir } : {}),
     workspacePath: launch.config.workspacePath,
     promptPath: launch.config.promptPath,
     ...(launch.config.codexGoalObjective
