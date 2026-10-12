@@ -205,6 +205,61 @@ it("redacts a key split across normal Responses delta events while preserving se
   } finally { await f.proxy.close(); }
 });
 
+it("releases done chains before response completion while redacting split secrets in the following chain", async () => {
+  let upstreamController!: ReadableStreamDefaultController<Uint8Array>;
+  const transport = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) { upstreamController = controller; },
+  }), { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const received = (async () => {
+      const response = await f.post({ model: "mimo-v2.6-pro", stream: true });
+      const reader = response.body!.getReader();
+      let text = "";
+      while (!text.includes('"type":"response.function_call_arguments.done"')) {
+        const part = await reader.read();
+        if (part.done) throw new Error("stream ended before chain completion");
+        text += new TextDecoder().decode(part.value);
+      }
+      return text;
+    })();
+    // Wait for the upstream call without requiring any response bytes.
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledOnce());
+    const emit = (type: string, item: string, fields: Record<string, unknown> = {}) => upstreamController.enqueue(Buffer.from(
+      `event: ${type}\ndata: ${JSON.stringify({ type, item_id: item, output_index: 0, ...fields })}\n\n`));
+    emit("response.reasoning_summary_text.delta", "reasoning", { summary_index: 0, delta: "short" });
+    emit("response.reasoning_summary_text.done", "reasoning", { summary_index: 0, text: "short" });
+    for (const [index, secret] of [key, f.proxy.capability].entries()) {
+      emit("response.function_call_arguments.delta", "tool", { delta: secret.slice(0, 10) });
+      // A different completed chain must not release the tool's secret prefix.
+      emit("response.output_text.delta", `other-${index}`, { content_index: 0, delta: "ok" });
+      emit("response.output_text.done", `other-${index}`, { content_index: 0, text: "ok" });
+      emit("response.function_call_arguments.delta", "tool", { delta: secret.slice(10) });
+    }
+    emit("response.function_call_arguments.done", "tool", { arguments: key + f.proxy.capability });
+    const text = await Promise.race([received, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("completed chains remained buffered")), 500);
+    })]);
+    expect(text).toContain('"delta":"short"');
+    expect(text).not.toContain(key); expect(text).not.toContain(f.proxy.capability);
+    expect(text).not.toContain("response.completed");
+    const events = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)) as Record<string, unknown>);
+    expect(events.filter(event => event.type === "response.function_call_arguments.delta").map(event => event.delta).join("")).toBe("******");
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { if (timer) clearTimeout(timer); await f.proxy.close(); }
+});
+
+it("fails closed on a delta after its matching done event", async () => {
+  const transport = vi.fn<typeof fetch>(async () => new Response(
+    'data: {"type":"response.output_text.done","item_id":"item-1"}\n\n' +
+    'data: {"type":"response.output_text.delta","item_id":"item-1","delta":"late"}\n\n',
+    { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport);
+  try { await expect(f.post().then(response => response.text())).rejects.toThrow(); }
+  finally { await f.proxy.close(); }
+});
+
 it("uses a replacement outside the credential alphabet, so redaction cannot match itself", async () => {
   const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from("redacted"), model: "mimo-v2.6-pro", limits: limits(),
     fetchUpstream: async () => new Response('data: {"type":"response.output_text.delta","delta":"redacted"}\n\ndata: [DONE]\n\n',

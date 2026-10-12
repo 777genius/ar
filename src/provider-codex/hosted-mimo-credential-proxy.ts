@@ -185,6 +185,7 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
   const serialize = (text: string) => JSON.stringify(redactJson(JSON.parse(text), secrets));
   type Frame = { event?: string; data: unknown; chain?: string };
   const queue: Frame[] = [];
+  const sealedChains = new Set<string>();
   let queueBytes = 0;
   const tailLength = Math.max(...secrets.map(secret => secret.length)) - 1;
   const encodeFrame = (item: Frame) => Buffer.from(`${item.event ? `event: ${item.event}\n` : ""}data: ${item.data === "[DONE]" ? "[DONE]" : JSON.stringify(item.data)}\n\n`);
@@ -193,7 +194,7 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
     const output: Buffer[] = [];
     while (queue.length) {
       const first = queue[0]!;
-      if (!flush && first.chain) {
+      if (!flush && first.chain && !sealedChains.has(first.chain)) {
         const following = queue.slice(1).filter(item => item.chain === first.chain).reduce((size, item) => size + delta(item).length, 0);
         if (following < tailLength) break;
       }
@@ -251,8 +252,18 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
     const safeData: unknown = textData === "[DONE]" ? textData : redactJson(JSON.parse(textData), secrets);
     const safeEvent = event ? String(redactJson(event, secrets)) : undefined;
     const record = safeData && typeof safeData === "object" && !Array.isArray(safeData) ? safeData as Record<string, unknown> : undefined;
+    const chainKey = (type: string) => JSON.stringify([type, record?.item_id ?? null,
+      record?.output_index ?? null, record?.content_index ?? null, record?.summary_index ?? null]);
     const chain = record && typeof record.type === "string" && record.type.endsWith(".delta") && typeof record.delta === "string"
-      ? JSON.stringify([record.type, record.item_id ?? null, record.output_index ?? null, record.content_index ?? null]) : undefined;
+      ? chainKey(record.type) : undefined;
+    if (chain && sealedChains.has(chain)) throw new Error("response_delta_after_done");
+    // A done event closes only its matching text/arguments chain. Its retained
+    // suffix can now be released without waiting for another chain or response
+    // completion. Reject later deltas on that chain rather than exposing a
+    // credential split across an invalid done boundary.
+    if (record && typeof record.type === "string" && record.type.endsWith(".done")) {
+      sealedChains.add(chainKey(record.type.slice(0, -5) + ".delta"));
+    }
     return enqueue({ ...(safeEvent ? { event: safeEvent } : {}), data: safeData, ...(chain ? { chain } : {}) });
   };
   try {
