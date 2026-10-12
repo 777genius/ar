@@ -9,9 +9,14 @@ import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstre
 import { readdirSync } from "node:fs";
 
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
-const contentionErrorCodes = new Set([
+const approvedErrorCodes = new Set([
   "safe_execution_workspace_locked",
   "protected_job_birth_publication_busy",
+  "protected_job_birth_authority_invalid",
+  "evidence_custody_bootstrap_evidence_basename_invalid",
+  "evidence_custody_bootstrap_root_unsafe",
+  "evidence_custody_bootstrap_anchor_unsafe",
+  "hosted_ordinary_writer_extent_invalid",
   "controller_maintenance_fence_active",
   "controller_maintenance_activity_active",
 ]);
@@ -19,9 +24,9 @@ function operationErrorCode(error: unknown): string {
   if (!(error instanceof Error)) return "mimo_project_bridge_operation_failed";
   // Errors can originate in another immutable release, with a different class identity.
   const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
-  if (typeof typedCode === "string" && contentionErrorCodes.has(typedCode)) return typedCode;
+  if (typeof typedCode === "string" && approvedErrorCodes.has(typedCode)) return typedCode;
   const code = error.message.split(":", 1)[0]!;
-  if (contentionErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
+  if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
   switch (typedCode) {
     case "ENOENT": return "mimo_project_bridge_fs_not_found";
     case "EACCES": return "mimo_project_bridge_fs_access_denied";
