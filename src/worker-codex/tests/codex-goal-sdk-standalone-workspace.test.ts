@@ -85,6 +85,7 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
       expect(() => assertHostedDependencyPhysicalWorkspace(binding)).not.toThrow();
       // Idempotent public refill preserves the actual standalone identity.
       const second = await callToolJson(client, "codex_goal_project_refill_worker", request);
+      let secondDiagnostic: string | undefined;
       if (second.ok !== true) {
         const admission = second.admission as { readonly reason?: unknown; readonly examples?: readonly { readonly reason?: unknown }[] } | undefined;
         const knownErrors = [
@@ -96,14 +97,14 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
           "project_control_existing_prompt_mismatch", "project_control_prompt_mismatch",
           "project_control_refill_no_ready_account", "protected_job_birth_authority_invalid", "protected_job_birth_publication_busy",
         ];
-        console.error(JSON.stringify({ phase: "second_refill", ok: false,
+        secondDiagnostic = JSON.stringify({ phase: "second_refill", ok: false,
           errorCode: knownErrors.find(code => code === second.error) ?? "unrecognized",
           admissionReason: Object.values(ProjectAdmissionDecisionReason).find(reason => reason === admission?.reason) ?? "unrecognized",
           debtReasons: Array.isArray(admission?.examples) ? admission.examples.slice(0, 2).map(item =>
             Object.values(ProjectDebtReason).find(reason => reason === item?.reason) ?? "unrecognized") : [],
-        }));
+        });
       }
-      expect(second.ok).toBe(true);
+      expect(second.ok, secondDiagnostic).toBe(true);
       const retained = await lstat(workspace, { bigint: true }); expect([retained.dev, retained.ino]).toEqual([identity.dev, identity.ino]);
     } finally { await client.close(); await server.close(); vi.unstubAllEnvs(); }
   }, 30000);
