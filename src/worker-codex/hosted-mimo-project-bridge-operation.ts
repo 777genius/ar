@@ -7,6 +7,7 @@ import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoPro
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
 import { readdirSync } from "node:fs";
+import { hostedMimoProjectOperationErrorCode } from "./hosted-mimo-project-operation-error";
 
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
 function canonical(request: MimoProjectBridgeRequest): string {
@@ -162,9 +163,7 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   let result: unknown;
   try { result = { ok: true, result: await handleHostedMimoProjectBridge(request) }; }
   catch (error) {
-    const code = error instanceof Error ? error.message.split(":", 1)[0]! : "";
-    result = { ok: false, error: /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_)[a-z0-9_]{1,100}$/.test(code)
-      ? code : "mimo_project_bridge_operation_failed" };
+    result = { ok: false, error: hostedMimoProjectOperationErrorCode(error) };
   }
   const serialized = JSON.stringify(result) + "\n";
   if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");

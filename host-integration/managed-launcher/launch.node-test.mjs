@@ -81,7 +81,29 @@ test('job and provider mask journal IPC without replacing provider pipes', async
 test('explicit job builds fixed confinement and preserves bounded limits and ownership', async () => {
   const invocation = await build(job);
   assert.equal(invocation.command, '/usr/bin/systemd-run');
-  assert.equal(invocation.args.includes('--user'), false);
+  // The original first separator ends systemd-run options. The later
+  // --user belongs to the fixed inner namespace bootstrap, not the manager.
+  const assertManagerAndUserPhase = args => {
+    const boundary = args.indexOf('--');
+    assert.ok(boundary > 0, 'original systemd-run COMMAND boundary');
+    assert.equal(args.slice(0, boundary).includes('--user'), false, 'system manager must not use --user');
+    const command = args.slice(boundary + 1);
+    assert.deepEqual(command.slice(0, 20), [
+      '/usr/bin/unshare', '--mount', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '--',
+      '/usr/bin/unshare', '--user', '--map-user=65532', '--map-group=65532', '--keep-caps', '--',
+      '/usr/bin/setpriv', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
+      '/usr/bin/tini', '--',
+    ], 'fixed outer and inner USER namespace phases');
+    return command;
+  };
+  const command = assertManagerAndUserPhase(invocation.args);
+  const boundary = invocation.args.indexOf('--');
+  assert.throws(() => assertManagerAndUserPhase([
+    ...invocation.args.slice(0, boundary), '--user', ...invocation.args.slice(boundary),
+  ]), /system manager must not use --user/);
+  assert.throws(() => assertManagerAndUserPhase([
+    ...invocation.args.slice(0, boundary + 1), ...command.slice(0, 7), ...command.slice(13),
+  ]), /fixed outer and inner USER namespace phases/);
   assert.equal(invocation.args.includes('--service-type=exec'), true);
   assert.deepEqual(invocation.args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')),
     ['--property=TimeoutStartSec=600']);
@@ -100,7 +122,6 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   assert.ok(invocation.args.includes('--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1'));
   assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=/TEST/jobs/${job.jobId}`));
   assert.equal(invocation.args.some(arg => arg.includes('SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT')), false);
-  const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
   assert.deepEqual(command.slice(-8), ['/TRUSTED/node', PAYLOAD_GUARD_PATH, '--job-id', job.jobId, '--job-unit', job.unit, '--', ...job.payload]);
   assert.ok(command.includes('--pid') && command.includes('--mount-proc'));
   assert.ok(command.indexOf('--bounding-set=-all') < command.indexOf(PAYLOAD_GUARD_PATH));
