@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
+import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import type { CodexGoalJobManifest, CodexGoalJobManifestInput } from "./codex-goal-jobs";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchCustody,
@@ -47,6 +48,10 @@ export async function withProtectedCodexGoalJobBirthPublication<T>(effect: () =>
   const release = acquirePublication(), context = { active: true };
   try { return await publicationContext.run(context, effect); }
   finally { context.active = false; release(); }
+}
+/** Host composition must prepare foreign modules before entering publication. */
+export function protectedCodexGoalJobBirthPublicationActive(): boolean {
+  return publicationContext.getStore()?.active === true;
 }
 function synchronized<T>(effect: () => T): T {
   if (publicationContext.getStore()?.active) return effect();
@@ -332,6 +337,15 @@ export function protectedCodexGoalJobRuntimeProvenance(job: CodexGoalJobManifest
  * Without an enclosing section it is a point-in-time observation, never a permit.
  * Public origin, role and absent active/grant files confer no positive authority. */
 export async function observeProtectedCodexGoalJobBirth(job: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  return observeBirth(job, false);
+}
+/** Explicit v1 read compatibility, not adoption of a foreign writer profile.
+ * Immutable provenance and every release witness remain authoritative. The
+ * current owner reads under its own mutex, never a foreign module's lock. */
+export async function observeCompatibleProtectedCodexGoalJobBirth(job: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  return observeBirth(job, true);
+}
+async function observeBirth(job: CodexGoalJobManifest, compatible: boolean): Promise<ProjectAdmissionWriterObservation> {
   try {
     if (!initialHost()) return { status: "unknown" };
     return synchronized<ProjectAdmissionWriterObservation>(() => {
@@ -341,10 +355,11 @@ export async function observeProtectedCodexGoalJobBirth(job: CodexGoalJobManifes
       const physical = physicalPaths(birth.jobDirectory);
       if (optionalRecord(physical.effect) !== undefined || !researchRead(physical.birth).equals(bytes)) return { status: "unknown" };
       if (birth.schemaVersion !== 1 || birth.jobId !== job.jobId || birth.createdAt !== job.createdAt ||
-          birth.runtimeDirectory !== runtimeDirectory() || !/^[a-f0-9]{64}$/.test(birth.artifactSha256) ||
+          (!compatible && birth.runtimeDirectory !== runtimeDirectory()) || !/^[a-f0-9]{64}$/.test(birth.artifactSha256) ||
           birth.jobDirectory.path !== job.jobRootDir || birth.workspaceDirectory.path !== job.workspacePath ||
           birth.manifestPath !== join(birth.registryDirectory.path, job.jobId, "job.json") ||
           !isDeepStrictEqual(manifestWitness(birth.manifestPath, job), birth.manifest)) return { status: "unknown" };
+      if (birth.runtimeDirectory !== runtimeDirectory()) assertQualifiedResearchRuntimeArtifact(birth.runtimeDirectory, birth.artifactSha256);
       assertResearchDirectory(birth.registryDirectory); assertResearchDirectory(birth.jobDirectory);
       assertResearchDirectory(birth.workspaceDirectory);
       if (optionalRecord(records.effect) !== undefined || optionalRecord(physical.effect) !== undefined ||
