@@ -1,3 +1,4 @@
+import { withCodexGoalMcpStorage, type CodexGoalMcpStorageDefaults } from "./codex-goal-mcp-inputs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
@@ -47,7 +48,7 @@ import {
   updateCodexGoalJobUseCase,
 } from "./application/codex-goal-job-use-cases";
 
-export function registerCodexGoalJobTools(server: McpServer): void {
+export function registerCodexGoalJobTools(server: McpServer, storageDefaults: CodexGoalMcpStorageDefaults = {}): void {
   server.registerTool(
     "codex_goal_list_jobs",
     {
@@ -55,9 +56,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
       description: "List stored Codex goal job manifests.",
       inputSchema: jobRegistryInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await listCodexGoalJobsUseCase(args as JobRegistryMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -74,9 +75,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         jobIdPrefix: z.string().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await buildCodexGoalOverviewUseCase(args as JobOverviewMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -95,9 +96,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         skipDoctor: z.boolean().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await reconcilePreviewCodexGoalJobsUseCase(args as JobWatchMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -107,9 +108,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
       description: "Read one Codex goal job manifest by jobId.",
       inputSchema: jobIdInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await getCodexGoalJobUseCase(args as JobIdMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -126,9 +127,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         overwrite: z.boolean().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await createCodexGoalJobUseCase(args as JobCreateMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -143,9 +144,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         tags: z.union([z.string(), z.array(z.string())]).optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await updateCodexGoalJobUseCase(args as JobUpdateMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -155,9 +156,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
       description: "Inspect a stored Codex goal job using only jobId. For a configured remote MiMo project, add mimoProjectId and mimoWorkstreamId and omit registryRootDir/cwd. Returns owned operation states and canonical worker status when available; pending submission is not worker completion.",
       inputSchema: jobIdInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await getCodexGoalStatusByIdUseCase(args as JobIdMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -167,9 +168,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
       description: "Return the next safe lifecycle action for a stored job.",
       inputSchema: jobIdInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await recommendCodexGoalNextActionUseCase(args as JobIdMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -180,11 +181,11 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         "Check whether starting another writer for this job would be safe.",
       inputSchema: jobIdInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await assertSingleCodexWriterUseCase(
         args as JobIdMcpArgs & Readonly<Record<string, unknown>>,
       )),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -201,11 +202,11 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         tailLines: z.number().int().positive().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await reconcileStoredJobRuntimeResultUseCase(
         args as JobResultReconcileMcpArgs,
       )),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -221,12 +222,12 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         forceStart: z.boolean().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await continueStoredJobUseCase(args as JobLifecycleMcpArgs, {
         confirmKey: "confirmContinue",
         mode: "continue",
       })),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -242,12 +243,12 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         forceStart: z.boolean().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await continueStoredJobUseCase(args as JobLifecycleMcpArgs, {
         confirmKey: "confirmRecover",
         mode: "recover",
       })),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -264,9 +265,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         tailLines: z.number().int().positive().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await stopStoredJobUseCase(args as JobLifecycleMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -284,9 +285,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         tailLines: z.number().int().positive().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await maintenancePauseStoredJobUseCase(args as JobLifecycleMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -300,11 +301,11 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         note: z.string().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await markCodexGoalReviewedUseCase(
         args as JobIdMcpArgs & Readonly<{ note?: unknown }>,
       )),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -324,7 +325,7 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         targetWorkspacePath: z.string().optional(),
       },
     },
-    async (rawArgs) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (rawArgs) => withMcpErrors(async () => {
       const args = rawArgs as JobBriefMcpArgs;
       const detail = args.detail ?? CodexGoalBriefDetail.Compact;
       const logTailLines = detail === CodexGoalBriefDetail.Full
@@ -346,7 +347,7 @@ export function registerCodexGoalJobTools(server: McpServer): void {
           : { targetWorkspacePath: args.targetWorkspacePath }),
         ...(args.afterRevision === undefined ? {} : { afterRevision: args.afterRevision }),
       }));
-    }),
+    })),
   );
 
   server.registerTool(
@@ -373,9 +374,9 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         status: z.unknown().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await buildCodexGoalDecisionUseCase(args as JobDecisionMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -393,8 +394,8 @@ export function registerCodexGoalJobTools(server: McpServer): void {
         includeCliFallback: z.boolean().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await buildCodexGoalHandoffUseCase(args as JobHandoffMcpArgs)),
-    ),
+    )),
   );
 }

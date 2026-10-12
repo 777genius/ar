@@ -53,6 +53,11 @@ export function buildCodexGoalForegroundArgv(
   pushOptional(args, "--description", input.registryMetadata?.description);
   pushOptional(args, "--tags", input.registryMetadata?.tags?.join(","));
   pushOptional(args, "--state-root", config.stateRootDir);
+  pushOptional(args, "--runtime-home-root", config.runtimeHomeRootDir);
+  pushOptional(args, "--encryption-key-path", config.encryptionKeyPath);
+  pushOptional(args, "--runtime-events", config.runtimeEventsPath);
+  pushOptional(args, "--agent-temp-root", config.agentTempRootDir);
+  pushOptional(args, "--log", input.logPath);
   pushOptional(args, "--durable-handoff-root", config.durableHandoffRootDir);
   pushOptional(args, "--job-id", config.jobId);
   pushOptional(args, "--codex-goal-objective", config.codexGoalObjective);
@@ -100,7 +105,6 @@ export function buildCodexGoalForegroundArgv(
     if (lifecycle.forceStart) args.push("--lifecycle-force-start");
     pushOptionalNumber(args, "--lifecycle-stale-after-ms", lifecycle.staleAfterMs);
     pushOptional(args, "--tmux-session", input.tmuxSession);
-    pushOptional(args, "--log", input.logPath);
   }
   return args;
 }

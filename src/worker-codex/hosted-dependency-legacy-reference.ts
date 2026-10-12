@@ -6,7 +6,7 @@ import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as St
 import { assertHostedActivationFence, withHostedActivationFence, type HostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { HostedDependencyReferenceKind, readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyQualifiedInventory,
-  assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+  assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { hostedDependencyInstallerRoot, readHostedDependencyInstallerProfile } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe as Recipe, qualifyHostedDependencyInstallerInputs } from "./hosted-dependency-installer-inputs";

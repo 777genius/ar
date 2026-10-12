@@ -93,6 +93,7 @@ export async function withoutAdmittedInputPatchDebt(input: {
   readonly snapshot: ProjectAdmissionSnapshot;
   readonly request: ProjectAdmissionRequest | undefined;
   readonly binding?: ProjectAdmissionJobWorkspaceBinding;
+  readonly orphanOnly?: boolean;
 }): Promise<ProjectAdmissionSnapshot> {
   const { binding, request } = input;
   if (
@@ -114,7 +115,7 @@ export async function withoutAdmittedInputPatchDebt(input: {
     const selfOrphanWorkspace =
       item.reason === ProjectDebtReason.OrphanLegacyWorkspace &&
       await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    if (request.operation === ProjectOperation.CreateJob) {
+    if (input.orphanOnly || request.operation === ProjectOperation.CreateJob) {
       if (!selfOrphanWorkspace) debt.push(item);
       continue;
     }

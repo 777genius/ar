@@ -1,4 +1,4 @@
-import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -17,7 +17,7 @@ import { openHostedRetainedToolFiles, assertHostedRetainedToolDescriptors, retai
   revokeHostedRetainedToolFiles, hostedToolFilesForChild, assertHostedToolCapsuleCopy, type HostedRetainedToolFiles } from "./hosted-retained-tool-files";
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
 import { CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
-import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { assertHostedDependencyParentEnvironment, readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 
 type Plan = { readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
   readonly readyReader: DependencyToolReadyReader;
@@ -52,12 +52,12 @@ export function assertHostedDependencyToolParentFrame(fence: HostedActivationFen
   if (rows.length !== 1) fail();
   const launch = rows[0].launch as { command: unknown; cwd: unknown; args: unknown };
   if (!launch || launch.command !== process.execPath || launch.cwd !== binding.workspace.canonicalPath || !Array.isArray(launch.args)) fail();
-  assertHostedDependencyParentRecipe(launch.args, binding.jobRootDir, binding.workspace.canonicalPath);
+  const recipe = readHostedDependencyParentRecipe(launch as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch, binding.jobRootDir, binding.workspace.canonicalPath, fence.parentRecipeReader);
   const data = decodeHostedActivationBytes(Buffer.from(frame)) as Record<string, unknown>;
   if (!data || typeof data !== "object" || Object.keys(data).sort().join(",") !== "env,schemaVersion" || data.schemaVersion !== 1 ||
       !data.env || typeof data.env !== "object" || Array.isArray(data.env)) fail();
   assertHostedDependencyParentEnvironment(data.env as Record<string, string>, binding.jobRootDir);
-  assertParentAuthWriterScope(binding, launch.args as string[]);
+  assertParentAuthWriterScope(binding, recipe.args);
 }
 
 /** Metadata only: never open auth.json or derive authority from a credential.
@@ -117,7 +117,7 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
   if (!readyReader) fail();
   if (pending.has(unit)) fail();
   const origin = readHostedOrdinaryProcessOrigin(fence);
-  const attempt = readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId));
+  const attempt = readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), undefined, fence.parentRecipeReader);
   const profile = readHostedFdProfile();
   if (!profile || profile.node.path !== binding.toolProfile.node.path || profile.node.sha256 !== binding.toolProfile.node.sha256 ||
       root !== `${hostedDependencyPolicyRoot}/dependency-provider-roots/${providerId(unit)}` || writable.length !== 3 ||
@@ -231,7 +231,7 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
       parentDirectory.uid !== 0n || (parentDirectory.mode & 0o777n) !== 0o700n) fail();
   if (origin.profileId !== CodexProviderEgressProfileId.TestNpmQualification) fail();
   if (!encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) ||
-      !sameDependencyAttempt(readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId)), plan.attempt)) fail();
+      !sameDependencyAttempt(readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), undefined, fence.parentRecipeReader), plan.attempt)) fail();
   const provider = readHostedActivationBytes(`ordinary-starts/${providerId(plan.unit)}.json`),
     relation = readHostedActivationBytes(`dependency-provider-attempts/${providerId(plan.unit)}.json`);
   if (!provider || !relation) fail();

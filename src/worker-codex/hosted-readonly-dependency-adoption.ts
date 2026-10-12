@@ -7,7 +7,7 @@ import { DependencyInstallProofKind, DependencyReceiptState, HostedCustodyPhase,
   releaseDependencyMaintenance, type DependencyMaintenanceAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { hostedDependencyBindingName, hostedDependencyOwnerRoot, readHostedDependencyBinding,
-  assertHostedDependencyPhysicalWorkspace, assertHostedDependencyQualifiedInventory } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+  assertHostedDependencyPhysicalWorkspace, assertHostedDependencyQualifiedInventory } from "./hosted-dependency-workspace";
 import { readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedReadonlyDependencyAssociationRoot, readonlyDependencyAssociationName, readHostedReadonlyDependencyAssociation } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";

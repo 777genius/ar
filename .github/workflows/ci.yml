@@ -415,10 +415,10 @@ jobs:
           dpkg-query --show --showformat='${Version}\n' tmux
           tmux -V
           npm ci
+          npm run build:packages
           npm run typecheck:native-probe
           npm run typecheck:native-probe:root-source
           npm run test:native-probe
-          npm run build:packages
           SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \

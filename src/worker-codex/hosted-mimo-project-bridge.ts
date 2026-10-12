@@ -5,9 +5,8 @@ import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-
 import { researchCustody, researchHash, researchPath, researchRecord } from "./research-launch-files";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
-import { projectControlRefillWorker, projectControlStartStoredJob, projectControlStopStoredJob } from "./codex-goal-mcp-project-control-tool-handlers";
-import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
-import { collectRegisteredCodexGoalJobStatus } from "./application/codex-goal-registered-job-observation";
+import { hostedMimoProjectRuntime } from "./hosted-mimo-project-runtime-routing";
+import { hostedMimoSealedSourcePort } from "./hosted-mimo-project-source";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 
 export type HostedMimoProjectBinding = Readonly<{
@@ -54,7 +53,9 @@ export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = 65536
   } finally { closeSync(fd); }
 }
 export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBinding): void {
-  if (!binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
+  if (existsSync(join(binding.stateRoot, ".controller-recovery.json")) ||
+      existsSync(join(binding.stateRoot, ".controller-maintenance-fence.json")) ||
+      !binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
       existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.route-disabled`))
     throw new Error("mimo_project_bridge_route_closed");
   const yaml = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.yml`).toString("utf8");
@@ -88,6 +89,8 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
   assertResearchInitialRoot(true); assertResearchSharedHost();
   if (readFileSync("/etc/machine-id", "utf8").trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   const bytes = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`), binding = parseHostedMimoProjectBinding(JSON.parse(bytes.toString("utf8")), request);
+  const { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob,
+    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await hostedMimoProjectRuntime(binding);
   const args: ProjectControlMcpArgs = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId, jobId: request.jobId };
   const controller = await loadProjectControlController(args);
   if (controller.scope.projectId !== request.projectId ||
@@ -105,13 +108,13 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
     // be replayed as a new workspace or provider attempt under this job ID.
     writeFileSync(recordPath, JSON.stringify({ schemaVersion: 1, requestSha256: researchHash(JSON.stringify(request)),
       projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId, jobRoot, workspace }) + "\n", { flag: "wx", mode: 0o600 });
-    return unwrap(await projectControlRefillWorker({ ...args, jobRootDir: jobRoot, workspacePath: workspace,
+    return unwrap(await projectControlRefillWorkerFromSealedSource({ ...args, jobRootDir: jobRoot, workspacePath: workspace,
       sourceWorkspacePath: binding.sourceWorkspacePath, sourceRef: binding.sourceRef, expectedSourceCommit: binding.sourceCommit,
       newBranch: `feat/${request.jobId}`, promptBody: request.prompt!, preStartAdmission: childAdmission(binding, workspace),
       confirmPreStartAdmission: true, confirmRefill: true, startWorker: false, overwrite: false, dependencyBootstrap: "off", executionMode: "sync",
       modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], model: "mimo-v2.6-pro", executionEngine: "app-server",
-      maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: "medium",
-      taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }));
+      maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: request.reasoningEffort ?? "medium",
+      taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }, hostedMimoSealedSourcePort(binding)));
   }
   researchCustody(records);
   const retained = lstatSync(recordPath);

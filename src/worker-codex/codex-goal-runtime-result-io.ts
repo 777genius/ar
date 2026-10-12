@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
@@ -17,6 +18,9 @@ import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/s
 const execFileAsync = promisify(execFile);
 const defaultGitCommandTimeoutMs = 10_000;
 
+/** Internal process recipe for guarded read-only callers; it grants no writer authority. */
+export type WorkspacePatchGitReadRecipe = { readonly binaryPath: string; readonly flags: readonly string[]; readonly env: NodeJS.ProcessEnv };
+
 export class AtomicJsonRuntimeResultWriter implements RuntimeResultWriterPort {
   constructor(private readonly terminalCheckpointJobRootDir?: string) {}
 
@@ -24,6 +28,7 @@ export class AtomicJsonRuntimeResultWriter implements RuntimeResultWriterPort {
     readonly path: string;
     readonly result: RuntimeResultEnvelope;
   }): Promise<void> {
+    assertHostedOrdinaryEffectPaths([input.path]);
     if (this.terminalCheckpointJobRootDir) {
       await new LocalTerminalCheckpointAdmission(this.terminalCheckpointJobRootDir).withWriter(
         () => writeAtomicJson(input.path, input.result),
@@ -79,16 +84,26 @@ export class GitPatchPreserver implements RuntimePatchPreserverPort {
 export async function captureGitWorkspacePatch(input: {
   readonly workspacePath: string;
   readonly gitBinaryPath?: string;
+  readonly gitReadRecipe?: WorkspacePatchGitReadRecipe;
+  readonly maxPatchBytes?: number;
+  readonly deadlineMs?: number;
 }): Promise<string> {
-  const gitBinaryPath = input.gitBinaryPath ?? "git";
+  const assertDeadline = () => {
+    if (input.deadlineMs !== undefined && performance.now() > input.deadlineMs) throw new Error("project_control_adoption_patch_read_timeout");
+  };
+  assertDeadline();
+  const gitBinaryPath = input.gitReadRecipe?.binaryPath ?? input.gitBinaryPath ?? "git";
   const hasHead = await gitHasHead({
     gitBinaryPath,
     workspacePath: input.workspacePath,
+    ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}),
   });
   // Disable presentation drivers. Git clean conversions can still normalize
   // bytes; callers claiming raw identity must separately check eligibility.
   const trackedPatch = await gitDiff({
     retention: true,
+    ...(input.maxPatchBytes === undefined ? {} : { maxBuffer: input.maxPatchBytes }),
+    ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}),
     gitBinaryPath,
     workspacePath: input.workspacePath,
     args: hasHead
@@ -98,42 +113,52 @@ export async function captureGitWorkspacePatch(input: {
   const patches: string[] = [];
   let bytes = 0;
   const append = (patch: string) => {
+    assertDeadline();
     if (!patch) return;
     const size = Buffer.byteLength(patch, "utf8") + (patch.endsWith("\n") ? 0 : 1);
     assertRetainedTerminalArchivePatchSize(bytes + size);
+    if (input.maxPatchBytes !== undefined && bytes + size > input.maxPatchBytes) throw new Error("project_control_adoption_patch_too_large");
     bytes += size;
     patches.push(ensureTrailingNewline(patch));
   };
   append(trackedPatch);
-  for (const path of await gitUntrackedPaths({ gitBinaryPath, workspacePath: input.workspacePath })) {
+  for (const path of await gitUntrackedPaths({ gitBinaryPath, workspacePath: input.workspacePath, ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}) })) {
+    assertDeadline();
     append(await gitDiff({
       retention: true,
+      ...(input.maxPatchBytes === undefined ? {} : { maxBuffer: input.maxPatchBytes }),
+      ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}),
       gitBinaryPath, workspacePath: input.workspacePath,
       args: ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", path],
       allowDifferenceExitCode: true,
     }));
   }
+  assertDeadline();
   return patches.join("");
 }
 
 export async function captureGitWorkspaceChangedFiles(input: {
   readonly workspacePath: string;
   readonly gitBinaryPath?: string;
+  readonly gitReadRecipe?: WorkspacePatchGitReadRecipe;
 }): Promise<readonly string[]> {
-  const gitBinaryPath = input.gitBinaryPath ?? "git";
+  const gitBinaryPath = input.gitReadRecipe?.binaryPath ?? input.gitBinaryPath ?? "git";
   const hasHead = await gitHasHead({
     gitBinaryPath,
+    ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}),
     workspacePath: input.workspacePath,
   });
   const tracked = await gitDiff({
     gitBinaryPath,
+    ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}),
     workspacePath: input.workspacePath,
     args: hasHead
-      ? ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]
+      ? ["diff", "--name-only", ...(input.gitReadRecipe ? ["--no-ext-diff", "--no-textconv"] : []), "--no-renames", "-z", "HEAD", "--"]
       : ["diff", "--name-only", "-z", "--"],
   });
   const untracked = await gitUntrackedPaths({
     gitBinaryPath,
+    ...(input.gitReadRecipe ? { gitReadRecipe: input.gitReadRecipe } : {}),
     workspacePath: input.workspacePath,
   });
   return [...new Set([
@@ -147,11 +172,13 @@ export async function captureGitWorkspaceChangedFiles(input: {
  */
 export async function assertGitWorkspaceRawPatchIdentitySupported(
   workspacePath: string,
+  recipe?: WorkspacePatchGitReadRecipe,
 ): Promise<void> {
-  const options = { timeout: defaultGitCommandTimeoutMs, maxBuffer: 16 * 1024 * 1024 };
+  const binary = recipe?.binaryPath ?? "git", fixedFlags = recipe?.flags ?? [];
+  const options = { timeout: defaultGitCommandTimeoutMs, maxBuffer: 16 * 1024 * 1024, ...(recipe ? { env: recipe.env } : {}) };
   // assume-unchanged and skip-worktree can hide raw source edits from both
   // status and diff, including the clean failed_no_output closure path.
-  const { stdout: flags } = await execFileAsync("git", ["-C", workspacePath,
+  const { stdout: flags } = await execFileAsync(binary, [...fixedFlags, "-C", workspacePath,
     "ls-files", "-v", "-z"], options);
   if (flags && !flags.endsWith("\0")) {
     throw new Error("failed_no_output_git_index_uncertain");
@@ -164,7 +191,7 @@ export async function assertGitWorkspaceRawPatchIdentitySupported(
   }
   let autocrlf: string;
   try {
-    ({ stdout: autocrlf } = await execFileAsync("git", ["-C", workspacePath,
+    ({ stdout: autocrlf } = await execFileAsync(binary, [...fixedFlags, "-C", workspacePath,
       "config", "--get", "core.autocrlf"], options));
   } catch (error) {
     if (!isRecord(error) || error.code !== 1) throw error;
@@ -177,26 +204,28 @@ export async function assertGitWorkspaceRawPatchIdentitySupported(
   // for an absent filter and filter=unspecified). Deny configured drivers
   // with those names rather than interpreting ambiguous output as safe.
   try {
-    await execFileAsync("git", ["-C", workspacePath, "config", "--name-only",
+    await execFileAsync(binary, [...fixedFlags, "-C", workspacePath, "config", "--name-only",
       "--get-regexp", "^filter\\.(unset|unspecified)\\.(clean|process)$"], options);
   } catch (error) {
     if (!isRecord(error) || error.code !== 1) throw error;
     // No ambiguous driver configuration.
-    return await assertNoGitPathConversions(workspacePath, options);
+    return await assertNoGitPathConversions(workspacePath, options, recipe);
   }
   throw new Error("failed_no_output_git_conversion_unsupported");
 }
 
 async function assertNoGitPathConversions(
   workspacePath: string,
-  options: { readonly timeout: number; readonly maxBuffer: number },
+  options: { readonly timeout: number; readonly maxBuffer: number; readonly env?: NodeJS.ProcessEnv },
+  recipe?: WorkspacePatchGitReadRecipe,
 ): Promise<void> {
-  const { stdout: paths } = await execFileAsync("git", ["-C", workspacePath,
+  const binary = recipe?.binaryPath ?? "git", fixedFlags = recipe?.flags ?? [];
+  const { stdout: paths } = await execFileAsync(binary, [...fixedFlags, "-C", workspacePath,
     "ls-files", "--cached", "--others", "--exclude-standard", "-z"], options);
   if (!paths) return;
   const attributes = ["filter", "text", "eol", "working-tree-encoding", "ident", "crlf"];
   const output = await new Promise<string>((resolve, reject) => {
-    const child = execFile("git", ["-C", workspacePath, "check-attr", "-z",
+    const child = execFile(binary, [...fixedFlags, "-C", workspacePath, "check-attr", "-z",
       "--stdin", ...attributes], options, (error, stdout) => {
       if (error) reject(error);
       else resolve(stdout);
@@ -222,30 +251,35 @@ function ensureTrailingNewline(value: string): string {
 }
 
 export async function writeAtomicJson(path: string, value: unknown): Promise<void> {
+  assertHostedOrdinaryEffectPaths([path]);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tempPath = join(
     dirname(path),
     `.${Date.now()}-${process.pid}-${randomUUID()}-${basenameForTemp(path)}.tmp`,
   );
+  assertHostedOrdinaryEffectPaths([tempPath, path]);
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
+  assertHostedOrdinaryEffectPaths([tempPath, path]);
   await rename(tempPath, path);
 }
 
 async function gitHasHead(input: {
   readonly gitBinaryPath: string;
   readonly workspacePath: string;
+  readonly gitReadRecipe?: WorkspacePatchGitReadRecipe;
 }): Promise<boolean> {
   try {
     await execFileAsync(input.gitBinaryPath, [
+      ...(input.gitReadRecipe?.flags ?? []),
       "-C",
       input.workspacePath,
       "rev-parse",
       "--verify",
       "HEAD",
-    ], { timeout: defaultGitCommandTimeoutMs });
+    ], { timeout: defaultGitCommandTimeoutMs, ...(input.gitReadRecipe ? { env: input.gitReadRecipe.env } : {}) });
     return true;
   } catch {
     return false;
@@ -255,18 +289,22 @@ async function gitHasHead(input: {
 async function gitDiff(input: {
   readonly gitBinaryPath: string;
   readonly workspacePath: string;
+  readonly gitReadRecipe?: WorkspacePatchGitReadRecipe;
   readonly args: readonly string[];
   readonly allowDifferenceExitCode?: boolean;
   readonly retention?: boolean;
+  readonly maxBuffer?: number;
 }): Promise<string> {
   try {
     const { stdout } = await execFileAsync(input.gitBinaryPath, [
+      ...(input.gitReadRecipe?.flags ?? []),
       "-C",
       input.workspacePath,
       ...input.args,
     ], {
-      maxBuffer: input.retention ? MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES : 16 * 1024 * 1024,
+      maxBuffer: input.maxBuffer ?? (input.retention ? MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES : 16 * 1024 * 1024),
       timeout: defaultGitCommandTimeoutMs,
+      ...(input.gitReadRecipe ? { env: input.gitReadRecipe.env } : {}),
     });
     return stdout;
   } catch (error) {
@@ -288,8 +326,10 @@ async function gitDiff(input: {
 async function gitUntrackedPaths(input: {
   readonly gitBinaryPath: string;
   readonly workspacePath: string;
+  readonly gitReadRecipe?: WorkspacePatchGitReadRecipe;
 }): Promise<readonly string[]> {
   const { stdout } = await execFileAsync(input.gitBinaryPath, [
+    ...(input.gitReadRecipe?.flags ?? []),
     "-C",
     input.workspacePath,
     "ls-files",
@@ -299,6 +339,7 @@ async function gitUntrackedPaths(input: {
   ], {
     maxBuffer: 16 * 1024 * 1024,
     timeout: defaultGitCommandTimeoutMs,
+    ...(input.gitReadRecipe ? { env: input.gitReadRecipe.env } : {}),
   });
   return stdout.split("\0").filter(Boolean);
 }

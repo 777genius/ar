@@ -58,9 +58,26 @@ export function sameTools(tools: readonly string[] | undefined, bound: ChildLife
 }
 function invalid(): never { throw new Error("child_effective_confinement_conflict"); }
 
-/** Manifest/launch adapter validation; no default fills a missing child setting. */
+/** Validate explicit contained-child settings and the fixed native Worker defaults. */
 export function childConfigFromRecord(value: Readonly<Record<string, unknown>>): Pick<CodexGoalRunConfig, "childLifetime" | "maxGoalTurns" | "safeExecutionPolicy"> {
-  if (value.childLifetime === undefined) return {};
+  if (value.childLifetime === undefined) {
+    // Registered native MiMo uses the existing fixed worker attempt contract.
+    // Retain declared semantics and derive the fixed Worker defaults from its
+    // existing provider/engine/report contract, including public tool input.
+    // Other legacy executors keep their existing defaults.
+    if (value.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) return {};
+    const nativeWorker = value.executionEngine === "app-server" && value.workerReportMode === "structured-output";
+    if (!nativeWorker && value.maxGoalTurns === undefined && value.safeExecutionPolicy === undefined) return {};
+    const expected = { maxAttempts: 1, continuationMode: "disabled" as const,
+      retryOnCapacity: false, retryOnAccountUnavailable: false, retryOnReconnectRequired: false };
+    const turns = value.maxGoalTurns === undefined ? (nativeWorker ? 8 : undefined) : value.maxGoalTurns;
+    const policy = value.safeExecutionPolicy === undefined ? (nativeWorker ? expected : undefined) : value.safeExecutionPolicy;
+    if (turns !== 8 || !policy || typeof policy !== "object" || Array.isArray(policy)) invalid();
+    const record = policy as Record<string, unknown>;
+    if (Object.keys(record).length !== Object.keys(expected).length ||
+        Object.entries(expected).some(([key, item]) => record[key] !== item)) invalid();
+    return { maxGoalTurns: 8, safeExecutionPolicy: expected };
+  }
   const childLifetime = parseChildLifetime(value.childLifetime);
   if (value.maxGoalTurns !== childLifetime.maxGoalTurns || !value.safeExecutionPolicy ||
       typeof value.safeExecutionPolicy !== "object" || Array.isArray(value.safeExecutionPolicy)) invalid();

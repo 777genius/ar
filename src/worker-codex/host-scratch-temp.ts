@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
@@ -122,6 +123,7 @@ export async function prepareHostScratchCaches(codexHome: string, sourceEnv: Rea
   assertDirectory(codexHome, host);
   for (const [parentName, leaf] of [["plugins", "cache"], ["cache", "remote_plugin_catalog"]]) {
     const parent = join(codexHome, parentName!);
+    assertHostedOrdinaryEffectPaths([parent, join(parent, leaf!)]);
     if (!optionalInfo(parent, host)) {
       if (host.uid !== 0) throw new Error("Root privilege required to prepare scratch cache parents");
       host.mkdir(parent, 0o700);
@@ -217,6 +219,7 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
   if (!host.ownsRunnerNamespace() || host.mountNamespace() === host.managerMountNamespace()) throw new Error("Scratch bind requires a private mount namespace");
   if (host.uid !== 0) throw new Error("Root privilege required to prepare scratch bind mount");
   const lock = `${layout.source}.lock`;
+  assertHostedOrdinaryEffectPaths([layout.source, lock, target]);
   try { host.mkdir(lock, 0o700); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Scratch bind target busy"); throw error; }
   try {
@@ -228,6 +231,7 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
     assertDirectory(target, host);
     host.chmod(target, 0o701);
     const sourceIdentity = host.lstat(layout.source);
+    assertHostedOrdinaryEffectPaths([layout.source, target]);
     host.bind(layout.source, target);
     // A throwing bind has an uncertain outcome and grants no rollback authority.
     const created = inspectMount(target, targetCause(family), host);
@@ -271,4 +275,23 @@ function assertAncestors(path: string, host: ScratchTempHost): void {
 function assertPrivateSource(path: string, host: ScratchTempHost): void {
   assertDirectory(path, host);
   if (host.lstat(path).mode & 0o066) throw new Error(`Unsafe scratch source permissions: ${path}`);
+}
+
+/** Finite future payloads from the same preparation recipe. Includes lock
+ * directories because creating a cache must not acquire a sibling write. */
+export function resolveHostScratchLifetimeSources(jobRootDir: string, codexHomes: readonly string[], host: ScratchTempHost = systemHost): readonly { source: string; target: string }[] {
+  const policy = readPolicy(host);
+  if (!policy) return [];
+  const targets = [
+    { target: join(jobRootDir, "tmp"), family: "runtime-tmp", hashInput: jobRootDir },
+    ...codexHomes.flatMap(home => ["plugins/cache", "cache/remote_plugin_catalog"].map(suffix => {
+      const target = join(home, suffix);
+      return { target, family: "runtime-caches", hashInput: target };
+    })),
+  ];
+  return targets.flatMap(({ target, family, hashInput }) => {
+    assertCanonical(target);
+    const { source } = sourceLayout(policy, hashInput, family, host);
+    return [{ source, target }, { source: source + ".lock", target: source + ".lock" }];
+  });
 }
