@@ -120,7 +120,7 @@ export function recoverProtectedCodexGoalJobBirthPublication(expected: Readonly<
   finally { closeSync(parent); closeSync(fd); }
 }
 async function awaitPublication(): Promise<() => void> {
-  const deadline = performance.now() + 5_000;
+  const deadline = performance.now() + 30_000;
   for (;;) {
     try { return acquirePublication(); }
     catch (error) {
