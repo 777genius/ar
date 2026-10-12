@@ -12,6 +12,7 @@ function fixture() {
     setGoal: vi.fn().mockResolvedValue(complete),
     assertExecutionActive: vi.fn((signal: AbortSignal) => {
       if (signal.aborted) throw new Error("TEST-aborted");
+      return 0;
     }),
   };
   const validate = vi.fn(async () => {});
