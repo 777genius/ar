@@ -1,3 +1,4 @@
+import { tryReadOnlyProjectRefillContinuation } from "./application/project-control/codex-goal-project-refill-readonly";
 import { prepareProtectedCodexGoalJobBirth } from "./protected-job-birth";
 import { projectControlNewChildWorkerMode, projectControlWorkerToolRootRequest } from "./project-control-worker-mode";
 import { WorkerToolRootStatus, type WorkerToolRootOutcome } from "./worker-tool-root";
@@ -205,6 +206,36 @@ export async function projectControlRefillWorkerView(
   ) {
     throw new Error("project_control_child_boundary_denied");
   }
+  const role = projectControlWorkerRole(args.workerRole);
+  const createRefillManifest = (accounts: readonly string[]): CodexGoalJobManifestInput => ({
+    ...requested,
+    accounts,
+    tags: uniqueProjectControlStrings([
+      ...tagValues(requested.tags),
+      "project-control-refill",
+      `worker-role-${role}`,
+    ]),
+    accessBoundary: requested.accessBoundary ?? AccessBoundary.IsolatedWorkspaceWrite,
+    projectAccessScope: projectControlChildScope(
+      controller.scope,
+      requested.workspacePath,
+    ),
+    allowDangerFullAccess: false,
+    networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
+    ...projectControlNewChildWorkerMode(controller.scope),
+    reasoningEffort: requested.reasoningEffort ?? "high",
+    serviceTier: requested.serviceTier ?? "default",
+  });
+  if (boundedToolName === "codex_goal_project_refill_worker") {
+    const allowed = new Set(controller.scope.allowedAccountIds ?? []);
+    const readOnlyContinuation = await tryReadOnlyProjectRefillContinuation({
+      args, controller, deps, promptBody, sourceWorkspacePath, workerRole: role,
+      sealedSource: deps.sealedSource !== undefined,
+      manifest: createRefillManifest(rotateProjectControlAccountNames(
+        uniqueProjectControlStrings(requested.accounts).filter(account => allowed.size === 0 || allowed.has(account)), requested.jobId)),
+    });
+    if (readOnlyContinuation) return readOnlyContinuation;
+  }
   const accounts = await projectControlRefillAccountNames({
     ...(requested.modelBackend === undefined
       ? {}
@@ -219,7 +250,6 @@ export async function projectControlRefillWorkerView(
   if (!accounts.length) {
     throw new Error("project_control_refill_no_ready_account");
   }
-  const role = projectControlWorkerRole(args.workerRole);
   const producerJobId = stringValue(args.producerJobId);
   const reviewedOutputId = stringValue(args.reviewedOutputId);
   const reviewedOutputIds = reviewedOutputIdValues(args.reviewedOutputIds);
@@ -228,27 +258,7 @@ export async function projectControlRefillWorkerView(
     producerJobId,
     reviewedOutputIds,
   });
-  const accessBoundary =
-    requested.accessBoundary ?? AccessBoundary.IsolatedWorkspaceWrite;
-  const baseCreateManifest: CodexGoalJobManifestInput = {
-    ...requested,
-    accounts,
-    tags: uniqueProjectControlStrings([
-      ...tagValues(requested.tags),
-      "project-control-refill",
-      `worker-role-${role}`,
-    ]),
-    accessBoundary,
-    projectAccessScope: projectControlChildScope(
-      controller.scope,
-      requested.workspacePath,
-    ),
-    allowDangerFullAccess: false,
-    networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
-    ...projectControlNewChildWorkerMode(controller.scope),
-    reasoningEffort: requested.reasoningEffort ?? "high",
-    serviceTier: requested.serviceTier ?? "default",
-  };
+  const baseCreateManifest = createRefillManifest(accounts);
   const mergeBinding = parseProjectMergeBindingRequest({
     value: args.mergeBinding,
     admission: args.preStartAdmission,
