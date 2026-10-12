@@ -172,7 +172,7 @@ export async function prepareProjectPreStartAdmission(input: {
   ) {
     throw new Error("project_control_pre_start_verified_input_patch_mismatch");
   }
-  assertDescriptorPaths(input.plan.descriptor, input.manifest.jobRootDir);
+  assertProjectPreStartAdmissionDescriptorPaths(input.plan.descriptor, input.manifest.jobRootDir);
   const createdPaths: string[] = [];
   try {
     await assertArtifactRootSecure(input.manifest.jobRootDir);
@@ -279,7 +279,7 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
     }
     return undefined;
   }
-  assertDescriptorPaths(descriptor, input.manifest.jobRootDir);
+  assertProjectPreStartAdmissionDescriptorPaths(descriptor, input.manifest.jobRootDir);
   await assertArtifactRootSecure(input.manifest.jobRootDir);
   const contractSnapshot = await readJsonObjectSnapshot(
     descriptor.contractPath,
@@ -511,7 +511,7 @@ export async function rebindProjectPreStartAdmissionManifest(input: {
   if (!descriptor) {
     throw new Error("project_control_pre_start_admission_required");
   }
-  assertDescriptorPaths(descriptor, input.manifest.jobRootDir);
+  assertProjectPreStartAdmissionDescriptorPaths(descriptor, input.manifest.jobRootDir);
   await assertArtifactRootSecure(input.manifest.jobRootDir);
   const contractSnapshot = await readJsonObjectSnapshot(
     descriptor.contractPath,
@@ -664,7 +664,7 @@ async function validateProjectPreStartAdmission(input: {
   if (!descriptor)
     throw new Error("project_control_pre_start_admission_required");
   await assertProjectPreStartAdmissionNotAuthorized(descriptor);
-  assertDescriptorPaths(descriptor, input.manifest.jobRootDir);
+  assertProjectPreStartAdmissionDescriptorPaths(descriptor, input.manifest.jobRootDir);
   await assertArtifactRootSecure(input.manifest.jobRootDir);
   const contractSnapshot = await readJsonObjectSnapshot(
     descriptor.contractPath,
@@ -931,7 +931,7 @@ function isAdoptionManifest(
   return manifest.tags?.includes("worker-role-adoption") === true;
 }
 
-function assertDescriptorPaths(
+export function assertProjectPreStartAdmissionDescriptorPaths(
   descriptor: CodexGoalProjectPreStartAdmission,
   jobRootDir: string,
 ): void {

@@ -61,6 +61,8 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly runStore?: ManagedRunStorePort;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  /** Source-owned bounded workspace Goal composition; filesystem tools remain disabled. */
+  readonly nativeGoalControls?: true;
   readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
   readonly bypassHookTrust?: boolean;
@@ -90,6 +92,10 @@ export function appServerWireOutputSchema(options: CodexAppServerExecutionEngine
 
 /** Resolve and validate the original bounded execution fence before admission. */
 export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionEngineOptions): AppServerExecutionLifetime | undefined {
+  if (options.nativeGoalControls !== undefined && (options.nativeGoalControls !== true ||
+      options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.hostedControllerTools !== undefined)) {
+    throw new Error("codex_app_server_native_goal_controls_profile_invalid");
+  }
   const lifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
   const coding = isOwnedMimoCodingTurn(options);
   const ownedMimoTurn = coding || isOwnedMimoContainedTurn(options);

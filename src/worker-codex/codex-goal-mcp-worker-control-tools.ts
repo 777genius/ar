@@ -1,3 +1,4 @@
+import { withCodexGoalMcpStorage, type CodexGoalMcpStorageDefaults } from "./codex-goal-mcp-inputs";
 import { ControlListState, listCodexGoalControlSignalsMcp, type ControlListInput } from "./codex-goal-mcp-control-list";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -25,6 +26,7 @@ export type CodexGoalWorkerControlToolOptions = CodexGoalWorkerControlUseCaseOpt
 export function registerCodexGoalWorkerControlTools(
   server: McpServer,
   options: CodexGoalWorkerControlToolOptions = {},
+  storageDefaults: CodexGoalMcpStorageDefaults = {},
 ): void {
   server.registerTool(
     "codex_goal_pause",
@@ -34,9 +36,9 @@ export function registerCodexGoalWorkerControlTools(
         "Write a soft pause request marker. This never kills a running worker.",
       inputSchema: jobIdInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await pauseCodexGoalWorker(args as JobIdMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -56,12 +58,12 @@ export function registerCodexGoalWorkerControlTools(
         expiresAt: z.string().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await sendCodexGoalGuidance(
         args as WorkerControlMcpArgs & { readonly message?: string },
         options,
       )),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -101,9 +103,9 @@ export function registerCodexGoalWorkerControlTools(
         supersedesSignalIds: z.union([z.string(), z.array(z.string())]).optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await enqueueCodexGoalControlSignal(args as WorkerControlMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -120,9 +122,9 @@ export function registerCodexGoalWorkerControlTools(
         state: z.nativeEnum(ControlListState).optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       listCodexGoalControlSignalsMcp(args as ControlListInput),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -133,9 +135,9 @@ export function registerCodexGoalWorkerControlTools(
         "Inspect pending control inbox signals and whether they are safe for next continuation.",
       inputSchema: jobIdInputSchema(),
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await inspectCodexGoalControlDecision(args as WorkerControlMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -150,9 +152,9 @@ export function registerCodexGoalWorkerControlTools(
         acceptedStaleAfterMs: z.number().int().positive().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await reconcileCodexGoalControlInbox(args as WorkerControlMcpArgs)),
-    ),
+    )),
   );
 
   server.registerTool(
@@ -171,8 +173,8 @@ export function registerCodexGoalWorkerControlTools(
         callerId: z.string().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await supersedeCodexGoalControlSignal(args as WorkerControlMcpArgs)),
-    ),
+    )),
   );
 }
