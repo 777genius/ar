@@ -1,11 +1,11 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { SafeExecutionError } from "../../worker-core/safe-execution/domain/safe-execution-policy";
 vi.mock("../hosted-mimo-project-workstream-fence", () => ({ withHostedMimoWorkstreamActivity: async (_root: string, effect: () => Promise<unknown>) => effect() }));
-const state = vi.hoisted(() => ({ files: new Map<string, string>(), command: vi.fn(), handler: vi.fn(), rearm: vi.fn() }));
+const state = vi.hoisted(() => ({ files: new Map<string, string>(), command: vi.fn(), handler: vi.fn(), rearm: vi.fn(), publicationFailure: undefined as "write" | "rename" | undefined }));
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), readdirSync: (p: string) => [...state.files.keys()].filter(x => x.startsWith(p + "/")).map(x => x.slice(p.length + 1)), mkdirSync: (p: string) => state.files.set(p, ""),
   realpathSync: (p: string) => p === "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js" ? "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js" : p, lstatSync: () => ({ isFile: () => true, uid: 0, nlink: 1, mode: 0o100700 }),
-  writeFileSync: (p: string, bytes: string, options: { flag: string }) => { if (options.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, bytes); },
-  renameSync: (a: string, b: string) => { state.files.set(b, state.files.get(a)!); state.files.delete(a); } }));
+  writeFileSync: (p: string, bytes: string, options: { flag: string }) => { if (state.publicationFailure === "write" && p.endsWith(".result.json.tmp")) throw new Error("TEST result write uncertain"); if (options.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, bytes); },
+  renameSync: (a: string, b: string) => { if (state.publicationFailure === "rename" && b.endsWith(".result.json")) throw new Error("TEST result rename uncertain"); state.files.set(b, state.files.get(a)!); state.files.delete(a); } }));
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ handleHostedMimoProjectBridge: state.handler,
@@ -24,7 +24,7 @@ import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contra
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
 const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
 const entry = "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
-beforeEach(() => { state.files.clear(); vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); state.rearm.mockResolvedValue({receiptSha256: researchHash("TEST finalization proof")}); });
+beforeEach(() => { state.files.clear(); state.publicationFailure = undefined; vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); state.rearm.mockResolvedValue({receiptSha256: researchHash("TEST finalization proof")}); });
 it("retains an exact owner before uncertain submission and never launches replacement", async () => {
   state.command.mockImplementationOnce(() => { expect(state.files.has(prefix + ".owner.json")).toBe(true); throw new Error("TEST transport timeout"); });
   await expect(submitHostedMimoProjectBridge(request)).rejects.toThrow("TEST transport timeout");
@@ -108,6 +108,62 @@ it("does not invoke a code accessor while retaining a failed operation", async (
   } finally { process.argv[1] = previous!; }
 });
 function control(operation: MimoProjectBridgeOperation) { const { prompt: _prompt, sourceCommit: _commit, ...identity } = request; return { ...identity, operation }; }
+it("settles an oversized Status projection as a bounded response error", async () => {
+  // Legal backslash-heavy filenames fit Git's 1MiB stdout limit but their
+  // porcelain quoting expands again when the Status projection is serialized.
+  const changedFiles = Array.from({ length: 3500 }, (_, i) => '"src/.mimo-shared-review/' + "\\".repeat(190) + String(i).padStart(4, "0") + '"');
+  const response = { ok: true, status: { changedFiles } };
+  expect(Buffer.byteLength(JSON.stringify({ ok: true, result: response }))).toBeGreaterThan(1048576);
+  const status = control(MimoProjectBridgeOperation.Status), base = prefix.replace(".create", ".status");
+  await submitHostedMimoProjectBridge(status);
+  const retainedOwner = state.files.get(base + ".owner.json")!, owner = JSON.parse(retainedOwner);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockResolvedValue(response);
+    await expect(executeHostedMimoProjectBridgeOperation(base + ".request.json")).resolves.toBe(false);
+    expect(JSON.parse(state.files.get(base + ".result.json")!)).toEqual({ ok: false, error: "mimo_project_bridge_response_invalid" });
+    expect(state.files.get(base + ".owner.json")).toBe(retainedOwner);
+    expect(state.handler).toHaveBeenCalledOnce();
+  } finally { process.argv[1] = previous!; }
+});
+it.each(["cycle", "utf8-size"])("settles a %s result without exposing payload or replaying Create", async fault => {
+  const response: { ok: boolean; detail?: unknown } = { ok: true };
+  response.detail = fault === "cycle" ? response : "я".repeat(600000);
+  await submitHostedMimoProjectBridge(request);
+  const retainedOwner = state.files.get(prefix + ".owner.json")!, owner = JSON.parse(retainedOwner);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockResolvedValue(response);
+    await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).resolves.toBe(false);
+    expect(JSON.parse(state.files.get(prefix + ".result.json")!)).toEqual({ ok: false, error: fault === "cycle" ? "mimo_project_bridge_type_error" : "mimo_project_bridge_response_invalid" });
+    state.command.mockImplementation((_command: string, args: string[]) => terminalShow(args[1]!));
+    await expect(submitHostedMimoProjectBridge(request)).resolves.toMatchObject({ state: "settled" });
+    await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow("mimo_project_bridge_creation_pending");
+    expect(state.files.get(prefix + ".owner.json")).toBe(retainedOwner);
+    expect(state.handler).toHaveBeenCalledOnce();
+    expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
+  } finally { process.argv[1] = previous!; }
+});
+it.each(["write", "rename"] as const)("retains %s publication uncertainty without replay or a fabricated failure result", async fault => {
+  await submitHostedMimoProjectBridge(request);
+  const retainedOwner = state.files.get(prefix + ".owner.json")!, owner = JSON.parse(retainedOwner);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.publicationFailure = fault;
+    await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).rejects.toThrow("TEST result " + fault + " uncertain");
+    expect(state.files.has(prefix + ".result.json")).toBe(false);
+    expect(state.files.has(prefix + ".result.json.tmp")).toBe(fault === "rename");
+    state.command.mockImplementation((_command: string, args: string[]) => terminalShow(args[1]!));
+    await expect(submitHostedMimoProjectBridge(request)).resolves.toMatchObject({ state: "unresolved" });
+    await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow("mimo_project_bridge_creation_pending");
+    expect(state.files.get(prefix + ".owner.json")).toBe(retainedOwner);
+    expect(state.handler).toHaveBeenCalledOnce();
+    expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
+  } finally { process.argv[1] = previous!; }
+});
 function repairRequest() {
   return { ...control(MimoProjectBridgeOperation.RepairAdmission), repairPlan: { schemaVersion: 1, machineId: request.machineId,
     projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId,

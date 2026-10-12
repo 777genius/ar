@@ -154,7 +154,7 @@ it.each(["application/json", "text/event-stream"])("redacts JSON-escaped key/cap
   const escape = (text: string) => [...text].map(c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")).join("");
   const transport = vi.fn<typeof fetch>(async () => {
     const json = `{"${escape(key)}":{"nested":["${escape(key)}","${escape(capability)}"]}}`;
-    const data = contentType === "text/event-stream" ? `event: response.output_text.delta\r\ndata: ${json}\r\n\r\n` : json;
+    const data = contentType === "text/event-stream" ? `event: response.created\r\ndata: ${json}\r\n\r\n` : json;
     return new Response(new ReadableStream({ start(controller) {
       const bytes = Buffer.from(data); for (let i = 0; i < bytes.length; i += 7) controller.enqueue(bytes.subarray(i, i + 7)); controller.close();
     } }), { headers: { "content-type": contentType } });
@@ -164,7 +164,7 @@ it.each(["application/json", "text/event-stream"])("redacts JSON-escaped key/cap
     const text = await (await f.post()).text();
     const json = contentType === "application/json" ? text : text.split("\n").find(line => line.startsWith("data: "))!.slice(6);
     expect(JSON.parse(json)).toEqual({ "***": { nested: ["***", "***"] } });
-    if (contentType === "text/event-stream") expect(text).toContain("event: response.output_text.delta\n");
+    if (contentType === "text/event-stream") expect(text).toContain("event: response.created\n");
   } finally { await f.proxy.close(); }
 });
 
@@ -205,6 +205,116 @@ it("redacts a key split across normal Responses delta events while preserving se
   } finally { await f.proxy.close(); }
 });
 
+it.each(["application/json", "text/event-stream", "interleaved"])("redacts a message credential split across content parts and terminal projections (%s)", async contentType => {
+  const content = [key.slice(0, 10), key.slice(10)].map(text => ({ type: "output_text", text }));
+  const item = { id: "message-1", type: "message", role: "assistant", content };
+  const frame = (data: Record<string, unknown>) => "data: " + JSON.stringify(data) + "\n\n";
+  const parts = content.map((part, content_index) => ({ part, content_index }));
+  const identity = { item_id: item.id, output_index: 0 };
+  const body = contentType === "application/json" ? JSON.stringify({ output: [item] }) :
+    (contentType === "text/event-stream" ? parts : parts.reverse()).flatMap(({ part, content_index }) => [
+      { type: "response.output_text.delta", ...identity, content_index, delta: part.text },
+      { type: "response.output_text.done", ...identity, content_index, text: part.text },
+    ]).map(frame).join("") + frame({ type: "response.output_item.done", output_index: 0, item }) +
+    frame({ type: "response.completed", response: { output: [item] } });
+  const f = await fixture(async () => new Response(body, { headers: { "content-type": contentType === "application/json" ? contentType : "text/event-stream" } }));
+  try {
+    const text = await (await f.post()).text();
+    const messageText = (value: typeof item) => value.content.map(part => part.text).join("");
+    if (contentType === "application/json") {
+      expect(messageText(JSON.parse(text).output[0])).toBe("***");
+    } else {
+      const events = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+      expect(events.filter(event => event.type === "response.output_text.delta").map(event => event.delta).join("")).toBe("***");
+      expect(events.filter(event => event.type === "response.output_text.done").map(event => event.text).join("")).toBe("***");
+      expect(messageText(events.find(event => event.type === "response.output_item.done").item)).toBe("***");
+      expect(messageText(events.at(-1).response.output[0])).toBe("***");
+    }
+    expect(text).not.toContain(key);
+  } finally { await f.proxy.close(); }
+});
+
+it("retains reversed message parts and done text until exact item closure", async () => {
+  let upstream!: ReadableStreamDefaultController<Uint8Array>;
+  const f = await fixture(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { upstream = controller; } }),
+    { headers: { "content-type": "text/event-stream" } }));
+  const identity = { item_id: "message-1", output_index: 0 };
+  const emit = (data: Record<string, unknown>) => upstream.enqueue(Buffer.from("data: " + JSON.stringify(data) + "\n\n"));
+  let output = "", reading: Promise<void> | undefined;
+  try {
+    const posted = f.post();
+    await vi.waitFor(() => expect(upstream).toBeDefined());
+    emit({ type: "response.created" });
+    const response = await posted;
+    reading = (async () => {
+      const reader = response.body!.getReader();
+      try { for (;;) { const part = await reader.read(); if (part.done) break; output += Buffer.from(part.value).toString("utf8"); } }
+      finally { reader.releaseLock(); }
+    })();
+    const suffix = key.slice(10), padding = " ".repeat(100);
+    emit({ type: "response.output_text.delta", ...identity, content_index: 1, delta: suffix });
+    emit({ type: "response.output_text.delta", ...identity, content_index: 1, delta: padding });
+    emit({ type: "response.output_text.done", ...identity, content_index: 1, text: suffix + padding });
+    emit({ type: "response.output_item.done", output_index: 1, item: { id: "message-1", type: "message" } });
+    upstream.enqueue(Buffer.from(": TEST-heartbeat-1\n\n"));
+    await vi.waitFor(() => expect(output).toContain(": ***\n\n"));
+    expect(output).not.toContain("response.output_text");
+    emit({ type: "response.output_text.delta", ...identity, content_index: 0, delta: key.slice(0, 10) });
+    emit({ type: "response.output_text.done", ...identity, content_index: 0, text: key.slice(0, 10) });
+    emit({ type: "response.output_item.done", output_index: 0, item: { id: "message-1", type: "message" } });
+    await vi.waitFor(() => expect(output).toContain("response.output_text.done"));
+    expect(output).not.toContain("response.completed");
+    emit({ type: "response.completed" }); upstream.close(); await reading;
+    const events = output.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+    for (const [type, field] of [["response.output_text.delta", "delta"], ["response.output_text.done", "text"]]) {
+      const parts = events.filter(event => event.type === type).sort((left, right) => left.content_index - right.content_index);
+      expect(parts.map(part => part[field!]).join("")).toBe("***" + padding);
+      expect(events.filter(event => event.type === type).map(event => event.content_index)).toEqual(type?.endsWith("delta") ? [1, 1, 0] : [1, 0]);
+    }
+  } finally { await f.proxy.close(); await reading?.catch(() => {}); }
+});
+
+it.each(["arrival", "content-index", "new-adjacency"])("redacts both bounded message projections to convergence (%s)", async order => {
+  const fakeKey = "abcdefgh";
+  const pieces = order === "new-adjacency"
+    ? [{ content_index: 2, text: "abc" }, { content_index: 1, text: "efgh" },
+      { content_index: 4, text: "defgh" }, { content_index: 3, text: "X" }, { content_index: 0, text: "abcd" }]
+    : [{ content_index: order === "arrival" ? 1 : 0, text: "abcd" },
+      { content_index: order === "arrival" ? 0 : 1, text: "efgh" }];
+  const frame = (data: Record<string, unknown>) => "data: " + JSON.stringify(data) + "\n\n";
+  const body = pieces.flatMap(part => [
+    { type: "response.output_text.delta", item_id: "message-1", output_index: 0, content_index: part.content_index, delta: part.text },
+    { type: "response.output_text.done", item_id: "message-1", output_index: 0, content_index: part.content_index, text: part.text },
+  ]).map(frame).join("") + frame({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "message-1" } });
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from(fakeKey), model: "mimo-v2.6-pro", limits: limits(),
+    fetchUpstream: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }) });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+      authorization: `Bearer ${proxy.capability}`, "content-type": "application/json" }, body: JSON.stringify({ model: "mimo-v2.6-pro" }) });
+    const text = await response.text();
+    const events = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+    for (const [type, field] of [["response.output_text.delta", "delta"], ["response.output_text.done", "text"]]) {
+      const parts = events.filter(event => event.type === type);
+      expect(parts.map(part => part.content_index)).toEqual(pieces.map(part => part.content_index));
+      expect(parts.map(part => part[field!]).join("")).not.toContain(fakeKey);
+      expect([...parts].sort((left, right) => left.content_index - right.content_index).map(part => part[field!]).join("")).not.toContain(fakeKey);
+    }
+    expect(text).not.toContain(fakeKey);
+  } finally { await proxy.close(); }
+});
+
+it.each(["item_id", "output_index", "content_index"])("fails closed for mixed valid and incomplete text identity (%s)", async missing => {
+  for (const type of ["response.output_text.delta", "response.output_text.done"]) {
+    const first = { type, item_id: "message-1", output_index: 0, content_index: 0, [type.endsWith("delta") ? "delta" : "text"]: key.slice(0, 10) };
+    const second: Record<string, unknown> = { ...first, content_index: 1, [type.endsWith("delta") ? "delta" : "text"]: key.slice(10) };
+    delete second[missing];
+    const body = [first, second, { type: "response.completed" }].map(data => "data: " + JSON.stringify(data) + "\n\n").join("");
+    const f = await fixture(async () => new Response(body, { headers: { "content-type": "text/event-stream" } }));
+    try { await expect(f.post().then(response => response.text())).rejects.toThrow(); }
+    finally { await f.proxy.close(); }
+  }
+});
+
 it("uses heartbeat text outside the credential alphabet even for the valid key keepalive", async () => {
   const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from("keepalive"), model: "mimo-v2.6-pro", limits: limits(),
     fetchUpstream: async () => new Response(': keepalive\n\n', { headers: { "content-type": "text/event-stream" } }) });
@@ -236,20 +346,25 @@ it.each(["output_text", "function_call_arguments"])("releases a completed %s cha
       finally { reader.releaseLock(); }
     })();
     emit({ type: `response.${kind}.delta`, ...identity, delta: "prefix " + key.slice(0, 10) });
-    emit({ type: `response.${kind}.done`, ...identity, item_id: "other-item" });
+    if (kind === "output_text") {
+      emit({ type: "response.output_item.done", output_index: 0, item: { id: "other-item", type: "message" } });
+    } else emit({ type: `response.${kind}.done`, ...identity, item_id: "other-item" });
     upstream.enqueue(Buffer.from(`: ${key}\n\n`));
     await vi.waitFor(() => expect(output).toContain(": ***\n\n"));
     expect(output).not.toContain("prefix ");
     emit({ type: `response.${kind}.delta`, ...identity, delta: key.slice(10) + " suffix" });
-    emit({ type: `response.${kind}.done`, ...identity });
+    emit({ type: `response.${kind}.done`, ...identity, ...(kind === "output_text" ? { text: "" } : {}) });
+    if (kind === "output_text") {
+      emit({ type: "response.output_item.done", output_index: identity.output_index, item: { id: identity.item_id, type: "message" } });
+    }
     emit({ type: "response.output_item.added", item: { id: "tool-1", type: "function_call" } });
     await vi.waitFor(() => expect(output).toContain('"id":"tool-1"'));
     expect(output).not.toContain("response.completed");
     expect(output).not.toContain(key);
     const events = output.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)) as Record<string, unknown>);
     expect(events.filter(event => typeof event.delta === "string").map(event => event.delta).join("")).toBe("prefix *** suffix");
-    expect(events.map(event => event.type)).toEqual(["response.created", `response.${kind}.delta`, `response.${kind}.done`,
-      `response.${kind}.delta`, `response.${kind}.done`, "response.output_item.added"]);
+    expect(events.map(event => event.type)).toEqual(["response.created", `response.${kind}.delta`, kind === "output_text" ? "response.output_item.done" : `response.${kind}.done`,
+      `response.${kind}.delta`, `response.${kind}.done`, ...(kind === "output_text" ? ["response.output_item.done"] : []), "response.output_item.added"]);
     emit({ type: "response.completed" }); upstream.close(); await reading;
   } finally { await f.proxy.close(); await reading?.catch(() => {}); }
 });
@@ -284,6 +399,7 @@ it("releases done chains before response completion while redacting split secret
       // A different completed chain must not release the tool's secret prefix.
       emit("response.output_text.delta", `other-${index}`, { content_index: 0, delta: "ok" });
       emit("response.output_text.done", `other-${index}`, { content_index: 0, text: "ok" });
+      emit("response.output_item.done", `other-${index}`, { item: { id: `other-${index}`, type: "message" } });
       emit("response.function_call_arguments.delta", "tool", { delta: secret.slice(10) });
     }
     emit("response.function_call_arguments.done", "tool", { arguments: key + f.proxy.capability });
@@ -299,10 +415,10 @@ it("releases done chains before response completion while redacting split secret
   } finally { if (timer) clearTimeout(timer); await f.proxy.close(); }
 });
 
-it("fails closed on a delta after its matching done event", async () => {
+it("fails closed on a text delta after its exact message item is completed", async () => {
   const transport = vi.fn<typeof fetch>(async () => new Response(
-    'data: {"type":"response.output_text.done","item_id":"item-1"}\n\n' +
-    'data: {"type":"response.output_text.delta","item_id":"item-1","delta":"late"}\n\n',
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item-1","type":"message"}}\n\n' +
+    'data: {"type":"response.output_text.delta","item_id":"item-1","output_index":0,"content_index":0,"delta":"late"}\n\n',
     { headers: { "content-type": "text/event-stream" } }));
   const f = await fixture(transport);
   try { await expect(f.post().then(response => response.text())).rejects.toThrow(); }
@@ -311,7 +427,7 @@ it("fails closed on a delta after its matching done event", async () => {
 
 it("uses a replacement outside the credential alphabet, so redaction cannot match itself", async () => {
   const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from("redacted"), model: "mimo-v2.6-pro", limits: limits(),
-    fetchUpstream: async () => new Response('data: {"type":"response.output_text.delta","delta":"redacted"}\n\ndata: [DONE]\n\n',
+    fetchUpstream: async () => new Response('data: {"type":"response.output_text.delta","item_id":"message-1","output_index":0,"content_index":0,"delta":"redacted"}\n\ndata: [DONE]\n\n',
       { headers: { "content-type": "text/event-stream" } }) });
   try {
     const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: {

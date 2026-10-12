@@ -250,13 +250,18 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   const service = researchCommand("/usr/bin/systemctl", ["show", current.value.unit as string, "--property=MainPID,Description"]);
   if (!service.split("\n").includes("MainPID=" + process.pid) || !service.split("\n").includes("Description=" + current.value.description))
     throw new Error("mimo_project_bridge_operation_invalid");
-  let result: unknown;
-  try { result = { ok: true, result: await handleHostedMimoProjectBridge(request) }; }
+  let result: unknown, serialized: string;
+  try {
+    result = { ok: true, result: await handleHostedMimoProjectBridge(request) };
+    serialized = JSON.stringify(result) + "\n";
+    if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
+  }
   catch (error) {
     result = { ok: false, error: operationErrorCode(error) };
+    serialized = JSON.stringify(result) + "\n";
   }
-  const serialized = JSON.stringify(result) + "\n";
-  if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
+  // Publication failures remain uncertain; never replace them with a failure
+  // envelope or replay a handler whose effects may already have happened.
   const temp = current.resultPath + ".tmp";
   writeFileSync(temp, serialized, { flag: "wx", mode: 0o600 }); renameSync(temp, current.resultPath);
   const outcome = result as { ok: boolean; result?: { ok?: boolean } };
