@@ -41,6 +41,7 @@ export const fullNativePublicCapsule="/srv/workers/jobs/"+fullNativeJob+"/public
 export const fullNativeBirthRoot="/srv/workers/jobs/"+fullNativeJob+"/full-launch-birth";
 export const fullNativeLiveRoot="/srv/workers/jobs/"+fullNativeJob+"/full-parent-live";
 export const fullNativeGuestLiveRoot="/var/lib/subscription-runtime-full-parent-live";
+const fullNativeOutputBase="/var/lib/subscription-runtime-full-TEST-output";
 export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/os-TEST";
 /** DATA path contract only; physical root custody is checked separately. */
 export function fullNativeGuestRoot(id:unknown,root:unknown):boolean {
@@ -175,6 +176,32 @@ function retainedFilesystemType(fd:number):bigint {
 class Pins {
   private readonly held=new Map<string,{fd:number;identity:string;sha256:string|null}>();private closed=false;private readonly namespaces:number[]=[];
   mountNamespace(){const fd=openSync("/proc/self/ns/mnt",constants.O_RDONLY);this.namespaces.push(fd);return fd;}
+  /** The fixed systemd writable root must exist before namespace setup.
+   * Only the original installer calls this create-only operation. */
+  prepareOutputRoot():void {
+    const parent=this.hold(dirname(fullNativeOutputBase),true);this.validate();
+    this.assertOutputAncestors();
+    let exists=true;
+    try{lstatSync(fullNativeOutputBase);}catch(error){check(error instanceof Error && "code" in error && error.code==="ENOENT");exists=false;}
+    if(!exists){
+      mkdirSync(`/proc/self/fd/${parent}/${basename(fullNativeOutputBase)}`,{mode:0o700});
+      fsyncSync(parent);
+    }
+    const fd=this.hold(fullNativeOutputBase,true,0o700);
+    this.validate();fsyncSync(fd);this.validate();
+  }
+  private assertOutputAncestors():void {
+    const root=this.held.get("/");check(root);
+    const device=fstatSync(root.fd).dev,mount=ancestorMountId(root.fd);
+    for(const path of ["/","/var","/var/lib",...(this.held.has(fullNativeOutputBase)?[fullNativeOutputBase]:[])]){
+      const entry=this.held.get(path);check(entry);const stat=fstatSync(entry.fd),named=lstatSync(path);
+      check(stat.isDirectory() && stat.uid===0 && stat.gid===0 && !(stat.mode&0o022)
+        && stat.dev===device && ancestorMountId(entry.fd)===mount
+        && !named.isSymbolicLink() && identity(named)===entry.identity && identity(stat)===entry.identity
+        && realpathSync(`/proc/self/fd/${entry.fd}`)===path);
+      if(path===fullNativeOutputBase)check((stat.mode&0o7777)===0o700);
+    }
+  }
   hold(path:string,directory=false,mode?:number):number{
     check(!this.closed);const found=this.held.get(path);if(found){
       if(path===sharedAncestor){check(directory);const parent=this.held.get("/srv");check(parent);assertSharedAncestor(found.fd,parent.fd);}
@@ -195,7 +222,7 @@ class Pins {
     if(path===sharedAncestor){const parent=this.held.get("/srv");check(parent);assertSharedAncestor(e.fd,parent.fd);}
     const fresh=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(held.isDirectory()?constants.O_DIRECTORY:0));
     try{check(identity(fstatSync(fresh))===e.identity && ancestorMountId(fresh)===ancestorMountId(e.fd));}finally{closeSync(fresh);}
-    if(e.sha256)check(hash(readFd(e.fd))===e.sha256);}}
+    if(e.sha256)check(hash(readFd(e.fd))===e.sha256);}if(this.held.has(fullNativeOutputBase))this.assertOutputAncestors();}
   descriptors(){check(!this.closed);return [...this.held.values()].map(entry=>entry.fd).concat(this.namespaces);}
   sourceSnapshot(){this.validate();return hash(JSON.stringify([...this.held.entries()].filter(([,entry])=>entry.sha256!==null).map(([path,entry])=>({path,identity:entry.identity,sha256:entry.sha256})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)));}
   close(){if(this.closed)return;this.closed=true;for(const e of [...this.held.values()].reverse())closeSync(e.fd);this.held.clear();for(const fd of this.namespaces)closeSync(fd);this.namespaces.length=0;}
@@ -280,7 +307,7 @@ enum LibcPurpose {H1="h1",PositiveHost="positive_host",PositiveHostSystemdShared
 /** The selected source contracts have one exact reviewed package each. */
 export function fullNativeSourcePackageHash(schemaVersion:unknown):string {
   if(schemaVersion===1)return "68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29";
-  if(schemaVersion===2)return "8b0480793816c0a3e96d8102c03fb2fdd60396c0d8ec6e819c38d60a97c498ba";
+  if(schemaVersion===2)return "a164901902184f8d4b304bdac45715e1fd9adcefd6a6865c35b64f796ccffb68";
   return refuse();
 }
 export function fullPositiveHostStableAncestors(ancestors:readonly Readonly<{path:string;identity:string;mount:string}>[]):readonly Readonly<{path:string;identity:string}>[] {
@@ -516,6 +543,7 @@ export async function installFullPositiveTestAndComposeRequest(){
     const copyModule=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-positive-copy-TEST.js").href);
     check(typeof copyModule.copyFullPositiveInstallationRow==="function");c.validate();
     const copy=(row:Copy,parent:number)=>copyModule.copyFullPositiveInstallationRow(row,parent,deadline);
+    c.pins.prepareOutputRoot();
     copy(tree,targetParents[0]!);copy(cohort,targetParents[3]!);copy(outer,targetParents[2]!);copy(publicReview,targetParents[2]!);
     mkdirSync(`/proc/self/fd/${targetParents[1]}/dependency-full-positive-scoped-activation`,{mode:0o700});fsyncSync(targetParents[1]!);
     const reviewDir=openSync(reviewRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);retained.push(reviewDir);copy(catalog,reviewDir);
@@ -670,7 +698,7 @@ export function fullNativeArguments(request:unknown){
       selector=custody.restoreConsumer===FullRestoreConsumer.Readonly ? ["--setenv=TEST_FULL_RESTORE_CONSUMER="+custody.restoreConsumer] : [];
     const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","LimitNOFILE=65536","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
-      "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
+      "ReadWritePaths="+fullNativeOsBase+" "+fullNativeOutputBase+" /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind",
       "BindReadOnlyPaths="+toolchain+":"+toolchain+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/"+custody.accountName+":/srv/worker-state/account-pools/live-codex-auth/"+custody.accountName+":norbind"];
     const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,...selector,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",...fullNativeParentArgv(custody.node,custody.parent,custody.removalCase)]);
