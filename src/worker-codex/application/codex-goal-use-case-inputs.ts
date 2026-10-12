@@ -11,11 +11,17 @@ import type { CodexGoalRunConfig } from "../codex-goal-runner";
 import type { CodexGoalMimoAccountSlot } from "../codex-goal-mimo-account-slots";
 
 export type CodexGoalInput = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly jobId?: string;
   readonly configPath?: string;
   readonly sessionHomeProfile?: CodexGoalRunConfig["sessionHomeProfile"];
   readonly storage?: CodexGoalRunConfig["storage"];
+  readonly storageRootDir?: string;
   readonly jobRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
+  readonly encryptionKeyPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
@@ -60,8 +66,10 @@ export type CodexGoalInput = {
 };
 
 export type CodexGoalJobRegistryInput = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly mimoProjectId?: string;
   readonly mimoWorkstreamId?: string;
+  readonly storageRootDir?: string;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -149,8 +157,11 @@ export type CodexGoalWorkerControlInput = CodexGoalJobIdInput & {
 
 export function registryRootFromInput(args: CodexGoalJobRegistryInput): string {
   assertNoUnsupportedMimoRemoteRoute(args);
+  const env = args.sourceEnv ?? process.env;
   return resolveCodexGoalJobRegistryRoot({
-    ...(args.registryRootDir ? { registryRootDir: args.registryRootDir } : {}),
+    registryRootDir: args.registryRootDir ?? env.SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT ?? env.CODEX_GOAL_REGISTRY_ROOT,
+    storageRootDir: args.storageRootDir ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT,
+    sourceEnv: env,
     ...(args.cwd ? { cwd: args.cwd } : {}),
   });
 }

@@ -5,7 +5,10 @@ vi.mock("node:fs", async original => ({ ...await original<object>(), lstatSync: 
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
 // The imported project-control composition reads the real job readers at load; only creation is the fixture.
-vi.mock("../codex-goal-jobs", async original => ({ ...await original<object>(), createCodexGoalJob: state.create }));
+vi.mock("../codex-goal-jobs", async original => ({
+  ...await original<typeof import("../codex-goal-jobs")>(),
+  createCodexGoalJob: state.create,
+}));
 vi.mock("../hosted-mimo-project-bridge-onboard", () => ({ onboardHostedMimoProject: state.onboard }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ hostedMimoBridgeMetadataBytes: (p: string) => { const bytes = state.files.get(p); if (bytes === undefined) throw new Error("TEST mandatory file missing"); return Buffer.from(bytes); },
   assertHostedMimoProjectRouteOpen: state.route, parseHostedMimoProjectBinding: (value: unknown) => value }));

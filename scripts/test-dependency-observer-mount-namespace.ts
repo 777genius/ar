@@ -50,13 +50,25 @@ const publish = (value: Record<string, unknown>) => {
   mkdirSync(dirname(evidencePath), { recursive: true, mode: 0o755 });
   writeFileSync(evidencePath, JSON.stringify(value, null, 2) + "\n", { mode: 0o644 });
 };
-const common: Record<string, unknown> = { version: 1, status: "failed", scope: "observer-mount-TEST-only",
+const parent = process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === "--manual-host");
+const executionOrigin = parent ? (process.argv[2] === "--manual-host" ? "manual-host" : "github-actions")
+  : process.env.TEST_OBSERVER_EXECUTION_ORIGIN;
+const common: Record<string, unknown> = { version: 1, executionOrigin, status: "failed", scope: "observer-mount-TEST-only",
   nativeG1Proven: false, writerExclusionProven: false, sourceSha: process.env.TEST_SOURCE_SHA ?? "",
   nodeVersion: process.versions.node, requiredTests: required, sourcePath: source,
   helperSha256: sha256(read(self, 65536)) };
 try {
-  assert.equal(process.platform, "linux"); assert.equal(process.env.CI, "true");
-  assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.match(String(common.sourceSha), /^[a-f0-9]{40}$/);
+  assert.equal(process.platform, "linux");
+  assert.ok(executionOrigin === "github-actions" || executionOrigin === "manual-host");
+  if (executionOrigin === "github-actions") {
+    assert.equal(process.env.CI, "true"); assert.equal(process.env.GITHUB_ACTIONS, "true");
+  } else {
+    assert.equal(process.env.CI, undefined); assert.equal(process.env.GITHUB_ACTIONS, undefined);
+    assert.equal(process.versions.node, "26.11.1");
+    if (parent) for (const name of namespaces)
+      assert.equal(readlinkSync(`/proc/self/ns/${name}`), readlinkSync(`/proc/1/ns/${name}`), "manual parent is not in initial namespace");
+  }
+  assert.match(String(common.sourceSha), /^[a-f0-9]{40}$/);
   assert.equal(realpathSync(process.env.GITHUB_WORKSPACE ?? ""), source);
   assert.match(readFileSync("/etc/os-release", "utf8"), /VERSION_ID="24\.04"/);
   assert.match(process.versions.node, /^26\./);
@@ -70,11 +82,11 @@ try {
   common.lockSha256 = sha256(lockBytes); common.vitestVersion = locked.version;
   common.testSha256 = sha256(read(join(source, testFile), 65536));
   common.observerSha256 = sha256(read(join(source, "src/worker-local/dependency-environment/observe-dependency-tree.ts"), 65536));
-  const parent = process.argv.length === 2;
   const uid = runnerId(process.env[parent ? "SUDO_UID" : "TEST_RUNNER_UID"]);
   const gid = runnerId(process.env[parent ? "SUDO_GID" : "TEST_RUNNER_GID"]);
   common.originalRunner = { uid, gid };
-  const env = { PATH: "/usr/bin:/bin", CI: "true", GITHUB_ACTIONS: "true", GITHUB_WORKSPACE: source,
+  const env = { PATH: "/usr/bin:/bin", ...(executionOrigin === "github-actions" ? { CI: "true", GITHUB_ACTIONS: "true" } : {}),
+    TEST_OBSERVER_EXECUTION_ORIGIN: executionOrigin, GITHUB_WORKSPACE: source,
     TEST_SOURCE_SHA: String(common.sourceSha), TEST_RUNNER_UID: String(uid), TEST_RUNNER_GID: String(gid), LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
   if (parent) {
     assert.match(readFileSync("/proc/self/uid_map", "utf8").trim(), /^0\s+0\s+4294967295$/);
@@ -128,7 +140,7 @@ try {
       }
       assert.deepEqual(targetRows(), beforeRows, "TEST mounts propagated into parent");
       const child: unknown = JSON.parse(read(join(staged, "observer-mount-evidence/result.json"), 128 * 1024).toString("utf8"));
-      assert.ok(object(child) && child.status === "passed" && child.sourceSha === common.sourceSha && child.sourcePath === staged);
+      assert.ok(object(child) && child.status === "passed" && child.executionOrigin === executionOrigin && child.sourceSha === common.sourceSha && child.sourcePath === staged);
       for (const key of ["testSha256", "observerSha256", "lockSha256", "helperSha256", "vitestVersion"] as const) assert.equal(child[key], common[key]);
       publish({ ...child, staging: common.staging, originalSourcePath: source,
         parentSourceAncestry: ancestry, parentNamespacesBeforeAfter: before, parentTargetMountsUnchanged: true });
