@@ -496,7 +496,9 @@ async function startFixture(options: { colocatedJobRoot?: boolean; admittedInput
         effect: async (workspaceLease) => {
           const binding = { start: { manifest, launch, workspaceLease,
             ...(options.admittedInputPatch ? { workspaceMode: "admitted_input_patch" as const } : {}) } };
-          return effect(codexProjectAdmissionGate({ ...input, targetBinding: binding }), binding);
+          return effect(codexProjectAdmissionGate({ ...input, targetBinding: binding,
+            ...(options.admittedInputPatch ? { admittedInputPatchTarget: { jobId: manifest.jobId,
+              workspacePath: workspaceLease.canonicalWorkspacePath } } : {}) }), binding);
         },
       });
     },
