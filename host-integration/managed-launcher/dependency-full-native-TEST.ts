@@ -725,6 +725,10 @@ export interface FullH1StagedObserver {
   readonly stderr:PassThrough;
   readonly closed:Promise<void>;
 }
+/** Consumer-owned source port only. Structural types confer no original custody. */
+export interface FullH1StagedObserverSource {
+  prepareOriginalH1StagedObserver(parent:FullParentSession):H1StagedObserverPrepared;
+}
 const fullH1StagedConstructors=new WeakMap<object,()=>Promise<FullH1StagedObserver>>();
 const fullH1StagedClosers=new WeakMap<object,()=>Promise<void>>();
 /** Only the retained original parent selects its source-pinned finite factory.
@@ -961,7 +965,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       }
 
 
-      const module:typeof import("../../scripts/dependency-retention-os-test/current-removal-h1-fixture.js")=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-removal-h1-fixture.js").href);
+      const module:FullH1StagedObserverSource=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-removal-h1-fixture.js").href);
       prepared=module.prepareOriginalH1StagedObserver(parent);prepared.revalidate();
       check(prepared.anchors.length===9 && prepared.queryAnchors.length===3 && Buffer.byteLength(prepared.program)<=32768 && Buffer.byteLength(prepared.config)<=16384);
       const rawConfig:unknown=JSON.parse(prepared.config),config=fullData(rawConfig,["purpose","request","operations","policy","key","evictionId","ownerPath","parentPid","parentTicks","supervisorPid","supervisorTicks","group","parentArgv","supervisorArgv","pidNamespace","supervisorInvocation","requestPath","requestDigest","backingPath","backingDigest"]);

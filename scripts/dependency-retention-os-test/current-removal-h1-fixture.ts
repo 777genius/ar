@@ -293,7 +293,7 @@ finally:
 `;
 const stagedKernel=kernel.replace("lib=ctypes.CDLL(None,use_errno=True)",stagedQuery+"\nlib=ctypes.CDLL(None,use_errno=True)").replace("assert open('/proc/sys/kernel/random/boot_id').read().strip()==c['request']['bootId']","boot=os.open('proc/sys/kernel/random/boot_id',flags,dir_fd=15)\n try:assert os.read(boot,129).decode().strip()==c['request']['bootId']\n finally:os.close(boot)");
 /** Fixed factory called only by the retained original native slot. */
-export function prepareOriginalH1StagedObserver(parent:originalProfile.FullParentSession){
+export function prepareOriginalH1StagedObserver(parent:originalProfile.FullParentSession):ReturnType<originalProfile.FullH1StagedObserverSource["prepareOriginalH1StagedObserver"]>{
   const prepared=retainOriginalH1ObserverInputs(parent);preparedObservers.set(parent,prepared);
   return Object.freeze({program:stagedKernel,config:JSON.stringify(prepared.config),anchors:prepared.anchors,queryAnchors:prepared.queryAnchors,revalidate:prepared.revalidate,revalidateSources:prepared.revalidateSources,descriptors:prepared.descriptors,close:prepared.close});
 }
