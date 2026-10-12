@@ -480,7 +480,8 @@ async function startFixture(options: { colocatedJobRoot?: boolean; admittedInput
   f.summaries.push(summary);
   const item: Record<string, unknown> = { ...f.item, jobId: manifest.jobId, workspacePath: manifest.workspacePath,
     workspaceDirty: options.admittedInputPatch ?? false, resultExists: false, resultStatus: undefined,
-    activeWriterRisk: options.admittedInputPatch ? "dirty_workspace_without_worker" : "none", changedFiles: [] };
+    activeWriterRisk: options.admittedInputPatch ? "dirty_workspace_without_worker" : "none",
+    activeWriterRiskReasons: options.admittedInputPatch ? ["dirty_workspace_without_worker"] : [], changedFiles: [] };
   f.items.push(item);
   // The prepared self remains Unknown to the synthetic owner port. Only its
   // actual manifest/receipt/artifact shape and held lease establish the target.
