@@ -13,6 +13,9 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
   processGroups: new Map<number, string>(), killFailures: new Set<string>(), stopFailures: new Set<string>(),
   processNamespaces: new Map<number, Record<"user" | "mnt" | "pid" | "net", string>>(), showFailures: new Set<string>(),
+  operationRunnerObserver: undefined as
+    | ((child: import("node:child_process").ChildProcess, runnerPath: string) => void)
+    | undefined,
   jobs: new Set<string>(), spawn: vi.fn(), authReads: 0, taskTimeoutMs: 3600000, findmntHook: undefined as (() => void) | undefined,
   scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
   scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
@@ -210,7 +213,11 @@ vi.mock("node:child_process", async original => {
         argv[0]?.endsWith("/fake-operation-runner.mjs") && owned(argv[0]) && owned(argv[3]!) &&
         options.stdio === "ignore" && options.detached === true &&
         options.env?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_RUNNER === "1" &&
-        (options.cwd === undefined || typeof options.cwd === "string" && owned(options.cwd))) return real.spawn(command, argv, options);
+        (options.cwd === undefined || typeof options.cwd === "string" && owned(options.cwd))) {
+      const child = real.spawn(command, argv, options);
+      fixture.operationRunnerObserver?.(child, argv[0]!);
+      return child;
+    }
     const stdio = options?.stdio;
     if (command === process.execPath && argv.length === 2 && argv[0] === "-e" && argv[1] === "process.exit(0)" &&
         typeof options.cwd === "string" && owned(options.cwd) && fs.lstatSync(options.cwd).isDirectory() &&
@@ -347,6 +354,7 @@ export function setupResearchFixture(options: { readonly nativeBackingFacts?: bo
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
+  fixture.operationRunnerObserver = undefined;
   fixture.taskTimeoutMs = 3600000;
   fixture.physicalPaths = fixture.nativeBackingFacts;
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
@@ -368,6 +376,7 @@ export function setupResearchFixture(options: { readonly nativeBackingFacts?: bo
   fixture.spawn.mockImplementation(() => Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() }));
 }
 export function cleanupResearchFixture(): void {
+  fixture.operationRunnerObserver = undefined;
   fixture.pins.clear();
   try {
     if (ownedRoot) {

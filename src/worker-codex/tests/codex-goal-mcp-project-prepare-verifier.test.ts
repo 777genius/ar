@@ -12,7 +12,8 @@ import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admissi
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
+import { host } from "./research-launch-fixture";
 import {
   AccessBoundary,
   InMemoryAttemptJournal,
@@ -58,31 +59,6 @@ import {
   stagedPatchSha256,
   writeRejectedProducerLedger,
 } from "./codex-goal-mcp-project-prepare-verifier-test-support";
-
-const ownedRunner = vi.hoisted(() => ({
-  path: undefined as string | undefined,
-  observe: undefined as
-    | ((child: import("node:child_process").ChildProcess) => void)
-    | undefined,
-}));
-
-vi.mock("node:child_process", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:child_process")>();
-  return {
-    ...original,
-    spawn: (...args: Parameters<typeof original.spawn>) => {
-      const child = original.spawn(...args);
-      if (
-        ownedRunner.path !== undefined &&
-        Array.isArray(args[1]) &&
-        args[1][0] === ownedRunner.path
-      ) {
-        ownedRunner.observe?.(child);
-      }
-      return child;
-    },
-  };
-});
 
 describe("project verifier preparation", () => {
   it("previews and atomically materializes two ordered reviewed outputs", async () => {
@@ -517,8 +493,8 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
 `,
           );
           await chmod(fakeRunnerPath, 0o755);
-          ownedRunner.path = fakeRunnerPath;
-          ownedRunner.observe = (child) => {
+          host.operationRunnerObserver = (child, runnerPath) => {
+            if (runnerPath !== fakeRunnerPath) return;
             runnerCount += 1;
             let error = false;
             child.once("error", () => {
@@ -909,8 +885,7 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
             expect(exit).toEqual({ code: 0, signal: null, error: false });
           }
         } finally {
-          ownedRunner.path = undefined;
-          ownedRunner.observe = undefined;
+          host.operationRunnerObserver = undefined;
           await Promise.allSettled([client.close(), server.close()]);
           // A timed-out child retains its disposable input rather than racing rm.
           if (runnersClosed) await rm(root, { recursive: true, force: true });
