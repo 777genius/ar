@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSy
 import { dirname } from "node:path";
 import type { DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes, parseHostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { parseFlags, option, resolvePath } from "./codex-goal-cli-support";

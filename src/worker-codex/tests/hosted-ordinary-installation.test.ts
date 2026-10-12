@@ -1,6 +1,6 @@
 import { registerOrdinaryWriterExtentTests } from "./hosted-ordinary-writer-extent-test-support";
 import { registerOrdinaryAccountRotationTests } from "./hosted-ordinary-account-rotation-test-support";
-import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
+import { registerManagedInstallationAdmissionTests, registerManagedInstallationMigrationTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
 import { registerManifestPlacementInstallationTests } from "./hosted-manifest-placement-installation-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
@@ -357,67 +357,8 @@ function seedManaged(jobId = "managed-job") {
   put("readonly-epoch.json", { ...epoch, generation: 2, phase: "ready" });
 }
 
-describe("explicit retained managed installation migration", () => {
-  function retained() {
-    seedManaged(); put("readonly-epoch.json", { ...read("readonly-epoch.json"), phase: "closed" });
-    return new HostedInstallationActivationStore();
-  }
-  it.each([false, true])("retains exact managed history and revocation while publishing only CLOSED: revoked=%s", revoked => {
-    const store = retained();
-    put("readonly-epoch.json", { ...read("readonly-epoch.json"), revoked });
-    const before = readFileSync(join(fixture.root, "readonly-epoch.json"));
-    const birth = readFileSync(join(fixture.root, "readonly-enrollment.json"));
-    expect(() => store.install()).toThrow();
-    const activation = store.installManaged();
-    expect(activation.phase).toBe("CLOSED");
-    expect(activation.exclusiveEnrollmentSha256).toBe(hash(birth));
-    expect(read("ordinary-origins.json").origins).toEqual([]);
-    expect(store.installManaged()).toEqual(activation);
-    expect(readFileSync(join(fixture.root, "readonly-epoch.json"))).toEqual(before);
-    expect(readFileSync(join(fixture.root, "readonly-enrollment.json"))).toEqual(birth);
-    expect(fixture.spawn).not.toHaveBeenCalled(); expect(fixture.stops).toEqual([]);
-  });
-  it.each(["missing-birth", "missing-epoch", "ready", "stage", "foreign-host", "pending-epoch", "ordinary-history", "foreign-operator", "missing-terminal-proof"])(
-    "rejects %s without creating installation authority", fault => {
-      const store = retained();
-      if (fault === "missing-birth") rmSync(join(fixture.root, "readonly-enrollment.json"));
-      if (fault === "missing-epoch") rmSync(join(fixture.root, "readonly-epoch.json"));
-      if (fault === "ready") put("readonly-epoch.json", { ...read("readonly-epoch.json"), phase: "ready" });
-      if (fault === "stage") put(stageName, { ...read(stageName), runtimeSha: "f".repeat(40) });
-      if (fault === "foreign-host") put("readonly-epoch.json", { ...read("readonly-epoch.json"), hostId: "foreign-host" });
-      if (fault === "pending-epoch") put("readonly-epoch.next", read("readonly-epoch.json"));
-      if (fault === "ordinary-history") put("ordinary-starts/orphan.json", { incomplete: true });
-      if (fault === "foreign-operator") fixture.group = "/system.slice/foreign.service";
-      if (fault === "missing-terminal-proof") put("readonly-epoch.json", { ...read("readonly-epoch.json"), reservations: [{
-        startId: "33333333-3333-4333-8333-333333333333", creatorId: "33333333-3333-4333-8333-333333333333",
-        unit: "subscription-runtime-hosted-33333333-3333-4333-8333-333333333333.service", state: "terminal" }] });
-      expect(() => store.installManaged()).toThrow();
-      expect(() => read("host-installation.json")).toThrow();
-      expect(fixture.spawn).not.toHaveBeenCalled(); expect(fixture.stops).toEqual([]);
-    });
-  it("missing activation after publication is not reconstructed on migration replay", () => {
-    const store = retained(); store.installManaged(); rmSync(join(fixture.root, "host-activation.json"));
-    expect(() => store.installManaged()).toThrow();
-    expect(() => read("host-activation.json")).toThrow();
-  });
-  it("official managed migration command derives retained identity without caller-authored records", async () => {
-    retained();
-    // Directory provisioning is an explicit substituted host fact. All records,
-    // installation validation and CLI dispatch below use the real composition.
-    vi.spyOn(egressFiles, "assertHostedTestEgressDirectory").mockResolvedValue(true);
-    const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    const argv = process.argv, exitCode = process.exitCode;
-    try {
-      process.argv = [process.execPath, "operator", "install-managed-host"];
-      await import("../hosted-readonly-inputs-cli");
-    } finally { process.argv = argv; process.exitCode = exitCode; vi.resetModules(); }
-    expect(errors).not.toHaveBeenCalled();
-    expect(output).toHaveBeenCalledWith(expect.stringContaining('"operation":"install-managed-host"'));
-    expect(read("host-activation.json").phase).toBe("CLOSED");
-    expect(fixture.spawn).not.toHaveBeenCalled();
-  });
-});
+registerManagedInstallationMigrationTests({ fixture, stageName, seedManaged, read, put, hash });
+
 function ordinarySlots(store: HostedInstallationActivationStore): HostedOrdinaryReservation[] {
   const origin = read("ordinary-origins.json").origins[0];
   const rows: HostedOrdinaryReservation[] = [];

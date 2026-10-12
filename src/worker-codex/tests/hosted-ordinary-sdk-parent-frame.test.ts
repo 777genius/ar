@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { sdkRecipe } from "../../provider-codex/tests/hosted-dependency-sdk-recipe.fixture";
+import { sdkRecipe } from "./hosted-dependency-sdk-recipe.fixture";
 import { assertHostedOrdinaryDependencyToolParentFrame } from "../hosted-managed-dependency-tool-plan";
 import type { HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import type { HostedActivationFence } from "../../provider-codex/app-server/adapters/hosted-process-activation";

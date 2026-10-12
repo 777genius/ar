@@ -8,8 +8,8 @@ import { assertDependencyPreclaimedConsumer, captureDependencyConsumerPreclaim, 
   HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart, DependencyReceiptState, type DependencyConsumerPreclaim } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot,
-  hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { readHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+  hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "./hosted-dependency-workspace";
+import { readHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "./hosted-dependency-parent-recipe";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";

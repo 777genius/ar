@@ -1,5 +1,5 @@
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
-import { planStoredProjectStart } from "../../worker-codex/stored-start-planning";
+import { planStoredProjectStart } from "../stored-start-planning";
 export function sdkRecipe(snapshots: Map<string, Buffer>, job: string) {
   const workspace = job + "/workspace";
   snapshots.clear();

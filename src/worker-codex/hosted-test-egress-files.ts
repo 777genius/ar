@@ -1,6 +1,6 @@
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
-import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "./hosted-dependency-workspace";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
