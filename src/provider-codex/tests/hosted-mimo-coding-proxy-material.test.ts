@@ -12,14 +12,26 @@ import { hostedMimoCodingBootstrapForFrame } from "../hosted-mimo-coding-bootstr
 import { codexMimoApiKeyEnvVarDefault } from "../codex-model-backend";
 import { AppServerExecutionLifetime } from "../app-server/application/app-server-child-lifetime";
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); });
-function setup(digest: string) {
-  const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs: 60000, codexBinaryPath: "/opt/codex" };
-  const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 50000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
+function setup(digest: string, taskTimeoutMs = 60000) {
+  const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs, codexBinaryPath: "/opt/codex" };
+  const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + taskTimeoutMs - 10000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
   const proxy = { capability: "TEST-cap-" + digest, baseUrl: "http://127.0.0.1:1234/v1", revoke: vi.fn(), close: vi.fn(async () => {}) };
   mocks.read.mockReturnValue(origin); mocks.current.mockImplementation(() => {}); mocks.credential.mockReturnValue("TEST-real-key-never-bootstrap"); mocks.start.mockResolvedValue(proxy);
   const input = { model: origin.model, lifetime, redactor: { registerSecret: vi.fn(), redact: (value: string) => value, assertNoKnownSecret: vi.fn() } };
   return { origin, lifetime, proxy, input };
 }
+it.each([60000, 1200000, 7200000])("uses MiMo's reasoning/output allowance without outliving the task (%i)", async timeout => {
+  const f = setup(`budget-${timeout}`, timeout);
+  const material = await createHostedMimoCodingProxyMaterial(f.input);
+  try {
+    const limits = mocks.start.mock.calls[0]![0].limits;
+    expect(limits.maxOutputTokens).toBe(131072);
+    expect(limits.deadlineMs).toBe(f.lifetime.deadlineEpochMs);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(timeout - 10000);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(3600000);
+    expect(limits.requestTimeoutMs).toBeGreaterThan(Math.min(timeout - 11000, 3599000));
+  } finally { await material?.close(); }
+});
 it("keeps key out of bootstrap, zeroes key bytes, binds executable/workspace and consumes start once", async () => {
   const f = setup("a".repeat(64)); const material = await createHostedMimoCodingProxyMaterial(f.input);
   try {

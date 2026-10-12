@@ -41,6 +41,26 @@ it("rejects changed route, auth, model, token ceiling, remote state and encoded/
   } finally { await f.proxy.close(); }
 });
 
+it("sends the 128K budget and preserves incomplete SSE token usage without retrying or fabricating completion", async () => {
+  const terminal = { type: "response.incomplete", response: { status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+    usage: { output_tokens: 131072, output_tokens_details: { reasoning_tokens: 130900 } } } };
+  const transport = vi.fn<typeof fetch>(async () => new Response(
+    `event: response.incomplete\ndata: ${JSON.stringify(terminal)}\n\n`,
+    { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport, { maxOutputTokens: 131072 });
+  try {
+    const response = await f.post({ model: "mimo-v2.6-pro", stream: true });
+    const text = await response.text();
+    expect(JSON.parse(String(transport.mock.calls[0]![1]!.body)).max_output_tokens).toBe(131072);
+    expect(JSON.parse(text.split("\n").find(line => line.startsWith("data: "))!.slice(6))).toEqual(terminal);
+    expect(text).not.toContain("response.completed");
+    expect(transport).toHaveBeenCalledOnce();
+    expect((await f.post({ model: "mimo-v2.6-pro", max_output_tokens: 131073 })).status).toBe(400);
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
 it("streams SSE across chunks and removes upstream key/capability echoes spanning chunks", async () => {
   let capability = "";
   const transport = vi.fn<typeof fetch>(async () => {

@@ -93,8 +93,10 @@ export async function createHostedMimoCodingProxyMaterial(input: {
     proxy = await startMimoCredentialProxy({ apiKey: bytes, model: origin.model,
       assertCurrent: () => { input.lifetime.assertActive(); assertHostedMimoCodingWorkerOriginCurrent(origin); },
       limits: { deadlineMs: input.lifetime.deadlineEpochMs, maxRequests: origin.maxGoalTurns * 4, maxConcurrency: 2,
-        maxBodyBytes: 4 * 1024 * 1024, maxResponseBytes: 16 * 1024 * 1024, maxOutputTokens: 16384,
-        requestTimeoutMs: Math.min(600000, Math.max(1, remaining)) } });
+        // MiMo's output allowance also covers reasoning. A 16K ceiling can
+        // exhaust a reasoning turn before its first tool call or code output.
+        maxBodyBytes: 4 * 1024 * 1024, maxResponseBytes: 16 * 1024 * 1024, maxOutputTokens: 131072,
+        requestTimeoutMs: Math.min(3600000, Math.max(1, remaining)) } });
   } finally { bytes.fill(0); }
   let unregister: (() => void) | undefined;
   let closed = false;
