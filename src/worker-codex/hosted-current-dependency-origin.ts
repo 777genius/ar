@@ -43,6 +43,7 @@ import { publishOriginalHostedOrdinaryProviderCompletion, assertOriginalHostedOr
 import { HostedInstallationActivationStore } from "./hosted-installation-activation";
 import { readOriginalHostedOrdinaryProviderBirthFacts } from "./hosted-ordinary-dependency-provider-facts";
 import { formHostedDependencyRootScopeFacts } from "./hosted-dependency-root-scope-facts";
+import { readOriginalHostedDependencyRootOwner } from "./hosted-dependency-root-owner-reader";
 import { readCurrentHostedDependencyRootCommittedFacts as currentRootCommitted, readOriginalHostedDependencyRootPreparation, readOriginalHostedDependencyRootReady as currentRootReady } from "./hosted-dependency-root-physical-selection";
 import { consumeHostedOrdinaryDependencyPreclaim, readHostedOrdinaryDependencyPreclaim, readHostedOrdinaryDependencyReaderEntry } from "./hosted-ordinary-dependency-reader";
 import { copyBoundedHostedByteInput } from "./hosted-bounded-byte-input";
@@ -80,9 +81,9 @@ import { collectUnitInvocation } from "./hosted-readonly-linux-collector";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
-import { DependencyGenerationContinuityKind, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
+import { DependencyGenerationContinuityKind, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, sameDependencyProtectedReference, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
-import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedOrdinaryProcessOrigin, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { type HostedRetainedToolFiles } from "../provider-codex/app-server/adapters/hosted-retained-tool-files";
 import { observeHostedFdProcess } from "../provider-codex/app-server/adapters/hosted-fd-observation";
@@ -483,11 +484,7 @@ export function closeOriginalHostedDependencyRootDescriptor(resource: RootDescri
 }
 let currentRootOrigin: CurrentHostedDependencyOrigin | undefined;
 const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value)+"\n");
-function currentOwnerForRoot(binding: HostedDependencyBinding) {
-  const name = `dependency-owners/${binding.workspace.dev}-${binding.workspace.ino}`;
-  if (readHostedActivationBytes(name+".lock")) invalid(); const owner = parseDependencyOwner(decodeHostedActivationBytes(fixed(name+".json",16384).bytes));
-  if (readHostedActivationBytes(name+".lock") || !sameDependencyWorkspace(owner.workspace,binding.workspace)) invalid(); return owner;
-}
+function currentOwnerForRoot(binding: HostedDependencyBinding) { return readOriginalHostedDependencyRootOwner(binding,rootInternalAccess); }
 /** No DTO inputs. Loads the sole trusted qualifier's fixed protected Ready or Unverified record before Running; provenance lives in the original origin map. */
 export function prepareCurrentHostedDependencyRootPurpose(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): void {
   const retained = consumerEntry(context); if (!retained || retained.rootPurpose) invalid();
