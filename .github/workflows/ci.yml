@@ -684,6 +684,19 @@ jobs:
           [[ -z "$(find /var/lib/subscription-runtime-host-policy -mindepth 1 -maxdepth 1 -print -quit)" ]]
           install -d -m 0700 /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
             /var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs
+          # Real root-owned private I/O; finite systemd/proc DATA stays Source only.
+          test "$(id -u):$(id -ru):$(id -g):$(id -rg)" = '0:0:0:0'
+          test "$(uname -s)" = Linux
+          /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
+            node node_modules/vitest/vitest.mjs run \
+            --config vitest.operator-root-source.config.ts \
+            --no-cache --configLoader runner --reporter=json \
+            --outputFile=delivery/a0-native-probe/operator-root-source-result.json
+          node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
+            --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
+            --target ES2022 --module NodeNext --moduleResolution NodeNext \
+            scripts/require-operator-root-source-result.mts
+          node --experimental-strip-types scripts/require-operator-root-source-result.mts
           SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
