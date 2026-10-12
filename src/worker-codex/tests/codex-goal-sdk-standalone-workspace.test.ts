@@ -12,12 +12,14 @@ import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
-describe("original public SDK physical N3 workspace", () => {
+// Select genuine root before the shared synthetic OS fixture installs mocks.
+(process.getuid?.() === 0 ? describe : describe.skip)("original public SDK physical N3 workspace", () => {
   it("creates a standalone repository through public controller/refill and passes the unchanged physical gate", async () => {
-    // Allocate real backing in the fixture's disposable Linux scratch parent;
-    // CI does not need an installed host-policy tree for this physical gate.
+    // The owned root container provides the original canonical TEST parent.
+    // This configuration selects standalone metadata; admission stays unchanged.
     cleanupResearchFixture();
-    setupResearchFixture({ nativeBackingFacts: true });
+    setupResearchFixture({ nativeBackingFacts: true,
+      allocationParent: "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs" });
     for (const [name, value] of Object.entries({ GIT_AUTHOR_NAME: "iliya", GIT_AUTHOR_EMAIL: "iliyazelenkog@gmail.com",
       GIT_COMMITTER_NAME: "iliya", GIT_COMMITTER_EMAIL: "iliyazelenkog@gmail.com", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" })) vi.stubEnv(name, value);
     const job = host.root, jobId = basename(job), workspace = join(job, "workspace"), registry = join(job, "state/registry"), auth = join(job, "auth"),
@@ -83,6 +85,7 @@ describe("original public SDK physical N3 workspace", () => {
       expect(() => assertHostedDependencyPhysicalWorkspace(binding)).not.toThrow();
       // Idempotent public refill preserves the actual standalone identity.
       const second = await callToolJson(client, "codex_goal_project_refill_worker", request);
+      let secondDiagnostic: string | undefined;
       if (second.ok !== true) {
         const admission = second.admission as { readonly reason?: unknown; readonly examples?: readonly { readonly reason?: unknown }[] } | undefined;
         const knownErrors = [
@@ -94,14 +97,14 @@ describe("original public SDK physical N3 workspace", () => {
           "project_control_existing_prompt_mismatch", "project_control_prompt_mismatch",
           "project_control_refill_no_ready_account", "protected_job_birth_authority_invalid", "protected_job_birth_publication_busy",
         ];
-        console.error(JSON.stringify({ phase: "second_refill", ok: false,
+        secondDiagnostic = JSON.stringify({ phase: "second_refill", ok: false,
           errorCode: knownErrors.find(code => code === second.error) ?? "unrecognized",
           admissionReason: Object.values(ProjectAdmissionDecisionReason).find(reason => reason === admission?.reason) ?? "unrecognized",
           debtReasons: Array.isArray(admission?.examples) ? admission.examples.slice(0, 2).map(item =>
             Object.values(ProjectDebtReason).find(reason => reason === item?.reason) ?? "unrecognized") : [],
-        }));
+        });
       }
-      expect(second.ok).toBe(true);
+      expect(second.ok, secondDiagnostic).toBe(true);
       const retained = await lstat(workspace, { bigint: true }); expect([retained.dev, retained.ino]).toEqual([identity.dev, identity.ino]);
     } finally { await client.close(); await server.close(); vi.unstubAllEnvs(); }
   }, 30000);
