@@ -2,7 +2,7 @@ import { originalFullGuestNativeSourcePaths } from "./hosted-full-guest-source-i
 import { H1ElfRole, validateH1ElfRole } from "./dependency-full-h1-elf-role-TEST.js";
 import {H1ConstructorHeld,h1HeldError,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
 import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
-import { originalProviderSetupSlot, providerSetupQueryClosureData, type OriginalSetupTask, type OriginalSetupFact } from "./dependency-full-provider-setup-TEST.js";
+import { originalProviderSetupSlot, providerSetupQueryClosureData, type OriginalSetupTask, type OriginalSetupFact, type OriginalSetupContext } from "./dependency-full-provider-setup-TEST.js";
 import { managedSystemdRunExecutable, fullPositiveTestRoot, fullPositiveTestJob, fullPositiveTestEntry, parseNativeUnitProperties } from "./launch.mjs";
 import {H1CatalogKind,H1MountOrigin,H1StagedSlotState,H1StagedActorRole,h1StagedObserverBootstrap,h1StagedSubjectData,retainH1StagedCatalogData,requireQualifiedH1StagedConstructor,type H1StagedSubject,type H1StagedObserverPrepared} from "./dependency-full-h1-staged-tools-TEST.js";
 const fullPositiveTestCohort = Object.freeze([
@@ -316,7 +316,7 @@ enum LibcPurpose {H1="h1",PositiveHost="positive_host",PositiveHostSystemdShared
 /** The selected source contracts have one exact reviewed package each. */
 export function fullNativeSourcePackageHash(schemaVersion:unknown):string {
   if(schemaVersion===1)return "68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29";
-  if(schemaVersion===2)return "a164901902184f8d4b304bdac45715e1fd9adcefd6a6865c35b64f796ccffb68";
+  if(schemaVersion===2)return "b30781b69ddf73bf53eb3bb02b073aeba00f4404bd796d485365dbc7dbe872ab";
   return refuse();
 }
 export function fullPositiveHostStableAncestors(ancestors:readonly Readonly<{path:string;identity:string;mount:string}>[]):readonly Readonly<{path:string;identity:string}>[] {
@@ -1430,10 +1430,10 @@ export function retainCurrentFullParent():FullParentSession {
       const invocationData={schemaVersion:1,pairSha256:guestHash,parentInvocationId:invocation,unit,guestInvocationId};
       seal("current-full-pair-invocation.json",invocationData);
       const require=createRequire(import.meta.url);
-      const fdModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-fd-table.js") as typeof import("../../src/provider-codex/app-server/adapters/hosted-fd-table.js");
-      const peerModule=require(c.tuple.source+"/dist/core/host-infrastructure/fd-collector-profile.js") as typeof import("../../src/core/host-infrastructure/fd-collector-profile.js");
-      const parentRecipeModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-dependency-parent-recipe.js") as typeof import("../../src/provider-codex/app-server/adapters/hosted-dependency-parent-recipe.js");
-      const namespaceModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-fd-namespace-stages.js") as typeof import("../../src/provider-codex/app-server/adapters/hosted-fd-namespace-stages.js");
+      const fdModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-fd-table.js") as Readonly<{hostedFdTable:OriginalSetupContext["fdTable"]}>;
+      const peerModule=require(c.tuple.source+"/dist/core/host-infrastructure/fd-collector-profile.js") as Readonly<{parseFdCollectorRows:OriginalSetupContext["parsePeers"];knownFdCollectorPeer:OriginalSetupContext["peer"]}>;
+      const parentRecipeModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-dependency-parent-recipe.js") as Readonly<{assertHostedDependencyParentRecipe:OriginalSetupContext["parentRecipe"]}>;
+      const namespaceModule=require(c.tuple.source+"/dist/provider-codex/app-server/adapters/hosted-fd-namespace-stages.js") as Readonly<{hostedFdNamespacePrefix:OriginalSetupContext["namespacePrefix"]}>;
       check(typeof fdModule.hostedFdTable==="function" && typeof peerModule.parseFdCollectorRows==="function" && typeof peerModule.knownFdCollectorPeer==="function");c.validate();
       check(registeredGuestRoot);providerSetupSlot=originalProviderSetupSlot({root:registeredGuestRoot,group:"/system.slice/"+unit,pairSha256:guestHash,invocationSealSha256:hash(JSON.stringify(invocationData)+"\n"),outbox:dirname(registeredGuestRoot)+"/policy-request-outbox",revalidate,
         systemdRunExecutable:managedSystemdRunExecutable,recipeSources:guestRecipeSources,source(path){revalidate();const fd=guestSourceFiles.get(path);check(fd!==undefined);return fd;},queryTool(){revalidate();checkQueryPreload();check(namespaceQueryFiles.length>1 && namespaceQueryTool);c.validate();return namespaceQueryTool;},

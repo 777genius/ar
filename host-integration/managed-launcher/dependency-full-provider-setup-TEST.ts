@@ -2,10 +2,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
-import type { HostedFdFact } from "../../src/provider-codex/app-server/adapters/hosted-fd-table.js";
+import type { HostedFdFact } from "../../dist/provider-codex/app-server/adapters/hosted-fd-table.js";
 import { decodeHostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle.js";
 import { readHostedFdUnitPolicy, assertHostedFdUnitPolicy, sameHostedFdUnitLifecycle, type HostedFdUnitPolicy } from "./hosted-fd-unit-policy.js";
-import type { FdCollectorPeer } from "../../src/core/host-infrastructure/fd-collector-profile.js";
+import type { FdCollectorPeer } from "../../dist/core/host-infrastructure/fd-collector-profile.js";
 
 type Identity=Readonly<{dev:string;ino:string}>;
 export type OriginalSetupTask=Readonly<{path:string;processPid:number;processBirth:string;birth:string;revalidate():void}>;

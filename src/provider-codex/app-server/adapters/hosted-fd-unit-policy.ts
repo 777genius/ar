@@ -1,4 +1,4 @@
-import type { HostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle";
+import type { HostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle.js";
 
 export enum HostedFdPolicySelectionKind { Explicit = "explicit", Absent = "absent" }
 type Selection = Readonly<{ kind: HostedFdPolicySelectionKind.Explicit; value: string }> |
