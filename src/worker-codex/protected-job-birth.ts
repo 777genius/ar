@@ -1,14 +1,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync,
-  realpathSync, rmdirSync, type BigIntStats } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
+  realpathSync, unlinkSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import type { CodexGoalJobManifest, CodexGoalJobManifestInput } from "./codex-goal-jobs";
-import { assertResearchInitialRoot } from "./research-launch-host";
+import { assertResearchInitialRoot, researchProcessIdentity } from "./research-launch-host";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchCustody,
   researchDirectoryIdentity, researchHash, researchJson, researchPath, researchPrivateDirectory,
   researchPublish, researchRead, type ResearchDirectoryIdentity } from "./research-launch-files";
@@ -30,13 +32,92 @@ function privateRoot(): void {
 }
 function acquirePublication(): () => void {
   privateRoot();
-  try { mkdirSync(publicationLock, { mode: 0o700 }); }
+  const nonce = randomUUID(), ownerPath = join(birthRoot, `.publication-${nonce}.owner.json`);
+  const owner = { schemaVersion: 1, nonce, process: researchProcessIdentity() };
+  // Fully write/fsync BEFORE publishing the name. An old mkdir owner remains
+  // mutually exclusive; no crash can publish an anonymous new lock.
+  researchPublish(ownerPath, owner, true);
+  try { linkSync(ownerPath, publicationLock); syncDirectory(birthRoot); }
   catch (error) {
+    // Publication could have succeeded before fsync failed: retain uncertainty.
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") { unlinkSync(ownerPath); syncDirectory(birthRoot); }
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("protected_job_birth_publication_busy");
     throw error;
   }
-  const identity = researchDirectoryIdentity(publicationLock);
-  return () => { researchCustody(publicationLock, true); assertResearchDirectory(identity); rmdirSync(publicationLock); };
+  const identity = publicationFile(publicationLock), bytes = readFileSync(publicationLock);
+  return () => {
+    const current = publicationFile(publicationLock), staged = publicationFile(ownerPath);
+    if (current.device !== identity.device || current.inode !== identity.inode ||
+        staged.device !== identity.device || staged.inode !== identity.inode || !readFileSync(publicationLock).equals(bytes)) invalid();
+    unlinkSync(publicationLock); syncDirectory(birthRoot);
+    unlinkSync(ownerPath); syncDirectory(birthRoot);
+  };
+}
+function publicationFile(path: string): ResearchDirectoryIdentity {
+  researchCustody(path, true);
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16_384 || stat.size < 1 || stat.nlink !== 2) invalid();
+  return { path, device: stat.dev, inode: stat.ino };
+}
+
+const recoverPublication = String.raw`import fcntl,hashlib,json,os,re,stat,sys
+def ident(s): return (s.st_dev,s.st_ino)
+expected=(int(sys.argv[1]),int(sys.argv[2])); sha=sys.argv[3]
+fcntl.flock(3,fcntl.LOCK_EX|fcntl.LOCK_NB)
+s=os.fstat(3)
+assert ident(s)==expected and ident(os.stat('publication.lock',dir_fd=4,follow_symlinks=False))==expected
+assert s.st_uid==0 and s.st_mode & 0o7777==0o600 and s.st_nlink==2 and 0<s.st_size<=16384
+data=os.pread(3,16385,0); assert len(data)==s.st_size and hashlib.sha256(data).hexdigest()==sha
+owner=json.loads(data); assert set(owner)=={'schemaVersion','nonce','process'} and owner['schemaVersion']==1
+assert re.fullmatch(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}',owner['nonce'])
+p=owner['process']; assert set(p)=={'pid','birthTicks','bootId','machineId','controlGroup','namespaces'}
+assert type(p['pid']) is int and p['pid']>0 and re.fullmatch(r'[1-9][0-9]*',p['birthTicks'])
+assert re.fullmatch(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}',p['bootId'])
+assert p['machineId']==open('/etc/machine-id').read().strip()
+ns=p['namespaces']; assert set(ns)=={'user','mnt','pid','net'}
+for kind in ns: assert re.fullmatch(kind+r':\[[1-9][0-9]*\]',ns[kind])
+group=p['controlGroup']; assert re.fullmatch(r'/(?:[A-Za-z0-9_.@+-]+/)*[A-Za-z0-9_.@+-]+|/',group)
+assert all(part not in ('.','..') for part in group.split('/'))
+boot=open('/proc/sys/kernel/random/boot_id').read().strip()
+if boot==p['bootId']:
+    for kind in ns: assert ns[kind]==os.readlink('/proc/1/ns/'+kind)
+    try:
+        proc_stat=open('/proc/'+str(p['pid'])+'/stat').read(); fields=proc_stat[proc_stat.rfind(')')+2:].split()
+        assert fields[19]!=p['birthTicks'], 'owner_alive'
+    except FileNotFoundError: pass
+    group_path='/sys/fs/cgroup'+group.rstrip('/')
+    try: group_info=os.stat(group_path)
+    except FileNotFoundError: group_info=None
+    if group_info is not None:
+        assert stat.S_ISDIR(group_info.st_mode)
+        events=[row.split() for row in open(group_path+'/cgroup.events').read().splitlines()]
+        assert all(len(row)==2 and re.fullmatch(r'[a-z_]+',row[0]) and re.fullmatch(r'[0-9]+',row[1]) for row in events)
+        populated=[row[1] for row in events if row[0]=='populated']
+        assert populated==['0'], 'owner_cgroup_populated_or_unknown'
+stage='.publication-'+owner['nonce']+'.owner.json'
+assert ident(os.stat(stage,dir_fd=4,follow_symlinks=False))==expected
+assert ident(os.stat('publication.lock',dir_fd=4,follow_symlinks=False))==expected and os.pread(3,16385,0)==data
+os.unlink('publication.lock',dir_fd=4); os.fsync(4)
+`;
+
+/** Explicit operator recovery only. No callback, eviction timer, or admission
+ * change; anonymous legacy directories and unknown owners remain untouched. */
+export function recoverProtectedCodexGoalJobBirthPublication(expected: Readonly<{
+  device: number; inode: number; ownerSha256: string;
+}>): void {
+  assertResearchInitialRoot(true); privateRoot();
+  if (!Number.isSafeInteger(expected.device) || expected.device < 0 || !Number.isSafeInteger(expected.inode) ||
+      expected.inode < 1 || !/^[a-f0-9]{64}$/.test(expected.ownerSha256)) invalid();
+  const identity = publicationFile(publicationLock);
+  if (identity.device !== expected.device || identity.inode !== expected.inode) invalid();
+  researchCustody(realpathSync("/usr/bin/python3"));
+  const fd = openSync(publicationLock, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const parent = openSync(birthRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    execFileSync("/usr/bin/python3", ["-I", "-c", recoverPublication, String(expected.device), String(expected.inode), expected.ownerSha256],
+      { env: {}, stdio: ["ignore", "ignore", "ignore", fd, parent], timeout: 5000 });
+  } catch { throw new Error("protected_job_birth_publication_recovery_refused"); }
+  finally { closeSync(parent); closeSync(fd); }
 }
 async function awaitPublication(): Promise<() => void> {
   const deadline = performance.now() + 5_000;

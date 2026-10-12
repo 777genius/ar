@@ -1,7 +1,7 @@
 import { setupResearchFixture, cleanupResearchFixture, host } from "./research-launch-fixture";
 import { AsyncResource } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,24 @@ function foreignLock(): Buffer {
 }
 
 describe("bounded protected publication acquisition", () => {
+  it("publishes complete owner bytes before an effect and excludes an old mkdir contender", async () => {
+    await withProtectedCodexGoalJobBirthPublication(async () => {
+      const owner = JSON.parse(readFileSync(lock, "utf8"));
+      expect(owner.process).toMatchObject({ pid: process.pid, bootId: host.boot, birthTicks: host.birth });
+      expect(lstatSync(lock).isFile()).toBe(true); expect(lstatSync(lock).nlink).toBe(2);
+      expect(() => mkdirSync(lock, { mode: 0o700 })).toThrow();
+      expect(readFileSync(join(researchAuthorityRoot, "job-births", `.publication-${owner.nonce}.owner.json`))).toEqual(readFileSync(lock));
+    });
+    expect(readdirSync(join(researchAuthorityRoot, "job-births"))).toEqual([]);
+  });
+  it("never evicts an anonymous old directory and cleans only its own losing staging records", async () => {
+    mkdirSync(lock, { recursive: true, mode: 0o700 }); const inode = lstatSync(lock).ino;
+    const effect = vi.fn(async () => {}), pending = withProtectedCodexGoalJobBirthPublication(effect);
+    const rejected = expect(pending).rejects.toThrow("protected_job_birth_publication_busy");
+    for (let n = 0; n < 100; n++) await tick(50);
+    await rejected; expect(effect).not.toHaveBeenCalled(); expect(lstatSync(lock).ino).toBe(inode);
+    expect(readdirSync(join(researchAuthorityRoot, "job-births"))).toEqual(["publication.lock"]);
+  });
   it("waits for independent async ownership, then invokes the contender effect once", async () => {
     const independent = new AsyncResource("TEST-independent-publication");
     let release!: () => void;
