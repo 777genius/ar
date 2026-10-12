@@ -1,18 +1,18 @@
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { planStoredProjectStart } from "../../worker-codex/stored-start-planning";
-import { buildCodexGoalForegroundArgv } from "../../worker-codex/application/codex-goal-foreground-command";
-import { readHostedDependencyParentRecipe } from "../../worker-codex/hosted-dependency-parent-recipe";
-import { sdkRecipe } from "../../worker-codex/tests/hosted-dependency-sdk-recipe.fixture";
+import { planStoredProjectStart } from "../stored-start-planning";
+import { buildCodexGoalForegroundArgv } from "../application/codex-goal-foreground-command";
+import { readHostedDependencyParentRecipe } from "../hosted-dependency-parent-recipe";
+import { sdkRecipe } from "./hosted-dependency-sdk-recipe.fixture";
 import { buildOriginalUsableRecipe, originalUsablePaths } from "./hosted-original-usable-recipe.fixture";
-import { assertHostedOrdinaryDependencyToolParentFrame } from "../../worker-codex/hosted-managed-dependency-tool-plan";
-import type { HostedDependencyBinding } from "../app-server/adapters/hosted-dependency-workspace";
-import type { HostedActivationFence } from "../app-server/adapters/hosted-process-activation";
+import { assertHostedOrdinaryDependencyToolParentFrame } from "../hosted-managed-dependency-tool-plan";
+import type { HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import type { HostedActivationFence } from "../../provider-codex/app-server/adapters/hosted-process-activation";
 import type { HostedInventoryLaunch } from "../../core/host-infrastructure/host-inventory";
-import * as activationFiles from "../app-server/adapters/hosted-process-activation";
-import * as workspaceFiles from "../app-server/adapters/hosted-dependency-workspace";
-import { readHostedOriginalUsableInstallationRecipe } from "../app-server/adapters/hosted-original-usable-parent-recipe";
+import * as activationFiles from "../../provider-codex/app-server/adapters/hosted-process-activation";
+import * as workspaceFiles from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { readHostedOriginalUsableInstallationRecipe } from "../hosted-original-usable-parent-recipe";
 import { parseHostedInstallation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
 
 // Substitute protected file reads and kernel collection only. The real stored
@@ -33,22 +33,22 @@ vi.mock("node:url", async original => {
   return { ...actual, fileURLToPath: (url: string | URL) => actual.fileURLToPath(url)
     .replace(/\/src\/worker-codex\/application\/codex-goal-launch-input\.ts$/, "/dist/worker-codex/application/codex-goal-launch-input.js") };
 });
-vi.mock("../../worker-codex/hosted-ordinary-dependency-reader", () => ({
+vi.mock("../hosted-ordinary-dependency-reader", () => ({
   readHostedOrdinaryDependencyParentFrame: f.parentRead,
 }));
-vi.mock("../../worker-codex/hosted-readonly-inputs", async original => ({
-  ...await original<typeof import("../../worker-codex/hosted-readonly-inputs")>(),
+vi.mock("../hosted-readonly-inputs", async original => ({
+  ...await original<typeof import("../hosted-readonly-inputs")>(),
   readHostedPrivateBytes: (path: string) => { f.reads.push(path); return f.privateBytes.get(path) ?? null; },
 }));
-vi.mock("../../worker-codex/hosted-ordinary-installation-qualification", async original => ({
-  ...await original<typeof import("../../worker-codex/hosted-ordinary-installation-qualification")>(),
+vi.mock("../hosted-ordinary-installation-qualification", async original => ({
+  ...await original<typeof import("../hosted-ordinary-installation-qualification")>(),
   qualificationRead: (path: string) => {
     f.reads.push(path); const bytes = f.qualificationBytes.get(path);
     if (!bytes) throw new Error("fixture_protected_leaf_absent"); return bytes;
   },
 }));
-vi.mock("../../worker-codex/hosted-readonly-linux-collector", async original => ({
-  ...await original<typeof import("../../worker-codex/hosted-readonly-linux-collector")>(),
+vi.mock("../hosted-readonly-linux-collector", async original => ({
+  ...await original<typeof import("../hosted-readonly-linux-collector")>(),
   collectUnitShow: (unit: string) => {
     if (unit !== f.unit) throw new Error("fixture_foreign_unit");
     return { MainPID: String(process.pid), ControlGroup: f.group, InvocationID: f.invocation,

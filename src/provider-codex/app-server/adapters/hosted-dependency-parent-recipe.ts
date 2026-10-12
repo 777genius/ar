@@ -1,4 +1,3 @@
-import { readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
 import type { HostedInventoryLaunch } from "../../../core/host-infrastructure/host-inventory";
 
@@ -15,7 +14,8 @@ export function readHostedDependencyParentRecipe(launch: HostedInventoryLaunch, 
   if (!reader) fail();
   const resolved = reader.readStoredLaunch(launch, job, workspace);
   if (resolved.command !== launch.command || resolved.cwd !== launch.cwd || resolved.args[0] !== args[0]) fail();
-  if (!readHostedOriginalUsableParentRoots(launch, job, workspace)) assertHostedDependencyParentRecipe(resolved.args, job, workspace, reader);
+  if (!reader.readOriginalUsableParentRoots(launch, job, workspace))
+    assertHostedDependencyParentRecipe(resolved.args, job, workspace, reader);
   return resolved;
 }
 
