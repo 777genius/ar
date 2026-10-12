@@ -75,4 +75,3 @@ export function recommendCodexGoalAction(input: {
   }
   return "check_log_or_result";
 }
-

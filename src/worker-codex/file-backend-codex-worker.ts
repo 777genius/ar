@@ -48,8 +48,8 @@ import { FileBackendCodexSessionSeeder } from "./file-backend-codex-session-seed
 import { FileBackendCodexSessionBinding } from "./file-backend-codex-session-binding";
 import { delay, refreshConflictDelayMs, shouldRetryRefreshConflict } from "./file-backend-codex-refresh-conflict-retry";
 
-import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
-export type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
+import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput, type FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
+export type { FileBackendCodexWorkerInput, FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
 export type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 export type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 export type { FileBackendCodexManagedRunResumeInput } from "./file-backend-codex-managed-run-recovery";
@@ -114,7 +114,11 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   private readonly prewarmer: FileBackendCodexPrewarmer;
   private readonly sessionBinding: FileBackendCodexSessionBinding;
 
-  constructor(private readonly options: FileBackendCodexWorkerOptions) {
+  private readonly options: FileBackendCodexWorkerOptions;
+
+  constructor(input: FileBackendCodexWorkerInput) {
+    const options = resolveFileBackendCodexWorkerOptions(input);
+    this.options = options;
     assertHostedDependencyExecutionWorkspace(options.workspacePath);
     this.workerId =
       options.workerId ??

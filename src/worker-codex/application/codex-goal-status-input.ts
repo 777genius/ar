@@ -14,6 +14,7 @@ export function codexGoalStatusInputFromLaunch(
     workspacePath: launch.config.workspacePath,
     ...(launch.tmuxSession && !isHostedGoalLaunch(launch) ? { tmuxSession: launch.tmuxSession } : {}),
     logPath: launch.logPath,
+    ...(launch.config.runtimeEventsPath ? { runtimeEventsPath: launch.config.runtimeEventsPath } : {}),
     ...(launch.config.progressPath ? { progressPath: launch.config.progressPath } : {}),
     ...(launch.config.accessBoundary === undefined
       ? {}

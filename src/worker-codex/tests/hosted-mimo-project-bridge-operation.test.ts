@@ -1,13 +1,14 @@
 import { beforeEach, expect, it, vi } from "vitest";
+vi.mock("../hosted-mimo-project-workstream-fence", () => ({ withHostedMimoWorkstreamActivity: async (_root: string, effect: () => Promise<unknown>) => effect() }));
 const state = vi.hoisted(() => ({ files: new Map<string, string>(), command: vi.fn(), handler: vi.fn() }));
-vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), mkdirSync: (p: string) => state.files.set(p, ""),
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), readdirSync: (p: string) => [...state.files.keys()].filter(x => x.startsWith(p + "/")).map(x => x.slice(p.length + 1)), mkdirSync: (p: string) => state.files.set(p, ""),
   realpathSync: (p: string) => p === "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js" ? "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js" : p, lstatSync: () => ({ isFile: () => true, uid: 0, nlink: 1, mode: 0o100700 }),
   writeFileSync: (p: string, bytes: string, options: { flag: string }) => { if (options.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, bytes); },
   renameSync: (a: string, b: string) => { state.files.set(b, state.files.get(a)!); state.files.delete(a); } }));
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ handleHostedMimoProjectBridge: state.handler,
-  hostedMimoBridgeMetadataBytes: (p: string) => Buffer.from(state.files.get(p)!), parseHostedMimoProjectBinding: () => ({ operationTimeoutMs: 900000 }) }));
+  hostedMimoBridgeMetadataBytes: (p: string) => Buffer.from(state.files.get(p)!), parseHostedMimoProjectBinding: () => ({ operationTimeoutMs: 900000, stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream" }) }));
 import { trustedMimoProjectOperationLaunch } from "../trusted-custody-systemd-launch";
 import { researchHash } from "../research-launch-files";
 // Keep unrelated recipes' provider/install graphs outside this unit boundary;
@@ -16,7 +17,7 @@ vi.mock("../hosted-readonly-inputs", () => ({ readHostedPrivateBytes: vi.fn() })
 vi.mock("../research-launch-contract", () => ({ parseResearchStartSpec: vi.fn(), researchProviderSetupTimeoutMs: 1000, researchProviderSetupAllowanceMs: vi.fn() }));
 vi.mock("../research-provider-root", () => ({ assertResearchProviderRoot: vi.fn(), researchProviderProtectedPaths: vi.fn(), ResearchRootMountAccess: {} }));
 vi.mock("../hosted-dependency-installer-recipe", () => ({ hostedDependencyInstallerProperties: vi.fn(), hostedDependencyInstallerBootstrapCommand: vi.fn() }));
-import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-operation";
+import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, assertHostedMimoRecoveryOperationsSettled } from "../hosted-mimo-project-bridge-operation";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
 const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
@@ -178,4 +179,18 @@ it("never overwrites prior status generation evidence", async () => {
   expect(state.files.get(statusPrefix + ".owner.json")).toBe(first);
   expect(state.files.get(statusPrefix + ".owner.json.generation-0")).toBe("TEST existing evidence");
   expect(state.files.has(statusPrefix + ".request.json.generation-0")).toBe(false);
+});
+
+it("recovery accepts exact collected failed operations and refuses pending/successful effects", async () => {
+  await submitHostedMimoProjectBridge(request);
+  const saved = JSON.parse(state.files.get(prefix + ".owner.json")!);
+  state.files.set(prefix + ".result.json", JSON.stringify({ ok: false, error: "project_control_admission_denied" }));
+  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n`);
+  const b = { stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream", projectId: request.projectId, workstreamId: request.workstreamId, machineId: request.machineId };
+  await expect(assertHostedMimoRecoveryOperationsSettled(b)).resolves.toBeUndefined();
+  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? `19 ${saved.unit} start waiting` : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n`);
+  await expect(assertHostedMimoRecoveryOperationsSettled(b)).rejects.toThrow();
+  state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n`);
+  state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } }));
+  await expect(assertHostedMimoRecoveryOperationsSettled(b)).rejects.toThrow();
 });

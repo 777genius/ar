@@ -1,4 +1,4 @@
-import { observedProcessCgroup } from "../../../worker-codex/hosted-readonly-observations";
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";

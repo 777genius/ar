@@ -63,7 +63,7 @@ environment overrides or output modes are accepted. The launcher constructs all
 systemd flags and hardening itself. Provider resource limits are fixed in code;
 I/O limits cover the root and admitted storage filesystems. Custody is a separate
 trusted controller and is not an accepted launcher operation.
-Jobs and providers share a fixed 300-second startup budget for systemd namespace
+Jobs and providers share a fixed 600-second startup budget for systemd namespace
 setup before the initial exec, separate from runtime and stop budgets. It does
 not extend provider readiness, client, MCP or task deadlines. Requests cannot
 override it. Transport timeouts still require reconciliation with the same

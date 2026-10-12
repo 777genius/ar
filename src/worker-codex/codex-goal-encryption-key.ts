@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -13,8 +14,10 @@ export async function readOrCreateCodexGoalEncryptionKey(
     }
     return Buffer.from(value, "hex");
   }
+  assertHostedOrdinaryEffectPaths([keyPath]);
   await mkdir(dirname(keyPath), { recursive: true, mode: 0o700 });
   const key = randomBytes(32);
+  assertHostedOrdinaryEffectPaths([keyPath]);
   await writeFile(keyPath, `${key.toString("hex")}\n`, {
     encoding: "utf8",
     mode: 0o600,

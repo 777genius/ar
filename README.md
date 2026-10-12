@@ -30,6 +30,60 @@ run, how to prioritize a backlog and when a workflow is complete.
 - GitHub Actions no-plaintext secret writeback and runner adapters;
 - contract fakes and adapter certification helpers.
 
+## Consumer Storage Root
+
+Use one SDK input, `storageRootDir`, to select a consumer-owned writable root.
+For Goal runs, a root derives `jobs/<jobId-or-taskId>/` with `workspace`, `home`,
+`state`, `logs`, `output`, `tmp/agent` and `durable-handoffs`. The encryption key
+lives in that job's state directory. Existing explicit leaf paths still win;
+an explicit `jobRootDir` retains its existing grouped defaults. Without a root,
+the existing defaults and required-path checks apply.
+
+```ts
+await runCodexGoal({
+  storageRootDir: "/srv/my-app/runtime",
+  jobId: "review-42",
+  taskId: "review-42",
+  workspacePath: "/srv/my-app/repo",
+  authRootDir: "/srv/my-app/accounts",
+  promptPath: "/srv/my-app/prompts/review.md",
+  accounts: [{ name: "worker-1" }],
+});
+```
+
+CLI and MCP transports accept the same setting as `--storage-root` or
+`SUBSCRIPTION_RUNTIME_STORAGE_ROOT`. CLI/MCP paths may be relative or start
+with `~/`; raw SDK roots must be normalized absolute paths. The raw SDK does
+not read the ambient `SUBSCRIPTION_RUNTIME_STORAGE_ROOT`: pass `storageRootDir`
+explicitly. A root of `/`, an empty root or an unsafe root-derived identifier
+is rejected before filesystem effects.
+
+```sh
+SUBSCRIPTION_RUNTIME_STORAGE_ROOT=/srv/my-app/runtime \
+  subscription-runtime-codex-goal overview --format json
+subscription-runtime-run-agent-task --provider codex --storage-root /srv/my-app/runtime --input request.json
+```
+
+Missing containers derive from the selected root:
+
+| Consumer | Default under the root |
+| --- | --- |
+| Codex worker / Claude worker | `state/codex-workers` / `state/claude-workers` |
+| Agent Runtime task / agent task CLI | `state/agent-runtime-task/<provider>` / `state/agent-task/<provider>` |
+| OpenAI-compatible bridge | `state/openai-codex-bridge` |
+| Goal registry | `state/codex-goal-jobs` |
+
+Stored Goal manifests retain resolved home, key, state, output, progress, log,
+event, temporary and handoff paths. Changing the root environment later does
+not move a resumed job. MCP resources and local Goal tools share the captured
+server storage defaults. Managed launchers keep authority over their fixed
+job layout and reject conflicting writable overrides.
+
+Both agent CLIs preserve explicit `--state-root` precedence. With `--ephemeral`
+and no explicit state root they allocate a unique directory under the selected
+root's `tmp` and remove only that allocation. Durable state uses the existing
+state environment setting before the generic root fallback.
+
 ## Responsibility Boundary
 
 The runtime owns execution mechanics and project-neutral safety:

@@ -20,13 +20,13 @@ import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, match
   type DependencyToolReadyFacts } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, isHostedDependencyWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, isHostedDependencyWorkspace, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { assertHostedDependencyToolProfileFiles, trustedFile } from "../provider-codex/app-server/adapters/hosted-dependency-tool-files";
 import { observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile, hostedFdGroupPids, assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdInternals, type HostedFdProcess, type HostedFdUnit } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import type { CodexAppServerProcessInvocation } from "../provider-codex/app-server/adapters/node-app-server-process";
 import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
-import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe, readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { isHostedManagedReadonlyOuterRuntime, assertCurrentHostedDependencyAttempt, readCurrentHostedManagedDependencyProvider,
   prepareCurrentHostedManagedDependencyProviderTools, readCurrentHostedManagedDependencyProviderTools,
   closeCurrentHostedManagedDependencyProviderTools, assertCurrentHostedManagedDependencyCapsuleCopy,
@@ -59,7 +59,8 @@ export function assertHostedManagedDependencyToolParentFrame(fence: HostedActiva
  * ordinary parent/preclaim and exact signed inventory recipe. No root issuer. */
 export function assertHostedOrdinaryDependencyToolParentFrame(fence:HostedActivationFence,startId:string,frame:string|Buffer):void {
   const selected=readHostedOrdinaryDependencyParentFrame(fence,startId,frame); if (!selected) return;
-  assertParentAuthWriterScope(selected.binding,selected.launch.args);
+  const recipe=readHostedDependencyParentRecipe(selected.launch,selected.binding.jobRootDir,selected.binding.workspace.canonicalPath);
+  assertParentAuthWriterScope(selected.binding,recipe.args);
   readHostedOrdinaryDependencyParentFrame(fence,startId,frame);
 }
 
@@ -169,7 +170,7 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
   // Other actual fixed startup/migration writers cannot be redirected by a
   // preexisting state/handoff directory or flat event/key/log leaf alias.
   for (const name of ["state", "durable-handoffs"]) walk(join(binding.jobRootDir, name), 0, false);
-  const task = args[args.indexOf("--task-id") + 1]; if (!task) fail();
+  const taskIndex = args.indexOf("--task-id"), task = args[taskIndex + 1]; if (taskIndex < 0 || !task) fail();
   for (const name of ["encryption-key.hex", `${task}.events.jsonl`, `${task}.log`, `${task}.progress.json`]) {
     const path = join(binding.jobRootDir, name);
     try {
