@@ -24,11 +24,13 @@ import type { HostedManagedDependencySessionMaterializer } from "./hosted-manage
 import { codexAppServerCommandApprovalPolicy } from "./file-backend-codex-command-policy";
 import type { LocalFileManagedRunStore } from "./file-backend-codex-managed-run-store";
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput } from "./file-backend-codex-worker-options";
 import { buildCodexWorkspaceToolsProfile } from "./workspace-tools/codex-workspace-tools-profile";
 import { codexSessionHomeCacheKey, codexSessionHomePreservedOnDispose } from "./codex-session-home-profile";
 
 /** Credential and durable-state roots excluded from every open worker grant. */
-export function openWorkerFactorySecretRoots(options: FileBackendCodexWorkerOptions): readonly string[] {
+export function openWorkerFactorySecretRoots(input: FileBackendCodexWorkerInput): readonly string[] {
+  const options = resolveFileBackendCodexWorkerOptions(input);
   const runtimeHome = options.runtimeHomeRootDir ?? options.stateRootDir;
   return [...(options.openWorker?.secretRoots ?? []), options.stateRootDir, runtimeHome,
     join(runtimeHome, "codex-session-cache")];
@@ -146,6 +148,7 @@ export function createFixedCodexAgentDriver(input: {
         allowedTools: options.boundedWorkspaceTools.allowedTools,
         modelBackend,
         mimoApiKeyEnvVarName,
+        ...(executionEngine === "app-server-goal" ? { nativeGoalControls: true as const } : {}),
         ...(options.childBudget ? { childLifetime: options.childBudget.lifetime } : {}),
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
@@ -236,6 +239,7 @@ export function createFixedCodexAgentDriver(input: {
                   historyMode: "none" as const,
                 },
                 nativeToolSurface: "disabled" as const,
+                ...(executionEngine === "app-server-goal" ? { nativeGoalControls: true as const } : {}),
               }
             : modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard
             ? { nativeToolSurface: "disabled" as const }

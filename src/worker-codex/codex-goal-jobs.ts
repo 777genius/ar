@@ -1,3 +1,5 @@
+import { resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
+export { defaultCodexGoalJobRegistryRoot, resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageBindingUnchanged, assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./application/codex-goal-storage-data";
 import { optionalWorkerMode } from "./project-control-worker-mode";
@@ -55,7 +57,6 @@ import {
   readStringArray,
   requiredIsoDate,
   requiredString,
-  resolvePath,
   uniqueManifestStrings,
 } from "./codex-goal-job-manifest-parse-primitives";
 export const codexGoalJobManifestSchemaVersion = 1;
@@ -90,6 +91,10 @@ export type CodexGoalJobManifest = {
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
+  readonly encryptionKeyPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
   readonly workspacePath: string;
   readonly promptPath: string;
   readonly codexGoalObjective?: string;
@@ -158,27 +163,9 @@ export type CodexGoalJobSummary = {
   readonly manifestPath: string;
 };
 
-export type CodexGoalJobRegistryInput = {
-  readonly registryRootDir?: string;
-  readonly cwd?: string;
-};
-
-export function defaultCodexGoalJobRegistryRoot(): string {
-  return join(homedir(), ".cache", "subscription-runtime", "codex-goal-jobs");
-}
-
 export function defaultCodexGoalJobRoot(jobId: string): string {
   assertJobId(jobId);
   return join(homedir(), ".cache", "subscription-runtime", jobId);
-}
-
-export function resolveCodexGoalJobRegistryRoot(
-  input: CodexGoalJobRegistryInput = {},
-): string {
-  return resolvePath(
-    input.cwd ?? process.cwd(),
-    input.registryRootDir ?? defaultCodexGoalJobRegistryRoot(),
-  );
 }
 
 export function codexGoalJobManifestPath(input: {
@@ -462,6 +449,10 @@ export function codexGoalJobToArgs(
     durableHandoffRootDir: manifest.durableHandoffRootDir,
     authRootDir: manifest.authRootDir,
     stateRootDir: manifest.stateRootDir,
+    agentTempRootDir: manifest.agentTempRootDir,
+    runtimeEventsPath: manifest.runtimeEventsPath,
+    encryptionKeyPath: manifest.encryptionKeyPath,
+    runtimeHomeRootDir: manifest.runtimeHomeRootDir,
     workspacePath: manifest.workspacePath,
     promptPath: manifest.promptPath,
     codexGoalObjective: manifest.codexGoalObjective,
@@ -602,6 +593,10 @@ function parseCodexGoalJobManifestValue(
     ...(optionalString(value.stateRootDir) === undefined
       ? {}
       : { stateRootDir: optionalString(value.stateRootDir) as string }),
+    ...(optionalString(value.runtimeHomeRootDir) === undefined ? {} : { runtimeHomeRootDir: optionalString(value.runtimeHomeRootDir) as string }),
+    ...(optionalString(value.encryptionKeyPath) === undefined ? {} : { encryptionKeyPath: optionalString(value.encryptionKeyPath) as string }),
+    ...(optionalString(value.runtimeEventsPath) === undefined ? {} : { runtimeEventsPath: optionalString(value.runtimeEventsPath) as string }),
+    ...(optionalString(value.agentTempRootDir) === undefined ? {} : { agentTempRootDir: optionalString(value.agentTempRootDir) as string }),
     workspacePath: requiredString(value.workspacePath, "workspacePath"),
     promptPath: requiredString(value.promptPath, "promptPath"),
     ...(optionalString(value.codexGoalObjective) === undefined

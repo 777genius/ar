@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { cliGoalPaths, cliInspectionPaths, parseMcpResources, parseMcpResource,
+  type McpResourcesCommand, type McpResourceCommand } from "./codex-goal-cli-storage";
+import { resolveCodexGoalJobRegistryRoot } from "./codex-goal-jobs";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { enterScratchPrivateMountNamespace, isScratchHelpInvocation } from "./scratch-mount-namespace";
@@ -129,6 +132,9 @@ type StatusCommand = {
   readonly workspacePath?: string;
   readonly tmuxSession?: string;
   readonly progressPath?: string;
+  readonly resultPath?: string;
+  readonly logPath?: string;
+  readonly runtimeEventsPath?: string;
   readonly format: OutputFormat;
 };
 
@@ -155,17 +161,6 @@ type McpToolCommand = {
   readonly name: string;
   readonly argsJson?: string;
   readonly argsFile?: string;
-  readonly format: OutputFormat;
-};
-
-type McpResourcesCommand = {
-  readonly kind: "mcp-resources";
-  readonly format: OutputFormat;
-};
-
-type McpResourceCommand = {
-  readonly kind: "mcp-resource";
-  readonly uri: string;
   readonly format: OutputFormat;
 };
 
@@ -267,13 +262,13 @@ export async function runCodexGoalCli(
       return 0;
     }
     if (command.kind === "mcp-resources") {
-      writeJsonOrText(command.format, await listCodexGoalMcpResources(), io);
+      writeJsonOrText(command.format, await listCodexGoalMcpResources(command), io);
       return 0;
     }
     if (command.kind === "mcp-resource") {
       writeJsonOrText(
         command.format,
-        await readCodexGoalMcpResource({ uri: command.uri }),
+        await readCodexGoalMcpResource(command),
         io,
       );
       return 0;
@@ -553,20 +548,23 @@ function parseRun(
 ): RunCommand {
   const env = io.env();
   const values = parseFlags(argv);
-  const jobRootDir = requiredOption(values, env, "--job-root", [
+  const jobRootDir = option(values, env, "--job-root", [
     "SUBSCRIPTION_RUNTIME_JOB_ROOT",
   ]);
   const taskId = requiredOption(values, env, "--task-id", [
     "SUBSCRIPTION_RUNTIME_TASK_ID",
     "MEMO_STACK_GOAL_TASK_ID",
   ]);
-  const logPath = option(values, env, "--log", []) ??
-    join(jobRootDir, `${taskId}.log`);
-  const config = runConfigFromFlags(values, env, io.cwd(), jobRootDir, taskId);
-  const registryRootDir = option(values, env, "--registry-root", [
+  const paths = cliGoalPaths(values, env, io.cwd(), taskId);
+  const config = runConfigFromFlags(values, env, io.cwd(), jobRootDir, taskId, paths);
+  const logPath = paths.logPath ?? join(config.jobRootDir, `${taskId}.log`);
+  const explicitRegistry = option(values, env, "--registry-root", [
     "SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT",
     "CODEX_GOAL_REGISTRY_ROOT",
   ]);
+  const registryRootDir = explicitRegistry !== undefined || config.storageRootDir !== undefined || env.SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH !== undefined
+    ? resolveCodexGoalJobRegistryRoot({ registryRootDir: explicitRegistry, storageRootDir: config.storageRootDir, sourceEnv: env, cwd: io.cwd() })
+    : undefined;
   const registryMetadata = registryMetadataFromFlags(values);
   const lifecycle = parseHostedGoalLifecycleRequest(values);
   return {
@@ -594,7 +592,7 @@ function parseDoctor(
 ): DoctorCommand {
   const env = io.env();
   const values = parseFlags(argv);
-  const jobRootDir = requiredOption(values, env, "--job-root", [
+  const jobRootDir = option(values, env, "--job-root", [
     "SUBSCRIPTION_RUNTIME_JOB_ROOT",
   ]);
   const taskId = requiredOption(values, env, "--task-id", [
@@ -629,8 +627,12 @@ function parseStatus(
   ]);
   const tmuxSession = option(values, env, "--tmux-session", []);
   const progressPath = option(values, env, "--progress", []);
+  const rootPaths = cliInspectionPaths(values, env, io.cwd(), taskId);
   return {
     kind: "status",
+    ...(rootPaths ? { jobRootDir: rootPaths.jobRootDir, workspacePath: rootPaths.workspacePath,
+      resultPath: rootPaths.outputPath, progressPath: rootPaths.progressPath, logPath: rootPaths.logPath,
+      runtimeEventsPath: rootPaths.runtimeEventsPath } : {}),
     ...(jobRootDir ? { jobRootDir } : {}),
     ...(taskId ? { taskId } : {}),
     ...(workspacePath ? { workspacePath } : {}),
@@ -653,7 +655,8 @@ function parseTail(
   const jobRoot = option(values, env, "--job-root", [
     "SUBSCRIPTION_RUNTIME_JOB_ROOT",
   ]);
-  const logPath = option(values, env, "--log", []) ??
+  const rootPaths = cliInspectionPaths(values, env, io.cwd(), taskId);
+  const logPath = option(values, env, "--log", []) ?? rootPaths?.logPath ??
     (taskId && jobRoot ? join(jobRoot, `${taskId}.log`) : undefined);
   if (!logPath) throw new Error("--log or --job-root with --task-id is required");
   return {
@@ -685,31 +688,6 @@ function parseMcpTool(
     kind: "mcp-tool",
     name,
     ...jsonArgsSource(values),
-    format: outputFormatFromFlags(values, io.env()),
-  };
-}
-
-function parseMcpResources(
-  argv: readonly string[],
-  io: CodexGoalCliIo,
-): McpResourcesCommand {
-  const values = parseFlags(argv);
-  return {
-    kind: "mcp-resources",
-    format: outputFormatFromFlags(values, io.env()),
-  };
-}
-
-function parseMcpResource(
-  argv: readonly string[],
-  io: CodexGoalCliIo,
-): McpResourceCommand {
-  const uri = argv[0];
-  if (!uri || uri.startsWith("--")) throw new Error("resource uri is required");
-  const values = parseFlags(argv.slice(1));
-  return {
-    kind: "mcp-resource",
-    uri,
     format: outputFormatFromFlags(values, io.env()),
   };
 }
@@ -757,10 +735,14 @@ function parseControllerSupervise(
 ): ControllerSuperviseCommand {
   const values = parseFlags(argv);
   const env = io.env();
-  const registryRootDir = option(values, env, "--registry-root", [
+  const explicitRegistry = option(values, env, "--registry-root", [
     "SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT",
     "CODEX_GOAL_REGISTRY_ROOT",
   ]);
+  const registryRootDir = resolveCodexGoalJobRegistryRoot({
+    registryRootDir: explicitRegistry, storageRootDir: option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]),
+    sourceEnv: env, cwd: io.cwd(),
+  });
   const stateDir = option(values, env, "--state-dir", []);
   const mcpCwd = option(values, env, "--mcp-cwd", []);
   const args: Record<string, unknown> = {

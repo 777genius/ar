@@ -3,8 +3,12 @@ import { join } from "node:path";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { deriveManagedJobLayout, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
 
-export interface ManagedGoalAdmission {
-  readonly config: CodexGoalRunConfig;
+type ManagedGoalPathConfig = Pick<CodexGoalRunConfig,
+  "taskId" | "jobId" | "jobRootDir" | "workspacePath" | "sourceEnv" | "stateRootDir" |
+  "encryptionKeyPath" | "runtimeHomeRootDir" | "outputPath" | "progressPath" |
+  "runtimeEventsPath" | "agentTempRootDir">;
+export interface ManagedGoalAdmission<T extends ManagedGoalPathConfig = CodexGoalRunConfig> {
+  readonly config: T;
   readonly logPath?: string;
   readonly registryRootDir?: string;
 }
@@ -14,9 +18,9 @@ export function usesManagedJobLayout(config: CodexGoalRunConfig): boolean {
 }
 
 /** Deterministic layout mapping inside the already-confined managed unit. */
-export function mapManagedGoalLayout(
-  input: ManagedGoalAdmission,
-): ManagedGoalAdmission {
+export function mapManagedGoalLayout<T extends ManagedGoalPathConfig>(
+  input: ManagedGoalAdmission<T>,
+): ManagedGoalAdmission<T> {
   enterCurrentHostedOrdinaryDependencyReader();
   const config = input.config;
   const env = config.sourceEnv ?? process.env;
@@ -25,8 +29,8 @@ export function mapManagedGoalLayout(
   const layout = deriveManagedJobLayout(env[MANAGED_JOB_ROOT_ENV]!, env[MANAGED_JOB_ID_ENV]!);
   if (layout.jobId !== (config.jobId ?? config.taskId)) throw new Error('Managed job identity mismatch');
   // taskId becomes a filename, so it has the same closed identifier contract.
-  if (requiresCurrentHostedDependencyRootPurpose() ? !isHostedDependencySignedTaskId(config.taskId) :
-      config.taskId !== config.taskId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(config.taskId)) {
+  if (typeof config.taskId !== "string" || (requiresCurrentHostedDependencyRootPurpose() ? !isHostedDependencySignedTaskId(config.taskId) :
+      config.taskId !== config.taskId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(config.taskId))) {
     throw new Error("Invalid managed taskId");
   }
   const fixed = {
@@ -35,6 +39,8 @@ export function mapManagedGoalLayout(
     runtimeHomeRootDir: layout.home,
     outputPath: join(layout.output, `${config.taskId}.latest-result.json`),
     progressPath: join(layout.output, `${config.taskId}.progress.json`),
+    runtimeEventsPath: join(layout.output, `${config.taskId}.events.jsonl`),
+    agentTempRootDir: join(layout.tmp, "agent"),
   };
   for (const [key, expected] of Object.entries(fixed)) {
     const actual = config[key as keyof typeof fixed];

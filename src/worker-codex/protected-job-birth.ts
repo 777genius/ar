@@ -301,6 +301,32 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
   });
 }
 
+/** Exact private birth witnesses select module composition only, not writer
+ * authority. No publication lock may span an original runtime's operation. */
+export function protectedCodexGoalJobRuntimeProvenance(job: CodexGoalJobManifest, registryRootDir: string):
+  Readonly<{ runtimeDirectory: string; artifactSha256: string; assertCurrent(): void }> | undefined {
+  try {
+    assertResearchInitialRoot(true);
+    const records = paths(job.jobRootDir), bytes = researchRead(records.birth), birth = researchJson(bytes) as Birth;
+    if (birth.schemaVersion !== 1 || birth.jobId !== job.jobId || birth.createdAt !== job.createdAt ||
+        typeof birth.runtimeDirectory !== "string" || !/^[a-f0-9]{64}$/.test(birth.artifactSha256) ||
+        birth.jobDirectory.path !== job.jobRootDir || birth.workspaceDirectory.path !== job.workspacePath ||
+        birth.registryDirectory.path !== registryRootDir || birth.manifestPath !== join(registryRootDir, job.jobId, "job.json")) return undefined;
+    const physical = physicalPaths(birth.jobDirectory);
+    const assertCurrent = (): void => {
+      assertResearchInitialRoot(true);
+      if (!researchRead(records.birth).equals(bytes) || !researchRead(physical.birth).equals(bytes) ||
+          !isDeepStrictEqual(manifestWitness(birth.manifestPath, job), birth.manifest)) invalid();
+      for (const directory of [birth.registryDirectory, birth.jobDirectory, birth.workspaceDirectory]) assertResearchDirectory(directory);
+      if (!researchRead(records.birth).equals(bytes) || !researchRead(physical.birth).equals(bytes)) invalid();
+    };
+    assertCurrent();
+    // Routing provenance only. First-effect history remains untouched and the
+    // selected original runtime must perform its own writer/admission checks.
+    return Object.freeze({ runtimeDirectory: birth.runtimeDirectory, artifactSha256: birth.artifactSha256, assertCurrent });
+  } catch { return undefined; }
+}
+
 /** This cold read is useful only under the admission publication section. The
  * shared owner mutex keeps first effects out through the caller's final claim.
  * Without an enclosing section it is a point-in-time observation, never a permit.

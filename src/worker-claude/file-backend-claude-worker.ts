@@ -3,6 +3,7 @@ import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createSubscriptionRuntime,
+  deriveRuntimeStorageRoots,
   DefaultRedactor,
   DeterministicIdGenerator,
   type ClockPort,
@@ -70,6 +71,7 @@ import { workerFailureDetails } from "./worker-failure-details";
 export type { ClaudeWorkerCapacityPolicy } from "./file-backend-claude-capacity";
 
 export type FileBackendClaudeWorkerOptions = {
+  readonly storageRootDir?: string;
   readonly workerId?: string;
   readonly providerInstanceId: string;
   readonly stateRootDir: string;
@@ -104,6 +106,22 @@ export type FileBackendClaudeWorkerOptions = {
   readonly runArtifactsRootDir?: string;
   readonly runArtifactHeartbeatMs?: number;
 };
+
+export type FileBackendClaudeWorkerInput = FileBackendClaudeWorkerOptions |
+  (Omit<FileBackendClaudeWorkerOptions, "stateRootDir" | "storageRootDir"> & {
+    readonly storageRootDir: string;
+    readonly stateRootDir?: string;
+  });
+
+export function resolveFileBackendClaudeWorkerOptions(input: FileBackendClaudeWorkerInput): FileBackendClaudeWorkerOptions {
+  const storageRootDir = input.storageRootDir ??
+    (input.stateRootDir === undefined ? input.baseEnv?.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined);
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
+  const stateRootDir = input.stateRootDir ??
+    (roots ? join(roots.stateRootDir, "claude-workers") : undefined);
+  if (stateRootDir === undefined) throw new Error("file_backend_claude_state_root_required");
+  return { ...input, stateRootDir };
+}
 
 export type FileBackendClaudeWorkerJob = {
   readonly jobId?: string;
@@ -167,7 +185,11 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
   private readonly sessionSelection: ClaudeWorkerSessionSelection;
   private readonly capacityTracker: FileBackendClaudeCapacityState;
 
-  constructor(private readonly options: FileBackendClaudeWorkerOptions) {
+  private readonly options: FileBackendClaudeWorkerOptions;
+
+  constructor(input: FileBackendClaudeWorkerInput) {
+    const options = resolveFileBackendClaudeWorkerOptions(input);
+    this.options = options;
     this.workerId =
       options.workerId ??
       `file-backend-claude:${hashText(options.providerInstanceId).slice(0, 12)}`;
