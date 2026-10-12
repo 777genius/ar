@@ -3,6 +3,7 @@ import type { DependencyParentRecipeReader } from "../core/dependency-environmen
 import type { HostedInventoryLaunch } from "../core/host-infrastructure/host-inventory";
 import { resolveStoredProjectStartPlan } from "./stored-start-planning";
 import { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
+import { readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import { readHostedDependencyParentRecipe as readProviderRecipe,
   assertHostedDependencyParentRecipe as assertProviderRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 export { assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
@@ -20,6 +21,7 @@ export const hostedDependencyParentRecipeReader: DependencyParentRecipeReader = 
     return Object.freeze({ command: launch.command, args: Object.freeze(argv.slice(1)), cwd: launch.cwd });
   },
   readProjectAccessScope: parseCodexGoalProjectAccessScopeJson,
+  readOriginalUsableParentRoots: readHostedOriginalUsableParentRoots,
 });
 export function readHostedDependencyParentRecipe(launch: HostedInventoryLaunch, job: string, workspace: string): HostedInventoryLaunch {
   return readProviderRecipe(launch, job, workspace, hostedDependencyParentRecipeReader);

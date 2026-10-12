@@ -1,4 +1,4 @@
-import { readHostedOriginalUsableParentRoots } from "../provider-codex/app-server/adapters/hosted-original-usable-parent-recipe";
+import { readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import { matchesDependencyToolExecution, type DependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
 import type { DependencyToolReadyRead, DependencyToolSourceRoot } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { readHostedOrdinaryDependencyParentFrame } from "./hosted-ordinary-dependency-reader";
