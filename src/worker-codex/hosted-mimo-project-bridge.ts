@@ -1,5 +1,6 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync, lstatSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, relative, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-launch-host";
 import { researchCustody, researchHash, researchPath, researchRecord } from "./research-launch-files";
@@ -8,6 +9,9 @@ import { workerLaunchAdmissionSchema } from "./application/project-control/worke
 import { hostedMimoProjectRuntime } from "./hosted-mimo-project-runtime-routing";
 import { hostedMimoSealedSourcePort } from "./hosted-mimo-project-source";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
+import { readCodexGoalJob } from "./codex-goal-jobs";
+import { protectedCodexGoalJobRuntimeProvenance } from "./protected-job-birth";
+import type { MimoAdmissionRepairPlan } from "./hosted-mimo-project-bridge-contract";
 
 export type HostedMimoProjectBinding = Readonly<{
   schemaVersion: 1; projectId: string; workstreamId: string; machineId: string; routingEnabled: boolean;
@@ -123,6 +127,26 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
   const record = researchRecord(JSON.parse(readFileSync(recordPath, "utf8")), "schemaVersion,requestSha256,projectId,workstreamId,jobId,jobRoot,workspace");
   if (record.schemaVersion !== 1 || record.projectId !== request.projectId || record.workstreamId !== request.workstreamId || record.jobId !== request.jobId ||
       record.jobRoot !== jobRoot || record.workspace !== workspace) throw new Error("mimo_project_bridge_attempt_invalid");
+  if (request.operation === MimoProjectBridgeOperation.RepairAdmission) {
+    const plan = request.repairPlan!;
+    if (researchHash(bytes) !== plan.expectedBindingSha256) throw new Error("mimo_project_bridge_binding_invalid");
+    const job = await readCodexGoalJob({ registryRootDir: binding.registryRootDir, jobId: request.jobId });
+    if (job.jobId !== request.jobId || job.jobRootDir !== jobRoot || job.workspacePath !== workspace)
+      throw new Error("mimo_project_bridge_attempt_invalid");
+    const controllerOrigin = protectedCodexGoalJobRuntimeProvenance(controller.controller, binding.registryRootDir);
+    const jobOrigin = protectedCodexGoalJobRuntimeProvenance(job, binding.registryRootDir);
+    if (!controllerOrigin || !jobOrigin || controllerOrigin.runtimeDirectory !== jobOrigin.runtimeDirectory ||
+        controllerOrigin.artifactSha256 !== jobOrigin.artifactSha256) throw new Error("mimo_project_bridge_repair_origin_invalid");
+    // This fixed module belongs to the bridge's installed composition. The
+    // request selects neither executable code nor an original runtime path.
+    const helperUrl = new URL("../../host-integration/runtime-admission/mimo-job-admission-repair.mts", import.meta.url);
+    const helperBytes = hostedMimoBridgeMetadataBytes(fileURLToPath(helperUrl), 262144);
+    const helper = await import(helperUrl.href) as { repairHostedMimoJobAdmissionPlan(plan: MimoAdmissionRepairPlan, runtimeDirectory: string, artifactSha256: string): Promise<unknown> };
+    if (!hostedMimoBridgeMetadataBytes(fileURLToPath(helperUrl), 262144).equals(helperBytes))
+      throw new Error("mimo_project_bridge_runtime_invalid");
+    controllerOrigin.assertCurrent(); jobOrigin.assertCurrent();
+    return await helper.repairHostedMimoJobAdmissionPlan(plan, jobOrigin.runtimeDirectory, jobOrigin.artifactSha256);
+  }
   const loaded = await loadJobLaunch(args);
   const c = loaded.launch.config;
   if (c.jobRootDir !== jobRoot || c.workspacePath !== workspace || c.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||

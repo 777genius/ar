@@ -39,8 +39,8 @@ function spawnSynthetic(exe: string, args: readonly string[] = []): cp.ChildProc
 }
 const mocked = mock.module('node:child_process', { namedExports: { ...cp, spawn: spawnSynthetic } });
 interface TransportModule {
-  hostTransport(options: {host: string; machineId: string; socketDir: string}): {
-    request(request: {operation: string; machineId: string; payload?: string}): Promise<unknown>;
+  hostTransport(options: {host: string; machineId: string; socketDir: string; run?: (args: readonly string[], stdin?: string) => Promise<string>}): {
+    request(request: {operation: string; machineId: string; payload?: string; kind?: string; repairPlan?: unknown}): Promise<unknown>;
   };
 }
 const target = process.argv[2] ? pathToFileURL(process.argv[2]).href : new URL('../host-job-transport.mjs', import.meta.url).href;
@@ -55,6 +55,18 @@ const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const outcomes: object[] = [];
 const selected = process.argv[3];
 try {
+  if (selected === undefined || selected === 'mimo-repair') {
+    const bodies: string[] = [];
+    const transport = fixed.hostTransport({host: `TEST-mimo-repair-${++serial}`, machineId, socketDir: join(root, `socket-${serial}`),
+      run: async (_args, stdin) => { if (stdin === undefined) return ''; bodies.push(stdin); return JSON.stringify({ok: true, result: {pending: true}}); } });
+    const repair = {kind: 'MimoProject', operation: 'repair-admission', machineId, repairPlan: {jobId: 'TEST-owned-job'}};
+    assert.deepEqual(await transport.request(repair), {pending: true});
+    assert.deepEqual(bodies, [JSON.stringify(repair)]);
+    await assert.rejects(transport.request({...repair, kind: 'ResearchOperator'}), /invalid operation/);
+    await assert.rejects(transport.request({...repair, operation: 'exec'}), /invalid operation/);
+    assert.equal(bodies.length, 1);
+    outcomes.push({case: 'fixed-mimo-repair-data-only-operation-forwarded-once', passed: true});
+  }
   if (selected === undefined || selected === 'stderr') {
   mode = 'stderr';
   const began = performance.now();

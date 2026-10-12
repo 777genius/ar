@@ -91,8 +91,11 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
       owner(request).value.requestSha256 !== researchHash(canonical(request)))
     throw new Error("mimo_project_bridge_request_mismatch");
   if (request.operation === MimoProjectBridgeOperation.Stop) {
-    for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start])
-      if (observation({ ...request, operation }).state === "running") throw new Error("mimo_project_bridge_control_pending");
+    for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.RepairAdmission]) {
+      const observed = observation({ ...request, operation });
+      if (observed.state === "running" || operation === MimoProjectBridgeOperation.RepairAdmission && observed.state === "unresolved")
+        throw new Error("mimo_project_bridge_control_pending");
+    }
     const prior = observation(request);
     // Only a verified terminal unit plus a durable settled result permits a
     // fresh explicit stop. An uncertain/collected unit keeps its exact owner.
@@ -103,12 +106,13 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
   }
   if (request.operation === MimoProjectBridgeOperation.Status) {
     const operations: Record<string, unknown> = {};
-    for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Stop])
+    for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Stop, MimoProjectBridgeOperation.RepairAdmission])
       operations[operation] = observation({ ...request, operation });
     // Status/finalization is a semantic mutation too; never run it under the
     // ingress timeout. The same owned status service is scheduled below when
     // no provider-control operation is still executing.
-    if (Object.values(operations).some(row => (row as { state: string }).state === "running")) return { ok: true, jobId: request.jobId, operations };
+    if (Object.values(operations).some(row => (row as { state: string }).state === "running") ||
+        (operations[MimoProjectBridgeOperation.RepairAdmission] as { state: string }).state === "unresolved") return { ok: true, jobId: request.jobId, operations };
     const prior = observation(request);
     if (prior.state === "settled" || prior.state === "unresolved" && recoverableStatus(request)) {
       previousStatus = { operations, worker: prior.state === "settled" ? prior.result : prior };
@@ -120,7 +124,16 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
       for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
     } else if (prior.state !== "absent") return { ok: true, jobId: request.jobId, operations, worker: prior };
   }
-  if (request.operation === MimoProjectBridgeOperation.Start) {
+  if (request.operation === MimoProjectBridgeOperation.Start || request.operation === MimoProjectBridgeOperation.RepairAdmission) {
+    if (request.operation === MimoProjectBridgeOperation.RepairAdmission) {
+      for (const operation of [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop])
+        if (observation({ ...request, operation }).state === "running") throw new Error("mimo_project_bridge_control_pending");
+    } else {
+      const repair = observation({ ...request, operation: MimoProjectBridgeOperation.RepairAdmission });
+      const result = repair.result as { ok?: boolean; result?: { ok?: boolean } } | undefined;
+      if (repair.state !== "absent" && (repair.state !== "settled" || result?.ok !== true || result.result?.ok !== true))
+        throw new Error("mimo_project_bridge_control_pending");
+    }
     const created = observation({ ...request, operation: MimoProjectBridgeOperation.Create });
     if (created.state !== "settled" || (created.result as { ok?: boolean; result?: { ok?: boolean } })?.ok !== true ||
         (created.result as { result?: { ok?: boolean } })?.result?.ok !== true)
@@ -163,7 +176,7 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   try { result = { ok: true, result: await handleHostedMimoProjectBridge(request) }; }
   catch (error) {
     const code = error instanceof Error ? error.message.split(":", 1)[0]! : "";
-    result = { ok: false, error: /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_)[a-z0-9_]{1,100}$/.test(code)
+    result = { ok: false, error: /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_)[a-z0-9_]{1,100}$/.test(code)
       ? code : "mimo_project_bridge_operation_failed" };
   }
   const serialized = JSON.stringify(result) + "\n";

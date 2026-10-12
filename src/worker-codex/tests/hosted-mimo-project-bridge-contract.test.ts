@@ -20,6 +20,22 @@ describe("finite root project MiMo bridge wire contract", () => {
   it("rejects mutation fields on a status request", () => {
     expect(() => parseMimoProjectBridgeRequest({ ...base, operation: MimoProjectBridgeOperation.Status })).toThrow();
   });
+  it("admits only an exact same-job bounded repair plan and snapshots its paths", () => {
+    const { prompt: _prompt, sourceCommit: _commit, ...identity } = base;
+    const repairPlan = { schemaVersion: 1, machineId: base.machineId, projectId: base.projectId, workstreamId: base.workstreamId, jobId: base.jobId,
+      expectedBindingSha256: "c".repeat(64), expectedControllerManifestSha256: "d".repeat(64), expectedManifestSha256: "e".repeat(64),
+      expectedContractSha256: "f".repeat(64), expectedStateSha256: "0".repeat(64), expectedReceiptSha256: "1".repeat(64), ownedPaths: ["src/WindowsNativeRunControl.hpp", "src/.task-reports/windows-run-control/"] };
+    const repair = { ...identity, operation: MimoProjectBridgeOperation.RepairAdmission, repairPlan };
+    expect(readMimoProjectIngress(Buffer.from(JSON.stringify(repair)))).toEqual(repair);
+    const parsed = parseMimoProjectBridgeRequest(repair);
+    repairPlan.ownedPaths.push("TEST changed caller path");
+    expect(parsed.repairPlan?.ownedPaths).toHaveLength(2);
+    for (const fields of [{ projectId: "other" }, { workstreamId: "other" }, { jobId: "other" }, { machineId: "f".repeat(32) },
+      { expectedBindingSha256: "main" }, { ownedPaths: [] }, { ownedPaths: ["x\0y"] }, { runtimeDirectory: "/opt/foreign" }, { planPath: "/etc/foreign" }])
+      expect(() => parseMimoProjectBridgeRequest({ ...repair, repairPlan: { ...repairPlan, ...fields } })).toThrow("mimo_project_bridge_request_invalid");
+    expect(() => parseMimoProjectBridgeRequest({ ...repair, argv: ["/bin/sh"] })).toThrow("mimo_project_bridge_request_invalid");
+    expect(() => parseMimoProjectBridgeRequest({ ...repair, operation: MimoProjectBridgeOperation.Status })).toThrow("mimo_project_bridge_request_invalid");
+  });
 });
 
 describe("actual restricted ingress MiMo kind routing", () => {
