@@ -7,6 +7,7 @@ import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } 
 import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type PublicResearchSourceReader, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import { SubscriptionWorkerError, type SubscriptionWorkerState, type CommandPolicy, type WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
+import type { AppServerCompletedGoalOutputValidator } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 import {
   assertCodexSessionHomeProfile,
@@ -58,6 +59,8 @@ export type FileBackendCodexWorkerOptions = {
   /** One bounded reader shared by all account drivers of this job executor. */
   readonly publicSourceReader?: PublicResearchSourceReader;
   readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
+  /** Trusted code acceptance only; not a persisted/MCP/CLI job field. */
+  readonly completedGoalOutputValidator?: AppServerCompletedGoalOutputValidator;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
   readonly executionProfile?: CodexExecutionProfile;
   readonly boundedWorkspaceTools?: {
@@ -160,6 +163,11 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   }
   if (options.completedTurnCheckpoint && (options.executionEngine ?? "app-server") !== "app-server-goal") {
     throw new Error("checkpoint_requires_app_server_goal_engine");
+  }
+  if (options.completedGoalOutputValidator !== undefined &&
+      (typeof options.completedGoalOutputValidator !== "function" || options.executionEngine !== "app-server-goal" ||
+       options.executionLifetime !== undefined || options.childBudget !== undefined)) {
+    throw new Error("file_backend_codex_goal_output_validator_profile_invalid");
   }
   const hostedGlobalScanGuard = isHostedContainment(options.sourceEnv ?? process.env);
   if (hostedGlobalScanGuard && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
