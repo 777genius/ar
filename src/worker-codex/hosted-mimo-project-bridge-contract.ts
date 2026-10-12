@@ -1,6 +1,6 @@
 import type { CodexReasoningEffort } from "@vioxen/subscription-runtime/provider-codex";
 
-export enum MimoProjectBridgeOperation { Create = "create", Start = "start", Status = "status", Stop = "stop", RepairAdmission = "repair-admission" }
+export enum MimoProjectBridgeOperation { Create = "create", Start = "start", Status = "status", Stop = "stop", RepairAdmission = "repair-admission", FinalizeAdmissionRepair = "finalize-admission-repair" }
 export type MimoAdmissionRepairPlan = Readonly<{
   schemaVersion: 1; projectId: string; workstreamId: string; machineId: string; jobId: string;
   expectedBindingSha256: string; expectedControllerManifestSha256: string; expectedManifestSha256: string;

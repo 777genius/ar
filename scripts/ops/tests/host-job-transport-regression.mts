@@ -62,9 +62,13 @@ try {
     const repair = {kind: 'MimoProject', operation: 'repair-admission', machineId, repairPlan: {jobId: 'TEST-owned-job'}};
     assert.deepEqual(await transport.request(repair), {pending: true});
     assert.deepEqual(bodies, [JSON.stringify(repair)]);
+    const finalizer = {kind: 'MimoProject', operation: 'finalize-admission-repair', machineId};
+    assert.deepEqual(await transport.request(finalizer), {pending: true});
+    assert.deepEqual(bodies, [JSON.stringify(repair), JSON.stringify(finalizer)]);
     await assert.rejects(transport.request({...repair, kind: 'ResearchOperator'}), /invalid operation/);
+    await assert.rejects(transport.request({...finalizer, kind: 'ResearchOperator'}), /invalid operation/);
     await assert.rejects(transport.request({...repair, operation: 'exec'}), /invalid operation/);
-    assert.equal(bodies.length, 1);
+    assert.equal(bodies.length, 2);
     outcomes.push({case: 'fixed-mimo-repair-data-only-operation-forwarded-once', passed: true});
   }
   if (selected === undefined || selected === 'stderr') {

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), fds: new Map<number, string>(), fd: 1,
-  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn(), executableDigest: vi.fn(), repair: vi.fn(), readJob: vi.fn(), provenance: vi.fn(), assertOrigin: vi.fn() }));
-vi.mock("../../../host-integration/runtime-admission/mimo-job-admission-repair.mts", () => ({ repairHostedMimoJobAdmissionPlan: state.repair }));
+  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn(), executableDigest: vi.fn(), repair: vi.fn(), finalize: vi.fn(), readJob: vi.fn(), provenance: vi.fn(), assertOrigin: vi.fn() }));
+vi.mock("../../../host-integration/runtime-admission/mimo-job-admission-repair.mts", () => ({ repairHostedMimoJobAdmissionPlan: state.repair, finalizeHostedMimoJobAdmissionRepair: state.finalize }));
 vi.mock("../protected-job-birth", async original => ({ ...await original<object>(), protectedCodexGoalJobRuntimeProvenance: state.provenance }));
 vi.mock("../codex-goal-jobs", async original => ({ ...await original<object>(), readCodexGoalJob: state.readJob }));
 vi.mock("node:fs", async original => {
@@ -45,6 +45,7 @@ beforeEach(() => {
   state.readJob.mockResolvedValue({ jobId: request.jobId, jobRootDir: root + "/jobs/test-job", workspacePath: scratch + "/workspaces/test-job" });
   state.provenance.mockReturnValue({ runtimeDirectory: "/opt/subscription-runtime/releases/" + "7".repeat(40), artifactSha256: "d".repeat(64), assertCurrent: state.assertOrigin });
   state.repair.mockResolvedValue({ ok: true, jobId: request.jobId });
+  state.finalize.mockResolvedValue({ ok: true, jobId: request.jobId });
   state.files.set("/etc/subscription-runtime/projects/test-project.d/test-stream.yml", Buffer.from(`project_id: test-project\nworkstream_id: test-stream\nstate_root: /srv/worker-state/jobs/test-project/test-stream\nscratch_root: /srv/workers/jobs/test-project/test-stream\nrouting_enabled: true\n`));
   const response = { content: [{ type: "text", text: '{"ok":true}' }] }; state.refill.mockResolvedValue(response); state.start.mockResolvedValue(response); state.stop.mockResolvedValue(response);
   state.load.mockResolvedValue({ launch: { config: { jobRootDir: root + "/jobs/test-job", workspacePath: scratch + "/workspaces/test-job", modelBackend: "xiaomi-mimo-token-plan", accounts: [{ name: "account-q" }], projectAccessScope: { projectId: request.projectId } } } });
@@ -62,6 +63,14 @@ it("dispatches only a same-job repair to the fixed helper with matched original 
   expect(state.repair).toHaveBeenCalledWith(repair.repairPlan, "/opt/subscription-runtime/releases/" + "7".repeat(40), "d".repeat(64));
   expect(state.assertOrigin).toHaveBeenCalledTimes(2);
   expect(state.load).not.toHaveBeenCalled(); expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.stop).not.toHaveBeenCalled();
+});
+it("dispatches an identity-only finalizer to the fixed helper with matched original provenance", async () => {
+  await handleHostedMimoProjectBridge(request); state.refill.mockClear();
+  await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.FinalizeAdmissionRepair))).resolves.toEqual({ ok: true, jobId: request.jobId });
+  expect(state.finalize).toHaveBeenCalledWith({ schemaVersion: 1, machineId: request.machineId, projectId: request.projectId,
+    workstreamId: request.workstreamId, jobId: request.jobId }, "/opt/subscription-runtime/releases/" + "7".repeat(40), "d".repeat(64));
+  expect(state.assertOrigin).toHaveBeenCalledTimes(2);
+  expect(state.load).not.toHaveBeenCalled(); expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.repair).not.toHaveBeenCalled();
 });
 it.each(["binding", "job", "missing-origin", "different-origin", "helper-custody"])("refuses repair %s drift before invoking helper", async fault => {
   await handleHostedMimoProjectBridge(request);

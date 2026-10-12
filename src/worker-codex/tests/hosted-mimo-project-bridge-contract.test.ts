@@ -8,7 +8,7 @@ describe("finite root project MiMo bridge wire contract", () => {
   it("admits finite create data and control-only same-job requests", () => {
     expect(parseMimoProjectBridgeRequest(base)).toEqual(base);
     const { prompt: _prompt, sourceCommit: _source, ...control } = base;
-    for (const operation of [MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop])
+    for (const operation of [MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop, MimoProjectBridgeOperation.FinalizeAdmissionRepair])
       expect(parseMimoProjectBridgeRequest({ ...control, operation })).toMatchObject({ operation, jobId: base.jobId });
   });
   it.each([{ argv: ["/bin/sh"] }, { env: { TEST: "override" } }, { registryRootDir: "/etc" }, { controllerJobId: "other" },
@@ -19,6 +19,14 @@ describe("finite root project MiMo bridge wire contract", () => {
   });
   it("rejects mutation fields on a status request", () => {
     expect(() => parseMimoProjectBridgeRequest({ ...base, operation: MimoProjectBridgeOperation.Status })).toThrow();
+  });
+  it("accepts only identity data for the fixed repair finalizer", () => {
+    const { prompt: _prompt, sourceCommit: _commit, ...identity } = base;
+    const finalizer = { ...identity, operation: MimoProjectBridgeOperation.FinalizeAdmissionRepair };
+    expect(readMimoProjectIngress(Buffer.from(JSON.stringify(finalizer)))).toEqual(finalizer);
+    for (const fields of [{ repairPlan: {} }, { runtimeDirectory: "/opt/foreign" }, { planPath: "/etc/foreign" }, { archivePath: "/srv/foreign" },
+      { artifactSha256: "a".repeat(64) }, { argv: ["/bin/sh"] }, { prompt: "TEST" }, { reasoningEffort: "none" }])
+      expect(() => parseMimoProjectBridgeRequest({ ...finalizer, ...fields })).toThrow("mimo_project_bridge_request_invalid");
   });
   it("admits only an exact same-job bounded repair plan and snapshots its paths", () => {
     const { prompt: _prompt, sourceCommit: _commit, ...identity } = base;

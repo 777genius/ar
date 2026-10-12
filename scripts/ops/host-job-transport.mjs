@@ -100,7 +100,7 @@ export function hostTransport({ host, machineId, socketDir, run = command }) {
   }
   const transport = {
     async request(request) {
-      const operations = request.kind === 'MimoProject' ? ['create', 'start', 'status', 'stop', 'repair-admission']
+      const operations = request.kind === 'MimoProject' ? ['create', 'start', 'status', 'stop', 'repair-admission', 'finalize-admission-repair']
         : request.kind === 'ResearchOperator' ? ['start', 'status', 'cancel', 'revoke'] : ['start', 'status', 'stop'];
       if (!operations.includes(request.operation)) throw new Error('invalid operation');
       if (request.machineId !== machineId) throw new Error('machine identity mismatch');

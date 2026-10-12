@@ -3,8 +3,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, isAbsolute, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { CodexGoalJobManifest } from "../../src/worker-codex/codex-goal-jobs";
 import { isDeepStrictEqual } from "node:util";
@@ -79,34 +79,38 @@ function createFile(path: string, bytes: Buffer): void {
 const jsonBytes = (value: unknown): Buffer => Buffer.from(JSON.stringify(value, null, 2) + "\n");
 // The only process invocation is a bounded, fixed Linux atomic directory syscall.
 // Both operands already belong to this exact root-owned job; no shell is involved.
-const exchangeProgram = "import ctypes,os,sys\nl=ctypes.CDLL(None,use_errno=True)\nf=l.renameat2\nf.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]\nf.restype=ctypes.c_int\ndef ident(s): return (s.st_dev,s.st_ino)\np,a,b=tuple(map(int,sys.argv[3:5])),tuple(map(int,sys.argv[5:7])),tuple(map(int,sys.argv[7:9]))\ndef stat(n): return os.stat(n,dir_fd=3,follow_symlinks=False)\nassert ident(os.fstat(3))==p and ident(stat(sys.argv[1]))==a and ident(stat(sys.argv[2]))==b\nr=f(3,os.fsencode(sys.argv[1]),3,os.fsencode(sys.argv[2]),2)\nif r: raise OSError(ctypes.get_errno(),'admission_directory_exchange_failed')\nassert ident(os.fstat(3))==p and ident(stat(sys.argv[1]))==b and ident(stat(sys.argv[2]))==a\nos.fsync(3)\n";
+const exchangeProgram = "import ctypes,os,sys\nl=ctypes.CDLL(None,use_errno=True)\nf=l.renameat2\nf.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]\nf.restype=ctypes.c_int\ndef ident(s): return (s.st_dev,s.st_ino)\np,q,a,b=[tuple(map(int,sys.argv[i:i+2])) for i in (3,5,7,9)]\ndef stat(n,d): return os.stat(n,dir_fd=d,follow_symlinks=False)\nassert ident(os.fstat(3))==p and ident(os.fstat(4))==q and ident(stat(sys.argv[1],3))==a and ident(stat(sys.argv[2],4))==b\nr=f(3,os.fsencode(sys.argv[1]),4,os.fsencode(sys.argv[2]),2)\nif r: raise OSError(ctypes.get_errno(),'admission_directory_exchange_failed')\nassert ident(os.fstat(3))==p and ident(os.fstat(4))==q and ident(stat(sys.argv[1],3))==b and ident(stat(sys.argv[2],4))==a\nos.fsync(3)\nos.fsync(4)\n";
 export function exchangeAdmissionDirectories(admissionRoot: string, stagedRoot: string): void {
-  check(process.platform === "linux" && dirname(admissionRoot) === dirname(stagedRoot), "linux_exchange_required");
-  const parent = dirname(admissionRoot), fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  check(process.platform === "linux", "linux_exchange_required");
+  const parents = [dirname(admissionRoot), dirname(stagedRoot)];
+  const fds = parents.map(parent => openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
   try {
-    const root = fstatSync(fd), admission = lstatSync(admissionRoot), staged = lstatSync(stagedRoot);
-    check(admission.isDirectory() && staged.isDirectory() && !admission.isSymbolicLink() && !staged.isSymbolicLink(), "exchange_directories_required");
-    const namedRoot = lstatSync(parent);
-    check(namedRoot.dev === root.dev && namedRoot.ino === root.ino && !namedRoot.isSymbolicLink(), "exchange_parent_changed");
+    const roots = fds.map(fd => fstatSync(fd)), admission = lstatSync(admissionRoot), staged = lstatSync(stagedRoot);
+    check(admission.isDirectory() && staged.isDirectory() && !admission.isSymbolicLink() && !staged.isSymbolicLink() && admission.dev === staged.dev, "exchange_directories_required");
+    const assertParents = (): void => parents.forEach((parent, index) => {
+      const named = lstatSync(parent), root = roots[index]!;
+      check(named.dev === root.dev && named.ino === root.ino && !named.isSymbolicLink(), "exchange_parent_changed");
+    });
+    assertParents();
     execFileSync("/usr/bin/python3", ["-I", "-c", exchangeProgram, basename(admissionRoot), basename(stagedRoot),
-      ...[root, admission, staged].flatMap(stat => [String(stat.dev), String(stat.ino)])],
-      { timeout: 10000, stdio: ["pipe", "pipe", "pipe", fd], env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } });
-    fsyncSync(fd);
-    const after = lstatSync(parent);
-    check(after.dev === root.dev && after.ino === root.ino && !after.isSymbolicLink(), "exchange_parent_changed");
-  } finally { closeSync(fd); }
+      ...[...roots, admission, staged].flatMap(stat => [String(stat.dev), String(stat.ino)])],
+      { timeout: 10000, stdio: ["pipe", "pipe", "pipe", ...fds], env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } });
+    fds.forEach(fd => fsyncSync(fd)); assertParents();
+  } finally { fds.forEach(fd => closeSync(fd)); }
 }
 
 /** First commit is the exchange. Precondition failures never rewrite admission;
  * failure after exchange retains both exact triples and audit for reconciliation. */
 export async function publishRepairedAdmission(input: {
-  readonly jobRootDir: string; readonly operationSha256: string;
+  readonly jobRootDir: string; readonly archiveRootDir: string; readonly operationSha256: string;
   readonly contract: WorkerLaunchSpec; readonly state: WorkerLaunchState; readonly receipt: Json;
   readonly assertCurrent: () => Promise<void>;
   readonly exchange: typeof exchangeAdmissionDirectories;
 }): Promise<{ readonly retainedPreviousAdmissionPath: string; readonly receiptSha256: string }> {
   const admissionRoot = join(input.jobRootDir, "pre-start-admission");
-  const stagedRoot = join(input.jobRootDir, ".admission-repair-" + input.operationSha256);
+  check(realpathSync(input.archiveRootDir) === input.archiveRootDir && !input.archiveRootDir.startsWith(input.jobRootDir + "/") && input.archiveRootDir !== input.jobRootDir &&
+    lstatSync(input.archiveRootDir).isDirectory() && lstatSync(input.archiveRootDir).dev === lstatSync(input.jobRootDir).dev, "external_same_device_archive_required");
+  const stagedRoot = join(input.archiveRootDir, basename(input.jobRootDir) + "." + input.operationSha256);
   check(digest.test(input.operationSha256), "operation_digest");
   const contractBytes = jsonBytes(input.contract), stateBytes = jsonBytes(input.state), receiptBytes = jsonBytes(input.receipt);
   check(contractBytes.length <= 262144 && stateBytes.length <= 1048576 && receiptBytes.length <= 65536, "artifact_size_limit");
@@ -117,15 +121,74 @@ export async function publishRepairedAdmission(input: {
   createFile(join(stagedRoot, "contract.json"), contractBytes);
   createFile(join(stagedRoot, "state.json"), stateBytes);
   createFile(join(stagedRoot, "receipt.json"), receiptBytes);
-  syncDirectory(stagedRoot); syncDirectory(input.jobRootDir);
+  syncDirectory(stagedRoot); syncDirectory(input.archiveRootDir);
   await input.assertCurrent();
   input.exchange(admissionRoot, stagedRoot);
   check(readFileSync(join(admissionRoot, "receipt.json")).equals(receiptBytes), "publication_uncertain");
   return { retainedPreviousAdmissionPath: stagedRoot, receiptSha256: hash(receiptBytes) };
 }
 
-export async function repairHostedMimoJobAdmission(planPath: string | RepairPlan, expectedPlanSha256: string, runtimeDirectory: string,
-  expectedArtifactSha256: string): Promise<unknown> {
+export type AdmissionRepairIdentity = Readonly<{ schemaVersion: 1; machineId: string; projectId: string; workstreamId: string; jobId: string }>;
+export type PreviousStartHashes = Readonly<{ ownerSha256: string; requestSha256: string; resultSha256: string }>;
+type Finalization = Readonly<{ priorPlan: RepairPlan; priorResult: Json }>;
+function operatorBytes(path: string, maximum = 1048576): Buffer {
+  check(isAbsolute(path) && resolve(path) === path, "proof_path");
+  for (let current = path;; current = dirname(current)) {
+    const stat = lstatSync(current);
+    check(stat.uid === 0 && !stat.isSymbolicLink() && !(stat.mode & 0o022) && (current === path || stat.isDirectory()), "proof_custody");
+    if (current === "/") break;
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    check(before.isFile() && before.nlink === 1n && !(before.mode & 0o077n) && before.size <= BigInt(maximum), "proof_file");
+    const bytes = readFileSync(fd), after = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
+    check(before.dev === named.dev && before.ino === named.ino && before.ctimeNs === after.ctimeNs && before.mtimeNs === after.mtimeNs && BigInt(bytes.length) === before.size, "proof_changed");
+    return bytes;
+  } finally { closeSync(fd); }
+}
+function absent(path: string): boolean { try { lstatSync(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } }
+const witness = (path: string): string => {
+  const stat = lstatSync(path, { bigint: true });
+  return [stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs, stat.mode, stat.uid, stat.gid, stat.nlink].join(":");
+};
+const directoryIdentity = (path: string) => { const stat = lstatSync(path); check(stat.isDirectory() && !stat.isSymbolicLink(), "directory_required"); return { path, device: stat.dev, inode: stat.ino }; };
+const relocationProgram = "import ctypes,os,sys\nl=ctypes.CDLL(None,use_errno=True)\nf=l.renameat2\nf.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]\nf.restype=ctypes.c_int\ndef ident(s): return (s.st_dev,s.st_ino)\np,q,a=[tuple(map(int,sys.argv[i:i+2])) for i in (3,5,7)]\nassert ident(os.fstat(3))==p and ident(os.fstat(4))==q and ident(os.stat(sys.argv[1],dir_fd=3,follow_symlinks=False))==a\nr=f(3,os.fsencode(sys.argv[1]),4,os.fsencode(sys.argv[2]),1)\nif r: raise OSError(ctypes.get_errno(),'admission_archive_move_failed')\nassert ident(os.stat(sys.argv[2],dir_fd=4,follow_symlinks=False))==a\nos.fsync(3)\nos.fsync(4)\n";
+export function relocateAdmissionArchive(source: string, destination: string): void {
+  check(process.platform === "linux", "linux_archive_required");
+  const parents = [dirname(source), dirname(destination)], fds = parents.map(path => openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
+  try {
+    const roots = fds.map(fd => fstatSync(fd)), archive = lstatSync(source);
+    check(archive.isDirectory() && !archive.isSymbolicLink() && roots[0]!.dev === roots[1]!.dev && !existsSync(destination), "archive_destination");
+    execFileSync("/usr/bin/python3", ["-I", "-c", relocationProgram, basename(source), basename(destination),
+      ...[...roots, archive].flatMap(stat => [String(stat.dev), String(stat.ino)])],
+      { timeout: 10000, stdio: ["pipe", "pipe", "pipe", ...fds], env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } });
+    parents.forEach((path, index) => { const stat = lstatSync(path); check(stat.dev === roots[index]!.dev && stat.ino === roots[index]!.ino, "archive_parent_changed"); });
+  } finally { fds.forEach(fd => closeSync(fd)); }
+}
+export async function finalizeRetainedAdmissionArchive(input: {
+  readonly source: string; readonly destination: string; readonly priorPlanSha256: string;
+  readonly priorHashes: Readonly<{ contract: string; state: string; receipt: string }>;
+  readonly assertCurrent: () => Promise<void>; readonly proof?: Json;
+  readonly move?: typeof relocateAdmissionArchive;
+}): Promise<unknown> {
+  await input.assertCurrent();
+  const identity = directoryIdentity(input.source);
+  check(!existsSync(input.destination), "archive_destination_exists");
+  await input.assertCurrent();
+  check(isDeepStrictEqual(directoryIdentity(input.source), identity), "archive_directory_changed");
+  (input.move ?? relocateAdmissionArchive)(input.source, input.destination);
+  check(!existsSync(input.source) && directoryIdentity(input.destination).device === identity.device && directoryIdentity(input.destination).inode === identity.inode, "archive_move_uncertain");
+  const receipt = { schemaVersion: 1, priorPlanSha256: input.priorPlanSha256, priorHashes: input.priorHashes,
+    originalSource: input.source, archivePath: input.destination, archiveDirectory: { ...identity, path: input.destination }, ...input.proof };
+  const receiptPath = join(dirname(input.destination), basename(dirname(input.source)) + ".finalization.json");
+  createFile(receiptPath, jsonBytes(receipt)); syncDirectory(dirname(receiptPath));
+  return { ok: true, jobId: basename(dirname(input.source)), archivePath: input.destination, receiptPath,
+    receiptSha256: hash(jsonBytes(receipt)), previousStart: input.proof?.previousStart ?? null };
+}
+
+async function operateHostedMimoJobAdmission(planPath: string | RepairPlan, expectedPlanSha256: string, runtimeDirectory: string,
+  expectedArtifactSha256: string, finalization?: Finalization): Promise<unknown> {
   check(process.platform === "linux" && digest.test(expectedPlanSha256) && digest.test(expectedArtifactSha256), "operator_arguments");
   // Bootstrap chooses one reviewed ORIGINAL release, never a remote plan field.
   check(/^\/opt\/subscription-runtime\/releases\/[a-f0-9]{40}$/.test(runtimeDirectory) && realpathSync(runtimeDirectory) === runtimeDirectory, "original_runtime_required");
@@ -197,6 +260,65 @@ export async function repairHostedMimoJobAdmission(planPath: string | RepairPlan
               await assertCurrent();
               await admission.assertProjectPreStartAdmissionLaunchBinding({ manifest: job, scope: controller.scope });
               const originalBinding = await bindingCapture.captureProjectPreStartBinding(job, descriptor);
+              const archiveRootDir = join(binding.stateRoot, "admission-repair-archives");
+              files.researchCustody(binding.stateRoot, true);
+              try { mkdirSync(archiveRootDir, { mode: 0o700 }); syncDirectory(binding.stateRoot); }
+              catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+              files.researchCustody(archiveRootDir, true);
+              if (finalization) {
+                const priorPlanSha256 = hash(JSON.stringify(finalization.priorPlan));
+                const source = join(job.jobRootDir, ".admission-repair-" + priorPlanSha256);
+                const destination = join(archiveRootDir, job.jobId + "." + priorPlanSha256);
+                check(finalization.priorResult.retainedPreviousAdmissionPath === source, "retained_archive_binding");
+                const pins = { contract: finalization.priorPlan.expectedContractSha256,
+                  state: finalization.priorPlan.expectedStateSha256, receipt: finalization.priorPlan.expectedReceiptSha256 };
+                const assertArchiveCurrent = async (): Promise<void> => {
+                  await assertCurrent();
+                  check(isDeepStrictEqual(await bindingCapture.captureProjectPreStartBinding(job, descriptor), originalBinding), "immutable_binding_changed");
+                  files.researchCustody(source, true);
+                  check(readdirSync(source).sort().join() === "contract.json,receipt.json,state.json", "archive_extra_files");
+                  for (const name of ["contract", "state", "receipt"] as const)
+                    check(hash(privateBytes(join(source, name + ".json"), name === "contract" ? 262144 : name === "receipt" ? 65536 : 1048576)) === pins[name], "archive_changed");
+                };
+                const startPrefix = join(binding.stateRoot, "mimo-bridge-operations", job.jobId + ".start");
+                const startPaths = { owner: startPrefix + ".owner.json", request: startPrefix + ".request.json", result: startPrefix + ".result.json" };
+                let previousStart: Json | null = null;
+                if (Object.values(startPaths).some(path => existsSync(path))) {
+                  const start = Object.fromEntries(Object.entries(startPaths).map(([name, path]) => [name, privateBytes(path)])) as Record<keyof typeof startPaths, Buffer>;
+                  const startOwner = object(JSON.parse(start.owner.toString())), startRequest = object(JSON.parse(start.request.toString())), startResult = object(JSON.parse(start.result.toString()));
+                  const startHash = hash(JSON.stringify(Object.fromEntries(Object.entries(startRequest).sort(([a], [b]) => a.localeCompare(b)))));
+                  const unit = `subscription-runtime-mimo-project-${hash(startHash + ":0")}.service`;
+                  check(startOwner.generation === 0 && startOwner.requestSha256 === startHash && startOwner.unit === unit &&
+                    startRequest.operation === "start" && startRequest.jobId === job.jobId && startRequest.projectId === binding.projectId &&
+                    startRequest.workstreamId === binding.workstreamId && startRequest.machineId === plan.machineId &&
+                    startResult.ok === false && startResult.error === "project_control_admission_denied", "previous_start_not_admission_denied");
+                  const unitState = Object.fromEntries(host.researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID"]).trim().split("\n").map(line => { const index = line.indexOf("="); return [line.slice(0, index), line.slice(index + 1)]; }));
+                  check(unitState.Id === unit && unitState.Description === startOwner.description && unitState.LoadState === "loaded" &&
+                    ["inactive", "failed"].includes(unitState.ActiveState ?? "") && unitState.MainPID === "0", "previous_start_not_terminal");
+                  check(!host.researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]).trim().split("\n").some(line => line.trim().split(/\s+/)[1] === unit), "previous_start_queued");
+                  previousStart = { ownerSha256: hash(start.owner), requestSha256: hash(start.request), resultSha256: hash(start.result), terminalVerified: true };
+                }
+                const birthWitnesses = [controller.controller, job].map(manifest => {
+                  const directory = directoryIdentity(manifest.jobRootDir);
+                  const roots = [hash(manifest.jobRootDir), `physical-${directory.device}-${directory.inode}`];
+                  const births = roots.map(key => { const path = join(files.researchAuthorityRoot, "job-births", key + ".json"); return { path, sha256: hash(privateBytes(path)), firstEffectPath: join(files.researchAuthorityRoot, "job-births", key + ".first-effect.json") }; });
+                  return { directory, births };
+                });
+                await assertArchiveCurrent();
+                const proof = { projectId: plan.projectId, workstreamId: plan.workstreamId, machineId: plan.machineId, jobId: job.jobId,
+                  previousStart, runtimeDirectory, expectedArtifactSha256, birthWitnesses,
+                  directories: [directoryIdentity(binding.registryRootDir), directoryIdentity(job.workspacePath)],
+                  bindings: [{ path: bindingPath, sha256: hash(bindingBytes), witness: witness(bindingPath) },
+                    { path: controllerPath, sha256: plan.expectedControllerManifestSha256, witness: witness(controllerPath) },
+                    { path: manifestPath, sha256: plan.expectedManifestSha256, witness: witness(manifestPath) },
+                    { path: job.promptPath, sha256: originalBinding.promptSha256, witness: witness(job.promptPath) },
+                    ...(["contract", "state", "receipt"] as const).map(name => ({ path: descriptor[`${name}Path`], sha256: hash(observed[name]), witness: witness(descriptor[`${name}Path`]) }))] };
+                const finalized = await finalizeRetainedAdmissionArchive({ source, destination, priorPlanSha256,
+                  priorHashes: pins, assertCurrent: assertArchiveCurrent, proof });
+                await assertCurrent();
+                check(isDeepStrictEqual(await bindingCapture.captureProjectPreStartBinding(job, descriptor), originalBinding), "immutable_binding_changed");
+                return finalized;
+              }
               const repaired = buildRepairedAdmission({ contract: JSON.parse(observed.contract.toString()) as WorkerLaunchSpec,
                 state: JSON.parse(observed.state.toString()) as WorkerLaunchState, receipt: object(JSON.parse(observed.receipt.toString())),
                 manifest: job, ownedPaths: plan.ownedPaths, materialize: builtin.materializeBuiltinWorkerLaunchSpec });
@@ -217,7 +339,7 @@ export async function repairHostedMimoJobAdmission(planPath: string | RepairPlan
                   originalArtifactSha256: expectedArtifactSha256, previousContractSha256: plan.expectedContractSha256,
                   previousStateSha256: plan.expectedStateSha256, previousReceiptSha256: plan.expectedReceiptSha256,
                   ownedPaths: plan.ownedPaths, repairedAt: new Date().toISOString() } };
-              const publication = await publishRepairedAdmission({ jobRootDir: job.jobRootDir, operationSha256: expectedPlanSha256,
+              const publication = await publishRepairedAdmission({ jobRootDir: job.jobRootDir, archiveRootDir, operationSha256: expectedPlanSha256,
                 ...repaired, receipt, assertCurrent: async () => { await assertStableBinding(); await assertCurrent(); }, exchange: exchangeAdmissionDirectories });
               await admission.assertProjectPreStartAdmissionLaunchBinding({ manifest: job, scope: controller.scope });
               for (const manifest of [controller.controller, job]) check((await birth.observeProtectedCodexGoalJobBirth(manifest)).status === "released", "post_publication_birth_changed");
@@ -225,6 +347,64 @@ export async function repairHostedMimoJobAdmission(planPath: string | RepairPlan
                 controllerManifestSha256: plan.expectedControllerManifestSha256, workKey: repaired.contract.workKey,
                 contractSha256: receipt.contractSha256, stateSha256: receipt.stateSha256, ...publication };
             } }) }) }) });
+}
+
+export async function repairHostedMimoJobAdmission(planPath: string | RepairPlan, expectedPlanSha256: string,
+  runtimeDirectory: string, expectedArtifactSha256: string): Promise<unknown> {
+  return operateHostedMimoJobAdmission(planPath, expectedPlanSha256, runtimeDirectory, expectedArtifactSha256);
+}
+
+export async function finalizeHostedMimoJobAdmissionRepair(identity: AdmissionRepairIdentity, runtimeDirectory: string,
+  expectedArtifactSha256: string): Promise<unknown> {
+  const stateRoot = `/srv/worker-state/mimo-projects/${identity.projectId}/${identity.workstreamId}`;
+  const operation = join(stateRoot, "mimo-bridge-operations", identity.jobId + ".repair-admission");
+  const request = object(JSON.parse(operatorBytes(operation + ".request.json").toString()));
+  const plan = parseRepairPlan(request.repairPlan), envelope = object(JSON.parse(operatorBytes(operation + ".result.json").toString()));
+  const result = object(envelope.result);
+  check(envelope.ok === true && result.ok === true && result.jobId === identity.jobId && result.planSha256 === hash(JSON.stringify(plan)), "prior_repair_required");
+  for (const field of ["projectId", "workstreamId", "machineId", "jobId"] as const) check(plan[field] === identity[field], "finalization_identity");
+  const bindingPath = `/etc/subscription-runtime/mimo-projects/${identity.projectId}/${identity.workstreamId}.json`;
+  const binding = object(JSON.parse(operatorBytes(bindingPath).toString()));
+  check(binding.projectId === identity.projectId && binding.workstreamId === identity.workstreamId && binding.machineId === identity.machineId &&
+    binding.stateRoot === stateRoot && binding.registryRootDir === join(stateRoot, "registry") && typeof binding.controllerJobId === "string", "finalization_binding");
+  const receiptPath = join(stateRoot, "jobs", identity.jobId, "pre-start-admission", "receipt.json");
+  const currentPlan: RepairPlan = { ...plan, expectedReceiptSha256: hash(operatorBytes(receiptPath, 65536)),
+    expectedContractSha256: String(result.contractSha256), expectedStateSha256: String(result.stateSha256) };
+  check(result.manifestSha256 === plan.expectedManifestSha256 && result.controllerManifestSha256 === plan.expectedControllerManifestSha256, "prior_manifest_binding");
+  return operateHostedMimoJobAdmission(currentPlan, hash(JSON.stringify(currentPlan)), runtimeDirectory, expectedArtifactSha256,
+    { priorPlan: plan, priorResult: result });
+}
+export async function assertHostedMimoAdmissionRepairStartRearm(identity: AdmissionRepairIdentity,
+  previousStart: PreviousStartHashes): Promise<{ receiptSha256: string }> {
+  check(process.getuid?.() === 0 && process.platform === "linux", "initial_root_required");
+  const receiptPath = `/srv/worker-state/mimo-projects/${identity.projectId}/${identity.workstreamId}/admission-repair-archives/${identity.jobId}.finalization.json`;
+  const bytes = operatorBytes(receiptPath), proof = object(JSON.parse(bytes.toString()));
+  verifyAdmissionRepairStartRearmProof(proof, identity, previousStart, {
+    readBytes: operatorBytes, witness, absent, directoryIdentity: path => {
+      const stat = lstatSync(path);
+      check(stat.uid === 0 && !(stat.mode & 0o022) && realpathSync(path) === path, "rearm_directory_custody");
+      return directoryIdentity(path);
+    },
+  });
+  return { receiptSha256: hash(bytes) };
+}
+
+export function verifyAdmissionRepairStartRearmProof(proof: Json, identity: AdmissionRepairIdentity,
+  previousStart: PreviousStartHashes, ports: Readonly<{ readBytes(path: string): Buffer; witness(path: string): string;
+    directoryIdentity(path: string): { path: string; device: number; inode: number }; absent(path: string): boolean }>): void {
+  for (const field of ["projectId", "workstreamId", "machineId", "jobId"] as const) check(proof[field] === identity[field], "rearm_identity");
+  const prior = object(proof.previousStart);
+  check(prior.terminalVerified === true && prior.ownerSha256 === previousStart.ownerSha256 && prior.requestSha256 === previousStart.requestSha256 && prior.resultSha256 === previousStart.resultSha256, "rearm_previous_start");
+  check(Array.isArray(proof.bindings) && Array.isArray(proof.directories) && Array.isArray(proof.birthWitnesses) && proof.birthWitnesses.length === 2, "rearm_proof_shape");
+  for (const value of proof.bindings) { const row = object(value); check(typeof row.path === "string" && hash(ports.readBytes(row.path)) === row.sha256 && ports.witness(row.path) === row.witness, "rearm_binding_changed"); }
+  for (const value of [...proof.directories, ...proof.birthWitnesses.map(value => object(value).directory)]) {
+    const row = object(value); check(typeof row.path === "string" && isDeepStrictEqual(ports.directoryIdentity(row.path), row), "rearm_directory_changed");
+  }
+  for (const value of proof.birthWitnesses) {
+    const row = object(value); check(Array.isArray(row.births) && row.births.length === 2, "rearm_birth_shape");
+    for (const value of row.births) { const birth = object(value); check(typeof birth.path === "string" && typeof birth.firstEffectPath === "string" &&
+      hash(ports.readBytes(birth.path)) === birth.sha256 && ports.absent(birth.firstEffectPath), "rearm_first_effect_or_birth_changed"); }
+  }
 }
 
 /** Fixed managed operation receives an immutable request snapshot; executable
