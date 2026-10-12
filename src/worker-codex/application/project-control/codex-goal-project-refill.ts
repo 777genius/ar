@@ -23,6 +23,7 @@ import {
   stagedPatchSha256,
 } from "./codex-goal-project-git";
 import { nodeErrorCode } from "./codex-goal-project-utils";
+import { defaultProjectControlGitPort, type ProjectControlGitPort } from "./adapters/host-command-adapters";
 import {
   prepareWorkerToolRoot, removeWorkerToolRoot, WorkerToolRootStatus,
   WorkerToolRootSkipReason, type WorkerToolRootOutcome,
@@ -100,11 +101,12 @@ export async function createOrReuseProjectWorktree(input: {
   return { result, created, ...(workerToolRoot ? { workerToolRoot } : {}) };
 }
 
-async function assertReusableProjectWorktree(
+export async function assertReusableProjectWorktree(
   input: {
     readonly createWorktreeInput: CodexGoalProjectCreateWorktreeInput;
     readonly scope: ProjectAccessScope;
   },
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<void> {
   try {
     const worktreeInput = input.createWorktreeInput;
@@ -127,13 +129,13 @@ async function assertReusableProjectWorktree(
     ) {
       throw new Error("project_control_existing_worktree_real_path_changed");
     }
-    await execGitStdout(["-C", materializedRealPath, "rev-parse", "--show-toplevel"]);
+    await execGitStdout(["-C", materializedRealPath, "rev-parse", "--show-toplevel"], git);
     const status = await execGitStdout([
       "-C",
       materializedRealPath,
       "status",
       "--porcelain",
-    ]);
+    ], git);
     if (
       status.trim().length > 0 &&
       !worktreeInput.inputPatch &&
@@ -158,7 +160,7 @@ async function assertReusableProjectWorktree(
         "symbolic-ref",
         "--short",
         "HEAD",
-      ])).trim();
+      ], git)).trim();
       if (branch !== worktreeInput.newBranch) {
         throw new Error("project_control_existing_worktree_branch_mismatch");
       }
@@ -166,6 +168,7 @@ async function assertReusableProjectWorktree(
     const actual = await resolveProjectWorktreeRevision(
       materializedRealPath,
       "HEAD",
+      git,
     );
     if (actual !== worktreeInput.expectedRevision) {
       throw new Error("project_control_existing_worktree_revision_mismatch");
@@ -254,6 +257,7 @@ async function assertReusableInputPatch(input: {
 async function resolveProjectWorktreeRevision(
   workspacePath: string,
   ref: string,
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<string> {
   return (await execGitStdout([
     "-C",
@@ -261,7 +265,7 @@ async function resolveProjectWorktreeRevision(
     "rev-parse",
     "--verify",
     `${ref}^{commit}`,
-  ])).trim();
+  ], git)).trim();
 }
 
 async function removeFailedProjectWorktreeMaterialization(
@@ -396,7 +400,7 @@ async function readExistingCodexGoalJob(input: {
   }
 }
 
-async function assertExistingRefillJobMatches(input: {
+export async function assertExistingRefillJobMatches(input: {
   readonly existing: CodexGoalJobManifest;
   readonly expected: CodexGoalJobManifestInput;
   readonly promptBody: string;
