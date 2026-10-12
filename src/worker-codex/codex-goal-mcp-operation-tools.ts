@@ -1,3 +1,4 @@
+import { withCodexGoalMcpStorage, type CodexGoalMcpStorageDefaults } from "./codex-goal-mcp-inputs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
@@ -28,7 +29,7 @@ import {
   tailCodexGoalRunLog,
 } from "./application/codex-goal-operation-use-cases";
 
-export function registerCodexGoalLaunchTools(server: McpServer): void {
+export function registerCodexGoalLaunchTools(server: McpServer, storageDefaults: CodexGoalMcpStorageDefaults = {}): void {
   server.registerTool(
     "codex_goal_dry_run",
     {
@@ -37,10 +38,10 @@ export function registerCodexGoalLaunchTools(server: McpServer): void {
         "Build the exact Codex goal worker command without starting a worker.",
       inputSchema: goalInputSchema(),
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const launch = await goalLaunchInput(args as GoalMcpArgs);
       return mcpJson(dryRunCodexGoalLaunch({ launch }));
-    }),
+    })),
   );
 
   server.registerTool(
@@ -57,7 +58,7 @@ export function registerCodexGoalLaunchTools(server: McpServer): void {
         forceStart: z.boolean().optional(),
       },
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const startArgs = args as StartMcpArgs;
       const launch = await goalLaunchInput(startArgs);
       return mcpJson(await startCodexGoalLaunch({
@@ -68,11 +69,11 @@ export function registerCodexGoalLaunchTools(server: McpServer): void {
         skipDoctor: Boolean(startArgs.skipDoctor),
         forceStart: Boolean(startArgs.forceStart),
       }));
-    }),
+    })),
   );
 }
 
-export function registerCodexGoalInspectionTools(server: McpServer): void {
+export function registerCodexGoalInspectionTools(server: McpServer, storageDefaults: CodexGoalMcpStorageDefaults = {}): void {
   server.registerTool(
     "codex_goal_status",
     {
@@ -81,8 +82,11 @@ export function registerCodexGoalInspectionTools(server: McpServer): void {
         "Inspect tmux, result JSON, log freshness and workspace dirtiness.",
       inputSchema: statusInputSchema(),
     },
-    async (args) => withMcpErrors(async () => mcpJson(
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => mcpJson(
       await inspectCodexGoalStatus({
+        sourceEnv: (args as GoalMcpArgs).sourceEnv,
+        storageRootDir: args.storageRootDir as string | undefined,
+        jobId: stringValue(args.jobId),
         cwd: stringValue(args.cwd),
         jobRootDir: stringValue(args.jobRootDir),
         taskId: stringValue(args.taskId),
@@ -91,7 +95,7 @@ export function registerCodexGoalInspectionTools(server: McpServer): void {
         logPath: stringValue(args.logPath),
         progressPath: stringValue(args.progressPath),
       }),
-    )),
+    ))),
   );
 
   server.registerTool(
@@ -102,10 +106,10 @@ export function registerCodexGoalInspectionTools(server: McpServer): void {
         "Validate prompt, job root, auth root, workspace and account auth files.",
       inputSchema: goalInputSchema(),
     },
-    async (args) => withMcpErrors(async () => {
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => {
       const launch = await goalLaunchInput(args as GoalMcpArgs);
       return mcpJson(await inspectCodexGoalDoctor({ launch }));
-    }),
+    })),
   );
 
   server.registerTool(
@@ -114,6 +118,8 @@ export function registerCodexGoalInspectionTools(server: McpServer): void {
       title: "Codex Goal Tail",
       description: "Read the last lines from a Codex goal worker log.",
       inputSchema: {
+        storageRootDir: z.string().optional(),
+        jobId: z.string().optional(),
         jobRootDir: z.string().optional(),
         taskId: z.string().optional(),
         logPath: z.string().optional(),
@@ -121,14 +127,17 @@ export function registerCodexGoalInspectionTools(server: McpServer): void {
         lines: z.number().int().positive().optional(),
       },
     },
-    async (args) => withMcpErrors(async () => mcpJson(
+    withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () => mcpJson(
       await tailCodexGoalRunLog({
+        sourceEnv: (args as GoalMcpArgs).sourceEnv,
+        storageRootDir: args.storageRootDir as string | undefined,
+        jobId: stringValue(args.jobId),
         cwd: stringValue(args.cwd),
         jobRootDir: stringValue(args.jobRootDir),
         taskId: stringValue(args.taskId),
         logPath: stringValue(args.logPath),
         lines: numberValue(args.lines),
       }),
-    )),
+    ))),
   );
 }

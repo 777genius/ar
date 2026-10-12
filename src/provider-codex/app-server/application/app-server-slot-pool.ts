@@ -104,6 +104,7 @@ export class AppServerSlotPool {
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly nativeGoalControls?: true;
       readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
@@ -221,6 +222,7 @@ export class AppServerSlotPool {
       ...(this.options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: this.options.nativeToolSurface }),
+      ...(this.options.nativeGoalControls === undefined ? {} : { nativeGoalControls: this.options.nativeGoalControls }),
       ...(this.options.hostedControllerTools === undefined
         ? {}
         : { hostedControllerTools: this.options.hostedControllerTools }),

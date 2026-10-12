@@ -5,6 +5,7 @@ import {
   listCodexGoalAccountStatuses,
   shellQuote,
 } from "../codex-goal-ops";
+import type { CodexGoalAccountSlotStatus } from "../codex-goal-account-status";
 import { defaultCodexGoalAuthRoot } from "./codex-goal-account-roots";
 import { resolvePath } from "./codex-goal-input-values";
 
@@ -16,9 +17,7 @@ export type CodexAccountPoolArgs = {
   readonly poolRootDir?: string;
 };
 
-export type CodexGoalAccountSlots = Awaited<
-  ReturnType<typeof listCodexGoalAccountStatuses>
->;
+export type CodexGoalAccountSlots = readonly CodexGoalAccountSlotStatus[];
 
 export type CodexGoalAccountSlot = CodexGoalAccountSlots[number];
 
@@ -158,7 +157,7 @@ export function accountOperatorLabel(slot: CodexGoalAccountSlot): string {
   return slot.operatorLabel ?? slot.displayName ?? slot.email ?? slot.name;
 }
 
-export function dedupeCodexGoalAccountSlots(slots: CodexGoalAccountSlots) {
+export function dedupeCodexGoalAccountSlots(slots: CodexGoalAccountSlots): CodexGoalAccountSlot[] {
   const byIdentity = new Map<string, CodexGoalAccountSlot>();
   const uniqueSlots: CodexGoalAccountSlot[] = [];
   for (const slot of slots) {
@@ -190,14 +189,14 @@ export function dedupeCodexGoalAccountSlots(slots: CodexGoalAccountSlots) {
   ];
 }
 
-export function availableCodexGoalAccountSlots(slots: CodexGoalAccountSlots) {
+export function availableCodexGoalAccountSlots(slots: CodexGoalAccountSlots): CodexGoalAccountSlot[] {
   return slots.filter(isAccountSlotAvailable);
 }
 
 export function visibleCodexGoalAccountPoolSlots(
   poolName: string,
   slots: CodexGoalAccountSlots,
-) {
+): CodexGoalAccountSlot[] {
   const likelyAuthPool = isLikelyAuthPoolName(poolName);
   return slots.filter((slot) =>
     slot.status !== "auth_missing" ||

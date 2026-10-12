@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
-import { inspectVisibleScratchMount } from "../src/worker-codex/host-scratch-mount.ts";
+import { inspectVisibleScratchMount } from "../dist/worker-codex/host-scratch-mount.js";
 
 // Run only with sudo unshare --mount --propagation private on a disposable TEST VM.
 // Refuse the initial namespace before creating any directories or mounts.
