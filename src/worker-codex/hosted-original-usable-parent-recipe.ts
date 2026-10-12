@@ -1,25 +1,24 @@
 import { readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventoryLaunch } from "../../../core/host-infrastructure/host-inventory";
-import { parseHostedInstallation, type HostedInstallation } from "../../../worker-core/hosted-custody/domain/hosted-installation-activation";
-import { resolveStoredProjectStartPlan } from "../../../worker-codex/stored-start-planning";
-import { collectProcessBirth, collectProcessCgroup, collectUnitInvocation, collectUnitShow } from "../../../worker-codex/hosted-readonly-linux-collector";
+import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventoryLaunch } from "../core/host-infrastructure/host-inventory";
+import type { DependencyParentRecipeOriginalRoots } from "../core/dependency-environment/dependency-parent-recipe-reader";
+import { parseHostedInstallation, type HostedInstallation } from "../worker-core/hosted-custody/domain/hosted-installation-activation";
+import { resolveStoredProjectStartPlan } from "./stored-start-planning";
+import { collectProcessBirth, collectProcessCgroup, collectUnitInvocation, collectUnitShow } from "./hosted-readonly-linux-collector";
 import { QualificationClock, qualificationJson, qualificationObject, qualificationRead, qualificationRoot,
-  qualificationSha } from "../../../worker-codex/hosted-ordinary-installation-qualification";
-import { assertHostedActivationFence, readHostedActivationBytes, type HostedActivationFence } from "./hosted-process-activation";
+  qualificationSha } from "./hosted-ordinary-installation-qualification";
+import { assertHostedActivationFence, readHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 
 /** Read-only writer facts for the existing original Usable producer. No caller
  * flag or credential can select this branch; the protected stored tuple, live
  * Source worker and original funded guest records must all agree. */
-export type HostedOriginalUsableParentRoots = Readonly<{ auth: string; capacity: string; registry: string;
-  handoff: string; state: string; progress: string; log: string }>;
 const broker = qualificationRoot + "/broker";
 const jobs = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs";
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const same = isDeepStrictEqual;
 function fail(): never { throw new Error("hosted_original_usable_parent_recipe_unsupported"); }
-export function readHostedOriginalUsableParentRoots(raw: HostedInventoryLaunch, job: string, workspace: string): HostedOriginalUsableParentRoots | null {
+export function readHostedOriginalUsableParentRoots(raw: HostedInventoryLaunch, job: string, workspace: string): DependencyParentRecipeOriginalRoots | undefined {
   return readOriginalRoots(raw, job, workspace);
 }
 /** The existing Store's fresh placement fence supplies its actual unpublished
@@ -27,15 +26,15 @@ export function readHostedOriginalUsableParentRoots(raw: HostedInventoryLaunch, 
  * callers always require the published installation through the function above. */
 export function readHostedOriginalUsableInstallationRecipe(fence: HostedActivationFence, installation: HostedInstallation, raw: HostedInventoryLaunch): boolean {
   assertHostedActivationFence(fence);
-  const selected = readOriginalRoots(raw, raw.cwd.slice(0, -"/workspace".length), raw.cwd, installation) !== null;
+  const selected = readOriginalRoots(raw, raw.cwd.slice(0, -"/workspace".length), raw.cwd, installation) !== undefined;
   assertHostedActivationFence(fence); return selected;
 }
-function readOriginalRoots(raw: HostedInventoryLaunch, job: string, workspace: string, draft?: HostedInstallation): HostedOriginalUsableParentRoots | null {
-  if (raw.args[1] !== "tool") return null;
+function readOriginalRoots(raw: HostedInventoryLaunch, job: string, workspace: string, draft?: HostedInstallation): DependencyParentRecipeOriginalRoots | undefined {
+  if (raw.args[1] !== "tool") return undefined;
   if (raw.args.length !== 6 || raw.args[2] !== "codex_goal_project_start" || raw.args[3] !== "--args-json" ||
       raw.args[5] !== "--json" || raw.cwd !== workspace) fail();
   const plan = resolveStoredProjectStartPlan(raw.args[4]!, workspace), config = plan.launch.config;
-  if (config.authRootDir !== broker) return null;
+  if (config.authRootDir !== broker) return undefined;
   if (plan.jobRoot !== job || plan.workspace !== workspace || raw.command !== process.execPath ||
       plan.launch.cliCommand[0] !== raw.command || plan.launch.cliCommand[1] !== raw.args[0]) fail();
   const captured = new Map<string, Buffer>();
