@@ -445,6 +445,7 @@ async function startFixture(options: { colocatedJobRoot?: boolean; admittedInput
   const promptPath = join(jobRootDir, "prompt.md");
   await writeFile(promptPath, "bounded prompt\n");
   const manifestInput = { ...prepared.manifest, jobRootDir, promptPath,
+    ...(options.admittedInputPatch ? { tags: ["worker-role-producer"] } : {}),
     workspacePath: await realpath(prepared.workspacePath), authRootDir: join(f.root, "synthetic-auth"),
     projectAccessScope: { projectId: scope.projectId, isolatedWorkspaceRoot: await realpath(prepared.workspacePath),
       allowedAccountIds: ["account-a"], authRoot: join(f.root, "synthetic-auth") } };
