@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { sdkRecipe } from "../../provider-codex/tests/hosted-dependency-sdk-recipe.fixture";
+import { sdkRecipe } from "./hosted-dependency-sdk-recipe.fixture";
 import { HostedManifestLimitsRevision, issueFreshHostedManifestPlacement } from "../hosted-dependency-manifest-placement";
 // Source admission regression: original protected planner and placement issuer
 // run unchanged. Kernel census and immutable private byte reads are substituted.

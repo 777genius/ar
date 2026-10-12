@@ -1,11 +1,12 @@
-import { buildCodexGoalForegroundArgv } from "../../worker-codex/application/codex-goal-foreground-command";
+import { readHostedDependencyParentRecipe as readProviderRecipe } from "../../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { buildCodexGoalForegroundArgv } from "../application/codex-goal-foreground-command";
 import { describe, expect, it, vi } from "vitest";
 import { sdkRecipe } from "./hosted-dependency-sdk-recipe.fixture";
-import { planStoredProjectStart } from "../../worker-codex/stored-start-planning";
+import { planStoredProjectStart } from "../stored-start-planning";
 const snapshots=vi.hoisted(()=>new Map<string,Buffer>());
-vi.mock("../../worker-codex/hosted-readonly-inputs",async original=>({...await original<typeof import("../../worker-codex/hosted-readonly-inputs")>(),
+vi.mock("../hosted-readonly-inputs",async original=>({...await original<typeof import("../hosted-readonly-inputs")>(),
  readHostedPrivateBytes:(path:string)=>snapshots.get(path)}));
-import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe, readHostedDependencyParentRecipe } from "../app-server/adapters/hosted-dependency-parent-recipe";
+import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe, readHostedDependencyParentRecipe } from "../hosted-dependency-parent-recipe";
 const job = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/TEST-parent", workspace = `${job}/workspace`;
 const args = ["/opt/test-runtime/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", "TEST-parent", "--job-root", job,
   "--workspace", workspace, "--prompt", `${job}/prompt`, "--auth-root", `${job}/auth`, "--output", `${job}/TEST-parent.latest-result.json`];
@@ -84,4 +85,9 @@ describe("original protected SDK dependency recipe facts",()=>{
     expect(()=>readHostedDependencyParentRecipe(current,job,workspace)).toThrow();
   }
  });
+});
+
+it("refuses a stored SDK recipe without its worker reader", () => {
+  const launch = sdkRecipe(snapshots, job);
+  expect(() => readProviderRecipe(launch, job, workspace)).toThrow();
 });

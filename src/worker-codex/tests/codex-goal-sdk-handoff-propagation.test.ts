@@ -11,7 +11,7 @@ import {createCodexGoalMcpServer} from "../codex-goal-mcp";
 import {readCodexGoalJob} from "../codex-goal-jobs";
 import {planStoredProjectStart} from "../stored-start-planning";
 import {buildCodexGoalForegroundArgv} from "../application/codex-goal-foreground-command";
-import {assertHostedDependencyParentRecipe} from "../../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import {assertHostedDependencyParentRecipe} from "../hosted-dependency-parent-recipe";
 
 // Original public MCP create/refill and real private TEST Git/manifests. The
 // existing synthetic account fixture is local data; no provider is started.

@@ -1,4 +1,4 @@
-import { sdkRecipe } from "../../provider-codex/tests/hosted-dependency-sdk-recipe.fixture";
+import { sdkRecipe } from "./hosted-dependency-sdk-recipe.fixture";
 import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

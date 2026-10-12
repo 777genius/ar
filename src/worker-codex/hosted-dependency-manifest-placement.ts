@@ -1,5 +1,4 @@
 import { readHostedOriginalUsableInstallationRecipe, readHostedOriginalUsableParentRoots } from "../provider-codex/app-server/adapters/hosted-original-usable-parent-recipe";
-import { readHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync,
@@ -13,6 +12,7 @@ import { assertHostedActivationFence, assertHostedActivationOperator, type Hoste
 import { createReadonlyPrivateRecord, readonlySupervisorRoot as policyRoot } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 
 export enum HostedManifestLimitsRevision { TestUnqualifiedV1 = "registry_test_manifest_bounds_v1_unqualified" }
 export enum HostedManifestPlacementFailure { Unsupported = "unsupported", Retained = "retained", Drift = "drift", Unsafe = "unsafe", Closed = "closed" }

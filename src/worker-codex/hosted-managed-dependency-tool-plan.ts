@@ -23,13 +23,13 @@ import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, match
   type DependencyToolReadyFacts } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, isHostedDependencyWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, isHostedDependencyWorkspace, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { assertHostedDependencyToolProfileFiles, trustedFile } from "../provider-codex/app-server/adapters/hosted-dependency-tool-files";
 import { observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile, hostedFdGroupPids, assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdInternals, type HostedFdProcess, type HostedFdUnit } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import type { CodexAppServerProcessInvocation } from "../provider-codex/app-server/adapters/node-app-server-process";
 import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
-import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe, readHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe, readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { isHostedManagedReadonlyOuterRuntime, assertCurrentHostedDependencyAttempt, readCurrentHostedManagedDependencyProvider,
   prepareCurrentHostedManagedDependencyProviderTools, readCurrentHostedManagedDependencyProviderTools,
   closeCurrentHostedManagedDependencyProviderTools, assertCurrentHostedManagedDependencyCapsuleCopy,
