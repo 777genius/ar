@@ -136,6 +136,7 @@ export async function runOriginalFullProjectControlSupervisorOnce():Promise<Read
   let stdin:Socket|undefined,stdout:Socket|undefined,stderr:Socket|undefined,gate:Duplex|undefined;
   const checkChild=()=>{remainingOriginalPeerQueryMilliseconds();entry.revalidate();check(!failure&&!nativeWait&&child.pid&&childBirth&&birth(child.pid)===childBirth&&anchor!==undefined&&exe!==undefined);timeJoin(entry,child.pid);
     const node=entry.descriptors().filter(row=>row.path===originalFullPeerNode);check(node.length===1);const a=fstatSync(exe,{bigint:true}),b=fstatSync(node[0]!.fd,{bigint:true});check(a.dev===b.dev&&a.ino===b.ino&&same(a,statSync("/proc/"+child.pid+"/exe",{bigint:true}))&&readFileSync("/proc/"+child.pid+"/cmdline").equals(Buffer.from([originalFullPeerNode,guestProgram,"qualify", ""].join("\0")))&&new RegExp("^PPid:\\s+"+process.pid+"$","m").test(readFileSync("/proc/"+child.pid+"/status","utf8")));};
+  let primaryFailed = false;
   try {
     check(native&&typeof native==="object"&&typeof onexit==="function"&&streams.length===4&&child.stdin instanceof Socket&&child.stdout instanceof Socket&&child.stderr instanceof Socket&&streams[3] instanceof Duplex);
     stdin=child.stdin;stdout=child.stdout;stderr=child.stderr;gate=streams[3]; const endpoints=[stdin,stdout,stderr,gate].map(streamSocket);check(new Set(endpoints.map(row=>row.dev+":"+row.ino)).size===4);
@@ -155,8 +156,30 @@ export async function runOriginalFullProjectControlSupervisorOnce():Promise<Read
     await confirmWrite(endpoints[1]!,sdkDeadline,()=>completeJoin(true),()=>completeJoin(false));sdkComplete=true;clearTimeout(sdkTimer);clock.close();stdout.resume();stderr.resume();
     await bounded(terminal,Math.max(1,Number((wholeDeadline-process.hrtime.bigint())/1_000_000n)+1000));check(nativeWait&&!failure&&closed.size===4);
     let stillBirth:string|undefined;try{stillBirth=birth(child.pid);}catch(error){check(error instanceof Error&&"code"in error&&error.code==="ENOENT");}check(stillBirth!==childBirth&&children(process.pid)===baseline&&groupMembers(group)===groupBaseline);drained=true;entry.revalidate();return nativeWait;
-  } catch(error) { if(!nativeWait)child.kill("SIGKILL");try{await bounded(terminal,1000);drained=children(process.pid)===baseline&&groupMembers(group)===groupBaseline;}catch{/* Retain exact unknown child and pins; no successor may adopt it. */}throw error; }
-  finally { clearTimeout(wholeTimer);clearTimeout(handoffTimer);clearTimeout(sdkTimer);if(nativeWait&&closed.size===4&&drained){reservations.delete(child);closeSync(group);if(exe!==undefined)closeSync(exe);if(anchor!==undefined)closeSync(anchor);entry.close();} }
+  } catch(error) {
+    // A thrown undefined is still a primary failure. Cancellation and close
+    // diagnostics cannot replace the original refusal.
+    primaryFailed = true;
+    try { if(!nativeWait)child.kill("SIGKILL"); } catch { /* Preserve primary and original reservation. */ }
+    try{await bounded(terminal,1000);drained=children(process.pid)===baseline&&groupMembers(group)===groupBaseline;}catch{/* Retain exact unknown child and pins; no successor may adopt it. */}
+    throw error;
+  } finally {
+    clearTimeout(wholeTimer);clearTimeout(handoffTimer);clearTimeout(sdkTimer);
+    if(nativeWait&&closed.size===4&&drained){
+      const closeErrors: unknown[] = [];
+      for (const fd of [group, exe, anchor]) if (fd !== undefined) {
+        try { closeSync(fd); } catch (error) { closeErrors.push(error); }
+      }
+      // Source/proc pins are an independent close obligation after confirmed
+      // child drain. A failed auxiliary FD close must not strand those pins.
+      try { entry.close(); } catch (error) { closeErrors.push(error); }
+      // Unknown close retains this exact child reservation; never acknowledge
+      // released custody merely because native wait and stream drain passed.
+      if (closeErrors.length) {
+        if (!primaryFailed) throw new AggregateError(closeErrors, "hosted_original_native_close_held");
+      } else reservations.delete(child);
+    }
+  }
 }
 
 /** Actual inherited fd0 uses Node's original standard-input object.

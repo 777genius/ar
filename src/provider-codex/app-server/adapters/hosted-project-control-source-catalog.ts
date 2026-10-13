@@ -85,6 +85,45 @@ export function originalFullProjectControlGitEntryData(value: unknown): readonly
   return Object.freeze(rows);
 }
 
+/** Fixed Git executable facts only. Every selected symlink must terminate at
+ * an inventoried regular ELF with the same independently signed pin. This is
+ * not filesystem custody, an ELF dependency closure or permission to execute. */
+export function originalFullProjectControlGitExecutableData(entriesValue: unknown, pinsValue: unknown):
+  readonly Readonly<{ path: string; resolvedPath: string; sha256: string }>[] {
+  const entries = originalFullProjectControlGitEntryData(entriesValue);
+  preloadCheck(Array.isArray(pinsValue) && pinsValue.length > 0 && pinsValue.length <= 4096);
+  const pins = new Map<string, string>();
+  for (const value of pinsValue) {
+    const row = preloadObject(value, "path,sha256");
+    preloadCheck(typeof row.path === "string" && /^\/usr\/(?:lib|bin)\//.test(row.path) &&
+      !row.path.split("/").some(part => part === "." || part === "..") &&
+      typeof row.sha256 === "string" && /^[a-f0-9]{64}$/.test(row.sha256) && !pins.has(row.path));
+    pins.set(row.path, row.sha256);
+  }
+  const byPath = new Map(entries.map(row => [row.path, row]));
+  return Object.freeze(["/usr/bin/git", "/usr/lib/git-core/git-upload-pack"].map(path => {
+    let selected = path; const visited = new Set<string>();
+    for (;;) {
+      preloadCheck(!visited.has(selected) && visited.size < 16); visited.add(selected);
+      const row = byPath.get(selected); preloadCheck(row);
+      if (row.kind !== OriginalFullGitEntryKind.Symlink) {
+        preloadCheck(row.kind === OriginalFullGitEntryKind.Regular && row.elf && row.sha256 !== null && pins.get(selected) === row.sha256);
+        return Object.freeze({ path, resolvedPath: selected, sha256: row.sha256 });
+      }
+      preloadCheck(row.target !== null);
+      const target = row.target.startsWith("/") ? row.target : selected.slice(0, selected.lastIndexOf("/")) + "/" + row.target;
+      const parts: string[] = [];
+      for (const part of target.split("/")) {
+        if (part === "" || part === ".") continue;
+        if (part === "..") { preloadCheck(parts.length > 0); parts.pop(); }
+        else parts.push(part);
+      }
+      selected = "/" + parts.join("/");
+      preloadCheck(selected === "/usr/bin/git" || selected.startsWith("/usr/lib/git-core/"));
+    }
+  }));
+}
+
 /** Validates copied signed-image facts only. This does not select an entry,
  * authenticate package bytes or enroll a filesystem alias. */
 export function originalFullProjectControlToolAliasData(value: unknown): readonly Readonly<{ path: string; target: string }>[] {

@@ -7,7 +7,10 @@ import { HostedManifestLimitsRevision, issueFreshHostedManifestPlacement } from 
 // run unchanged. Kernel census and immutable private byte reads are substituted.
 // The retained-record gate deliberately stops before native mount/publication IO.
 const state=vi.hoisted(()=>({snapshots:new Map<string,Buffer>(),inventory:{} as unknown,fence:Object.freeze({held:true})}));
-vi.mock("../hosted-readonly-inputs",async original=>({...await original<typeof import("../hosted-readonly-inputs")>(),readHostedPrivateBytes:(path:string)=>state.snapshots.get(path)}));
+// Both worker facades and the shared backing-stage adapter now read through
+// this canonical physical-input leaf. Substitute bytes at that existing seam;
+// keep the real stage decoder, planner and retained-record refusal unchanged.
+vi.mock("../../provider-codex/app-server/adapters/hosted-private-physical-inputs",async original=>({...await original<typeof import("../../provider-codex/app-server/adapters/hosted-private-physical-inputs")>(),readHostedPrivateBytes:(path:string)=>state.snapshots.get(path)}));
 // Source modules resolve a src CLI; the production modules resolve dist. Only
 // that installation path is substituted, preserving the actual planner/builder.
 vi.mock("../application/codex-goal-launch-input",async original=>{

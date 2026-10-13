@@ -1,6 +1,6 @@
 import "./unmanaged-goal-host-fixture";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,22 +29,47 @@ const facts = vi.hoisted(() => ({
   root: "",
   policy: vi.fn(), bytes: vi.fn(), grant: vi.fn(), grantFile: vi.fn(), review: vi.fn(),
   epoch: null as HostedCustodyEpoch | null, activationPhase: "EXCLUSIVE", records: new Map<string, Buffer>(),
+  fdPaths: new Map<number, string>(),
   snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(), session: vi.fn(),
 }));
 // Real protected mode bytes select strict enrollment. Only their fixed Host
 // paths and root principal are projected; admission still parses the file.
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
-  const local = (path: string) => ["/", "/etc", "/etc/subscription-runtime"].includes(path) ? facts.root :
-    path === "/etc/subscription-runtime/host-activation-mode" ? join(facts.root, "host-activation-mode") : path;
+  const local = (path: string) => {
+    // The source fixture can run without Linux procfs. Only its own opened
+    // descriptors get a portable lookup; Linux retains the real anchored IO.
+    const anchored = /^\/proc\/self\/fd\/([0-9]+)(\/.*)?$/.exec(path);
+    if (anchored && !real.existsSync("/proc/self/fd")) {
+      const parent = facts.fdPaths.get(Number(anchored[1]));
+      if (parent === undefined) throw new Error("TEST unowned descriptor lookup");
+      return parent + (anchored[2] ?? "");
+    }
+    return ["/", "/etc", "/etc/subscription-runtime"].includes(path) ? facts.root :
+      path === "/etc/subscription-runtime/host-activation-mode" ? join(facts.root, "host-activation-mode") :
+      path === "/etc/resolv.conf" ? join(facts.root, "resolv.conf") : path;
+  };
   return { ...real,
+    readFileSync: (path: Parameters<typeof real.readFileSync>[0], options?: Parameters<typeof real.readFileSync>[1]) => {
+      // This existing fixture models an ordinary source process, never an
+      // original C/R service. Do not borrow the test runner's real Host cgroup.
+      if (path === "/proc/self/cgroup") {
+        const bytes = Buffer.from("0::/TEST-readonly-runner-source\n");
+        return options === "utf8" ? bytes.toString("utf8") : bytes;
+      }
+      return real.readFileSync(typeof path === "string" ? local(path) : path, options);
+    },
     lstatSync: (path: string) => {
       if (path === "/etc/subscription-runtime/scratch-temp.json") {
         throw Object.assign(new Error("TEST scratch policy absent"), { code: "ENOENT" });
       }
       return Object.assign(real.lstatSync(local(path)), { uid: 0 });
     },
-    openSync: (path: string, flags: number, permissions?: number) => real.openSync(local(path), flags, permissions),
+    openSync: (path: string, flags: number, permissions?: number) => {
+      const selected = local(path), fd = real.openSync(selected, flags, permissions);
+      facts.fdPaths.set(fd, selected); return fd;
+    },
+    closeSync: (fd: number) => { real.closeSync(fd); facts.fdPaths.delete(fd); },
     fstatSync: (fd: number, options?: { bigint?: boolean }) => options?.bigint
       ? Object.assign(real.fstatSync(fd, { bigint: true }), { uid: 0n })
       : Object.assign(real.fstatSync(fd), { uid: 0 }),
@@ -74,6 +99,10 @@ vi.mock("../hosted-test-egress-files", () => ({
 vi.mock("../hosted-readonly-inputs", async original => ({
   ...await original<typeof import("../hosted-readonly-inputs")>(),
   readHostedReadonlyPolicy: facts.policy, readHostedPrivateBytes: facts.bytes,
+}));
+vi.mock("../../provider-codex/app-server/adapters/hosted-private-physical-inputs", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-private-physical-inputs")>(),
+  readHostedPrivateBytes: facts.bytes,
 }));
 vi.mock("../hosted-readonly-authority", async original => ({
   ...await original<typeof import("../hosted-readonly-authority")>(),
@@ -117,8 +146,11 @@ vi.mock("../hosted-dependency-cold-controller", () => {
 // the inventory parser and admission/activation decisions remain real.
 beforeEach(() => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-  facts.root = mkdtempSync(join(tmpdir(), "readonly-mode-TEST-"));
+  facts.root = realpathSync(mkdtempSync(join(tmpdir(), "readonly-mode-TEST-")));
   writeFileSync(join(facts.root, "host-activation-mode"), "required\n", { mode: 0o600 });
+  // Model a regular Linux resolver file instead of the runner OS's symlink.
+  // The production resolver validation and provider network policy stay real.
+  writeFileSync(join(facts.root, "resolv.conf"), "nameserver 192.0.2.1\n", { mode: 0o644 });
   facts.session.mockReturnValue(session);
   vi.spyOn(HostedReadonlyHostKernel.prototype, "session").mockImplementation(facts.session);
   vi.spyOn(HostedReadonlyHostKernel.prototype, "verifyRuntimeOwner").mockImplementation(() => {});
@@ -140,7 +172,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
   const revoke = fault !== "none";
   facts.activationPhase = "EXCLUSIVE";
   vi.spyOn(process, "getuid").mockReturnValue(0);
-  const root = await mkdtemp(join(tmpdir(), "readonly-runner-"));
+  const root = realpathSync(await mkdtemp(join(tmpdir(), "readonly-runner-")));
   const config = { jobId: "readonly-rotation", taskId: "readonly-rotation", jobRootDir: join(root, "job"),
     workspacePath: join(root, "workspace"), promptPath: join(root, "prompt"),
     authRootDir: join(root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
@@ -236,7 +268,13 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
       });
     } });
     expect(facts.session).toHaveBeenCalled();
-    expect(result.attempts[0]?.failureReason).toBe("quota_limited");
+    const first = result.attempts[0];
+    const code = /^(?:hosted_|dependency_|controller_|safe_execution_)[a-z0-9_]+(?=:|$)/.exec(first?.failureMessage ?? "")?.[0];
+    const messages = [first?.failureMessage ?? "", ...Object.values(first?.failureDetails ?? {})];
+    const nestedCodes = [...new Set(messages.flatMap(value => [...value.matchAll(/\b(?:hosted_|dependency_|controller_|safe_execution_|codex_)[a-z0-9_]+\b/g)].map(match => match[0])))];
+    const errnos = ["ENOENT", "EACCES", "EPERM", "EINVAL", "EROFS"].filter(errno => messages.some(value => value.includes(errno)));
+    expect(first?.failureReason, JSON.stringify({ code: code ?? "unclassified",
+      nestedCodes, errnos, providerSpawns: facts.spawn.mock.calls.length, serviceReservations: serviceRecords().length })).toBe("quota_limited");
     expect(facts.spawn).toHaveBeenCalledTimes(revoke ? 1 : 2);
     expect(serviceRecords()).toHaveLength(revoke ? 1 : 2);
     expect(facts.policy.mock.calls.length).toBeGreaterThanOrEqual(3); // admission and both attempted spawns

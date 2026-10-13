@@ -34,8 +34,8 @@ vi.mock("../../provider-codex/app-server/adapters/hosted-process-activation", as
     throw new Error("unexpected private activation record");
   },
 }));
-vi.mock("../hosted-readonly-inputs", async original => ({
-  ...await original<typeof import("../hosted-readonly-inputs")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-private-physical-inputs", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-private-physical-inputs")>(),
   readHostedPrivateBytes: (path: string) => {
     if (path === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json") return inventoryBytes();
     if (path === "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" +

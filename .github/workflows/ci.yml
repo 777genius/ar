@@ -85,10 +85,11 @@ jobs:
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      # Source facades require this exact revision's canonical emitted leaves.
+      - run: npm run build
       - run: npm run typecheck
       - run: npm run typecheck:ci-tools
       - run: npm run test:ci-tools
-      - run: npm run build
       - run: npm run check:dist
       - run: npm run check:boundaries
 
@@ -605,6 +606,11 @@ jobs:
             host-integration/managed-launcher/profiles.mjs \
             host-integration/host-jobs/storage-policy.mjs \
             scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json \
+            dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
+            dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
+            dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
+            dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
+            dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
             .github/workflows/ci.yml package.json package-lock.json \
             node_modules/typescript/package.json node_modules/typescript/bin/tsc node_modules/typescript/lib/_tsc.js \
             > dependency-h1-staged-data-ci-evidence/source-and-compiler.sha256
@@ -620,6 +626,11 @@ jobs:
             outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/payload-guard.mjs \
             outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/profiles.mjs \
             outputs/TEST-h1-staged-data-ci-emit/host-integration/host-jobs/storage-policy.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
             > dependency-h1-staged-data-ci-evidence/emitted.sha256
       - name: Require three actual Linux ROOT staged DATA physical tests with unchanged H1 refusal
         run: |
@@ -699,7 +710,10 @@ jobs:
           dpkg-query --show --showformat='${Version}\n' tmux
           tmux -V
           npm ci
-          npm run build:packages
+          # The HOST source facade imports canonical emitted runtime leaves.
+          # Build this exact disposable source before its root-source check;
+          # workspace-package declarations alone do not provide those leaves.
+          npm run build
           npm run typecheck:native-probe
           npm run typecheck:native-probe:root-source
           npm run test:native-probe

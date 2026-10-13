@@ -10,6 +10,7 @@ import { callToolJson, git, gitStdout, writeFakeAuth } from "./codex-goal-mcp-te
 import { assertHostedTestEgressDirectory } from "../hosted-test-egress-files";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob } from "../codex-goal-jobs";
+import { buildCodexGoalOverviewItem } from "../application/codex-goal-overview-item";
 import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
 // Select genuine root before the shared synthetic OS fixture installs mocks.
@@ -68,7 +69,17 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
         progressPath: join(job, jobId + ".progress.json"), logPath: join(job, jobId + ".log"), outputPath: join(job, jobId + ".latest-result.json"),
         executionEngine: "app-server-goal", durableHandoffRootDir: join(job, "durable-handoffs"), prewarmOnStart: false, startWorker: false, confirmRefill: true };
       const result = await callToolJson(client, "codex_goal_project_refill_worker", request);
-      if (result.ok !== true) throw new Error(JSON.stringify(result));
+      if (result.ok !== true) {
+        const overview = await buildCodexGoalOverviewItem({ registryRootDir: registry, jobId: controllerId, staleAfterMs: 60000, tailLines: 0 });
+        // Keep raw overview failures private: they may contain paths or provider
+        // payloads. Only these exact finite codes can enter the TEST report.
+        const codes = ["protected_job_birth_authority_invalid", "protected_job_birth_publication_busy",
+          "hosted_ordinary_writer_extent_invalid", "safe_execution_workspace_locked"];
+        const message = typeof overview.safeMessage === "string" ? overview.safeMessage : "";
+        const observation = { phase: "first_refill", controllerOverviewReadable: overview.ok === true,
+          controllerErrorCode: codes.find(code => message === code || message.startsWith(code + ":")) ?? "unclassified" };
+        throw new Error(JSON.stringify(observation));
+      }
       const manifest = await readCodexGoalJob({ registryRootDir: registry, jobId });
       expect(manifest.workspacePath).toBe(workspace); expect(manifest.projectAccessScope?.workspaceRoots).toEqual([workspace]);
       const metadata = await lstat(join(workspace, ".git")); expect(metadata.isDirectory()).toBe(true); expect(metadata.isSymbolicLink()).toBe(false);

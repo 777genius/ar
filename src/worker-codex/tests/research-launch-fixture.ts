@@ -175,6 +175,7 @@ vi.mock("node:fs/promises", async original => {
   writeFile: (path: string, bytes: Parameters<typeof real.writeFile>[1], options: Parameters<typeof real.writeFile>[2]) => real.writeFile(local(path), bytes, options),
   rename: (from: string, to: string) => real.rename(local(from), local(to)),
   rm: (path: string, options: Parameters<typeof real.rm>[1]) => real.rm(local(path), options),
+  rmdir: (path: string) => real.rmdir(local(path)),
   unlink: (path: string) => real.unlink(local(path)),
   link: (from: string, to: string) => real.link(local(from), local(to)),
   readdir: (path: string, options: Parameters<typeof real.readdir>[1]) => real.readdir(local(path), options),

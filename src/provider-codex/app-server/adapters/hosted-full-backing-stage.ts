@@ -1,4 +1,4 @@
-import { OriginalFullProjectControlPreparedCase, OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, originalFullProjectControlToolAliasData, originalFullProjectControlGitEntryData, type OriginalFullPeerPreloadSelection, originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths, originalFullProjectControlEntrySourcePaths } from "./hosted-project-control-source-catalog.js";
+import { OriginalFullProjectControlPreparedCase, OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, originalFullProjectControlToolAliasData, originalFullProjectControlGitExecutableData, type OriginalFullPeerPreloadSelection, originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths, originalFullProjectControlEntrySourcePaths } from "./hosted-project-control-source-catalog.js";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -313,7 +313,7 @@ export function retainOriginalFullProjectControlPeerSources(): OriginalFullProje
       /^[A-Za-z0-9.+~:-]{1,128}$/.test(gitPackage.version) && typeof gitPackage.sha256 === "string" &&
       /^[a-f0-9]{64}$/.test(gitPackage.sha256) && Number.isSafeInteger(gitPackage.size) && (gitPackage.size as number) > 0 &&
       packages.packages.filter(row => JSON.stringify(row) === JSON.stringify(gitPackage)).length === 1);
-    originalFullProjectControlGitEntryData(git.entries);
+    originalFullProjectControlGitExecutableData(git.entries, elf.pins);
     originalFullProjectControlToolAliasData(git.aliases);
     const preload = originalFullProjectControlPreloadData(parse(preloadFile)), parent = own("/etc", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW),
       parentStat = fstatSync(parent, { bigint: true }), parentMount = heldMount(parent), child = "/proc/self/fd/" + parent + "/ld.so.preload";

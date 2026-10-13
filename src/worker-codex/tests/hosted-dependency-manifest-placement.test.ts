@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostedManifestLimitsRevision as Revision, HostedManifestPlacementFailure as Failure,
   issueFreshHostedManifestPlacement as issue, openHostedDependencyManifestPlacement as open } from "../hosted-dependency-manifest-placement";
-import * as privateInputs from "../hosted-readonly-inputs";
+import * as privateInputs from "../../provider-codex/app-server/adapters/hosted-private-physical-inputs";
 import { DependencyManifestStorageFailure as BlobFailure, LocalDependencyManifestBlobStore } from "../../store-local-file/dependency-environment/local-dependency-manifest-blob-store";
 
 // Actual private TEST files and retained descriptors; only the initial host
@@ -31,7 +31,21 @@ vi.mock("node:fs", async original => {
     realpathSync: (path: string) => { const mapped = local(path), actual = real.realpathSync(mapped); return mapped === actual ? path : actual; },
     readFileSync: (path: string | number, options?: Parameters<typeof real.readFileSync>[1]) => {
       if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot + "\n";
-      if (path === "/proc/self/mountinfo" && fixture.mountAlias) return Buffer.concat([real.readFileSync(path), Buffer.from(fixture.mountAlias)]);
+      if (path === "/proc/self/mountinfo") {
+        // Namespace facts are synthetic in this fixture. Join its actual
+        // scratch filesystem/mount ID without importing unrelated Host mounts.
+        const fd = real.openSync(fixture.root, real.constants.O_RDONLY | real.constants.O_DIRECTORY | real.constants.O_NOFOLLOW);
+        try {
+          const id = /^mnt_id:\s+([1-9][0-9]*)$/m.exec(real.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"))?.[1];
+          if (!id) throw new Error("TEST mount identity unavailable");
+          const dev = BigInt(real.fstatSync(fd).dev);
+          const major = (dev >> 8n & 0xfffn) | (dev >> 32n & 0xfffff000n);
+          const minor = (dev & 0xffn) | (dev >> 12n & 0xffffff00n);
+          const bytes = Buffer.from(`${id} 0 ${major}:${minor} / / rw - ext4 /dev/TEST rw\n` + fixture.mountAlias);
+          const encoding = typeof options === "string" ? options : options?.encoding;
+          return encoding ? bytes.toString(encoding) : bytes;
+        } finally { real.closeSync(fd); }
+      }
       return real.readFileSync(typeof path === "string" ? local(path) : path, options);
     },
     openSync: (path: string, flags: number, mode?: number) => real.openSync(local(path), flags, mode),

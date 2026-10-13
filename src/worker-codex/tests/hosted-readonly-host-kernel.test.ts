@@ -36,8 +36,8 @@ vi.mock("node:child_process", () => ({
 vi.mock("../hosted-readonly-authority", async original => ({
   ...await original<typeof import("../hosted-readonly-authority")>(), assertReadonlyHostOperator: os.operator,
 }));
-vi.mock("../hosted-readonly-inputs", async original => ({
-  ...await original<typeof import("../hosted-readonly-inputs")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-private-physical-inputs", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-private-physical-inputs")>(),
   readHostedPrivateBytes: (path: string) => os.records.get(path) ?? null,
 }));
 vi.mock("@vioxen/subscription-runtime/provider-codex", async original => {

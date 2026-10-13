@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { readReadonlyReview } from "../hosted-readonly-authority";
 import * as privateInputs from "../hosted-readonly-inputs";
+import * as physicalInputs from "../../provider-codex/app-server/adapters/hosted-private-physical-inputs";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedInstallationActivationStore } from "../hosted-installation-activation";
 import { HostedManifestLimitsRevision, HostedManifestPlacementFailure,
@@ -112,9 +113,9 @@ export function registerManifestPlacementInstallationTests({ fixture, root, mani
       const path = join(fixture.root, stageName), value = read(stageName), canonical = Buffer.from(JSON.stringify(value) + "\n");
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
       const selectedPath = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + stageName.slice("stages/".length);
-      const actual = privateInputs.readHostedPrivateBytes, real = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const actual = physicalInputs.readHostedPrivateBytes, real = await vi.importActual<typeof import("node:fs")>("node:fs");
       let reads = 0;
-      const spy = vi.spyOn(privateInputs, "readHostedPrivateBytes").mockImplementation((selected, bound) => {
+      const spy = vi.spyOn(physicalInputs, "readHostedPrivateBytes").mockImplementation((selected, bound) => {
         const bytes = actual(selected, bound);
         if (selected === selectedPath && ++reads === 1) real.writeFileSync(path, canonical, { mode: 0o600 });
         return bytes;

@@ -12,7 +12,7 @@ function check(value: unknown): asserts value { if (!value) throw new Error("TES
 async function main(): Promise<never> {
   check(process.platform === "linux" && process.version === "v22.23.3" && process.execPath === originalFullPeerNode &&
     process.argv.length === 3 && process.argv[1] === originalControlGitProgram && process.argv[2] === "control-git" && process.execArgv.length === 0);
-  const entry = retainOriginalFullProjectControlControlGitEntry(); let active = true, timer: ReturnType<typeof setTimeout> | undefined;
+  const entry = retainOriginalFullProjectControlControlGitEntry(); let active = true, failed = false, timer: ReturnType<typeof setTimeout> | undefined;
   try {
     entry.revalidate(); check(process.env.TEST_SOURCE_SHA === entry.sourceSha);
     const environment = originalControlGitEnvironment();
@@ -69,6 +69,13 @@ async function main(): Promise<never> {
     process.execve(originalFullPeerLoader, [originalFullPeerLoader, "--inhibit-cache", "--glibc-hwcaps-mask", "",
       "--library-path", "/usr/lib/x86_64-linux-gnu", originalControlGitExecutable, ...args], environment);
     throw new Error("TEST_original_control_git_execve_returned");
-  } finally { if (timer) clearTimeout(timer); if (active) entry.close(); }
+  } catch (error) {
+    failed = true; throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (active) {
+      try { entry.close(); } catch (error) { if (!failed) throw error; }
+    }
+  }
 }
 await main();
