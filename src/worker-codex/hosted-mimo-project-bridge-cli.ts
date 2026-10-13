@@ -1,5 +1,6 @@
 import { onboardHostedMimoProject } from "./hosted-mimo-project-bridge-onboard";
 import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-operation";
+import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
 const chunks: Buffer[] = [];
 let size = 0;
 try {
@@ -27,7 +28,10 @@ try {
   process.stdout.write(JSON.stringify({ ok: true, result }) + "\n");
   }
 } catch (error) {
-  const message = error instanceof Error && /^mimo_project_bridge_[a-z_]+$/.test(error.message)
+  const message = error instanceof Error && (
+    /^mimo_project_bridge_[a-z_]+$/.test(error.message) ||
+    error.message === InterruptedProjectCreateErrorCode.ReconciliationRefused ||
+    error.message === "hosted_research_launch_denied")
     ? error.message : "mimo_project_bridge_operation_failed";
   process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
   process.exitCode = 1;
