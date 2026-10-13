@@ -8,7 +8,7 @@ import {pathToFileURL} from "node:url";
 
 export const INTAKE="/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation";
 export const MAGIC=Buffer.from("SR_PUBLIC_FILES_V1\n");
-const C=fs.constants,MAX_BYTES=1024**3,MAX_LEAF=128*1024**2,MAX_OBJECTS=100000;
+const C=fs.constants,MAX_BYTES=1024**3,MAX_LEAF=128*1024**2,MAX_DEPENDENCY_LEAF=512*1024**2,MAX_OBJECTS=100000;
 const BOOTSTRAP="/opt/nodejs/node-v24.21.0-linux-x64/bin/node";
 const BOOTSTRAP_SHA="7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c";
 type Pin={bytes:number;sha256:string};
@@ -35,7 +35,16 @@ const encode=(v:unknown)=>Buffer.from(JSON.stringify(v)+"\n");
 function fields(v:unknown,names:string):asserts v is Record<string,unknown>{hold(v!==null&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).sort().join(",")===names,"fields");}
 export function safeRelative(v:unknown):asserts v is string {hold(typeof v==="string"&&v.length>0&&v.length<=240&&/^[A-Za-z0-9_@+./-]+$/.test(v)&&v.split("/").length<=32&&!v.split("/").some(p=>!p||p==="."||p===".."||/^(?:auth\.json(?:[.-].*)?|credentials?\.json(?:[.-].*)?|.*\.pem|\.env.*)$/i.test(p)),"relative_path");}
 function pin(v:unknown):asserts v is Pin {fields(v,"bytes,sha256");hold(Number.isSafeInteger(v.bytes)&&Number(v.bytes)>=0&&Number(v.bytes)<=MAX_BYTES&&digest(v.sha256),"pin");}
-function row(v:unknown,extra:string):asserts v is Row&Record<string,unknown>{fields(v,("bytes,"+extra+"mode,path,sha256").split(",").sort().join(","));safeRelative(v.path);hold(Number.isSafeInteger(v.bytes)&&Number(v.bytes)>=0&&Number(v.bytes)<=MAX_LEAF&&(v.mode===0o644||v.mode===0o755)&&digest(v.sha256),"row");}
+function row(v:unknown,extra:string):asserts v is Row&Record<string,unknown>{
+ fields(v,("bytes,"+extra+"mode,path,sha256").split(",").sort().join(","));safeRelative(v.path);let maximum=MAX_LEAF;
+ if(extra==="role,"){
+  hold(Object.values(Role).includes(v.role as Role),"role");
+  // Only validated third-party dependency leaves use the measured larger
+  // bound. Tracked/emitted/workspace/toolchain and non-frame limits stay 128MiB.
+  if(v.role===Role.Dependency){hold(v.path.startsWith("node_modules/")&&!v.path.startsWith("node_modules/.bin/")&&!v.path.startsWith("node_modules/@vioxen/agent-account-observability/"),"dependency_path");maximum=MAX_DEPENDENCY_LEAF;}
+ }
+ hold(Number.isSafeInteger(v.bytes)&&Number(v.bytes)>=0&&Number(v.bytes)<=maximum&&(v.mode===0o644||v.mode===0o755)&&digest(v.sha256),"row");
+}
 function orderedUnique(values:string[]):void {hold(values.every((v,i)=>i===0||values[i-1]!<v),"sorted_unique");}
 export function parseManifest(bytes:Buffer,expectedSha:string):Manifest {
  hold(digest(expectedSha)&&bytes.length<=32*1024**2&&sha(bytes)===expectedSha,"manifest_digest");
@@ -52,8 +61,7 @@ export function parseManifest(bytes:Buffer,expectedSha:string):Manifest {
 function finishManifest(m:Manifest):Manifest {
  // Frame rows have an additional discriminator; validation above is intentionally
  // performed by the dedicated exact row check below, never archive metadata.
- for(const r of m.rows){row(r,"role,");hold(Object.values(Role).includes(r.role),"role");
-  if(r.role===Role.Dependency)hold(r.path.startsWith("node_modules/")&&!r.path.startsWith("node_modules/.bin/")&&!r.path.startsWith("node_modules/@vioxen/agent-account-observability/"),"dependency_path");
+ for(const r of m.rows){row(r,"role,");
   if(r.role===Role.Emitted)hold(/^(?:dist|packages|scripts|host-integration|src)\//.test(r.path)&&/\.(?:js|mjs|cjs|json|map|ts)$/.test(r.path),"emitted_path");
   if(r.role===Role.WorkspacePackage)hold(/^node_modules\/@vioxen\/agent-account-observability\/(?:package\.json|README\.md|dist\/.+)$/.test(r.path),"workspace_package_path");
  }

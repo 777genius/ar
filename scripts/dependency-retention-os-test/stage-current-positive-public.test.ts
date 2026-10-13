@@ -41,3 +41,31 @@ it("detects named substitution while keeping the original retained file open",()
 it("propagates fsync failure and preserves the partial owned output",()=>{const path=join(temp(),"out"),fd=fs.openSync(path,"wx+");try{writeRegularBytes(fd,bytes,()=>{});const error=new Error("TEST fsync failure");fault.error=error;expect(()=>sealRegularFile(fd,frameRow,()=>{})).toThrow(error);expect(fs.readFileSync(path)).toEqual(bytes);}finally{fault.error=undefined;fs.closeSync(fd);}});
 
 it("accepts an explicitly reviewed prod alias subset without inventing dev links",()=>{const m=manifestFixture();m.links=m.links.filter(l=>l.path.startsWith("toolchain/")||l.path==="source/node_modules/.bin/anthropic-ai-sdk");expect(parse(m).links).toEqual(m.links);});
+
+// Metadata parser regressions only: no allocation/read of a 334MiB fixture and
+// no claim that these declared digest/size cells qualify actual package bytes.
+const measuredDependencyBytes=334715184,dependencyMaximum=512*1024**2;
+function addSizedFrame(m:Manifest,role:Role,path:string,size:number):void {
+ m.rows.push({...frameRow,role,path,bytes:size,mode:0o755});
+ m.rows.sort((a,b)=>{const key=(r:FrameRow)=>`${r.role===Role.Toolchain?"toolchain":"source"}/${r.path}`;return key(a)<key(b)?-1:1;});
+ m.payload.bytes=MAGIC.length+m.rows.reduce((n,r)=>n+8+r.bytes,0);
+}
+it("admits the measured334715184-byte Dependency metadata leaf and exact512MiB ceiling",()=>{
+ for(const size of [measuredDependencyBytes,dependencyMaximum]){const m=manifestFixture();addSizedFrame(m,Role.Dependency,"node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",size);expect(parse(m)).toEqual(m);}
+});
+it("refuses Dependency leaves beyond512MiB",()=>{const m=manifestFixture();addSizedFrame(m,Role.Dependency,"node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",dependencyMaximum+1);expect(()=>parse(m)).toThrow(/PUBLIC_STAGE_HOLD:row$/);});
+it("keeps128MiB tracked emitted workspace toolchain and bundle leaf bounds",()=>{
+ for(const [role,path]of [[Role.Emitted,"dist/large.js"],[Role.WorkspacePackage,"node_modules/@vioxen/agent-account-observability/dist/large.js"],[Role.Toolchain,"bin/large-tool"]]as const){const m=manifestFixture();addSizedFrame(m,role,path,measuredDependencyBytes);expect(()=>parse(m)).toThrow(/PUBLIC_STAGE_HOLD:row$/);}
+ const tracked=manifestFixture();tracked.tracked[0]!.bytes=measuredDependencyBytes;expect(()=>parse(tracked)).toThrow(/PUBLIC_STAGE_HOLD:row$/);
+ const bundle=manifestFixture();bundle.bundle.bytes=measuredDependencyBytes;expect(()=>parse(bundle)).toThrow("bundle_leaf");
+});
+it("requires exact Dependency role and allowed path before its larger allowance",()=>{
+ for(const path of ["dist/claude","node_modules/.bin/claude","node_modules/@vioxen/agent-account-observability/claude"]){const m=manifestFixture();addSizedFrame(m,Role.Dependency,path,measuredDependencyBytes);expect(()=>parse(m)).toThrow("dependency_path");}
+ const unknown=manifestFixture();addSizedFrame(unknown,"unknown_dependency" as Role,"node_modules/example/claude",measuredDependencyBytes);expect(()=>parse(unknown)).toThrow(/PUBLIC_STAGE_HOLD:role$/);
+});
+it("keeps the whole projection1GiB bound even when individual Dependency leaves pass",()=>{
+ const m=manifestFixture();addSizedFrame(m,Role.Dependency,"node_modules/large-first/cli",dependencyMaximum);addSizedFrame(m,Role.Dependency,"node_modules/large-second/cli",dependencyMaximum);
+ // Keep the payload declaration within its own pin limit to exercise the
+ // independent whole tracked+frame aggregate, which now exceeds 1GiB.
+ m.payload.bytes=1024**3;expect(()=>parse(m)).toThrow("whole_bounds");
+});
