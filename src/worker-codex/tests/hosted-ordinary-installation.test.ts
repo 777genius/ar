@@ -63,7 +63,9 @@ function local(path: string): string {
 }
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
+  const { installationFileOperations } = await import("./hosted-ordinary-installation-fs-test-support");
   return { ...real,
+    ...installationFileOperations(real, local),
     readFileSync: (path: string | number, options: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "number") return real.readFileSync(path, options);
       if (path === "/proc/self/uid_map") return "0 0 4294967295\n";
@@ -97,9 +99,6 @@ vi.mock("node:fs", async original => {
     lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
       { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
-    openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
-    mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
-    rmdirSync: (path: string) => real.rmdirSync(local(path)),
     renameSync: (from: string, to: string) => {
       if (fixture.failRename && from.endsWith(fixture.failRename)) throw new Error("synthetic publication interruption");
       real.renameSync(local(from), local(to));
