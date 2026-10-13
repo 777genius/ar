@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   LocalFileRunEventStore,
   LocalFileWorkerAccountCapacityStore,
@@ -35,7 +35,6 @@ import {
 import { assertRefilledWorkerCheckpointRequired } from "./codex-goal-project-refill-checkpoint-assertions";
 import {
   auditDecision,
-  callToolJson,
   git,
   gitInitRepository,
   gitStdout,
@@ -619,7 +618,9 @@ await runProjectControlOperationFile({
           enum: ["workspace-write", "danger-full-access"],
         },
       });
-      expect(refillTool?.inputSchema.required).toContain("workspacePath");
+      // Hosted MiMo resolves workspace paths from its protected binding;
+      // local requests still validate these paths in the handler below.
+      expect(refillTool?.inputSchema.required ?? []).not.toContain("workspacePath");
       expect(verifierTool?.inputSchema.properties).toMatchObject({
         mergeBinding: {
           type: "object",

@@ -1,28 +1,29 @@
 import { dirname, join, relative } from "node:path";
 import { lstatSync, mkdirSync } from "node:fs";
 import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
-import { readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjectPreStartLaunchReceipt } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
-import { AccessBoundary, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
-import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
+import { parseResearchOperatorRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord } from "./research-launch-files";
-import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
+import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord, researchRegisteredPromptBytes } from "./research-launch-files";
+import { assertResearchDurableDirectory, researchDurableDirectory, researchDurableDirectories, sameResearchDurableBacking } from "./research-durable-handoff-directory";
 import type { ResearchStartSpec } from "./research-launch-contract";
-import { codexGoalJobManifestPath } from "./codex-goal-jobs";
 import { withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "./codex-goal-project-workspace-lock";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
-import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
-import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { assertCodexProjectReservedLaunchAuthority, assertCodexProjectReservedAccountReceiptCurrent,
+  consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
+import { assertFreshRegisteredResearchProfile, assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
+import { researchProjectLaunchInputs } from "./research-project-launch-inputs";
 import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 
 /** Root adapters must already hold the registered action's activity/workspace
  * locks and have authorized its receipt through the policy/semantic broker.
  * The token cannot be deserialized or minted from an independently supplied sink. */
-export type RegisteredResearchHandoffAuthorization = Readonly<{ request: ResearchOperatorRequest }>;
-const authorizations = new WeakMap<RegisteredResearchHandoffAuthorization, ResearchRegisteredHandoff>();
+export type RegisteredResearchHandoffAuthorization = Readonly<{ request: ResearchOperatorRequest; registryRootDir: string }>;
+const authorizations = new WeakMap<RegisteredResearchHandoffAuthorization, {
+  binding: ResearchRegisteredHandoff; manifest: Awaited<ReturnType<typeof loadJobLaunch>>["manifest"]; reservedLaunch: CodexGoalLaunchInput;
+}>();
 const digest = (value: unknown): string => researchHash(JSON.stringify(value));
 const overlaps = (a: string, b: string): boolean => a === b || a.startsWith(b + "/") || b.startsWith(a + "/");
 export class RegisteredResearchHandoffUnsupportedSink extends Error {
@@ -34,77 +35,33 @@ export class RegisteredResearchSinkPreparationUnresolved extends Error {
 }
 
 async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false, execution?: ResearchRegisteredExecution) {
-  const controllerPath = codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId });
-  const manifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: request.jobId });
-  const controllerBytes = researchRead(controllerPath), manifestBytes = researchRead(manifestPath);
-  const controller = await loadProjectControlController({ registryRootDir, controllerJobId });
-  const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
-  const { manifest, launch } = loaded;
-  researchCustody(registryRootDir);
-  if (controller.registryRootDir !== registryRootDir || loaded.registryRootDir !== registryRootDir ||
-      !manifest.projectPreStartAdmission || manifest.jobId !== request.jobId) researchInvalid();
-  const policy = createAccessPolicyService({ boundary: AccessBoundary.ProjectScopedControl, scope: controller.scope });
-  if (!policy.canStartWorker({ jobId: request.jobId, registryRoot: registryRootDir, workspacePath: request.workspacePath }).allowed ||
-      request.accounts.some(accountId => !policy.canUseAccount({ accountId }).allowed)) researchInvalid();
-  for (const key of ["jobId", "taskId", "jobRootDir", "workspacePath", "promptPath", "authRootDir", "codexBinaryPath",
-    "model", "reasoningEffort", "serviceTier", "taskTimeoutMs"] as const) {
-    if (request[key] !== launch.config[key]) researchInvalid();
-  }
-  // The action has selected/reserved the account. A sink token cannot select a
-  // foreign account outside the effective registered launch's candidate set.
-  if (request.accounts.length !== 1 || !launch.config.accounts.some(account => account.name === request.accounts[0])) researchInvalid();
-  const sink = researchPath(launch.config.durableHandoffRootDir);
-  if (sink !== join(registryRootDir, "durable-handoffs")) throw new RegisteredResearchHandoffUnsupportedSink();
   const codexClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: request.codexBinaryPath,
     sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
-  for (const path of [request.jobRootDir, request.workspacePath, request.authRootDir, installedResearchRuntimeDirectory(),
-    ...(codexClosure?.paths ?? []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
-    if (overlaps(sink, path)) researchInvalid();
-  }
-  assertRegisteredResearchExecutionSupported({ registryRootDir, manifest, controller: controller.controller, launch, request, execution });
-  researchCustody(manifest.projectPreStartAdmission.receiptPath, true);
-  const { receipt, receiptSha256 } = preStart
-    ? await readAuthorizedProjectPreStartLaunchReceipt({ manifest, scope: controller.scope })
-    : await readCurrentAuthorizedProjectPreStartLaunchReceipt(manifest);
-  // The clean-workspace proof becomes historical after start, but these
-  // immutable launch inputs and the exact authorized receipt remain live.
-  for (const [path, key] of [[manifest.promptPath, "promptSha256"],
-    [manifest.projectPreStartAdmission.contractPath, "contractSha256"],
-    [manifest.projectPreStartAdmission.statePath, "stateSha256"]] as const) {
-    if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
-  }
-  const boundRequest = parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
-  const binding = Object.freeze({ registryRootDir, controllerJobId,
-    manifestSha256: digest(manifest), scopeSha256: digest(controller.scope), receiptSha256,
-    requestSha256: researchHashRequest(boundRequest), ...(execution ? { registeredExecution: execution } : {}) });
-  // Awaited receipt/loader work can overlap a revocation. Re-read supported
-  // metadata and finish with a nofollow, private exact-byte custody witness.
-  const freshManifest = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
-  const freshController = await loadProjectControlController({ registryRootDir, controllerJobId });
-  if (digest(freshManifest.manifest) !== binding.manifestSha256 || digest(freshController.scope) !== binding.scopeSha256) researchInvalid();
-  const assertAuthorityBytes = (): void => {
-    if (researchHash(researchRead(manifest.projectPreStartAdmission!.receiptPath)) !== receiptSha256 ||
-        !researchRead(controllerPath).equals(controllerBytes) || !researchRead(manifestPath).equals(manifestBytes)) researchInvalid();
-    for (const [path, key] of [[manifest.promptPath, "promptSha256"],
-      [manifest.projectPreStartAdmission!.contractPath, "contractSha256"],
-      [manifest.projectPreStartAdmission!.statePath, "stateSha256"]] as const) {
-      if (researchHash(researchRead(path)) !== receipt[key]) researchInvalid();
-    }
-  };
-  assertAuthorityBytes();
-  researchCustody(codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId }), true);
-  researchCustody(codexGoalJobManifestPath({ registryRootDir, jobId: request.jobId }), true);
+  const current = await researchProjectLaunchInputs({ registryRootDir, controllerJobId, request, preStart,
+    ...(execution ? { execution } : {}), readPromptBytes: path => researchRegisteredPromptBytes(request.jobRootDir, path),
+    bindSupportedRequest: ({ manifest, launch }, controller) => {
+      const sink = researchPath(launch.config.durableHandoffRootDir);
+      if (sink !== join(registryRootDir, "durable-handoffs")) throw new RegisteredResearchHandoffUnsupportedSink();
+      for (const path of [request.jobRootDir, request.workspacePath, request.authRootDir, installedResearchRuntimeDirectory(),
+        ...(codexClosure?.paths ?? []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
+        if (overlaps(sink, path)) researchInvalid();
+      }
+      assertRegisteredResearchExecutionSupported({ registryRootDir, manifest, controller: controller.controller, launch, request, execution });
+      return parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
+    },
+  });
   const readDirectory = (path: string): string => lstatSync("/proc/1/root" + path).isDirectory() ? path : dirname(path);
-  return { binding, request: boundRequest, assertAuthorityBytes, protectedSources: [request.jobRootDir, request.workspacePath, request.authRootDir,
+  return { ...current, protectedSources: [request.jobRootDir, request.workspacePath, request.authRootDir,
     installedResearchRuntimeDirectory(), ...(codexClosure?.paths.map(readDirectory) ?? []), readDirectory(process.execPath),
-    controller.controller.jobRootDir, "/usr", "/etc"] };
+    current.controller.controller.jobRootDir, "/usr", "/etc"] };
 }
 async function currentRegisteredHandoff(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false,
-  execution?: ResearchRegisteredExecution, beforeSinkEffects?: () => void) {
+  execution?: ResearchRegisteredExecution, beforeSinkEffects?: (assertAuthorityBytes: () => void) => Promise<void>) {
   const current = await registeredHandoffInputs(registryRootDir, controllerJobId, request, preStart, execution);
   // The supported reservation is historical and single-use. Consume only after
   // current receipt/unsupported-field validation and before any sink effects.
-  beforeSinkEffects?.();
+  await beforeSinkEffects?.(current.assertAuthorityBytes);
+  current.assertAuthorityBytes();
   const sink = current.request.durableHandoffRootDir!;
   const parentBacking = researchDurableDirectory(registryRootDir);
   let existing: ReturnType<typeof researchDurableDirectory> | undefined;
@@ -112,8 +69,10 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
   catch (error) { if (!preStart || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const sinkMount = existing ?? parentBacking;
   const sinkBacking = join(sinkMount.mountRoot, relative(sinkMount.mountPoint, sink));
-  for (const source of current.protectedSources) {
-    const witness = researchDurableDirectory(source, false);
+  const sources = [...new Set(current.protectedSources)];
+  const sourceWitnesses = researchDurableDirectories(sources.map(path => ({ path, privateLeaf: false })));
+  for (const [index, source] of sources.entries()) {
+    const witness = sourceWitnesses[index]!;
     if (sinkMount.mountDevice === witness.mountDevice && sinkMount.filesystemUuid === witness.filesystemUuid &&
         overlaps(sinkBacking, join(witness.mountRoot, relative(witness.mountPoint, source)))) researchInvalid();
   }
@@ -165,30 +124,43 @@ export async function authorizeRegisteredResearchHandoff(input: {
     const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
     const reserved = { manifest: loaded.manifest, sourceLaunch: loaded.launch, reservedLaunch: input.reservedLaunch };
     const authority = assertCodexProjectReservedLaunchAuthority(reserved);
+    assertFreshRegisteredResearchProfile(request);
     const execution = researchRegisteredExecutionFromReservation(authority, input.reservedLaunch);
     const current = await currentRegisteredHandoff(registryRootDir, controllerJobId, request, true, execution,
-      () => { consumeCodexProjectReservedLaunchAuthority(reserved); });
-    const authorization = Object.freeze({ request: current.request });
-    authorizations.set(authorization, current.binding);
+      async assertAuthorityBytes => {
+        await assertCodexProjectReservedAccountReceiptCurrent({ manifest: loaded.manifest, reservedLaunch: input.reservedLaunch });
+        assertAuthorityBytes();
+        consumeCodexProjectReservedLaunchAuthority(reserved);
+      });
+    const authorization = Object.freeze({ request: current.request, registryRootDir });
+    authorizations.set(authorization, { binding: current.binding, manifest: loaded.manifest, reservedLaunch: input.reservedLaunch });
     return authorization;
   } });
 }
 export async function consumeRegisteredResearchHandoffAuthorization(
   authorization: RegisteredResearchHandoffAuthorization,
+  publish?: (binding: ResearchRegisteredHandoff, assertAuthorityBytes: () => void) => void,
 ): Promise<ResearchRegisteredHandoff> {
   assertResearchInitialRoot(true);
-  const binding = authorizations.get(authorization);
-  if (!binding) researchInvalid();
+  const retained = authorizations.get(authorization);
+  if (!retained) researchInvalid();
   authorizations.delete(authorization);
-  await assertRegisteredResearchHandoffCurrent(binding, authorization.request);
-  return binding;
+  const assertAuthorityBytes = await assertRegisteredResearchHandoffCurrent(retained.binding, authorization.request);
+  await assertCodexProjectReservedAccountReceiptCurrent({ manifest: retained.manifest, reservedLaunch: retained.reservedLaunch });
+  assertAuthorityBytes();
+  publish?.(retained.binding, assertAuthorityBytes);
+  return retained.binding;
 }
-export async function assertRegisteredResearchHandoffCurrent(binding: ResearchRegisteredHandoff, request: ResearchOperatorRequest): Promise<void> {
-  assertResearchInitialRoot();
+/** Fresh async observation ends in a synchronous current-byte guard for the
+ * owner's next individual effect. The closure never caches admission. */
+export async function assertRegisteredResearchHandoffCurrent(binding: ResearchRegisteredHandoff, request: ResearchOperatorRequest,
+  assertRoot: () => void = assertResearchInitialRoot): Promise<() => void> {
+  assertRoot();
   const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution);
   if (digest(current.binding) !== digest(binding)) researchInvalid();
   assertResearchDurableDirectory(binding.durableDirectory);
   current.assertAuthorityBytes();
+  return () => { assertRoot(); assertResearchDurableDirectory(binding.durableDirectory); current.assertAuthorityBytes(); };
 }
 /** Publication holds the supported workspace, registry mutation and controller
  * activity fences for the complete async capture/readback. Per-effect guards
@@ -220,9 +192,10 @@ export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, dire
     if (spec.request.durableHandoffRootDir !== undefined) researchInvalid();
     return;
   }
-  assertResearchDurableDirectory(binding.durableDirectory);
+  const [source, pin] = researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }]);
+  if (digest(source) !== digest(binding.durableDirectory)) researchInvalid();
   const r = researchRecord(JSON.parse(researchRead(join(directory, "durable-pin.json")).toString("utf8")), "schemaVersion,specSha256,pin");
   if (r.schemaVersion !== 1 || r.specSha256 !== researchHash(researchRead(join(directory, "spec.json")))) researchInvalid();
-  const pin = researchDurableDirectory(join(directory, "pins", "durable-handoff"));
-  if (digest(pin) !== digest(r.pin) || !sameResearchDurableBacking(binding.durableDirectory, pin)) researchInvalid();
+
+  if (digest(pin) !== digest(r.pin) || !sameResearchDurableBacking(binding.durableDirectory, pin!)) researchInvalid();
 }

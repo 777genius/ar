@@ -1,18 +1,26 @@
+import { mkdirSync, writeFileSync, lstatSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { setInheritedStdioBlocking } from "./hosted-blocking-output";
+import { managedProviderScratchLaunch } from "./managed-provider-scratch-environment";
 import { assertHostedProcessDescriptors, assertHostedFdPreludeDescriptors } from "./hosted-process-descriptors";
 import { announceHostedFdPrelude } from "./hosted-fd-prelude";
-import {
-  decodeHostedAppServerLaunchFrame,
-  hostedResearchSetupTimeoutMs,
-  type HostedAppServerLaunchFrame,
-} from "./hosted-app-server-launch-frame";
+import type { HostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
+import { decodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame-decoder";
+
+import { hostedResearchSetupTimeoutMs, decodeHostedMimoCodingExpectedBinding, assertHostedMimoCodingExpectedBinding } from "../../hosted-mimo-coding-bootstrap";
 
 const maximumFrameBytes = 4 * 1024 * 1024;
 let buffered = Buffer.alloc(0);
 let launched = false;
 // Closed installed-launcher mode; ordinary/MiMo launches pass no argument.
+const codingReady = process.argv.length === 4 && process.argv[2] === "--research-coding-ready-v1";
 const researchReady = process.argv.length === 3 && process.argv[2] === "--research-ready-v1";
 const fdReady = process.argv.length === 3 && process.argv[2] === "--fd-ready-v1";
+const originalStorage = process.argv.length === 4 && process.argv[2] === "--provider-storage-v1";
+// Existing research/FD closures do not acquire new modules or launch fields.
+// Load before reading stdin so a second protocol chunk cannot be discarded.
+const originalStorageValidator = originalStorage
+  ? (await import("./original-provider-storage-context")).assertOriginalProviderStorageFrame : undefined;
 let stopFdPrelude: (() => void) | undefined;
 let bootstrapDeadline: ReturnType<typeof setTimeout> | undefined;
 
@@ -48,9 +56,33 @@ function onInput(chunk: Buffer): void {
   try { if (fdReady) assertHostedFdPreludeDescriptors(); else assertHostedProcessDescriptors(); }
   catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
 
-  const child = spawn(frame.command, frame.args, {
+  if (codingReady !== (frame.coding !== undefined)) fail("hosted_app_server_coding_mode_invalid");
+  if (originalStorageValidator) {
+    try { originalStorageValidator(process.argv[3]!, frame); }
+    catch { fail("original_provider_storage_context_invalid"); }
+  }
+  if (codingReady) {
+    try {
+      // This fixed mode is selected only by the sealed coding root assembler.
+      // Never write host-selected homes or replace an existing config.
+      const expected = decodeHostedMimoCodingExpectedBinding(process.argv[3]!);
+      assertHostedMimoCodingExpectedBinding(frame.coding!, expected);
+      const home = "/home/coding/.codex";
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const stat = lstatSync(home);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new Error();
+      writeFileSync(home + "/config.toml", frame.coding!.configToml, { flag: "wx", mode: 0o600 });
+    } catch { fail("hosted_app_server_coding_config_invalid"); }
+  }
+
+  let launch: ReturnType<typeof managedProviderScratchLaunch>;
+  try { launch = managedProviderScratchLaunch(frame.env, frame.args); }
+  catch { fail("hosted_provider_scratch_boundary_invalid"); }
+  try { setInheritedStdioBlocking(); }
+  catch { fail("hosted_app_server_blocking_output_failed"); }
+  const child = spawn(frame.command, launch.args, {
     cwd: frame.cwd,
-    env: frame.env,
+    env: launch.environment,
     stdio: ["pipe", "inherit", "inherit"],
   });
   child.on("error", () => fail("hosted_app_server_child_spawn_failed"));
@@ -70,8 +102,8 @@ function onInput(chunk: Buffer): void {
   process.stdin.pipe(child.stdin);
 }
 
-if (process.argv.length !== 2 && !researchReady && !fdReady) fail("hosted_app_server_launch_mode_invalid");
-if (researchReady) {
+if (process.argv.length !== 2 && !researchReady && !codingReady && !fdReady && !originalStorage) fail("hosted_app_server_launch_mode_invalid");
+if (researchReady || codingReady) {
   // Runs only after the fixed unshare/setpriv/Tini chain has entered confinement.
   // Native provider/user code does not exist yet and cannot emit this frame.
   try { assertHostedProcessDescriptors(); }

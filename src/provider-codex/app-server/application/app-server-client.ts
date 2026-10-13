@@ -1,3 +1,6 @@
+import { assertHostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
+import { CodexModelBackend } from "../../codex-model-backend";
 import type { CodexAppServerClientOptions } from "./app-server-client-options";
 import { nativeWebId } from "@vioxen/subscription-runtime/core";
 import { AppServerNativeWebCapture } from "./app-server-native-web";
@@ -26,6 +29,7 @@ import {
 } from "../domain/app-server-goal-policy";
 import {
   codexAppServerSandboxPolicy,
+  codexAgentTempRootFromEnv,
   codexAppServerThreadRuntimePolicy,
   type AppServerWarning,
   type CodexAppServerSandboxPolicy,
@@ -125,6 +129,8 @@ export class CodexAppServerClient {
   constructor(
     private readonly options: CodexAppServerClientOptions,
   ) {
+    this.options = Object.freeze({ ...options });
+    options = this.options;
     this.executionLifetime = observeAppServerExecutionLifetime(options.session, error => this.failProtocol(error));
     this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {
       isTerminal: () => this.terminalError !== null,
@@ -197,13 +203,25 @@ export class CodexAppServerClient {
     };
     const hostJobId = (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
     if (hostJobId !== undefined) env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID = hostJobId;
+    const coding = this.options.nativeToolSurface === HostedMimoProfile.CodingV1;
+    const agentTemp = !coding && this.options.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan && this.options.processFactory.originalProviderStorageContext
+      ? codexAgentTempRootFromEnv(this.options.sourceEnv ?? process.env) : null;
+    if (agentTemp && (env.TMPDIR !== agentTemp || env.TMP !== agentTemp || env.TEMP !== agentTemp)) {
+      throw new Error("original_provider_storage_context_invalid");
+    }
     this.assertExecutionActive(this.options.abortSignal);
+    if (coding || this.options.hostedCodingAuthority !== undefined) assertHostedMimoCodingEngineAuthority(this.options.hostedCodingAuthority,
+      { processFactory: this.options.processFactory, codexBinaryPath: this.options.codexBinaryPath, workspacePath: this.options.workspacePath });
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: codexAppServerProcessArgs(this.options),
-      cwd: this.options.session.home,
+      cwd: coding ? this.options.workspacePath : this.options.session.home,
       env,
+      ...(!coding && this.options.processFactory.originalProviderStorageContext ? { storageContext: { workspace: this.options.workspacePath,
+        home: this.options.session.home, codexHome: this.options.session.codexHome,
+        ...(agentTemp ? { agentTemp } : {}) } } : {}),
     });
+    this.options.onProcessCreated?.(this.child);
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.onStdout(String(chunk)));

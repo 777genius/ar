@@ -1,3 +1,5 @@
+import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./codex-goal-storage-paths";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import { optionalWorkerMode } from "../project-control-worker-mode";
 import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
@@ -53,6 +55,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   const argumentStorage = parseCodexGoalStorageData(args);
   const argumentSnapshot = { ...args, ...argumentStorage };
   const cwd = resolvePath(process.cwd(), argumentSnapshot.cwd ?? process.cwd());
+  resolveCodexGoalStorageRoot(argumentSnapshot.storageRootDir, cwd);
   const fileConfig = argumentSnapshot.configPath
     ? await readGoalConfigFile(resolvePath(cwd, argumentSnapshot.configPath))
     : {};
@@ -60,29 +63,49 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   // must not disappear behind an override and silently become a legacy run.
   parseCodexGoalStorageData(fileConfig);
   const merged = mergeDefined(fileConfig, argumentSnapshot);
-  return goalLaunchInputFromRecord(merged, cwd);
+  return goalLaunchInputFromRecord(merged, cwd, argumentSnapshot.sourceEnv);
 }
 
 /** Stored manifests have no config-file transport. Keep their planning pure,
  * sharing every resolved default with the asynchronous public loader. */
-export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): CodexGoalLaunchInput {
+export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string, sourceEnv?: Readonly<Record<string, string | undefined>>): CodexGoalLaunchInput {
+  const env = sourceEnv ?? process.env;
   const storageData = parseCodexGoalStorageData(merged);
   assertCodexGoalStorageTransportSupported(merged);
-  const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);
-  const durableHandoffRootDir = stringValue(merged.durableHandoffRootDir);
   const taskId = requiredRawString(merged.taskId, "taskId");
   const jobId = stringValue(merged.jobId);
+  const optionalPath = (key: string, fallback?: string): string | undefined => {
+    const value = stringValue(merged[key]) ?? fallback;
+    return value === undefined ? undefined : resolvePath(cwd, value);
+  };
+  const paths = resolveCodexGoalPaths({
+    taskId, ...(jobId === undefined ? {} : { jobId }),
+    storageRootDir: resolveCodexGoalStorageRoot(merged.storageRootDir ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT, cwd),
+    jobRootDir: optionalPath("jobRootDir", env.SUBSCRIPTION_RUNTIME_JOB_ROOT),
+    workspacePath: optionalPath("workspacePath", env.SUBSCRIPTION_RUNTIME_WORKSPACE_PATH),
+    stateRootDir: optionalPath("stateRootDir"),
+    runtimeHomeRootDir: optionalPath("runtimeHomeRootDir"),
+    encryptionKeyPath: optionalPath("encryptionKeyPath"),
+    durableHandoffRootDir: optionalPath("durableHandoffRootDir"),
+    outputPath: optionalPath("outputPath"), progressPath: optionalPath("progressPath"),
+    runtimeEventsPath: optionalPath("runtimeEventsPath"), agentTempRootDir: optionalPath("agentTempRootDir"),
+    logPath: optionalPath("logPath"), sourceEnv,
+  });
+  const jobRootDir = paths.jobRootDir;
+  const durableHandoffRootDir = paths.durableHandoffRootDir;
   const authRootDir = resolvePath(
     cwd,
     stringValue(merged.authRootDir) ?? defaultAuthRoot,
   );
-  const workspacePath = requiredString(merged.workspacePath, "workspacePath", cwd);
+  const workspacePath = paths.workspacePath;
   const promptPath = requiredString(merged.promptPath, "promptPath", cwd);
   const accounts = codexGoalAccountSlots(
     accountNames(merged.accounts),
     optionalCodexGoalMimoAccountSlots(merged.mimoAccounts).mimoAccounts,
   );
   if (!accounts.length) throw new Error("accounts are required");
+  const modelBackend = optionalCodexGoalModelBackend(merged.modelBackend);
+  const mimo = modelBackend.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const controlModes = goalControlModesFromRecord(merged);
   const accessBoundary = optionalCodexGoalAccessBoundary(merged.accessBoundary);
   const projectAccessScope = parseCodexGoalProjectAccessScope(
@@ -104,12 +127,14 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
   const maxAccountCycles = positiveIntegerValue(
     merged.maxAccountCycles,
     "maxAccountCycles",
-  ) ?? 5;
+  ) ?? (mimo ? 1 : 5);
+  const { logPath: _logPath, ...configPaths } = paths;
   const config: CodexGoalRunConfig = {
     ...storageData,
+    ...configPaths,
     ...childConfigFromRecord(merged),
-    ...(storageData.storage ? { runtimeHomeRootDir: join(jobRootDir, "home"),
-      durableHandoffRootDir: join(jobRootDir, "durable-handoffs") } : {}),
+    ...(storageData.storage ? { runtimeHomeRootDir: paths.runtimeHomeRootDir ?? join(jobRootDir, "home"),
+      durableHandoffRootDir: paths.durableHandoffRootDir ?? join(jobRootDir, "durable-handoffs") } : {}),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
     ...(durableHandoffRootDir === undefined
@@ -131,23 +156,23 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
     ...optionalCodexGoalMimoAccountSlots(merged.mimoAccounts),
     outputPath: resolvePath(
       cwd,
-      stringValue(merged.outputPath) ??
+      paths.outputPath ??
         join(storageData.storage ? join(jobRootDir, "output") : jobRootDir, `${taskId}.latest-result.json`),
     ),
     progressPath: resolvePath(
       cwd,
-      stringValue(merged.progressPath) ??
+      paths.progressPath ??
         (storageData.storage ? join(jobRootDir, "output", `${taskId}.progress.json`) : codexGoalProgressPath({ jobRootDir, taskId })),
     ),
-    model: stringValue(merged.model) ?? CODEX_WORKER_DEFAULT_MODEL,
+    model: stringValue(merged.model) ?? (mimo ? codexMimoDefaultModel : CODEX_WORKER_DEFAULT_MODEL),
     reasoningEffort:
       (stringValue(merged.reasoningEffort) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as NonNullable<CodexGoalRunConfig["reasoningEffort"]>,
     serviceTier:
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:
-      (stringValue(merged.executionEngine) ?? "app-server-goal") as NonNullable<CodexGoalRunConfig["executionEngine"]>,
+      (stringValue(merged.executionEngine) ?? (mimo ? "app-server" : "app-server-goal")) as NonNullable<CodexGoalRunConfig["executionEngine"]>,
     ...(booleanValue(merged.checkpointRequired) ? { checkpointRequired: true } : {}),
-    ...optionalCodexGoalModelBackend(merged.modelBackend),
+    ...modelBackend,
     codexBinaryPath: stringValue(merged.codexBinaryPath) ?? "codex",
     ...controlModes,
     ...(accessBoundary === undefined ? {} : { accessBoundary }),
@@ -170,7 +195,7 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
       ? {}
       : { workerReportMode: workerReportModeValue(merged.workerReportMode) }),
   };
-  const stateRootDir = stringValue(merged.stateRootDir) ?? (storageData.storage ? join(jobRootDir, "state") : undefined);
+  const stateRootDir = paths.stateRootDir ?? (storageData.storage ? join(jobRootDir, "state") : undefined);
   const finalConfig = stateRootDir
     ? { ...config, stateRootDir: resolvePath(cwd, stateRootDir) }
     : config;
@@ -183,7 +208,7 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): Code
     cwd,
     logPath: resolvePath(
       cwd,
-      stringValue(merged.logPath) ?? join(jobRootDir, `${taskId}.log`),
+      paths.logPath ?? join(jobRootDir, `${taskId}.log`),
     ),
     format: (stringValue(merged.outputFormat) ?? "json") as CodexGoalOutputFormat,
     cliCommand: defaultCliCommand(import.meta.url),

@@ -1,3 +1,4 @@
+import type { HostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { EventEmitter } from "node:events";
 import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError, stopAppServerProcess } from "./app-server-process-stopper";
@@ -101,7 +102,9 @@ export class AppServerSlotPool {
       readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-      readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
+  readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly nativeGoalControls?: true;
       readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
@@ -203,11 +206,10 @@ export class AppServerSlotPool {
       ...(this.options.hostedPermissionProfiles === undefined ? {} : {
         hostedPermissionProfiles: this.options.hostedPermissionProfiles,
       }),
-      processFactory: (request) => {
-        const child = this.options.processFactory(request);
+      processFactory: this.options.processFactory,
+      onProcessCreated: (child) => {
         cleanup.child = child;
         child.on("exit", cleanup.onExit);
-        return child;
       },
       signalChildProcess: this.options.signalChildProcess,
       session: input.session,
@@ -216,9 +218,11 @@ export class AppServerSlotPool {
       ...(this.options.commandApprovalPolicy === undefined
         ? {}
         : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+      ...(this.options.hostedCodingAuthority === undefined ? {} : { hostedCodingAuthority: this.options.hostedCodingAuthority }),
       ...(this.options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: this.options.nativeToolSurface }),
+      ...(this.options.nativeGoalControls === undefined ? {} : { nativeGoalControls: this.options.nativeGoalControls }),
       ...(this.options.hostedControllerTools === undefined
         ? {}
         : { hostedControllerTools: this.options.hostedControllerTools }),
@@ -317,6 +321,7 @@ export class AppServerSlotPool {
   }
 
   private async cleanupStartupFailure(key: string, startupError: unknown): Promise<void> {
+    this.cleanup.get(key)?.client.executionLifetime?.close(startupError);
     try {
       await this.stopSlot(key);
     } catch (cleanupError) {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
@@ -26,6 +27,7 @@ import {
   codexAccountCapacityStore,
 } from "../codex-account-capacity-store";
 import { directCodexAppServerFailureCause } from "./codex-app-server-failure-cause";
+import { researchDirectoryIdentity, researchPromptBytes } from "../../research-launch-files";
 
 const reservationSchemaVersion = 1 as const;
 const reservationGraceMs = 10 * 60_000;
@@ -69,6 +71,7 @@ export type CodexProjectReservedLaunchAuthority = Readonly<{
   selectedAccountSha256: string; accountId: string; maxAccountCycles: number; fresh: boolean;
 }>;
 const reservedLaunchAuthorities = new WeakMap<CodexGoalLaunchInput, CodexProjectReservedLaunchAuthority>();
+const reservedAccountReceipts = new WeakMap<CodexGoalLaunchInput, PersistedCodexProjectAccountReservation | null>();
 export const codexProjectReservationValueSha256 = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function assertCodexProjectReservedLaunchAuthority(input: {
   readonly manifest: CodexGoalJobManifest; readonly sourceLaunch: CodexGoalLaunchInput; readonly reservedLaunch: CodexGoalLaunchInput;
@@ -88,6 +91,44 @@ export function consumeCodexProjectReservedLaunchAuthority(input: Parameters<typ
   const authority = assertCodexProjectReservedLaunchAuthority(input);
   reservedLaunchAuthorities.delete(input.reservedLaunch);
   return authority;
+}
+
+/** Must run under the reacquired workspace lease, before publication. */
+export async function assertCodexProjectReservedAccountReceiptCurrent(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly reservedLaunch: CodexGoalLaunchInput;
+}): Promise<void> {
+  const expected = reservedAccountReceipts.get(input.reservedLaunch);
+  if (expected === undefined || (expected !== null &&
+    JSON.stringify(await readReservation(codexProjectAccountReservationPath(input.manifest))) !== JSON.stringify(expected))) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+}
+
+/** Only the original exclusive reservation qualifies this extra fresh-job leaf.
+ * Shared/unreserved launches grant no leaf; changed exclusive receipts deny. */
+export function codexProjectReservedAccountReceiptArtifactPath(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly reservedLaunch: CodexGoalLaunchInput;
+}): string | undefined {
+  const expected = reservedAccountReceipts.get(input.reservedLaunch);
+  if (expected === undefined || expected === null) return undefined;
+  const authority = reservedLaunchAuthorities.get(input.reservedLaunch);
+  if (!authority?.fresh || codexProjectReservationValueSha256(input.manifest) !== authority.manifestSha256 ||
+      codexProjectReservationValueSha256(input.reservedLaunch.config) !== authority.reservedConfigSha256) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+  const path = codexProjectAccountReservationPath(input.manifest);
+  const root = researchDirectoryIdentity(input.manifest.jobRootDir), before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || (before.mode & 0o7777) !== 0o600 || before.size > 64 * 1024) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+  const bytes = researchPromptBytes(root, path), after = lstatSync(path);
+  if (!(["dev", "ino", "mode", "uid", "gid", "nlink", "size", "ctimeMs", "mtimeMs"] as const).every(key => before[key] === after[key]) ||
+      bytes.toString("utf8") !== reservationBytes(expected)) {
+    throw new Error("project_control_account_reservation_changed_before_start");
+  }
+  return path;
 }
 
 export type CodexProjectAccountReservationDeps = {
@@ -208,6 +249,7 @@ async function reserveExclusiveCodexProjectAccount(
   const capacityStore =
     input.deps?.capacityStore ??
     codexAccountCapacityStore(input.launch.config.authRootDir, {
+      ...(input.launch.config.modelBackend === undefined ? {} : { modelBackend: input.launch.config.modelBackend }),
       authJsonPaths: Object.fromEntries(
         input.launch.config.accounts.flatMap((account) =>
           account.authJsonPath ? [[account.name, account.authJsonPath]] : [],
@@ -262,6 +304,7 @@ async function selectSharedCodexProjectAccount(
   const capacityStore =
     input.deps?.capacityStore ??
     codexAccountCapacityStore(input.launch.config.authRootDir, {
+      ...(input.launch.config.modelBackend === undefined ? {} : { modelBackend: input.launch.config.modelBackend }),
       authJsonPaths: Object.fromEntries(
         input.launch.config.accounts.flatMap((account) =>
           account.authJsonPath ? [[account.name, account.authJsonPath]] : [],
@@ -610,6 +653,10 @@ export async function releaseCodexProjectAccount(input: {
   const receiptPath = codexProjectAccountReservationPath(input.manifest);
   const receipt = await readReservation(receiptPath);
   if (!receipt) return false;
+  const expected = reservedAccountReceipts.get(input.launch);
+  // A returned shared launch owns no receipt; an exclusive launch can release
+  // only its original receipt. Callers retain the workspace lease for cleanup.
+  if (expected === null || (expected !== undefined && JSON.stringify(receipt) !== JSON.stringify(expected))) return false;
   const leaseStore =
     input.deps?.leaseStore ??
     codexProjectAccountLeaseStore(input.launch.config.authRootDir);
@@ -619,7 +666,9 @@ export async function releaseCodexProjectAccount(input: {
     reason: input.reason,
     now: input.deps?.now ?? new Date(),
   });
-  await rm(receiptPath, { force: true });
+  if (JSON.stringify(await readReservation(receiptPath)) === JSON.stringify(receipt)) {
+    await rm(receiptPath, { force: true });
+  }
   return true;
 }
 
@@ -651,20 +700,18 @@ function reservationResult(
     (candidate) => candidate.name === receipt.accountId,
   );
   if (!account) throw new Error("project_control_reserved_account_missing");
+  const reservedLaunch = {
+    ...launch,
+    config: { ...launch.config, accounts: [account], maxAccountCycles },
+  };
+  reservedAccountReceipts.set(reservedLaunch, Object.freeze({ ...receipt }));
   return {
     mode: "exclusive",
     accountId: receipt.accountId,
     fencingToken: receipt.fencingToken,
     acquiredAt: receipt.acquiredAt,
     expiresAt: receipt.expiresAt,
-    launch: {
-      ...launch,
-      config: {
-        ...launch.config,
-        accounts: [account],
-        maxAccountCycles,
-      },
-    },
+    launch: reservedLaunch,
   };
 }
 
@@ -677,17 +724,15 @@ function sharedReservationResult(
     (candidate) => candidate.name === accountId,
   );
   if (!account) throw new Error("project_control_reserved_account_missing");
+  const reservedLaunch = {
+    ...launch,
+    config: { ...launch.config, accounts: [account], maxAccountCycles },
+  };
+  reservedAccountReceipts.set(reservedLaunch, null);
   return {
     mode: "shared",
     accountId,
-    launch: {
-      ...launch,
-      config: {
-        ...launch.config,
-        accounts: [account],
-        maxAccountCycles,
-      },
-    },
+    launch: reservedLaunch,
   };
 }
 
@@ -843,7 +888,7 @@ async function writeReservation(
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const stagingPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await writeFile(stagingPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    await writeFile(stagingPath, reservationBytes(receipt), {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
@@ -852,6 +897,10 @@ async function writeReservation(
   } finally {
     await rm(stagingPath, { force: true });
   }
+}
+
+function reservationBytes(receipt: PersistedCodexProjectAccountReservation): string {
+  return `${JSON.stringify(receipt, null, 2)}\n`;
 }
 
 function requiredText(value: unknown): string {

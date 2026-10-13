@@ -37,7 +37,7 @@ export function enrollResearchOperatorRequest(requestPath: string, expectedSha25
     const directory = researchOperatorDirectory(request.jobId);
     if (existsSync(join(directory, "active.json")) || existsSync(bindingPath(request.jobId))) throw new Error("research_operator_already_enrolled");
     const grantBytes = researchRead(join(directory, "grant.json")), grant = parseResearchGrant(researchJson(grantBytes));
-    if (grant.profileId !== CodexProviderEgressProfileId.FullInternetV1 || grant.registeredHandoff || grant.jobId !== request.jobId || grant.jobRootDir !== request.jobRootDir || grant.workspacePath !== request.workspacePath)
+    if (grant.profileId !== CodexProviderEgressProfileId.FullInternetV1 || grant.registeredHandoff || grant.projectLaunchBinding || grant.jobId !== request.jobId || grant.jobRootDir !== request.jobRootDir || grant.workspacePath !== request.workspacePath)
       throw new Error("research_operator_grant_mismatch");
     source(request, sourceCommit, sourceTree);
     if (researchCommand("/usr/bin/git", ["-C", request.workspacePath, "status", "--porcelain=v1", "--untracked-files=all"]).trim()) throw new Error("research_operator_workspace_dirty");

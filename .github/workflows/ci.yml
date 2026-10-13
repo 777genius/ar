@@ -31,9 +31,24 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: &node_linux_prerequisite_script |
+          set -euo pipefail
+          # The official Linux Node.js binary needs libatomic.so.1 before setup-node can run it.
+          have_libatomic() { grep -q 'libatomic\.so\.1 ' < <(/sbin/ldconfig -p 2>/dev/null); }
+          if have_libatomic; then exit 0; fi
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::libatomic.so.1 is missing and this Linux runner has no apt-get"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1
+          have_libatomic
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
       - name: Install encrypted checkpoint restore test dependency
         run: |
           if ! command -v restic >/dev/null 2>&1; then
@@ -41,20 +56,30 @@ jobs:
             sudo apt-get install -y --no-install-recommends restic
           fi
           restic version
+      # The helper uses strict enums, which Node cannot execute directly. Compile
+      # it with the lock-pinned project TypeScript; no lifecycle scripts run.
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
       - name: Verify reusable PR lane proofs
         id: proof
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
-        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts detect
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" detect
 
   quality:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
@@ -82,10 +107,15 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Fetch pinned legacy ledger fixture
         run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
+      - &unit_test_node_prerequisite
+        name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
       - &unit_test_node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
@@ -97,6 +127,10 @@ jobs:
             sudo apt-get install -y --no-install-recommends restic
           fi
           restic version
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
       - name: Capture CI proof identity before source execution
         id: capture
         continue-on-error: true
@@ -105,7 +139,7 @@ jobs:
           CI_PROOF_FAMILY: unit
           CI_PROOF_LANE: ${{ matrix.shard }}
           CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
-        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
       - &unit_test_install
         run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - name: Run unit shard in a private TEST home
@@ -184,6 +218,7 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - *unit_test_checkout
+      - *unit_test_node_prerequisite
       - *unit_test_node
       - *unit_test_install
       - name: Run non-Vitest test phases once in a private TEST home
@@ -218,54 +253,54 @@ jobs:
           fi
 
   archive-root-tests:
-    # Only the fixed disposable TEST command is elevated, on an ephemeral host.
-    runs-on: ubuntu-latest
+    # The unchanged archive TEST runs as native UID 0 in the existing disposable
+    # SOURCE container. Its command and completed JSON report are mandatory there.
+    needs: native-probe-source
+    if: ${{ always() }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22
-          cache: npm
-      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
-      - run: npm run build:packages
-      - name: Qualify archive and custody regressions on disposable TEST identities
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive_test_root=$(mktemp -d /tmp/sr-archive-ci-TEST-XXXXXX)
-          trap 'sudo -n /bin/rm -rf --one-file-system -- "$archive_test_root"' EXIT
-          # No checkout Git metadata, HOME, credentials or real job data enters
-          # the TEST copy. Fixtures create their own root-owned 0600 permits.
-          cp -a src packages node_modules package.json vitest.config.ts tsconfig.json "$archive_test_root/"
-          mkdir "$archive_test_root/home" "$archive_test_root/temp"
-          archive_test_node=$(command -v node)
-          cd "$archive_test_root"
-          sudo -n /usr/bin/env -i \
-            PATH=/usr/bin:/bin HOME="$archive_test_root/home" \
-            TMPDIR="$archive_test_root/temp" XDG_CONFIG_HOME="$archive_test_root/home" \
-            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-            SR_ARCHIVE_TEST_PRIVILEGE=root \
-            "$archive_test_node" node_modules/vitest/vitest.mjs run \
-            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
-            src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
-            --maxWorkers=1 --no-cache --configLoader runner
+      - name: Require completed SOURCE and native root archive TEST container
+        env:
+          NATIVE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
+        run: test "$NATIVE_SOURCE_RESULT" = success
 
   observer-mount-tests:
-    # Fresh disposable VM: namespace capabilities on the shared ARC runner are
-    # not assumed. Only the fixed TEST helper receives sudo here.
+    # This native mount gate requires the stock Ubuntu VM namespace contract.
+    # Keep the shared ARC runner and its security policy unchanged.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
+      - name: Require genuine runner identity and disposable namespace capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          id
+          cat /etc/os-release
+          node --version
+          cat /proc/self/uid_map
+          wc -c /proc/self/mountinfo
+          readlink /proc/self/ns/user /proc/self/ns/mnt /proc/self/ns/pid
+          test "$(id -u)" -gt 0
+          test "$(id -g)" -gt 0
+          test "$(stat -c %u -- "$GITHUB_WORKSPACE")" = "$(id -u)"
+          grep -q '^VERSION_ID="24\.04"$' /etc/os-release
+          node -e 'if (process.versions.node !== "26.11.1") process.exit(1)'
+          sudo -n -l
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+            /usr/bin/unshare --user --map-root-user --mount --pid --fork \
+            --mount-proc --propagation private --kill-child=SIGKILL -- /bin/true
       - name: Fetch locked TEST dependencies
         run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
@@ -321,9 +356,13 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
@@ -370,17 +409,38 @@ jobs:
           tar -xf /source.tar -C /native-probe-source-workspace/source
           cd /native-probe-source-workspace/source
           mkdir -p delivery/a0-native-probe
+          # Archive fixtures observe a real isolated tmux socket, never a mocked absence.
+          timeout --signal=TERM --kill-after=5s 90s apt-get update
+          timeout --signal=TERM --kill-after=5s 90s apt-get install --yes --no-install-recommends tmux=3.3a-3
+          dpkg-query --show --showformat='${Version}\n' tmux
+          tmux -V
           npm ci
           npm run typecheck:native-probe
           npm run typecheck:native-probe:root-source
           npm run test:native-probe
+          npm run build:packages
+          SR_ARCHIVE_TEST_PRIVILEGE=root \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
+            node node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
+            --outputFile=delivery/a0-native-probe/archive-root-result.json
+          node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
+            --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
+            --target ES2022 --module NodeNext --moduleResolution NodeNext \
+            scripts/require-archive-root-result.mts
+          node --experimental-strip-types scripts/require-archive-root-result.mts
           TEST_COMMAND
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
             --security-opt "seccomp=$owned/ci-source-seccomp.json" \
-            --user 0:0 --init node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+            --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
+            node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 \
             /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
             HOME=/native-probe-source-workspace/home \
             TMPDIR=/native-probe-source-workspace/tmp \
+            XDG_CONFIG_HOME=/native-probe-source-workspace/home \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
             npm_config_cache=/native-probe-source-workspace/cache \
             SR_NATIVE_PROBE_TMP=/native-probe-source-workspace/tmp \
             /usr/bin/timeout --signal=TERM --kill-after=10s 15m \
@@ -466,10 +526,18 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
       - name: Capture CI proof identity before source execution
         id: capture
         continue-on-error: true
@@ -478,7 +546,7 @@ jobs:
           CI_PROOF_FAMILY: crash
           CI_PROOF_LANE: ${{ matrix.lane }}
           CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-crash-${{ matrix.lane }}/receipt.json
-        run: node --experimental-transform-types scripts/ci-proof-reuse/cli.mts capture
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
       # Bounded retry: `npm ci` is a pure download step and runner
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.

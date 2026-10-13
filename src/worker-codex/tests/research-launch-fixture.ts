@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
 const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.scope", birth: "12345", boot: "a".repeat(8) + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, foreign: new Set<string>(),
+  uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, nativeBackingFacts: false, foreign: new Set<string>(),
   fdPaths: new Map<number, string>(), pins: new Map<string, string>(), calls: [] as { command: string; args: string[] }[],
   units: new Map<string, { description: string; pid: number; invocation: string; active: boolean; pending?: boolean;
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
@@ -73,6 +73,13 @@ function syntheticMountInfo(): string {
   for (const [target, mount] of fixture.scratchMounts) if (mount) lines.push(`${lines.length + 1} 1 0:11 ${mount.fsroot} ${target} rw - ext4 /dev/TEST-scratch rw`);
   return lines.join("\n") + "\n";
 }
+function syntheticFdInfo(fd: number): string {
+  const path = fixture.fdPaths.get(fd);
+  if (path === undefined) throw new Error("unexpected TEST fdinfo descriptor");
+  const selected = path.replace(/^\/proc\/1\/root/, "");
+  const index = [...fixture.pins.keys()].findIndex(pin => selected === pin || selected.startsWith(pin + "/"));
+  return `mnt_id:\t${index === -1 ? 1 : index + 2}\n`;
+}
 vi.mock("node:url", async original => {
   const real = await original<typeof import("node:url")>();
   return { ...real, fileURLToPath: (url: URL | string) => {
@@ -83,23 +90,31 @@ vi.mock("node:url", async original => {
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   return { ...real,
-    lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
-    statSync: (path: string) => Object.assign(real.statSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
-    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
+    lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { ...(!fixture.nativeBackingFacts ? { dev: 2049 } : {}), gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
+    statSync: (path: string) => Object.assign(real.statSync(local(path)), { ...(!fixture.nativeBackingFacts ? { dev: 2049 } : {}), gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
+    fstatSync: (fd: number, options?: { bigint?: boolean }) => {
+      const uid = fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0;
+      return options?.bigint
+        ? Object.assign(real.fstatSync(fd, { bigint: true }), { ...(!fixture.nativeBackingFacts ? { dev: 2049n } : {}), gid: 0n, uid: BigInt(uid) })
+        : Object.assign(real.fstatSync(fd), { ...(!fixture.nativeBackingFacts ? { dev: 2049 } : {}), gid: 0, uid });
+    },
     openSync: (path: string, flags: number | string, mode: number) => {
-      const selected = path === "/proc/self/mountinfo" ? join(fixture.root, "mountinfo") : local(path);
-      if (path === "/proc/self/mountinfo") real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
+      const mountInfo = path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo";
+      let selected = !fixture.nativeBackingFacts && mountInfo ? join(fixture.root, "mountinfo") : local(path);
+      if (!fixture.nativeBackingFacts && mountInfo) real.writeFileSync(selected, syntheticMountInfo(), { mode: 0o600 });
+      if (!fixture.nativeBackingFacts && path.startsWith("/proc/self/fdinfo/")) {
+        const sourceFd = Number(path.split("/").at(-1));
+        selected = join(fixture.root, `fdinfo-${sourceFd}.txt`);
+        real.writeFileSync(selected, syntheticFdInfo(sourceFd), { mode: 0o600 });
+      }
       const fd = real.openSync(selected, flags, mode); fixture.fdPaths.set(fd, path); return fd;
     },
     existsSync: (path: string) => real.existsSync(local(path)),
     readFileSync: (path: string | number, opts: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "string" && path.startsWith("/proc/")) {
+        if (fixture.nativeBackingFacts && (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo" || path.startsWith("/proc/self/fdinfo/"))) return real.readFileSync(path, opts);
         if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") return syntheticMountInfo();
-        if (path.startsWith("/proc/self/fdinfo/")) {
-          const selected = (fixture.fdPaths.get(Number(path.split("/").at(-1))) ?? "").replace(/^\/proc\/1\/root/, "");
-          const index = [...fixture.pins.keys()].findIndex(pin => selected === pin || selected.startsWith(pin + "/"));
-          return `mnt_id:\t${index === -1 ? 1 : index + 2}\n`;
-        }
+        if (path.startsWith("/proc/self/fdinfo/")) return syntheticFdInfo(Number(path.split("/").at(-1)));
         if (path.endsWith("/uid_map") || path.endsWith("/gid_map")) return fixture.uidMap;
         if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot;
         if (path.endsWith("/cgroup")) return `0::${fixture.processGroups.get(Number(path.split("/")[2])) ?? fixture.group}\n`;
@@ -125,6 +140,7 @@ vi.mock("node:fs", async original => {
     symlinkSync: (target: string, path: string) => real.symlinkSync(target, local(path)),
     writeFileSync: (path: string | number, bytes: Parameters<typeof real.writeFileSync>[1], options: Parameters<typeof real.writeFileSync>[2]) => real.writeFileSync(typeof path === "string" ? local(path) : path, bytes, options),
     renameSync: (from: string, to: string) => real.renameSync(local(from), local(to)),
+    linkSync: (from: string, to: string) => real.linkSync(local(from), local(to)),
     unlinkSync: (path: string) => real.unlinkSync(local(path)),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
   };
@@ -146,10 +162,18 @@ vi.mock("node:fs/promises", async original => {
   link: (from: string, to: string) => real.link(local(from), local(to)),
   readdir: (path: string, options: Parameters<typeof real.readdir>[1]) => real.readdir(local(path), options),
   stat: (path: string) => real.stat(local(path)),
-  lstat: async (path: string) => Object.assign(await real.lstat(local(path)), { uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
+  lstat: async (path: string, options?: { bigint?: boolean }) => {
+    const info = await real.lstat(local(path), options);
+    const uid = fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0;
+    return Object.assign(info, { uid: options?.bigint ? BigInt(uid) : uid });
+  },
   readlink: async (path: string) => path.startsWith("/proc/") ? "TEST-host" : real.readlink(local(path)),
   open: async (path: string, flags: string | number) => {
-    const file = await real.open(local(path), flags), stat = file.stat.bind(file);
+    // The custody adapter's fixed read-only FD walk starts at the native root.
+    // Its final canonical binding still has to reach the owned TEST directory.
+    const nativeRootRead = fixture.nativeBackingFacts && path === "/" &&
+      flags === (nativeFs.constants.O_RDONLY | nativeFs.constants.O_DIRECTORY);
+    const file = await real.open(nativeRootRead ? path : local(path), flags), stat = file.stat.bind(file);
     file.stat = (async (...args: Parameters<typeof file.stat>) => Object.assign(await stat(...args), { uid: fixture.foreign.has(path) ? 999 : 0 })) as typeof file.stat;
     return file;
   },
@@ -158,10 +182,97 @@ vi.mock("node:fs/promises", async original => {
 vi.mock("node:child_process", async original => {
   const real = await original<typeof import("node:child_process")>();
   const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
-  return { ...real, spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
+  return { ...real, spawn: (...args: unknown[]) => {
+    if (!fixture.nativeBackingFacts) return fixture.spawn(...args);
+    const [command, argv, options] = args as [string, string[], import("node:child_process").SpawnOptions];
+    const owned = (path: string): boolean => {
+      const selected = researchScratchBackingPath(path);
+      return selected === path && fs.realpathSync(path) === path && fs.lstatSync(path).dev === ownedRoot?.device;
+    };
+    // Only fixed offline readers/operations may run. Provider runtimes never
+    // pass this TEST-only effect boundary.
+    if (command === process.execPath && argv.length === 6 && argv[1] === "project-control-operation-run" &&
+        argv[2] === "--operation-file" && argv[4] === "--format" && argv[5] === "json" &&
+        argv[0]?.endsWith("/fake-operation-runner.mjs") && owned(argv[0]) && owned(argv[3]!) &&
+        options.stdio === "ignore" && options.detached === true &&
+        options.env?.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_RUNNER === "1" &&
+        (options.cwd === undefined || typeof options.cwd === "string" && owned(options.cwd))) return real.spawn(command, argv, options);
+    const stdio = options?.stdio;
+    if (command === process.execPath && argv.length === 2 && argv[0] === "-e" && argv[1] === "process.exit(0)" &&
+        typeof options.cwd === "string" && owned(options.cwd) && fs.lstatSync(options.cwd).isDirectory() &&
+        options.detached === true && Array.isArray(stdio) && stdio.length === 3 &&
+        stdio[0] === "ignore" && stdio[1] === "pipe" && stdio[2] === "pipe" && typeof options.env === "object" && options.env !== null &&
+        !Array.isArray(options.env) && Object.keys(options).every(key => ["cwd", "detached", "env", "stdio"].includes(key))) {
+      // The integration fixture's fixed no-op retains the real process-group
+      // check runner while dropping inherited credentials and Node preload flags.
+      return real.spawn(command, argv, { ...options, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
+    }
+    const batch = command === "git" && ((argv.length === 2 && argv.join("\0") === "cat-file\0--batch") ||
+      (argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch"));
+    const apply = command === "git" && argv.length === 9 &&
+      argv.slice(0, 4).join("\0") === "--literal-pathspecs\0-c\0core.quotepath=false\0-C" &&
+      argv.slice(5).join("\0") === "apply\0--cached\0--whitespace=nowarn\0-";
+    const workspace = apply ? argv[4] : options?.cwd;
+    if ((batch || apply) &&
+        Array.isArray(stdio) && stdio.length === 3 && stdio.every(value => value === "pipe") &&
+        Object.keys(options).every(key => (apply ? ["env", "stdio"] : ["cwd", "env", "stdio"]).includes(key)) &&
+        typeof workspace === "string" && owned(workspace) && fs.lstatSync(workspace).isDirectory() &&
+        options.env?.GIT_NO_REPLACE_OBJECTS === "1" && (apply || options.env?.GIT_GRAFT_FILE === "/dev/null")) {
+      const environment: NodeJS.ProcessEnv = {
+        PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null",
+        GIT_TERMINAL_PROMPT: "0",
+      };
+      const keys = ["GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"] as const;
+      if (apply || keys.some(key => options.env?.[key] !== undefined)) {
+        const [index, objects, alternates] = keys.map(key => options.env?.[key]);
+        if (typeof index !== "string" || typeof objects !== "string" || typeof alternates !== "string" ||
+            [index, objects, alternates].some(path => /[\x00-\x1f\x7f]/.test(path)) || /[:"]/.test(alternates))
+          throw new Error("unexpected TEST private Git environment");
+        const temporary = dirname(index), indexInfo = fs.lstatSync(index);
+        if (!/\/\.secret-scan-[A-Za-z0-9]{6}$/.test(temporary) || !owned(temporary) ||
+            !fs.lstatSync(temporary).isDirectory() || (fs.lstatSync(temporary).mode & 0o777) !== 0o700 ||
+            ![join(temporary, "index"), join(temporary, "prefix-index")].includes(index) ||
+            !owned(index) || !indexInfo.isFile() || indexInfo.nlink !== 1 ||
+            objects !== join(temporary, "objects") || !owned(objects) || !fs.lstatSync(objects).isDirectory() ||
+            !owned(alternates) || !fs.lstatSync(alternates).isDirectory())
+          throw new Error("unexpected TEST private Git paths");
+        let common = join(workspace, ".git");
+        const gitInfo = fs.lstatSync(common);
+        if (gitInfo.isFile() && gitInfo.nlink === 1 && gitInfo.size <= 4096 && owned(common)) {
+          const link = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(fs.readFileSync(common, "utf8"));
+          if (!link) throw new Error("unexpected TEST Git worktree link");
+          common = resolve(workspace, link[1]!);
+          if (!owned(common) || !fs.lstatSync(common).isDirectory()) throw new Error("unexpected TEST Git worktree directory");
+          const commonLink = join(common, "commondir"), commonLinkInfo = fs.lstatSync(commonLink);
+          if (!owned(commonLink) || !commonLinkInfo.isFile() || commonLinkInfo.nlink !== 1 || commonLinkInfo.size > 4096)
+            throw new Error("unexpected TEST Git common directory link");
+          const relativeCommon = fs.readFileSync(commonLink, "utf8");
+          if (!/^[^\r\n]+\r?\n?$/.test(relativeCommon)) throw new Error("unexpected TEST Git common directory");
+          common = resolve(common, relativeCommon.trimEnd());
+        }
+        if (!owned(common) || !fs.lstatSync(common).isDirectory() ||
+            alternates !== fs.realpathSync(join(common, "objects"))) throw new Error("unexpected TEST Git object source");
+        for (const key of keys) environment[key] = options.env![key];
+      }
+      return real.spawn("/usr/bin/git", argv, { ...options, env: environment });
+    }
+    if (command === "/usr/bin/mv" && argv.length === 6 &&
+        argv.slice(0, 4).join("\0") === "--no-copy\0--no-clobber\0--no-target-directory\0--" &&
+        argv.slice(4).every(path => /^\/proc\/self\/fd\/3\/[A-Za-z0-9_.-]+$/.test(path) && !path.endsWith("/.") && !path.endsWith("/..")) &&
+        argv[4] !== argv[5] && Array.isArray(stdio) && stdio.length === 4 &&
+        stdio.slice(0, 3).every(value => value === "ignore") && typeof stdio[3] === "number" &&
+        fs.fstatSync(stdio[3]).isDirectory() && owned(fs.readlinkSync(`/proc/self/fd/${stdio[3]}`)) &&
+        options.env?.PATH === "/usr/bin:/bin" && options.env?.LC_ALL === "C") return real.spawn(command, argv, options);
+    throw new Error("unexpected TEST native process effect");
+  }, spawnSync: (command: string, args: string[]) => {
     fixture.calls.push({ command, args });
     if (command === "/usr/bin/findmnt") {
+      // util-linux treats explicit table selectors as mutually exclusive.
+      if (args.includes("--task") && args.some(value => ["--kernel", "--mtab", "--fstab"].includes(value)))
+        throw new Error("TEST findmnt mutually exclusive table selectors");
       fixture.findmntHook?.();
+      if (args.includes("--list")) return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: 1, target: "/", uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", fsroot: "/", "maj:min": "8:1" }, ...[...fixture.pins].map(([target, fsroot], index) => ({ id: index + 2, target, fsroot, uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "maj:min": "8:1" }))] }) };
       const path = args[args.indexOf("--target") + 1]!, pins = [...fixture.pins];
       const index = pins.findIndex(([pin]) => path === pin || path.startsWith(pin + "/"));
       return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: index === -1 ? 1 : index + 2,
@@ -205,14 +316,25 @@ export function configureResearchFixtureTaskTimeout(taskTimeoutMs: number): void
   fixture.taskTimeoutMs = taskTimeoutMs;
   writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n", { mode: 0o600 });
 }
-export function setupResearchFixture(): void {
-  fixture.root = nativeFs.mkdtempSync(join(tmpdir(), "TEST-research-launch-r7-"));
+export function setupResearchFixture(): void;
+export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string }): void;
+export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string } = {}): void {
+  fixture.nativeBackingFacts = options.nativeBackingFacts === true;
+  const parent = options.allocationParent ?? (fixture.nativeBackingFacts ? "/dev/shm" : tmpdir());
+  if (options.allocationParent !== undefined && (resolve(parent) !== parent || nativeFs.realpathSync(parent) !== parent ||
+      !nativeFs.lstatSync(parent).isDirectory() || nativeFs.lstatSync(parent).isSymbolicLink()))
+    throw new Error("Expected a canonical TEST fixture allocation parent");
+  fixture.root = nativeFs.mkdtempSync(join(parent, "TEST-research-launch-r7-"));
   const allocated = nativeFs.lstatSync(fixture.root);
   ownedRoot = { path: fixture.root, device: allocated.dev, inode: allocated.ino };
+  // Clear inherited setgid only on the fresh owned TEST root, before its
+  // private descendants inherit modes from a shared CI workspace.
+  nativeFs.chmodSync(fixture.root, 0o700);
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
   fixture.taskTimeoutMs = 3600000;
+  fixture.physicalPaths = fixture.nativeBackingFacts;
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units", "system/etc/ssl/certs", "system/opt", "system/usr/bin", "system/usr/sbin", "system/usr/lib", "system/usr/lib64"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
   mkdirSync(local(dirname(process.execPath)), { recursive: true, mode: 0o700 });

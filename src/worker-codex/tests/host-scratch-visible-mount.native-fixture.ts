@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { types } from "node:util";
 import { prepareHostScratchCaches, prepareHostScratchTemp, resolveHostScratchTempRoot,
-  resolvePreparedHostScratchBinds } from "../host-scratch-temp.js";
+  resolvePreparedHostScratchBinds, SCRATCH_NAMESPACE_MARKER_ENV } from "../host-scratch-temp.js";
 
 enum Phase { Initial = "initial", Prepared = "prepared", Covered = "covered", Rebound = "rebound", Refusals = "refusals", Complete = "complete" }
 enum Step { Initial = "initial", PrepareInitial = "prepare-initial", ResolveInitial = "resolve-initial", ObservePrepared = "observe-prepared",
@@ -76,6 +76,8 @@ try {
   if (namespace === readlinkSync("/proc/1/ns/mnt")) deny();
   for (const map of ["uid", "gid"]) if (!/^0\s+0\s+4294967295$/.test(small(`/proc/self/${map}_map`, 256).trim())) deny();
   privateNamespace(); // BEFORE all fixture filesystem and mount effects.
+  // The fixture owns its fresh namespace; without this marker the production guard refuses new binds.
+  process.env[SCRATCH_NAMESPACE_MARKER_ENV] = String(process.pid);
   custody(dirname(root)); custody(dirname(self));
   const selfInfo = lstatSync(self);
   if (!selfInfo.isFile() || selfInfo.isSymbolicLink() || selfInfo.uid !== 0 || selfInfo.gid !== 0 || selfInfo.nlink !== 1 ||

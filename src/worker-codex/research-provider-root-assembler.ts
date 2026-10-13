@@ -2,13 +2,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertResearchProviderCurrentAuthority, assertResearchProviderStartMaterial, readResearchStartBinding, researchCurrentStart } from "./research-launch-admission";
+import { assertResearchProviderCurrentAuthority, assertResearchProviderStartMaterial, readResearchStartBinding, researchCurrentStart, prepareResearchProjectLaunchAuthority, prepareResearchRegisteredHandoffAuthority } from "./research-launch-admission";
 import { researchProviderSetupAllowanceMs } from "./research-launch-contract";
 import { assertResearchProviderRootIdentity, assertResearchServiceOwner, researchDescription, researchExecutableDigest, researchProcessIdentity, researchProcessLifetime, researchServiceIdentity } from "./research-launch-host";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation } from "./research-launch-lifecycle";
 import { researchHash, researchInvalid, researchPath, researchRead } from "./research-launch-files";
 import { readKernelMountTable } from "./host-scratch-mount";
 import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
+
+import { researchMimoCodingCodexHome, researchMimoCodingLauncherArguments, researchMimoCodingPrivateHome, researchMimoCodingRoot } from "./research-mimo-coding-root";
+import { normalizeResearchAssemblyFailure } from "./research-launch-diagnostics";
 
 const now = (): number => Number(process.hrtime.bigint() / 1_000_000n);
 const environment = Object.freeze({ PATH: "/usr/bin:/usr/sbin", LANG: "C", LC_ALL: "C" });
@@ -24,6 +27,8 @@ const apiDevices = [["null", 1, 3], ["zero", 1, 5], ["full", 1, 7], ["random", 1
 // No new mount namespace is cloned here: an inherited FD would still reference
 // the original mount. The trusted supervisor only awaits/signals after pivot.
 const pivotRoot = [
+  'phase=descriptor-validation',
+  `trap 'code=$?; [ "$code" = 0 ] || printf "research_root_transition_failed phase=%s code=%s\\n" "$phase" "$code" >&2' EXIT`,
   '[ "$#" -ge 2 ] && [ -d /proc/self/fd/3 ] && [ /proc/self/fd/3 -ef "$1" ] || exit 70',
   'for handle in /proc/self/fd/*; do',
   '  case "$handle" in',
@@ -36,10 +41,13 @@ const pivotRoot = [
   'cd -P /proc/self/fd/3 2>&4 || exit 70',
   '[ "$PWD" = "$1" ] || exit 70',
   'shift',
+  'phase=pivot',
   '/usr/sbin/pivot_root . . 2>&4 || exit 70',
+  'phase=detach-old-root',
   '/usr/bin/umount --no-canonicalize --internal-only --no-mtab --lazy -- . 2>&4 || exit 70',
   'cd / 2>&4 || exit 70',
   'exec 3<&- 4>&- || exit 70',
+  'phase=namespace-transition',
   'exec "$@"',
 ].join("\n");
 const deviceNumber = (value: number): readonly [number, number] => {
@@ -63,7 +71,10 @@ export function researchProviderRootTransition(root: string): Readonly<{ command
 export async function assembleResearchProviderRoot(jobId: string, unit: string, home: string, seal: string, deadline: number): Promise<number> {
   assertResearchProviderRootIdentity();
   if (!Number.isSafeInteger(deadline) || deadline <= now()) researchInvalid();
-  const current = researchCurrentStart(jobId), remaining = deadline - now();
+  const current = researchCurrentStart(jobId);
+  if (current.spec.projectLaunchBinding) await prepareResearchProjectLaunchAuthority(jobId, current.spec.startId, assertResearchProviderRootIdentity);
+  if (current.spec.registeredHandoff) await prepareResearchRegisteredHandoffAuthority(jobId, current.spec.startId, assertResearchProviderRootIdentity);
+  const remaining = deadline - now();
   if (remaining <= 0 || remaining > researchProviderSetupAllowanceMs(current.spec.request)) researchInvalid();
   const reservation = readResearchProviderReservation(current.directory, unit);
   if (reservation.specSha256 !== researchHash(current.bytes)) researchInvalid();
@@ -95,11 +106,13 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
   const finalAuthority = (): void => {
     // Reuse the established grant/closing/shared-policy/root/pin checks after
     // blocking material walks, at each synchronous mount/spawn boundary.
-    assertResearchProviderCurrentAuthority(jobId, current, root, bindingBytes);
     assertResearchProviderNotCancelled(current.directory, unit);
     if (now() >= deadline) researchInvalid();
+    assertResearchProviderCurrentAuthority(jobId, current, root, bindingBytes);
   };
   assertAuthority(); assertResearchProviderStartMaterial(root); assertAuthority(); finalAuthority();
+  const coding = researchMimoCodingRoot(current.spec.request);
+  if (coding) researchExecutableDigest("/usr/bin/bwrap");
   for (const path of ["/usr/bin/mount", "/usr/bin/bash", "/usr/sbin/pivot_root", "/usr/bin/umount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const check = (): void => { assertAuthority(); root.assertCurrent(); finalAuthority(); };
   const descriptors = new Map<number, Readonly<{ path: string; identity: string }>>([
@@ -177,6 +190,10 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     const temporaryRoots = [["/tmp", "rw,nosuid,nodev,mode=1777,size=256M"], ["/var/tmp", "rw,nosuid,nodev,mode=1777,size=64M"],
       ["/run", "rw,nosuid,nodev,noexec,mode=0755,size=16M"], ["/sys", "ro,nosuid,nodev,noexec,mode=0555,size=1M"], ["/dev", "rw,nosuid,noexec,mode=0755,size=4M"]] as const;
     for (const [path, options] of temporaryRoots) temporary(path, options);
+    if (coding) {
+      temporary(researchMimoCodingPrivateHome.target, researchMimoCodingPrivateHome.options);
+      check(); mkdirSync(join(root.root, researchMimoCodingCodexHome.slice(1)), { mode: 0o700 });
+    }
     // tmpfs overlays precede declared binds. Recreate only the finite sealed
     // anchors they covered (notably the admitted resolver leaves under /run).
     for (const entry of root.bindings.filter(entry => temporaryRoots.some(([path]) => inside(path, entry.target)))) {
@@ -254,11 +271,12 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     check();
     assertAuthority(); finalAuthority();
     const transition = researchProviderRootTransition(root.root);
+    const launcherArguments = researchMimoCodingLauncherArguments(root.codingBootstrap);
     root.close();
     // Only the mounted root FD3 crosses this trusted transition. The glue
     // detaches the old root and closes FD3 before user mapping or payload exec.
     child = spawn(transition.command, [...transition.args, process.execPath,
-      join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"],
+      join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), ...launcherArguments],
     { cwd: "/", env: environment, stdio: ["inherit", "inherit", "inherit", handoffRoot] });
   } finally { try { root.close(); } finally { if (handoffRoot !== undefined) closeSync(handoffRoot); } }
   if (!child) researchInvalid();
@@ -276,5 +294,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const args = process.argv.slice(2);
     if (args.length !== 5 || !/^[1-9]\d{0,14}$/.test(args[4]!)) researchInvalid();
     process.exitCode = await assembleResearchProviderRoot(args[0]!, args[1]!, args[2]!, args[3]!, Number(args[4]));
-  } catch { process.exitCode = 70; }
+  } catch (error) {
+    process.stderr.write(JSON.stringify({ event: "research_provider_root_assembly_failed", ...normalizeResearchAssemblyFailure(error) }) + "\n");
+    process.exitCode = 70;
+  }
 }

@@ -1,3 +1,4 @@
+import { assertNoUnsupportedMimoRemoteRoute } from "./mimo-project-bridge-client";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -26,9 +27,16 @@ import {
 } from "./codex-goal-mcp-values";
 
 export type GoalMcpArgs = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly jobId?: string;
   readonly configPath?: string;
+  readonly storageRootDir?: string;
   readonly jobRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
+  readonly encryptionKeyPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
+  readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
   readonly workspacePath?: string;
@@ -67,6 +75,7 @@ export type GoalMcpArgs = {
 };
 
 export type StartMcpArgs = GoalMcpArgs & {
+  readonly storageRootDir?: string;
   readonly registryRootDir?: string;
   readonly confirmStart?: boolean;
   readonly skipDoctor?: boolean;
@@ -74,6 +83,10 @@ export type StartMcpArgs = GoalMcpArgs & {
 };
 
 export type JobRegistryMcpArgs = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly mimoProjectId?: string;
+  readonly mimoWorkstreamId?: string;
+  readonly storageRootDir?: string;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -142,6 +155,7 @@ export type JobCreateMcpArgs = GoalMcpArgs & JobIdMcpArgs & {
 export type JobUpdateMcpArgs = JobIdMcpArgs & Partial<JobCreateMcpArgs>;
 
 export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
+  readonly sourceCommit?: string;
   readonly storedStartBinding?: import("./stored-start-planning").StoredProjectStartBinding;
   readonly controllerJobId?: string;
   readonly path?: string;
@@ -361,6 +375,9 @@ export type AccountPoolMcpArgs = {
 
 export function jobRegistryInputSchema(): Record<string, z.ZodTypeAny> {
   return {
+    mimoProjectId: z.string().optional().describe("Configured hosted MiMo project route."),
+    mimoWorkstreamId: z.string().optional(),
+    storageRootDir: z.string().optional(),
     registryRootDir: z.string().optional(),
     cwd: z.string().optional(),
   };
@@ -374,8 +391,12 @@ export function jobIdInputSchema(): Record<string, z.ZodTypeAny> {
 }
 
 export function registryRootFromArgs(args: JobRegistryMcpArgs): string {
+  assertNoUnsupportedMimoRemoteRoute(args);
+  const env = args.sourceEnv ?? process.env;
   return resolveCodexGoalJobRegistryRoot({
-    ...(args.registryRootDir ? { registryRootDir: args.registryRootDir } : {}),
+    registryRootDir: args.registryRootDir ?? env.SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT ?? env.CODEX_GOAL_REGISTRY_ROOT,
+    storageRootDir: args.storageRootDir ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT,
+    sourceEnv: env,
     ...(args.cwd ? { cwd: args.cwd } : {}),
   });
 }
@@ -441,4 +462,21 @@ function optionalRunEventCompactionSafetyMode(
   if (text === undefined) return undefined;
   if (isRunEventCompactionSafetyMode(text)) return text;
   throw new Error(`unsupported run event compaction safety mode: ${text}`);
+}
+
+/** Server-owned defaults remain transport input, outside stores and public schemas. */
+export type CodexGoalMcpStorageDefaults = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+};
+
+export function withCodexGoalMcpStorage<TResult>(
+  defaults: CodexGoalMcpStorageDefaults,
+  handler: (args: Record<string, unknown>) => TResult,
+): (args: Record<string, unknown>) => TResult {
+  return args => {
+    const route = args as { readonly mimoProjectId?: string; readonly mimoWorkstreamId?: string };
+    // Remote routes own their paths and reject any local storage overrides.
+    if (route.mimoProjectId !== undefined || route.mimoWorkstreamId !== undefined) return handler(args);
+    return handler({ ...args, sourceEnv: defaults.sourceEnv ?? process.env });
+  };
 }

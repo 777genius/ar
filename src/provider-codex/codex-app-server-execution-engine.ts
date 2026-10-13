@@ -103,9 +103,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
-    this.options = { ...options, ...(options.providerEgressPolicy ? {
-      providerEgressPolicy: codexProviderEgressPolicy(options.providerEgressPolicy.profileId),
+    const captured = { ...options };
+    this.options = { ...captured, ...(captured.providerEgressPolicy ? {
+      providerEgressPolicy: codexProviderEgressPolicy(captured.providerEgressPolicy.profileId),
     } : {}) };
+    options = this.options;
     this.executionLifetime = resolveAppServerEngineLifetime(options);
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
@@ -142,9 +144,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.commandApprovalPolicy === undefined
         ? {}
         : { commandApprovalPolicy: options.commandApprovalPolicy }),
+      ...(options.hostedCodingAuthority === undefined ? {} : { hostedCodingAuthority: options.hostedCodingAuthority }),
       ...(options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: options.nativeToolSurface }),
+      ...(options.nativeGoalControls === undefined ? {} : { nativeGoalControls: options.nativeGoalControls }),
       ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
       ...(options.rolloutBudget === undefined
         ? {}

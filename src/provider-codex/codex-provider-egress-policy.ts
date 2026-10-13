@@ -10,6 +10,7 @@ export enum CodexProviderEgressProfileId {
   MimoTokenPlan = "codex-provider-mimo-token-plan",
   PublicResearchV1 = "codex-public-research-v1",
   FullInternetV1 = "codex-full-internet-v1",
+  ManagedPublicInternetV1 = "codex-managed-public-internet-v1",
 }
 export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
@@ -40,7 +41,8 @@ const publicResearchDomains = Object.freeze([
 
 export function codexProviderHasPublicSources(policy: CodexProviderEgressPolicy | undefined): boolean {
   return policy?.profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
-    policy?.profileId === CodexProviderEgressProfileId.FullInternetV1;
+    policy?.profileId === CodexProviderEgressProfileId.FullInternetV1 ||
+    policy?.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1;
 }
 
 export function codexHostedDefaultEgressPolicy(): CodexProviderEgressPolicy {
@@ -66,6 +68,10 @@ export function codexProviderEgressPolicy(
   profileId: CodexProviderEgressProfileId,
 ): CodexProviderEgressPolicy {
   switch (profileId) {
+    case CodexProviderEgressProfileId.ManagedPublicInternetV1:
+      // ff6 native proxy independently denies private literals and DNS results.
+      // A wildcard grants public destinations without an explicit local exception.
+      return Object.freeze({ profileId, domains: Object.freeze(["*"]) });
     case CodexProviderEgressProfileId.FullInternetV1:
       return Object.freeze({ profileId, domains: Object.freeze([]) });
     case CodexProviderEgressProfileId.ProviderApi:
@@ -121,6 +127,7 @@ export function codexProviderEgressPolicyFromEnv(
       profileId === CodexProviderEgressProfileId.TestManagedQualification ||
       profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
       profileId === CodexProviderEgressProfileId.FullInternetV1 ||
+      profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ||
       profileId === CodexProviderEgressProfileId.MimoTokenPlan) {
     return codexProviderEgressPolicy(profileId);
   }
@@ -149,6 +156,8 @@ export function codexProviderEgressConfigToml(
     "[features.network_proxy]",
     `enabled = ${policy.profileId !== CodexProviderEgressProfileId.FullInternetV1}`,
     `domains = { ${tomlDomainRules(policy)} }`,
+    ...codexManagedPublicNetworkConfigLines(policy),
+    ...(policy.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ? ["credential_broker = false"] : []),
     "",
   ].join("\n");
 }
@@ -163,6 +172,8 @@ export function codexProviderEgressCliConfigArgs(
     `features.network_proxy.enabled=${policy.profileId !== CodexProviderEgressProfileId.FullInternetV1}`,
     "--config",
     `features.network_proxy.domains={ ${tomlDomainRules(policy)} }`,
+    ...codexManagedPublicNetworkConfigLines(policy).concat(policy.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ? ["credential_broker = false"] : [])
+      .flatMap(line => ["--config", `features.network_proxy.${line.replace(" = ", "=")}`]),
   ];
 }
 
@@ -170,4 +181,15 @@ function tomlDomainRules(policy: CodexProviderEgressPolicy): string {
   // Reconstruct the finite policy rather than trusting a caller's domain array.
   return codexProviderEgressPolicy(policy.profileId).domains
     .map((domain) => `${JSON.stringify(domain)} = "allow"`).join(", ");
+}
+
+/** Version-pinned native ProxyOnly companion configuration. A captured profile
+ * selects these fixed flags; caller domains, URLs and local exceptions cannot. */
+export function codexManagedPublicNetworkConfigLines(policy: CodexProviderEgressPolicy): readonly string[] {
+  return policy.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ? [
+    'mode = "full"',
+    "allow_local_binding = false", "allow_upstream_proxy = false",
+    "enable_socks5 = false", "enable_socks5_udp = false",
+    "dangerously_allow_non_loopback_proxy = false", "dangerously_allow_all_unix_sockets = false",
+  ] : [];
 }

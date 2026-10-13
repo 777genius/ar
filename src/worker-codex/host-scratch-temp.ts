@@ -1,11 +1,15 @@
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { inspectVisibleScratchMount, type ScratchMount } from "./host-scratch-mount.js";
+import { hostedProviderRunsInSeparateUnit, isResearchUnitCgroup } from "../provider-codex/app-server/adapters/node-app-server-process.js";
 import { annotateScratchCapacityFailure, annotateScratchMountInspectionFailure, ResearchLaunchCause, ScratchCapacityVolumeRole } from "./research-launch-diagnostics.js";
 
-const CONFIG_PATH = "/etc/subscription-runtime/scratch-temp.json";
+/** Set at re-exec to the runner's own PID: only that process owns its private mount namespace. */
+export const SCRATCH_NAMESPACE_MARKER_ENV = "SUBSCRIPTION_RUNTIME_SCRATCH_NS_PID";
+export const SCRATCH_TEMP_CONFIG_PATH = "/etc/subscription-runtime/scratch-temp.json";
 type Info = { uid: number; mode: number; dev: number; ino: number; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 type Mount = ScratchMount;
 type Policy = { root: string; uuid: string; legacyTemps: Record<string, unknown> };
@@ -24,6 +28,11 @@ export interface ScratchTempHost {
   bind(source: string, target: string): void;
   makePrivate(target: string): void;
   unmount(target: string): void;
+  /** Mount namespace of this process and of PID 1 (the host manager). */
+  mountNamespace(): string;
+  managerMountNamespace(): string;
+  /** True only for a runner that re-executed into its own namespace, or a research unit. */
+  ownsRunnerNamespace(): boolean;
   uid: number;
 }
 const systemHost: ScratchTempHost = {
@@ -39,6 +48,10 @@ const systemHost: ScratchTempHost = {
   bind: (source, target) => { execFileSync("mount", ["--bind", source, target]); },
   makePrivate: (target) => { execFileSync("mount", ["--make-private", target]); },
   unmount: (target) => { execFileSync("umount", [target]); },
+  mountNamespace: () => readlinkSync("/proc/self/ns/mnt"),
+  managerMountNamespace: () => readlinkSync("/proc/1/ns/mnt"),
+  ownsRunnerNamespace: () => process.env[SCRATCH_NAMESPACE_MARKER_ENV] === String(process.pid) ||
+    isResearchUnitCgroup(readFileSync("/proc/self/cgroup", "utf8")),
   uid: process.getuid?.() ?? 0,
 };
 function inspectMount(path: string, cause: ResearchLaunchCause.ScratchRoot | ScratchTargetCause, host: ScratchTempHost): Mount | undefined {
@@ -48,18 +61,23 @@ function inspectMount(path: string, cause: ResearchLaunchCause.ScratchRoot | Scr
 function targetCause(family: ScratchFamily): ScratchTargetCause {
   return family === "runtime-tmp" ? ResearchLaunchCause.ScratchTmp : ResearchLaunchCause.ScratchCache;
 }
-function readPolicy(host: ScratchTempHost): Policy | undefined {
-  const info = optionalInfo(CONFIG_PATH, host);
+function readPolicy(host: ScratchTempHost, capacity = true): Policy | undefined {
+  const info = optionalInfo(SCRATCH_TEMP_CONFIG_PATH, host);
   if (!info) return undefined;
   if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022)) throw new Error("Scratch config must be a root-owned regular file without group/other writes");
-  assertAncestors(dirname(CONFIG_PATH), host);
-  const config: unknown = JSON.parse(host.read(CONFIG_PATH));
+  assertAncestors(dirname(SCRATCH_TEMP_CONFIG_PATH), host);
+  const config: unknown = JSON.parse(host.read(SCRATCH_TEMP_CONFIG_PATH));
   if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid scratch config");
   const { schemaVersion, root, uuid, legacyTemps = {} } = config as Record<string, unknown>;
   if (schemaVersion !== 1 || typeof root !== "string" || !isAbsolute(root) || root === "/" || resolve(root) !== root || typeof uuid !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(uuid) || !legacyTemps || typeof legacyTemps !== "object" || Array.isArray(legacyTemps)) throw new Error("Invalid scratch schema, root, UUID or legacy map");
   assertAncestors(root, host);
   const mount = inspectMount(root, ResearchLaunchCause.ScratchRoot, host);
   if (mount?.target !== root || mount.uuid?.toLowerCase() !== uuid.toLowerCase() || mount.fsroot !== "/") throw new Error("Scratch mount target, UUID or filesystem root mismatch");
+  if (capacity) assertScratchCapacity(root, host);
+  return { root, uuid, legacyTemps: legacyTemps as Record<string, unknown> };
+}
+/** Free space is required to create new binds and sources, not to keep running on binds already in place. */
+function assertScratchCapacity(root: string, host: ScratchTempHost): void {
   for (const volume of ["/", root]) {
     const { bavail, bsize } = host.statfs(volume);
     const available = bavail * bsize;
@@ -69,7 +87,6 @@ function readPolicy(host: ScratchTempHost): Policy | undefined {
         available, 5 * 1024 ** 3);
     }
   }
-  return { root, uuid, legacyTemps: legacyTemps as Record<string, unknown> };
 }
 function sourceLayout(policy: Policy, target: string, family: string, host: ScratchTempHost) {
   assertDirectory(join(policy.root, family), host);
@@ -83,10 +100,15 @@ export function resolveHostScratchTempRoot(jobRootDir: string, host: ScratchTemp
   assertCanonical(jobRootDir);
   return { ...sourceLayout(policy, jobRootDir, "runtime-tmp", host), uuid: policy.uuid };
 }
+/** Managed launches keep their own layout. A separate hosted provider unit is created from
+ * PID 1's namespace and cannot see binds made in the runner's private namespace. */
+function skipsRunnerScratch(sourceEnv: Readonly<Record<string, string | undefined>>): boolean {
+  return sourceEnv.SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH === "1" || hostedProviderRunsInSeparateUnit(sourceEnv);
+}
 /** Actual-run hook retaining the provider's logical jobRoot/tmp contract. */
 export async function prepareHostScratchTemp(jobRootDir: string, sourceEnv: Readonly<Record<string, string | undefined>>, host: ScratchTempHost = systemHost): Promise<void> {
-  if (sourceEnv.SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH === "1") return;
-  const policy = readPolicy(host);
+  if (skipsRunnerScratch(sourceEnv)) return;
+  const policy = readPolicy(host, false);
   if (!policy) return;
   assertDirectory(jobRootDir, host);
   const target = join(jobRootDir, "tmp");
@@ -95,12 +117,13 @@ export async function prepareHostScratchTemp(jobRootDir: string, sourceEnv: Read
 }
 /** Invoked under the retained-home materializer lease, before credential writes. */
 export async function prepareHostScratchCaches(codexHome: string, sourceEnv: Readonly<Record<string, string | undefined>>, host: ScratchTempHost = systemHost): Promise<void> {
-  if (sourceEnv.SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH === "1") return;
-  const policy = readPolicy(host);
+  if (skipsRunnerScratch(sourceEnv)) return;
+  const policy = readPolicy(host, false);
   if (!policy) return;
   assertDirectory(codexHome, host);
   for (const [parentName, leaf] of [["plugins", "cache"], ["cache", "remote_plugin_catalog"]]) {
     const parent = join(codexHome, parentName!);
+    assertHostedOrdinaryEffectPaths([parent, join(parent, leaf!)]);
     if (!optionalInfo(parent, host)) {
       if (host.uid !== 0) throw new Error("Root privilege required to prepare scratch cache parents");
       host.mkdir(parent, 0o700);
@@ -188,8 +211,15 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
     return false;
   };
   if (checkExisting()) return;
+  assertScratchCapacity(policy.root, host);
+  // Fail closed: a bind made in PID 1's namespace, or in a namespace shared with other runners
+  // (an inherited one, e.g. a tmux server's), is never reclaimed and is copied into every unit and
+  // sandbox namespace. Only the runner's own namespace may hold new binds. Reusing a visible bind
+  // above stays allowed until host GC. Ownership is checked first: it needs no /proc/1 access.
+  if (!host.ownsRunnerNamespace() || host.mountNamespace() === host.managerMountNamespace()) throw new Error("Scratch bind requires a private mount namespace");
   if (host.uid !== 0) throw new Error("Root privilege required to prepare scratch bind mount");
   const lock = `${layout.source}.lock`;
+  assertHostedOrdinaryEffectPaths([layout.source, lock, target]);
   try { host.mkdir(lock, 0o700); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Scratch bind target busy"); throw error; }
   try {
@@ -201,6 +231,7 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
     assertDirectory(target, host);
     host.chmod(target, 0o701);
     const sourceIdentity = host.lstat(layout.source);
+    assertHostedOrdinaryEffectPaths([layout.source, target]);
     host.bind(layout.source, target);
     // A throwing bind has an uncertain outcome and grants no rollback authority.
     const created = inspectMount(target, targetCause(family), host);
@@ -244,4 +275,23 @@ function assertAncestors(path: string, host: ScratchTempHost): void {
 function assertPrivateSource(path: string, host: ScratchTempHost): void {
   assertDirectory(path, host);
   if (host.lstat(path).mode & 0o066) throw new Error(`Unsafe scratch source permissions: ${path}`);
+}
+
+/** Finite future payloads from the same preparation recipe. Includes lock
+ * directories because creating a cache must not acquire a sibling write. */
+export function resolveHostScratchLifetimeSources(jobRootDir: string, codexHomes: readonly string[], host: ScratchTempHost = systemHost): readonly { source: string; target: string }[] {
+  const policy = readPolicy(host);
+  if (!policy) return [];
+  const targets = [
+    { target: join(jobRootDir, "tmp"), family: "runtime-tmp", hashInput: jobRootDir },
+    ...codexHomes.flatMap(home => ["plugins/cache", "cache/remote_plugin_catalog"].map(suffix => {
+      const target = join(home, suffix);
+      return { target, family: "runtime-caches", hashInput: target };
+    })),
+  ];
+  return targets.flatMap(({ target, family, hashInput }) => {
+    assertCanonical(target);
+    const { source } = sourceLayout(policy, hashInput, family, host);
+    return [{ source, target }, { source: source + ".lock", target: source + ".lock" }];
+  });
 }

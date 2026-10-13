@@ -1,13 +1,19 @@
+import type { HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
+import { join } from "node:path";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
+import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent, type HostedMimoCodingWorkerOrigin } from "../../hosted-mimo-worker-origin";
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type {
   CodexAppServerChildProcess,
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
+  OriginalProviderStorageContext,
 } from "../application/app-server-process-port";
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
@@ -86,6 +92,27 @@ export function signalHostedSystemdUnit(
     : "bounded";
 }
 
+/** Research units own their mount namespace (MountFlags=private); their scratch binds stay there. */
+export function isResearchUnitCgroup(cgroup: string): boolean {
+  return /\/subscription-runtime-research-/.test(cgroup);
+}
+
+/** True when the provider of a run is a separate `subscription-runtime-hosted-*` unit created
+ * from PID 1's mount namespace. Unlike `isHostedContainment`, research units are excluded:
+ * their scratch binds live in the unit's own namespace and must stay. */
+export function hostedProviderRunsInSeparateUnit(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform,
+  readCgroup: () => string = () => readFileSync("/proc/self/cgroup", "utf8"),
+): boolean {
+  if (platform !== "linux") return false;
+  const cgroup = readCgroup();
+  if (isResearchUnitCgroup(cgroup)) return false;
+  return env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === hostedSandboxKind ||
+    /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(cgroup);
+}
+
 export type CodexAppServerProcessInvocation = {
   readonly command: string;
   readonly args: readonly string[];
@@ -102,6 +129,8 @@ export function codexAppServerProcessInvocation(input: {
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
+  readonly storageContext?: OriginalProviderStorageContext;
+  readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot;
 }, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
@@ -122,6 +151,9 @@ export function codexAppServerProcessInvocation(input: {
   if (typeof jobId !== "string" || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId)) {
     throw new Error("hosted_managed_job_identity_required");
   }
+  const storageContext = !admittedMounts &&
+    input.env[codexProviderEgressProfileEnvVar] !== CodexProviderEgressProfileId.MimoTokenPlan
+    ? input.storageContext : undefined;
   return {
     command: managedLauncherNodePath,
     systemdUnit,
@@ -138,16 +170,19 @@ export function codexAppServerProcessInvocation(input: {
       JSON.stringify({ operation: "provider", jobId, unit: systemdUnit,
         payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
         ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
+        ...(storageContext ? { storageContext } : {}),
+        ...(input.ordinaryJobRoot ? { ordinaryJobRoot: input.ordinaryJobRoot } : {}),
       }),
     ],
   };
 }
 
-export function spawnCodexAppServerProcess(input: {
+export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppServerProcess(input: {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  readonly storageContext?: OriginalProviderStorageContext;
 }, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
   const contained = isHostedContainment(input.env);
   if (contained &&
@@ -157,14 +192,19 @@ export function spawnCodexAppServerProcess(input: {
   if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
   if (!submission && requiresHostedProcessAdmission(input.env)) {
     if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
-    return submitHostedOrdinaryProcess(input, (unit, identity, fence) => spawnInvocation(input,
-      hostedDependencyProviderInvocation(fence, unit, input) ??
-      codexAppServerProcessInvocation({ ...input, env: { ...input.env,
-        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit }),
+    // Ordinary admission owns its existing storage boundary and launch frame,
+    // including without an FD collector. The context extension is baseline-only.
+    const ordinaryInput = { command: input.command, args: input.args, cwd: input.cwd, env: input.env };
+    return submitHostedOrdinaryProcess(ordinaryInput, (unit, identity, fence) => spawnInvocation(ordinaryInput,
+      hostedDependencyProviderInvocation(fence, unit, ordinaryInput) ??
+      codexAppServerProcessInvocation({ ...ordinaryInput, env: { ...ordinaryInput.env,
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit,
+        ...(identity.ordinaryJobRoot ? { ordinaryJobRoot: identity.ordinaryJobRoot } : {}) }),
       (child, release) => releaseHostedOrdinaryProcess(child, release)));
   }
   const invocation = codexAppServerProcessInvocation({
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
+    ...(input.storageContext ? { storageContext: input.storageContext } : {}),
     ...(reservedSystemdUnit ? { systemdUnit: reservedSystemdUnit } : {}),
   }, admittedMounts);
   if (invocation.systemdUnit !== undefined) {
@@ -186,7 +226,7 @@ export function spawnCodexAppServerProcess(input: {
     assertHostedBaselineIdentity(input.env.SUBSCRIPTION_RUNTIME_JOB_ID);
   }
   return spawnInvocation(input, invocation);
-}
+}, { originalProviderStorageContext: true as const });
 
 /** Trusted worker composition captures established Ready history. The worker
  * executor separately brands this exact returned factory; accepting this port
@@ -209,7 +249,8 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     }
     let args = invocation.args;
     if (invocation.command === process.execPath && args[0] === managedLauncherPath) {
-      const request = JSON.parse(args[2]!) as { payload: string[] };
+      const request = JSON.parse(args[2]!) as { payload: string[]; storageContext?: OriginalProviderStorageContext };
+      delete request.storageContext;
       request.payload = [...request.payload, "--fd-ready-v1"];
       args = [args[0]!, args[1]!, JSON.stringify(request)];
     }
@@ -275,25 +316,58 @@ export type {
   CodexAppServerProcessFactory,
 };
 
+function researchLaunchPath(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 4096 && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(value) &&
+    !value.split("/").some(part => part === "." || part === "..");
+}
+const codingResearchFactories = new WeakMap<CodexAppServerProcessFactory, HostedMimoCodingWorkerOrigin>();
+/** Read-only genuine adapter provenance; a callback cannot register itself. */
+export function readHostedMimoCodingProcessFactoryOrigin(factory: CodexAppServerProcessFactory): HostedMimoCodingWorkerOrigin | undefined {
+  const origin = codingResearchFactories.get(factory);
+  if (origin) assertHostedMimoCodingWorkerOriginCurrent(origin);
+  return origin;
+}
 /** Worker-owned research admission supplies the immutable installed launcher and
  * synchronous authority recheck. No environment marker selects this route. */
 export function admittedResearchCodexProcessFactory(input: {
   readonly jobId: string;
   readonly launcherPath: string;
+  readonly hostedProfile?: HostedMimoProfile.CodingV1;
+  readonly launchValidation?: Readonly<{ codexBinaryPath: string; workspacePath: string; homeRoot: string }>;
   readonly submit: (unit: string, effect: () => CodexAppServerChildProcess) => CodexAppServerChildProcess;
   readonly signal: (unit: string, signal: NodeJS.Signals) => void;
 }): CodexAppServerProcessFactory {
-  return launch => {
+  const jobId = input.jobId, launcherPath = input.launcherPath, submit = input.submit, signal = input.signal, profile = input.hostedProfile;
+  const origin = profile === HostedMimoProfile.CodingV1 ? readHostedMimoCodingWorkerOrigin() : undefined;
+  const validation = input.launchValidation && Object.freeze({ ...input.launchValidation });
+  if (profile !== undefined && profile !== HostedMimoProfile.CodingV1 ||
+      profile === HostedMimoProfile.CodingV1 && (!origin || !validation || jobId !== origin.jobId ||
+        launcherPath !== join(origin.runtimeDirectory, "host-integration/research-provider-launch.mjs") ||
+        validation.codexBinaryPath !== origin.codexBinaryPath || validation.workspacePath !== origin.workspacePath || validation.homeRoot !== origin.homeRoot)) {
+    throw new Error("hosted_mimo_coding_factory_invalid");
+  }
+  const factory: CodexAppServerProcessFactory = launch => {
+    const admittedLaunch = { ...launch };
+    admittedLaunch.args = [...admittedLaunch.args]; admittedLaunch.env = { ...admittedLaunch.env };
+    if (origin) assertHostedMimoCodingWorkerOriginCurrent(origin);
+    if (validation && (!researchLaunchPath(admittedLaunch.cwd) || !researchLaunchPath(admittedLaunch.env.CODEX_HOME) || admittedLaunch.command !== validation.codexBinaryPath ||
+        (admittedLaunch.cwd !== validation.workspacePath && (origin !== undefined || !admittedLaunch.cwd.startsWith(validation.homeRoot + "/"))) ||
+        typeof admittedLaunch.env.CODEX_HOME !== "string" || !admittedLaunch.env.CODEX_HOME.startsWith(validation.homeRoot + "/"))) {
+      throw new Error("hosted_research_launch_denied");
+    }
     const unit = `subscription-runtime-research-provider-${randomUUID()}.service`;
-    return input.submit(unit, () => {
-      const child = spawnInvocation(launch, { command: process.execPath,
-        args: [input.launcherPath, input.jobId, unit, launch.env.CODEX_HOME!],
-        stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...launch, args: [...launch.args] }),
+    return submit(unit, () => {
+      if (origin) assertHostedMimoCodingWorkerOriginCurrent(origin);
+      const child = spawnInvocation(admittedLaunch, { command: process.execPath,
+        args: [launcherPath, jobId, unit, admittedLaunch.env.CODEX_HOME!],
+        stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...admittedLaunch, args: [...admittedLaunch.args] }),
       });
-      researchSignals.set(child, signal => input.signal(unit, signal));
+      researchSignals.set(child, value => signal(unit, value));
       return child;
     });
   };
+  if (origin) codingResearchFactories.set(factory, origin);
+  return factory;
 }
 
 export function signalCodexAppServerChildGroup(

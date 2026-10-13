@@ -1,6 +1,7 @@
 import type { OpenWorkerLaunch } from "./project-control-worker-mode";
 import { assertOwnedMimoWorkerFactory, ownedMimoWorkerStart } from "./research-launch-admission";
-import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { ChildExecutionBudget, deriveRuntimeStorageRoots } from "@vioxen/subscription-runtime/core";
+import { join } from "node:path";
 import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
 import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type PublicResearchSourceReader, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
@@ -13,6 +14,7 @@ import {
 } from "./codex-session-home-profile";
 
 export type FileBackendCodexWorkerOptions = {
+  readonly storageRootDir?: string;
   readonly childBudget?: ChildExecutionBudget;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly workerId?: string;
@@ -78,6 +80,22 @@ export type FileBackendCodexWorkerOptions = {
   readonly onSessionInvalid?: (capacity: WorkerCapacitySnapshot) => void;
   readonly capacityPolicy?: CodexWorkerCapacityPolicy;
 };
+
+export type FileBackendCodexWorkerInput = FileBackendCodexWorkerOptions |
+  (Omit<FileBackendCodexWorkerOptions, "stateRootDir" | "storageRootDir"> & {
+    readonly storageRootDir: string;
+    readonly stateRootDir?: string;
+  });
+
+export function resolveFileBackendCodexWorkerOptions(input: FileBackendCodexWorkerInput): FileBackendCodexWorkerOptions {
+  const storageRootDir = input.storageRootDir ??
+    (input.stateRootDir === undefined ? input.sourceEnv?.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined);
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
+  const stateRootDir = input.stateRootDir ??
+    (roots ? join(roots.stateRootDir, "codex-workers") : undefined);
+  if (stateRootDir === undefined) throw new Error("file_backend_codex_state_root_required");
+  return { ...input, stateRootDir };
+}
 
 export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): void {
   if (!options.providerInstanceId.trim()) {

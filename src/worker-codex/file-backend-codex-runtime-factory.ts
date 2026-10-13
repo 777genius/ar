@@ -6,7 +6,7 @@ import { isHostedContainment } from "../provider-codex/app-server/adapters/hoste
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { researchMimoWorkerLifecycle } from "./research-mimo-worker-result";
 import { ownedMimoWorkerStart } from "./research-launch-admission";
-import { codexWorkerReportSchemaName, codexWorkerReportSchema } from "./codex-goal-report-schema";
+import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { readAdmittedHostedDependencyToolConfig } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
@@ -29,6 +29,8 @@ import {
   CodexJsonAgentDriver,
   CodexMimoNoSessionDriver,
   CodexModelBackend,
+  HostedMimoProfile,
+  prepareHostedMimoCodingEngineAuthority,
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
   codexJsonHomeConfigToml,
@@ -61,6 +63,7 @@ import { CommandPolicyRunner } from "./command-policy-runner";
 import { codexAppServerCommandApprovalPolicy } from "./file-backend-codex-command-policy";
 import { LocalFileManagedRunStore } from "./file-backend-codex-managed-run-store";
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput } from "./file-backend-codex-worker-options";
 import { buildCodexWorkspaceToolsProfile } from "./workspace-tools/codex-workspace-tools-profile";
 import {
   codexSessionHomeCacheKey,
@@ -87,20 +90,21 @@ export type FileBackendCodexWorkerRuntimeParts = {
 };
 
 /** Credential and durable-state roots excluded from every open worker grant. */
-export function openWorkerFactorySecretRoots(options: FileBackendCodexWorkerOptions): readonly string[] {
+export function openWorkerFactorySecretRoots(input: FileBackendCodexWorkerInput): readonly string[] {
+  const options = resolveFileBackendCodexWorkerOptions(input);
   const runtimeHome = options.runtimeHomeRootDir ?? options.stateRootDir;
   return [...(options.openWorker?.secretRoots ?? []), options.stateRootDir, runtimeHome,
     join(runtimeHome, "codex-session-cache")];
 }
 
 export function createFileBackendCodexWorkerRuntime(input: {
-  readonly options: FileBackendCodexWorkerOptions;
+  readonly options: FileBackendCodexWorkerInput;
   readonly workerId: string;
   readonly observability: ObservabilityPort;
   readonly redactor: RedactorPort;
   readonly clock: ClockPort;
 }): FileBackendCodexWorkerRuntimeParts {
-  const { options } = input;
+  const options = resolveFileBackendCodexWorkerOptions(input.options);
   // A v2 caller cannot construct adapters through a substituted public process
   // factory. Actual protected ordinary origin, not options, selects this gate.
   assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
@@ -257,12 +261,19 @@ function createCodexAgentDriver(input: {
   readonly managedRunStore: LocalFileManagedRunStore;
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
-  const ownedMimoTurn = options.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
-    options.executionEngine === "app-server" && !!ownedMimoWorkerStart(options.appServerProcessFactory);
+  const ownedMimoStart = options.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    options.executionEngine === "app-server" ? ownedMimoWorkerStart(options.appServerProcessFactory) : undefined;
+  const ownedMimoTurn = !!ownedMimoStart;
+  const ownedMimoCoding = ownedMimoStart?.request.hostedProfile === HostedMimoProfile.CodingV1;
   if (ownedMimoTurn && (!options.executionLifetime || options.childBudget ||
-      options.cleanThreadPrewarm !== false || options.boundedWorkspaceTools?.denyProjectInstructions !== true ||
-      JSON.stringify(options.boundedWorkspaceTools.allowedTools) !== JSON.stringify([
-        AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles]) ||
+      options.cleanThreadPrewarm !== false || options.executionProfile !== undefined || options.openWorker !== undefined ||
+      (ownedMimoCoding
+        ? options.boundedWorkspaceTools !== undefined || options.maxGoalTurns !== 64 ||
+          options.model !== ownedMimoStart.request.model || options.workspacePath !== ownedMimoStart.request.workspacePath ||
+          options.codexBinaryPath !== ownedMimoStart.request.codexBinaryPath
+        : options.boundedWorkspaceTools?.denyProjectInstructions !== true ||
+          JSON.stringify(options.boundedWorkspaceTools.allowedTools) !== JSON.stringify([
+            AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles])) ||
       JSON.stringify(options.outputSchemas) !== JSON.stringify({ [codexWorkerReportSchemaName]: codexWorkerReportSchema }))) {
     throw new Error("codex_bounded_factory_profile_conflict");
   }
@@ -316,7 +327,9 @@ function createCodexAgentDriver(input: {
   // `providerEgressPolicy` input (`assertWorkerOptions` rejects the two
   // being combined). Every other backend keeps today's exact behavior.
   const providerEgressPolicy = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
-    ? codexMimoTokenPlanEgressPolicy()
+    ? ownedMimoCoding
+      ? codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1)
+      : codexMimoTokenPlanEgressPolicy()
     : codexProviderEgressPolicy(
         (options.providerEgressPolicy ?? (hostedGlobalScanGuard
           ? codexHostedDefaultEgressPolicy() : codexProviderApiEgressPolicy())).profileId,
@@ -352,6 +365,7 @@ function createCodexAgentDriver(input: {
         allowedTools: options.boundedWorkspaceTools.allowedTools,
         modelBackend,
         mimoApiKeyEnvVarName,
+        ...(executionEngine === "app-server-goal" ? { nativeGoalControls: true as const } : {}),
         ...(options.childBudget ? { childLifetime: options.childBudget.lifetime } : {}),
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
@@ -388,6 +402,14 @@ function createCodexAgentDriver(input: {
     ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
     ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
   });
+  const appServerProcessFactory = egressBoundCodexProcessFactory(
+    providerEgressPolicy, options.appServerProcessFactory,
+    projectReadBoundary ? { namedPermissions: true } : undefined,
+  );
+  const hostedCodingAuthority = ownedMimoCoding ? prepareHostedMimoCodingEngineAuthority({
+    processFactory: appServerProcessFactory, executionLifetime: options.executionLifetime!,
+    workspacePath: options.workspacePath!, model: options.model!, codexBinaryPath: options.codexBinaryPath!,
+  }) : undefined;
   return new CodexJsonAgentDriver({
     ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
     ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
@@ -400,17 +422,15 @@ function createCodexAgentDriver(input: {
           modelBackend,
           sourceEnv: appServerEnv,
           providerEgressPolicy,
-          ...(codexProviderHasPublicSources(providerEgressPolicy)
+          ...(!ownedMimoCoding && codexProviderHasPublicSources(providerEgressPolicy)
             ? { publicSourceReader: options.publicSourceReader ?? createPublicResearchSourceReader(providerEgressPolicy) } : {}),
           ...(projectReadBoundary ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }
             : {}),
-          processFactory: egressBoundCodexProcessFactory(
-            providerEgressPolicy, options.appServerProcessFactory,
-            projectReadBoundary ? { namedPermissions: true } : undefined,
-          ),
+          processFactory: appServerProcessFactory,
+          ...(hostedCodingAuthority ? { hostedCodingAuthority } : {}),
           ...(options.rateLimitsSnapshotHandler
             ? {
                 rateLimitsSnapshotHandler:
@@ -420,10 +440,13 @@ function createCodexAgentDriver(input: {
           ...(options.rolloutBudget
             ? { rolloutBudget: options.rolloutBudget }
             : {}),
-          ...(hostedGlobalScanGuard && !workspaceToolsProfile
+          ...(hostedGlobalScanGuard && !workspaceToolsProfile && !ownedMimoCoding
             ? { bypassHookTrust: true }
             : {}),
-          ...(workspaceToolsProfile
+          ...(ownedMimoCoding
+            ? { executionProfile: { kind: "custom" as const, developerInstructions: codexWorkerReportSystemPrompt,
+                  disableTools: false, historyMode: "none" as const }, nativeToolSurface: HostedMimoProfile.CodingV1 }
+            : workspaceToolsProfile
             ? {
                 executionProfile: {
                   kind: "custom" as const,
@@ -433,6 +456,7 @@ function createCodexAgentDriver(input: {
                   historyMode: "none" as const,
                 },
                 nativeToolSurface: "disabled" as const,
+                ...(executionEngine === "app-server-goal" ? { nativeGoalControls: true as const } : {}),
               }
             : modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard
             ? { nativeToolSurface: "disabled" as const }
@@ -462,6 +486,7 @@ function createCodexAgentDriver(input: {
           runStore: input.managedRunStore,
           ...(
             executionEngine === "app-server-goal" ||
+            ownedMimoCoding ||
             projectReadBoundary ||
             workspaceToolsProfile ||
             options.rolloutBudget

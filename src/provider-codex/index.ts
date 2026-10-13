@@ -18,6 +18,7 @@ export type { HostedControllerDynamicToolAdapter, HostedControllerDynamicToolCal
 export * from "./app-server/domain/model-catalog";
 export * from "./codex-json-execution-engine";
 export * from "./codex-session-materializer";
+export { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 export * from "./codex-cli-provider-driver";
 export * from "./codex-cli-session-driver";
 export * from "./codex-mimo-session-driver";
@@ -49,3 +50,5 @@ export type { CodexSubscriptionPreparationOwner, CodexSubscriptionPreparationInp
   CodexSubscriptionPreparedConsumer } from "./hosted-subscription-session-materializer";
 export { OpenWorkerLayoutErrorCode, assertHostedOpenWorkerLayout, renderHostedOpenWorkerProfilesToml, hostedOpenWorkerReadRoots,
   hostedOpenWorkerExtraDenyDirectories, hostedOpenWorkerForbiddenReadRoots } from "./hosted-open-worker-permissions";
+
+export { prepareHostedMimoCodingEngineAuthority, type HostedMimoCodingEngineAuthority } from "./hosted-mimo-coding-engine-authority";

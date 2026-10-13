@@ -1,3 +1,6 @@
+import { resolveCodexGoalRunInput } from "./application/codex-goal-storage-paths";
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
+import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
 import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
@@ -11,7 +14,7 @@ import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction
   invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
-import { researchProviderAdmissionGuard, assertOwnedMimoWorkerConfig } from "./research-launch-admission";
+import { researchProviderAdmissionGuard, assertOwnedMimoWorkerConfig, ownedMimoWorkerStart } from "./research-launch-admission";
 import { researchMimoWorkerLifecycle } from "./research-mimo-worker-result";
 import { snapshotCodexGoalStorageConfig, withCodexGoalStorage, withCodexGoalCheckpointWriter, type CodexGoalNewStorage } from "./job-storage/codex-goal-storage-admission";
 import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
@@ -29,6 +32,7 @@ import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-e
 import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import {
   CodexModelBackend,
+  HostedMimoProfile,
   AppServerExecutionLifetime,
   codexMimoApiKeyEnvVarDefault,
   codexMimoTokenPlanEgressPolicy,
@@ -114,6 +118,7 @@ export type CodexGoalRunConfig = {
   readonly childLifetime?: ChildLifetime;
   readonly maxGoalTurns?: number;
   readonly jobId?: string;
+  readonly storageRootDir?: string;
   readonly jobRootDir: string;
   readonly durableHandoffRootDir?: string;
   readonly stateRootDir?: string;
@@ -130,6 +135,8 @@ export type CodexGoalRunConfig = {
   readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
   readonly outputPath?: string;
   readonly progressPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
   readonly progressHeartbeatMs?: number;
   readonly executorId?: string;
   readonly codexBinaryPath?: string;
@@ -168,6 +175,12 @@ export type CodexGoalRunConfig = {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
 };
 
+export type CodexGoalRunInput = CodexGoalRunConfig | (Omit<CodexGoalRunConfig, "jobRootDir" | "workspacePath" | "storageRootDir"> & {
+  readonly storageRootDir: string;
+  readonly jobRootDir?: string;
+  readonly workspacePath?: string;
+});
+
 export type CodexGoalWorkerReportMode = "runtime-only" | "structured-output";
 
 export const codexGoalLinkedWorktreeHandoffSystemPrompt = [
@@ -202,9 +215,10 @@ export type CodexGoalProgressSnapshot = {
 };
 
 export async function runCodexGoal(
-  config: CodexGoalRunConfig,
+  input: CodexGoalRunInput,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  let config = resolveCodexGoalRunInput(input);
   if (requiresCurrentHostedDependencyRootPurpose()) {
     // Before layout/config IO or any optional adapter callback. The actual
     // protected route uses only fixed composition, including inherited ports.
@@ -216,7 +230,6 @@ export async function runCodexGoal(
   }
   // Reference purpose is a separate closed CLI entry, never a fabricated task.
   assertHostedDependencyExecutionWorkspace(undefined);
-  config = mapManagedGoalLayout({ config }).config;
   config = withHostedGoalIdentity(config);
   if (config.storage) config = snapshotCodexGoalStorageConfig(config);
   assertCodexGoalRunConfig(config);
@@ -227,12 +240,13 @@ export async function runCodexGoal(
 async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGoalRunDeps,
   storageLease?: JobStorageWriteLease): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   storageLease?.assertCurrent();
+  assertHostedMimoGoalConfinement(config);
+  assertCodexGoalAccessLaunchAllowed(config);
+  assertHostedOrdinaryGoalExtent(config);
   const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
   try {
   storageLease?.assertCurrent();
   const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath, toolEntry);
-  assertHostedMimoGoalConfinement(config);
-  assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
     ...hostedGoalAdmissionIdentity(config),
@@ -246,6 +260,9 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
   if (admittedEgress.profileId !== providerEgressPolicy.profileId) {
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
+  storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config);
+  recordRawGoalStateOrigin(config.jobRootDir);
   const appServerProcessFactory = admitHostedReadonlyInputs({
     ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
@@ -267,6 +284,7 @@ async function runCodexGoalAdmitted(
   toolEntry: HostedDependencyQualifiedToolEntry | undefined,
   storageLease?: JobStorageWriteLease,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  assertHostedOrdinaryGoalExtent(config);
   const ownedMimoLifecycle = researchMimoWorkerLifecycle(appServerProcessFactory);
   const prompt = await readFile(config.promptPath, "utf8");
   storageLease?.assertCurrent();
@@ -320,13 +338,16 @@ async function runCodexGoalAdmitted(
   storageLease?.assertCurrent();
   await progressHeartbeat.write({ status: "starting" });
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config);
   const encryptionKey = await readOrCreateCodexGoalEncryptionKey(
     config.encryptionKeyPath ?? join(config.jobRootDir, "encryption-key.hex"),
   );
   const stateRootDir = config.stateRootDir ?? join(config.jobRootDir, "state");
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config, [stateRootDir]);
   await mkdir(stateRootDir, { recursive: true, mode: 0o700 });
   storageLease?.assertCurrent();
+  assertHostedOrdinaryGoalExtent(config);
   const agentTempRoot = await ensureCodexAgentTempRoot({
     sourceEnv: config.sourceEnv,
     sandboxTraverse: config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
@@ -480,6 +501,7 @@ async function runCodexGoalAdmitted(
 
 export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInput): FileBackendCodexSafeExecutorOptions {
   const config = withHostedGoalIdentity(input.config);
+  assertHostedOrdinaryGoalExtent(config);
   assertCodexSessionHomeProfile(config.sessionHomeProfile);
   if (config.sessionHomeProfile?.kind === CodexSessionHomeProfileKind.OneShot) {
     throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.OneShotDisposal);
@@ -496,6 +518,8 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   assertChildGoalConfig(config);
   const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
   const ownedMimoWorker = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && !!researchAdmission;
+  const ownedMimoCoding = ownedMimoWorker &&
+    ownedMimoWorkerStart(input.appServerProcessFactory)?.request.hostedProfile === HostedMimoProfile.CodingV1;
   if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
   const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
     deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
@@ -546,6 +570,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     ...(config.sessionHomeProfile === undefined ? {} : { sessionHomeProfile: config.sessionHomeProfile }),
     accountCapacityStore: isMimo
       ? codexAccountCapacityStore(config.authRootDir, {
+          modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
           ...(input.observability ? { observability: input.observability } : {}),
         })
       : migrateLegacyCodexAccountCapacity({
@@ -611,7 +636,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
         ...(publicSourceReader ? { publicSourceReader } : {}),
         capacityAccountId: account.name,
         ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
-        ...(ownedMimoWorker ? { boundedWorkspaceTools: { denyProjectInstructions: true,
+        ...(ownedMimoWorker && !ownedMimoCoding ? { boundedWorkspaceTools: { denyProjectInstructions: true,
           allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile, AgentRuntimeTool.SearchFiles] } } : {}),
         ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
           refreshConflictRetryMaxMs: 0,
@@ -659,9 +684,9 @@ export function codexGoalOutputPath(
 }
 
 export function codexGoalRuntimeEventsPath(
-  config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "outputPath">,
+  config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "outputPath" | "runtimeEventsPath">,
 ): string {
-  return join(usesManagedJobLayout(config as CodexGoalRunConfig) && config.outputPath
+  return config.runtimeEventsPath ?? join(usesManagedJobLayout(config as CodexGoalRunConfig) && config.outputPath
     ? dirname(config.outputPath) : config.jobRootDir, `${config.taskId}.events.jsonl`);
 }
 
@@ -730,10 +755,10 @@ function codexGoalWorkerSystemPrompt(taskId: string, tempRoot = "/tmp"): string 
 }
 
 function codexGoalRunSystemPrompt(
-  config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode">,
+  config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode" | "agentTempRootDir">,
   options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string; readonly openWorkerInstruction?: string } = {},
 ): string {
-  const prompts = [codexGoalWorkerSystemPrompt(config.taskId, options.openWorkerInstruction ? "$TMPDIR" : "/tmp")];
+  const prompts = [codexGoalWorkerSystemPrompt(config.taskId, options.openWorkerInstruction ? "$TMPDIR" : config.agentTempRootDir ?? "/tmp")];
   if (options.dependencyToolInstruction) prompts.push(options.dependencyToolInstruction);
   if (options.openWorkerInstruction) prompts.push(options.openWorkerInstruction);
   else if (options.linkedWorktreeHandoff === true) {

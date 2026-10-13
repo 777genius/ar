@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveManagedJobLayout } from '../managed-job-layout';
+import { deriveManagedJobLayout, MANAGED_JOB_ID_ENV, MANAGED_JOB_ROOT_ENV, MANAGED_MARKER_ENV, type ManagedJobLayout } from '../managed-job-layout';
 describe('launcher layout data contract', () => {
   it('accepts exact immutable layout without filesystem probes', () => {
     const layout = deriveManagedJobLayout('/external/runtime/jobs/job-1', 'job-1');
@@ -15,5 +15,19 @@ describe('launcher layout data contract', () => {
     expect(layout.jobRoot).toBe('/sandbox/custom-root');
     expect(layout.workspace).toBe('/sandbox/custom-root/workspace');
     expect(layout).not.toHaveProperty('storageRoot');
+  });
+  it('preserves all managed paths and marker exports through the compatibility import', () => {
+    const layout: ManagedJobLayout = deriveManagedJobLayout('/sandbox/custom-root', 'job');
+    expect(layout).toEqual({
+      jobId: 'job', jobRoot: '/sandbox/custom-root',
+      workspace: '/sandbox/custom-root/workspace', state: '/sandbox/custom-root/state',
+      logs: '/sandbox/custom-root/logs', payloadLogs: '/sandbox/custom-root/payload-logs',
+      output: '/sandbox/custom-root/output', home: '/sandbox/custom-root/home', tmp: '/sandbox/custom-root/tmp',
+    });
+    expect([MANAGED_MARKER_ENV, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV]).toEqual([
+      'SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH', 'SUBSCRIPTION_RUNTIME_JOB_ROOT', 'SUBSCRIPTION_RUNTIME_JOB_ID',
+    ]);
+    expect(() => deriveManagedJobLayout('/sandbox\0/elsewhere', 'job')).toThrow('Invalid managed jobRoot');
+    expect(() => deriveManagedJobLayout('/sandbox', '../job')).toThrow('Invalid managed jobId');
   });
 });

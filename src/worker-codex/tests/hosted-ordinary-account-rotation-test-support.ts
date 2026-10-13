@@ -34,7 +34,7 @@ it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-del
   if (mode !== "internet") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
     workspacePath: config.workspacePath, profileId: selectedProfile });
   const store = new HostedInstallationActivationStore(); store.install(); store.enrollOrdinary(bound.creatorId); store.resumeOrdinary();
-  const prepared = store.serialized(fence => store.reserveOrdinaryRuntime(fence, bound.launch.command, bound.launch.args, bound.launch.cwd));
+  const prepared = store.serialized(fence => store.reserveOrdinaryRuntime(fence, bound.launch.command, bound.launch.args, bound.launch.cwd, undefined, undefined, config.sourceEnv));
   fixture.runtimeUnit = prepared.start.unit; fixture.group = prepared.start.controlGroup;
   const fakes = [new FakeAppServerFactory({ emitTopLevelErrorOnTurn: "You've hit your usage limit",
     onRequest: request => { if (request.method === "turn/start" && mode.endsWith("grant-deleted")) rmSync(join(fixture.root, grant));

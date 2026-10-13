@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryLaunchExtent, hostedOrdinaryLaunchEnvironment } from "./hosted-ordinary-writer-authority";
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 import { ordinaryInstallationRemainingMs, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
 import { collectProcessBirth } from "./hosted-readonly-linux-collector";
@@ -135,6 +136,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
   try {
     if (fdProfile) assertHostedFdFrameEnvironment(env);
     if (isHostedDependencyWorkspace(cwd)) assertDependencyHostFrameEnvironment(env);
+    else env = hostedOrdinaryLaunchEnvironment({ command, args, cwd }, env);
     frame = Buffer.from(JSON.stringify({ schemaVersion: 1, env }));
     if (frame.length > 4 * 1024 * 1024) throw new Error("hosted_custody_launch_frame_invalid");
   } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
@@ -146,7 +148,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     const child = spawn(launch.command, [...launch.args], { cwd, env, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(frame);
     return child;
-  }, output); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
+  }, output, env); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   return new Promise<number | HostedForegroundResult>(resolve => {
     let failed = false;
     const supervisor = inventory.schemaVersion === 5 ? (inventory as unknown as HostedInventoryV5).supervisor : undefined;
@@ -253,7 +255,8 @@ export async function runHostedOrdinaryBootstrap(): Promise<number> {
       !Object.entries(frame.env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
         typeof value === "string" && !value.includes("\0"))) throw new Error("hosted_custody_launch_frame_invalid");
   const submit = () => withHostedActivationFence(fence => {
-    const { launch, creator } = readHostedOrdinaryRuntime(fence);
+    const { launch, creator, start, reservation, installation } = readHostedOrdinaryRuntime(fence);
+    assertHostedOrdinaryLaunchExtent(fence, start, reservation.startId, installation, launch, frame.env as Record<string, string>);
     if (fdProfile) assertHostedFdFrameEnvironment(frame.env as Record<string, string>);
     if (isHostedDependencyWorkspace(creator.workspacePath)) {
       assertDependencyHostFrameEnvironment(frame.env as Record<string, string>);

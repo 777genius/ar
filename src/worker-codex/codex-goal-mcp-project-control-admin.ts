@@ -1,3 +1,4 @@
+import { hostedMimoCredentialSourceReady } from "@vioxen/subscription-runtime/provider-codex";
 import { durableConfirmFilePublication } from "./project-control-operation-file-store";
 import { enableProjectControllerCheckpoint } from "./codex-goal-mcp-project-control-checkpoint-admin";
 import { createHash } from "node:crypto";
@@ -7,7 +8,6 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   AccessBoundary,
-  ProjectAdmissionWorkerRole,
   ProjectOperation,
   evaluateProjectAdmission,
   type ProjectAccessScope,
@@ -171,19 +171,11 @@ export async function projectControlAdmissionSnapshotView(
         snapshot,
       })
     : undefined;
-  const operationalDecision = decision ?? evaluateProjectAdmission({
-    request: {
-      operation: ProjectOperation.CreateJob,
-      projectId: controller.scope.projectId,
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-    },
-    snapshot,
-  });
   const operations = await buildCodexProjectOperationsSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
     admissionSnapshot: snapshot,
-    admissionDecision: operationalDecision,
+    ...(decision ? { admissionDecision: decision } : {}),
     deps: deps.admissionDeps,
   });
   const detailView = projectAdmissionDetailView({
@@ -693,18 +685,19 @@ async function assertProjectControlAddedAccountsUsable(input: {
     proposed: input.proposed.allowedAccountIds,
   });
   if (addedAccountIds.length === 0) return;
-  if (!input.authRootDir) {
-    throw new Error("project_control_scope_allowedAccountIds_auth_root_required");
-  }
   if (addedAccountIds.some((accountId) => !/^[a-z0-9][a-z0-9._-]*$/.test(accountId))) {
     throw new Error("project_control_scope_allowedAccountIds_account_id_invalid");
   }
+  const sharedMimoReady = addedAccountIds.includes("account-q") && hostedMimoCredentialSourceReady();
+  const accounts = addedAccountIds.filter(accountId => accountId !== "account-q" || !sharedMimoReady);
+  if (accounts.length === 0) return;
+  if (!input.authRootDir) throw new Error("project_control_scope_allowedAccountIds_auth_root_required");
   const statuses = await listCodexGoalAccountStatuses({
     authRootDir: input.authRootDir,
-    accounts: addedAccountIds,
+    accounts,
   });
   if (
-    statuses.length !== addedAccountIds.length ||
+    statuses.length !== accounts.length ||
     statuses.some((status) => status.status !== "ready")
   ) {
     throw new Error("project_control_scope_allowedAccountIds_account_unavailable");
@@ -748,6 +741,7 @@ export async function projectControlRepairJobManifestView(
     patch.accountSelectionMode = CodexGoalAccountSelectionMode.Explicit;
   } else {
     const repairedAccounts = await projectControlDefaultAccountNames({
+      ...(existing.modelBackend === undefined ? {} : { modelBackend: existing.modelBackend }),
       ...(existing.authRootDir ? { authRootDir: existing.authRootDir } : {}),
       requestedAccounts: existing.accounts,
       allowedAccountIds: controller.scope.allowedAccountIds ?? [],
