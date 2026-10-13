@@ -31,7 +31,7 @@ const elapsedWait = (milliseconds: number): void => {
 };
 
 describe("research byte witnesses (real sized TEST files under substituted root custody)", () => {
-  it("evicts only the oldest witness and keeps surviving byte reads cached until a signature changes", () => {
+  it("retains warmed witnesses across cold scans and refreshes changed cached signatures", () => {
     const paths = ["oldest", "survivor", "new"].map(name => "/TEST-artifact/node_modules/TEST-" + name);
     paths.forEach((path, index) => fs.writeFileSync(local(path), "TEST bytes " + index, { mode: 0o644 }));
     const options = { ...freshOptions(), cacheEntries: 2 };
@@ -39,7 +39,7 @@ describe("research byte witnesses (real sized TEST files under substituted root 
     expect(researchFileDigest(paths[0]!, options)).toBe(expected[0]);
     expect(researchFileDigest(paths[1]!, options)).toBe(expected[1]);
     expect(researchFileDigest(paths[2]!, options)).toBe(expected[2]);
-    expect([...options.cache.keys()]).toEqual(paths.slice(1));
+    expect([...options.cache.keys()]).toEqual(paths.slice(0, 2));
     const reads = vi.spyOn(fs, "readSync");
     expect(researchFileDigest(paths[1]!, options)).toBe(expected[1]);
     expect(reads).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe("research byte witnesses (real sized TEST files under substituted root 
     const reads = vi.spyOn(fs, "readSync");
     expect(researchFileDigest(selected, options)).toBe(createHash("sha256").update("TEST bounded " + (kind === "existing" ? 0 : 4)).digest("hex"));
     expect(options.cache.size).toBe(2);
-    expect([...options.cache.keys()]).toEqual([paths[3], selected]);
+    expect([...options.cache.keys()]).toEqual(paths.slice(2, 4));
     if (kind === "existing") expect(reads).not.toHaveBeenCalled();
     reads.mockClear();
     expect(researchFileDigest(paths[3]!, options)).toMatch(/^[a-f0-9]{64}$/);
