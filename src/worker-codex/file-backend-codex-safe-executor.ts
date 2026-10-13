@@ -1,4 +1,7 @@
+import { resolveFileBackendCodexSafeExecutorOptions } from "./file-backend-codex-safe-executor-storage";
+export { resolveFileBackendCodexSafeExecutorOptions } from "./file-backend-codex-safe-executor-storage";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import type { FileBackendCodexWorkerInput } from "./file-backend-codex-worker-options";
 import { assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { assertChildExecutor } from "./child-execution-confinement";
 import { readFile } from "node:fs/promises";
@@ -86,6 +89,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly storageRootDir?: string;
   readonly assertProviderAdmission?: () => void;
   readonly childBudget?: ChildExecutionBudget;
   readonly executionLifetime?: AppServerExecutionLifetime;
@@ -135,6 +139,22 @@ export type FileBackendCodexSafeExecutorOptions = {
   readonly clock?: { now(): Date };
 };
 
+type WorkerInputWithoutWorkspace<T> = T extends unknown ? Omit<T, "workspace" | "workspacePath"> : never;
+export type FileBackendCodexSafeExecutorAccountInput = Omit<FileBackendCodexSafeExecutorAccount, "worker"> & {
+  readonly worker: WorkerInputWithoutWorkspace<FileBackendCodexWorkerInput>;
+};
+type InheritedStorageSafeExecutorAccountInput = Omit<FileBackendCodexSafeExecutorAccount, "worker"> & {
+  readonly worker: Omit<FileBackendCodexWorkerOptions, "workspace" | "workspacePath" | "stateRootDir"> & {
+    readonly stateRootDir?: string;
+  };
+};
+export type FileBackendCodexSafeExecutorInput =
+  Omit<FileBackendCodexSafeExecutorOptions, "accounts" | "stateRootDir" | "storageRootDir"> &
+  ({ readonly stateRootDir: string; readonly storageRootDir?: string;
+    readonly accounts: readonly FileBackendCodexSafeExecutorAccountInput[] } |
+   { readonly storageRootDir: string; readonly stateRootDir?: string;
+    readonly accounts: readonly InheritedStorageSafeExecutorAccountInput[] });
+
 export type FileBackendCodexSafeExecutorRunInput = FileBackendCodexWorkerJob & {
   readonly jobId?: string;
   readonly taskId: string;
@@ -166,7 +186,11 @@ export class FileBackendCodexSafeExecutor {
   private disposed = false;
   private childRunEntered = false;
 
-  constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
+  private readonly options: FileBackendCodexSafeExecutorOptions;
+
+  constructor(input: FileBackendCodexSafeExecutorInput) {
+    let options = resolveFileBackendCodexSafeExecutorOptions(input);
+    this.options = options;
     assertHostedDependencyExecutionWorkspace(options.workspacePath);
     options.assertProviderAdmission?.();
     if (options.childBudget && !options.executionLifetime) {

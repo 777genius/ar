@@ -63,7 +63,9 @@ function local(path: string): string {
 }
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
+  const { installationFileOperations } = await import("./hosted-ordinary-installation-fs-test-support");
   return { ...real,
+    ...installationFileOperations(real, local),
     readFileSync: (path: string | number, options: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "number") return real.readFileSync(path, options);
       if (path === "/proc/self/uid_map") return "0 0 4294967295\n";
@@ -97,9 +99,6 @@ vi.mock("node:fs", async original => {
     lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
       { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
-    openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
-    mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
-    rmdirSync: (path: string) => real.rmdirSync(local(path)),
     renameSync: (from: string, to: string) => {
       if (fixture.failRename && from.endsWith(fixture.failRename)) throw new Error("synthetic publication interruption");
       real.renameSync(local(from), local(to));
@@ -788,7 +787,7 @@ describe("real default provider primitive under ordinary activation", () => {
     await expect(admitHostedTestEgress({ ...identity, ...(fault === "engine" ? { executionEngine: "plain-exec" as const } : {}) })).rejects.toThrow();
     expect(fixture.spawn).not.toHaveBeenCalled();
   });
-  it.each([false, true])("the default primitive reserves before real mocked OS submission; npm=%s", npm => {
+  it.each([false, true])("the default primitive reserves and excludes baseline storage context; npm=%s", npm => {
     const { store, input } = runtime(npm);
     fixture.spawn.mockImplementation(() => {
       expect(store.read().ordinaryStarts).toHaveLength(2);
@@ -796,7 +795,9 @@ describe("real default provider primitive under ordinary activation", () => {
       expect(() => store.enterExclusive()).toThrow();
       return fixture.child;
     });
-    const child = spawnCodexAppServerProcess(input);
+    const child = spawnCodexAppServerProcess({ ...input, storageContext: {
+      workspace: input.cwd, home: "/TEST/session/home", codexHome: "/TEST/session/codex-home",
+    } });
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = fixture.spawn.mock.calls[0]!;
     expect(command).toBe(process.execPath);
@@ -993,8 +994,6 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
 
 registerOrdinaryAccountRotationTests({ fixture, creator, hash, read, put });
 registerOrdinaryWriterExtentTests({ fixture, creator, read, put, runtimeDirectory });
-
 registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
-
 registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });

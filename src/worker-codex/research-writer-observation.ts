@@ -1,7 +1,10 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { observeHostedOrdinaryJobWriterAuthority, hostedOrdinaryWriterAuthorityAbsent, isHostedOrdinaryRuntime } from "./hosted-ordinary-writer-authority";
-import { observeProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthNamespacePresent } from "./protected-job-birth";
-import { dirname, join } from "node:path";
+import { observeCompatibleProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthNamespacePresent, protectedCodexGoalJobBirthPublicationActive } from "./protected-job-birth";
+import { pathToFileURL } from "node:url";
+import { researchJobRuntimeNamespaceAbsent, researchJobRuntimeProvenance } from "./research-job-runtime-provenance";
+import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
+import { join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
@@ -9,7 +12,7 @@ import { assertResearchProjectLaunchBindingCurrent } from "./research-project-la
 import { assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { researchHash, researchJson, researchRead, assertResearchDirectory, researchCustody, researchAuthorityRoot } from "./research-launch-files";
+import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
 import { researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
 
@@ -132,14 +135,7 @@ async function prepareNativeResearchJobWriterObservation(manifest: CodexGoalJobM
  * A retained native directory (including malformed/incomplete authority) owns
  * the answer and cannot inherit an older ordinary or never-started release. */
 function nativeAuthorityAbsent(manifest: CodexGoalJobManifest): boolean {
-  try {
-    assertResearchInitialRoot(true);
-    researchCustody(dirname(researchAuthorityRoot));
-    try { researchCustody(researchAuthorityRoot, true); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return true; }
-    try { lstatSync(researchJobAuthority(manifest.jobId)); return false; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return true; }
-  } catch { return false; }
+  return researchJobRuntimeNamespaceAbsent(manifest.jobId);
 }
 async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
   if (!nativeAuthorityAbsent(manifest)) return { status: "unknown" };
@@ -147,18 +143,53 @@ async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<P
   if (!nativeAuthorityAbsent(manifest)) return { status: "unknown" };
   if (ordinary.status !== "unknown") return ordinary;
   if (!hostedOrdinaryWriterAuthorityAbsent(manifest.jobId)) return { status: "unknown" };
-  const birth = await observeProtectedCodexGoalJobBirth(manifest);
+  const birth = await observeCompatibleProtectedCodexGoalJobBirth(manifest);
   return nativeAuthorityAbsent(manifest) && hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ? birth : { status: "unknown" };
 }
 export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  const original = await prepareOriginalNativeWriterObservation(manifest);
+  if (original) return await original();
   const absent = nativeAuthorityAbsent(manifest);
   const native = await observeNativeResearchJobWriterAuthority(manifest);
   return native.status !== "unknown" || !absent ? native : await observeNonNativeWriter(manifest);
 }
 export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
+  const original = await prepareOriginalNativeWriterObservation(manifest);
+  if (original) return original;
   const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
   return async () => {
     const observation = await native();
     return observation.status !== "unknown" || !absent ? observation : await observeNonNativeWriter(manifest);
   };
+}
+
+/** Preparation is outside publication. Retained native authority is checked by
+ * its original composition; its prepared cold reader cannot become a new launch.
+ * A direct foreign observation inside publication retains unknown instead of
+ * importing another module with an independent reentrancy capability. */
+export async function prepareOriginalNativeWriterObservation(manifest: CodexGoalJobManifest,
+  importModule: (url: string) => Promise<Record<string, unknown>> = async url => await import(url)):
+  Promise<(() => Promise<ProjectAdmissionWriterObservation>) | undefined> {
+  const origin = researchJobRuntimeProvenance(manifest);
+  if (!origin || origin.runtimeDirectory === installedResearchRuntimeDirectory()) return undefined;
+  const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
+  if (protectedCodexGoalJobBirthPublicationActive()) return unknown;
+  try {
+    const guard = (): void => {
+      origin.assertCurrent();
+      assertQualifiedResearchRuntimeArtifact(origin.runtimeDirectory, origin.artifactSha256);
+      origin.assertCurrent();
+    };
+    guard();
+    const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
+    guard();
+    if (typeof module.prepareResearchJobWriterObservation !== "function") return unknown;
+    const read = await module.prepareResearchJobWriterObservation(manifest) as () => Promise<ProjectAdmissionWriterObservation>;
+    guard();
+    if (typeof read !== "function") return unknown;
+    return async () => {
+      try { guard(); const observation = await read(); guard(); return observation; }
+      catch { return { status: "unknown" }; }
+    };
+  } catch { return unknown; }
 }

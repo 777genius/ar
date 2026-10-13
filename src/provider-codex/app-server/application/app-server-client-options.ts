@@ -28,6 +28,7 @@ export type CodexAppServerClientOptions = {
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly nativeGoalControls?: true;
   readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
   readonly bypassHookTrust?: boolean;

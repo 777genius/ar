@@ -2,10 +2,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it, vi } from "vitest";
 const boundary = vi.hoisted(() => ({ root: "", map: (value: unknown): unknown => value, unmap: (value: string) => value }));
+vi.mock("node:url", async original => {
+  const url = await original<typeof import("node:url")>();
+  return { ...url, fileURLToPath: (value: URL | string) => {
+    const path = url.fileURLToPath(value); return path === process.cwd() + "/" ? "/TEST-artifact/" : path;
+  } };
+});
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["existsSync", "mkdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
+  for (const name of ["existsSync", "mkdirSync", "rmdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "linkSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => unknown>)[name]!;
     result[name] = (...args: unknown[]) => {
       const answer = fn(...args.map(boundary.map));
@@ -13,14 +19,15 @@ vi.mock("node:fs", async original => {
       return name === "realpathSync" ? boundary.unmap(answer as string) : answer;
     };
   }
-  result.fstatSync = (fd: number) => Object.assign(fs.fstatSync(fd), { uid: 0 });
+  result.fstatSync = (fd: number, options?: { bigint?: boolean }) => options?.bigint
+    ? Object.assign(fs.fstatSync(fd, { bigint: true }), { uid: 0n }) : Object.assign(fs.fstatSync(fd), { uid: 0 });
   return result;
 });
 vi.mock("node:fs/promises", async original => {
   const fs = await original<typeof import("node:fs/promises")>(); const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "appendFile", "writeFile", "readFile", "open", "readdir", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
+  for (const name of ["mkdir", "mkdtemp", "rmdir", "chmod", "copyFile", "appendFile", "writeFile", "readFile", "open", "readdir", "link", "unlink", "rename", "rm", "stat", "lstat", "realpath", "access"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
-    result[name] = async (...args: unknown[]) => { const answer = await fn(...args.map(boundary.map)); return name === "realpath" ? boundary.unmap(answer as string) : answer; };
+    result[name] = async (...args: unknown[]) => { const answer = await fn(...args.map(boundary.map)); return name === "realpath" && !String(args[0]).startsWith("/proc/self/fd/") ? boundary.unmap(answer as string) : answer; };
   }
   return result;
 });
@@ -36,17 +43,46 @@ vi.mock("../research-launch-files", async original => ({ ...await original<objec
   let current = physical;
   for (;;) { const stat = fs.lstatSync(current); if (stat.isSymbolicLink() || (stat.mode & 0o022) || (privateLeaf && current === physical && (stat.mode & 0o077))) throw new Error("TEST custody denied"); if (current === boundary.root) break; const parent = current.slice(0, current.lastIndexOf("/")) || "/"; if (parent === current || !current.startsWith(boundary.root)) break; current = parent; }
 } }));
-// Cold writer census/publication needs a real Linux host; this fixture owns no provider effects.
+// Cold runtime census needs a real Linux host; protected birth uses real files/publication.
 vi.mock("../application/project-control/codex-goal-project-admission", async original => ({ ...await original<object>(), codexProjectAdmissionGate: () => ({ evaluate: async () => ({ allowed: true, status: "admitted" }) }) }));
-vi.mock("../protected-job-birth", async original => ({ ...await original<object>(), withProtectedCodexGoalJobBirthPublication: async (effect: () => Promise<unknown>) => effect() }));
 vi.mock("../codex-goal-mcp-project-accounts", async original => ({ ...await original<object>(), projectControlRefillAccountNames: async () => ["account-q"] }));
+vi.mock("../../worker-local/project-control-evidence-custody-local-adapter", async original => {
+  const adapter = await original<typeof import("../../worker-local/project-control-evidence-custody-local-adapter")>();
+  const fs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const { projectControlCustodyMaterializationPaths } = await import("../../worker-local/project-control-evidence-custody-materialization");
+  return { ...adapter, LocalProjectControlEvidenceCustody: class extends adapter.LocalProjectControlEvidenceCustody {
+    override async canonicalDirectory(path: string, allowMissing = false) {
+      const mapped = boundary.map(path) as string;
+      if (process.platform === "linux") return boundary.unmap(await super.canonicalDirectory(mapped, allowMissing));
+      // macOS substitutes procfs traversal only; real path/mode checks remain.
+      const stat = await fs.lstat(mapped);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(mapped) !== mapped) throw new Error("TEST noncanonical custody");
+      return path;
+    }
+    override async materializeApprovedProjectControlCustody(input: Parameters<InstanceType<typeof adapter.LocalProjectControlEvidenceCustody>["materializeApprovedProjectControlCustody"]>[0]) {
+      if (process.platform === "linux") return super.materializeApprovedProjectControlCustody({ ...input,
+        approvedAnchor: boundary.map(input.approvedAnchor) as string, ledgerRoots: input.ledgerRoots.map(root => boundary.map(root) as string),
+        evidenceRoots: input.evidenceRoots.map(root => boundary.map(root) as string), deniedRoots: input.deniedRoots.map(root => boundary.map(root) as string) });
+      const paths = projectControlCustodyMaterializationPaths({ anchor: input.approvedAnchor, ledgerRoots: input.ledgerRoots, evidenceRoots: input.evidenceRoots });
+      for (const path of paths) await fs.mkdir(boundary.map(path) as string, { recursive: true, mode: 0o700 });
+      const revalidate = async () => { for (const path of paths) { await this.canonicalDirectory(path);
+        if ((await fs.lstat(boundary.map(path) as string)).mode & 0o077) throw new Error("TEST custody denied"); } };
+      await revalidate();
+      return { ...input, revalidate, close: async () => {} };
+    }
+  } };
+});
 import { prepareHostedMimoProject, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
 import { resolveProjectSourceRevision } from "../application/project-control/codex-goal-project-source-revision";
 import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { readCodexGoalJob } from "../codex-goal-jobs";
+import { loadProjectControlController } from "../codex-goal-mcp-project-control-deps";
+import { projectControlAdoptPublishedIntegrationCommit } from "../codex-goal-mcp-project-control-published-adoption";
+import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
+import { observeResearchJobWriterAuthority } from "../research-writer-observation";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
 boundary.root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-")));
-boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt)(?:\/|$)/.test(value) ? boundary.root + value : value;
+boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt|run|TEST-artifact)(?:\/|$)/.test(value) ? boundary.root + value : value;
 boundary.unmap = value => value.startsWith(boundary.root + "/") ? value.slice(boundary.root.length) : value;
 const physical = (path: string) => boundary.map(path) as string;
 function directory(path: string) { fs.mkdirSync(physical(path), { recursive: true, mode: 0o700 }); }
@@ -55,6 +91,9 @@ afterAll(() => fs.rmSync(boundary.root, { recursive: true, force: true }));
 it("real filesystem prepare creates a real scoped controller and onboards; fsmonitor stays inert", async () => {
   const snapshot = "/srv/reviewed/test-source", state = "/srv/worker-state/mimo-projects/test-project/test-work", scratch = "/srv/workers/mimo-projects/test-project/test-work";
   directory(snapshot); directory("/srv/worker-state/account-pools/auth"); directory("/srv/workers"); directory("/srv/worker-state");
+  directory("/run/user");
+  for (const path of ["dist", "host-integration", "node_modules"]) directory("/TEST-artifact/" + path);
+  file("/TEST-artifact/package.json", '{"type":"module"}\n'); file("/TEST-artifact/dist/main.js", "TEST immutable artifact bytes\n");
   const git = (...args: string[]) => cp.execFileSync("/usr/bin/git", ["-C", physical(snapshot), ...args], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } }).trim();
   git("init"); git("config", "user.name", "iliya"); git("config", "user.email", "iliyazelenkog@gmail.com");
   const url = "https://github.com/example/project.git"; git("remote", "add", "origin", url);
@@ -82,7 +121,29 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
   const result = await prepareHostedMimoProject("/etc/subscription-runtime/test-plan.json");
   expect(result).toMatchObject({ ok: true, projectId: "test-project" }); expect(fs.existsSync(marker)).toBe(false);
   const controller = await readCodexGoalJob({ registryRootDir: state + "/registry", jobId: "test-controller" });
+  expect(await observeProtectedCodexGoalJobBirth(controller)).toEqual({ status: "released" });
+  expect(await observeResearchJobWriterAuthority(controller)).toEqual({ status: "released" });
   expect(controller.projectAccessScope?.allowedAccountIds).toEqual(["account-q"]);
+  const archive = state + "/registry/archives", ledger = state + "/registry/consumed-output-ledger";
+  expect(controller.projectAccessScope?.consumedOutputEvidenceRoots).toEqual([archive]);
+  expect(controller.projectAccessScope?.consumedOutputLedgerRoots).toEqual([ledger]);
+  for (const path of [state + "/reviewed-worker-outputs", state + "/reviewed-worker-outputs/.locks", state + "/reviewed-worker-outputs/.locks/workspace-locks",
+    state + "/registry/.consumed-output-ledger-mutation-locks", archive, ledger, ledger + "/items"]) {
+    const stat = fs.lstatSync(physical(path));
+    expect(stat.isDirectory()).toBe(true); expect(stat.isSymbolicLink()).toBe(false); expect(stat.mode & 0o777).toBe(0o700);
+  }
+  const control = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId };
+  await expect(loadProjectControlController(control)).resolves.toMatchObject({ scope: controller.projectAccessScope });
+  // The public consumption boundary must accept initial authority without scope repair.
+  const adoption = await projectControlAdoptPublishedIntegrationCommit({ ...control, attemptId: "test-attempt", commitSha: sha,
+    message: "test: readiness only", permitFile: "/etc/subscription-runtime/test-unread-permit.json", expectedPermitSha256: "a".repeat(64) });
+  expect(JSON.parse(adoption.content[0]!.text!)).toMatchObject({ reason: "confirm_adoption_required" });
+  // Canonical controller loading fails closed if either authority root disappears.
+  for (const path of [archive, ledger]) {
+    fs.renameSync(physical(path), physical(path + "-held"));
+    await expect(loadProjectControlController(control)).rejects.toThrow();
+    fs.renameSync(physical(path + "-held"), physical(path));
+  }
   expect(fs.statSync(physical(scratch + "/source/sandbox")).isDirectory()).toBe(true);
   expect(JSON.parse(fs.readFileSync(physical("/etc/subscription-runtime/mimo-projects/test-project/test-work.json"), "utf8")).sourceCommit).toBe(sha);
   // A sealed snapshot must create locally even when Git origin cannot be reached.

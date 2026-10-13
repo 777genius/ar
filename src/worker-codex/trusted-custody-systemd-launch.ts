@@ -241,7 +241,7 @@ export function trustedMimoProjectOperationLaunch(value: Readonly<{
   const digest = researchHash(JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))));
   const generation = data.generation;
   if (data.requestSha256 !== digest || !Number.isSafeInteger(generation) || (generation as number) < 0 ||
-      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop].includes(request.operation) && generation !== 0) ||
+      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop, MimoProjectBridgeOperation.Start].includes(request.operation) && generation !== 0) ||
       !Number.isSafeInteger(data.operationTimeoutMs) || (data.operationTimeoutMs as number) < 1000 || (data.operationTimeoutMs as number) > 86400000)
     throw new Error("mimo_project_bridge_operation_invalid");
   const unitDigest = researchHash(digest + ":" + generation), unit = `subscription-runtime-mimo-project-${unitDigest}.service`;

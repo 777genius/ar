@@ -5,10 +5,31 @@ import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest } from "../ho
 const base = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream",
   operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "Edit the TEST workspace", sourceCommit: "b".repeat(40) };
 describe("finite root project MiMo bridge wire contract", () => {
+  it.each([[true, "high"], [false, "none"]] as const)("normalizes thinking=%s to the retained reasoning effort", (thinking, reasoningEffort) => {
+    const input = { ...base, thinking };
+    const parsed = readMimoProjectIngress(Buffer.from(JSON.stringify(input)));
+    expect(parsed).toEqual({ ...base, reasoningEffort });
+    expect(parseMimoProjectBridgeRequest(parsed)).toEqual(parsed);
+    expect(input).not.toHaveProperty("reasoningEffort");
+  });
+  it.each(["none", "minimal", "low", "medium", "high", "xhigh"] as const)("preserves legacy effort %s with semantically matching thinking", reasoningEffort => {
+    expect(parseMimoProjectBridgeRequest({ ...base, reasoningEffort })).toEqual({ ...base, reasoningEffort });
+    expect(parseMimoProjectBridgeRequest({ ...base, reasoningEffort, thinking: reasoningEffort !== "none" })).toEqual({ ...base, reasoningEffort });
+  });
+  it.each([{ thinking: true, reasoningEffort: "none" }, { thinking: false, reasoningEffort: "high" },
+    { thinking: "true" }, { thinking: 1 }, { thinking: null }, { thinking: undefined },
+    { thinking: true, reasoningEffort: "invalid" }])("refuses invalid or contradictory thinking %j", fields => {
+    expect(() => parseMimoProjectBridgeRequest({ ...base, ...fields })).toThrow("mimo_project_bridge_request_invalid");
+  });
+  it.each([MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop,
+    MimoProjectBridgeOperation.RepairAdmission, MimoProjectBridgeOperation.FinalizeAdmissionRepair])("never changes thinking through %s", operation => {
+    const { prompt: _prompt, sourceCommit: _source, ...control } = base;
+    expect(() => parseMimoProjectBridgeRequest({ ...control, operation, thinking: false })).toThrow("mimo_project_bridge_request_invalid");
+  });
   it("admits finite create data and control-only same-job requests", () => {
     expect(parseMimoProjectBridgeRequest(base)).toEqual(base);
     const { prompt: _prompt, sourceCommit: _source, ...control } = base;
-    for (const operation of [MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop])
+    for (const operation of [MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop, MimoProjectBridgeOperation.FinalizeAdmissionRepair])
       expect(parseMimoProjectBridgeRequest({ ...control, operation })).toMatchObject({ operation, jobId: base.jobId });
   });
   it.each([{ argv: ["/bin/sh"] }, { env: { TEST: "override" } }, { registryRootDir: "/etc" }, { controllerJobId: "other" },
@@ -19,6 +40,30 @@ describe("finite root project MiMo bridge wire contract", () => {
   });
   it("rejects mutation fields on a status request", () => {
     expect(() => parseMimoProjectBridgeRequest({ ...base, operation: MimoProjectBridgeOperation.Status })).toThrow();
+  });
+  it("accepts only identity data for the fixed repair finalizer", () => {
+    const { prompt: _prompt, sourceCommit: _commit, ...identity } = base;
+    const finalizer = { ...identity, operation: MimoProjectBridgeOperation.FinalizeAdmissionRepair };
+    expect(readMimoProjectIngress(Buffer.from(JSON.stringify(finalizer)))).toEqual(finalizer);
+    for (const fields of [{ repairPlan: {} }, { runtimeDirectory: "/opt/foreign" }, { planPath: "/etc/foreign" }, { archivePath: "/srv/foreign" },
+      { artifactSha256: "a".repeat(64) }, { argv: ["/bin/sh"] }, { prompt: "TEST" }, { reasoningEffort: "none" }])
+      expect(() => parseMimoProjectBridgeRequest({ ...finalizer, ...fields })).toThrow("mimo_project_bridge_request_invalid");
+  });
+  it("admits only an exact same-job bounded repair plan and snapshots its paths", () => {
+    const { prompt: _prompt, sourceCommit: _commit, ...identity } = base;
+    const repairPlan = { schemaVersion: 1, machineId: base.machineId, projectId: base.projectId, workstreamId: base.workstreamId, jobId: base.jobId,
+      expectedBindingSha256: "c".repeat(64), expectedControllerManifestSha256: "d".repeat(64), expectedManifestSha256: "e".repeat(64),
+      expectedContractSha256: "f".repeat(64), expectedStateSha256: "0".repeat(64), expectedReceiptSha256: "1".repeat(64), ownedPaths: ["src/WindowsNativeRunControl.hpp", "src/.task-reports/windows-run-control/"] };
+    const repair = { ...identity, operation: MimoProjectBridgeOperation.RepairAdmission, repairPlan };
+    expect(readMimoProjectIngress(Buffer.from(JSON.stringify(repair)))).toEqual(repair);
+    const parsed = parseMimoProjectBridgeRequest(repair);
+    repairPlan.ownedPaths.push("TEST changed caller path");
+    expect(parsed.repairPlan?.ownedPaths).toHaveLength(2);
+    for (const fields of [{ projectId: "other" }, { workstreamId: "other" }, { jobId: "other" }, { machineId: "f".repeat(32) },
+      { expectedBindingSha256: "main" }, { ownedPaths: [] }, { ownedPaths: ["x\0y"] }, { runtimeDirectory: "/opt/foreign" }, { planPath: "/etc/foreign" }])
+      expect(() => parseMimoProjectBridgeRequest({ ...repair, repairPlan: { ...repairPlan, ...fields } })).toThrow("mimo_project_bridge_request_invalid");
+    expect(() => parseMimoProjectBridgeRequest({ ...repair, argv: ["/bin/sh"] })).toThrow("mimo_project_bridge_request_invalid");
+    expect(() => parseMimoProjectBridgeRequest({ ...repair, operation: MimoProjectBridgeOperation.Status })).toThrow("mimo_project_bridge_request_invalid");
   });
 });
 

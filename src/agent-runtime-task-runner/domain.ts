@@ -126,7 +126,6 @@ export type CodexAgentRuntimeConfig = {
 };
 
 type LocalAgentRuntimeTaskRunnerCommonInput = {
-  readonly stateRootDir: string;
   readonly encryptionKey: Uint8Array | string;
   readonly workspaceRoot: string;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -137,8 +136,12 @@ type LocalAgentRuntimeTaskRunnerCommonInput = {
   readonly onDisposeError?: (message: string) => void;
 };
 
+type LocalAgentRuntimeTaskRunnerStorageInput =
+  | { readonly stateRootDir: string; readonly storageRootDir?: string }
+  | { readonly storageRootDir: string; readonly stateRootDir?: string };
+
 export type CreateLocalAgentRuntimeTaskRunnerInput =
-  LocalAgentRuntimeTaskRunnerCommonInput &
+  LocalAgentRuntimeTaskRunnerCommonInput & LocalAgentRuntimeTaskRunnerStorageInput &
     (
       | {
           readonly provider: AgentRuntimeTaskProvider.Claude;

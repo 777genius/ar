@@ -125,6 +125,7 @@ export type CodexGoalStatusInput = {
   readonly tmuxSession?: string;
   readonly logPath?: string;
   readonly progressPath?: string;
+  readonly runtimeEventsPath?: string;
   readonly accessBoundary?: AccessBoundary;
 };
 
@@ -478,13 +479,13 @@ export async function collectCodexGoalStatus(
     workerAlive: currentAttemptWorkerAlive,
   });
   if (visibleResult.warning) warnings.push(visibleResult.warning);
-  const runtimeEventsPath =
+  const runtimeEventsPath = input.runtimeEventsPath ?? (
     input.jobRootDir && input.taskId
       ? codexGoalRuntimeEventsPath({
           jobRootDir: input.jobRootDir,
           taskId: input.taskId,
         })
-      : undefined;
+      : undefined);
   const runtimeEventsStatus = runtimeEventsPath
     ? await logFileStatus(runtimeEventsPath)
     : {};
