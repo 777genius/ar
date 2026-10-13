@@ -1,4 +1,5 @@
-import { OriginalFullPeerPreloadSelectionKind } from "../../dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js";
+import { OriginalFullPeerPreloadSelectionKind, OriginalFullGitEntryKind, originalFullProjectControlGitEntryData,
+  type OriginalFullGitEntry } from "../../dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js";
 import { parseHostedSignedToolElf } from "../../dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js";
 import { emitSignedPythonEnvelopeCatalog } from "./current-full-python-envelope-catalog.ts";
 import type { EnvelopeLimits, SignedPackage } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
@@ -134,6 +135,13 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   // runtime/configuration copy. Later observer discovery cannot enroll aliases.
   const peerAliases = captureSignedPeerAliases(root, signedElfPins, requirements.map(row => row.soname), checkBudget);
   json(root + runtime + "/os-signed-tool-aliases.json", { schemaVersion: 1, packages, aliases: peerAliases });
+  const gitPackage = packages.filter(row => row.package === "git"); assert.equal(gitPackage.length, 1);
+  const gitEntries = captureSignedGitInventory(root, signedElfPins, checkBudget);
+  const gitAliases = captureSignedPeerAliases(root, signedElfPins, requirements.map(row => row.soname), checkBudget,
+    gitEntries.filter(row => row.kind === OriginalFullGitEntryKind.Regular && row.elf).map(row => row.path));
+  const gitInventory = { schemaVersion: 1, package: gitPackage[0]!, entries: gitEntries, aliases: gitAliases };
+  assert(Buffer.byteLength(JSON.stringify(gitInventory) + "\n") <= 256 * 1024);
+  json(root + runtime + "/os-signed-git-inventory.json", gitInventory);
   const preloadParent = lstatSync(root + "/etc", { bigint: true });
   assert(preloadParent.isDirectory() && !preloadParent.isSymbolicLink() && preloadParent.uid === 0n && preloadParent.gid === 0n && !(preloadParent.mode & 0o022n));
   const parentIdentity = { dev: String(preloadParent.dev), ino: String(preloadParent.ino) };
@@ -284,7 +292,8 @@ export function assembleCurrentFull(root: string, state: string, source: string,
 }
 
 /** Private original assembly fact collector, not an enrollment factory. */
-function captureSignedPeerAliases(root: string, pins: readonly { path: string; sha256: string }[], nodeRequirements: readonly string[], checkBudget: () => number): readonly { path: string; target: string }[] {
+function captureSignedPeerAliases(root: string, pins: readonly { path: string; sha256: string }[], nodeRequirements: readonly string[], checkBudget: () => number,
+  gitElfRoots: readonly string[] = []): readonly { path: string; target: string }[] {
   const selected = new Map(pins.map(row => [row.path, row.sha256])), aliases = new Map<string, string>(), seen = new Set<string>();
   let bytes = 0; const deadline = process.hrtime.bigint() + 30000000000n;
   const bound = () => { checkBudget(); assert(process.hrtime.bigint() < deadline); };
@@ -299,7 +308,8 @@ function captureSignedPeerAliases(root: string, pins: readonly { path: string; s
           const target = readlinkSync(root + name); assert(target.length > 0 && Buffer.byteLength(target) <= 4096 && /^[A-Za-z0-9_+./-]+$/.test(target));
           const previous = aliases.get(name); assert(previous === undefined || previous === target); aliases.set(name, target); assert(aliases.size <= 1024);
           path = posix.normalize((target.startsWith("/") ? target : posix.dirname(name) + "/" + target) + "/" + parts.slice(index + 1).join("/"));
-          assert(path.startsWith("/usr/lib/") || path.startsWith("/usr/lib64/") || path === "/usr/bin/ss" || ["/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64"].includes(path));
+          assert(path.startsWith("/usr/lib/") || path.startsWith("/usr/lib64/") || path === "/usr/bin/ss" ||
+            gitElfRoots.length > 0 && path === "/usr/bin/git" || ["/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64"].includes(path));
           changed = true; break;
         }
         assert(index === parts.length - 1 || stat.isDirectory());
@@ -313,7 +323,9 @@ function captureSignedPeerAliases(root: string, pins: readonly { path: string; s
   }
   const visit = (input: string) => {
     bound(); const path = resolveSigned(input); if (seen.has(path)) return;
-    assert(seen.size < 32); seen.add(path); assert(path === "/usr/bin/ss" || path.startsWith("/usr/lib/x86_64-linux-gnu/"));
+    assert(seen.size < (gitElfRoots.length > 0 ? 512 : 32)); seen.add(path);
+    assert(path === "/usr/bin/ss" || path.startsWith("/usr/lib/x86_64-linux-gnu/") ||
+      gitElfRoots.length > 0 && (path === "/usr/bin/git" || path.startsWith("/usr/lib/git-core/")));
     const expected = selected.get(path); assert(expected); const stat = lstatSync(root + path, { bigint: true });
     assert(stat.isFile() && stat.nlink === 1n && stat.size > 0n && stat.size <= 32n * 1024n * 1024n && (bytes += Number(stat.size)) <= 256 * 1024 * 1024);
     const fd = openSync(root + path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -332,9 +344,60 @@ function captureSignedPeerAliases(root: string, pins: readonly { path: string; s
     assert(/^[A-Za-z0-9_.+-]+$/.test(soname) && Object.hasOwn(elfPackages, soname));
     visit("/usr/lib/x86_64-linux-gnu/" + soname);
   }
+  assert(gitElfRoots.length <= 1024 && new Set(gitElfRoots).size === gitElfRoots.length);
+  for (const path of gitElfRoots) {
+    assert(path === "/usr/bin/git" || /^\/usr\/lib\/git-core\/[A-Za-z0-9_.+/-]+$/.test(path)); visit(path);
+  }
   bound();
   const rows = [...aliases].map(([path, target]) => ({ path, target })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   assert(Buffer.byteLength(JSON.stringify(rows)) <= 256 * 1024); return Object.freeze(rows.map(row => Object.freeze(row)));
+}
+
+/** Only original authenticated extraction is present at this call site. No
+ * script is executed and no inventory field grants future helper execution. */
+function captureSignedGitInventory(root: string, pins: readonly { path: string; sha256: string }[], checkBudget: () => number): readonly OriginalFullGitEntry[] {
+  const selected = new Map(pins.map(row => [row.path, row.sha256]));
+  const rows: OriginalFullGitEntry[] = []; let bytes = 0;
+  const visit = (path: string): void => {
+    checkBudget(); assert(rows.length < 1024);
+    assert(path === "/usr/bin/git" || /^\/usr\/lib\/git-core(?:\/[A-Za-z0-9_.+-]+)*$/.test(path));
+    const actual = root + path, stat = lstatSync(actual, { bigint: true });
+    assert(stat.uid === 0n && stat.gid === 0n && (stat.isSymbolicLink() || !(stat.mode & 0o022n)));
+    if (stat.isDirectory()) {
+      assert.equal(realpathSync(actual), actual);
+      const names = readdirSync(actual, { encoding: "buffer" }).map(name => {
+        const text = name.toString("utf8"); assert(Buffer.from(text).equals(name) && /^[A-Za-z0-9_.+-]+$/.test(text) && text !== "." && text !== ".."); return text;
+      }).sort();
+      rows.push({ path, kind: OriginalFullGitEntryKind.Directory, sha256: null, size: null, target: null, elf: false });
+      for (const name of names) visit(path + "/" + name);
+      checkBudget(); const after = lstatSync(actual, { bigint: true });
+      for (const key of ["dev", "ino", "uid", "gid", "mode", "nlink", "mtimeNs"] as const) assert.equal(after[key], stat[key]);
+      assert.deepEqual(readdirSync(actual, { encoding: "buffer" }).map(name => name.toString("hex")).sort(),
+        names.map(name => Buffer.from(name).toString("hex")).sort()); return;
+    }
+    if (stat.isSymbolicLink()) {
+      const target = readlinkSync(actual); assert(target.length > 0 && Buffer.byteLength(target) <= 4096 && /^[A-Za-z0-9_+./-]+$/.test(target));
+      rows.push({ path, kind: OriginalFullGitEntryKind.Symlink, sha256: null, size: null, target, elf: false });
+      checkBudget(); const after = lstatSync(actual, { bigint: true });
+      for (const key of ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs"] as const) assert.equal(after[key], stat[key]);
+      assert.equal(readlinkSync(actual), target); return;
+    }
+    assert(stat.isFile() && stat.nlink === 1n && stat.size <= 32n * 1024n * 1024n && (bytes += Number(stat.size)) <= 64 * 1024 * 1024);
+    const fd = openSync(actual, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const held = fstatSync(fd, { bigint: true });
+      for (const key of ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs"] as const) assert.equal(held[key], stat[key]);
+      checkBudget(); const data = readFileSync(fd); assert.equal(data.length, Number(stat.size));
+      const sha256 = createHash("sha256").update(data).digest("hex"), elf = data.length >= 4 && data.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      if (elf) assert.equal(selected.get(path), sha256);
+      rows.push({ path, kind: OriginalFullGitEntryKind.Regular, sha256, size: data.length, target: null, elf });
+      checkBudget(); const after = fstatSync(fd, { bigint: true }), named = lstatSync(actual, { bigint: true });
+      for (const key of ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs"] as const) { assert.equal(after[key], stat[key]); assert.equal(named[key], stat[key]); }
+    } finally { closeSync(fd); }
+  };
+  visit("/usr/bin/git"); visit("/usr/lib/git-core");
+  rows.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0); checkBudget();
+  return originalFullProjectControlGitEntryData(rows);
 }
 
 function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {

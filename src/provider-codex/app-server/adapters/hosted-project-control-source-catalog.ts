@@ -24,7 +24,7 @@ export const originalFullProjectControlSourcePaths = Object.freeze([
   "dist/provider-codex/app-server/adapters/hosted-private-physical-inputs.js",
 ]);
 export const originalFullProjectControlPeerMetadataPaths = Object.freeze([
-  "os-signed-elf-pins.json", "os-packages.json", "os-signed-tool-aliases.json", "os-signed-peer-preload.json",
+  "os-signed-elf-pins.json", "os-packages.json", "os-signed-tool-aliases.json", "os-signed-peer-preload.json", "os-signed-git-inventory.json",
 ]);
 
 const runtime = "/opt/subscription-runtime-dependency-os-TEST";
@@ -43,6 +43,64 @@ function preloadObject(value: unknown, keys: string): Record<string, unknown> {
 function preloadIdentity(value: unknown): Readonly<{dev: string; ino: string}> {
   const row = preloadObject(value, "dev,ino"); preloadCheck(typeof row.dev === "string" && /^[1-9][0-9]*$/.test(row.dev) && typeof row.ino === "string" && /^[1-9][0-9]*$/.test(row.ino));
   return {dev: row.dev, ino: row.ino};
+}
+
+export enum OriginalFullGitEntryKind { Directory = "directory", Regular = "regular", Symlink = "symlink" }
+export type OriginalFullGitEntry = Readonly<{ path: string; kind: OriginalFullGitEntryKind;
+  sha256: string | null; size: number | null; target: string | null; elf: boolean }>;
+
+/** A complete copied exec-path inventory, not a permission to execute a helper.
+ * Scripts and aliases still need the original producer's actual closed recipe. */
+export function originalFullProjectControlGitEntryData(value: unknown): readonly OriginalFullGitEntry[] {
+  preloadCheck(Array.isArray(value) && value.length > 0 && value.length <= 1024);
+  let previous = "";
+  const rows = value.map((item: unknown): OriginalFullGitEntry => {
+    const row = preloadObject(item, "path,kind,sha256,size,target,elf");
+    preloadCheck(typeof row.path === "string" && row.path > previous &&
+      (row.path === "/usr/bin/git" || /^\/usr\/lib\/git-core(?:\/[A-Za-z0-9_.+-]+)*$/.test(row.path)) &&
+      !row.path.split("/").some(part => part === "." || part === "..") && typeof row.elf === "boolean");
+    previous = row.path;
+    if (row.kind === OriginalFullGitEntryKind.Regular) {
+      preloadCheck(typeof row.sha256 === "string" && /^[a-f0-9]{64}$/.test(row.sha256) &&
+        Number.isSafeInteger(row.size) && (row.size as number) >= (row.elf ? 20 : 0) && (row.size as number) <= 32 * 1024 * 1024 && row.target === null);
+      return Object.freeze({ path: row.path, kind: OriginalFullGitEntryKind.Regular, sha256: row.sha256,
+        size: row.size as number, target: null, elf: row.elf });
+    }
+    preloadCheck(row.sha256 === null && row.size === null && row.elf === false);
+    if (row.kind === OriginalFullGitEntryKind.Directory) {
+      preloadCheck(row.target === null); return Object.freeze({ path: row.path, kind: OriginalFullGitEntryKind.Directory,
+        sha256: null, size: null, target: null, elf: false });
+    }
+    preloadCheck(row.kind === OriginalFullGitEntryKind.Symlink && typeof row.target === "string" &&
+      row.target.length > 0 && Buffer.byteLength(row.target) <= 4096 && /^[A-Za-z0-9_+./-]+$/.test(row.target));
+    return Object.freeze({ path: row.path, kind: OriginalFullGitEntryKind.Symlink, sha256: null,
+      size: null, target: row.target, elf: false });
+  });
+  preloadCheck(rows.some(row => row.path === "/usr/bin/git" && row.kind === OriginalFullGitEntryKind.Regular && row.elf) &&
+    rows.some(row => row.path === "/usr/lib/git-core" && row.kind === OriginalFullGitEntryKind.Directory));
+  const directories = new Set(rows.filter(row => row.kind === OriginalFullGitEntryKind.Directory).map(row => row.path));
+  for (const row of rows) if (row.path.startsWith("/usr/lib/git-core/")) {
+    preloadCheck(directories.has(row.path.slice(0, row.path.lastIndexOf("/"))));
+  }
+  return Object.freeze(rows);
+}
+
+/** Validates copied signed-image facts only. This does not select an entry,
+ * authenticate package bytes or enroll a filesystem alias. */
+export function originalFullProjectControlToolAliasData(value: unknown): readonly Readonly<{ path: string; target: string }>[] {
+  preloadCheck(Array.isArray(value) && value.length <= 1024);
+  let previous = "";
+  const rows = value.map((item: unknown) => {
+    const row = preloadObject(item, "path,target");
+    preloadCheck(typeof row.path === "string" && row.path > previous &&
+      /^\/(?:usr\/(?:lib|lib64|bin)\/|(?:lib64|lib|bin|sbin)$)/.test(row.path) &&
+      !row.path.split("/").some(part => part === "." || part === "..") &&
+      typeof row.target === "string" && row.target.length > 0 && Buffer.byteLength(row.target) <= 4096 &&
+      !/[\0-\x20\x7f]/.test(row.target));
+    previous = row.path;
+    return Object.freeze({ path: row.path, target: row.target });
+  });
+  return Object.freeze(rows);
 }
 export enum OriginalFullPeerPreloadSelectionKind { Absent = "absent", Empty = "empty" }
 export type OriginalFullPeerPreloadSelection = Readonly<{ kind: OriginalFullPeerPreloadSelectionKind;

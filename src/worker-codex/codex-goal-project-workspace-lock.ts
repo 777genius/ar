@@ -1,3 +1,5 @@
+import { originalHostedProjectControlLockLifecycle, assertOriginalHostedProjectControlRegistryBudgetCurrent,
+  originalHostedProjectControlAllocationPathPresent, holdOriginalHostedProjectControlAllocationError } from "./hosted-project-control-native-allocation.js";
 import { realpath } from "node:fs/promises";
 import { withProtectedCodexGoalJobBirthPublication } from "./protected-job-birth";
 import { dirname, join, resolve } from "node:path";
@@ -22,14 +24,43 @@ export type ProjectControlWorkspaceLease = {
   }) => Promise<T>;
 };
 
+/** Original custody stays held after either failure. A release refusal must
+ * preserve an earlier effect error, including a thrown undefined value. */
+async function withOriginalLockFailureCustody<T>(
+  original: boolean,
+  effect: () => Promise<T>,
+  release: () => void | Promise<void>,
+): Promise<T> {
+  let failed = false;
+  try { return await effect(); }
+  catch (error) {
+    failed = true;
+    if (original) holdOriginalHostedProjectControlAllocationError();
+    throw error;
+  } finally {
+    try { await release(); }
+    catch (error) {
+      if (!original) throw error;
+      holdOriginalHostedProjectControlAllocationError();
+      if (!failed) throw error;
+    }
+  }
+}
+
 export function projectControlWorkspaceLocks(
   registryRootDir: string,
   assertPublicationCurrent?: (paths: readonly string[]) => void,
 ): WorkspaceLockPort {
+  const directoryLifecycle = originalHostedProjectControlLockLifecycle(registryRootDir);
+  const consumingVeto = directoryLifecycle ? (paths: readonly string[]) => {
+    try { assertPublicationCurrent?.(paths); assertOriginalHostedProjectControlRegistryBudgetCurrent(registryRootDir); }
+    catch (error) { directoryLifecycle.hold(); throw error; }
+  } : assertPublicationCurrent;
   return new LocalWorkspaceIntegrationLock({
     rootDir: projectControlWorkspaceLockRoot(registryRootDir),
     staleLockMs: 30 * 60_000,
-    ...(assertPublicationCurrent ? { assertPublicationCurrent } : {}),
+    ...(consumingVeto ? { assertPublicationCurrent: consumingVeto } : {}),
+    ...(directoryLifecycle ? { directoryLifecycle } : {}),
   });
 }
 
@@ -59,7 +90,7 @@ export async function withProjectAdmissionPublicationLock<T>(input: {
     workspacePath: registryPath,
     owner: input.owner,
   });
-  try {
+  return withOriginalLockFailureCustody(originalHostedProjectControlAllocationPathPresent(registryPath), async () => {
     if (await realpath(resolve(input.registryRootDir)) !== registryPath ||
       lock.workspacePath !== registryPath) {
       throw new Error("project_control_registry_real_path_changed");
@@ -67,9 +98,7 @@ export async function withProjectAdmissionPublicationLock<T>(input: {
     // Raw first effects share this owner-private try-lock through the final
     // census and existing claim publication, including every awaited read.
     return await withProtectedCodexGoalJobBirthPublication(input.effect);
-  } finally {
-    await locks.release(lock);
-  }
+  }, () => locks.release(lock));
 }
 
 export async function withValidatedProjectWorkspaceLock<T>(input: {
@@ -136,11 +165,11 @@ export async function withValidatedProjectWorkspaceLock<T>(input: {
       } finally { publicationActive = false; }
     },
   };
-  try {
+  return withOriginalLockFailureCustody(originalHostedProjectControlAllocationPathPresent(canonicalWorkspacePath), async () => {
     await assertCanonicalBinding();
     return await input.effect(workspace);
-  } finally {
+  }, async () => {
     closed = true;
     if (lock) await input.locks.release(lock);
-  }
+  });
 }

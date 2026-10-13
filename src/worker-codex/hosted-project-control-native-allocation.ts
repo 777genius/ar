@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
-  realpathSync, readSync, statfsSync, type BigIntStats } from "node:fs";
-import { dirname } from "node:path";
+  realpathSync, readSync, readdirSync, rmdirSync, statfsSync, type BigIntStats } from "node:fs";
+import { dirname, basename } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { researchAuthorityRoot, researchHash, researchJson, researchRead } from "./research-launch-files.js";
+import type { LocalOwnedWorkspaceLockDirectory, LocalOwnedWorkspaceLockTemporary,
+  LocalWorkspaceLockDirectoryLifecycle } from "../store-local-file/safe-execution/adapters/local-safe-execution-state-store.js";
 import { assertOriginalFullProjectControlSetupCurrent } from "./hosted-project-control-native-origin.js";
 
 /** These are copied selectors. Only the original private NativeEntryLive
@@ -16,6 +18,10 @@ enum AllocationPhase { Creating = "creating", Reserved = "reserved", Held = "hel
 type Directory = { readonly path: string; readonly fd: number; stat: BigIntStats; readonly mount: string; readonly private: boolean };
 const jobs = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs";
 let issued = false;
+enum CreatorEffect { LockLeaseCreation = "lock_lease_creation", LockTempCreation = "lock_temp_creation",
+  LockTempRemoval = "lock_temp_removal", LockLeaseRemoval = "lock_lease_removal" }
+let creatorEffect: Readonly<{ kind: CreatorEffect; sequence: number }> | undefined;
+let creatorSequence = 0;
 // Partial creation retains its exact original FD custody even before selectors
 // can be published. It is never inferred released or reconstructed on retry.
 let creatingDirectories: Directory[] | undefined;
@@ -51,6 +57,7 @@ function validate(directory: Directory): void {
   if (privateLeaf) check(options.includes("rw"));
 }
 function retain(path: string, privateLeaf: boolean): Directory {
+  assertOriginalFullProjectControlSetupCurrent();
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     const directory = { path, fd, stat: fstatSync(fd, { bigint: true }), mount: mount(fd), private: privateLeaf };
@@ -59,7 +66,7 @@ function retain(path: string, privateLeaf: boolean): Directory {
 }
 function current(): NonNullable<typeof allocation> {
   try {
-    assertOriginalFullProjectControlSetupCurrent(); check(allocation && allocation.phase === AllocationPhase.Reserved && allocation.ownerBirth === ownerBirth());
+    assertOriginalFullProjectControlSetupCurrent(); check(allocation && allocation.phase === AllocationPhase.Reserved && creatorEffect === undefined && allocation.ownerBirth === ownerBirth());
     for (const directory of allocation.directories) validate(directory);
     assertOriginalFullProjectControlSetupCurrent(); return allocation;
   } catch (error) {
@@ -78,7 +85,8 @@ function create(parent: Directory, leaf: string, directories: Directory[]): Dire
   check(before.dev === after.dev && before.ino === after.ino && before.mode === after.mode && before.uid === after.uid &&
     before.gid === after.gid && after.nlink === before.nlink + 1n);
   parent.stat = after; // Only this positively joined exclusive mkdir advances it.
-  validate(parent); validate(child); fsyncSync(child.fd); fsyncSync(parent.fd);
+  validate(parent); validate(child); assertOriginalFullProjectControlSetupCurrent(); fsyncSync(child.fd);
+  assertOriginalFullProjectControlSetupCurrent(); fsyncSync(parent.fd);
   assertOriginalFullProjectControlSetupCurrent(); return child;
 }
 
@@ -95,7 +103,10 @@ export function prepareOriginalHostedProjectControlAllocation(): OriginalHostedP
     const parent = directories[directories.length - 1]!;
     const jobId = "TEST-sdk-" + randomUUID(), root = create(parent, jobId, directories);
     const source = create(root, "source", directories), auth = create(root, "auth", directories), state = create(root, "state", directories);
-    const registry = create(state, "registry", directories), controller = create(root, "controller", directories), handoffs = create(root, "durable-handoffs", directories);
+    const registry = create(state, "registry", directories);
+    const reviewed = create(state, "reviewed-worker-outputs", directories), locks = create(reviewed, ".locks", directories);
+    create(locks, "workspace-locks", directories);
+    const controller = create(root, "controller", directories), handoffs = create(root, "durable-handoffs", directories);
     create(registry, "TEST-standalone-controller", directories); create(registry, jobId, directories);
     const selectors = Object.freeze({ jobId, jobRootDir: root.path, source: source.path, auth: auth.path,
       controllerId: "TEST-standalone-controller", controllerRoot: controller.path, registry: registry.path,
@@ -110,6 +121,113 @@ export function prepareOriginalHostedProjectControlAllocation(): OriginalHostedP
     if (allocation) allocation.phase = AllocationPhase.Held;
     throw error;
   }
+}
+
+
+/** Exact child census for a privately held original parent. It cannot enroll a
+ * changed inode; each entry is read through that actual retained directory FD. */
+function childCensus(parent: Directory): ReadonlyMap<string, string> {
+  assertOriginalFullProjectControlSetupCurrent();
+  const names = readdirSync("/proc/self/fd/" + parent.fd); check(names.length <= 256);
+  const rows = new Map<string, string>();
+  for (const name of names.sort()) {
+    assertOriginalFullProjectControlSetupCurrent(); check(name !== "." && name !== ".." && !name.includes("/"));
+    const stat = lstatSync("/proc/self/fd/" + parent.fd + "/" + name, { bigint: true });
+    rows.set(name, [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid].join(":"));
+  }
+  assertOriginalFullProjectControlSetupCurrent(); return rows;
+}
+function joinedChildren(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>, leaf: Directory, created: boolean): void {
+  const name = basename(leaf.path), expected = [leaf.stat.dev, leaf.stat.ino, leaf.stat.mode, leaf.stat.uid, leaf.stat.gid].join(":");
+  check(created ? !before.has(name) && after.get(name) === expected : before.get(name) === expected && !after.has(name));
+  check(after.size === before.size + (created ? 1 : -1));
+  for (const [other, value] of before) if (other !== name) check(after.get(other) === value);
+}
+function creatorCurrent(own: NonNullable<typeof allocation>, excluding?: Directory): void {
+  assertOriginalFullProjectControlSetupCurrent();
+  check(own === allocation && own.phase === AllocationPhase.Reserved && own.ownerBirth === ownerBirth() && creatorEffect);
+  for (const row of own.directories) if (row !== excluding) validate(row);
+  assertOriginalFullProjectControlSetupCurrent();
+}
+function createLockDirectory(own: NonNullable<typeof allocation>, parent: Directory, leaf: string, kind: CreatorEffect): Directory {
+  check(current() === own); creatorEffect = Object.freeze({ kind, sequence: ++creatorSequence });
+  try {
+    const before = childCensus(parent), child = create(parent, leaf, own.directories);
+    joinedChildren(before, childCensus(parent), child, true); creatorCurrent(own);
+    creatorEffect = undefined; check(current() === own); return child;
+  } catch (error) { own.phase = AllocationPhase.Held; throw error; }
+}
+function removeLockDirectory(own: NonNullable<typeof allocation>, parent: Directory, child: Directory, kind: CreatorEffect): void {
+  check(current() === own); creatorEffect = Object.freeze({ kind, sequence: ++creatorSequence });
+  try {
+    const before = childCensus(parent); check(childCensus(child).size === 0);
+    creatorCurrent(own); const parentBefore = parent.stat;
+    assertOriginalFullProjectControlSetupCurrent(); rmdirSync("/proc/self/fd/" + parent.fd + "/" + basename(child.path));
+    const after = fstatSync(parent.fd, { bigint: true });
+    check(after.dev === parentBefore.dev && after.ino === parentBefore.ino && after.mode === parentBefore.mode &&
+      after.uid === parentBefore.uid && after.gid === parentBefore.gid && after.nlink === parentBefore.nlink - 1n);
+    joinedChildren(before, childCensus(parent), child, false); parent.stat = after;
+    // The removed original FD is still held here; no named absence supplies a
+    // release witness or permits a replacement child to be adopted.
+    const retained = fstatSync(child.fd, { bigint: true });
+    check(retained.dev === child.stat.dev && retained.ino === child.stat.ino && retained.nlink === 0n && mount(child.fd) === child.mount);
+    creatorCurrent(own, child); assertOriginalFullProjectControlSetupCurrent(); fsyncSync(parent.fd);
+    creatorCurrent(own, child); assertOriginalFullProjectControlSetupCurrent(); closeSync(child.fd);
+    let closed = false; try { fstatSync(child.fd); }
+    catch (error) { check(error instanceof Error && "code" in error && error.code === "EBADF"); closed = true; }
+    const index = own.directories.indexOf(child); check(closed && index >= 0); own.directories.splice(index, 1);
+    creatorEffect = undefined; check(current() === own);
+  } catch (error) { own.phase = AllocationPhase.Held; throw error; }
+}
+const originalLockLeases = new WeakMap<object, Readonly<{ current(): void; temporary(): LocalOwnedWorkspaceLockTemporary; remove(): void }>>();
+const originalLockTemps = new WeakMap<object, Readonly<{ current(): void; remove(): void }>>();
+const pendingLockLeases = new Set<Directory>();
+/** Consumers provide selection DATA only. This port exists solely for the
+ * originally issued live allocation; absence or held history cannot fall back
+ * to an ordinary creator for the same selected registry. */
+export function originalHostedProjectControlLockLifecycle(registryRootDir: string): LocalWorkspaceLockDirectoryLifecycle | undefined {
+  if (!allocation || registryRootDir !== allocation.selectors.registry) return undefined;
+  const own = current(), selected = own.selectors;
+  const parent = own.directories.find(row => row.path === dirname(selected.registry) + "/reviewed-worker-outputs/.locks/workspace-locks"); check(parent);
+  return Object.freeze({
+    hold() { check(own === allocation); own.phase = AllocationPhase.Held; },
+    createLease(workspacePath: string): LocalOwnedWorkspaceLockDirectory {
+      try {
+        check(current() === own && [selected.source, selected.workspace, selected.registry, selected.registry + "/.manifest-mutation"].includes(workspacePath));
+        const directory = createLockDirectory(own, parent, researchHash(workspacePath), CreatorEffect.LockLeaseCreation);
+        pendingLockLeases.add(directory); let active = true; const temps = new Set<Directory>();
+        const assertCurrent = () => { check(active && pendingLockLeases.has(directory) && current() === own); validate(directory); };
+        const receiver: LocalOwnedWorkspaceLockDirectory = Object.freeze({ path: directory.path,
+          assertCurrent() { const state = originalLockLeases.get(this); check(state); state.current(); },
+          createTemporary() { const state = originalLockLeases.get(this); check(state); return state.temporary(); },
+          remove() { const state = originalLockLeases.get(this); check(state); state.remove(); },
+        });
+        originalLockLeases.set(receiver, Object.freeze({ current: assertCurrent,
+          temporary() {
+            try {
+              assertCurrent(); const temp = createLockDirectory(own, directory, ".tmp-" + randomUUID(), CreatorEffect.LockTempCreation);
+              temps.add(temp); let tempActive = true;
+              const tempCurrent = () => { check(tempActive && temps.has(temp)); assertCurrent(); validate(temp); };
+              const temporary: LocalOwnedWorkspaceLockTemporary = Object.freeze({ path: temp.path,
+                assertCurrent() { const state = originalLockTemps.get(this); check(state); state.current(); },
+                remove() { const state = originalLockTemps.get(this); check(state); state.remove(); },
+              });
+              originalLockTemps.set(temporary, Object.freeze({ current: tempCurrent, remove() {
+                try { tempCurrent(); removeLockDirectory(own, directory, temp, CreatorEffect.LockTempRemoval); tempActive = false;
+                  temps.delete(temp); originalLockTemps.delete(temporary); }
+                catch (error) { own.phase = AllocationPhase.Held; throw error; }
+              } })); return temporary;
+            } catch (error) { own.phase = AllocationPhase.Held; throw error; }
+          },
+          remove() {
+            try { assertCurrent(); check(temps.size === 0); removeLockDirectory(own, parent, directory, CreatorEffect.LockLeaseRemoval);
+              active = false; pendingLockLeases.delete(directory); originalLockLeases.delete(receiver); }
+            catch (error) { own.phase = AllocationPhase.Held; throw error; }
+          },
+        })); return receiver;
+      } catch (error) { own.phase = AllocationPhase.Held; throw error; }
+    },
+  });
 }
 
 /** Negative invalidation only; no caller facts can restore this original owner. */
@@ -271,6 +389,7 @@ export function consumeOriginalHostedProjectControlBirthClaim(claim: OriginalHos
 export function closeOriginalHostedProjectControlAllocation(): void {
   const own = current();
   try {
+  check(pendingLockLeases.size === 0 && creatorEffect === undefined);
   check(publicationWitnesses.size === 2 && claimedBirthRoles.size === 2 &&
     [OriginalBirthRole.Controller, OriginalBirthRole.Child].every(role => publicationWitnesses.has(role)));
   for (const witness of publicationWitnesses.values()) {

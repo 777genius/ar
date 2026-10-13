@@ -1,4 +1,4 @@
-import { OriginalFullProjectControlPreparedCase, OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, type OriginalFullPeerPreloadSelection, originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths, originalFullProjectControlEntrySourcePaths } from "./hosted-project-control-source-catalog.js";
+import { OriginalFullProjectControlPreparedCase, OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, originalFullProjectControlToolAliasData, originalFullProjectControlGitEntryData, type OriginalFullPeerPreloadSelection, originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths, originalFullProjectControlEntrySourcePaths } from "./hosted-project-control-source-catalog.js";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -279,7 +279,7 @@ export function retainOriginalFullProjectControlControlGitEntry(): OriginalFullP
 export { live, hash, encoded, check, object, procIdentity, protectedJson, originalPair };
 
 export { OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, type OriginalFullPeerPreloadSelection } from "./hosted-project-control-source-catalog.js";
-export type OriginalFullProjectControlPeerSources = Readonly<{ elfPins: Buffer; packages: Buffer; aliases: Buffer;
+export type OriginalFullProjectControlPeerSources = Readonly<{ elfPins: Buffer; packages: Buffer; aliases: Buffer; gitInventory: Buffer;
   preload: OriginalFullPeerPreloadSelection; revalidate(): void; close(): void }>;
 const projectControlPeerSources = new WeakMap<object, Readonly<{ revalidate(): void; close(): void }>>();
 /** Only the actual original guest/supervisor entry selects this source port.
@@ -298,7 +298,7 @@ export function retainOriginalFullProjectControlPeerSources(): OriginalFullProje
       const fd = own(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK), stat = fstatSync(fd, { bigint: true });
       check(readHostedHeldRegularBytes(fd, 256 * 1024).equals(bytes)); files.push({ path, fd, bytes, dev: stat.dev, ino: stat.ino, mount: heldMount(fd) });
     }
-    const elfFile = files[0]!, packagesFile = files[1]!, aliasesFile = files[2]!, preloadFile = files[3]!;
+    const elfFile = files[0]!, packagesFile = files[1]!, aliasesFile = files[2]!, preloadFile = files[3]!, gitFile = files[4]!;
     const parse = (file: typeof elfFile) => { const value: unknown = JSON.parse(file.bytes.toString("utf8")); check(file.bytes.equals(encoded(value))); return value; };
     const elf = object(parse(elfFile), "schemaVersion,pins"); check(elf.schemaVersion === 1 && Array.isArray(elf.pins) && elf.pins.length > 0 && elf.pins.length <= 4096);
     const packages = object(parse(packagesFile), "schemaVersion,release,releases,packages,usrLayout,pinnedNode");
@@ -306,10 +306,15 @@ export function retainOriginalFullProjectControlPeerSources(): OriginalFullProje
     check(packages.schemaVersion === 1 && packages.release === "ubuntu-noble" && Array.isArray(packages.packages) && packages.packages.length > 0 &&
       packages.packages.length <= 256 && aliases.schemaVersion === 1 && JSON.stringify(aliases.packages) === JSON.stringify(packages.packages) &&
       Array.isArray(aliases.aliases) && aliases.aliases.length <= 1024);
-    let previous = "";
-    for (const value of aliases.aliases) { const row = object(value, "path,target"); check(typeof row.path === "string" && row.path > previous &&
-      /^\/(?:usr\/(?:lib|bin)\/|(?:lib64|lib|bin|sbin)$)/.test(row.path) && !row.path.split("/").some(part => part === "." || part === "..") &&
-      typeof row.target === "string" && row.target.length > 0 && Buffer.byteLength(row.target) <= 4096 && !/[\0-\x20\x7f]/.test(row.target)); previous = row.path; }
+    originalFullProjectControlToolAliasData(aliases.aliases);
+    const git = object(parse(gitFile), "schemaVersion,package,entries,aliases"); check(git.schemaVersion === 1);
+    const gitPackage = object(git.package, "package,version,arch,sha256,size");
+    check(gitPackage.package === "git" && gitPackage.arch === "amd64" && typeof gitPackage.version === "string" &&
+      /^[A-Za-z0-9.+~:-]{1,128}$/.test(gitPackage.version) && typeof gitPackage.sha256 === "string" &&
+      /^[a-f0-9]{64}$/.test(gitPackage.sha256) && Number.isSafeInteger(gitPackage.size) && (gitPackage.size as number) > 0 &&
+      packages.packages.filter(row => JSON.stringify(row) === JSON.stringify(gitPackage)).length === 1);
+    originalFullProjectControlGitEntryData(git.entries);
+    originalFullProjectControlToolAliasData(git.aliases);
     const preload = originalFullProjectControlPreloadData(parse(preloadFile)), parent = own("/etc", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW),
       parentStat = fstatSync(parent, { bigint: true }), parentMount = heldMount(parent), child = "/proc/self/fd/" + parent + "/ld.so.preload";
     check(parentStat.uid === 0n && parentStat.gid === 0n && !(parentStat.mode & 0o022n) && String(parentStat.dev) === preload.parent.dev && String(parentStat.ino) === preload.parent.ino);
@@ -330,7 +335,7 @@ export function retainOriginalFullProjectControlPeerSources(): OriginalFullProje
       entry.revalidate();
     };
     revalidate(); const receiver: OriginalFullProjectControlPeerSources = Object.freeze({ get elfPins() { return Buffer.from(elfFile.bytes); }, get packages() { return Buffer.from(packagesFile.bytes); },
-      get aliases() { return Buffer.from(aliasesFile.bytes); }, preload,
+      get aliases() { return Buffer.from(aliasesFile.bytes); }, get gitInventory() { return Buffer.from(gitFile.bytes); }, preload,
       revalidate() { const retained = projectControlPeerSources.get(this); check(retained); retained.revalidate(); },
       close() { const retained = projectControlPeerSources.get(this); check(retained); projectControlPeerSources.delete(this); retained.close(); } });
     projectControlPeerSources.set(receiver, Object.freeze({ revalidate, close })); return receiver;
