@@ -68,7 +68,7 @@ export function configureMimoProjectClientRoute(route: unknown, path = defaultPa
       return { ...result, changed: false };
     }
     const updated = parseMimoProjectClientRoutes({ schemaVersion: 1, routes: [...routes, selected] });
-    const bytes = JSON.stringify({ schemaVersion: 1, routes: updated }, null, 2) + "\n";
+    const bytes = JSON.stringify({ schemaVersion: 1, routes: updated }) + "\n";
     if (Buffer.byteLength(bytes) > 65536) throw new Error("mimo_project_client_config_invalid");
     temporary = path + ".publication-" + randomUUID();
     const file = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
