@@ -31,6 +31,23 @@ it("publishes readable private metadata, preserves other workstreams and makes e
   expect(existsSync(path + ".publication-lock")).toBe(false);
 });
 
+it("adds a route to a near-limit catalog without spending the reader budget on formatting", () => {
+  const { root, path } = fixture(); mkdirSync(join(root, "config"), { mode: 0o700 });
+  const routes = Array.from({ length: 233 }, (_, index) => ({ ...route,
+    workstreamId: `test-work-${index}`, socketDir: route.socketDir + "/" + "x".repeat(62) }));
+  const original = JSON.stringify({ schemaVersion: 1, routes }, null, 2) + "\n";
+  expect(Buffer.byteLength(original)).toBeGreaterThan(65000);
+  expect(Buffer.byteLength(original)).toBeLessThanOrEqual(65536);
+  writeFileSync(path, original, { mode: 0o600 });
+  expect(readMimoProjectClientRoutes(path)).toEqual(routes);
+  const next = { ...route, workstreamId: "test-next", socketDir: routes[0]!.socketDir };
+  expect(Buffer.byteLength(JSON.stringify({ schemaVersion: 1, routes: [...routes, next] }, null, 2) + "\n")).toBeGreaterThan(65536);
+  expect(configureMimoProjectClientRoute(next, path)).toMatchObject({ ok: true, changed: true });
+  expect(lstatSync(path).size).toBeLessThanOrEqual(65536);
+  expect(readMimoProjectClientRoutes(path)).toEqual([...routes, next]);
+  expect(existsSync(path + ".publication-lock")).toBe(false);
+});
+
 it("refuses conflicting authority instead of replacing the original transport", () => {
   const { path } = fixture(); configureMimoProjectClientRoute(route, path);
   const bytes = readFileSync(path, "utf8");

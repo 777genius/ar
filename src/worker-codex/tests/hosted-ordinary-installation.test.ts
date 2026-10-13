@@ -104,6 +104,8 @@ vi.mock("node:fs", async original => {
       if (fixture.failRename && from.endsWith(fixture.failRename)) throw new Error("synthetic publication interruption");
       real.renameSync(local(from), local(to));
     },
+    linkSync: (existingPath: string, newPath: string) => real.linkSync(local(existingPath), local(newPath)),
+    unlinkSync: (path: string) => real.unlinkSync(local(path)),
   };
 });
 // Project scratch and explicit capture ancestry into actual private TEST files; no operator/fence result is replaced.
