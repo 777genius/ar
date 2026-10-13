@@ -1,5 +1,5 @@
 import test from "node:test";import assert from "node:assert/strict";import * as fs from "node:fs";import {tmpdir} from "node:os";import {join} from "node:path";import {createHash} from "node:crypto";import {spawnSync} from "node:child_process";
-import {producePositivePublicPayload,type Selection} from "./prepare-current-positive-public-payload.mts";
+import {producePositivePublicPayload,parseSelection,PublicProducerOutputMode,type Selection,type SelectionV2} from "./prepare-current-positive-public-payload.mts";
 import {parseManifest,readRegularFrames,Role,type FrameRow} from "./stage-current-positive-public.mts";
 const sha=(b:Uint8Array)=>createHash("sha256").update(b).digest("hex");const json=(v:unknown)=>Buffer.from(JSON.stringify(v)+"\n");
 function fixture(){const temp=fs.realpathSync(fs.mkdtempSync(join(tmpdir(),"positive-public-producer-test-"))),source=join(temp,"source"),deps=join(temp,"deps"),node=join(temp,"node"),output=join(temp,"output");for(const d of [source,deps,node])fs.mkdirSync(d);
@@ -12,7 +12,7 @@ function fixture(){const temp=fs.realpathSync(fs.mkdtempSync(join(tmpdir(),"posi
  const rows:FrameRow[]=[row(deps,"example/package.json",Role.Dependency,"node_modules/example/package.json")];for(const p of ["package.json","README.md","dist/index.js"])rows.push(row(source,"packages/agent-account-observability/"+p,Role.WorkspacePackage,"node_modules/@vioxen/agent-account-observability/"+p));for(const p of ["bin/node","lib/node_modules/npm/package.json","lib/node_modules/npm/bin/npm-cli.js","lib/node_modules/npm/bin/npx-cli.js","lib/node_modules/corepack/dist/corepack.js"])rows.push(row(node,p,Role.Toolchain));rows.sort((a,b)=>`${a.role===Role.Toolchain?"toolchain":"source"}/${a.path}`<`${b.role===Role.Toolchain?"toolchain":"source"}/${b.path}`?-1:1);
  const pin=(name:string)=>{const path=join(temp,name),bytes=Buffer.from("PUBLIC fixture receipt only; no native or CI qualification\n");fs.writeFileSync(path,bytes,{mode:0o644});return {path,bytes:bytes.length,sha256:sha(bytes)};};
  const selection:Selection={schemaVersion:1,kind:"FULL_POSITIVE_PUBLIC_INPUT_SELECTION_V1",sourceRoot:source,sourceSha:git(["rev-parse","HEAD"]),sourceTree:git(["rev-parse","HEAD^{tree}"]),dependencyRoot:deps,toolchainRoot:node,rows,links:[{path:"toolchain/bin/corepack",target:"../lib/node_modules/corepack/dist/corepack.js",projection:"omit"},{path:"toolchain/bin/npm",target:"../lib/node_modules/npm/bin/npm-cli.js",projection:"omit"},{path:"toolchain/bin/npx",target:"../lib/node_modules/npm/bin/npx-cli.js",projection:"omit"}],toolchainDirectories:["bin","lib","lib/node_modules","lib/node_modules/corepack","lib/node_modules/corepack/dist","lib/node_modules/npm","lib/node_modules/npm/bin"],compilerReceipt:pin("compiler.json"),artifactReceipt:pin("artifact.json"),nodeArchive:pin("node-archive.data"),publicPackageImportAudit:pin("import-audit.json")};
- const path=join(temp,"selection.json");const save=()=>{const bytes=json(selection);fs.writeFileSync(path,bytes,{mode:0o644});return sha(bytes);};return {temp,source,deps,node,output,selection,path,save,close:()=>fs.rmSync(temp,{recursive:true,force:true})};}
+ const path=join(temp,"selection.json");const save=()=>{const bytes=json(selection);fs.writeFileSync(path,bytes,{mode:0o644});return sha(bytes);};return {temp,source,deps,node,output,selection,path,save,put,row,git,close:()=>fs.rmSync(temp,{recursive:true,force:true})};}
 test("real clean Git PUBLIC DATA bundle and frames join the original receiver parser",async()=>{const f=fixture();try{await producePositivePublicPayload(f.path,f.save(),f.output);const b=fs.readFileSync(join(f.output,"preparation-input.json")),m=parseManifest(b,sha(b));assert.equal(m.sourceSha,f.selection.sourceSha);assert.equal(m.producer.inputReceiptSha256,sha(fs.readFileSync(f.path)));const fd=fs.openSync(join(f.output,"public-files.payload"),"r");let count=0;try{for await(const part of readRegularFrames(fd,m.rows,()=>{}))if(part.last)count++;}finally{fs.closeSync(fd);}assert.equal(count,m.rows.length);assert.equal(JSON.parse(fs.readFileSync(join(f.output,"producer-receipt.json"),"utf8")).status,"PUBLIC_PAYLOAD_UNADMITTED_DATA");}finally{f.close();}});
 test("unknown decoded dependency leaf refuses before any output",async()=>{const f=fixture();try{fs.writeFileSync(join(f.deps,"extra.js"),"PUBLIC extra\n");await assert.rejects(producePositivePublicPayload(f.path,f.save(),f.output),/unknown_decoded_leaf/);assert.equal(fs.existsSync(f.output),false);}finally{f.close();}});
 test("decoded symlink is refused without dereferencing its target",async()=>{const f=fixture();try{fs.symlinkSync("example/package.json",join(f.deps,"alias"));await assert.rejects(producePositivePublicPayload(f.path,f.save(),f.output),/decoded_census/);assert.equal(fs.existsSync(f.output),false);}finally{f.close();}});
@@ -26,3 +26,46 @@ test("published bundle inode substitution at payload yield denies receipt",async
 
 test("actual Git bundle stdout is a verifiable bundle and preserves named competitors",()=>{const f=fixture();try{const dest=join(f.temp,"stdout.bundle");fs.writeFileSync(dest,"competing PUBLIC file\n");const r=spawnSync("/usr/bin/git",["bundle","create","-","HEAD"],{cwd:f.source,maxBuffer:8*1024**2});assert.equal(r.status,0,r.stderr.toString());assert.equal(fs.readFileSync(dest,"utf8"),"competing PUBLIC file\n");const bundle=join(f.temp,"received.bundle");fs.writeFileSync(bundle,r.stdout,{flag:"wx"});const verified=spawnSync("/usr/bin/git",["bundle","verify",bundle],{cwd:f.source});assert.equal(verified.status,0,verified.stderr.toString());}finally{f.close();}});
 test("competing bundle leaf is preserved before first bundle publication",async()=>{const f=fixture();let created=false;const timer=setInterval(()=>{if(!created&&fs.existsSync(f.output)){created=true;try{fs.writeFileSync(join(f.output,"source.bundle"),"competing PUBLIC file\n",{flag:"wx"});}catch{created=false;}}},1);try{await assert.rejects(producePositivePublicPayload(f.path,f.save(),f.output));assert.equal(created,true);assert.equal(fs.readFileSync(join(f.output,"source.bundle"),"utf8"),"competing PUBLIC file\n");assert.equal(fs.existsSync(join(f.output,"producer-receipt.json")),false);}finally{clearInterval(timer);f.close();}});
+
+function emittedSelection(f:ReturnType<typeof fixture>,bytes="export const generated = 1;\n",other=bytes,mode=0o644):SelectionV2 {
+ const roots=[join(f.temp,"emit-0"),join(f.temp,"emit-1")];for(const root of roots)fs.mkdirSync(root,{mode:0o700});
+ const relative="scripts/dependency-retention-os-test/TEST-generated.js";f.put(roots[0]!,relative,bytes);f.put(roots[1]!,relative,other,mode);fs.chmodSync(join(roots[1]!,relative),mode);
+ const rows=[...f.selection.rows,f.row(roots[0]!,relative,Role.Emitted)];rows.sort((a,b)=>`${a.role===Role.Toolchain?"toolchain":"source"}/${a.path}`<`${b.role===Role.Toolchain?"toolchain":"source"}/${b.path}`?-1:1);
+ return {...f.selection,schemaVersion:2,kind:"FULL_POSITIVE_PUBLIC_INPUT_SELECTION_V2",rows,emittedRoots:roots,emittedMappings:[{path:relative,origins:[{root:1,relativePath:relative},{root:0,relativePath:relative}]}],outputMode:PublicProducerOutputMode.Local};
+}
+function saveSelection(f:ReturnType<typeof fixture>,selection:Selection):string {const bytes=json(selection);fs.writeFileSync(f.path,bytes,{mode:0o644});return sha(bytes);}
+// Red if directory order chooses one conflicting output, or emitted inputs are
+// copied back over the original clean Git clone rather than selected directly.
+test("V2 equal separate emits deliver canonical bytes and preserve original Git",async()=>{const f=fixture();try{
+ const s=emittedSelection(f);await producePositivePublicPayload(f.path,saveSelection(f,s),f.output);
+ const bytes=fs.readFileSync(join(f.output,"preparation-input.json")),m=parseManifest(bytes,sha(bytes));assert(m.rows.some(r=>r.path===s.emittedMappings[0]!.path));
+ const receipt=JSON.parse(fs.readFileSync(join(f.output,"producer-receipt.json"),"utf8"));assert.equal(receipt.selectionVersion,2);assert.equal(receipt.emittedOrigins[0].origins.length,2);assert.equal(receipt.nativeQualified,"UNPROVEN");
+ const fd=fs.openSync(join(f.output,"public-files.payload"),"r"),chunks:Buffer[]=[];try{for await(const part of readRegularFrames(fd,m.rows,()=>{}))if(part.row.path===s.emittedMappings[0]!.path)chunks.push(part.bytes);}finally{fs.closeSync(fd);}
+ assert.equal(Buffer.concat(chunks).toString(),"export const generated = 1;\n");assert.equal(f.git(["status","--porcelain","--untracked-files=all"]),"");assert.equal(fs.existsSync(join(f.source,s.emittedMappings[0]!.path)),false);
+ }finally{f.close();}});
+test("V2 conflicting duplicate emitted bytes or mode refuse before output",async()=>{
+ for(const [other,mode]of [["export const generated = 2;\n",0o644],["export const generated = 1;\n",0o755],["export const generated = 1;\n",0o4644]]as const){const f=fixture();try{
+  const s=emittedSelection(f,"export const generated = 1;\n",other,mode);await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),/(input_pin|emitted_mode)/);assert.equal(fs.existsSync(f.output),false);assert.equal(fs.readFileSync(join(s.emittedRoots[1]!,s.emittedMappings[0]!.path),"utf8"),other);
+ }finally{f.close();}}
+});
+test("V2 tracked overlay equality refuses rewritten original JS bytes",async()=>{const f=fixture();try{
+ const original="packages/agent-account-observability/dist/index.js",before=fs.readFileSync(join(f.source,original)),s=emittedSelection(f);
+ const changed="export const publicData = 999;\n";for(const root of s.emittedRoots)f.put(root,original,changed);
+ s.rows=s.rows.filter(r=>r.role!==Role.Emitted);s.rows.push(f.row(s.emittedRoots[0]!,original,Role.Emitted));s.rows.sort((a,b)=>`${a.role===Role.Toolchain?"toolchain":"source"}/${a.path}`<`${b.role===Role.Toolchain?"toolchain":"source"}/${b.path}`?-1:1);
+ s.emittedMappings=[{path:original,origins:[{root:0,relativePath:original},{root:1,relativePath:original}]}];
+ await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),/tracked_overlay_equal/);assert(fs.readFileSync(join(f.source,original)).equals(before));assert.equal(fs.existsSync(f.output),false);
+ }finally{f.close();}});
+test("V2 unknown duplicate or escaped mapping DATA is refused",()=>{const f=fixture();try{
+ const s=emittedSelection(f),parse=(value:unknown)=>{const bytes=json(value);return parseSelection(bytes,sha(bytes));};
+ assert.equal(parse(f.selection).schemaVersion,1);assert.equal(parse(s).schemaVersion,2);
+ const mapping=s.emittedMappings[0]!;
+ for(const value of [{...s,unknown:true},{...s,emittedMappings:[mapping,mapping]},{...s,emittedMappings:[{...mapping,origins:[mapping.origins[0],mapping.origins[0]]}]},{...s,emittedMappings:[{...mapping,origins:[{root:9,relativePath:mapping.path}]}]},{...s,emittedMappings:[{...mapping,origins:[{root:0,relativePath:"../original.js"}]}]},{...s,emittedMappings:[]},{...s,outputMode:"arbitrary_srv"}])assert.throws(()=>parse(value));
+ }finally{f.close();}});
+test("V2 output remains disjoint from every emitted root",async()=>{const f=fixture();try{
+ const s=emittedSelection(f),output=join(s.emittedRoots[1]!,"forbidden-output");await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),output),/output_input_overlap/);assert.equal(fs.existsSync(output),false);
+ }finally{f.close();}});
+test("local V1 and V2 cannot open arbitrary srv output; managed needs runtime workspace",async()=>{const f=fixture();try{
+ await assert.rejects(producePositivePublicPayload(f.path,f.save(),"/srv/TEST-unowned-public-output"),/local_output/);
+ const s=emittedSelection(f);await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),"/srv/TEST-unowned-public-output"),/local_output/);
+ s.outputMode=PublicProducerOutputMode.ManagedTestWorkspace;await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),/managed_output_(?:context|workspace)/);assert.equal(fs.existsSync(f.output),false);
+ }finally{f.close();}});
