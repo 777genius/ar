@@ -118,6 +118,17 @@ Lifecycle commands in that namespace cannot satisfy the host MiMo initial-root n
 Use the [trusted hosted bridge](#remote-agents-and-the-trusted-bridge) in its finite owned initial-host-root service.
 Do not bypass namespace checks with environment markers or edit reservations, leases or ownership records manually.
 
+For a generation-zero Create interrupted before registration, an operator can explicitly retain a failed attempt through
+`hosted-mimo-project-bridge-cli --reconcile-interrupted-create /absolute/private-plan.json` in a finite owned initial-host-root service.
+The root-owned mode-0600 plan has exactly `schemaVersion: 1`, `machineId`, `projectId`, `workstreamId`, `jobId`,
+`expectedBindingSha256`, `expectedOwnerSha256`, `expectedRequestSha256`, `expectedBootId` and `expectedInvocationId`.
+The runtime derives the original unit and paths. It requires structured PID-1 timeout evidence for the same boot/invocation,
+physical process and queue absence, unchanged builtin admission partials, and no manifest, birth, first effect or Start authority.
+Missing proof refuses reconciliation; a collected unit or default systemd success alone is insufficient.
+The canonical failure becomes settled only with its matching complete settlement receipt. Incomplete publication stays unresolved.
+This preserves all partials and reports `project_control_interrupted_create_timeout`; it never replays Create, adopts a root,
+permits Start or clears orphan debt. Preserve the original ID and receipts rather than replacing an uncertain attempt.
+
 Status can mutate canonical state. With a retained candidate, it reconciles the same native/provider attempt,
 publishes the canonical result and handoff, then releases the active reservation last.
 Without a candidate, Status reporting native `terminal` does not prove writer release.

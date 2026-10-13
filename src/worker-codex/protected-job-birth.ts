@@ -159,6 +159,15 @@ function paths(jobRootDir: string): { birth: string; effect: string } {
   const key = researchHash(jobRootDir);
   return { birth: join(birthRoot, key + ".json"), effect: join(birthRoot, key + ".first-effect.json") };
 }
+
+/** Absence is checked by the original birth producer under its publication mutex. */
+export function assertProtectedCodexGoalJobBirthUnpublished(jobRootDir: string): void {
+  assertResearchInitialRoot(true);
+  if (!publicationContext.getStore()?.active) invalid();
+  const logical = paths(jobRootDir), physical = physicalPaths(researchDirectoryIdentity(jobRootDir));
+  for (const path of [logical.birth, logical.effect, physical.birth, physical.effect])
+    if (optionalRecord(path) !== undefined) invalid();
+}
 function physicalPaths(identity: ResearchDirectoryIdentity): { birth: string; effect: string } {
   if (!Number.isSafeInteger(identity.device) || identity.device < 0 || !Number.isSafeInteger(identity.inode) || identity.inode < 1) invalid();
   const key = `physical-${identity.device}-${identity.inode}`;

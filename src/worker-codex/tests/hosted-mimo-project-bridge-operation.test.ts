@@ -1,10 +1,22 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { SafeExecutionError } from "../../worker-core/safe-execution/domain/safe-execution-policy";
 vi.mock("../hosted-mimo-project-workstream-fence", () => ({ withHostedMimoWorkstreamActivity: async (_root: string, effect: () => Promise<unknown>) => effect() }));
-const state = vi.hoisted(() => ({ files: new Map<string, string>(), command: vi.fn(), handler: vi.fn(), rearm: vi.fn(), publicationFailure: undefined as "write" | "rename" | undefined }));
+const state = vi.hoisted(() => ({ files: new Map<string, string>(), fds: new Map<number, string>(), nextFd: 10000, command: vi.fn(), handler: vi.fn(), rearm: vi.fn(), publicationFailure: undefined as "write" | "rename" | undefined }));
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), readdirSync: (p: string) => [...state.files.keys()].filter(x => x.startsWith(p + "/")).map(x => x.slice(p.length + 1)), mkdirSync: (p: string) => state.files.set(p, ""),
-  realpathSync: (p: string) => p === "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js" ? "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js" : p, lstatSync: () => ({ isFile: () => true, uid: 0, nlink: 1, mode: 0o100700 }),
-  writeFileSync: (p: string, bytes: string, options: { flag: string }) => { if (state.publicationFailure === "write" && p.endsWith(".result.json.tmp")) throw new Error("TEST result write uncertain"); if (options.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, bytes); },
+  realpathSync: (p: string) => p === "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js" ? "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js" : p, lstatSync: (p: string) => ({ isFile: () => true, isDirectory: () => p.endsWith("/mimo-bridge-operations"), isSymbolicLink: () => false, uid: 0, gid: 0, nlink: 1, dev: 1, ino: p.length, ctimeMs: 1,
+    size: Buffer.byteLength(state.files.get(p) ?? ""), mode: 0o100000 | (/\.json(?:\.tmp)?$/.test(p) ? 0o600 : 0o700) }),
+  openSync: (p: string, flags: number) => {
+    if (state.publicationFailure === "write" && p.endsWith(".result.json.tmp")) throw new Error("TEST result write uncertain");
+    if (flags & 0o100) state.files.set(p, "");
+    const fd = ++state.nextFd; state.fds.set(fd, p); return fd;
+  },
+  closeSync: (fd: number) => state.fds.delete(fd), fsyncSync: vi.fn(),
+  fstatSync: (fd: number) => ({ isFile: () => true, uid: 0, gid: 0, nlink: 1, mode: 0o100600, dev: 1,
+    ino: state.fds.get(fd)!.length, ctimeMs: 1, size: Buffer.byteLength(state.files.get(state.fds.get(fd)!) ?? "") }),
+  linkSync: (a: string, b: string) => { if (state.publicationFailure === "rename" && b.endsWith(".result.json")) throw new Error("TEST result rename uncertain");
+    if (state.files.has(b)) throw Object.assign(new Error("TEST result exists"), { code: "EEXIST" }); state.files.set(b, state.files.get(a)!); },
+  unlinkSync: (p: string) => state.files.delete(p),
+  writeFileSync: (path: string | number, bytes: string, options?: { flag: string }) => { const p = typeof path === "number" ? state.fds.get(path)! : path; if (state.publicationFailure === "write" && p.endsWith(".result.json.tmp")) throw new Error("TEST result write uncertain"); if (options?.flag === "wx" && state.files.has(p)) throw new Error("TEST retained"); state.files.set(p, bytes); },
   renameSync: (a: string, b: string) => { if (state.publicationFailure === "rename" && b.endsWith(".result.json")) throw new Error("TEST result rename uncertain"); state.files.set(b, state.files.get(a)!); state.files.delete(a); } }));
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchCommand: state.command }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
@@ -24,7 +36,7 @@ import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contra
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
 const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
 const entry = "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
-beforeEach(() => { state.files.clear(); state.publicationFailure = undefined; vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); state.rearm.mockResolvedValue({receiptSha256: researchHash("TEST finalization proof")}); });
+beforeEach(() => { state.files.clear(); state.fds.clear(); state.publicationFailure = undefined; vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); state.rearm.mockResolvedValue({receiptSha256: researchHash("TEST finalization proof")}); });
 it("retains an exact owner before uncertain submission and never launches replacement", async () => {
   state.command.mockImplementationOnce(() => { expect(state.files.has(prefix + ".owner.json")).toBe(true); throw new Error("TEST transport timeout"); });
   await expect(submitHostedMimoProjectBridge(request)).rejects.toThrow("TEST transport timeout");
@@ -453,4 +465,37 @@ it("recovery accepts exact collected failed operations and refuses pending/succe
   state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${saved.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\n`);
   state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } }));
   await expect(assertHostedMimoRecoveryOperationsSettled(b)).rejects.toThrow();
+});
+
+function interruptedCreatePair(complete: boolean) {
+  const owner = JSON.parse(state.files.get(prefix + ".owner.json")!);
+  const root = "/srv/worker-state/mimo-projects/test-project/test-stream/interrupted-create-settlements/test-job";
+  const result = JSON.stringify({ ok: false, error: "project_control_interrupted_create_timeout" }) + "\n";
+  const intent = JSON.stringify({ schemaVersion: 1, planSha256: "1".repeat(64), machineId: request.machineId,
+    projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId,
+    ownerSha256: researchHash(state.files.get(prefix + ".owner.json")!), requestSha256: researchHash(state.files.get(prefix + ".request.json")!),
+    bindingSha256: "2".repeat(64), resultSha256: researchHash(result), witness: { unit: owner.unit, bootId: "3".repeat(32), invocationId: "4".repeat(32),
+      startedMonotonicUs: "1000000", failedMonotonicUs: "901000000" }, partials: { attemptSha256: "9".repeat(64), promptSha256: "5".repeat(64), contractSha256: "6".repeat(64), stateSha256: "7".repeat(64), receiptSha256: "8".repeat(64) },
+    outcome: { termination: "runtime_timeout", disposition: "retained_unregistered_failure", registrationPublished: false, payloadStarted: false, partialsPreserved: true }, cpuCause: "unproven" }) + "\n";
+  state.files.set(prefix + ".result.json", result); state.files.set(root + ".intent.json", intent);
+  state.files.set(root + ".receipt.json", JSON.stringify({ schemaVersion: 1, complete, intentSha256: researchHash(intent), resultSha256: researchHash(result) }) + "\n");
+  return root;
+}
+it.each(["complete", "incomplete", "missing", "wrong-owner"])("recognizes only the bound complete interrupted Create settlement: %s", async phase => {
+  await submitHostedMimoProjectBridge(request);
+  const before = state.files.get(prefix + ".owner.json"), root = interruptedCreatePair(phase === "complete");
+  if (phase === "missing") state.files.delete(root + ".receipt.json");
+  if (phase === "wrong-owner") {
+    const intent = JSON.parse(state.files.get(root + ".intent.json")!); intent.ownerSha256 = "0".repeat(64);
+    const bytes = JSON.stringify(intent) + "\n"; state.files.set(root + ".intent.json", bytes);
+    state.files.set(root + ".receipt.json", JSON.stringify({ schemaVersion: 1, complete: true, intentSha256: researchHash(bytes), resultSha256: researchHash(state.files.get(prefix + ".result.json")!) }));
+  }
+  state.command.mockImplementation((_exe: string, args: string[]) => args[0] === "list-jobs" ? "" : terminalShow(args[1]!));
+  await expect(submitHostedMimoProjectBridge(request)).resolves.toMatchObject({ state: phase === "complete" ? "settled" : "unresolved" });
+  const binding = { stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream", projectId: request.projectId, workstreamId: request.workstreamId, machineId: request.machineId };
+  if (phase === "complete") await expect(assertHostedMimoRecoveryOperationsSettled(binding)).resolves.toBeUndefined();
+  else await expect(assertHostedMimoRecoveryOperationsSettled(binding)).rejects.toThrow("mimo_project_bridge_recovery_denied");
+  await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow("mimo_project_bridge_creation_pending");
+  expect(state.files.get(prefix + ".owner.json")).toBe(before);
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
 });
