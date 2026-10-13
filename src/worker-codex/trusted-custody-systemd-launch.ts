@@ -1,3 +1,4 @@
+import { HostedMimoProfile } from "../provider-codex/hosted-mimo-profile";
 import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, lstatSync } from "node:fs";
@@ -187,7 +188,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   // No filesystem-namespace property belongs here: PID1 must exec the finite
   // early-private adapter before copying or protecting the captured root.
   const properties = [...hostedFdSystemdProperties, "Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
-    `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
+    `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", request.hostedProfile === HostedMimoProfile.CodingV1 ? "MemoryHigh=4G" : "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
     `TimeoutStartSec=${researchProviderSetupAllowanceMs(request) / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",
