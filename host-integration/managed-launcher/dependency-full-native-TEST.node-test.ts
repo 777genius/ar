@@ -41,9 +41,9 @@ test("readonly mount DATA refuses stacked/writable/foreign physical observations
 });
 
 test("FULL guest roots refuse global and foreign staging prefixes",()=>{
-  const id="a1234567-89ab-cdef-0123-456789abcdef",root="/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/os-TEST/"+id+"/root";
+  const id="a1234567-89ab-cdef-0123-456789abcdef",root="/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261014-r1/os-TEST/"+id+"/root";
   assert.equal(fullNativeGuestRoot(id,root),true);
-  for(const value of ["/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST/"+id+"/root","/var/lib/subscription-runtime-os-TEST/"+id+"/root","/srv/workers/jobs/TEST-other/os-TEST/"+id+"/root",root+"/extra",root.replace("/os-TEST/","/os-TEST//"),root.replace("/os-TEST/","/os-TEST/../os-TEST/"),null])
+  for(const value of ["/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/os-TEST/"+id+"/root","/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST/"+id+"/root","/var/lib/subscription-runtime-os-TEST/"+id+"/root","/srv/workers/jobs/TEST-other/os-TEST/"+id+"/root",root+"/extra",root.replace("/os-TEST/","/os-TEST//"),root.replace("/os-TEST/","/os-TEST/../os-TEST/"),null])
     assert.equal(fullNativeGuestRoot(id,value),false);
   assert.equal(fullNativeGuestRoot("../"+id,root),false);
   assert.equal(fullNativeGuestRoot(id.toUpperCase(),root),false);

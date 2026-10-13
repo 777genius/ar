@@ -193,13 +193,15 @@ async function captureProviderStorage(request, policy, trust) {
 
 /** Closed composition option; never selected from request JSON. */
 export const ManagedLauncherProfile = Object.freeze({ Standard: 'standard', FixedFullPositiveTest: 'fixed_full_positive_test' });
-export const fullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261010-r1';
+export const fullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261014-r1';
+// Retired FULL identity remains a refusal; it cannot enter Standard or be replayed.
+const retiredFullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261010-r1';
 export const legacyFullTestJob = 'TEST-dependency-full-native-20261007-r1';
 export const fullPositiveTestRoot = '/opt/subscription-runtime-full-positive-TEST';
 export const fullPositiveTestEntry = fullPositiveTestRoot + '/managed-launcher/launch-full-positive-TEST.mjs';
 export function assertManagedLauncherProfile(profile, jobId) {
   if (profile === ManagedLauncherProfile.Standard) {
-    if (jobId === fullPositiveTestJob || jobId === legacyFullTestJob) denied();
+    if (jobId === fullPositiveTestJob || jobId === legacyFullTestJob || jobId === retiredFullPositiveTestJob) denied();
   } else if (profile !== ManagedLauncherProfile.FixedFullPositiveTest || jobId !== fullPositiveTestJob) denied();
 }
 export function managedLauncherInvocation(request, profile = ManagedLauncherProfile.Standard) {
@@ -213,7 +215,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   guardPath = PAYLOAD_GUARD_PATH, launcherPath = MANAGED_LAUNCHER_PATH,
   executable = path => access(path, constants.X_OK), storagePin, memoryInfo = readMemoryInfo } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
-  if (request.jobId === legacyFullTestJob) denied();
+  if (request.jobId === legacyFullTestJob || request.jobId === retiredFullPositiveTestJob) denied();
   if (request.jobId === fullPositiveTestJob) {
     if (process.argv[1] !== fullPositiveTestEntry) denied();
     // Fixed protected FULL branch. The original manager's exclusive ledger is

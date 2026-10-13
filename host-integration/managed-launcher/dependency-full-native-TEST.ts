@@ -54,7 +54,7 @@ export const fullNativeBirthRoot="/srv/workers/jobs/"+fullNativeJob+"/full-launc
 export const fullNativeLiveRoot="/srv/workers/jobs/"+fullNativeJob+"/full-parent-live";
 export const fullNativeGuestLiveRoot="/var/lib/subscription-runtime-full-parent-live";
 const fullNativeOutputBase="/var/lib/subscription-runtime-full-TEST-output";
-export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-positive-scoped-20261010-r1/os-TEST";
+export const fullNativeOsBase="/srv/workers/jobs/"+fullNativeJob+"/os-TEST";
 /** DATA path contract only; physical root custody is checked separately. */
 export function fullNativeGuestRoot(id:unknown,root:unknown):boolean {
   return typeof id==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) && root===fullNativeOsBase+"/"+id+"/root";

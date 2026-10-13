@@ -6,7 +6,7 @@ import {setImmediate as yieldNow} from "node:timers/promises";
 import {createRequire} from "node:module";
 import {pathToFileURL} from "node:url";
 
-export const INTAKE="/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261010-r1/full-positive-installation";
+export const INTAKE="/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation";
 export const MAGIC=Buffer.from("SR_PUBLIC_FILES_V1\n");
 const C=fs.constants,MAX_BYTES=1024**3,MAX_LEAF=128*1024**2,MAX_OBJECTS=100000;
 const BOOTSTRAP="/opt/nodejs/node-v24.21.0-linux-x64/bin/node";
@@ -122,7 +122,7 @@ export async function stageCurrentPositivePublic(manifestSha:string):Promise<voi
  const verify=async(root:Held,r:Row,blob?:string)=>{const {parent,leaf}=parents(root,r.path),h=open(`${fdPath(parent)}/${leaf}`,false);try{hold((h.mode&0o7777n)===BigInt(r.mode),"leaf_mode");await hashFile(h,r,blob);}finally{release(h);prune();}};
  const writeRecord=async(parent:Held,name:string,value:unknown)=>{guard();const bytes=encode(value);hold(bytes.length<=MAX_LEAF,"record_bound");hold(++objects<=MAX_OBJECTS,"object_bound");const path=`${fdPath(parent)}/${name}`,fd=fs.openSync(path,C.O_RDWR|C.O_CREAT|C.O_EXCL|C.O_NOFOLLOW,0o400);try{writeRegularBytes(fd,bytes,guard);fs.fchmodSync(fd,0o400);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}fs.fsyncSync(parent.fd);const h=open(path,false);try{await hashFile(h,{bytes:bytes.length,sha256:sha(bytes)});}finally{release(h);}return sha(bytes);};
  try {
-  let dir=open("/",true);anchors.push(dir);for(const part of ["srv","workers","public-intake","TEST-dependency-full-positive-scoped-20261010-r1","full-positive-installation"]){dir=open(`${fdPath(dir)}/${part}`,true);anchors.push(dir);if(part==="workers")workers=dir;}guard();const intake=dir;
+  let dir=open("/",true);anchors.push(dir);for(const part of ["srv","workers","public-intake","TEST-dependency-full-positive-scoped-20261014-r1","full-positive-installation"]){dir=open(`${fdPath(dir)}/${part}`,true);anchors.push(dir);if(part==="workers")workers=dir;}guard();const intake=dir;
   let executableParent=handles[0]!;const bootstrapParts=BOOTSTRAP.split("/").slice(1),bootstrapLeaf=bootstrapParts.pop()!;for(const part of bootstrapParts){executableParent=open(`${fdPath(executableParent)}/${part}`,true);anchors.push(executableParent);}const executable=open(`${fdPath(executableParent)}/${bootstrapLeaf}`,false);sources.push(executable);await hashFile(executable,{bytes:Number(executable.size),sha256:BOOTSTRAP_SHA});
   const manifestFile=open(`${fdPath(intake)}/preparation-input.json`,false);sources.push(manifestFile);hold(manifestFile.size<=32n*1024n**2n,"manifest_size");const manifestBytes=fs.readFileSync(manifestFile.fd),manifest=parseManifest(manifestBytes,manifestSha);check(manifestFile);
   const bundle=open(`${fdPath(intake)}/source.bundle`,false),payload=open(`${fdPath(intake)}/public-files.payload`,false);sources.push(bundle,payload);await hashFile(bundle,manifest.bundle);await hashFile(payload,manifest.payload);

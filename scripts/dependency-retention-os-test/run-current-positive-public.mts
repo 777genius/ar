@@ -3,9 +3,9 @@ import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261010-r1/full-positive-installation';
+const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node',NODE_SHA='7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c';
-const HELPER_SHA='b27de3fa10cd52e31ab6692e280c8408606410de477ab2063151307b8ac4c76f';
+const HELPER_SHA='406548d9a647162113c9ca615e7be5fb5cf6f63867abd036adaf3cd28191074d';
 const names=['preparation-input.json','source.bundle','public-files.payload','stage-current-positive-public.mts','run-current-positive-public.mts','review.json','outer-input.json','public-input.json'] as const;
 const hash=(b:Uint8Array)=>createHash('sha256').update(b).digest('hex');
 function fact(v:unknown,why:string):asserts v{if(!v)throw new Error('PUBLIC_TRANSPORT_HOLD:'+why);}
@@ -77,13 +77,13 @@ try{const control=anchor(S+'/.transport'),delivery=open('/proc/self/fd/'+control
  write(stage,'public-installation.json',catalogBytes,0o600);const outer=make(stage,'outer-review'),pub=make(stage,'public-review');write(outer,'input.json',bounded(source[6]!.fd,32768),0o600);write(pub,'input.json',bounded(source[7]!.fd,32768),0o600);guard();
  // Native Installer acquire requires the original fixed job roots before its copy phase.
  guard();const jobs=anchor('/srv/workers/jobs');fact(fs.fstatSync(jobs.fd,{bigint:true}).dev===66305n&&jobs.mnt===stage.mnt,'original_jobs_mount');
- const job=make(jobs,'TEST-dependency-full-positive-scoped-20261010-r1');guard();
+ const job=make(jobs,'TEST-dependency-full-positive-scoped-20261014-r1');guard();
  for(const name of ['input','tmp','os-TEST']){guard();make(job,name);guard();}
  const requestBytes=await child([S+'/input/'+d.sourceSha+'/source/host-integration/managed-launcher/dependency-full-positive-install-TEST.js'],{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C',TEST_SOURCE_SHA:d.sourceSha});
  fact(requestBytes.length>0,'request_data_missing');JSON.parse(requestBytes.toString('utf8'));guard();write(control,'request.json',requestBytes);
  const handoffBytes=await child(['/opt/subscription-runtime-full-positive-TEST/host-jobs/full-positive-manager-TEST.mjs'],{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'});
  const handoff:unknown=JSON.parse(handoffBytes.toString('utf8'));fact(handoff!==null&&typeof handoff==='object'&&!Array.isArray(handoff),'parent_handoff');
- const parent=handoff as Record<string,unknown>;fact(Object.keys(parent).sort().join(',')==='afterSha256,beforeSha256,completion,invocationId,jobId,pid,sourceSha,startTicks,status,unit'&&parent.status==='STARTED_HELD'&&parent.completion==='UNPROVEN'&&parent.jobId==='TEST-dependency-full-positive-scoped-20261010-r1'&&parent.unit==='subscription-job-c5e3da03d465ef9e5f5972331fbb02fab96bed12945546d406718429e34cdd4b.service'&&parent.sourceSha===d.sourceSha&&digest(parent.beforeSha256)&&digest(parent.afterSha256)&&typeof parent.invocationId==='string'&&/^[a-f0-9]{32}$/.test(parent.invocationId)&&Number.isSafeInteger(parent.pid)&&Number(parent.pid)>0&&typeof parent.startTicks==='string'&&/^[1-9][0-9]*$/.test(parent.startTicks),'parent_handoff_fields');
+ const parent=handoff as Record<string,unknown>;fact(Object.keys(parent).sort().join(',')==='afterSha256,beforeSha256,completion,invocationId,jobId,pid,sourceSha,startTicks,status,unit'&&parent.status==='STARTED_HELD'&&parent.completion==='UNPROVEN'&&parent.jobId==='TEST-dependency-full-positive-scoped-20261014-r1'&&parent.unit==='subscription-job-dfedfa76a77a65dc9b5ede0e4a98b8082dccc42443a683deba555fa700319583.service'&&parent.sourceSha===d.sourceSha&&digest(parent.beforeSha256)&&digest(parent.afterSha256)&&typeof parent.invocationId==='string'&&/^[a-f0-9]{32}$/.test(parent.invocationId)&&Number.isSafeInteger(parent.pid)&&Number(parent.pid)>0&&typeof parent.startTicks==='string'&&/^[1-9][0-9]*$/.test(parent.startTicks),'parent_handoff_fields');
  guard();write(control,'handoff.json',handoffBytes);census(cgroup(unit),process.pid);write(control,'result.json',Buffer.from(JSON.stringify({version:1,status:'INSTALLED_PARENT_STARTED_HELD',unit,invocationId:inv,deliverySha256:pin,sourceSha:d.sourceSha,manifestSha256:d.manifestSha256,catalogSha256:hash(catalogBytes),requestSha256:hash(requestBytes),handoffSha256:hash(handoffBytes),nativeQualified:'UNPROVEN',retry:'HOLD'})+'\n'));guard();
 }catch{process.stderr.write('{"status":"INSTALLER_PARTIAL_OR_UNCERTAIN","retry":"HOLD"}\n');process.exitCode=70;}finally{try{closeAll();fact(!cancelled&&performance.now()<deadline,'final_deadline');}catch{process.exitCode=70;}process.off('SIGTERM',cancel);process.off('SIGINT',cancel);}
 
