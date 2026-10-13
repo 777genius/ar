@@ -197,13 +197,18 @@ export function researchFileDigest(path: string, options: {
     researchCustody(path);
     if (researchFileSignature(lstatSync(path)) !== signature) researchInvalid();
     checkTime();
-    while (options.cache.size > options.cacheEntries || (options.cache.size === options.cacheEntries && !options.cache.has(path))) {
+    while (options.cache.size > options.cacheEntries) {
       checkTime();
       const oldest = options.cache.keys().next();
       if (oldest.done) researchInvalid();
       options.cache.delete(oldest.value);
     }
-    options.cache.set(path, { signature, digest });
+    // A sequential cold-artifact scan must not evict every warmed witness.
+    // Saturation only declines caching; uncached files still undergo the full
+    // fresh byte/descriptor/custody validation above on every observation.
+    if (options.cache.has(path) || options.cache.size < options.cacheEntries) {
+      options.cache.set(path, { signature, digest });
+    }
     return digest;
   } finally { closeSync(fd); }
 }
