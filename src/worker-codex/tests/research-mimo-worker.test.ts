@@ -73,6 +73,8 @@ describe("owned standalone MiMo worker", () => {
     if (factory === undefined) throw new Error("Expected the owned MiMo worker provider factory");
     const options = buildCodexGoalExecutorOptions({ config, appServerProcessFactory: factory,
       providerEgressPolicy: policy, encryptionKey: new Uint8Array(32), stateRootDir: config.stateRootDir! });
+    expect(options.snapshotter).toBeDefined();
+    expect(options.workspaceAccess).toBeDefined();
     expect(options.accounts).toHaveLength(1);
     expect(options.accounts[0]).not.toHaveProperty("codexAuthJsonPath");
     expect(options.maxAccountCycles).toBe(1);
