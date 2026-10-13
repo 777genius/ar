@@ -26,7 +26,7 @@ const consumedStarts = new Set<string>();
 
 /** Fixed public configuration, never supplied by a caller or read from project
  * files. Native activation/network qualification remain separately closed. */
-function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string, gitReadPaths: readonly string[]): string {
+function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string, gitReadPaths: readonly string[], requestTimeoutMs: number): string {
   const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.ManagedPublicInternetV1);
   return [
     'cli_auth_credentials_store = "file"', 'approval_policy = "never"',
@@ -42,6 +42,7 @@ function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string, git
     codexModelBackendModelProvidersConfigToml({ backend: CodexModelBackend.XiaomiMimoTokenPlan, baseUrl,
       envKeyName: codexMimoApiKeyEnvVarDefault }),
     "request_max_retries = 0", "stream_max_retries = 0", "supports_websockets = false",
+    `stream_idle_timeout_ms = ${requestTimeoutMs}`,
     codexProviderEgressConfigToml(policy, { namedPermissions: true }),
     hostedCodexPermissionProfilesToml(policy, [process.execPath, origin.codexBinaryPath, ...gitReadPaths]),
   ].join("\n") + "\n";
@@ -83,6 +84,8 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   const remaining = input.lifetime.deadlineEpochMs - Date.now();
   if (origin.model !== input.model || origin.maxGoalTurns !== input.lifetime.maxGoalTurns ||
       remaining <= 0 || remaining > origin.taskTimeoutMs) throw new Error("hosted_mimo_coding_proxy_binding_invalid");
+  const requestTimeoutMs = Math.floor(Math.min(3600000, remaining, input.lifetime.remainingMs()));
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0) throw new Error("hosted_mimo_coding_proxy_binding_invalid");
   assertHostedMimoCodingWorkerOriginCurrent(origin);
   const gitReadPaths = hostedMimoCodingGitReadPaths(origin.workspacePath, codingGitHost);
   if (consumedStarts.has(origin.digest)) throw new Error("hosted_mimo_coding_proxy_start_consumed");
@@ -96,7 +99,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
         // MiMo's output allowance also covers reasoning. A 16K ceiling can
         // exhaust a reasoning turn before its first tool call or code output.
         maxBodyBytes: 4 * 1024 * 1024, maxResponseBytes: 16 * 1024 * 1024, maxOutputTokens: 131072,
-        requestTimeoutMs: Math.min(3600000, Math.max(1, remaining)) } });
+        requestTimeoutMs } });
   } finally { bytes.fill(0); }
   let unregister: (() => void) | undefined;
   let closed = false;
@@ -119,7 +122,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   input.lifetime.signal.addEventListener("abort", abort, { once: true });
   try {
     material.assertCurrent();
-    const configToml = codingConfig(origin, proxy.baseUrl, gitReadPaths);
+    const configToml = codingConfig(origin, proxy.baseUrl, gitReadPaths, requestTimeoutMs);
     input.redactor.registerSecret(proxy.capability, "hosted-mimo-start-proxy");
     unregister = registerHostedMimoCodingBootstrap(proxy.capability, frame => {
       material.assertCurrent();
