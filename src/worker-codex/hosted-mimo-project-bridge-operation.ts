@@ -25,7 +25,7 @@ function operationErrorCode(error: unknown): string {
   // Errors can originate in another immutable release, with a different class identity.
   const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
   if (typeof typedCode === "string" && approvedErrorCodes.has(typedCode)) return typedCode;
-  const code = error.message.split(":", 1)[0]!;
+  const code = error.message.split(/[:;]/, 1)[0]!;
   if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
   switch (typedCode) {
     case "ENOENT": return "mimo_project_bridge_fs_not_found";

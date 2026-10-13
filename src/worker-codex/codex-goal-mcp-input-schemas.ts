@@ -16,6 +16,9 @@ export const CODEX_GOAL_MODEL_BACKEND_SCHEMA = z.enum([
   CodexModelBackend.OpenAiChatGpt,
   CodexModelBackend.XiaomiMimoTokenPlan,
 ]);
+export const mimoThinkingInputSchema = z.boolean().optional().describe(
+  "Hosted MiMo Create/refill only: true enables thinking (high), false disables it (none). Must agree with reasoningEffort. Rejected on control operations.",
+);
 
 export function goalInputSchema(): Record<string, z.ZodTypeAny> {
   return {
