@@ -4,9 +4,11 @@ export enum OriginalControlGitRole { Source = "source", CreatedChild = "created_
 export enum OriginalControlGitOperation {
   InitSource = "init_source", Author = "author", Committer = "committer", AddSource = "add_source", CommitSource = "commit_source",
   AddLinked = "add_linked", RemoveLinked = "remove_linked", InitChild = "init_child", FetchChild = "fetch_child", CheckoutChild = "checkout_child",
-  PublishBranch = "publish_branch", Head = "head", Commit = "commit", Tree = "tree", Branch = "branch", Status = "status",
-  TopLevel = "top_level", Metadata = "metadata", Remote = "remote", Filters = "filters",
+  PublishBranch = "publish_branch", Worktrees = "worktrees", FindBranch = "find_branch", Head = "head", Commit = "commit", Tree = "tree", Branch = "branch", Status = "status",
+  StatusDefault = "status_default", TopLevel = "top_level", Metadata = "metadata", Remote = "remote", Filters = "filters",
 }
+export const originalControlGitMaximumMilliseconds = 5_000;
+export const originalControlGitOutputMaxBytes = 1024 * 1024;
 export const originalControlGitProgram = "/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-control-git.js";
 export const originalControlGitExecutable = "/usr/bin/git";
 export const originalControlGitUploadPack = "/usr/lib/git-core/git-upload-pack";
@@ -52,11 +54,14 @@ export function originalControlGitArguments(frame: OriginalControlGitFrame): rea
     case OriginalControlGitOperation.FetchChild: creatingOnly(); args = ["fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--upload-pack=" + originalControlGitUploadPack, "--", source, revision()]; break;
     case OriginalControlGitOperation.CheckoutChild: creatingOnly(); args = ["checkout", "-b", originalControlGitBranch, revision()]; break;
     case OriginalControlGitOperation.PublishBranch: sourceOnly(); args = ["update-ref", "refs/heads/" + originalControlGitBranch, revision(), "0".repeat(40)]; break;
+    case OriginalControlGitOperation.Worktrees: sourceOnly(); check(frame.revision === null); args = ["worktree", "list", "--porcelain"]; break;
+    case OriginalControlGitOperation.FindBranch: sourceOnly(); check(frame.revision === null); args = ["for-each-ref", "--format=%(refname)", "refs/heads/" + originalControlGitBranch]; break;
     case OriginalControlGitOperation.Head: args = ["rev-parse", "--verify", "HEAD"]; break;
     case OriginalControlGitOperation.Commit: args = ["rev-parse", "--verify", (frame.revision ?? "HEAD") + "^{commit}"]; break;
     case OriginalControlGitOperation.Tree: args = ["rev-parse", "--verify", (frame.revision ?? "HEAD") + "^{tree}"]; break;
     case OriginalControlGitOperation.Branch: args = ["symbolic-ref", "--short", "HEAD"]; break;
     case OriginalControlGitOperation.Status: args = ["status", "--porcelain", "--untracked-files=all"]; break;
+    case OriginalControlGitOperation.StatusDefault: args = ["status", "--porcelain"]; break;
     case OriginalControlGitOperation.TopLevel: args = ["rev-parse", "--show-toplevel"]; break;
     case OriginalControlGitOperation.Metadata: args = ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]; break;
     case OriginalControlGitOperation.Remote: args = ["remote"]; break;

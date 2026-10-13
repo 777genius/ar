@@ -112,3 +112,8 @@ export function remainingOriginalSdkMilliseconds(): number {
   const clock = process.argv[2] === "supervisor" ? supervisorClock : guestClock;
   check(clock); return useClock(clock, own => own.remainingSdk());
 }
+
+/** Same once-reserved SDK clock, capped to the finite peer query bound. */
+export function remainingOriginalSdkPeerQueryMilliseconds(): number {
+  return Math.min(remainingOriginalSdkMilliseconds(), 5_000);
+}

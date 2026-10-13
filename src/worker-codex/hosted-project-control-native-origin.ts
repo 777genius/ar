@@ -1,5 +1,7 @@
+import { originalHostedProjectControlGitEffectFacts, assertOriginalHostedProjectControlGitPreludeCurrent, holdOriginalHostedProjectControlAllocationError } from "./hosted-project-control-native-allocation.js";
+import { OriginalControlGitOperation, OriginalControlGitRole, encodeOriginalControlGitFrame, originalControlGitArguments, originalControlGitEnvironment, originalControlGitProgram, originalControlGitReady, originalControlGitMaximumMilliseconds, originalControlGitOutputMaxBytes } from "./hosted-project-control-git-recipe.js";
 import { spawn } from "node:child_process";
-import { type BigIntStats, closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, writeSync, statfsSync, statSync } from "node:fs";
+import { type BigIntStats, closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, writeSync, statfsSync, statSync, readdirSync } from "node:fs";
 import { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { knownFdCollectorPeer, type FdCollectorPeer } from "../core/host-infrastructure/fd-collector-profile.js";
@@ -10,7 +12,7 @@ import { retainOriginalFullProjectControlGuestEntry, retainOriginalFullProjectCo
 import { OriginalFullProjectControlPreparedCase } from "../provider-codex/app-server/adapters/hosted-project-control-source-catalog.js";
 import { reserveOriginalGuestSetupOnce, reserveOriginalSupervisorSetupOnce, originalSupervisorDeadlineFrame,
   remainingOriginalPeerQueryMilliseconds, remainingOriginalSdkMilliseconds, type OriginalFullSetupClock } from "./hosted-project-control-native-handoff.js";
-import { retainOriginalHostedProjectControlPeerObserver } from "./hosted-project-control-peer-observer.js";
+import { retainOriginalHostedProjectControlPeerObserver, retainOriginalHostedProjectControlSdkPeerObserver, retainOriginalHostedProjectControlGitClosure } from "./hosted-project-control-peer-observer.js";
 import { originalFullPeerNode, originalFullPeerRuntime } from "./hosted-project-control-peer-recipe.js";
 
 const guestProgram = originalFullPeerRuntime + "/scripts/dependency-retention-os-test/current-full-guest.js";
@@ -19,6 +21,7 @@ enum NativeOriginPhase { Unissued = "unissued", Frame = "frame", GateConsumed = 
 let supervisorIssued = false, guestPhase = NativeOriginPhase.Unissued;
 let guestEntry: OriginalFullProjectControlEntry | undefined, guestClock: OriginalFullSetupClock | undefined;
 let ordinaryInput: Socket | undefined;
+let guestInput: ReturnType<typeof socket> | undefined, guestError: ReturnType<typeof socket> | undefined;
 let guestOutput: ReturnType<typeof socket> | undefined, guestParentBirth: string | undefined;
 let guestOutputHandle: object | undefined, guestOutputSetBlocking: unknown;
 // Unknown ownership is never reusable as the baseline of a subsequent launch.
@@ -192,7 +195,7 @@ export async function consumeOriginalFullProjectControlGuestOnce():Promise<void>
   // Use Node's original stdio object, never a second uv watcher for fd0.
   input.allowHalfOpen=true;check(Reflect.set(readable,"autoDestroy",false)&&Reflect.set(writable,"autoDestroy",false)&&Reflect.get(readable,"autoDestroy")===false&&Reflect.get(writable,"autoDestroy")===false);
   const gate=new Socket({fd:3,readable:true,writable:false});
-  ordinaryInput=input;check(streamSocket(input).fd===0&&streamSocket(gate).fd===3); originalSocket(stdinFact);originalSocket(gateFact);
+  ordinaryInput=input;guestInput=stdinFact;guestError=socket(2);check(streamSocket(input).fd===0&&streamSocket(gate).fd===3); originalSocket(stdinFact);originalSocket(gateFact);
   let frame=Buffer.alloc(0),extra=false,eof=false,gateBytes=Buffer.alloc(0);let finishFrame:()=>void=()=>{},rejectFrame:(error:Error)=>void=()=>{};
   const frameReady=new Promise<void>((resolve,reject)=>{finishFrame=resolve;rejectFrame=reject;}); const end=new Promise<void>(resolve=>input.once("end",()=>{eof=true;resolve();}));
   input.on("data",(chunk:Buffer)=>{if(frame.includes(10)){extra=true;rejectFrame(new Error("hosted_original_native_extra_frame_held"));return;}if(frame.length+chunk.length>128){extra=true;rejectFrame(new Error("hosted_original_native_frame_bound_held"));return;}frame=Buffer.concat([frame,chunk]);if(frame.includes(10)){if(frame.indexOf(10)!==frame.length-1){extra=true;rejectFrame(new Error("hosted_original_native_extra_frame_held"));}else finishFrame();}});input.on("error",rejectFrame);input.once("end",()=>{if(!frame.includes(10))rejectFrame(new Error("hosted_original_native_truncated_frame_held"));});
@@ -224,5 +227,130 @@ export function assertOriginalFullProjectControlSetupCurrent():void {
 /** Positive local SDK close. The longer private Supervisor child reservation
  * remains alive; fd0 retains original ordinary EOF and is not claimed closed. */
 export async function completeOriginalFullProjectControlGuestSetup():Promise<void> {
-  check(guestPhase===NativeOriginPhase.Live&&guestEntry&&guestClock&&guestOutput&&guestParentBirth);const deadline=process.hrtime.bigint()+BigInt(remainingOriginalSdkMilliseconds())*1_000_000n;guestEntry.revalidate();check(birth(guestEntry.callerPid)===guestEntry.callerBirth);guestPhase=NativeOriginPhase.Complete;guestClock.close();guestEntry.close();guestClock=undefined;guestEntry=undefined;check(ordinaryInput && !ordinaryInput.destroyed);socket(0);absent(3);assertHostedFdPreludeDescriptors();process.stdout.write(completeAck);await confirmRead(guestOutput,deadline,guestParentBirth);
+  check(guestPhase===NativeOriginPhase.Live&&guestEntry&&guestClock&&guestOutput&&guestParentBirth&&reservations.size===0);const deadline=process.hrtime.bigint()+BigInt(remainingOriginalSdkMilliseconds())*1_000_000n;guestEntry.revalidate();check(birth(guestEntry.callerPid)===guestEntry.callerBirth);guestPhase=NativeOriginPhase.Complete;guestClock.close();guestEntry.close();guestClock=undefined;guestEntry=undefined;check(ordinaryInput && !ordinaryInput.destroyed);socket(0);absent(3);assertHostedFdPreludeDescriptors();process.stdout.write(completeAck);await confirmRead(guestOutput,deadline,guestParentBirth);
+}
+
+function gitChildCensus(entry:OriginalFullProjectControlEntry,pid:number,proc:number):void {
+  const authentic=entry.descriptors(),expected:{dev:string;ino:string;mount:string;directory:boolean}[]=[];
+  for(const path of originalFullProjectControlEntrySourcePaths){const rows=authentic.filter(row=>row.path===path);check(rows.length===1);const row=rows[0]!;expected.push({dev:row.dev,ino:row.ino,mount:row.mountId,directory:false});}
+  const node=authentic.find(row=>row.path===originalFullPeerNode);check(node);
+  for(const actor of [pid,process.pid,entry.callerPid]){const p=statSync("/proc/"+actor,{bigint:true}),exe=statSync("/proc/"+actor+"/exe",{bigint:true});check(String(exe.dev)===node.dev&&String(exe.ino)===node.ino);expected.push({dev:String(p.dev),ino:String(p.ino),mount:mount(process.pid,proc),directory:true},{dev:String(exe.dev),ino:String(exe.ino),mount:node.mountId,directory:false});}
+  const table=hostedFdTable(pid);check(table.length<=256);const regular=table.filter(row=>row.file||row.directory);check(regular.length===expected.length);
+  for(const row of regular){const at=expected.findIndex(pin=>pin.dev===row.dev&&pin.ino===row.ino&&pin.directory===row.directory&&pin.mount===mount(pid,row.fd));check(at>=0&&(row.flags&3)===0&&!!(row.flags&0o2000000)&&!(row.flags&0o10000000));expected.splice(at,1);}check(expected.length===0);
+  const counts={poll:0,event:0,pipe:0,devnull:0};for(const row of table.filter(row=>!row.file&&!row.directory)){
+    if(row.fd<=3){check(row.socket);continue;}check(!!(row.flags&0o2000000)&&!(row.flags&0o10000000));
+    if(row.target==="anon_inode:[eventpoll]"&&!row.socket)counts.poll++;else if(row.target==="anon_inode:[eventfd]"&&!row.socket)counts.event++;else if(row.pipe&&/^pipe:\[[1-9][0-9]*\]$/.test(row.target))counts.pipe++;else if(row.character&&row.rdev==="259"&&(row.flags&3)===0)counts.devnull++;else check(false);
+  }check(counts.poll<=8&&counts.event<=8&&counts.pipe<=32&&counts.devnull<=8);
+}
+const issuedGitEffects=new Set<number>();
+type GitParentPin=Readonly<{fd:number;dev:string;ino:string;mountId:string;directory:boolean}>;
+function gitParentCensus(entry:OriginalFullProjectControlEntry,role:OriginalControlGitRole,operation:OriginalControlGitOperation,revision:string|null,extra:readonly GitParentPin[],endpoints:readonly ReturnType<typeof socket>[]):void {
+  const allocation=originalHostedProjectControlGitEffectFacts(role,operation,revision),selected=entry.descriptors();
+  const expected=[...selected,...selected].map(row=>({dev:row.dev,ino:row.ino,mountId:row.mountId,directory:fstatSync(row.fd).isDirectory()}));
+  expected.push(...allocation.descriptors.map(row=>({dev:row.dev,ino:row.ino,mountId:row.mount,directory:row.directory})),...extra);
+  const table=hostedFdTable(process.pid);check(table.length<=256);const regular=table.filter(row=>row.file||row.directory);check(regular.length===expected.length);
+  for(const row of regular){const at=expected.findIndex(pin=>pin.dev===row.dev&&pin.ino===row.ino&&pin.mountId===mount(process.pid,row.fd)&&pin.directory===row.directory);check(at>=0&&(row.flags&3)===0&&!!(row.flags&0o2000000)&&!(row.flags&0o10000000));expected.splice(at,1);}check(expected.length===0);
+  const sockets=[socket(0),socket(1),socket(2),...endpoints];check(new Set(sockets.map(row=>row.dev+":"+row.ino)).size===sockets.length);
+  const counts={poll:0,event:0,pipe:0,devnull:0};for(const row of table.filter(row=>!row.file&&!row.directory)){
+    if(row.socket){check(sockets.filter(pin=>pin.fd===row.fd&&pin.dev===row.dev&&pin.ino===row.ino).length===1);continue;}check(!!(row.flags&0o2000000)&&!(row.flags&0o10000000));
+    if(row.target==="anon_inode:[eventpoll]")counts.poll++;else if(row.target==="anon_inode:[eventfd]")counts.event++;else if(row.pipe&&/^pipe:\[[1-9][0-9]*\]$/.test(row.target))counts.pipe++;else if(row.character&&row.rdev==="259"&&(row.flags&3)===0)counts.devnull++;else check(false);
+  }check(sockets.every(pin=>table.filter(row=>row.socket&&row.fd===pin.fd&&row.dev===pin.dev&&row.ino===pin.ino).length===1)&&counts.poll<=8&&counts.event<=8&&counts.pipe<=32&&counts.devnull<=8);
+}
+function taskChildren():string {
+  const tasks=readdirSync("/proc/self/task").sort();check(tasks.length<=64&&tasks.every(task=>/^[1-9][0-9]*$/.test(task)));
+  return tasks.map(task=>{const raw=readFileSync("/proc/self/task/"+task+"/children","utf8");check(Buffer.byteLength(raw)<=4096&&/^(?:[1-9][0-9]* )*$/.test(raw));return task+":"+raw.trim().split(/\s+/).filter(Boolean).sort().join(",");}).join(";");
+}
+function fdSnapshot():string {return JSON.stringify(hostedFdTable(process.pid));}
+/** Internal finite execution counterpart of the allocator's direct await.
+ * Its private in-flight effect is mandatory, as are the actual retained Guest
+ * entry/once clock. No caller frame, path, callback or native receiver enters. */
+export async function runOriginalFullProjectControlGitChild(role:OriginalControlGitRole,operation:OriginalControlGitOperation,revision:string|null):Promise<Readonly<{stdout:string;code:number;signal:string}>> {
+  assertOriginalFullProjectControlSetupCurrent();check(guestEntry&&guestClock&&reservations.size===0&&ordinaryInput&&!ordinaryInput.destroyed);
+  check(guestInput&&guestOutput&&guestError&&ordinaryInput===process.stdin&&ordinaryInput.readableEnded&&ordinaryInput.readableLength===0&&streamSocket(ordinaryInput).fd===0);
+  originalSocket(guestInput);originalSocket(guestOutput);originalSocket(guestError);
+  const entry=guestEntry,clock=guestClock,originalInput=guestInput,facts=originalHostedProjectControlGitEffectFacts(role,operation,revision);
+  check(!issuedGitEffects.has(facts.sequence)&&issuedGitEffects.size<256);issuedGitEffects.add(facts.sequence);
+  gitParentCensus(entry,role,operation,revision,[],[]);
+  const removedWorkspace=operation===OriginalControlGitOperation.RemoveLinked?facts.descriptors.filter(row=>row.directory&&readlinkSync("/proc/self/fd/"+row.fd)===facts.workspace):[];check(operation!==OriginalControlGitOperation.RemoveLinked||removedWorkspace.length===1);
+  const baselineFds=fdSnapshot(),baselineTasks=taskChildren(),baselineChildren=children(process.pid);
+  const closure=retainOriginalHostedProjectControlGitClosure();let group:number|undefined,anchor:number|undefined,exe:number|undefined;
+  let observer:ReturnType<typeof retainOriginalHostedProjectControlSdkPeerObserver>|undefined;
+  let child:ReturnType<typeof spawn>|undefined,nativeWait:Readonly<{code:number;signal:string}>|undefined,terminal:Promise<void>|undefined;
+  let selectedBirth:string|undefined,failure:Error|undefined,primaryFailed=false,drained=false,released=false;
+  let timer:ReturnType<typeof setTimeout>|undefined;const closed=new Set<number>();let endpoints:ReturnType<typeof socket>[]=[];
+  const actualWait=():Readonly<{code:number;signal:string}>|undefined=>nativeWait;
+  let baselineGroup="",stdout=Buffer.alloc(0),stderrBytes=0;
+  const deadline=process.hrtime.bigint()+BigInt(Math.min(remainingOriginalSdkMilliseconds(),originalControlGitMaximumMilliseconds))*1_000_000n;
+  const remaining=()=>{assertOriginalFullProjectControlSetupCurrent();clock.revalidate();originalSocket(originalInput);check(guestOutput&&guestError);originalSocket(guestOutput);originalSocket(guestError);check(ordinaryInput&&!ordinaryInput.destroyed&&ordinaryInput===process.stdin&&ordinaryInput.readableEnded&&ordinaryInput.readableLength===0&&streamSocket(ordinaryInput).fd===0&&process.hrtime.bigint()<deadline);return Math.min(remainingOriginalSdkMilliseconds(),Math.max(1,Number((deadline-process.hrtime.bigint())/1_000_000n)));};
+  const effectCurrent=()=>{remaining();entry.revalidate();closure.revalidate();originalHostedProjectControlGitEffectFacts(role,operation,revision);};
+  try {
+    effectCurrent();group=retainGroup();baselineGroup=groupMembers(group);
+    const frame=Object.freeze({id:facts.id,role,operation,revision,deadline});originalControlGitArguments(frame);
+    child=spawn(originalFullPeerNode,[originalControlGitProgram,"control-git"],{cwd:"/",env:{...originalControlGitEnvironment(),TEST_SOURCE_SHA:entry.sourceSha},stdio:["pipe","pipe","pipe","pipe"],detached:false});
+    reservations.add(child);const owned=child,native:unknown=Reflect.get(owned,"_handle"),onexit:unknown=native&&typeof native==="object"?Reflect.get(native,"onexit"):undefined,streams=Array.from(owned.stdio);
+    terminal=new Promise<void>(resolve=>{const finish=()=>{if(nativeWait&&closed.size===4)resolve();};
+      if(native&&typeof native==="object"&&typeof onexit==="function")Reflect.set(native,"onexit",function(this:unknown,code:number,signal:unknown){
+        if(this===native&&!nativeWait&&Number.isSafeInteger(code)&&code>=0&&typeof signal==="string")nativeWait=Object.freeze({code,signal});else failure??=new Error("hosted_original_git_nonwait_held");
+        Reflect.apply(onexit,native,[code,signal]);finish();
+      });
+      streams.forEach((stream,index)=>{if(stream){stream.once("close",()=>{closed.add(index);finish();});stream.on("error",()=>{failure??=new Error("hosted_original_git_stream_held");});}});
+      owned.on("error",()=>{failure??=new Error("hosted_original_git_spawn_held");});
+    });
+    check(native&&typeof native==="object"&&typeof onexit==="function"&&streams.length===4&&owned.stdin instanceof Socket&&owned.stdout instanceof Socket&&owned.stderr instanceof Socket&&streams[3] instanceof Duplex);
+    const input=owned.stdin,output=owned.stdout,errorOutput=owned.stderr,gate=streams[3];endpoints=[input,output,errorOutput,gate].map(streamSocket);check(new Set(endpoints.map(row=>row.fd)).size===4&&new Set(endpoints.map(row=>row.dev+":"+row.ino)).size===4);
+    let refuseReady:(error:Error)=>void=()=>{};
+    const ready=new Promise<void>((resolve,reject)=>{refuseReady=reject;
+      output.on("data",(bytes:Buffer)=>{if(stdout.length+bytes.length>originalControlGitOutputMaxBytes+Buffer.byteLength(originalControlGitReady)){failure??=new Error("hosted_original_git_output_held");reject(failure);if(!nativeWait)owned.kill("SIGKILL");return;}stdout=Buffer.concat([stdout,bytes]);if(!released&&stdout.length>=Buffer.byteLength(originalControlGitReady)){if(stdout.toString("ascii")===originalControlGitReady)resolve();else{failure??=new Error("hosted_original_git_ready_held");reject(failure);}}});
+      errorOutput.on("data",(bytes:Buffer)=>{stderrBytes+=bytes.length;if(!released||stderrBytes>originalControlGitOutputMaxBytes){failure??=new Error("hosted_original_git_stderr_held");reject(failure);if(!nativeWait)owned.kill("SIGKILL");}});
+      owned.once("error",()=>reject(new Error("hosted_original_git_spawn_held")));owned.once("exit",()=>{if(!released)reject(new Error("hosted_original_git_early_exit_held"));});
+    });void ready.catch(()=>undefined);
+    timer=setTimeout(()=>{failure??=new Error("hosted_original_git_deadline_held");refuseReady(failure!);if(!nativeWait)owned.kill("SIGKILL");},Math.max(0,Number((deadline-process.hrtime.bigint())/1_000_000n)));
+    await bounded(write(input,Buffer.from(encodeOriginalControlGitFrame(frame)),false),remaining());await bounded(ready,remaining());check(!failure&&!nativeWait&&owned.pid&&owned.pid>1);
+    const pid=owned.pid;selectedBirth=birth(pid);anchor=openSync("/proc/"+pid,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);exe=openSync("/proc/self/fd/"+anchor+"/exe",constants.O_RDONLY);
+    const proc=fstatSync(anchor,{bigint:true}),initialExe=fstatSync(exe,{bigint:true}),node=entry.descriptors().find(row=>row.path===originalFullPeerNode);check(node&&String(initialExe.dev)===node.dev&&String(initialExe.ino)===node.ino);
+    const checkChild=()=>{
+      effectCurrent();assertOriginalHostedProjectControlGitPreludeCurrent();check(!failure&&!nativeWait&&birth(pid)===selectedBirth&&same(proc,statSync("/proc/"+pid,{bigint:true}))&&exe!==undefined&&same(initialExe,fstatSync(exe,{bigint:true}))&&same(initialExe,statSync("/proc/"+pid+"/exe",{bigint:true})));
+      check(readFileSync("/proc/"+pid+"/cmdline").equals(Buffer.from([originalFullPeerNode,originalControlGitProgram,"control-git",""].join("\0")))&&new RegExp("^PPid:\\s+"+process.pid+"$","m").test(readFileSync("/proc/"+pid+"/status","utf8"))&&children(pid)==="");
+      timeJoin(entry,pid);closure.verifyMaps(pid);check(anchor!==undefined&&exe!==undefined&&group!==undefined);gitChildCensus(entry,pid,anchor);
+      const extra=[...closure.descriptors(),...[anchor,exe,group].map(fd=>{const stat=fstatSync(fd,{bigint:true});return {fd,dev:String(stat.dev),ino:String(stat.ino),mountId:mount(process.pid,fd),directory:stat.isDirectory()};})];
+      gitParentCensus(entry,role,operation,revision,extra,endpoints.filter((_row,index)=>!closed.has(index)));
+      const root=statSync("/proc/"+pid+"/root",{bigint:true}),self=statSync("/",{bigint:true});check(root.dev===self.dev&&root.ino===self.ino);
+    };
+    checkChild();observer=retainOriginalHostedProjectControlSdkPeerObserver();const peers=await bounded(observer.query(),remaining());observer.close();observer=undefined;checkChild();
+    const join=()=>{checkChild();const table=hostedFdTable(pid);endpoints.forEach((own,index)=>{const peer=table.filter(row=>row.fd===index);check(peer.length===1);reciprocal(peers,own,peer[0]!,process.pid,pid);});};join();
+    await bounded(write(input,Buffer.alloc(0),true),remaining());await bounded(new Promise<void>(resolve=>{if(closed.has(0))resolve();else input.once("close",resolve);}),remaining());absent(endpoints[0]!.fd);
+    // fd0 EOF has now been consumed by the helper; it retains that child socket
+    // through execve. The Guest's own original ordinary fd0 is never touched.
+    checkChild();const table=hostedFdTable(pid);for(const index of [1,2,3]){const peer=table.find(row=>row.fd===index);check(peer);reciprocal(peers,endpoints[index]!,peer,process.pid,pid);}
+    released=true;await bounded(write(gate,Buffer.from([1]),true),remaining());
+    await bounded(terminal,remaining());check(nativeWait&&closed.size===4&&!failure&&process.hrtime.bigint()<deadline);
+    // A fast Git command may already be reaped. Its ORIGINAL pre-gate exec and
+    // signed fixed helper boundary are joined above, never post-exit /proc.
+    check(children(process.pid)===baselineChildren&&taskChildren()===baselineTasks&&groupMembers(group)===baselineGroup);
+    const after=hostedFdTable(process.pid);check(endpoints.every(endpoint=>!after.some(row=>row.socket&&row.dev===endpoint.dev&&row.ino===endpoint.ino)));drained=true;
+    effectCurrent();const waited=actualWait();check(waited&&waited.signal===""&&(waited.code===0||operation===OriginalControlGitOperation.Filters&&waited.code===1));
+    return Object.freeze({stdout:stdout.subarray(Buffer.byteLength(originalControlGitReady)).toString("utf8"),code:waited.code,signal:waited.signal});
+  }catch(error){
+    primaryFailed=true;holdOriginalHostedProjectControlAllocationError();
+    if(child){try{if(!nativeWait)child.kill("SIGKILL");}catch{}try{if(terminal)await bounded(terminal,1000);if(nativeWait&&closed.size===4&&group!==undefined)drained=children(process.pid)===baselineChildren&&taskChildren()===baselineTasks&&groupMembers(group)===baselineGroup;}catch{}}
+    throw error;
+  }finally{
+    if(timer)clearTimeout(timer);
+    if(!child||nativeWait&&closed.size===4&&drained){
+      const errors:unknown[]=[];
+      if(observer)try{observer.close();}catch(error){errors.push(error);}
+      for(const fd of [exe,anchor,group])if(fd!==undefined)try{closeSync(fd);absent(fd);}catch(error){errors.push(error);}
+      try{closure.close();}catch(error){errors.push(error);}
+      // Every independent close is attempted before the actual current FD and
+      // future queued callback drain. No caller completion flag supplies it.
+      try{await new Promise<void>(resolve=>setImmediate(resolve));await new Promise<void>(resolve=>setImmediate(resolve));const joined=hostedFdTable(process.pid).map(row=>{
+        if(operation===OriginalControlGitOperation.RemoveLinked&&row.fd===removedWorkspace[0]!.fd&&row.target!==facts.workspace){
+          const pin=removedWorkspace[0]!;check(nativeWait&&closed.size===4&&drained&&row.directory&&row.dev===pin.dev&&row.ino===pin.ino&&row.target===facts.workspace+" (deleted)"&&fstatSync(pin.fd,{bigint:true}).nlink===0n);
+          return {...row,target:facts.workspace};
+        }return row;
+      });check(JSON.stringify(joined)===baselineFds&&taskChildren()===baselineTasks);originalSocket(originalInput);if(!primaryFailed)remaining();}catch(error){errors.push(error);}
+      if(errors.length){guestPhase=NativeOriginPhase.Held;holdOriginalHostedProjectControlAllocationError();if(!primaryFailed)throw new AggregateError(errors,"hosted_original_git_close_held");}
+      else if(child)reservations.delete(child);
+    }
+  }
 }

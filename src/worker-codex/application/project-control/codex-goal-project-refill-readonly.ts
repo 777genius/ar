@@ -12,6 +12,7 @@ import { inspectDependencyBootstrap } from "../../dependency-bootstrap";
 import { assertProjectControlCreateManifestPaths, assertProjectControlDependencyBootstrapReady } from "../../codex-goal-mcp-project-scope";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../../codex-goal-project-workspace-lock";
 import { withCurrentControllerScopeActivity } from "./codex-goal-current-controller-activity";
+import { originalHostedProjectControlAllocationPathPresent } from "../../hosted-project-control-native-allocation";
 import { assertExistingRefillJobMatches, assertReadablePrompt, assertReusableProjectWorktree } from "./codex-goal-project-refill";
 import { assertSafeGitRefName, execGitStdout } from "./codex-goal-project-git";
 import { projectControlCanonicalWorkspacePath } from "./codex-goal-project-workspace-scope";
@@ -29,7 +30,11 @@ const readOnlyGit: ProjectControlGitPort = {
       command === "symbolic-ref" && operands.join("\0") === "--short\0HEAD";
     if (literal !== "--literal-pathspecs" || changeDirectory !== "-C" || !path || !allowed)
       throw new Error("project_control_read_only_git_operation_invalid");
-    const options = { ...input, env: { ...process.env, ...input.env, GIT_NO_LAZY_FETCH: "1" },
+    const original = originalHostedProjectControlAllocationPathPresent(path);
+    if (original && input.env !== undefined) throw new Error("project_control_read_only_git_environment_invalid");
+    // The original producer already owns a fixed GIT_NO_LAZY_FETCH=1
+    // environment. Ambient environment belongs only to the ordinary route.
+    const options = { ...input, ...(!original ? { env: { ...process.env, ...input.env, GIT_NO_LAZY_FETCH: "1" } } : {}),
       args: ["--no-optional-locks", "-c", "core.fsmonitor=false", ...input.args] };
     if (command === "status") {
       try {

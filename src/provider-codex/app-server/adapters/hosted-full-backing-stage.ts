@@ -264,7 +264,7 @@ function retainProjectControlEntry(role: OriginalFullProjectControlEntryRole): O
       revalidate() { const retained = projectControlEntries.get(this); check(retained); retained.revalidate(); },
       close() { const retained = projectControlEntries.get(this); check(retained); projectControlEntries.delete(this); retained.close(); } });
     projectControlEntries.set(entry, Object.freeze({ descriptors, revalidate, close })); return entry;
-  } catch (error) { if (active) close(); throw error; }
+  } catch (error) { if (active) try{close();}catch{} throw error; }
 }
 /** Authentic entry selection only; child/stream custody and issuer remain with
  * their original constructors. No argument can select an actor or source. */
@@ -280,7 +280,7 @@ export { live, hash, encoded, check, object, procIdentity, protectedJson, origin
 
 export { OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, type OriginalFullPeerPreloadSelection } from "./hosted-project-control-source-catalog.js";
 export type OriginalFullProjectControlPeerSources = Readonly<{ elfPins: Buffer; packages: Buffer; aliases: Buffer; gitInventory: Buffer;
-  preload: OriginalFullPeerPreloadSelection; revalidate(): void; close(): void }>;
+  preload: OriginalFullPeerPreloadSelection; descriptors(): readonly Readonly<{fd:number;dev:string;ino:string;mountId:string;directory:boolean}>[]; revalidate(): void; close(): void }>;
 const projectControlPeerSources = new WeakMap<object, Readonly<{ revalidate(): void; close(): void }>>();
 /** Only the actual original guest/supervisor entry selects this source port.
  * Buffers are copies of privately held original bytes, never caller enrollment. */
@@ -289,7 +289,12 @@ export function retainOriginalFullProjectControlPeerSources(): OriginalFullProje
   const owned: number[] = [], files: { path: string; fd: number; bytes: Buffer; dev: bigint; ino: bigint; mount: string }[] = [];
   let active = true;
   const own = (path: string, flags: number) => { const fd = openSync(path, flags); owned.push(fd); return fd; };
-  const close = () => { check(active); active = false; for (const fd of owned.reverse()) closeSync(fd); entry.close(); };
+  const close = () => {
+    check(active); active=false;const errors:unknown[]=[];
+    for(const fd of owned.slice().reverse())try{closeSync(fd);let closed=false;try{fstatSync(fd);}catch(error){check(error instanceof Error&&"code"in error&&error.code==="EBADF");closed=true;}check(closed);}catch(error){errors.push(error);}
+    try{entry.close();}catch(error){errors.push(error);}
+    if(errors.length)throw new AggregateError(errors,"hosted_original_peer_sources_close_held");
+  };
   try {
     entry.revalidate(); const original = originalPair(), sources = original.pair.guestSources; check(Array.isArray(sources));
     for (const relative of originalFullProjectControlPeerMetadataPaths) {
@@ -336,8 +341,10 @@ export function retainOriginalFullProjectControlPeerSources(): OriginalFullProje
     };
     revalidate(); const receiver: OriginalFullProjectControlPeerSources = Object.freeze({ get elfPins() { return Buffer.from(elfFile.bytes); }, get packages() { return Buffer.from(packagesFile.bytes); },
       get aliases() { return Buffer.from(aliasesFile.bytes); }, get gitInventory() { return Buffer.from(gitFile.bytes); }, preload,
+      descriptors() { revalidate(); return Object.freeze([...entry.descriptors().map(row => Object.freeze({fd:row.fd,dev:row.dev,ino:row.ino,mountId:row.mountId,directory:fstatSync(row.fd).isDirectory()})),
+        ...owned.map(fd => {const stat=fstatSync(fd,{bigint:true});return Object.freeze({fd,dev:String(stat.dev),ino:String(stat.ino),mountId:heldMount(fd),directory:stat.isDirectory()});})]); },
       revalidate() { const retained = projectControlPeerSources.get(this); check(retained); retained.revalidate(); },
       close() { const retained = projectControlPeerSources.get(this); check(retained); projectControlPeerSources.delete(this); retained.close(); } });
     projectControlPeerSources.set(receiver, Object.freeze({ revalidate, close })); return receiver;
-  } catch (error) { if (active) close(); throw error; }
+  } catch (error) { if (active) try{close();}catch{} throw error; }
 }

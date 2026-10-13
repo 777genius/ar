@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
-  realpathSync, readSync, readdirSync, rmdirSync, statfsSync, type BigIntStats } from "node:fs";
+  realpathSync, readSync, writeSync, readdirSync, rmdirSync, statfsSync, type BigIntStats } from "node:fs";
 import { dirname, basename } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { researchAuthorityRoot, researchHash, researchJson, researchRead } from "./research-launch-files.js";
 import type { LocalOwnedWorkspaceLockDirectory, LocalOwnedWorkspaceLockTemporary,
   LocalWorkspaceLockDirectoryLifecycle } from "../store-local-file/safe-execution/adapters/local-safe-execution-state-store.js";
-import { assertOriginalFullProjectControlSetupCurrent } from "./hosted-project-control-native-origin.js";
+import { assertOriginalFullProjectControlSetupCurrent, runOriginalFullProjectControlGitChild } from "./hosted-project-control-native-origin.js";
+
+import { OriginalControlGitOperation, OriginalControlGitRole, originalControlGitArguments, type OriginalControlGitFrame } from "./hosted-project-control-git-recipe.js";
 
 /** These are copied selectors. Only the original private NativeEntryLive
  * association and held create-only directory custody can use the allocation. */
@@ -27,6 +29,8 @@ let creatorSequence = 0;
 let creatingDirectories: Directory[] | undefined;
 let allocation: { phase: AllocationPhase; selectors: OriginalHostedProjectControlAllocation;
   directories: Directory[]; parent: Directory; ownerBirth: string } | undefined;
+let sourceFixtureIssued = false;
+const sourceFixtureDescriptors = new Set<number>();
 function check(value: unknown): asserts value { if (!value) throw new Error("hosted_original_control_allocation_held"); }
 function mount(fd: number): string {
   const bytes = readFileSync("/proc/self/fdinfo/" + fd); check(bytes.length <= 4096);
@@ -67,7 +71,10 @@ function retain(path: string, privateLeaf: boolean): Directory {
 function current(): NonNullable<typeof allocation> {
   try {
     assertOriginalFullProjectControlSetupCurrent(); check(allocation && allocation.phase === AllocationPhase.Reserved && creatorEffect === undefined && allocation.ownerBirth === ownerBirth());
+    assertPublicationWitnessesCurrent();
     for (const directory of allocation.directories) validate(directory);
+    if (gitWorkspace) validate(gitWorkspace);
+    check(gitEffect === undefined);
     assertOriginalFullProjectControlSetupCurrent(); return allocation;
   } catch (error) {
     if (allocation) allocation.phase = AllocationPhase.Held;
@@ -121,6 +128,35 @@ export function prepareOriginalHostedProjectControlAllocation(): OriginalHostedP
     if (allocation) allocation.phase = AllocationPhase.Held;
     throw error;
   }
+}
+
+/** Fixed TEST source only. No caller supplies a path, bytes or a replacement
+ * root; partial creation retains custody and cannot replay or roll back. */
+export function prepareOriginalHostedProjectControlSourceFixture(): void {
+  const own = current();
+  try {
+    check(!sourceFixtureIssued); sourceFixtureIssued = true;
+    const source = own.directories.find(row => row.path === own.selectors.source); check(source);
+    const before = childCensus(source), bytes = Buffer.from("Original public standalone SDK Source fixture.\n");
+    check(before.size === 0);
+    const path = "/proc/self/fd/" + source.fd + "/README.md";
+    const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    sourceFixtureDescriptors.add(fd);
+    const initial = fstatSync(fd, { bigint: true });
+    check(initial.isFile() && initial.uid === 0n && initial.gid === 0n && initial.mode === 0o100600n && initial.nlink === 1n && initial.size === 0n);
+    for (let offset = 0; offset < bytes.length;) {
+      assertOriginalFullProjectControlSetupCurrent();
+      const count = writeSync(fd, bytes, offset, bytes.length - offset); check(count > 0); offset += count;
+    }
+    fsyncSync(fd); fsyncSync(source.fd);
+    const final = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
+    check(final.dev === initial.dev && final.ino === initial.ino && final.mode === initial.mode && final.uid === 0n && final.gid === 0n && final.nlink === 1n && final.size === BigInt(bytes.length) &&
+      named.isFile() && named.dev === final.dev && named.ino === final.ino && named.mode === final.mode && named.size === final.size && named.ctimeNs === final.ctimeNs && readFileSync(path).equals(bytes));
+    exactDelta(before, childCensus(source), "README.md", true); check(current() === own);
+    closeSync(fd); let closed = false;
+    try { fstatSync(fd); } catch (error) { check(error instanceof Error && "code" in error && error.code === "EBADF"); closed = true; }
+    check(closed); sourceFixtureDescriptors.delete(fd); check(current() === own);
+  } catch (error) { own.phase = AllocationPhase.Held; throw error; }
 }
 
 
@@ -266,6 +302,14 @@ const publicationDescriptors: number[] = [];
 const publicationWitnesses = new Map<OriginalBirthRole, Readonly<{
   lexical: string; physical: string; bytes: Buffer; manifestPath: string; manifest: Buffer; manifestFd: number; manifestStat: BigIntStats;
 }>>();
+function assertPublicationWitnessesCurrent(): void {
+  try {
+    for (const witness of publicationWitnesses.values()) {
+      check(witness.bytes.equals(researchRead(witness.lexical)) && witness.bytes.equals(researchRead(witness.physical)) &&
+        witness.manifest.equals(publicationManifest(witness.manifestPath, witness.manifestFd, witness.manifestStat)));
+    }
+  } catch (error) { if (allocation) allocation.phase = AllocationPhase.Held; throw error; }
+}
 /** A public manifest is selection DATA. Only the actual original private
  * allocation can consume its exact once-only controller or child reservation.
  * This capability does not grant a Git operation or assert writer release. */
@@ -292,6 +336,15 @@ export function originalHostedProjectControlBirthRootPresent(path: string): bool
  * no scope and never adopts a caller path or a discovered inode. */
 export function originalHostedProjectControlAllocationPathPresent(path: string): boolean {
   return allocation !== undefined && (path === allocation.selectors.jobRootDir || path.startsWith(allocation.selectors.jobRootDir + "/"));
+}
+/** Factual role selection under current original custody. The returned enum
+ * grants no effect; the producer independently revalidates the private owner
+ * and the actual protected child-publication witness before execution. */
+export function originalHostedProjectControlGitRoleForPath(path: string): OriginalControlGitRole {
+  const own = current();
+  if (path === own.selectors.source) return OriginalControlGitRole.Source;
+  check(path === own.selectors.workspace && gitWorkspace);
+  return publicationWitnesses.has(OriginalBirthRole.Child) ? OriginalControlGitRole.PublishedChild : OriginalControlGitRole.CreatedChild;
 }
 /** Exact private registry budget veto. Existing writer authorization remains
  * independent; no caller registry root can construct an allocation. */
@@ -389,22 +442,124 @@ export function consumeOriginalHostedProjectControlBirthClaim(claim: OriginalHos
 export function closeOriginalHostedProjectControlAllocation(): void {
   const own = current();
   try {
-  check(pendingLockLeases.size === 0 && creatorEffect === undefined);
+  check(pendingLockLeases.size === 0 && creatorEffect === undefined && gitEffect === undefined && creatingWorkspaceDirectories === undefined && sourceFixtureDescriptors.size === 0 && workspaceDescriptors.size === (gitWorkspace ? 1 : 0));
   check(publicationWitnesses.size === 2 && claimedBirthRoles.size === 2 &&
     [OriginalBirthRole.Controller, OriginalBirthRole.Child].every(role => publicationWitnesses.has(role)));
-  for (const witness of publicationWitnesses.values()) {
-    check(witness.bytes.equals(researchRead(witness.lexical)) && witness.bytes.equals(researchRead(witness.physical)) &&
-      witness.manifest.equals(publicationManifest(witness.manifestPath, witness.manifestFd, witness.manifestStat)));
-  }
+  assertPublicationWitnessesCurrent();
   own.phase = AllocationPhase.Held;
   check(publicationDescriptors.length === 2);
-  for (const fd of [...publicationDescriptors].reverse().concat([...own.directories].reverse().map(row => row.fd))) {
-    closeSync(fd);
-    let positivelyClosed = false;
-    try { fstatSync(fd); }
-    catch (error) { check(error instanceof Error && "code" in error && error.code === "EBADF"); positivelyClosed = true; }
-    check(positivelyClosed);
+  const closeErrors:unknown[]=[];
+  for (const fd of [...publicationDescriptors].reverse().concat([...(gitWorkspace ? [gitWorkspace] : []), ...own.directories.slice().reverse()].map(row => row.fd))) {
+    try {
+      closeSync(fd);let positivelyClosed=false;
+      try{fstatSync(fd);}catch(error){check(error instanceof Error&&"code"in error&&error.code==="EBADF");positivelyClosed=true;}
+      check(positivelyClosed);workspaceDescriptors.delete(fd);
+    }catch(error){closeErrors.push(error);}
   }
+  if(closeErrors.length)throw new AggregateError(closeErrors,"hosted_original_allocation_close_held");
   assertOriginalFullProjectControlSetupCurrent(); own.phase = AllocationPhase.Closed;
   } catch (error) { own.phase = AllocationPhase.Held; throw error; }
+}
+
+// Git-created workspace custody is additional to the immutable original
+// publication projection. No later directory is enrolled in its sealed roles.
+let gitWorkspace: Directory | undefined;
+let creatingWorkspaceDirectories: Directory[] | undefined;
+const workspaceDescriptors = new Set<number>();
+let gitEffectSequence=0;
+let gitEffect: Readonly<{sequence:number;owner:NonNullable<typeof allocation>;role:OriginalControlGitRole;operation:OriginalControlGitOperation;revision:string|null;
+  affected:Directory;before:ReadonlyMap<string,string>;stat:BigIntStats}> | undefined;
+function identity(a:BigIntStats,b:BigIntStats):boolean { return a.dev===b.dev && a.ino===b.ino && a.mode===b.mode && a.uid===b.uid && a.gid===b.gid; }
+function gitCurrent(): NonNullable<typeof gitEffect> {
+  assertOriginalFullProjectControlSetupCurrent(); const effect=gitEffect;
+  check(effect && effect.owner===allocation && effect.owner.phase===AllocationPhase.Reserved && effect.owner.ownerBirth===ownerBirth());
+  assertPublicationWitnessesCurrent();
+  if (effect.role !== OriginalControlGitRole.Source) check(effect.role ===
+    (publicationWitnesses.has(OriginalBirthRole.Child) ? OriginalControlGitRole.PublishedChild : OriginalControlGitRole.CreatedChild));
+  for(const directory of [...effect.owner.directories,...(gitWorkspace ? [gitWorkspace] : [])]) {
+    if(directory===effect.affected || effect.operation===OriginalControlGitOperation.RemoveLinked && directory===gitWorkspace) {
+      const held=fstatSync(directory.fd,{bigint:true}); check(identity(directory.stat,held)&&mount(directory.fd)===directory.mount);
+      if(directory!==gitWorkspace || effect.operation!==OriginalControlGitOperation.RemoveLinked) check(identity(held,lstatSync(directory.path,{bigint:true}))&&realpathSync(directory.path)===directory.path);
+    } else validate(directory);
+  }
+  assertOriginalFullProjectControlSetupCurrent(); return effect;
+}
+/** Only facts from the in-flight actual allocator call. Reading these pins does
+ * not begin an operation or provide a caller-selected native authority. */
+export function originalHostedProjectControlGitEffectFacts(role:OriginalControlGitRole,operation:OriginalControlGitOperation,revision:string|null):Readonly<{
+  sequence:number;id:string;source:string;workspace:string;descriptors:readonly Readonly<{fd:number;dev:string;ino:string;mount:string;directory:boolean}>[];
+}> {
+  const effect=gitCurrent(); check(effect.role===role&&effect.operation===operation&&effect.revision===revision);
+  const own=effect.owner; return Object.freeze({sequence:effect.sequence,id:own.selectors.jobId.slice("TEST-sdk-".length),source:own.selectors.source,workspace:own.selectors.workspace,
+    descriptors:Object.freeze([...own.directories,...(gitWorkspace?[gitWorkspace]:[])].map(row=>Object.freeze({fd:row.fd,dev:String(row.stat.dev),ino:String(row.stat.ino),mount:row.mount,directory:true as boolean})).concat(publicationDescriptors.map(fd=>{const stat=fstatSync(fd,{bigint:true});return Object.freeze({fd,dev:String(stat.dev),ino:String(stat.ino),mount:mount(fd),directory:false as boolean});}))) });
+}
+/** Private in-flight selection only; every pre-gate check still requires the
+ * original membership and nlink, before any Git mutation can be authorized. */
+export function assertOriginalHostedProjectControlGitPreludeCurrent():void {
+  const effect=gitCurrent();check(stable(effect.stat,fstatSync(effect.affected.fd,{bigint:true}))&&isDeepStrictEqual(effect.before,childCensus(effect.affected)));
+  if(gitWorkspace)validate(gitWorkspace);
+}
+/** SDK peer observation is applicable only to this privately reserved effect. */
+export function assertOriginalHostedProjectControlGitPeerQueryCurrent():void {gitCurrent();assertOriginalHostedProjectControlGitPreludeCurrent();}
+function exactDelta(before:ReadonlyMap<string,string>,after:ReadonlyMap<string,string>,name:string,created:boolean):void {
+  check(created ? !before.has(name)&&after.has(name) : before.has(name)&&!after.has(name));
+  check(after.size===before.size+(created?1:-1)); for(const [key,value]of before) if(key!==name) check(after.get(key)===value);
+}
+/** Finite DATA API: its direct await binds the mutation join to the actual
+ * original producer's native wait, stream, task/cgroup and queued FD drain. */
+export async function runOriginalHostedProjectControlGit(role:OriginalControlGitRole,operation:OriginalControlGitOperation,revision:string|null=null):Promise<Readonly<{stdout:string;code:number;signal:string}>> {
+  const own=current();
+  try {
+  check(!gitEffect); const root=own.directories.find(row=>row.path===own.selectors.jobRootDir),source=own.directories.find(row=>row.path===own.selectors.source); check(root&&source);
+  const frame:OriginalControlGitFrame={id:own.selectors.jobId.slice(9),role,operation,revision,deadline:1n}; originalControlGitArguments(frame);
+  if(role!==OriginalControlGitRole.Source) check(gitWorkspace && role ===
+    (publicationWitnesses.has(OriginalBirthRole.Child) ? OriginalControlGitRole.PublishedChild : OriginalControlGitRole.CreatedChild));
+  if(operation===OriginalControlGitOperation.AddLinked) check(!gitWorkspace);
+  if(operation===OriginalControlGitOperation.RemoveLinked) check(gitWorkspace);
+  const affected=operation===OriginalControlGitOperation.AddLinked||operation===OriginalControlGitOperation.RemoveLinked ? root : role===OriginalControlGitRole.Source?source:gitWorkspace!;
+  gitEffect=Object.freeze({sequence:++gitEffectSequence,owner:own,role,operation,revision,affected,before:childCensus(affected),stat:affected.stat});
+    gitCurrent(); const result=await runOriginalFullProjectControlGitChild(role,operation,revision); gitCurrent();
+    check(result.signal===""&&(result.code===0||operation===OriginalControlGitOperation.Filters&&result.code===1));
+    const effect=gitEffect!,after=childCensus(affected),now=fstatSync(affected.fd,{bigint:true}); check(identity(effect.stat,now));
+    let nlinkDelta=0n;
+    if(operation===OriginalControlGitOperation.InitSource||operation===OriginalControlGitOperation.InitChild) {
+      exactDelta(effect.before,after,".git",true); const git=lstatSync("/proc/self/fd/"+affected.fd+"/.git",{bigint:true});
+      check(git.isDirectory()&&git.uid===0n&&git.gid===0n&&!(git.mode&0o022n)); nlinkDelta=1n;
+    } else if(operation===OriginalControlGitOperation.AddLinked) {
+      exactDelta(effect.before,after,"workspace",true); nlinkDelta=1n;
+      const fd=openSync(own.selectors.workspace,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);workspaceDescriptors.add(fd);
+      gitWorkspace={path:own.selectors.workspace,fd,stat:fstatSync(fd,{bigint:true}),mount:mount(fd),private:false};
+      check(gitWorkspace.stat.dev===root.stat.dev&&gitWorkspace.mount===root.mount);validate(gitWorkspace);
+    } else if(operation===OriginalControlGitOperation.RemoveLinked) {
+      exactDelta(effect.before,after,"workspace",false);nlinkDelta=-1n;check(gitWorkspace);
+      const held=fstatSync(gitWorkspace.fd,{bigint:true}); check(identity(gitWorkspace.stat,held)&&held.nlink===0n&&mount(gitWorkspace.fd)===gitWorkspace.mount);
+      closeSync(gitWorkspace.fd);let closed=false;try{fstatSync(gitWorkspace.fd);}catch(error){check(error instanceof Error&&"code"in error&&error.code==="EBADF");closed=true;}check(closed);workspaceDescriptors.delete(gitWorkspace.fd);gitWorkspace=undefined;
+    } else if(operation===OriginalControlGitOperation.CheckoutChild) {
+      exactDelta(effect.before,after,"README.md",true); const path="/proc/self/fd/"+affected.fd+"/README.md",file=lstatSync(path,{bigint:true});
+      check(file.isFile()&&file.uid===0n&&file.gid===0n&&file.nlink===1n&&file.size<=65536n&&!(file.mode&0o022n));
+      const expected=lstatSync(source.path+"/README.md",{bigint:true});check(expected.isFile()&&expected.size===file.size&&readFileSync(path).equals(readFileSync(source.path+"/README.md")));
+    } else { check(isDeepStrictEqual(effect.before,after)); }
+    check(now.nlink===effect.stat.nlink+nlinkDelta);affected.stat=now;gitEffect=undefined;check(current()===own);return result;
+  } catch(error) {own.phase=AllocationPhase.Held;throw error;}
+}
+/** The standalone materializer selects this no-input creator only for the
+ * genuine original allocation. Its effect cannot adopt an existing workspace. */
+export function createOriginalHostedProjectControlWorkspace():string {
+  const own=current(),root=own.directories.find(row=>row.path===own.selectors.jobRootDir);check(root&&!gitWorkspace);
+  try {
+    const before=childCensus(root);const rows:Directory[]=[];creatingWorkspaceDirectories=rows;gitWorkspace=create(root,"workspace",rows);workspaceDescriptors.add(gitWorkspace.fd);
+    joinedChildren(before,childCensus(root),gitWorkspace,true);check(current()===own);creatingWorkspaceDirectories=undefined;return gitWorkspace.path;
+  }catch(error){own.phase=AllocationPhase.Held;throw error;}
+}
+/** Empty rollback only. A failed/uncertain Git effect has already fenced this
+ * path; it cannot be recursively removed or restored by caller absence. */
+export function removeOriginalHostedProjectControlEmptyWorkspace():void {
+  const own=current(),root=own.directories.find(row=>row.path===own.selectors.jobRootDir);check(root&&gitWorkspace&&childCensus(gitWorkspace).size===0);
+  try {
+    const before=childCensus(root),selected=gitWorkspace,stat=root.stat;rmdirSync("/proc/self/fd/"+root.fd+"/workspace");
+    const after=fstatSync(root.fd,{bigint:true});check(identity(stat,after)&&after.nlink===stat.nlink-1n);
+    joinedChildren(before,childCensus(root),selected,false);check(fstatSync(selected.fd,{bigint:true}).nlink===0n);
+    closeSync(selected.fd);let closed=false;try{fstatSync(selected.fd);}catch(error){check(error instanceof Error&&"code"in error&&error.code==="EBADF");closed=true;}check(closed);
+    root.stat=after;workspaceDescriptors.delete(selected.fd);gitWorkspace=undefined;check(current()===own);
+  }catch(error){own.phase=AllocationPhase.Held;throw error;}
 }

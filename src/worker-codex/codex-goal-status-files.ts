@@ -6,6 +6,8 @@ import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { readHostedForegroundResultRecord } from "./hosted-foreground-result";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { captureManagedDependencyGitContext, runManagedDependencyGitBuffer } from "./managed-dependency-git";
+import { originalHostedProjectControlAllocationPathPresent } from "./hosted-project-control-native-allocation";
+import { defaultProjectControlGitPort } from "./application/project-control/adapters/host-command-adapters";
 
 const execFileAsync = promisify(execFile);
 const gitStatusTimeoutMs = 5_000;
@@ -164,6 +166,15 @@ export type CodexGoalWorkspaceStatus = {
 export async function gitWorkspaceStatus(
   path: string,
 ): Promise<CodexGoalWorkspaceStatus> {
+  // Original custody failures must escape the legacy catch, which otherwise
+  // turns a failed Git read into a misleading clean-workspace observation.
+  if (originalHostedProjectControlAllocationPathPresent(path)) {
+    const { stdout } = await defaultProjectControlGitPort.run({
+      args: ["-C", path, "status", "--porcelain", "--untracked-files=all"],
+      timeoutMs: gitStatusTimeoutMs,
+    });
+    return workspaceStatusFromOutput(stdout);
+  }
   // Protected origin/path selection precedes the legacy catch. Missing purpose
   // or governed read failure must never become a clean workspace observation.
   const context = captureManagedDependencyGitContext(path);

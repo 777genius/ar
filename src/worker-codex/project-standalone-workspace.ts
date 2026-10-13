@@ -4,6 +4,14 @@ import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-cor
 import type { CodexGoalJobManifestInput } from "./codex-goal-jobs";
 import type { CodexGoalProjectCreateWorktreeInput } from "./application/project-control/codex-goal-project-control-contracts";
 import { defaultProjectControlGitPort } from "./application/project-control/adapters/host-command-adapters";
+import {
+  createOriginalHostedProjectControlWorkspace,
+  originalHostedProjectControlAllocationPathPresent,
+  originalHostedProjectControlAllocationPublication,
+  originalHostedProjectControlGitRoleForPath,
+  runOriginalHostedProjectControlGit,
+} from "./hosted-project-control-native-allocation";
+import { OriginalControlGitOperation, originalControlGitBranch } from "./hosted-project-control-git-recipe";
 
 /** Selection is configuration, never admission. The broker still owns the
  * current controller fence and fresh-target identity before any Git effect. */
@@ -30,6 +38,24 @@ const created = new Map<string, DirectoryIdentity>();
 const flags = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
   "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "-c", "uploadpack.packObjectsHook="];
 async function git(path: string, args: readonly string[]): Promise<string> {
+  if (originalHostedProjectControlAllocationPathPresent(path)) {
+    const selected = originalHostedProjectControlAllocationPublication().selectors;
+    if (path !== selected.workspace) throw new Error("project_control_original_standalone_path_held");
+    let operation: OriginalControlGitOperation;
+    let revision: string | null = null;
+    if (args.length === 1 && args[0] === "remote") operation = OriginalControlGitOperation.Remote;
+    else if (args.length === 2 && args[0] === "init" && args[1] === "--template=") operation = OriginalControlGitOperation.InitChild;
+    else if (args.length === 8 && args.slice(0, 6).join("\0") === ["fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--upload-pack=git-upload-pack", "--"].join("\0") && args[6] === selected.source && /^[a-f0-9]{40}$/.test(args[7]!)) {
+      operation = OriginalControlGitOperation.FetchChild; revision = args[7]!;
+    } else if (args.length === 4 && args[0] === "checkout" && args[1] === "-b" && args[2] === originalControlGitBranch && /^[a-f0-9]{40}$/.test(args[3]!)) {
+      operation = OriginalControlGitOperation.CheckoutChild; revision = args[3]!;
+    } else if (args.length === 3 && args[0] === "rev-parse" && args[1] === "--verify" && /^[a-f0-9]{40}\^\{commit\}$/.test(args[2]!)) {
+      operation = OriginalControlGitOperation.Commit; revision = args[2]!.slice(0, 40);
+    } else throw new Error("project_control_original_standalone_git_tuple_held");
+    const result = await runOriginalHostedProjectControlGit(originalHostedProjectControlGitRoleForPath(path), operation, revision);
+    if (result.code !== 0 || result.signal !== "") throw new Error("project_control_original_standalone_git_failed");
+    return result.stdout;
+  }
   return (await defaultProjectControlGitPort.run({ args: [...flags, "-C", path, ...args],
     timeoutMs: 120_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1",
@@ -57,18 +83,33 @@ export async function materializeStandaloneProjectWorkspace(input: {
   readonly path: string; readonly source: string; readonly revision: string;
   readonly branch: string | undefined; readonly existingBranchRevision: string | undefined;
 }): Promise<void> {
-  await mkdir(input.path, { mode: 0o700 });
-  const identity = await lstat(input.path);
-  created.set(input.path, { dev: identity.dev, ino: identity.ino });
+  const original = originalHostedProjectControlAllocationPathPresent(input.path);
+  if (original) {
+    const selected = originalHostedProjectControlAllocationPublication().selectors;
+    if (input.path !== selected.workspace || input.source !== selected.source || input.branch !== originalControlGitBranch ||
+        !/^[a-f0-9]{40}$/.test(input.revision) || input.existingBranchRevision !== undefined)
+      throw new Error("project_control_original_standalone_input_held");
+    if (createOriginalHostedProjectControlWorkspace() !== input.path) throw new Error("project_control_original_standalone_creator_held");
+  } else {
+    await mkdir(input.path, { mode: 0o700 });
+    const identity = await lstat(input.path);
+    created.set(input.path, { dev: identity.dev, ino: identity.ino });
+  }
   try {
     await git(input.path, ["init", "--template="]);
     for (const revision of new Set([input.revision, input.existingBranchRevision].filter((value): value is string => value !== undefined)))
       await fetchStandaloneProjectRevision(input.path, input.source, revision);
     await git(input.path, ["checkout", ...(input.branch ? ["-b", input.branch] : ["--detach"]), input.existingBranchRevision ?? input.revision]);
     await assertStandaloneProjectWorkspace(input.path);
-  } catch (error) { await removeCreatedStandaloneProjectWorkspace(input.path); throw error; }
+  } catch (error) {
+    // Original custody is preserved on failure; neither a caller path nor a
+    // cleanup exception can authorize recursive rollback or replace the cause.
+    if (!original) await removeCreatedStandaloneProjectWorkspace(input.path);
+    throw error;
+  }
 }
 export async function removeCreatedStandaloneProjectWorkspace(path: string): Promise<boolean> {
+  if (originalHostedProjectControlAllocationPathPresent(path)) return false;
   const expected = created.get(path);
   if (!expected) return false;
   const actual = await lstat(path);
