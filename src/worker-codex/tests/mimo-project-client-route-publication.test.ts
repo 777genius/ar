@@ -1,9 +1,10 @@
+import { mimoProjectClientMaxRoutes, mimoProjectClientMaxRouteBytes } from "../mimo-project-client-route-limits";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { configureMimoProjectClientRoute } from "../mimo-project-client-route-publication";
-import { readMimoProjectClientRoutes, type MimoProjectClientRoute } from "../mimo-project-bridge-client";
+import { parseMimoProjectClientRoutes, readMimoProjectClientRoutes, type MimoProjectClientRoute } from "../mimo-project-bridge-client";
 import { runMimoProjectClientCli } from "../mimo-project-client-cli";
 
 const roots: string[] = [];
@@ -31,21 +32,58 @@ it("publishes readable private metadata, preserves other workstreams and makes e
   expect(existsSync(path + ".publication-lock")).toBe(false);
 });
 
+it("publishes the 257th route without losing the existing 256 routes", () => {
+  const { root, path } = fixture(); mkdirSync(join(root, "config"), { mode: 0o700 });
+  const routes = Array.from({ length: 256 }, (_, index) => ({ ...route, workstreamId: `test-work-${index}` }));
+  writeFileSync(path, JSON.stringify({ schemaVersion: 1, routes }), { mode: 0o600 });
+  const next = { ...route, workstreamId: "test-work-256" };
+  expect(configureMimoProjectClientRoute(next, path)).toMatchObject({ ok: true, changed: true });
+  expect(readMimoProjectClientRoutes(path)).toEqual([...routes, next]);
+});
+
 it("adds a route to a near-limit catalog without spending the reader budget on formatting", () => {
   const { root, path } = fixture(); mkdirSync(join(root, "config"), { mode: 0o700 });
-  const routes = Array.from({ length: 233 }, (_, index) => ({ ...route,
+  const candidates = Array.from({ length: mimoProjectClientMaxRoutes - 1 }, (_, index) => ({ ...route,
     workstreamId: `test-work-${index}`, socketDir: route.socketDir + "/" + "x".repeat(62) }));
-  const original = JSON.stringify({ schemaVersion: 1, routes }, null, 2) + "\n";
-  expect(Buffer.byteLength(original)).toBeGreaterThan(65000);
-  expect(Buffer.byteLength(original)).toBeLessThanOrEqual(65536);
+  const pretty = (routes: readonly MimoProjectClientRoute[]) => JSON.stringify({ schemaVersion: 1, routes }, null, 2) + "\n";
+  let count = 1;
+  while (count < candidates.length && Buffer.byteLength(pretty(candidates.slice(0, count + 1))) <= mimoProjectClientMaxRouteBytes) count++;
+  const routes = candidates.slice(0, count);
+  const original = pretty(routes);
+  expect(Buffer.byteLength(original)).toBeLessThanOrEqual(mimoProjectClientMaxRouteBytes);
   writeFileSync(path, original, { mode: 0o600 });
   expect(readMimoProjectClientRoutes(path)).toEqual(routes);
   const next = { ...route, workstreamId: "test-next", socketDir: routes[0]!.socketDir };
-  expect(Buffer.byteLength(JSON.stringify({ schemaVersion: 1, routes: [...routes, next] }, null, 2) + "\n")).toBeGreaterThan(65536);
+  expect(Buffer.byteLength(JSON.stringify({ schemaVersion: 1, routes: [...routes, next] }, null, 2) + "\n")).toBeGreaterThan(mimoProjectClientMaxRouteBytes);
   expect(configureMimoProjectClientRoute(next, path)).toMatchObject({ ok: true, changed: true });
-  expect(lstatSync(path).size).toBeLessThanOrEqual(65536);
+  expect(lstatSync(path).size).toBeLessThanOrEqual(mimoProjectClientMaxRouteBytes);
   expect(readMimoProjectClientRoutes(path)).toEqual([...routes, next]);
   expect(existsSync(path + ".publication-lock")).toBe(false);
+});
+
+it("retains the finite route-count bound and preserves a full catalog when another route is refused", () => {
+  const { root, path } = fixture(); mkdirSync(join(root, "config"), { mode: 0o700 });
+  const routes = Array.from({ length: mimoProjectClientMaxRoutes }, (_, index) => ({ ...route, workstreamId: `test-work-${index}` }));
+  const original = JSON.stringify({ schemaVersion: 1, routes });
+  expect(Buffer.byteLength(original)).toBeLessThan(mimoProjectClientMaxRouteBytes);
+  writeFileSync(path, original, { mode: 0o600 }); const before = lstatSync(path);
+  expect(readMimoProjectClientRoutes(path)).toEqual(routes);
+  const next = { ...route, workstreamId: "test-over-limit" };
+  expect(() => parseMimoProjectClientRoutes({ schemaVersion: 1, routes: [...routes, next] })).toThrow("config_invalid");
+  expect(() => configureMimoProjectClientRoute(next, path)).toThrow("config_invalid");
+  expect(readFileSync(path, "utf8")).toBe(original); expect(lstatSync(path).ino).toBe(before.ino);
+  expect(existsSync(path + ".publication-lock")).toBe(false);
+});
+
+it("refuses oversized protected reads and oversized publication without replacing the catalog", () => {
+  const { path } = fixture(); configureMimoProjectClientRoute(route, path);
+  const original = readFileSync(path, "utf8"), before = lstatSync(path);
+  expect(() => configureMimoProjectClientRoute({ ...route, workstreamId: "test-too-large", socketDir: "/" + "x".repeat(mimoProjectClientMaxRouteBytes) }, path)).toThrow("config_invalid");
+  expect(readFileSync(path, "utf8")).toBe(original); expect(lstatSync(path).ino).toBe(before.ino);
+  expect(existsSync(path + ".publication-lock")).toBe(false);
+  writeFileSync(path, original + " ".repeat(mimoProjectClientMaxRouteBytes + 1 - Buffer.byteLength(original)));
+  expect(lstatSync(path).size).toBe(mimoProjectClientMaxRouteBytes + 1);
+  expect(() => readMimoProjectClientRoutes(path)).toThrow("config_untrusted");
 });
 
 it("refuses conflicting authority instead of replacing the original transport", () => {

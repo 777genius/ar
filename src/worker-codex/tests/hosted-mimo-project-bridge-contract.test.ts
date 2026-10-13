@@ -5,6 +5,27 @@ import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest } from "../ho
 const base = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream",
   operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "Edit the TEST workspace", sourceCommit: "b".repeat(40) };
 describe("finite root project MiMo bridge wire contract", () => {
+  it.each([[true, "high"], [false, "none"]] as const)("normalizes thinking=%s to the retained reasoning effort", (thinking, reasoningEffort) => {
+    const input = { ...base, thinking };
+    const parsed = readMimoProjectIngress(Buffer.from(JSON.stringify(input)));
+    expect(parsed).toEqual({ ...base, reasoningEffort });
+    expect(parseMimoProjectBridgeRequest(parsed)).toEqual(parsed);
+    expect(input).not.toHaveProperty("reasoningEffort");
+  });
+  it.each(["none", "minimal", "low", "medium", "high", "xhigh"] as const)("preserves legacy effort %s with semantically matching thinking", reasoningEffort => {
+    expect(parseMimoProjectBridgeRequest({ ...base, reasoningEffort })).toEqual({ ...base, reasoningEffort });
+    expect(parseMimoProjectBridgeRequest({ ...base, reasoningEffort, thinking: reasoningEffort !== "none" })).toEqual({ ...base, reasoningEffort });
+  });
+  it.each([{ thinking: true, reasoningEffort: "none" }, { thinking: false, reasoningEffort: "high" },
+    { thinking: "true" }, { thinking: 1 }, { thinking: null }, { thinking: undefined },
+    { thinking: true, reasoningEffort: "invalid" }])("refuses invalid or contradictory thinking %j", fields => {
+    expect(() => parseMimoProjectBridgeRequest({ ...base, ...fields })).toThrow("mimo_project_bridge_request_invalid");
+  });
+  it.each([MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop,
+    MimoProjectBridgeOperation.RepairAdmission, MimoProjectBridgeOperation.FinalizeAdmissionRepair])("never changes thinking through %s", operation => {
+    const { prompt: _prompt, sourceCommit: _source, ...control } = base;
+    expect(() => parseMimoProjectBridgeRequest({ ...control, operation, thinking: false })).toThrow("mimo_project_bridge_request_invalid");
+  });
   it("admits finite create data and control-only same-job requests", () => {
     expect(parseMimoProjectBridgeRequest(base)).toEqual(base);
     const { prompt: _prompt, sourceCommit: _source, ...control } = base;
