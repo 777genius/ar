@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSy
   fsyncSync, fstatSync, linkSync, unlinkSync, constants } from "node:fs";
 import { join, dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
-import { researchCustody, researchHash, researchRecord } from "./research-launch-files";
+import { researchCustody, researchHash, researchRecord, researchPublish } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
@@ -11,6 +11,8 @@ import { readdirSync } from "node:fs";
 import { InterruptedProjectCreateErrorCode, InterruptedProjectCreateDisposition, InterruptedProjectCreateTermination,
   type InterruptedProjectCreateOutcome } from "@vioxen/subscription-runtime/worker-core";
 import { z } from "zod";
+import { capturePublicationBusyStartRearm, assertPublicationBusyStartRearmCurrent, publicationBusyRearmPath,
+  isPublicationBusyResult, type PublicationBusyStartRearmProof } from "./hosted-mimo-publication-busy-rearm";
 
 // Canonical settlement representation belongs to the native operation store.
 const settlementSha = z.string().regex(/^[a-f0-9]{64}$/), settlementId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/), settlementHexId = z.string().regex(/^[a-f0-9]{32}$/);
@@ -102,8 +104,10 @@ function owner(request: MimoProjectBridgeRequest) {
     const oldRequest = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(files.requestPath + ".generation-" + previousGeneration).toString()));
     if (oldOwner.generation !== previousGeneration || oldOwner.requestSha256 !== digest || canonical(oldRequest) !== canonical(retained) ||
         oldOwner.unit !== `subscription-runtime-mimo-project-${researchHash(digest + ":" + previousGeneration)}.service` ||
-        !admissionDenied(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString())) ||
-        researchHash(hostedMimoBridgeMetadataBytes(join(dirname(files.root), "admission-repair-archives", request.jobId + ".finalization.json"))) !== proof.receiptSha256)
+        !(admissionDenied(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString()))
+          ? researchHash(hostedMimoBridgeMetadataBytes(join(dirname(files.root), "admission-repair-archives", request.jobId + ".finalization.json"))) === proof.receiptSha256
+          : isPublicationBusyResult(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString())) &&
+            researchHash(readPrivateHostedMimoOperationBytes(publicationBusyRearmPath(dirname(files.root), request.jobId, previousGeneration), 65536)) === proof.receiptSha256))
       throw new Error("mimo_project_bridge_operation_invalid");
   } else if (hasRearm) throw new Error("mimo_project_bridge_operation_invalid");
   return { ...files, value, retained, ownerBytes, requestBytes: bytes };
@@ -193,10 +197,13 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
 /** Status may reconcile an existing publication, but never submits a provider.
  * Recover only after the exact prior observer cannot execute any further work. */
 function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller-recovery"): boolean {
-  const current = owner(request), unit = current.value.unit as string;
+  const current = owner(request);
+  return coldOperationUnit(current.value.unit as string, current.value.description as string, mode);
+}
+function coldOperationUnit(unit: string, description: string, mode?: "controller-recovery"): boolean {
   const output = researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID,ControlGroup"]);
   const fields = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
-  if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== current.value.description))
+  if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== description))
     throw new Error("mimo_project_bridge_operation_invalid");
   if (mode === "controller-recovery" && (fields.MainPID !== "0" || fields.ControlGroup !== "")) return false;
   if (!(fields.LoadState === "not-found" || fields.LoadState === "loaded" &&
@@ -299,6 +306,25 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
         // still acquired by the unchanged original broker in the owned unit.
         for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
         rearmProof = { ...previousStart, receiptSha256: proof.receiptSha256 };
+      } else if (prior.state === "settled" && isPublicationBusyResult(prior.result)) {
+        if (!recoverableStatus(request, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
+        const old = owner(request), evidence = [old.requestPath, old.resultPath, old.ownerPath];
+        if (evidence.some(path => existsSync(path + ".generation-" + old.value.generation))) throw new Error("mimo_project_bridge_operation_invalid");
+        const previousStart = { ownerSha256: researchHash(old.ownerBytes), requestSha256: researchHash(old.requestBytes),
+          resultSha256: researchHash(hostedMimoBridgeMetadataBytes(old.resultPath)) };
+        const proofPath = publicationBusyRearmPath(binding.stateRoot, request.jobId, old.value.generation as number);
+        const proof = await capturePublicationBusyStartRearm(request);
+        // Fresh proof grants no launch authority. Retain it before archiving;
+        // any partial publication remains uncertain and is never overwritten.
+        if (!recoverableStatus(request, "controller-recovery") ||
+            !hostedMimoBridgeMetadataBytes(old.ownerPath).equals(old.ownerBytes) ||
+            !hostedMimoBridgeMetadataBytes(old.requestPath).equals(old.requestBytes) ||
+            researchHash(hostedMimoBridgeMetadataBytes(old.resultPath)) !== previousStart.resultSha256)
+          throw new Error("mimo_project_bridge_operation_invalid");
+        researchPublish(proofPath, proof, true);
+        rearmProof = { ...previousStart, receiptSha256: researchHash(readPrivateHostedMimoOperationBytes(proofPath, 65536)) };
+        for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
+        generation = (old.value.generation as number) + 1;
       }
     }
   }
@@ -346,6 +372,15 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
     throw new Error("mimo_project_bridge_operation_invalid");
   let result: unknown, serialized: string;
   try {
+    if (request.operation === MimoProjectBridgeOperation.Start && (current.value.generation as number) > 0) {
+      const previousGeneration = (current.value.generation as number) - 1;
+      if (isPublicationBusyResult(JSON.parse(hostedMimoBridgeMetadataBytes(current.resultPath + ".generation-" + previousGeneration).toString()))) {
+        const oldOwner = JSON.parse(hostedMimoBridgeMetadataBytes(current.ownerPath + ".generation-" + previousGeneration).toString()) as { unit: string; description: string };
+        if (!coldOperationUnit(oldOwner.unit, oldOwner.description, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
+        const proof = JSON.parse(readPrivateHostedMimoOperationBytes(publicationBusyRearmPath(dirname(current.root), request.jobId, previousGeneration), 65536).toString()) as PublicationBusyStartRearmProof;
+        await assertPublicationBusyStartRearmCurrent(request, proof);
+      }
+    }
     result = { ok: true, result: await handleHostedMimoProjectBridge(request) };
     serialized = JSON.stringify(result) + "\n";
     if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
