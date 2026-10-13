@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmod, link, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
-import { readHostedMimoCredentialAtPath } from "../hosted-mimo-credential-source";
+import { readHostedMimoCredentialAtPath, resolveHostedMimoCodingProxyCredential } from "../hosted-mimo-credential-source";
+import type { HostedMimoCodingWorkerOrigin } from "../hosted-mimo-worker-origin";
+
+const originFence = vi.hoisted(() => ({ current: vi.fn(), pathReads: 0 }));
+vi.mock("../hosted-mimo-worker-origin", () => ({
+  assertHostedMimoCodingWorkerOriginCurrent: originFence.current,
+  readHostedMimoWorkerOrigin: () => null,
+}));
 
 const syntheticOwner = vi.hoisted(() => ({ root: "", ancestorUid: 0, fileUid: 0 }));
 vi.mock("node:fs", async importOriginal => {
@@ -10,6 +17,7 @@ vi.mock("node:fs", async importOriginal => {
   return {
     ...fs,
     lstatSync: (path: string) => {
+      originFence.pathReads++;
       const stat = fs.lstatSync(path);
       const ancestor = syntheticOwner.root !== "" &&
         syntheticOwner.root.startsWith(path.endsWith("/") ? path : `${path}/`);
@@ -30,6 +38,8 @@ afterEach(async () => {
   syntheticOwner.root = "";
   syntheticOwner.ancestorUid = 0;
   syntheticOwner.fileUid = 0;
+  originFence.current.mockReset();
+  originFence.pathReads = 0;
 });
 
 async function fixture() {
@@ -44,6 +54,14 @@ async function fixture() {
 }
 
 describe("hosted MiMo credential filesystem boundary", () => {
+  it("does not inspect the credential path after its origin check closes the original lifetime", () => {
+    let active = true;
+    originFence.current.mockImplementationOnce(() => { active = false; });
+    const assertActive = () => { if (!active) throw new Error("TEST-original-expired"); };
+    expect(() => resolveHostedMimoCodingProxyCredential({} as HostedMimoCodingWorkerOrigin,
+      new DefaultRedactor(), assertActive)).toThrow("TEST-original-expired");
+    expect(originFence.pathReads).toBe(0);
+  });
   it("opens the rotated file afresh and registers each synthetic value before returning it", async () => {
     // Regression: caching the first open or registering redaction after return
     // exposes the old key or a downstream error string.

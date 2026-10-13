@@ -84,6 +84,13 @@ it("denies stale independent authority before credential read", async () => {
   const f = setup("b".repeat(64)); mocks.current.mockImplementation(() => { throw new Error("stale"); });
   await expect(createHostedMimoCodingProxyMaterial(f.input)).rejects.toThrow("stale"); expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
 });
+it("opens no credential or proxy when origin preparation exhausts the original lifetime", async () => {
+  const f = setup("preparation-expired");
+  mocks.current.mockImplementationOnce(() => f.lifetime.close(new Error("TEST-original-expired")));
+  await expect(createHostedMimoCodingProxyMaterial(f.input)).rejects.toThrow("TEST-original-expired");
+  expect(mocks.credential).not.toHaveBeenCalled();
+  expect(mocks.start).not.toHaveBeenCalled();
+});
 it("does not select Coding credentials for ordinary worker origins", async () => {
   const f = setup("c".repeat(64)); mocks.read.mockReturnValue(null);
   expect(await createHostedMimoCodingProxyMaterial(f.input)).toBeNull(); expect(mocks.credential).not.toHaveBeenCalled();
@@ -113,7 +120,7 @@ it("joins concurrent listener closure instead of returning an early cleanup rece
 it("uses the already authenticated classified origin without a second full observation", async () => {
   const f = setup("f".repeat(64)); mocks.read.mockImplementation(() => { throw new Error("unexpected-second-full-read"); });
   const material = await createHostedMimoCodingProxyMaterial({ ...f.input, origin: f.origin as NonNullable<Parameters<typeof createHostedMimoCodingProxyMaterial>[0]["origin"]> });
-  try { expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.current).toHaveBeenCalledWith(f.origin); expect(mocks.credential).toHaveBeenCalledWith(f.origin, f.input.redactor); }
+  try { expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.current).toHaveBeenCalledWith(f.origin); expect(mocks.credential).toHaveBeenCalledWith(f.origin, f.input.redactor, expect.any(Function)); }
   finally { await material?.close(); }
 });
 

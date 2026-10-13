@@ -84,17 +84,22 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   const remaining = input.lifetime.deadlineEpochMs - Date.now();
   if (origin.model !== input.model || origin.maxGoalTurns !== input.lifetime.maxGoalTurns ||
       remaining <= 0 || remaining > origin.taskTimeoutMs) throw new Error("hosted_mimo_coding_proxy_binding_invalid");
-  const requestTimeoutMs = Math.floor(Math.min(3600000, remaining, input.lifetime.remainingMs()));
+  let requestTimeoutMs = Math.floor(Math.min(3600000, remaining, input.lifetime.remainingMs()));
   if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0) throw new Error("hosted_mimo_coding_proxy_binding_invalid");
-  assertHostedMimoCodingWorkerOriginCurrent(origin);
+  const assertActive = () => input.lifetime.assertActive();
+  const assertCurrent = () => { assertActive(); assertHostedMimoCodingWorkerOriginCurrent(origin); assertActive(); };
+  assertCurrent();
   const gitReadPaths = hostedMimoCodingGitReadPaths(origin.workspacePath, codingGitHost);
+  requestTimeoutMs = Math.floor(Math.min(requestTimeoutMs, input.lifetime.deadlineEpochMs - Date.now(), input.lifetime.remainingMs()));
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0) throw new Error("hosted_mimo_coding_proxy_binding_invalid");
   if (consumedStarts.has(origin.digest)) throw new Error("hosted_mimo_coding_proxy_start_consumed");
   consumedStarts.add(origin.digest);
-  const bytes = Buffer.from(resolveHostedMimoCodingProxyCredential(origin, input.redactor));
+  const bytes = Buffer.from(resolveHostedMimoCodingProxyCredential(origin, input.redactor, assertActive));
   let proxy: MimoCredentialProxy;
   try {
+    assertActive();
     proxy = await startMimoCredentialProxy({ apiKey: bytes, model: origin.model,
-      assertCurrent: () => { input.lifetime.assertActive(); assertHostedMimoCodingWorkerOriginCurrent(origin); },
+      assertCurrent,
       limits: { deadlineMs: input.lifetime.deadlineEpochMs, maxRequests: origin.maxGoalTurns * 4, maxConcurrency: 2,
         // MiMo's output allowance also covers reasoning. A 16K ceiling can
         // exhaust a reasoning turn before its first tool call or code output.
@@ -107,7 +112,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   let ownerTimer: ReturnType<typeof setInterval> | undefined;
   const abort = () => proxy.revoke();
   const material: HostedMimoCodingProxyMaterial = Object.freeze({ origin, capability: proxy.capability,
-    assertCurrent() { if (closed) throw new Error("hosted_mimo_coding_proxy_closed"); input.lifetime.assertActive(); assertHostedMimoCodingWorkerOriginCurrent(origin); },
+    assertCurrent() { if (closed) throw new Error("hosted_mimo_coding_proxy_closed"); assertCurrent(); },
     revoke() { proxy.revoke(); },
     close() {
       if (closing) return closing;
