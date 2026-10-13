@@ -25,6 +25,8 @@ node /absolute/subscription-runtime/dist/worker-codex/mimo-project-client-cli.js
 
 The input uses the same protected JSON schema above with exactly one route. Use the verified host alias, machine ID and owned authenticated socket directory from current inventory. The command publishes to `~/.config/subscription-runtime/mimo-project-routes.json`, preserves other entries, and makes an identical existing route a no-op. A conflicting entry or concurrent publication is refused; inspect the existing configuration instead of overwriting it. The command does not install credentials, open a host route or launch work. A new local installation needs protected configuration parents and an authenticated restricted Host Jobs endpoint first.
 
+The shared catalog is bounded to 1,024 distinct project/workstream routes and 256 KiB of UTF-8 metadata. Publication uses compact JSON; exceeding either budget fails without replacing the existing catalog. Existing catalogs require no migration.
+
 Use this command after trusted `--prepare-project` for both existing and future projects. Keep one entry per logical project/workstream and reuse that identity for subsequent jobs. Every agent using this local MCP configuration shares the same route catalog; adding project-specific SDK code is unnecessary.
 
 Use `mimoProjectId` and `mimoWorkstreamId` with the ordinary tools:
@@ -35,7 +37,7 @@ Use `mimoProjectId` and `mimoWorkstreamId` with the ordinary tools:
 - `codex_goal_project_start`: the same identity, `jobId`, `confirmStart: true`, after create settled successfully.
 - `codex_goal_project_stop`: the same identity, `jobId`, `confirmStop: true`.
 
-Create and refill accept optional `reasoningEffort`: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; omission keeps `medium`. Use `reasoningEffort: "none"` to request disabled thinking through MiMo's Responses API. MiMo documents every other level as enabling the same thinking behavior. The value is retained for that new job and cannot be changed by start, status, or stop. See [MiMo Responses documentation](https://mimo.mi.com/docs/en-US/api/chat/responses).
+Hosted MiMo create and refill accept optional `thinking`: `true` maps to `reasoningEffort: "high"`, and `false` maps to `"none"`. Legacy `reasoningEffort` remains supported: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; omitting both fields keeps `medium`. When both are supplied, the legacy value is preserved and must agree: `thinking: false` requires `none`, while `thinking: true` accepts any supported non-`none` effort. Contradictions are rejected before submission. The Boolean is normalized to reasoning effort in the shared MiMo wire parser; it is unavailable for ordinary local routes or start, status, and stop. The value is retained for that new job. MiMo treats non-`none` efforts as enabled thinking. See [MiMo Responses documentation](https://mimo.mi.com/docs/en-US/api/chat/responses).
 
 Create, start and stop return a pending owned operation. Inspect status until that operation settles; a pending operation or successful submission is not worker completion. A transport timeout is uncertain: inspect the same job instead of resubmitting. Caller paths, credentials, environment, commands, model/provider overrides and arbitrary tool names are refused. The ordinary OpenAI route is unchanged when the MiMo route fields are absent.
 
