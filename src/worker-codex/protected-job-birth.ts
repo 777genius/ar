@@ -1,15 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync,
-  realpathSync, rmdirSync, type BigIntStats } from "node:fs";
+  realpathSync, rmdirSync, writeSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobManifestInput } from "./codex-goal-jobs";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { originalHostedProjectControlAllocationPublication, originalHostedProjectControlBirthRootPresent,
+import { originalHostedProjectControlAllocationPublication, originalHostedProjectControlBirthRootPresent, originalHostedProjectControlAllocationPathPresent, holdOriginalHostedProjectControlAllocationError,
   OriginalControlAllocationRecordKind, OriginalControlAllocationRecordRole, claimOriginalHostedProjectControlBirth, assertOriginalHostedProjectControlBirthClaimCurrent,
-  consumeOriginalHostedProjectControlBirthClaim, holdOriginalHostedProjectControlBirthClaim, type OriginalHostedProjectControlBirthClaim } from "./hosted-project-control-native-allocation.js";
+  consumeOriginalHostedProjectControlBirthClaim, holdOriginalHostedProjectControlBirthClaim, assertOriginalHostedProjectControlBirthDirectoryDescriptorCurrent, type OriginalHostedProjectControlBirthClaim } from "./hosted-project-control-native-allocation.js";
 import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot, researchCustody,
   researchDirectoryIdentity, researchHash, researchJson, researchPath, researchPrivateDirectory,
   researchPublish, researchRead, type ResearchDirectoryIdentity } from "./research-launch-files";
@@ -17,27 +17,31 @@ import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot,
 const birthRoot = join(researchAuthorityRoot, "job-births");
 const publicationLock = join(birthRoot, "publication.lock");
 const publicationContext = new AsyncLocalStorage<{ active: boolean }>();
+// Only the actual protected publisher owns this dynamic extent. Async children
+// retain the object but its private active bit is revoked when the callback ends.
+const originalBirthEffects = new AsyncLocalStorage<{ active: boolean; claim: OriginalHostedProjectControlBirthClaim;
+  jobRootDir: string; manifestPath: string; registryRootDir: string }>();
 const runtimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 const invalid = (): never => { throw new Error("protected_job_birth_authority_invalid"); };
 function initialHost(): boolean {
   try { assertResearchInitialRoot(true); return true; } catch { return false; }
 }
-function privateRoot(): void {
+function privateRoot(assertCurrent?: () => void): void {
   for (const path of [researchAuthorityRoot, birthRoot]) {
-    try { researchPrivateDirectory(path); }
+    try { assertCurrent?.(); researchPrivateDirectory(path, assertCurrent); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     researchCustody(path, true);
   }
 }
-function acquirePublication(): () => void {
-  privateRoot();
-  try { mkdirSync(publicationLock, { mode: 0o700 }); }
+function acquirePublication(assertCurrent?: () => void): () => void {
+  privateRoot(assertCurrent);
+  try { assertCurrent?.(); mkdirSync(publicationLock, { mode: 0o700 }); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("protected_job_birth_publication_busy");
     throw error;
   }
   const identity = researchDirectoryIdentity(publicationLock);
-  return () => { researchCustody(publicationLock, true); assertResearchDirectory(identity); rmdirSync(publicationLock); };
+  return () => { researchCustody(publicationLock, true); assertResearchDirectory(identity); assertCurrent?.(); rmdirSync(publicationLock); };
 }
 
 /** Short owner publication mutex, shared by final census/claim publication and
@@ -45,21 +49,28 @@ function acquirePublication(): () => void {
  * publisher retains uncertainty; there is no PID/age-based stale eviction.
  * Reentrancy is an in-process capability, never a caller-supplied flag. */
 export async function withProtectedCodexGoalJobBirthPublication<T>(effect: () => Promise<T>): Promise<T> {
+  let assertCurrent: (() => void) | undefined;
   if (!initialHost()) {
     // A genuine FULL allocation owns its separate original publication phase.
     // Failure never supplies ordinary initial-host/operator authority.
-    try { originalHostedProjectControlAllocationPublication(); }
+    try { originalHostedProjectControlAllocationPublication(); assertCurrent = () => { originalHostedProjectControlAllocationPublication(); }; }
     catch { return await effect(); }
   }
+  assertCurrent?.();
   if (publicationContext.getStore()?.active) return await effect();
-  const release = acquirePublication(), context = { active: true };
+  const release = acquirePublication(assertCurrent), context = { active: true };
+  let failed = false, originalError: unknown;
   try { return await publicationContext.run(context, effect); }
-  finally { context.active = false; release(); }
+  catch (error) { failed = true; originalError = error; throw error; }
+  finally { context.active = false; try { release(); } catch (error) { if (failed) throw originalError; throw error; } }
 }
-function synchronized<T>(effect: () => T): T {
+function synchronized<T>(effect: () => T, assertCurrent?: () => void): T {
+  assertCurrent?.();
   if (publicationContext.getStore()?.active) return effect();
-  const release = acquirePublication();
-  try { return effect(); } finally { release(); }
+  const release = acquirePublication(assertCurrent);
+  let failed = false, originalError: unknown;
+  try { return effect(); } catch (error) { failed = true; originalError = error; throw error; }
+  finally { try { release(); } catch (error) { if (failed) throw originalError; throw error; } }
 }
 function paths(jobRootDir: string): { birth: string; effect: string } {
   if (!isAbsolute(jobRootDir) || resolve(jobRootDir) !== jobRootDir || jobRootDir === "/" || jobRootDir.includes("\0")) invalid();
@@ -82,7 +93,7 @@ export function publishOriginalHostedProjectControlAllocation(): void {
   const original = originalHostedProjectControlAllocationPublication();
   if (originalControlAllocationPublished) return invalid();
   originalControlAllocationPublished = true; // Uncertain partial publication never retries.
-  synchronized(() => {
+  try { synchronized(() => {
     const current = originalHostedProjectControlAllocationPublication();
     if (!isDeepStrictEqual(current, original)) return invalid();
     const roles = [
@@ -105,12 +116,12 @@ export function publishOriginalHostedProjectControlAllocation(): void {
     originalHostedProjectControlAllocationPublication();
     for (const role of roles) {
       originalHostedProjectControlAllocationPublication(); assertResearchDirectory(role.identity);
-      researchPublish(controlAllocationPath(role.lexical.birth), { ...record, role: role.role }, true);
-      researchPublish(controlAllocationPath(role.physical.birth), { ...record, role: role.role }, true);
+      researchPublish(controlAllocationPath(role.lexical.birth), { ...record, role: role.role }, true, () => { originalHostedProjectControlAllocationPublication(); });
+      researchPublish(controlAllocationPath(role.physical.birth), { ...record, role: role.role }, true, () => { originalHostedProjectControlAllocationPublication(); });
     }
     if (!isDeepStrictEqual(originalHostedProjectControlAllocationPublication(), original)) return invalid();
     for (const role of roles) assertResearchDirectory(role.identity);
-  });
+  }, () => { originalHostedProjectControlAllocationPublication(); }); } catch (error) { holdOriginalHostedProjectControlAllocationError(); throw error; }
 }
 function optionalRecord(path: string): Buffer | undefined {
   try { return researchRead(path); }
@@ -208,9 +219,10 @@ function manifestWitness(path: string, expected: CodexGoalJobManifest): Manifest
     return { signature: signature(before), sha256: researchHash(bytes) };
   } finally { closeSync(fd); }
 }
-function syncDirectory(path: string): void {
+function syncDirectory(path: string, assertCurrent?: () => void): void {
+  assertCurrent?.();
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  try { assertCurrent?.(); fsyncSync(fd); } finally { closeSync(fd); }
 }
 
 declare const preparationBrand: unique symbol;
@@ -320,7 +332,7 @@ function prepareOriginalControlBirth(input: {
       artifactSha256: expected.artifactSha256, jobDirectory, registryDirectory,
       ...(workspaceDirectory ? { workspaceDirectory } : {}), originalControl: { claim, allocation: original, lexicalAllocation, physicalAllocation } });
     return capability;
-  }); } catch (error) { holdOriginalHostedProjectControlBirthClaim(claim); throw error; }
+  }, () => assertOriginalHostedProjectControlBirthClaimCurrent(claim)); } catch (error) { holdOriginalHostedProjectControlBirthClaim(claim); throw error; }
 }
 
 /** The trusted refill owner must create the root before prompt/admission writes.
@@ -394,7 +406,11 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
       return await input.publish(false);
     }
     if (prepared.originalControl) assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim);
-    const value = await input.publish(true);
+    const effectExtent = prepared.originalControl ? { active: true, claim: prepared.originalControl.claim,
+      jobRootDir: job.jobRootDir, manifestPath: input.manifestPath, registryRootDir } : undefined;
+    let value: T;
+    try { value = effectExtent ? await originalBirthEffects.run(effectExtent, () => input.publish(true)) : await input.publish(true); }
+    finally { if (effectExtent) effectExtent.active = false; }
     if (prepared.originalControl) assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim);
     // A real first effect during prompt/worktree preparation permanently removes
     // the no-start proof. Manifest publication may finish but cannot grant release.
@@ -410,10 +426,10 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
     assertResearchDirectory(workspaceDirectory); assertResearchDirectory(prepared.registryDirectory);
     if (prepared.originalControl) assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim);
     const fd = openSync(input.manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { fsyncSync(fd); } finally { closeSync(fd); }
+    try { if (prepared.originalControl) assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim); fsyncSync(fd); } finally { closeSync(fd); }
     for (const path of [job.jobRootDir, dirname(job.jobRootDir), dirname(input.manifestPath), birth.registryDirectory.path]) {
       if (prepared.originalControl) assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim);
-      syncDirectory(path);
+      syncDirectory(path, prepared.originalControl ? () => assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl!.claim) : undefined);
     }
     if (prepared.originalControl) {
       assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim);
@@ -422,7 +438,7 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
         originalAllocation: prepared.originalControl.allocation };
       for (const row of [records, physical]) {
         assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl.claim);
-        researchPublish(row.birth.replace(/\.json$/, ".control-publication-v2.json"), publication, true);
+        researchPublish(row.birth.replace(/\.json$/, ".control-publication-v2.json"), publication, true, () => assertOriginalHostedProjectControlBirthClaimCurrent(prepared.originalControl!.claim));
       }
       assertPreparedBirthCurrent(prepared, input.manifestInput, input.manifestPath);
       consumeOriginalHostedProjectControlBirthClaim(prepared.originalControl.claim);
@@ -435,6 +451,90 @@ export async function publishCodexGoalJobWithProtectedBirth<T>(input: {
     if (originalClaim) holdOriginalHostedProjectControlBirthClaim(originalClaim);
     throw error;
   }
+}
+
+/** Per-enqueue veto for the existing public durable writers. Path spelling
+ * only selects a controlled target; it cannot issue or restore a claim. */
+export function assertOriginalProtectedBirthPublicationPathsCurrent(pathsToWrite: readonly string[]): boolean {
+  const extent = originalBirthEffects.getStore();
+  const original = pathsToWrite.some(originalHostedProjectControlAllocationPathPresent);
+  if (!extent) { if (original) return invalid(); return false; }
+  try {
+    if (!extent.active) return invalid();
+    assertOriginalHostedProjectControlBirthClaimCurrent(extent.claim);
+    const selected = originalHostedProjectControlAllocationPublication(), roleRoot = extent.jobRootDir;
+    if (roleRoot !== selected.selectors.jobRootDir && roleRoot !== selected.selectors.controllerRoot) return invalid();
+    if (extent.registryRootDir !== selected.selectors.registry) return invalid();
+    const directories = [roleRoot, extent.registryRootDir, dirname(extent.registryRootDir), dirname(extent.manifestPath)];
+    for (let parent = dirname(roleRoot);; parent = dirname(parent)) { directories.push(parent); if (parent === "/") break; }
+    const leaves = [extent.manifestPath, join(roleRoot, ".controller-state-origin.json")];
+    for (const path of pathsToWrite) {
+      if (resolve(path) !== path || !isAbsolute(path)) return invalid();
+      if (directories.includes(path) || leaves.includes(path)) continue;
+      const temporary = leaves.some(leaf => dirname(path) === dirname(leaf) &&
+        new RegExp("^\\." + leaf.slice(dirname(leaf).length + 1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\." + process.pid + "\\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\\.tmp$").test(path.slice(dirname(path).length + 1)));
+      if (!temporary) return invalid();
+    }
+    assertOriginalHostedProjectControlBirthClaimCurrent(extent.claim); return true;
+  } catch (error) { holdOriginalHostedProjectControlBirthClaim(extent.claim); throw error; }
+}
+
+/** A factual descriptor veto within the private publication extent. It issues
+ * no handle/FD capability and compares directories only to original held pins. */
+export function assertOriginalProtectedBirthPublicationDescriptorCurrent(path: string, fd: number): void {
+  if (!assertOriginalProtectedBirthPublicationPathsCurrent([path])) return;
+  const extent = originalBirthEffects.getStore(); if (!extent) return invalid();
+  try {
+    const held = fstatSync(fd, { bigint: true });
+    if (held.isDirectory()) { assertOriginalHostedProjectControlBirthDirectoryDescriptorCurrent(extent.claim, path, fd); return; }
+    const named = lstatSync(path, { bigint: true });
+    if (!held.isFile() || held.uid !== 0n || held.gid !== 0n || (held.mode & 0o7777n) !== 0o600n ||
+      realpathSync(path) !== path || signature(held) !== signature(named) || (held.nlink !== 1n && held.nlink !== 2n)) return invalid();
+    if (held.nlink === 2n) {
+      const counterpart = [extent.manifestPath, join(extent.jobRootDir, ".controller-state-origin.json")]
+        .find(leaf => path !== leaf && dirname(path) === dirname(leaf) && path.startsWith(join(dirname(leaf), "." + leaf.slice(dirname(leaf).length + 1) + "." + process.pid + ".")));
+      if (!counterpart || signature(lstatSync(counterpart, { bigint: true })) !== signature(held)) return invalid();
+    }
+    assertOriginalHostedProjectControlBirthClaimCurrent(extent.claim);
+  } catch (error) { holdOriginalHostedProjectControlBirthClaim(extent.claim); throw error; }
+}
+
+/** Negative invalidation only. It resolves the actual private dynamic extent,
+ * never a caller claim, target, success flag or registration. */
+export function holdOriginalProtectedBirthPublicationError(): void {
+  const extent = originalBirthEffects.getStore();
+  if (extent) holdOriginalHostedProjectControlBirthClaim(extent.claim);
+}
+const originalBirthManifestDescriptors = new Set<number>();
+/** Exact first manifest write within the private public-publisher extent.
+ * Ordinary callers retain their existing writer; a selected path is only DATA. */
+export function publishOriginalProtectedBirthManifest(path: string, manifest: unknown): boolean {
+  if (!assertOriginalProtectedBirthPublicationPathsCurrent([path])) return false;
+  const extent = originalBirthEffects.getStore(); if (!extent || path !== extent.manifestPath) return invalid();
+  const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + "\n");
+  if (bytes.length > 1024 * 1024) return invalid();
+  assertOriginalProtectedBirthPublicationPathsCurrent([path]);
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  originalBirthManifestDescriptors.add(fd);
+  try {
+    let offset = 0;
+    while (offset < bytes.length) {
+      assertOriginalProtectedBirthPublicationPathsCurrent([path]);
+      assertOriginalProtectedBirthPublicationDescriptorCurrent(path, fd);
+      const count = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count <= 0) return invalid(); offset += count;
+    }
+    assertOriginalProtectedBirthPublicationDescriptorCurrent(path, fd); fsyncSync(fd);
+    assertOriginalProtectedBirthPublicationPathsCurrent([path]);
+    const held = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
+    if (!held.isFile() || held.uid !== 0n || held.gid !== 0n || held.nlink !== 1n ||
+      (held.mode & 0o7777n) !== 0o600n || held.size !== BigInt(bytes.length) || signature(held) !== signature(named)) return invalid();
+    assertOriginalProtectedBirthPublicationPathsCurrent([path]); closeSync(fd);
+    let closed = false; try { fstatSync(fd); } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EBADF")) throw error; closed = true;
+    }
+    if (!closed) return invalid(); originalBirthManifestDescriptors.delete(fd); return true;
+  } catch (error) { holdOriginalProtectedBirthPublicationError(); throw error; }
 }
 
 /** Exact private birth witnesses select module composition only, not writer

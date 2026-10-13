@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
-  readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+  readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 // Independent of mutable project/job ancestry and of TEST/global authority.
@@ -74,12 +74,12 @@ export function researchCustody(path: string, privateLeaf = false): void {
     if (current === "/") return;
   }
 }
-export function researchPrivateDirectory(path: string): void {
+export function researchPrivateDirectory(path: string, assertCurrent?: () => void): void {
   if (path !== researchAuthorityRoot && !path.startsWith(researchAuthorityRoot + "/")) researchInvalid();
   try { researchCustody(path, true); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    researchCustody(dirname(path)); mkdirSync(path, { mode: 0o700 }); researchCustody(path, true);
+    researchCustody(dirname(path)); assertCurrent?.(); mkdirSync(path, { mode: 0o700 }); researchCustody(path, true);
   }
 }
 export function researchRead(path: string, privateFile = true, max = 1024 * 1024): Buffer {
@@ -140,20 +140,60 @@ export function researchPromptBytes(job: ResearchDirectoryIdentity, path: string
   assertResearchDirectory(job, pinnedRoot);
   return bytes;
 }
-export function researchPublish(path: string, value: unknown, exclusive = false): void {
-  researchCustody(dirname(path), true);
-  const bytes = Buffer.from(JSON.stringify(value) + "\n");
-  if (exclusive) {
-    const fd = openSync(path, "wx", 0o600);
-    try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
-  } else {
-    const tmp = path + "." + randomUUID() + ".tmp";
-    const fd = openSync(tmp, "wx", 0o600);
-    try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
-    try { renameSync(tmp, path); } finally { try { unlinkSync(tmp); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; } }
+// Guarded publication retains an uncertain original descriptor. The optional
+// callback is a fresh veto; the existing private custody still authorizes I/O.
+const guardedResearchPublicationDescriptors = new Set<number>();
+export function researchPublish(path: string, value: unknown, exclusive = false, assertCurrent?: () => void): void {
+  if (!assertCurrent) {
+    researchCustody(dirname(path), true);
+    const bytes = Buffer.from(JSON.stringify(value) + "\n");
+    if (exclusive) {
+      const fd = openSync(path, "wx", 0o600);
+      try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
+    } else {
+      const tmp = path + "." + randomUUID() + ".tmp";
+      const fd = openSync(tmp, "wx", 0o600);
+      try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
+      try { renameSync(tmp, path); } finally { try { unlinkSync(tmp); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; } }
+    }
+    const fd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+
+    return;
   }
-  const fd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  // Genuine original allocation/publication records are all create-only.
+  // No scoped replacement/cleanup can adopt a prior private record.
+  if (!exclusive) researchInvalid();
+  assertCurrent(); researchCustody(dirname(path), true); assertCurrent();
+  const bytes = Buffer.from(JSON.stringify(value) + "\n");
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  guardedResearchPublicationDescriptors.add(fd);
+  const checkFile = (): void => {
+    assertCurrent(); researchCustody(path, true);
+    const held = fstatSync(fd), named = lstatSync(path);
+    if (!held.isFile() || held.uid !== 0 || held.gid !== 0 || held.nlink !== 1 || (held.mode & 0o7777) !== 0o600 ||
+      researchFileSignature(held) !== researchFileSignature(named)) researchInvalid();
+    assertCurrent();
+  };
+  for (let offset = 0; offset < bytes.length;) {
+    checkFile(); const count = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (count <= 0) researchInvalid(); offset += count;
+  }
+  checkFile(); fsyncSync(fd); checkFile();
+  closeSync(fd); assertGuardedResearchDescriptorClosed(fd); guardedResearchPublicationDescriptors.delete(fd);
+  assertCurrent(); researchCustody(dirname(path), true); assertCurrent();
+  const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  guardedResearchPublicationDescriptors.add(directory);
+  assertCurrent(); fsyncSync(directory); assertCurrent(); closeSync(directory);
+  assertGuardedResearchDescriptorClosed(directory); guardedResearchPublicationDescriptors.delete(directory);
+}
+
+function assertGuardedResearchDescriptorClosed(fd: number): void {
+  try { fstatSync(fd); } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EBADF") return;
+    throw error;
+  }
+  researchInvalid();
 }
 
 type ResearchFileHashCache = Map<string, { signature: string; digest: string }>;

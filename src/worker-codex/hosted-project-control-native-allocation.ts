@@ -112,6 +112,11 @@ export function prepareOriginalHostedProjectControlAllocation(): OriginalHostedP
   }
 }
 
+/** Negative invalidation only; no caller facts can restore this original owner. */
+export function holdOriginalHostedProjectControlAllocationError(): void {
+  if (allocation) allocation.phase = AllocationPhase.Held;
+}
+
 /** Exact original in-process applicability; copied selectors confer nothing.
  * This read never changes a phase, creates a root or releases a writer. */
 export function assertOriginalHostedProjectControlAllocationCurrent(): void { current(); }
@@ -165,6 +170,16 @@ export function claimOriginalHostedProjectControlBirth(input: Readonly<{
 export function originalHostedProjectControlBirthRootPresent(path: string): boolean {
   return allocation !== undefined && [allocation.selectors.jobRootDir, allocation.selectors.controllerRoot].includes(path);
 }
+/** Negative canonical route selection, including held/closed history. It grants
+ * no scope and never adopts a caller path or a discovered inode. */
+export function originalHostedProjectControlAllocationPathPresent(path: string): boolean {
+  return allocation !== undefined && (path === allocation.selectors.jobRootDir || path.startsWith(allocation.selectors.jobRootDir + "/"));
+}
+/** Exact private registry budget veto. Existing writer authorization remains
+ * independent; no caller registry root can construct an allocation. */
+export function assertOriginalHostedProjectControlRegistryBudgetCurrent(registryRootDir: string): void {
+  if (allocation && registryRootDir === allocation.selectors.registry) current();
+}
 export function assertOriginalHostedProjectControlBirthClaimCurrent(claim: OriginalHostedProjectControlBirthClaim): void {
   const state = birthClaims.get(claim);
   try { check(state && state.active && current() === state.owner && claimedBirthRoles.has(state.role)); }
@@ -175,6 +190,21 @@ export function assertOriginalHostedProjectControlBirthClaimCurrent(claim: Origi
 export function holdOriginalHostedProjectControlBirthClaim(claim: OriginalHostedProjectControlBirthClaim): void {
   const state = birthClaims.get(claim); check(state && state.owner === allocation);
   state.active = false; state.owner.phase = AllocationPhase.Held;
+}
+/** Descriptor comparison only against an already retained original directory.
+ * Neither an fd number nor a caller path can enroll new directory custody. */
+export function assertOriginalHostedProjectControlBirthDirectoryDescriptorCurrent(
+  claim: OriginalHostedProjectControlBirthClaim, path: string, fd: number,
+): void {
+  assertOriginalHostedProjectControlBirthClaimCurrent(claim);
+  const state = birthClaims.get(claim)!;
+  try {
+    const selected = state.owner.directories.find(row => row.path === path); check(selected);
+    const actual = fstatSync(fd, { bigint: true });
+    check(actual.isDirectory() && stable(actual, selected.stat) && mount(fd) === selected.mount &&
+      realpathSync("/proc/self/fd/" + fd) === path);
+    assertOriginalHostedProjectControlBirthClaimCurrent(claim);
+  } catch (error) { state.owner.phase = AllocationPhase.Held; throw error; }
 }
 function publicationSignature(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs, stat.mode, stat.uid, stat.gid, stat.nlink].join(":");

@@ -2,9 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  open,
   readFile,
   realpath,
   rename,
+  rmdir,
+  unlink,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -368,7 +371,11 @@ async function releaseFileLock(
   );
   if (current && sameWorkspaceLock(current, record)) {
     assertPublicationCurrent?.([lockDir]);
-    await rm(lockDir, { recursive: true, force: true });
+    if (!assertPublicationCurrent) await rm(lockDir, { recursive: true, force: true });
+    else {
+      assertPublicationCurrent([lockFile]); await unlink(lockFile);
+      assertPublicationCurrent([lockDir]); await rmdir(lockDir);
+    }
   }
 }
 
@@ -612,6 +619,8 @@ function parseAttemptPatchStats(value: unknown): AttemptPatchStats | undefined {
   return { additions, deletions, source };
 }
 
+// A revoked consuming veto cannot release an uncertain open descriptor.
+const vetoedWorkspaceLockHandles = new Set<import("node:fs/promises").FileHandle>();
 async function atomicWriteJson(
   path: string,
   value: Readonly<Record<string, unknown>>,
@@ -623,17 +632,37 @@ async function atomicWriteJson(
   assertPublicationCurrent?.([join(targetDir, ".tmp-")]);
   const tempDir = await mkdtemp(join(targetDir, ".tmp-"));
   const tempPath = join(tempDir, basename(path));
+  let failed = false;
   try {
     assertPublicationCurrent?.([tempPath]);
-    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
+    if (!assertPublicationCurrent) {
+      await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    } else {
+      const bytes = Buffer.from(JSON.stringify(value, null, 2) + "\n");
+      const handle = await open(tempPath, "wx", 0o600);
+      vetoedWorkspaceLockHandles.add(handle);
+      for (let offset = 0; offset < bytes.length;) {
+        assertPublicationCurrent([tempPath]);
+        const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+        if (bytesWritten <= 0) throw new Error("workspace_lock_publication_short_write");
+        offset += bytesWritten;
+      }
+      assertPublicationCurrent([tempPath]); await handle.sync();
+      assertPublicationCurrent([tempPath]); await handle.close(); vetoedWorkspaceLockHandles.delete(handle);
+    }
     assertPublicationCurrent?.([tempPath, path]);
     await rename(tempPath, path);
-  } finally {
-    assertPublicationCurrent?.([tempDir]);
-    await rm(tempDir, { recursive: true, force: true });
+  } catch (error) { failed = true; throw error; }
+  finally {
+    // Retain owned temporary evidence and handles after scoped uncertainty.
+    if (!(failed && assertPublicationCurrent)) {
+      if (!assertPublicationCurrent) await rm(tempDir, { recursive: true, force: true });
+      else {
+        assertPublicationCurrent([tempPath]);
+        try { await unlink(tempPath); } catch (error) { if (!isNodeErrorCode(error, "ENOENT")) throw error; }
+        assertPublicationCurrent([tempDir]); await rmdir(tempDir);
+      }
+    }
   }
 }
 

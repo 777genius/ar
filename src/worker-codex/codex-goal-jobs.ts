@@ -1,3 +1,4 @@
+import { assertOriginalProtectedBirthPublicationPathsCurrent, publishOriginalProtectedBirthManifest } from "./protected-job-birth";
 import { resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
 export { defaultCodexGoalJobRegistryRoot, resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
@@ -291,13 +292,14 @@ export async function createCodexGoalJob(input: {
         );
         try {
           assertPublicationCurrent([join(registryRootDir, manifest.jobId)]);
+          assertOriginalProtectedBirthPublicationPathsCurrent([join(registryRootDir, manifest.jobId)]);
           await mkdir(join(registryRootDir, manifest.jobId), {
             recursive: true,
             mode: 0o700,
           });
           await custodyCertification?.revalidate();
           assertPublicationCurrent([path]);
-          await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+          if (!publishOriginalProtectedBirthManifest(path, manifest)) await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
             encoding: "utf8",
             mode: 0o600,
             flag: input.overwrite ? "w" : "wx",
