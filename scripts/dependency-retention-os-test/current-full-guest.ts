@@ -61,13 +61,13 @@ function prepareCurrentTestEvictionPolicy(roots:CurrentColdHotRoots,inputReferen
   });
 }
 import { FullH1Case, originalH1Case } from "./current-removal-h1-fixture.js";
+import { runOriginalHostedProjectControlSdkTestConsumer } from "../../dist/worker-codex/hosted-project-control-sdk-test-consumer.js";
 try {
   assertReadonlyHostOperator();assert.equal(process.argv[2],"qualify");
   const removalCase=process.argv.length===4 && process.argv[3]==="--parent-crash-h1" ? originalH1Case() : FullH1Case.Positive;assert.equal(process.argv.length,removalCase===FullH1Case.ParentCrash?4:3);
   if(removalCase===FullH1Case.Positive){
     await consumeOriginalFullProjectControlGuestOnce();
-    // Infrastructure slice: no SDK scope/scenario is issued here. The genuine
-    // canonical SDK consumer must be inserted before this positive FD close.
+    evidence.originalPublicSdkSource = await runOriginalHostedProjectControlSdkTestConsumer();
     await completeOriginalFullProjectControlGuestSetup();
   }
   assert.equal(readCurrentBackingGeometry(),CurrentBackingGeometry.Adoptable);

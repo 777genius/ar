@@ -28,7 +28,7 @@ let creatorSequence = 0;
 // can be published. It is never inferred released or reconstructed on retry.
 let creatingDirectories: Directory[] | undefined;
 let allocation: { phase: AllocationPhase; selectors: OriginalHostedProjectControlAllocation;
-  directories: Directory[]; parent: Directory; ownerBirth: string } | undefined;
+  directories: Directory[]; originalDirectories: readonly Directory[]; parent: Directory; ownerBirth: string } | undefined;
 let sourceFixtureIssued = false;
 const sourceFixtureDescriptors = new Set<number>();
 function check(value: unknown): asserts value { if (!value) throw new Error("hosted_original_control_allocation_held"); }
@@ -120,7 +120,8 @@ export function prepareOriginalHostedProjectControlAllocation(): OriginalHostedP
       workspace: root.path + "/workspace", durableHandoffs: handoffs.path });
     try { lstatSync(selectors.workspace); check(false); }
     catch (error) { check(error instanceof Error && "code" in error && error.code === "ENOENT"); }
-    allocation = { phase: AllocationPhase.Reserved, selectors, directories, parent, ownerBirth: ownerBirth() };
+    allocation = { phase: AllocationPhase.Reserved, selectors, directories,
+      originalDirectories: Object.freeze(directories.slice()), parent, ownerBirth: ownerBirth() };
     current(); creatingDirectories = undefined; return selectors;
   } catch (error) {
     // Creation history and held descriptors are preserved. Unknown creation can
@@ -284,7 +285,9 @@ export function originalHostedProjectControlAllocationPublication(): Readonly<{
 }> {
   const own = current();
   return Object.freeze({ schemaVersion: 2, ownerBirth: own.ownerBirth, selectors: own.selectors,
-    directories: Object.freeze(own.directories.filter(row => row.path === own.selectors.jobRootDir || row.path.startsWith(own.selectors.jobRootDir + "/"))
+    // Publication identifies the original creation set. Later genuine lock
+    // leases remain in directories and undergo every custody/census check.
+    directories: Object.freeze(own.originalDirectories.filter(row => row.path === own.selectors.jobRootDir || row.path.startsWith(own.selectors.jobRootDir + "/"))
       .map(row => Object.freeze({ path: row.path, device: String(row.stat.dev), inode: String(row.stat.ino), mountId: row.mount }))) });
 }
 
@@ -345,6 +348,15 @@ export function originalHostedProjectControlGitRoleForPath(path: string): Origin
   if (path === own.selectors.source) return OriginalControlGitRole.Source;
   check(path === own.selectors.workspace && gitWorkspace);
   return publicationWitnesses.has(OriginalBirthRole.Child) ? OriginalControlGitRole.PublishedChild : OriginalControlGitRole.CreatedChild;
+}
+/** Expected comparison DATA measured from the original retained workspace.
+ * It cannot create a binding, installation, Ready state or mount exception. */
+export function originalHostedProjectControlWorkspaceInspectionSelection(): Readonly<{
+  jobRootDir: string; workspace: Readonly<{ canonicalPath: string; dev: string; ino: string }>;
+}> {
+  const own = current(); check(gitWorkspace && gitWorkspace.path === own.selectors.workspace);
+  return Object.freeze({ jobRootDir: own.selectors.jobRootDir,
+    workspace: Object.freeze({ canonicalPath: gitWorkspace.path, dev: String(gitWorkspace.stat.dev), ino: String(gitWorkspace.stat.ino) }) });
 }
 /** Exact private registry budget veto. Existing writer authorization remains
  * independent; no caller registry root can construct an allocation. */

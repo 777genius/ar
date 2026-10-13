@@ -90,7 +90,8 @@ export function readHostedDependencyBinding(jobId: string): HostedDependencyBind
   return bytes ? parseHostedDependencyBinding(decodeHostedActivationBytes(bytes)) : null;
 }
 
-export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependencyBinding): void {
+type PhysicalWorkspaceSelection = Pick<HostedDependencyBinding, "jobRootDir" | "workspace">;
+function assertPhysicalWorkspaceShape(binding: PhysicalWorkspaceSelection): void {
   assertHostedActivationOperator();
   for (let path = binding.jobRootDir;; path = dirname(path)) {
     const stat = lstatSync(path);
@@ -103,6 +104,29 @@ export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependenc
   const git = lstatSync(`${binding.workspace.canonicalPath}/.git`);
   if (!git.isDirectory() || git.uid !== 0 || (git.mode & 0o022) || git.isSymbolicLink() || realpathSync(`${binding.workspace.canonicalPath}/.git`) !== `${binding.workspace.canonicalPath}/.git` ||
       readdirSync(`${binding.workspace.canonicalPath}/.git`).includes("commondir")) invalid();
+}
+function assertPhysicalWorkspaceMounts(jobRootDir: string,
+  attachment: import("../../../core/host-infrastructure/configured-auth-attachment").HostedConfiguredAuthAttachment | undefined): void {
+  let admitted = 0;
+  for (const line of readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n")) {
+    const fields = line.split(" ");
+    if (fields.length < 10 || !fields.includes("-")) invalid();
+    const point = fields[4]!.replace(/\\([0-7]{3})/g, (_, code: string) => String.fromCharCode(parseInt(code, 8)));
+    if (point === jobRootDir || point.startsWith(`${jobRootDir}/`)) {
+      if (!attachment || line !== attachment.targetMount || ++admitted !== 1) invalid();
+    }
+  }
+  if (attachment && admitted !== 1) invalid();
+}
+/** Factual inspection only: no installed binding, Ready proof or mount
+ * exception can be issued by expected paths/identities supplied to this reader. */
+export function assertHostedDependencyPhysicalWorkspaceInspection(selection: PhysicalWorkspaceSelection): void {
+  if (selection.workspace.canonicalPath !== selection.jobRootDir + "/workspace") invalid();
+  assertPhysicalWorkspaceShape(selection);
+  assertPhysicalWorkspaceMounts(selection.jobRootDir, undefined);
+}
+export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependencyBinding): void {
+  assertPhysicalWorkspaceShape(binding);
   // An explicitly installed one-shot auth role is the only finite exception.
   // Profile selection is original protected IO, never an exemption DTO.
   const inventoryBytes=readHostedActivationBytes("readonly-inventory.json"), installationBytes=readHostedActivationBytes("host-installation.json");
@@ -122,18 +146,10 @@ export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependenc
       assertConfiguredAuthAttachmentPhysical(attachment);
     }
   }
-  let admitted=0;
   // All other mounts, including same-device binds, still veto this TEST profile.
-  for (const line of readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n")) {
-    const fields = line.split(" ");
-    if (fields.length < 10 || !fields.includes("-")) invalid();
-    const point = fields[4]!.replace(/\\([0-7]{3})/g, (_, code: string) => String.fromCharCode(parseInt(code, 8)));
-    if (point === binding.jobRootDir || point.startsWith(`${binding.jobRootDir}/`)) {
-      if(!attachment || line!==attachment.targetMount || ++admitted!==1) invalid();
-    }
-  }
+  assertPhysicalWorkspaceMounts(binding.jobRootDir, attachment);
   if(attachment) {
-    if(admitted!==1 || !inventoryBytes || !installationBytes ||
+    if(!inventoryBytes || !installationBytes ||
       !readHostedActivationBytes("readonly-inventory.json")?.equals(inventoryBytes) ||
       !readHostedActivationBytes("host-installation.json")?.equals(installationBytes)) invalid();
     assertConfiguredAuthAttachmentPhysical(attachment);
