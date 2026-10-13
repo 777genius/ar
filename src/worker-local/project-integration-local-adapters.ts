@@ -774,13 +774,14 @@ export {
 export type LocalWorkspaceIntegrationLockOptions = {
   readonly rootDir: string;
   readonly staleLockMs?: number;
+  readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 };
 
 export class LocalWorkspaceIntegrationLock implements WorkspaceLockPort {
   private readonly store: LocalFileWorkspaceLockStore;
 
   constructor(private readonly options: LocalWorkspaceIntegrationLockOptions) {
-    this.store = new LocalFileWorkspaceLockStore(options.rootDir);
+    this.store = new LocalFileWorkspaceLockStore(options.rootDir, options.assertPublicationCurrent);
   }
 
   async acquire(input: {

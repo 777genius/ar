@@ -21,9 +21,15 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
   return {
     jobId: z.string().optional(),
     configPath: z.string().optional(),
+    storageRootDir: z.string().optional(),
     jobRootDir: z.string().optional(),
     authRootDir: z.string().optional(),
     stateRootDir: z.string().optional(),
+    runtimeHomeRootDir: z.string().optional(),
+    encryptionKeyPath: z.string().optional(),
+    runtimeEventsPath: z.string().optional(),
+    agentTempRootDir: z.string().optional(),
+    durableHandoffRootDir: z.string().optional(),
     workspacePath: z.string().optional(),
     promptPath: z.string().optional(),
     codexGoalObjective: z.string().max(codexGoalObjectiveMaxChars).describe(
@@ -68,6 +74,8 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
 
 export function statusInputSchema(): Record<string, z.ZodTypeAny> {
   return {
+    jobId: z.string().optional(),
+    storageRootDir: z.string().optional(),
     jobRootDir: z.string().optional(),
     taskId: z.string().optional(),
     workspacePath: z.string().optional(),

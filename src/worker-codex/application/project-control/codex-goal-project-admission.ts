@@ -10,9 +10,9 @@ import {
   projectAdmissionDebtCounts,
   type ConsumedOutputLedger,
   type ProjectAccessScope,
-  type ProjectAdmissionGate,
   type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
+  type ProjectAdmissionWriterObservation,
   type ProjectDebtItem,
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -46,8 +46,6 @@ import {
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
   withoutAdmittedInputPatchDebt,
-  withoutCapacityContinuationSiblingDebt,
-  withoutInPlaceContinuationSelfDebt,
   type ProjectAdmissionInPlaceContinuationBinding,
   type ProjectAdmissionJobWorkspaceBinding,
 } from "./codex-goal-project-admission-normalization";
@@ -98,6 +96,20 @@ export type CodexProjectAdmissionDeps = {
     readonly registryRootDir: string;
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
+  /** Trusted, fresh executor/owner observation of every physical writable root.
+   * Unknown means unresolved authority. Released requires positive lifecycle proof;
+   * neither missing files nor a stopped-looking overview establish release.
+   * Native owner adapters verify grant/spec hashes and pinned backing identities.
+   * This is an internal observation port, never caller-supplied MCP permission.
+   */
+  readonly readWriterWritableRoots?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<ProjectAdmissionWriterObservation>;
+  /** Owner reconciliation outside topology; returned reader must cold-check
+   * exact retained authority and never treat the prepared decision as a permit. */
+  readonly prepareWriterObservation?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<() => Promise<ProjectAdmissionWriterObservation>>;
   readonly observeManifestRuntime?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<{
@@ -124,7 +136,7 @@ type CodexProjectAdmissionInput = {
   readonly inPlaceContinuationTarget?: ProjectAdmissionInPlaceContinuationBinding;
   readonly targetBinding?: ProjectAdmissionTargetBinding;
 };
-type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
+export type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
   readonly controllerJobId: string;
 };
 type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
@@ -134,6 +146,7 @@ type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly skipActiveProposedAdmissionNormalization?: boolean;
   readonly admittedInputPatchRequest?: ProjectAdmissionRequest;
   readonly targetRequest?: ProjectAdmissionRequest;
+  readonly guardedOrphanGitRead?: { readonly workspacePath: string; readonly recipe: import("../../codex-goal-runtime-result-io").WorkspacePatchGitReadRecipe };
 };
 
 export function projectAdmissionDetailView(input: {
@@ -174,49 +187,7 @@ export function projectAdmissionDetailView(input: {
   };
 }
 
-export function codexProjectAdmissionGate(
-  input: CodexProjectMutationAdmissionInput,
-): ProjectAdmissionGate {
-  return {
-    async evaluate(request) {
-      // Admission protects a mutation. A cached pre-launch snapshot can no
-      // longer prove that another writer did not start in the meantime.
-      const observedSnapshot = await buildCodexProjectAdmissionSnapshot({
-        ...input,
-        targetRequest: request,
-        ...(request.workspacePath
-          ? { requestedWorkspacePath: request.workspacePath }
-          : {}),
-        blockAnyLiveWriter: request.ownedPaths !== undefined ||
-          request.workspacePath === undefined,
-        ...(input.admittedInputPatchTarget
-          ? { admittedInputPatchRequest: request }
-          : {}),
-      });
-      const snapshot = await withoutCapacityContinuationSiblingDebt({
-        snapshot: observedSnapshot,
-        request,
-        ...(input.capacityContinuationTarget
-          ? { binding: input.capacityContinuationTarget }
-          : {}),
-      });
-      const continuationSnapshot = await withoutInPlaceContinuationSelfDebt({
-        snapshot,
-        request,
-        ...(input.inPlaceContinuationTarget
-          ? { binding: input.inPlaceContinuationTarget }
-          : {}),
-      });
-      return evaluateProjectAdmission({
-        request: {
-          ...request,
-          projectId: request.projectId ?? input.scope.projectId,
-        },
-        snapshot: continuationSnapshot,
-      });
-    },
-  };
-}
+export { codexProjectAdmissionGate } from "./codex-goal-project-mutation-admission";
 
 export async function readCodexProjectAdmissionSnapshot(
   input: CodexProjectAdmissionInput,
@@ -392,6 +363,7 @@ export async function buildCodexProjectAdmissionSnapshot(
       consumedOutput,
       orphanWorkspaceBindings: ledgerState.orphanWorkspaceBindings,
       deniedRoots: input.scope.deniedRoots ?? [],
+      ...(input.guardedOrphanGitRead ? { guardedGitRead: input.guardedOrphanGitRead } : {}),
     }));
     debt.push(...await diskPressureDebt(root));
   }

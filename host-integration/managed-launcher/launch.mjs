@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { access, open, readFile, writeFile, statfs, stat, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readlinkSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { prepareManagedJobLayout, captureManagedStoragePin, requireManagedPinCapability, readManagedPinFile, MANAGED_STORAGE_LIFETIME_CONFIG } from '../host-jobs/storage-policy.mjs';
 import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
@@ -86,6 +86,7 @@ const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
 const MANAGED_STARTUP_SECONDS = 600;
+const jobStartupSeconds = limits => Object.hasOwn(limits, 'startupSeconds') ? limits.startupSeconds : MANAGED_STARTUP_SECONDS;
 // Admission snapshot, not a reservation of memory against concurrent launches.
 const OS_SSH_RESERVE_BYTES = 2n * 1024n ** 3n;
 function readMemoryInfo() {
@@ -122,16 +123,22 @@ export function parseInvocation(request) {
   if (!['job', 'provider'].includes(operation) || typeof request.jobId !== 'string' || request.jobId !== request.jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId) ||
       !Array.isArray(payload) || !payload.length || payload.length > 4096 ||
       payload.some(x => typeof x !== 'string' || x.includes('\0')) || !safePath(payload[0])) denied();
-  const allowed = ['operation', 'unit', 'jobId', 'payload', ...(operation === 'job' ? ['fingerprint', 'limits'] : ['readonlyPaths'])];
+  const allowed = ['operation', 'unit', 'jobId', 'payload', ...(operation === 'job' ? ['fingerprint', 'limits'] : ['readonlyPaths', 'storageContext', 'ordinaryJobRoot'])];
   if (Object.keys(request).some(key => !allowed.includes(key))) denied();
   let trusted = [];
   if (operation === 'job') {
     if (!/^subscription-job-[a-f0-9]{64}\.service$/.test(unit) || !/^[a-f0-9]{64}$/.test(request.fingerprint) ||
         !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(request.jobId)) denied();
     const bounds = { runtimeSeconds: 86400, stopSeconds: 300, memoryMiB: 1048576, tasksMax: 65536, cpuPercent: 100000 };
-    if (!request.limits || typeof request.limits !== 'object' || Array.isArray(request.limits) ||
-        Object.keys(request.limits).length !== Object.keys(bounds).length || Object.entries(bounds).some(([key, max]) =>
+    if (!request.limits || typeof request.limits !== 'object' || Array.isArray(request.limits)) denied();
+    const hasStartup = Object.hasOwn(request.limits, 'startupSeconds');
+    if (Object.keys(request.limits).some(key => !Object.hasOwn(bounds, key) && key !== 'startupSeconds') ||
+        Object.keys(bounds).some(key => !Object.hasOwn(request.limits, key)) ||
+        Object.keys(request.limits).length !== Object.keys(bounds).length + (hasStartup ? 1 : 0) ||
+        Object.entries(bounds).some(([key, max]) =>
           !Number.isSafeInteger(request.limits[key]) || request.limits[key] < 1 || request.limits[key] > max)) denied();
+    if (hasStartup && (!Number.isSafeInteger(request.limits.startupSeconds) || request.limits.startupSeconds < 1 ||
+        request.limits.startupSeconds > 900)) denied();
   } else {
     if (!/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit) ||
         !payload[0].endsWith('/node') || !safePath(payload[1])) denied();
@@ -139,11 +146,35 @@ export function parseInvocation(request) {
         !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile(request)))) denied();
     trusted = payload.slice(0, 2);
   }
+  if (request.ordinaryJobRoot !== undefined) {
+    const pin = request.ordinaryJobRoot;
+    if (operation !== 'provider' || !pin || Object.keys(pin).sort().join(',') !== 'device,inode,path' ||
+        !safePath(pin.path) || !Number.isSafeInteger(pin.device) || pin.device < 0 || !Number.isSafeInteger(pin.inode) || pin.inode < 1) denied();
+  }
   if (request.readonlyPaths !== undefined) {
     if (!Array.isArray(request.readonlyPaths) || request.readonlyPaths.length > 256 ||
         request.readonlyPaths.some(path => !safePath(path) || path === '/')) denied();
   }
+  if (request.storageContext !== undefined) {
+    const context = request.storageContext;
+    if (operation !== 'provider' || payload.length !== 2 || request.readonlyPaths !== undefined ||
+        !context || typeof context !== 'object' || Array.isArray(context) ||
+        !['codexHome,home,workspace', 'agentTemp,codexHome,home,workspace'].includes(Object.keys(context).sort().join(',')) ||
+        Object.values(context).some(path => !safePath(path) || path === '/' || path !== path.trim() || path.endsWith('/') || path.length > 4096)) denied();
+  }
   return { ...request, trusted };
+}
+
+async function captureProviderStorage(request, policy, trust) {
+  if (request.storageContext === undefined) return undefined;
+  if (governedFdProfile(request)) denied();
+  // The helper is fixed beside the already trusted ORIGINAL bootstrap. An old
+  // context-absent SDK keeps its existing installed-launcher path unchanged.
+  const helper = `${dirname(request.payload[1])}/original-provider-storage-context.js`;
+  if (helper === policy.storageRoot || helper.startsWith(policy.storageRoot + '/')) denied();
+  await trust(helper);
+  const { captureOriginalProviderStorage } = await import(pathToFileURL(helper).href);
+  return captureOriginalProviderStorage(policy.storageRoot, request.storageContext);
 }
 
 export function managedLauncherInvocation(request) {
@@ -159,7 +190,8 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     ...(storagePin ? ['/usr/bin/mount', '/usr/sbin/blkid'] : [])];
   for (const path of [nodePath, ...trusted, ...confinementExecutables]) await trust(path);
   await executable(TINI_PATH);
-  const policy = storagePin ? storagePin.pin.layout : await admit(request.jobId);
+  const policy = storagePin ? storagePin.pin.layout : await admit(request.jobId,
+    request.ordinaryJobRoot ? { expectedJobRoot: request.ordinaryJobRoot } : {});
   if (storagePin && (operation !== 'job' || storagePin.binding.jobId !== request.jobId ||
       storagePin.binding.fingerprint !== request.fingerprint || storagePin.binding.unit !== unit)) denied();
   if (!policy || !safePath(policy.storageRoot) || policy.storageRoot === '/') denied();
@@ -178,45 +210,53 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   for (const path of [nodePath, guardPath, launcherPath, ...trusted]) {
     if (path === policy.storageRoot || path.startsWith(policy.storageRoot + '/')) denied();
   }
-  const properties = [
-    'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
-    `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
-    ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
-      `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
-      ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
-    ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
-    'ProtectControlGroups=yes',
-    ...profileProperties(),
-    ...(governedFdProfile(request) ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`,
-      'SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS',
-      'SystemCallArchitectures=native', 'NoNewPrivileges=yes'] : []),
-    ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
-    'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
-    'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',
-    'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
-    ...readonlyPaths.map(path => `BindReadOnlyPaths=${path}:${path}:norbind`),
-    ...(storagePin ? ['MountFlags=private', 'RemainAfterExit=yes',
-      `OpenFile=/proc/${process.pid}/fd/${storagePin.pin.handle.fd}:storage-pin:read-only`,
-      `OpenFile=/proc/${process.pid}/fd/${storagePin.receipt.fd}:storage-acquisition`,
-      `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
-      `InaccessiblePaths=${storagePin.binding.directory}`] : []),
-  ];
   assertMemoryAdmission(request, memoryInfo);
-  return { command: '/usr/bin/systemd-run', args: [
-    ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
-    `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
-    `--setenv=HOME=${policy.home}`,
-    ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
-    ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
-    `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
-    '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
-    `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
-    ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
-      '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
-        generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
-      '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
-    '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload,
-  ] };
+  const providerStorage = await captureProviderStorage(request, policy, trust);
+  try {
+    const providerPayload = providerStorage ? [...payload, '--provider-storage-v1',
+      Buffer.from(JSON.stringify(providerStorage.witness)).toString('base64url')] : payload;
+    const properties = [
+      'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
+      `TimeoutStartSec=${operation === 'job' ? jobStartupSeconds(request.limits) : MANAGED_STARTUP_SECONDS}`,
+      ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
+        `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
+        ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
+      ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
+      'ProtectControlGroups=yes',
+      ...profileProperties(),
+      ...(governedFdProfile(request) ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`,
+        'SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS',
+        'SystemCallArchitectures=native', 'NoNewPrivileges=yes'] : []),
+      ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
+      'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
+      ...(providerStorage ? [`BindReadOnlyPaths=${policy.storageRoot}:${policy.storageRoot}:norbind`,
+        ...[...new Set(Object.values(providerStorage.witness.context))].map(path => `ReadWritePaths=${path}`),
+        ...[policy.jobRoot, ...new Set(Object.values(providerStorage.witness.context))].map(path => `BindPaths=${path}:${path}:norbind`)] : []),
+      'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',
+      'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
+      ...readonlyPaths.map(path => `BindReadOnlyPaths=${path}:${path}:norbind`),
+      ...(storagePin ? ['MountFlags=private', 'RemainAfterExit=yes',
+        `OpenFile=/proc/${process.pid}/fd/${storagePin.pin.handle.fd}:storage-pin:read-only`,
+        `OpenFile=/proc/${process.pid}/fd/${storagePin.receipt.fd}:storage-acquisition`,
+        `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
+        `InaccessiblePaths=${storagePin.binding.directory}`] : []),
+    ];
+    return { command: '/usr/bin/systemd-run', ...(providerStorage ? { providerStorage } : {}), args: [
+      ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
+      `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
+      `--setenv=HOME=${policy.home}`,
+      ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
+      ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
+      `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
+      '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
+      `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
+      ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
+        '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
+          generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
+        '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
+      '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...providerPayload,
+    ] };
+  } catch (error) { providerStorage?.close(); throw error; }
 }
 
 // Optional transport deadlines only narrow an existing job. They are never
@@ -254,7 +294,7 @@ export function parseLauncherArguments(args, timeNamespace) {
 export function originalJobReservation(request) {
   const parsed = parseInvocation(request);
   if (parsed.operation !== 'job') denied();
-  const workNs = BigInt(MANAGED_STARTUP_SECONDS + parsed.limits.runtimeSeconds) * 1_000_000_000n;
+  const workNs = BigInt(jobStartupSeconds(parsed.limits) + parsed.limits.runtimeSeconds) * 1_000_000_000n;
   return Object.freeze({ workNs, cleanupNs: workNs + BigInt(parsed.limits.stopSeconds) * 1_000_000_000n });
 }
 
@@ -564,7 +604,9 @@ async function main() {
   // Every real asynchronous admission has completed. No await, callback or
   // renewed timeout lies between this original monotonic sample and birth.
   if (ends) assertOriginalReservation(ends, reservation, anchor, process.hrtime.bigint());
-  const child = spawn(command, childArgs, options);
+  let child;
+  try { invocation.providerStorage?.revalidate(); child = spawn(command, childArgs, options); }
+  finally { invocation.providerStorage?.close(); }
   const handlers = new Map(['SIGINT', 'SIGTERM', 'SIGHUP'].map(signal => [signal, () => child.kill(signal)]));
   for (const [signal, handler] of handlers) process.on(signal, handler);
   child.on('error', () => { process.exitCode = 70; });

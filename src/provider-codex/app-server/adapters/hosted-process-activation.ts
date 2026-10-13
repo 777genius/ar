@@ -1,3 +1,5 @@
+import { readHostedFdProfile } from "./hosted-fd-observation";
+import { assertHostedOrdinaryWriterPaths, readHostedOrdinaryWriterExtent, assertHostedOrdinaryProviderNamespace, type HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { hostedFdLaunch } from "./hosted-fd-launch";
 import type { ChildProcess } from "node:child_process";
@@ -377,7 +379,7 @@ function pidBirth(pid: string): string {
 }
 
 const failedOrdinaryWaits = new WeakSet<object>();
-const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void }>();
+const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void; namespace?: (pid: number) => void }>();
 export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess): void {
   failedOrdinaryWaits.add(child); revokeHostedToolFilesForChild(child);
 }
@@ -397,12 +399,20 @@ export function releaseHostedOrdinaryProcess(child: CodexAppServerChildProcess, 
   });
 }
 
+export function assertHostedOrdinaryProviderRelease(child: object, fence: HostedActivationFence, pid: number): void {
+  assertHostedActivationFence(fence);
+  const retained = ordinaryReleases.get(child);
+  if (!retained) return;
+  if (retained.released || failedOrdinaryWaits.has(child)) invalid();
+  retained.namespace?.(pid);
+}
+
 /** Production default primitive calls this with its private synchronous spawn.
  * It never receives worker factory injection, mount options or a managed ticket. */
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string; readonly ordinaryJobRoot?: HostedOrdinaryProviderJobRoot }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
-    const { activation, start, reservation: parentReservation, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
+    const { installation, activation, start, reservation: parentReservation, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
     const jobRoot = canonical(start.jobRootDir);
     const workspacePath = canonical(start.workspacePath);
     const dependency = readHostedDependencyBinding(str(start.jobId));
@@ -418,6 +428,21 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     const cwd = canonical(input.cwd);
     if ((cwd !== start.workspacePath && cwd !== input.env.HOME) || input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job" ||
         (input.env[codexProviderEgressProfileEnvVar] ?? CodexProviderEgressProfileId.FullInternetV1) !== profileId) invalid();
+    const extentStartId = str(parentReservation.startId), extentStartBytes = readHostedActivationBytes(`ordinary-starts/${extentStartId}.json`);
+    if (!extentStartBytes) invalid();
+    const extent = readHostedOrdinaryWriterExtent(fence, extentStartId, extentStartBytes,
+      installation as { runtimeSha: unknown; runtimeManifestSha256: unknown; inventorySha256: unknown });
+    const assertExtent = () => {
+      if (!extent) return;
+      if (!extent.homes.some(row => row.home === input.env.HOME && row.codexHome === input.env.CODEX_HOME)) invalid();
+      assertHostedOrdinaryWriterPaths(extent, [jobRoot, workspacePath, input.env.HOME!, input.env.CODEX_HOME!,
+        join(input.env.CODEX_HOME!, "plugins/cache"), join(input.env.CODEX_HOME!, "cache/remote_plugin_catalog"),
+        ...["TMPDIR", "TMP", "TEMP", "SUBSCRIPTION_RUNTIME_TMPDIR"].flatMap(key => input.env[key] ? [input.env[key]!] : [])]);
+    };
+    assertExtent();
+    if (extent && !readHostedFdProfile()) throw new Error("hosted_ordinary_provider_namespace_unqualified");
+    const jobIdentity = extent ? lstatSync(jobRoot) : undefined;
+    const ordinaryJobRoot = jobIdentity ? { path: jobRoot, device: jobIdentity.dev, inode: jobIdentity.ino } : undefined;
     const starts = rows(activation.ordinaryStarts);
     if (childBound && starts.some(row => !!row && typeof row === "object" &&
         "creatorId" in row && row.creatorId === start.creatorId && "unit" in row &&
@@ -466,15 +491,16 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
         }) + "\n"));
       }
       assertHostedScopedAdmission(fence, parentId);
-      const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath, ...(ordinaryJobRoot ? { ordinaryJobRoot } : {}) }, fence);
       const descriptorScope = hostedToolFilesForChild(child);
-      ordinaryReleases.set(child, { released: false, revalidate: held => {
+      ordinaryReleases.set(child, { released: false, ...(extent ? { namespace: (pid: number) => assertHostedOrdinaryProviderNamespace(extent, pid, ordinaryJobRoot!) } : {}), revalidate: held => {
         const fresh = readHostedOrdinaryProcessOrigin(held, descriptorScope);
         if (JSON.stringify(fresh.start) !== JSON.stringify(start) ||
             JSON.stringify(fresh.reservation) !== JSON.stringify(parentReservation) ||
             fresh.activation.installationId !== activation.installationId || fresh.activation.bootId !== activation.bootId ||
             fresh.activation.supervisorId !== activation.supervisorId) invalid();
         assertHostedScopedAdmission(held, parentId);
+        assertExtent();
         const retained = readHostedActivationBytes(`ordinary-starts/${startId}.json`);
         const current = requiredWire("host-activation.json", activationKeys).value;
         const row = rows(current.ordinaryStarts).find(row => !!row && typeof row === "object" && "startId" in row && row.startId === startId);

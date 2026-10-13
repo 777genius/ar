@@ -1,10 +1,37 @@
-import test from 'node:test';
+import test, { after, mock } from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { buildSystemdInvocation, managedLauncherInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
+import { buildSystemdInvocation, managedLauncherInvocation, parseInvocation, originalJobReservation, assertOriginalReservation } from './launch.mjs';
 import { runGuardedPayload as guardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
 import { socketFence, bootstrapCaps } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+// Argument tests model a host with no enrollment, independently of the worker
+// running them. Keep the real policy reader and real ENOENT from absent files.
+const policyFixture = fs.mkdtempSync(join(tmpdir(), 'TEST-managed-launcher-policy-'));
+const actualLstat = fs.lstatSync, actualReadFile = fs.readFileSync;
+const policyPath = path => {
+  if (typeof path !== 'string') return path;
+  for (const [prefix, name] of [['/etc/subscription-runtime', 'etc'],
+    ['/var/lib/subscription-runtime-host-policy', 'private']]) {
+    if (path === prefix || path.startsWith(prefix + '/')) return join(policyFixture, name) + path.slice(prefix.length);
+  }
+  return path;
+};
+const policyStatMock = mock.method(fs, 'lstatSync', (path, ...options) => actualLstat(policyPath(path), ...options));
+const cgroupMock = mock.method(fs, 'readFileSync', (path, options) => {
+  if (path !== '/proc/self/cgroup') return actualReadFile(path, options);
+  const bytes = Buffer.from('0::/\n'), encoding = typeof options === 'string' ? options : options?.encoding;
+  return encoding ? bytes.toString(encoding) : bytes;
+});
+syncBuiltinESMExports();
+after(() => {
+  policyStatMock.mock.restore(); cgroupMock.mock.restore(); syncBuiltinESMExports();
+  fs.rmSync(policyFixture, { recursive: true, force: true });
+});
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
@@ -22,6 +49,19 @@ const build = (request, options = {}, admission = admit) => buildSystemdInvocati
 });
 const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'a'.repeat(36)}.service`, jobId: job.jobId,
   payload: ['/usr/bin/node', '/opt/runtime/hosted-app-server-launcher.js'] };
+test('original provider accepts only finite materialized storage roles and keeps other envelopes closed', () => {
+  const storageContext = { workspace: '/scratch/workspace', home: '/scratch/session/home', codexHome: '/scratch/session/codex-home' };
+  assert.deepEqual(parseInvocation({ ...provider, storageContext }).storageContext, storageContext);
+  const tempContext = { ...storageContext, agentTemp: '/scratch/task/tmp/agent' };
+  assert.deepEqual(parseInvocation({ ...provider, storageContext: tempContext }).storageContext, tempContext);
+  assert.equal(parseInvocation(provider).storageContext, undefined);
+  for (const request of [{ ...job, storageContext }, { ...provider, storageContext, readonlyPaths: [] },
+    { ...provider, storageContext, payload: [...provider.payload, '--provider-storage-v1', 'caller-witness'] },
+    { ...provider, storageContext: { ...storageContext, writablePaths: ['/etc'] } },
+    { ...provider, storageContext: { ...tempContext, extraTemp: '/scratch/state' } },
+    { ...provider, storageContext: { ...storageContext, home: storageContext.home + '\n' } },
+    { ...provider, storageContext: { ...storageContext, workspace: '/' } }]) assert.throws(() => parseInvocation(request));
+});
 test('job and provider mask journal IPC without replacing provider pipes', async () => {
   for (const request of [job, provider]) {
     const { args } = await build(request);
@@ -74,6 +114,64 @@ test('fixed startup budget reserves the same bounded time inside original monoto
   assert.throws(() => assertOriginalReservation(ends, reservation, anchor, now + 1n), /original ends exhausted/);
   assert.throws(() => assertOriginalReservation(ends, reservation, anchor, anchor - 1n), /original ends exhausted/);
 });
+test('job startup binds exactly to timeout and original reservation', async () => {
+  const second = 1_000_000_000n;
+  for (const startupSeconds of [1, 300, 600, 900]) {
+    const limits = { ...job.limits, startupSeconds };
+    const request = { ...job, limits };
+    const invocation = await build(request);
+    assert.equal(invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')),
+      `--property=TimeoutStartSec=${startupSeconds}`);
+    assert.equal(invocation.args.includes(`--property=RuntimeMaxSec=${job.limits.runtimeSeconds}`), true);
+    assert.equal(invocation.args.includes(`--property=TimeoutStopSec=${job.limits.stopSeconds}`), true);
+    const reservation = originalJobReservation(request);
+    assert.equal(reservation.workNs, BigInt(startupSeconds + job.limits.runtimeSeconds) * second);
+    assert.equal(reservation.cleanupNs - reservation.workNs, BigInt(job.limits.stopSeconds) * second);
+    assert.equal(Object.hasOwn(parseInvocation(request).limits, 'startupSeconds'), true);
+  }
+  const omitted = await build(job);
+  assert.equal(omitted.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')), '--property=TimeoutStartSec=600');
+  assert.equal(originalJobReservation(job).workNs, 690n * second);
+  assert.equal(originalJobReservation(job).cleanupNs, 720n * second);
+  assert.equal(Object.hasOwn(parseInvocation(job).limits, 'startupSeconds'), false);
+});
+
+test('provider startup is fixed at 600 and accepts no override or limits', async () => {
+  const invocation = await build(provider);
+  assert.equal(invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')), '--property=TimeoutStartSec=600');
+  await assert.rejects(() => build({ ...provider, startupSeconds: 300 }));
+  await assert.rejects(() => build({ ...provider, limits: job.limits }));
+});
+
+test('startup is optional only as an own valid field and mandatory limits stay complete', async () => {
+  const limits = Object.create({ startupSeconds: 300 });
+  Object.assign(limits, job.limits);
+  const inherited = { ...job, limits };
+  const invocation = await build(inherited);
+  assert.equal(invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')), '--property=TimeoutStartSec=600');
+  assert.equal(originalJobReservation(inherited).workNs, 690n * 1_000_000_000n);
+  for (const key of Object.keys(job.limits)) {
+    const missing = { ...job, limits: { ...job.limits } };
+    delete missing.limits[key];
+    await assert.rejects(() => build(missing));
+  }
+  for (const startupSeconds of [undefined, null, Number.NaN, Infinity, -Infinity, 0.5, '300', true, false, 0, -1, 901, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(() => build({ ...job, limits: { ...job.limits, startupSeconds } }));
+  }
+});
+
+test('original reservation refuses exact work and cleanup boundaries', () => {
+  const second = 1_000_000_000n;
+  const reservation = originalJobReservation(job);
+  const anchor = second, now = 2n * second;
+  assert.throws(() => assertOriginalReservation(
+    { workEndNs: now + reservation.workNs, cleanupEndNs: now + reservation.cleanupNs + 1n },
+    reservation, anchor, now), /original ends exhausted/);
+  assert.throws(() => assertOriginalReservation(
+    { workEndNs: now + reservation.workNs + 1n, cleanupEndNs: now + reservation.cleanupNs },
+    reservation, anchor, now), /original ends exhausted/);
+});
+
 test('request denies old argv bridge, unknown operations and arbitrary policy fields', async () => {
   for (const value of [[], ['--property=ProtectSystem=no'], null, { ...job, operation: 'shell' }, { ...job, startupSeconds: 600 }, { ...provider, startupSeconds: 600 },
     ...['cwd', 'mounts', 'workspacePath', 'jobRoot', 'properties', 'args', 'capabilities', 'sockets', 'storageRoot', 'pipe', 'env', 'startupSeconds'].map(key => ({ ...job, [key]: [] }))]) {

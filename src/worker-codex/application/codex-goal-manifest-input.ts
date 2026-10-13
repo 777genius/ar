@@ -1,3 +1,4 @@
+import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./codex-goal-storage-paths";
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import { childConfigFromRecord } from "../child-execution-confinement";
@@ -49,10 +50,21 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
   assertCodexGoalStorageTransportSupported(args);
   const cwd = resolvePath(process.cwd(), args.cwd ?? process.cwd());
   const jobId = requiredRawString(args.jobId, "jobId");
-  const jobRootDir = resolvePath(
-    cwd,
-    args.jobRootDir ?? defaultCodexGoalJobRoot(jobId),
-  );
+  const sourceEnv = args.sourceEnv ?? process.env;
+  const storageRootDir = args.storageRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_STORAGE_ROOT;
+  const selectedPath = (value: string | undefined): string | undefined => value === undefined ? undefined : resolvePath(cwd, value);
+  const paths = resolveCodexGoalPaths({
+    taskId: args.taskId ?? jobId, jobId,
+    storageRootDir: resolveCodexGoalStorageRoot(storageRootDir, cwd),
+    jobRootDir: selectedPath(args.jobRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_JOB_ROOT ?? (storageRootDir === undefined ? defaultCodexGoalJobRoot(jobId) : undefined)),
+    workspacePath: selectedPath(args.workspacePath ?? sourceEnv.SUBSCRIPTION_RUNTIME_WORKSPACE_PATH),
+    stateRootDir: selectedPath(args.stateRootDir), runtimeHomeRootDir: selectedPath(args.runtimeHomeRootDir),
+    encryptionKeyPath: selectedPath(args.encryptionKeyPath), durableHandoffRootDir: selectedPath(args.durableHandoffRootDir),
+    outputPath: selectedPath(args.outputPath), progressPath: selectedPath(args.progressPath),
+    runtimeEventsPath: selectedPath(args.runtimeEventsPath), agentTempRootDir: selectedPath(args.agentTempRootDir),
+    logPath: selectedPath(args.logPath), sourceEnv,
+  });
+  const jobRootDir = paths.jobRootDir;
   const modelBackend = optionalCodexGoalModelBackend(args.modelBackend);
   const mimo = modelBackend.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const controlModes = goalControlModesFromRecord(args as unknown as JsonObject);
@@ -67,10 +79,11 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
     jobId,
     ...(stringValue(args.description) ? { description: stringValue(args.description) as string } : {}),
     ...(tagValues(args.tags).length ? { tags: tagValues(args.tags) } : {}),
+    ...manifestPaths(paths),
     jobRootDir,
     authRootDir: resolvePath(cwd, args.authRootDir ?? defaultAuthRoot),
     ...(args.stateRootDir ? { stateRootDir: resolvePath(cwd, args.stateRootDir) } : {}),
-    workspacePath: requiredString(args.workspacePath, "workspacePath", cwd),
+    workspacePath: paths.workspacePath,
     promptPath: resolvePath(cwd, args.promptPath ?? join(jobRootDir, "prompt.md")),
     ...(stringValue(args.codexGoalObjective)
       ? { codexGoalObjective: stringValue(args.codexGoalObjective) as string }
@@ -112,6 +125,11 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
   };
 }
 
+function manifestPaths(paths: ReturnType<typeof resolveCodexGoalPaths>) {
+  const { sourceEnv: _env, storageRootDir: _root, ...resolved } = paths;
+  return resolved;
+}
+
 export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGoalJobManifestPatch {
   const cwd = resolvePath(process.cwd(), args.cwd ?? process.cwd());
   const patch: Record<string, unknown> = { ...parseCodexGoalStorageData(args) };
@@ -121,6 +139,11 @@ export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGo
   putIfDefined(patch, "jobRootDir", args.jobRootDir && resolvePath(cwd, args.jobRootDir));
   putIfDefined(patch, "authRootDir", args.authRootDir && resolvePath(cwd, args.authRootDir));
   putIfDefined(patch, "stateRootDir", args.stateRootDir && resolvePath(cwd, args.stateRootDir));
+  putIfDefined(patch, "runtimeHomeRootDir", args.runtimeHomeRootDir && resolvePath(cwd, args.runtimeHomeRootDir));
+  putIfDefined(patch, "encryptionKeyPath", args.encryptionKeyPath && resolvePath(cwd, args.encryptionKeyPath));
+  putIfDefined(patch, "runtimeEventsPath", args.runtimeEventsPath && resolvePath(cwd, args.runtimeEventsPath));
+  putIfDefined(patch, "agentTempRootDir", args.agentTempRootDir && resolvePath(cwd, args.agentTempRootDir));
+  putIfDefined(patch, "durableHandoffRootDir", args.durableHandoffRootDir && resolvePath(cwd, args.durableHandoffRootDir));
   putIfDefined(patch, "workspacePath", args.workspacePath && resolvePath(cwd, args.workspacePath));
   putIfDefined(patch, "promptPath", args.promptPath && resolvePath(cwd, args.promptPath));
   putIfDefined(patch, "codexGoalObjective", stringValue(args.codexGoalObjective));

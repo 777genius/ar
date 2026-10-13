@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, recordTerminalOutputDecision, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
+import { ProjectAdmissionDecisionReason, ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, recordTerminalOutputDecision, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
 import { RunEventProjectionService, RunEventProviderKind, type RunObservationSnapshot } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileRunEventStore, LocalFileRunEventProjectionStateStore } from "@vioxen/subscription-runtime/store-local-file";
 import { runEventRootFromArgs } from "../codex-goal-mcp-inputs";
@@ -20,6 +20,7 @@ import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broke
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../codex-goal-project-workspace-lock";
 import { assertAdmissionRegistryComplete, revalidateAdmissionCreatedWorktree } from "../application/project-control/codex-goal-project-admission-target";
+import { prospectiveAdmissionResourceBacking } from "../application/project-control/codex-goal-project-admission-paths";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
 import { readCodexGoalConsumedOutputLedgers } from "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { assertProjectControlCustodyScopeCanonical } from "../codex-goal-mcp-project-scope";
@@ -44,8 +45,9 @@ async function fixture(options: {
   jobRootParent?: string;
   jobRootName?: string;
   jobsParentAlias?: string;
+  temporaryRoot?: string;
 } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "retained-disjoint-admission-"));
+  const root = await mkdtemp(join(options.temporaryRoot ?? tmpdir(), options.temporaryRoot ? "TEST-retained-disjoint-admission-" : "retained-disjoint-admission-"));
   roots.push(root);
   const workspacePath = join(root, "historical");
   const requestedWorkspace = join(root, "isolated");
@@ -96,15 +98,26 @@ async function fixture(options: {
   };
   const summaries: CodexGoalJobSummary[] = [summary];
   const items = [item];
+  // This injected policy fixture explicitly declares released retained owners.
+  // Exact snapshots keep new identities and manifest drift Unknown; native
+  // executor/owner qualification is exercised by the dedicated owner tests.
+  const releasedWriters = new Map<string, CodexGoalJobManifest>();
+  function releaseSyntheticWriter(manifest: CodexGoalJobManifest) {
+    releasedWriters.set(manifest.jobId, structuredClone(manifest));
+  }
+  releaseSyntheticWriter(manifest);
   const deps: CodexProjectAdmissionDeps = {
     listJobs: async () => summaries,
     buildOverviewItems: async () => items,
     readJob: readCodexGoalJob,
+    readWriterWritableRoots: async (current) =>
+      isDeepStrictEqual(releasedWriters.get(current.jobId), current)
+        ? { status: "released" } : { status: "unknown" },
   };
   const input = { registryRootDir, scope: { projectId: "project", jobIdPrefixes: ["project-"] }, deps };
   const gate = codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" });
   const request = { operation: ProjectOperation.StartWorker, workspacePath: requestedWorkspace, ownedPaths: ["new/"] };
-  return { root, workspacePath, manifest, summary, summaries, item, items, handoff, result, resultPath, input, gate, request };
+  return { root, workspacePath, manifest, summary, summaries, item, items, handoff, result, resultPath, input, gate, request, releaseSyntheticWriter };
 }
 
 describe("retained terminal output path-disjoint admission", () => {
@@ -232,6 +245,7 @@ describe("retained terminal output path-disjoint admission", () => {
       f.summaries.push({ ...f.summary, jobId: secondManifest.jobId, manifestPath: join(secondRoot, "job.json") });
       f.items.push({ ...f.item, jobId: secondManifest.jobId });
       await writeFile(join(secondRoot, "job.json"), JSON.stringify(secondManifest));
+      f.releaseSyntheticWriter(secondManifest);
     }
     const paths = [join(f.workspacePath, "held.txt"), join(f.workspacePath, "untracked.txt"), f.resultPath, f.handoff.manifestPath, f.handoff.patchPath, f.summary.manifestPath];
     const before = await Promise.all(paths.map((path) => readFile(path)));
@@ -395,8 +409,18 @@ describe("retained terminal output path-disjoint admission", () => {
   });
 });
 
+// Physical operation targets need a supported kernel backing, not CI's overlay.
+// Keep the portable injected policy fixture on its default temporary directory.
+async function physicalFixture() {
+  const f = await fixture({ temporaryRoot: "/dev/shm" });
+  if (!(await prospectiveAdmissionResourceBacking(f.root))?.length) {
+    throw new Error("expected supported tmpfs physical backing for retained fixture");
+  }
+  return f;
+}
+
 async function creationFixture() {
-  const f = await fixture();
+  const f = await physicalFixture();
   const source = await realpath(f.request.workspacePath);
   const revision = (await exec("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
   const target = { jobId: "project-next", sourceWorkspacePath: source,
@@ -409,40 +433,58 @@ async function creationFixture() {
   return { ...f, target, request, input, gate: codexProjectAdmissionGate(input) };
 }
 
-async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
-  const f = await fixture();
-  const prepared = await createBuiltinFixture();
+async function startFixture(options: { colocatedJobRoot?: boolean; admittedInputPatch?: boolean } = {}) {
+  const f = await physicalFixture();
+  const prepared = await createBuiltinFixture({ temporaryRoot: "/dev/shm" });
+  if (!(await prospectiveAdmissionResourceBacking(prepared.workspacePath))?.length) {
+    throw new Error("expected supported tmpfs physical backing for prepared fixture");
+  }
   const scope = { ...f.input.scope, ...prepared.scope, workspaceRoots: [f.root, prepared.root] };
   const jobRootDir = join(options.colocatedJobRoot ? f.input.registryRootDir : join(f.root, "jobs"), "project-worker");
   await mkdir(jobRootDir, { recursive: true });
   const promptPath = join(jobRootDir, "prompt.md");
   await writeFile(promptPath, "bounded prompt\n");
   const manifestInput = { ...prepared.manifest, jobRootDir, promptPath,
+    ...(options.admittedInputPatch ? { tags: ["worker-role-producer"] } : {}),
     workspacePath: await realpath(prepared.workspacePath), authRootDir: join(f.root, "synthetic-auth"),
     projectAccessScope: { projectId: scope.projectId, isolatedWorkspaceRoot: await realpath(prepared.workspacePath),
       allowedAccountIds: ["account-a"], authRoot: join(f.root, "synthetic-auth") } };
+  let patchSha256: string | undefined;
+  if (options.admittedInputPatch) {
+    await mkdir(join(prepared.workspacePath, "src"), { recursive: true });
+    await writeFile(join(prepared.workspacePath, "src/example.ts"), "export const repaired = true;\n");
+    await exec("git", ["-C", prepared.workspacePath, "add", "src/example.ts"]);
+    const patch = await exec("git", ["-C", prepared.workspacePath, "diff", "--cached", "--binary", "HEAD", "--"]);
+    patchSha256 = createHash("sha256").update(patch.stdout).digest("hex");
+  }
   const plan = planProjectPreStartAdmission({
-    value: { mode: "serial-builtin", contract: declarativeContract(prepared.contract) },
+    value: { mode: "serial-builtin", contract: { ...declarativeContract(prepared.contract),
+      ...(patchSha256 ? { inputPatchHash: patchSha256, reviewKind: "remediation" } : {}) } },
     confirmed: true, scope, manifest: manifestInput,
   })!;
   const createManifest = { ...manifestInput, projectPreStartAdmission: plan.descriptor };
   // Native refill order: prepare outside registry, broker publishes only its
   // registration, then the stored-manifest validator refreshes the receipt.
-  await prepareProjectPreStartAdmission({ plan, manifest: createManifest, scope });
+  await prepareProjectPreStartAdmission({ plan, manifest: createManifest, scope,
+    ...(patchSha256 ? { verifiedInputPatchArtifactSha256: patchSha256, verifiedInputPatchStagedSha256: patchSha256 } : {}) });
   const broker = createCodexProjectControlBroker({ controller: { ...f.manifest, jobId: "project-controller" },
     registryRootDir: f.input.registryRootDir, scope, admissionDeps: f.input.deps, createManifest });
   await broker.createJob({ jobId: createManifest.jobId, workspacePath: createManifest.workspacePath,
     ownedPaths: ["src/example.ts"] });
   const manifest = await readCodexGoalJob({ registryRootDir: f.input.registryRootDir, jobId: createManifest.jobId });
-  await validateProjectRefillPreStartAdmission({ registryRootDir: f.input.registryRootDir,
+  const workspaceMode = await validateProjectRefillPreStartAdmission({ registryRootDir: f.input.registryRootDir,
     controllerJobId: "project-controller", manifest, scope,
-    expectedCanonicalWorkspacePath: manifest.workspacePath, admittedInputPatch: false });
+    expectedCanonicalWorkspacePath: manifest.workspacePath, admittedInputPatch: options.admittedInputPatch ?? false });
+  if (options.admittedInputPatch && workspaceMode !== "admitted_input_patch") throw new Error("expected fresh admitted input patch");
   const summary = (await listCodexGoalJobs({ registryRootDir: f.input.registryRootDir })).find((row) => row.jobId === manifest.jobId)!;
   f.summaries.push(summary);
-  const item = { ...f.item, jobId: manifest.jobId, workspacePath: manifest.workspacePath,
-    workspaceDirty: false, resultExists: false, resultStatus: undefined,
-    activeWriterRisk: "none", changedFiles: [] };
+  const item: Record<string, unknown> = { ...f.item, jobId: manifest.jobId, workspacePath: manifest.workspacePath,
+    workspaceDirty: options.admittedInputPatch ?? false, resultExists: false, resultStatus: undefined,
+    activeWriterRisk: options.admittedInputPatch ? "dirty_workspace_without_worker" : "none",
+    activeWriterRiskReasons: options.admittedInputPatch ? ["dirty_workspace_without_worker"] : [], changedFiles: [] };
   f.items.push(item);
+  // The prepared self remains Unknown to the synthetic owner port. Only its
+  // actual manifest/receipt/artifact shape and held lease establish the target.
   const launch = await goalLaunchInput({ ...codexGoalJobToArgs(manifest), cwd: f.root });
   const request = { operation: ProjectOperation.StartWorker, jobId: manifest.jobId,
     workspacePath: manifest.workspacePath, ownedPaths: ["src/example.ts"] };
@@ -453,8 +495,11 @@ async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
       return withValidatedProjectWorkspaceLock({ locks, scope, requestedWorkspacePath: manifest.workspacePath,
         owner: `project-refill-start:project-controller:${manifest.jobId}`,
         effect: async (workspaceLease) => {
-          const binding = { start: { manifest, launch, workspaceLease } };
-          return effect(codexProjectAdmissionGate({ ...input, targetBinding: binding }), binding);
+          const binding = { start: { manifest, launch, workspaceLease,
+            ...(options.admittedInputPatch ? { workspaceMode: "admitted_input_patch" as const } : {}) } };
+          return effect(codexProjectAdmissionGate({ ...input, targetBinding: binding,
+            ...(options.admittedInputPatch ? { admittedInputPatchTarget: { jobId: manifest.jobId,
+              workspacePath: workspaceLease.canonicalWorkspacePath } } : {}) }), binding);
         },
       });
     },
@@ -462,10 +507,24 @@ async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
 }
 
 describe("operation-bound retained output admission", () => {
-  it.each(["outside scope", "changed scoped identity", "missing parent proof"])("retains the original admission identity across %s mutation races", async (mutation) => {
+  it.skipIf(process.platform !== "linux").each(["missing observation port", "unknown owner", "changed owner manifest"] as const)("keeps retained history fenced with %s", async (fault) => {
+    const f = await creationFixture();
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    let deps = f.input.deps;
+    if (fault === "missing observation port") {
+      const { readWriterWritableRoots: _read, ...withoutObservation } = deps;
+      deps = withoutObservation;
+    }
+    if (fault === "unknown owner") deps = { ...deps, readWriterWritableRoots: async () => ({ status: "unknown" }) };
+    if (fault === "changed owner manifest") await writeFile(f.summary.manifestPath,
+      JSON.stringify({ ...f.manifest, promptPath: join(f.manifest.jobRootDir, "changed-prompt.md") }));
+    await expect(codexProjectAdmissionGate({ ...f.input, deps }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.skipIf(process.platform !== "linux").each(["outside scope", "changed scoped identity", "missing parent proof"])("retains the original admission identity across %s mutation races", async (mutation) => {
     const f = await creationFixture();
     await mkdir(join(f.root, "future"));
-    const alternate = mutation === "outside scope" ? await mkdtemp(join(tmpdir(), "admission-outside-")) : join(f.root, "alternate");
+    const alternate = mutation === "outside scope" ? await mkdtemp("/dev/shm/TEST-admission-outside-") : join(f.root, "alternate");
     if (mutation === "outside scope") roots.push(alternate);
     else await mkdir(alternate);
     const broker = createCodexProjectControlBroker({ controller: { ...f.manifest, jobId: "project-controller" },
@@ -483,7 +542,37 @@ describe("operation-bound retained output admission", () => {
     await expect(lstat(join(alternate, "worker"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("creates a missing target through the actual broker without consuming disjoint retained output", async () => {
+  it.skipIf(process.platform !== "linux")("denies a future target retargeted during the awaited owner read", async () => {
+    const f = await creationFixture();
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    const before = await prospectiveAdmissionResourceBacking(f.target.path);
+    expect(before?.length).toBeGreaterThan(0);
+    const retained = await readFile(f.handoff.patchPath);
+    const alternate = join(f.root, "alternate");
+    await mkdir(alternate);
+    const observeOwner = f.input.deps.readWriterWritableRoots!;
+    let retargeted = false;
+    const deps = { ...f.input.deps, readWriterWritableRoots: async (manifest: CodexGoalJobManifest) => {
+      const observed = await observeOwner(manifest);
+      if (!retargeted) {
+        retargeted = true;
+        await symlink(alternate, join(f.root, "future"));
+      }
+      return observed;
+    } };
+    const decision = await codexProjectAdmissionGate({ ...f.input, deps }).evaluate(f.request);
+    expect(retargeted).toBe(true);
+    const after = await prospectiveAdmissionResourceBacking(f.target.path);
+    expect(after?.length).toBeGreaterThan(0);
+    expect(after).not.toEqual(before);
+    expect(decision).toMatchObject({ allowed: false, reason: ProjectAdmissionDecisionReason.UnreadableProjectState,
+      summary: { scope: "unknown", target: {} } });
+    expect(decision.summary?.target).toEqual({});
+    await expect(lstat(join(alternate, "worker"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(f.handoff.patchPath)).toEqual(retained);
+  });
+
+  it.skipIf(process.platform !== "linux")("creates a missing target through the actual broker without consuming disjoint retained output", async () => {
     const f = await creationFixture();
     const { targetBinding: _binding, ...unbound } = f.input;
     await expect(codexProjectAdmissionGate(unbound).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
@@ -499,7 +588,7 @@ describe("operation-bound retained output admission", () => {
     await expect(f.gate.evaluate({ ...f.request, ownedPaths: ["held.txt"] })).resolves.toMatchObject({ allowed: false });
   });
 
-  it("proves an absent scoped worktree root without granting its existing ancestor workspace authority", async () => {
+  it.skipIf(process.platform !== "linux")("proves an absent scoped worktree root without granting its existing ancestor workspace authority", async () => {
     const f = await creationFixture();
     const worktreeRoot = join(f.root, "future");
     const scope = { ...f.input.scope, workspaceRoots: [f.target.sourceWorkspacePath], worktreeRoots: [worktreeRoot] };
@@ -517,7 +606,7 @@ describe("operation-bound retained output admission", () => {
     expect((await exec("git", ["-C", f.target.path, "rev-parse", "HEAD"])).stdout.trim()).toBe(f.target.expectedRevision);
   });
 
-  it.each(["source identity", "source SHA", "scope", "request ownership", "expected target identity"])("denies an unproved future target: %s", async (mutation) => {
+  it.skipIf(process.platform !== "linux").each(["source identity", "source SHA", "scope", "request ownership", "expected target identity"])("denies an unproved future target: %s", async (mutation) => {
     const f = await creationFixture();
     const target = { ...f.target };
     if (mutation === "source identity") target.expectedSourceRealPath = f.workspacePath;
@@ -529,7 +618,7 @@ describe("operation-bound retained output admission", () => {
     await expect(codexProjectAdmissionGate(input).evaluate(request)).resolves.toMatchObject({ allowed: false });
   });
 
-  it("revalidates the materialized canonical Git root and pinned HEAD", async () => {
+  it.skipIf(process.platform !== "linux")("revalidates the materialized canonical Git root and pinned HEAD", async () => {
     const f = await creationFixture();
     await mkdir(join(f.root, "future"));
     await exec("git", ["-C", f.target.sourceWorkspacePath, "worktree", "add", "--detach", f.target.path, f.target.expectedRevision]);
@@ -541,7 +630,7 @@ describe("operation-bound retained output admission", () => {
     await expect(revalidateAdmissionCreatedWorktree(input)).rejects.toThrow("project_control_created_admission_target_changed");
   });
 
-  it("admits only its exact registered prepared self while the native lease is held", async () => {
+  it.skipIf(process.platform !== "linux")("admits only its exact registered prepared self while the native lease is held", async () => {
     const f = await startFixture();
     await expect(codexProjectAdmissionGate(f.input).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
     await f.withLease(async (gate, binding) => {
@@ -552,7 +641,7 @@ describe("operation-bound retained output admission", () => {
     });
   });
 
-  it("allows unknown optional process fields only for a native never-launched target", async () => {
+  it.skipIf(process.platform !== "linux")("allows unknown optional process fields only for a native never-launched target", async () => {
     const f = await startFixture();
     Object.assign(f.item, { workerProcessAlive: undefined, progressProcessAlive: undefined, progressExists: false, workerSupervisorKind: "none" });
     await f.withLease(async (gate) => {
@@ -562,7 +651,41 @@ describe("operation-bound retained output admission", () => {
     });
   });
 
-  it.each(["progress", "log", "state"] as const)("fences false/false stopped self with native %s artifacts and a valid receipt", async (artifact) => {
+  it.skipIf(process.platform !== "linux")("admits the first launch of a verified patch without a progress PID", async () => {
+    const f = await startFixture({ admittedInputPatch: true });
+    Object.assign(f.item, { progressProcessAlive: undefined, progressExists: false, workerSupervisorKind: "none" });
+    await f.withLease(async gate => {
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+      for (const observation of [{ progressProcessAlive: true }, { workerProcessAlive: true },
+        { progressStatus: "running" }, { workerSupervisorKind: "unknown" }]) {
+        const before = { ...f.item };
+        Object.assign(f.item, observation);
+        await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+        for (const key of Object.keys(observation)) delete f.item[key];
+        Object.assign(f.item, before);
+      }
+      await writeFile(join(f.manifest.workspacePath, "src/example.ts"), "changed after admission\n");
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    });
+  });
+
+  it.skipIf(process.platform !== "linux").each(["progress", "log", "state"] as const)("fences an admitted patch with prior %s artifacts despite missing progress PID", async artifact => {
+    const f = await startFixture({ admittedInputPatch: true });
+    Object.assign(f.item, { progressProcessAlive: undefined, progressExists: false, workerSupervisorKind: "none" });
+    await f.withLease(async gate => {
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+      if (artifact === "progress") await writeFile(f.launch.config.progressPath!, "{}\n");
+      if (artifact === "log") await writeFile(f.launch.logPath!, "prior attempt\n");
+      if (artifact === "state") {
+        const root = f.launch.config.stateRootDir ?? join(f.manifest.jobRootDir, "state");
+        await mkdir(root, { recursive: true });
+        await writeFile(join(root, "attempt.json"), "{}\n");
+      }
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    });
+  });
+
+  it.skipIf(process.platform !== "linux").each(["progress", "log", "state"] as const)("fences false/false stopped self with native %s artifacts and a valid receipt", async (artifact) => {
     const f = await startFixture();
     const receipt = await readFile(f.manifest.projectPreStartAdmission!.receiptPath);
     const bindingBefore = await assertProjectPreStartAdmissionLaunchBinding({ manifest: f.manifest, scope: f.input.scope });
@@ -586,7 +709,7 @@ describe("operation-bound retained output admission", () => {
     expect(await readFile(f.manifest.projectPreStartAdmission!.receiptPath)).toEqual(receipt);
   });
 
-  it.each(["progressPid", "workerSupervisorKind", "attemptNumber"])("fences unknown process observation with prior %s", async (field) => {
+  it.skipIf(process.platform !== "linux").each(["progressPid", "workerSupervisorKind", "attemptNumber"])("fences unknown process observation with prior %s", async (field) => {
     const f = await startFixture();
     Object.assign(f.item, { workerProcessAlive: undefined, progressProcessAlive: undefined,
       [field]: field === "workerSupervisorKind" ? "direct" : 12345 });
@@ -595,7 +718,7 @@ describe("operation-bound retained output admission", () => {
     });
   });
 
-  it.each(["jobId", "jobRootDir", "promptPath"] as const)("binds launch %s before admission exemption and any launch effect", async (field) => {
+  it.skipIf(process.platform !== "linux").each(["jobId", "jobRootDir", "promptPath"] as const)("binds launch %s before admission exemption and any launch effect", async (field) => {
     const f = await startFixture();
     const receiptBefore = await readFile(f.manifest.projectPreStartAdmission!.receiptPath);
     const supervisor = vi.spyOn(goalOps, "startCodexGoalTmux").mockImplementation(async () => { throw new Error("synthetic_supervisor_must_not_be_reached"); });
@@ -614,7 +737,7 @@ describe("operation-bound retained output admission", () => {
     expect(await readFile(f.manifest.projectPreStartAdmission!.receiptPath)).toEqual(receiptBefore);
   });
 
-  it("admits an exact native interrupted continuation beside complete stopped retained output", async () => {
+  it.skipIf(process.platform !== "linux")("admits an exact native interrupted continuation beside complete stopped retained output", async () => {
     const f = await startFixture();
     await authorizeProjectPreStartAdmissionLaunch({ manifest: f.manifest, scope: f.input.scope });
     await mkdir(join(f.manifest.workspacePath, "src"));
@@ -643,7 +766,7 @@ describe("operation-bound retained output admission", () => {
     expect(await readFile(f.handoff.patchPath)).toEqual(retainedBefore);
   });
 
-  it.each(["live self", "result self", "changed manifest", "changed receipt", "foreign registration"])("retains the start fence for %s", async (mutation) => {
+  it.skipIf(process.platform !== "linux").each(["live self", "result self", "changed manifest", "changed receipt", "foreign registration"])("retains the start fence for %s", async (mutation) => {
     const f = await startFixture();
     await f.withLease(async (gate) => {
       await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
@@ -751,7 +874,7 @@ describe("operation-bound retained output admission", () => {
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
   });
 
-  it("follows native prepared CreateJob then registered start admission with separate job and registry roots", async () => {
+  it.skipIf(process.platform !== "linux")("follows native prepared CreateJob then registered start admission with separate job and registry roots", async () => {
     const f = await startFixture();
     expect(f.manifest.jobRootDir).toBe(join(f.root, "jobs", "project-worker"));
     expect(f.summaries.at(-1)!.manifestPath).toBe(join(f.input.registryRootDir, "project-worker", "job.json"));
@@ -761,7 +884,7 @@ describe("operation-bound retained output admission", () => {
     });
   });
 
-  it("admits only the bound unpublished CreateJob staging and rejects added runtime files", async () => {
+  it.skipIf(process.platform !== "linux")("admits only the bound unpublished CreateJob staging and rejects added runtime files", async () => {
     const f = await startFixture({ colocatedJobRoot: true });
     await rm(join(f.input.registryRootDir, f.manifest.jobId, "job.json"));
     f.summaries.pop(); f.items.pop();
