@@ -1,3 +1,4 @@
+import { consumeOriginalFullProjectControlGuestOnce, completeOriginalFullProjectControlGuestSetup } from "../../dist/worker-codex/hosted-project-control-native-origin.js";
 import { closePreparedCurrentConfiguredAuth } from "./current-cold-hot-root.js";
 import { assertOriginalFullBackingPreparation } from "../../dist/worker-codex/hosted-full-backing-interval.js";
 import { HostedReadonlyEpochStore } from "../../dist/worker-codex/hosted-readonly-epoch-store.js";
@@ -63,6 +64,12 @@ import { FullH1Case, originalH1Case } from "./current-removal-h1-fixture.js";
 try {
   assertReadonlyHostOperator();assert.equal(process.argv[2],"qualify");
   const removalCase=process.argv.length===4 && process.argv[3]==="--parent-crash-h1" ? originalH1Case() : FullH1Case.Positive;assert.equal(process.argv.length,removalCase===FullH1Case.ParentCrash?4:3);
+  if(removalCase===FullH1Case.Positive){
+    await consumeOriginalFullProjectControlGuestOnce();
+    // Infrastructure slice: no SDK scope/scenario is issued here. The genuine
+    // canonical SDK consumer must be inserted before this positive FD close.
+    await completeOriginalFullProjectControlGuestSetup();
+  }
   assert.equal(readCurrentBackingGeometry(),CurrentBackingGeometry.Adoptable);
   assert.match(process.env.TEST_SOURCE_SHA??"",/^[a-f0-9]{40}$/);
   const consumer=process.env.TEST_FULL_RESTORE_CONSUMER??FullGuestRestoreConsumer.Ordinary;

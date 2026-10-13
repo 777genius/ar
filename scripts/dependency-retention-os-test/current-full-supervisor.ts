@@ -8,6 +8,7 @@ import { json, node, runtime } from "./common.ts";
 import { assertOriginalH1RecoveryReady, assertOriginalH1RecoveryComplete, publishOriginalH1SupervisorAccepted, readOriginalH1Request, publishH1ReadinessRecord, H1ReadinessRecord, readOriginalH1ProgramSource } from "./current-removal-h1-fixture.js";
 import { FullRemovalCase } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { originalH1Continuation } from "./current-full-h1-supervision.js";
+import { runOriginalFullProjectControlSupervisorOnce } from "../../dist/worker-codex/hosted-project-control-native-origin.js";
 import { currentFullEnvironment } from "./current-full-env.js";
 assert.equal(process.platform,"linux");assert.equal(process.getuid?.(),0);assert(process.argv.length===3 || (process.argv.length===4 && process.argv[3]==="--parent-crash-h1"));assert.equal(process.argv[2],"supervisor");
 assert.equal(process.argv[1],runtime+"/scripts/dependency-retention-os-test/current-full-supervisor.js");
@@ -18,6 +19,17 @@ assert(!h1 || restoreConsumer===undefined || restoreConsumer==="ordinary");
 assert(restoreConsumer===undefined || restoreConsumer==="ordinary" || restoreConsumer==="readonly");
 json(runtime+"/guest-started.json",{schemaVersion:1,purpose:"TEST_bootstrap_observation_only",sourceSha:process.env.TEST_SOURCE_SHA,
   machineId:readFileSync("/etc/machine-id","utf8").trim(),pid:process.pid});
+if(!h1){
+  try {
+    const result=await runOriginalFullProjectControlSupervisorOnce();
+    if(!existsSync(runtime+"/guest-evidence.json") && !existsSync(runtime+"/guest-child-exit.json"))
+      json(runtime+"/guest-child-exit.json",{schemaVersion:1,purpose:"TEST_child_failure_observation_only",sourceSha:process.env.TEST_SOURCE_SHA,reason:"child_exited_without_evidence",code:result.code,signal:result.signal===""?null:result.signal});
+  }catch{
+    process.exitCode=70;
+    if(!existsSync(runtime+"/guest-evidence.json") && !existsSync(runtime+"/guest-child-exit.json"))
+      json(runtime+"/guest-child-exit.json",{schemaVersion:1,purpose:"TEST_child_failure_observation_only",sourceSha:process.env.TEST_SOURCE_SHA,reason:"spawn_failed",code:null,signal:null});
+  }
+}else{
 const child=spawn(node,[runtime+"/scripts/dependency-retention-os-test/current-full-guest.js","qualify",...(h1?["--parent-crash-h1"]:[])],
   {env:{...currentFullEnvironment(),TEST_SOURCE_SHA:process.env.TEST_SOURCE_SHA,...(restoreConsumer===undefined?{}:{TEST_FULL_RESTORE_CONSUMER:restoreConsumer})},stdio:["pipe","pipe","pipe"]});
 // Real pipes satisfy the unchanged descriptor boundary. Never persist output.
@@ -69,5 +81,6 @@ child.once("close",async(code,signal)=>{
   try{assert(child.pid!==undefined);await continueH1({pid:child.pid,code,signal});clearTimeout(timeout);}
   catch{clearTimeout(timeout);process.exitCode=70;}
 });
+ }
 // Actual supervisor unit lifetime, not the guest process, supplies operator birth.
 setInterval(()=>{},60000);
