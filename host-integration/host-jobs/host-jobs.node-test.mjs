@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat, rm, realpath, readlink, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { HostJobs, systemCommand } from './manager.mjs';
+import { fingerprint } from './contract.mjs';
 import { hostTransport, sshOutput } from '../../scripts/ops/host-job-transport.mjs';
 import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
@@ -288,6 +290,49 @@ test('managed policy denial prevents launch and cannot prevent persisted reconci
 
 const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
 const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/opt/subscription-runtime/managed-launcher/launch.mjs';
+const legacyFingerprint = request => createHash('sha256').update(JSON.stringify([
+  request.jobId, request.machineId, request.argv, request.runtimeSeconds,
+  request.stopSeconds, request.memoryMiB, request.tasksMax, request.cpuPercent,
+  ...(Object.hasOwn(request, 'storageLifetime') ? [request.storageLifetime] : []),
+])).digest('hex');
+
+test('startup fingerprint preserves legacy omission and binds explicit values', () => {
+  const omitted = fingerprint(request);
+  assert.equal(omitted, legacyFingerprint(request));
+  const stored = { ...request, storageLifetime: 'fd-openfile-bind-v1' };
+  assert.equal(fingerprint(stored), legacyFingerprint(stored));
+  const bindings = [undefined, 1, 300, 600, 900].map(startupSeconds =>
+    startupSeconds === undefined ? request : { ...request, startupSeconds });
+  assert.equal(new Set(bindings.map(fingerprint)).size, bindings.length);
+  const ordered = { ...request, startupSeconds: 300, storageLifetime: 'fd-openfile-bind-v1' };
+  assert.equal(fingerprint(ordered), createHash('sha256').update(JSON.stringify([
+    ordered.jobId, ordered.machineId, ordered.argv, ordered.runtimeSeconds,
+    ordered.stopSeconds, ordered.memoryMiB, ordered.tasksMax, ordered.cpuPercent,
+    ordered.startupSeconds, ordered.storageLifetime,
+  ])).digest('hex'));
+});
+
+test('explicit startup forwards once, reconciles identically and rejects changes', async () => {
+  const { manager, calls } = await fixture();
+  const bound = { ...request, startupSeconds: 300 };
+  await manager.start(bound);
+  await manager.start(bound);
+  const launches = calls.filter(isLaunch);
+  assert.equal(launches.length, 1);
+  assert.equal(JSON.parse(launches[0].args[2]).limits.startupSeconds, 300);
+  await assert.rejects(() => manager.start({ ...bound, startupSeconds: 301 }));
+  assert.equal(calls.filter(isLaunch).length, 1);
+});
+
+test('explicit invalid startup never reaches launch', async () => {
+  const { manager, calls } = await fixture();
+  const invalid = [undefined, null, Number.NaN, Infinity, -Infinity, 0.5, '300', true, false, 0, -1, 901, Number.MAX_SAFE_INTEGER + 1];
+  for (const startupSeconds of invalid) {
+    await assert.rejects(() => manager.start({ ...request, startupSeconds }));
+  }
+  assert.equal(calls.length, 0);
+});
+
 test('system manager is persisted before launch and used for reconciliation and stop', async () => {
   let manager;
   const calls = [];
