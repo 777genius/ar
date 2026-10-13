@@ -6,6 +6,9 @@ try {
   if (process.argv[2] === "--prepare-project" && process.argv.length === 4) {
     const { prepareHostedMimoProject } = await import("./hosted-mimo-project-bridge-prepare");
     process.stdout.write(JSON.stringify(await prepareHostedMimoProject(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--reconcile-interrupted-create" && process.argv.length === 4) {
+    const { reconcileHostedMimoInterruptedCreate } = await import("./hosted-mimo-interrupted-create-reconciliation");
+    process.stdout.write(JSON.stringify(await reconcileHostedMimoInterruptedCreate(process.argv[3]!)) + "\n");
   } else if (process.argv[2] === "--recover-controller" && process.argv.length === 4) {
     const { recoverHostedMimoController } = await import("./hosted-mimo-project-controller-recovery");
     process.stdout.write(JSON.stringify(await recoverHostedMimoController(process.argv[3]!)) + "\n");

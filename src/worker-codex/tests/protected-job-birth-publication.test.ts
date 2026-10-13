@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../research-launch-host", async original => ({ ...await original<object>(), assertResearchInitialRoot: vi.fn() }));
-import { protectedCodexGoalJobBirthPublicationActive, recordProtectedCodexGoalJobFirstEffect,
+import { assertProtectedCodexGoalJobBirthUnpublished, protectedCodexGoalJobBirthPublicationActive, recordProtectedCodexGoalJobFirstEffect,
   withProtectedCodexGoalJobBirthPublication } from "../protected-job-birth";
 import { researchAuthorityRoot } from "../research-launch-files";
 import { createCodexGoalJob } from "../codex-goal-jobs";
@@ -31,6 +31,16 @@ function foreignLock(): Buffer {
 }
 
 describe("bounded protected publication acquisition", () => {
+  it("admits only unpublished roots while holding genuine publication ownership", async () => {
+    const root = "/TEST-project/jobs/TEST-unpublished";
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    expect(() => assertProtectedCodexGoalJobBirthUnpublished(root)).toThrow("protected_job_birth_authority_invalid");
+    await withProtectedCodexGoalJobBirthPublication(async () => {
+      expect(() => assertProtectedCodexGoalJobBirthUnpublished(root)).not.toThrow();
+      recordProtectedCodexGoalJobFirstEffect(root);
+      expect(() => assertProtectedCodexGoalJobBirthUnpublished(root)).toThrow("protected_job_birth_authority_invalid");
+    });
+  });
   it.each([false, true])("waits for an independent publisher before observing actual writer authority (first effect=%s)", async firstEffect => {
     const jobId = "TEST-contended-birth", jobRootDir = "/TEST-project/jobs/" + jobId;
     const workspacePath = "/TEST-project/workspaces/" + jobId;
