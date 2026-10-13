@@ -197,7 +197,12 @@ export function researchFileDigest(path: string, options: {
     researchCustody(path);
     if (researchFileSignature(lstatSync(path)) !== signature) researchInvalid();
     checkTime();
-    if (options.cache.size >= options.cacheEntries && !options.cache.has(path)) options.cache.clear();
+    while (options.cache.size > options.cacheEntries || (options.cache.size === options.cacheEntries && !options.cache.has(path))) {
+      checkTime();
+      const oldest = options.cache.keys().next();
+      if (oldest.done) researchInvalid();
+      options.cache.delete(oldest.value);
+    }
     options.cache.set(path, { signature, digest });
     return digest;
   } finally { closeSync(fd); }
