@@ -9,7 +9,7 @@ export type MimoAdmissionRepairPlan = Readonly<{
 }>;
 export type MimoProjectBridgeRequest = Readonly<{
   kind: "MimoProject"; schemaVersion: 1; machineId: string; projectId: string; workstreamId: string;
-  operation: MimoProjectBridgeOperation; jobId: string; prompt?: string; sourceCommit?: string; reasoningEffort?: CodexReasoningEffort;
+  operation: MimoProjectBridgeOperation; jobId: string; prompt?: string; sourceCommit?: string; reasoningEffort?: CodexReasoningEffort; thinking?: boolean;
   repairPlan?: MimoAdmissionRepairPlan;
 }>;
 export function parseMimoProjectBridgeRequest(value: unknown): MimoProjectBridgeRequest {
@@ -18,9 +18,12 @@ export function parseMimoProjectBridgeRequest(value: unknown): MimoProjectBridge
   const create = row.operation === MimoProjectBridgeOperation.Create;
   const repair = row.operation === MimoProjectBridgeOperation.RepairAdmission;
   const hasReasoning = Object.hasOwn(row, "reasoningEffort");
+  const hasThinking = Object.hasOwn(row, "thinking");
   const efforts: readonly CodexReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh"];
   if (hasReasoning && (!create || !efforts.includes(row.reasoningEffort as CodexReasoningEffort))) throw new Error("mimo_project_bridge_request_invalid");
-  const keys = "kind,schemaVersion,machineId,projectId,workstreamId,operation,jobId" + (create ? ",prompt,sourceCommit" + (hasReasoning ? ",reasoningEffort" : "") : repair ? ",repairPlan" : "");
+  if (hasThinking && (!create || typeof row.thinking !== "boolean" ||
+      hasReasoning && row.thinking !== (row.reasoningEffort !== "none"))) throw new Error("mimo_project_bridge_request_invalid");
+  const keys = "kind,schemaVersion,machineId,projectId,workstreamId,operation,jobId" + (create ? ",prompt,sourceCommit" + (hasReasoning ? ",reasoningEffort" : "") + (hasThinking ? ",thinking" : "") : repair ? ",repairPlan" : "");
   if (Object.keys(row).sort().join(",") !== keys.split(",").sort().join(",") || row.kind !== "MimoProject" || row.schemaVersion !== 1 ||
       typeof row.machineId !== "string" || !/^[a-f0-9]{32}$/.test(row.machineId) ||
       !Object.values(MimoProjectBridgeOperation).includes(row.operation as MimoProjectBridgeOperation)) throw new Error("mimo_project_bridge_request_invalid");
@@ -43,6 +46,10 @@ export function parseMimoProjectBridgeRequest(value: unknown): MimoProjectBridge
   if (repair) {
     const plan = row.repairPlan as MimoAdmissionRepairPlan;
     return Object.freeze({ ...row, repairPlan: Object.freeze({ ...plan, ownedPaths: Object.freeze([...plan.ownedPaths]) }) }) as MimoProjectBridgeRequest;
+  }
+  if (hasThinking) {
+    const { thinking, ...request } = row;
+    return Object.freeze({ ...request, reasoningEffort: hasReasoning ? row.reasoningEffort : thinking ? "high" : "none" }) as MimoProjectBridgeRequest;
   }
   return Object.freeze(row) as MimoProjectBridgeRequest;
 }

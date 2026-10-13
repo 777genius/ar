@@ -444,7 +444,7 @@ export async function observeCompatibleProtectedCodexGoalJobBirth(job: CodexGoal
 async function observeBirth(job: CodexGoalJobManifest, compatible: boolean): Promise<ProjectAdmissionWriterObservation> {
   try {
     if (!initialHost()) return { status: "unknown" };
-    return synchronized<ProjectAdmissionWriterObservation>(() => {
+    return await withProtectedCodexGoalJobBirthPublication<ProjectAdmissionWriterObservation>(async () => {
       const records = paths(job.jobRootDir);
       if (optionalRecord(records.effect) !== undefined) return { status: "unknown" };
       const bytes = researchRead(records.birth), birth = researchJson(bytes) as Birth;

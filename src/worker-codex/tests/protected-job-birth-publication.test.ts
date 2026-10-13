@@ -9,6 +9,8 @@ vi.mock("../research-launch-host", async original => ({ ...await original<object
 import { protectedCodexGoalJobBirthPublicationActive, recordProtectedCodexGoalJobFirstEffect,
   withProtectedCodexGoalJobBirthPublication } from "../protected-job-birth";
 import { researchAuthorityRoot } from "../research-launch-files";
+import { createCodexGoalJob } from "../codex-goal-jobs";
+import { observeResearchJobWriterAuthority } from "../research-writer-observation";
 
 const lock = join(researchAuthorityRoot, "job-births/publication.lock");
 let now: number;
@@ -29,6 +31,35 @@ function foreignLock(): Buffer {
 }
 
 describe("bounded protected publication acquisition", () => {
+  it.each([false, true])("waits for an independent publisher before observing actual writer authority (first effect=%s)", async firstEffect => {
+    const jobId = "TEST-contended-birth", jobRootDir = "/TEST-project/jobs/" + jobId;
+    const workspacePath = "/TEST-project/workspaces/" + jobId;
+    mkdirSync(workspacePath, { recursive: true, mode: 0o700 });
+    const job = await createCodexGoalJob({ registryRootDir: "/TEST-project/registry", manifest: {
+      jobId, taskId: jobId, jobRootDir, workspacePath, promptPath: join(jobRootDir, "prompt.md"), accounts: ["TEST-a"],
+    } });
+    expect(await observeResearchJobWriterAuthority(job)).toEqual({ status: "released" });
+    const independent = new AsyncResource("TEST-independent-birth-reader");
+    let release!: () => void, entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const publisher = withProtectedCodexGoalJobBirthPublication(async () => {
+      entered(); await held;
+      if (firstEffect) recordProtectedCodexGoalJobFirstEffect(jobRootDir);
+    });
+    await ready;
+    let settled = false;
+    const reader = independent.runInAsyncScope(() => observeResearchJobWriterAuthority(job));
+    void reader.then(() => { settled = true; });
+    try {
+      await tick(100);
+      expect(settled).toBe(false);
+    } finally { release(); await publisher; }
+    await tick(50);
+    expect(await reader).toEqual({ status: firstEffect ? "unknown" : "released" });
+    expect(existsSync(lock)).toBe(false);
+    independent.emitDestroy();
+  });
   it("publishes complete owner bytes before an effect and excludes an old mkdir contender", async () => {
     await withProtectedCodexGoalJobBirthPublication(async () => {
       const owner = JSON.parse(readFileSync(lock, "utf8"));

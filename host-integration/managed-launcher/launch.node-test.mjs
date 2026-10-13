@@ -114,6 +114,64 @@ test('fixed startup budget reserves the same bounded time inside original monoto
   assert.throws(() => assertOriginalReservation(ends, reservation, anchor, now + 1n), /original ends exhausted/);
   assert.throws(() => assertOriginalReservation(ends, reservation, anchor, anchor - 1n), /original ends exhausted/);
 });
+test('job startup binds exactly to timeout and original reservation', async () => {
+  const second = 1_000_000_000n;
+  for (const startupSeconds of [1, 300, 600, 900]) {
+    const limits = { ...job.limits, startupSeconds };
+    const request = { ...job, limits };
+    const invocation = await build(request);
+    assert.equal(invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')),
+      `--property=TimeoutStartSec=${startupSeconds}`);
+    assert.equal(invocation.args.includes(`--property=RuntimeMaxSec=${job.limits.runtimeSeconds}`), true);
+    assert.equal(invocation.args.includes(`--property=TimeoutStopSec=${job.limits.stopSeconds}`), true);
+    const reservation = originalJobReservation(request);
+    assert.equal(reservation.workNs, BigInt(startupSeconds + job.limits.runtimeSeconds) * second);
+    assert.equal(reservation.cleanupNs - reservation.workNs, BigInt(job.limits.stopSeconds) * second);
+    assert.equal(Object.hasOwn(parseInvocation(request).limits, 'startupSeconds'), true);
+  }
+  const omitted = await build(job);
+  assert.equal(omitted.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')), '--property=TimeoutStartSec=600');
+  assert.equal(originalJobReservation(job).workNs, 690n * second);
+  assert.equal(originalJobReservation(job).cleanupNs, 720n * second);
+  assert.equal(Object.hasOwn(parseInvocation(job).limits, 'startupSeconds'), false);
+});
+
+test('provider startup is fixed at 600 and accepts no override or limits', async () => {
+  const invocation = await build(provider);
+  assert.equal(invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')), '--property=TimeoutStartSec=600');
+  await assert.rejects(() => build({ ...provider, startupSeconds: 300 }));
+  await assert.rejects(() => build({ ...provider, limits: job.limits }));
+});
+
+test('startup is optional only as an own valid field and mandatory limits stay complete', async () => {
+  const limits = Object.create({ startupSeconds: 300 });
+  Object.assign(limits, job.limits);
+  const inherited = { ...job, limits };
+  const invocation = await build(inherited);
+  assert.equal(invocation.args.find(arg => arg.startsWith('--property=TimeoutStartSec=')), '--property=TimeoutStartSec=600');
+  assert.equal(originalJobReservation(inherited).workNs, 690n * 1_000_000_000n);
+  for (const key of Object.keys(job.limits)) {
+    const missing = { ...job, limits: { ...job.limits } };
+    delete missing.limits[key];
+    await assert.rejects(() => build(missing));
+  }
+  for (const startupSeconds of [undefined, null, Number.NaN, Infinity, -Infinity, 0.5, '300', true, false, 0, -1, 901, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(() => build({ ...job, limits: { ...job.limits, startupSeconds } }));
+  }
+});
+
+test('original reservation refuses exact work and cleanup boundaries', () => {
+  const second = 1_000_000_000n;
+  const reservation = originalJobReservation(job);
+  const anchor = second, now = 2n * second;
+  assert.throws(() => assertOriginalReservation(
+    { workEndNs: now + reservation.workNs, cleanupEndNs: now + reservation.cleanupNs + 1n },
+    reservation, anchor, now), /original ends exhausted/);
+  assert.throws(() => assertOriginalReservation(
+    { workEndNs: now + reservation.workNs + 1n, cleanupEndNs: now + reservation.cleanupNs },
+    reservation, anchor, now), /original ends exhausted/);
+});
+
 test('request denies old argv bridge, unknown operations and arbitrary policy fields', async () => {
   for (const value of [[], ['--property=ProtectSystem=no'], null, { ...job, operation: 'shell' }, { ...job, startupSeconds: 600 }, { ...provider, startupSeconds: 600 },
     ...['cwd', 'mounts', 'workspacePath', 'jobRoot', 'properties', 'args', 'capabilities', 'sockets', 'storageRoot', 'pipe', 'env', 'startupSeconds'].map(key => ({ ...job, [key]: [] }))]) {
