@@ -11,6 +11,7 @@ import { assertHostedTestEgressDirectory } from "../hosted-test-egress-files";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 import { buildCodexGoalOverviewItem } from "../application/codex-goal-overview-item";
+import { sdkControllerStatusDiagnostic } from "./sdk-controller-status-diagnostic";
 import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
 // Select genuine root before the shared synthetic OS fixture installs mocks.
@@ -77,6 +78,7 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
           "hosted_ordinary_writer_extent_invalid", "safe_execution_workspace_locked"];
         const message = typeof overview.safeMessage === "string" ? overview.safeMessage : "";
         const observation = { phase: "first_refill", controllerOverviewReadable: overview.ok === true,
+          controllerStatusDiagnostic: overview.ok === true ? undefined : await sdkControllerStatusDiagnostic(registry, controllerId),
           controllerErrorCode: codes.find(code => message === code || message.startsWith(code + ":")) ?? "unclassified" };
         throw new Error(JSON.stringify(observation));
       }
