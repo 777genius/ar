@@ -111,6 +111,29 @@ Preparation validates enabled routing and proof before creating fresh protected 
 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
 
+## Operator troubleshooting
+
+On a Linux root host with scratch isolation enabled, the ordinary `codex-goal-cli` main entry can enter a private mount namespace.
+Lifecycle commands in that namespace cannot satisfy the host MiMo initial-root namespace contract.
+Use the [trusted hosted bridge](#remote-agents-and-the-trusted-bridge) in its finite owned initial-host-root service.
+Do not bypass namespace checks with environment markers or edit reservations, leases or ownership records manually.
+
+Status can mutate canonical state. With a retained candidate, it reconciles the same native/provider attempt,
+publishes the canonical result and handoff, then releases the active reservation last.
+Without a candidate, Status reporting native `terminal` does not prove writer release.
+Use one qualified same-job Stop: the [registered cancellation contract](../src/worker-codex/research-launch-lifecycle.ts)
+returns `cleanWorkspace: true` for a clean workspace without requiring a handoff packet.
+The project adapter exposes `cleanWorkspace: "true"`; verify exact start/spec in `last-terminal.json` and absent `active.json`.
+Keep the retained failure evidence; cancellation does not fabricate a candidate or successful result.
+
+A bootstrap exit 70 before any provider can be a scratch admission failure.
+Read only the [finite startup diagnostics](../src/worker-codex/research-launch-diagnostics.ts), including the volume role and available/required bytes.
+Reserve the 5 GiB floor plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.
+Preserve the exact job/start/spec identity on failure or timeout; improved capacity does not authorize replay of an immutable Start.
+
+For fresh enrollment, preload the reviewed source through the [protected snapshot preparation contract](#preparing-an-existing-project-without-launching-work).
+Keep the exact source and prerequisite proofs; do not replace source preparation with a base64 seed embedded in the worker prompt.
+
 ## Recovering an unlaunched legacy controller
 
 If a legacy controller reports `controllerWriterAuthority: unknown`, the initial root operator can use the bounded recovery command:

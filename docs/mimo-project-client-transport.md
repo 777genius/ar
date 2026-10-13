@@ -41,6 +41,17 @@ Hosted MiMo create and refill accept optional `thinking`: `true` maps to `reason
 
 Create, start and stop return a pending owned operation. Inspect status until that operation settles; a pending operation or successful submission is not worker completion. A transport timeout is uncertain: inspect the same job instead of resubmitting. Caller paths, credentials, environment, commands, model/provider overrides and arbitrary tool names are refused. The ordinary OpenAI route is unchanged when the MiMo route fields are absent.
 
+## Loaded client compatibility
+
+Installing a new client does not reload an existing MCP connection. Older sessions can retain schemas without `thinking`
+and readers limited to 256 routes / 64 KiB, even when the installed publisher supports the current [shared catalog limits](../src/worker-codex/mimo-project-client-route-limits.ts).
+Reconnect that MCP server through the supported client procedure and verify its loaded entrypoint and exposed tool schema.
+Do not restart the desktop app or unrelated worker jobs to refresh this connection.
+Before publishing route 257, or exceeding a loaded reader's byte budget, ensure every client using the catalog is compatible;
+otherwise an older reader can reject the whole catalog. Keep the existing catalog until compatibility is established.
+Until the refreshed schema exposes `thinking`, use the supported legacy `reasoningEffort` field; reconnecting never authorizes replay of an existing job.
+For same-job Status reconciliation and candidate-free Stop completion, follow [operator troubleshooting](hosted-mimo-project-workers.md#operator-troubleshooting).
+
 An installed, authenticated host endpoint and enrolled project binding are required. A local route file alone does not enable execution. Contained clients require their own authorized transport channel; do not expose host SSH credentials or the shared MiMo key to a worker to obtain one.
 
 Fresh registered MiMo jobs use the trusted CodingV1/64 policy; callers cannot select profiles or turn budgets. A qualified deployment supports native code editing, shell execution and project builds/tests within the admitted workspace. This requires exact-artifact native sandbox and real model Coding E2E evidence, not a legacy eight-turn research Worker proof. Each enabled project/workstream must be enrolled by the trusted operator and have a matching local route; disabled routing stays disabled. Merely updating the local MCP or this route file cannot activate a host release.
