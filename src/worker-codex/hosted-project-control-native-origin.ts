@@ -185,6 +185,19 @@ export async function consumeOriginalFullProjectControlGuestOnce():Promise<void>
     check(bothClosed);guestPhase=NativeOriginPhase.Live;guestOutput=stdoutFact;guestParentBirth=entry.callerBirth;check(streamSocket(process.stdout).fd===1);const stdoutHandle:unknown=Reflect.get(process.stdout,"_handle");check(stdoutHandle&&typeof stdoutHandle==="object"&&Reflect.get(stdoutHandle,"fd")===1);guestOutputHandle=stdoutHandle;guestOutputSetBlocking=Reflect.get(stdoutHandle,"setBlocking");check(typeof guestOutputSetBlocking==="function");nonblockingDuplex(stdoutFact);process.stdout.write(closedAck);
   }catch(error){guestPhase=NativeOriginPhase.Held;throw error;}
 }
+/** Internal current-origin applicability, with no receiver, path, phase or
+ * deadline input. Copied selectors cannot enter or restore NativeEntryLive. */
+export function assertOriginalFullProjectControlSetupCurrent():void {
+  check(guestPhase===NativeOriginPhase.Live&&guestEntry&&guestClock&&guestParentBirth);
+  remainingOriginalSdkMilliseconds();guestEntry.revalidate();guestClock.revalidate();
+  // A genuine handoff alone cannot enroll a later/current allocation module.
+  // These exact constructor/publication leaves must have been selected and held
+  // by the ORIGINAL pre-submit source closure, before their first effect.
+  const selected=guestEntry.descriptors();
+  for(const source of ["dist/worker-codex/hosted-project-control-native-allocation.js","dist/worker-codex/protected-job-birth.js"])
+    check(selected.filter(row=>row.path===originalFullPeerRuntime+"/"+source).length===1);
+  check(birth(guestEntry.callerPid)===guestParentBirth);timeJoin(guestEntry,guestEntry.callerPid);remainingOriginalSdkMilliseconds();
+}
 /** Positive local SDK close. The longer private Supervisor child reservation
  * remains alive; fd0 retains original ordinary EOF and is not claimed closed. */
 export async function completeOriginalFullProjectControlGuestSetup():Promise<void> {

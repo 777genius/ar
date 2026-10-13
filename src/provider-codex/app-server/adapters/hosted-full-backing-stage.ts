@@ -137,7 +137,7 @@ export function assertOriginalFullBackingPreparation(): void {
   }
   assertFullParentProcFiles(live+"/stat",live+"/status",current.expected);
 }
-export enum OriginalFullProjectControlEntryRole { Guest = "original_full_guest", Supervisor = "original_full_supervisor", PeerQuery = "original_full_peer_query" }
+export enum OriginalFullProjectControlEntryRole { Guest = "original_full_guest", Supervisor = "original_full_supervisor", PeerQuery = "original_full_peer_query", ControlGit = "original_full_control_git" }
 export enum OriginalFullProjectControlDescriptorKind { Source = "source", ProcAnchor = "proc_anchor", Executable = "executable" }
 export type OriginalFullProjectControlDescriptor = Readonly<{ fd: number; path: string; kind: OriginalFullProjectControlDescriptorKind; dev: string; ino: string; mountId: string }>;
 export type OriginalFullProjectControlEntry = Readonly<{ role: OriginalFullProjectControlEntryRole; preparedCase: OriginalFullProjectControlPreparedCase;
@@ -147,15 +147,26 @@ const projectControlEntries = new WeakMap<object, Readonly<{ descriptors(): read
 // A finite source closure, selected and held by the original HOST constructor
 // before guest submission. Missing planned SDK modules keep this entry Held.
 export { originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths, originalFullProjectControlEntrySourcePaths } from "./hosted-project-control-source-catalog.js";
+/** Finite argv DATA; only the original sealed entry/kernel joins below can
+ * authenticate a process. This function cannot create an entry or scope. */
+function projectControlEntryRecipe(role: OriginalFullProjectControlEntryRole) {
+  let name: string, mode: string;
+  switch (role) {
+    case OriginalFullProjectControlEntryRole.Guest: name = "guest"; mode = "qualify"; break;
+    case OriginalFullProjectControlEntryRole.Supervisor: name = "supervisor"; mode = "supervisor"; break;
+    case OriginalFullProjectControlEntryRole.PeerQuery: name = "peer-query"; mode = "query-peer"; break;
+    case OriginalFullProjectControlEntryRole.ControlGit: name = "control-git"; mode = "control-git"; break;
+    default: return invalid();
+  }
+  return Object.freeze({ program: runtime + "/scripts/dependency-retention-os-test/current-full-" + name + ".js", mode,
+    flags: Object.freeze(role === OriginalFullProjectControlEntryRole.Supervisor ? ["--experimental-strip-types"] : []) });
+}
 function retainProjectControlEntry(role: OriginalFullProjectControlEntryRole): OriginalFullProjectControlEntry {
   check(process.platform === "linux" && process.getuid?.() === 0 && process.getgid?.() === 0);
-  const program = runtime + "/scripts/dependency-retention-os-test/current-full-" +
-    (role === OriginalFullProjectControlEntryRole.Guest ? "guest.js" : role === OriginalFullProjectControlEntryRole.Supervisor ? "supervisor.js" : "peer-query.js"),
-    mode = role === OriginalFullProjectControlEntryRole.Guest ? "qualify" : role === OriginalFullProjectControlEntryRole.Supervisor ? "supervisor" : "query-peer",
-    flags = role === OriginalFullProjectControlEntryRole.Supervisor ? ["--experimental-strip-types"] : [];
+  const { program, mode, flags } = projectControlEntryRecipe(role);
   // The fourth H1 argument is selected from the original sealed case and
   // exact original unit fragment, never from argv or environment preference.
-  const current = originalPair(), caseArguments = role === OriginalFullProjectControlEntryRole.PeerQuery ? [] : current.caseArguments;
+  const current = originalPair(), caseArguments = role === OriginalFullProjectControlEntryRole.PeerQuery || role === OriginalFullProjectControlEntryRole.ControlGit ? [] : current.caseArguments;
   const command = Buffer.from([runtime + "/toolchain/bin/node", ...flags, program, mode, ...caseArguments, ""].join("\0"));
   check(process.execPath === runtime + "/toolchain/bin/node" && process.argv.length === 3 + caseArguments.length && process.argv[1] === program &&
     process.argv[2] === mode && JSON.stringify(process.argv.slice(3)) === JSON.stringify(caseArguments) && JSON.stringify(process.execArgv) === JSON.stringify(flags));
@@ -193,9 +204,9 @@ function retainProjectControlEntry(role: OriginalFullProjectControlEntryRole): O
     if (role === OriginalFullProjectControlEntryRole.Supervisor) check(parentPid === 1 && readlinkSync(parentPath + "/exe") === "/usr/lib/systemd/systemd");
     else {
       check(readlinkSync(parentPath + "/exe") === process.execPath && readFileSync(parentPath + "/cgroup").equals(group));
-      if (parentCommand.equals(supervisorCommand)) check(/^PPid:\s+1$/m.test(parentStatus));
+      if (parentCommand.equals(supervisorCommand)) { check(role !== OriginalFullProjectControlEntryRole.ControlGit && /^PPid:\s+1$/m.test(parentStatus)); }
       else {
-        check(role === OriginalFullProjectControlEntryRole.PeerQuery && parentCommand.equals(guestCommand));
+        check((role === OriginalFullProjectControlEntryRole.PeerQuery || role === OriginalFullProjectControlEntryRole.ControlGit) && parentCommand.equals(guestCommand));
         const ancestorPid = Number(/^PPid:\s+([1-9][0-9]*)$/m.exec(parentStatus)?.[1]); check(Number.isSafeInteger(ancestorPid) && ancestorPid > 1);
         const ancestor = own("/proc/" + ancestorPid, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW),
           ancestorPath = "/proc/self/fd/" + ancestor, ancestorStat = fstatSync(ancestor), ancestorExe = own(ancestorPath + "/exe", constants.O_RDONLY), ancestorExeStat = fstatSync(ancestorExe),
@@ -260,6 +271,9 @@ function retainProjectControlEntry(role: OriginalFullProjectControlEntryRole): O
 export function retainOriginalFullProjectControlGuestEntry(): OriginalFullProjectControlEntry { return retainProjectControlEntry(OriginalFullProjectControlEntryRole.Guest); }
 export function retainOriginalFullProjectControlSupervisorEntry(): OriginalFullProjectControlEntry { return retainProjectControlEntry(OriginalFullProjectControlEntryRole.Supervisor); }
 export function retainOriginalFullProjectControlPeerQueryEntry(): OriginalFullProjectControlEntry { return retainProjectControlEntry(OriginalFullProjectControlEntryRole.PeerQuery); }
+/** Fixed factual Git pre-exec entry only; its private original producer still
+ * owns allocation, operation phase, signed tool closure and native release. */
+export function retainOriginalFullProjectControlControlGitEntry(): OriginalFullProjectControlEntry { return retainProjectControlEntry(OriginalFullProjectControlEntryRole.ControlGit); }
 // Read-only physical helpers shared with the original access/fence-guarded interval.
 // No outbox, issuer, private access symbol or interval effect enters this module.
 export { live, hash, encoded, check, object, procIdentity, protectedJson, originalPair };
