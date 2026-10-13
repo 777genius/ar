@@ -1,3 +1,4 @@
+import { mimoProjectClientMaxRoutes, mimoProjectClientMaxRouteBytes } from "./mimo-project-client-route-limits";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -13,7 +14,7 @@ const remoteKeys = new Set(["mimoProjectId", "mimoWorkstreamId", "jobId", "promp
 export function parseMimoProjectClientRoutes(value: unknown): readonly MimoProjectClientRoute[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("mimo_project_client_config_invalid");
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).sort().join(",") !== "routes,schemaVersion" || record.schemaVersion !== 1 || !Array.isArray(record.routes) || record.routes.length > 256) throw new Error("mimo_project_client_config_invalid");
+  if (Object.keys(record).sort().join(",") !== "routes,schemaVersion" || record.schemaVersion !== 1 || !Array.isArray(record.routes) || record.routes.length > mimoProjectClientMaxRoutes) throw new Error("mimo_project_client_config_invalid");
   const seen = new Set<string>();
   return Object.freeze(record.routes.map((input: unknown) => {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("mimo_project_client_config_invalid");
@@ -41,7 +42,7 @@ export function readMimoProjectClientRoutes(path = join(homedir(), ".config", "s
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd);
-    if (!before.isFile() || ![0, uid].includes(before.uid) || before.nlink !== 1 || (before.mode & 0o077) || before.size > 65536) throw new Error("mimo_project_client_config_untrusted");
+    if (!before.isFile() || ![0, uid].includes(before.uid) || before.nlink !== 1 || (before.mode & 0o077) || before.size > mimoProjectClientMaxRouteBytes) throw new Error("mimo_project_client_config_untrusted");
     const bytes = readFileSync(fd), after = fstatSync(fd), named = lstatSync(path);
     if (before.dev !== named.dev || before.ino !== named.ino || before.size !== bytes.length || before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs) throw new Error("mimo_project_client_config_changed");
     return parseMimoProjectClientRoutes(JSON.parse(bytes.toString("utf8")));
