@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { checkInputs, type CheckedInput } from "./check-inputs.mts";
 import { createHash, randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 
 const workspace = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const compiler = join(workspace, "node_modules/typescript/bin/tsc");
@@ -223,6 +224,12 @@ try {
   // Persist the original bytes/identities before any successful disposal. A
   // failure/unresolved result always retains its owned tree; no retry/prune.
   await writeFile(join(evidence, `source-check-${attempt}.json`), JSON.stringify({ qualification: "source-contracts-only", attempt, passed, inputsStable, inputs, checks: log, fixture: { path: temporary, originalDevice: originalTemporary.dev.toString(), originalInode: originalTemporary.ino.toString(), originalUid: originalTemporary.uid.toString(), ownerFixture, originalOwnerJoined, originalOwnerSettled, artifacts, artifactError, cleanupEligible, disposition: "retained" } }, null, 2) + "\n", { flag: "wx" });
+  // Existing result flags only; no argv, output, error text or qualification.
+  const bounded = log.length <= 256, last = bounded ? log.at(-1) : undefined;
+  const exit = last?.exit !== null && Number.isInteger(last?.exit) && last!.exit! >= 0 && last!.exit! <= 255 ? last!.exit : "UNKNOWN";
+  const signal = last?.signal === null ? "NONE" : /^(SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ)$/.test(last?.signal ?? "") ? last!.signal : "UNKNOWN";
+  const marker = `SR_NATIVE_SOURCE_PUBLIC_V1 contracts passed=${Number(passed)} inputsStable=${Number(inputsStable)} checks=${bounded ? log.length : "UNKNOWN"} index=${last ? log.length - 1 : "UNKNOWN"} exit=${exit} signal=${signal} naturalClose=${last ? Number(last.naturalClose) : "UNKNOWN"} cause=UNKNOWN`;
+  try { writeSync(1, "\n" + marker + "\n"); } catch { /* Preserve the original result/exit. */ }
   if (cleanupEligible) {
     let removed = false, cleanupError: string | null = null;
     try {
