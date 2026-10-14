@@ -20,7 +20,7 @@ vi.mock("node:fs/promises", async original => ({ ...await original<typeof import
   open: vi.fn(async () => ({ stat: async () => ({ isFile: () => true, nlink: 1, uid: process.getuid?.() }),
     chmod: async () => {}, close: async () => {} })) }));
 vi.mock("../hosted-readonly-controller-admission", () => ({ admitHostedControllerLaunch: f.admit, admitHostedRawGoalLaunch: f.admit }));
-vi.mock("../codex-goal-runner", async original => ({ ...await original<typeof import("../codex-goal-runner")>(), runCodexGoal: f.run }));
+import * as runner from "../codex-goal-runner";
 vi.mock("../hosted-readonly-supervisor-host", () => ({ HostedReadonlySupervisorHost: class {
   runtimeRole = f.role;
   readEpoch() { return { identity: { jobId: "TEST", jobRootDir: "/job", workspacePath: "/workspace" } }; }
@@ -45,6 +45,8 @@ function child() {
 // The real installation/dispatch contract has its own activation fixture.
 beforeEach(() => {
   vi.resetAllMocks(); f.events.length = 0;
+  // Substitute execution after the cyclic runner/ops graph loads; retain real helpers.
+  vi.spyOn(runner, "runCodexGoal").mockImplementation(f.run);
   vi.spyOn(installation, "readHostedInstallationActivation").mockReturnValue({
     activation: { phase: HostedActivationPhase.Exclusive },
   } as ReturnType<typeof installation.readHostedInstallationActivation>);

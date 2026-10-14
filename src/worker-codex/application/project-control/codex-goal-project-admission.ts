@@ -110,6 +110,8 @@ export type CodexProjectAdmissionDeps = {
   readonly prepareWriterObservation?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<() => Promise<ProjectAdmissionWriterObservation>>;
+  /** Create observation-local adapter preparation; never reuse job facts or decisions. */
+  readonly createWriterObservationPreparer?: () => NonNullable<CodexProjectAdmissionDeps["prepareWriterObservation"]>;
   readonly observeManifestRuntime?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<{

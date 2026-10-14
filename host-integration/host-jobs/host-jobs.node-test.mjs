@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat, rm, realpath, readlink, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { HostJobs, systemCommand } from './manager.mjs';
+import { fingerprint } from './contract.mjs';
 import { hostTransport, sshOutput } from '../../scripts/ops/host-job-transport.mjs';
 import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
@@ -288,6 +290,49 @@ test('managed policy denial prevents launch and cannot prevent persisted reconci
 
 const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
 const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/opt/subscription-runtime/managed-launcher/launch.mjs';
+const legacyFingerprint = request => createHash('sha256').update(JSON.stringify([
+  request.jobId, request.machineId, request.argv, request.runtimeSeconds,
+  request.stopSeconds, request.memoryMiB, request.tasksMax, request.cpuPercent,
+  ...(Object.hasOwn(request, 'storageLifetime') ? [request.storageLifetime] : []),
+])).digest('hex');
+
+test('startup fingerprint preserves legacy omission and binds explicit values', () => {
+  const omitted = fingerprint(request);
+  assert.equal(omitted, legacyFingerprint(request));
+  const stored = { ...request, storageLifetime: 'fd-openfile-bind-v1' };
+  assert.equal(fingerprint(stored), legacyFingerprint(stored));
+  const bindings = [undefined, 1, 300, 600, 900].map(startupSeconds =>
+    startupSeconds === undefined ? request : { ...request, startupSeconds });
+  assert.equal(new Set(bindings.map(fingerprint)).size, bindings.length);
+  const ordered = { ...request, startupSeconds: 300, storageLifetime: 'fd-openfile-bind-v1' };
+  assert.equal(fingerprint(ordered), createHash('sha256').update(JSON.stringify([
+    ordered.jobId, ordered.machineId, ordered.argv, ordered.runtimeSeconds,
+    ordered.stopSeconds, ordered.memoryMiB, ordered.tasksMax, ordered.cpuPercent,
+    ordered.startupSeconds, ordered.storageLifetime,
+  ])).digest('hex'));
+});
+
+test('explicit startup forwards once, reconciles identically and rejects changes', async () => {
+  const { manager, calls } = await fixture();
+  const bound = { ...request, startupSeconds: 300 };
+  await manager.start(bound);
+  await manager.start(bound);
+  const launches = calls.filter(isLaunch);
+  assert.equal(launches.length, 1);
+  assert.equal(JSON.parse(launches[0].args[2]).limits.startupSeconds, 300);
+  await assert.rejects(() => manager.start({ ...bound, startupSeconds: 301 }));
+  assert.equal(calls.filter(isLaunch).length, 1);
+});
+
+test('explicit invalid startup never reaches launch', async () => {
+  const { manager, calls } = await fixture();
+  const invalid = [undefined, null, Number.NaN, Infinity, -Infinity, 0.5, '300', true, false, 0, -1, 901, Number.MAX_SAFE_INTEGER + 1];
+  for (const startupSeconds of invalid) {
+    await assert.rejects(() => manager.start({ ...request, startupSeconds }));
+  }
+  assert.equal(calls.length, 0);
+});
+
 test('system manager is persisted before launch and used for reconciliation and stop', async () => {
   let manager;
   const calls = [];
@@ -558,7 +603,7 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
       await writeFile(join(dir, 'managed-launcher', name), 'synthetic fixture\n');
     }
     await mkdir(join(dir, 'native-probe')); await writeFile(join(dir, 'native-probe/installed-data-package.json'), '{"type":"module"}\n');
-    for (const probe of ['hosted-native-probe/research-operator-ingress.js', 'core/research-operator-request.js', 'hosted-native-probe/mimo-project-ingress.js', 'worker-codex/hosted-mimo-project-bridge-contract.js', 'hosted-native-probe/ingress.js', 'hosted-native-probe/protocol.js', 'hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js', 'worker-core/hosted-custody/domain/native-probe.js', 'core/scoped-retained-resource-contract.js', 'core/scoped-termination-contract.js']) {
+    for (const probe of ['hosted-native-probe/research-operator-ingress.js', 'core/research-operator-request.js', 'hosted-native-probe/mimo-project-ingress.js', 'worker-codex/hosted-mimo-project-bridge-contract.js', 'worker-codex/application/project-control/worker-launch-ownership.js', 'hosted-native-probe/ingress.js', 'hosted-native-probe/protocol.js', 'hosted-native-probe/original-owner-client.js', 'hosted-native-probe/original-owner-adapter.js', 'worker-core/hosted-custody/ports/native-probe.js', 'worker-core/hosted-custody/application/native-probe.js', 'worker-core/hosted-custody/domain/native-probe.js', 'core/scoped-retained-resource-contract.js', 'core/scoped-termination-contract.js']) {
       const path = join(dir, 'dist', probe); await mkdir(dirname(path), { recursive: true }); await writeFile(path, '// disposable emitted fixture\n');
     }
     for (const name of ['contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell']) {
@@ -602,7 +647,7 @@ test('restricted installer is repeatable and rejects identity, key and policy dr
 
 test('Node installer accepts both layouts and rejects untrusted paths before writes', async () => {
   const source = await readFile(new URL('./install', import.meta.url), 'utf8');
-  const stagedFiles = ['../dist/hosted-native-probe/research-operator-ingress.js', '../dist/core/research-operator-request.js', '../dist/hosted-native-probe/mimo-project-ingress.js', '../dist/worker-codex/hosted-mimo-project-bridge-contract.js', '../dist/hosted-native-probe/ingress.js', '../dist/hosted-native-probe/protocol.js', '../dist/hosted-native-probe/original-owner-client.js', '../dist/hosted-native-probe/original-owner-adapter.js', '../dist/worker-core/hosted-custody/ports/native-probe.js', '../dist/worker-core/hosted-custody/application/native-probe.js', '../dist/worker-core/hosted-custody/domain/native-probe.js', '../dist/core/scoped-retained-resource-contract.js', '../dist/core/scoped-termination-contract.js', 'contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell', '../native-probe/installed-data-package.json', '../managed-launcher/install', '../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs', '../managed-launcher/storage-pressure-guard.mjs'];
+  const stagedFiles = ['../dist/hosted-native-probe/research-operator-ingress.js', '../dist/core/research-operator-request.js', '../dist/hosted-native-probe/mimo-project-ingress.js', '../dist/worker-codex/hosted-mimo-project-bridge-contract.js', '../dist/worker-codex/application/project-control/worker-launch-ownership.js', '../dist/hosted-native-probe/ingress.js', '../dist/hosted-native-probe/protocol.js', '../dist/hosted-native-probe/original-owner-client.js', '../dist/hosted-native-probe/original-owner-adapter.js', '../dist/worker-core/hosted-custody/ports/native-probe.js', '../dist/worker-core/hosted-custody/application/native-probe.js', '../dist/worker-core/hosted-custody/domain/native-probe.js', '../dist/core/scoped-retained-resource-contract.js', '../dist/core/scoped-termination-contract.js', 'contract.mjs', 'manager.mjs', 'read-request.mjs', 'endpoint.mjs', 'storage-policy.mjs', 'ssh-endpoint', 'ssh-ingress-shell', '../native-probe/installed-data-package.json', '../managed-launcher/install', '../managed-launcher/launch.mjs', '../managed-launcher/payload-guard.mjs', '../managed-launcher/profiles.mjs', '../managed-launcher/storage-pressure-guard.mjs'];
   const scenarios = ['system', 'fixed', 'untrusted-source', 'untrusted-fixed', 'writable-ancestor',
     ...stagedFiles.flatMap(file => [`writable-staged:${file}`, `symlink-staged:${file}`]),
     ...stagedFiles.filter(file => !file.startsWith('../')).flatMap(file => [`writable-destination:${file}`, `symlink-destination:${file}`])];

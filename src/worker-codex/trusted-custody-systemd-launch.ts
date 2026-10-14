@@ -1,3 +1,4 @@
+import { HostedMimoProfile } from "../provider-codex/hosted-mimo-profile";
 import { readOriginalUsableGuestFunding } from "./hosted-ordinary-usable-guest-funding";
 import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
@@ -240,7 +241,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   // No filesystem-namespace property belongs here: PID1 must exec the finite
   // early-private adapter before copying or protecting the captured root.
   const properties = [...hostedFdSystemdProperties, "Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
-    `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
+    `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", request.hostedProfile === HostedMimoProfile.CodingV1 ? "MemoryHigh=4G" : "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
     `TimeoutStartSec=${researchProviderSetupAllowanceMs(request) / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",
@@ -263,7 +264,7 @@ export function trustedMimoProjectOperationLaunch(value: Readonly<{
   const digest = researchHash(JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))));
   const generation = data.generation;
   if (data.requestSha256 !== digest || !Number.isSafeInteger(generation) || (generation as number) < 0 ||
-      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop].includes(request.operation) && generation !== 0) ||
+      (![MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop, MimoProjectBridgeOperation.Start].includes(request.operation) && generation !== 0) ||
       !Number.isSafeInteger(data.operationTimeoutMs) || (data.operationTimeoutMs as number) < 1000 || (data.operationTimeoutMs as number) > 86400000)
     throw new Error("mimo_project_bridge_operation_invalid");
   const unitDigest = researchHash(digest + ":" + generation), unit = `subscription-runtime-mimo-project-${unitDigest}.service`;
