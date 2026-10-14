@@ -53,7 +53,7 @@ export function registerCodexGoalJobTools(server: McpServer, storageDefaults: Co
     "codex_goal_list_jobs",
     {
       title: "List Codex Goal Jobs",
-      description: "List stored Codex goal job manifests.",
+      description: "List job manifests from the local registry only. MiMo project/workstream selectors are unsupported; use codex_goal_status_by_id for a known hosted MiMo job.",
       inputSchema: jobRegistryInputSchema(),
     },
     withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
