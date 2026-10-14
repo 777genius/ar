@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { Agent } from "undici";
 import { codexMimoConfirmedBaseUrl } from "./codex-model-backend";
 
 /** Trusted start owner supplies these limits; HTTP clients cannot change them. */
@@ -60,15 +61,29 @@ export async function startMimoCredentialProxy(input: {
   const capability = randomBytes(32).toString("base64url");
   const auth = Buffer.from(`Bearer ${capability}`);
   const active = new Set<AbortController>();
+  // fetch's implicit five-minute body/header timers are independent of the
+  // AbortController. Keep this start's transport within its existing budget.
+  const dispatcher = input.fetchUpstream === undefined ? new Agent({
+    bodyTimeout: limits.requestTimeoutMs, headersTimeout: limits.requestTimeoutMs,
+  }) : undefined;
+  let dispatcherClosing: Promise<void> | undefined;
+  const destroyDispatcher = () => {
+    dispatcherClosing ??= dispatcher?.destroy() ?? Promise.resolve();
+    // revoke is synchronous; close joins the same retained cleanup below.
+    void dispatcherClosing.catch(() => undefined);
+    return dispatcherClosing;
+  };
   let revoked = false, requests = 0;
   const revoke = () => {
     revoked = true;
     for (const controller of active) controller.abort();
     key.fill(0);
+    void destroyDispatcher();
   };
   const expiry = setTimeout(revoke, remaining);
   expiry.unref();
-  const transport = input.fetchUpstream ?? fetch;
+  const transport: typeof fetch = input.fetchUpstream ?? ((url, init) =>
+    fetch(url, { ...init, dispatcher } as RequestInit & { dispatcher: Agent }));
   const serve = async (request: IncomingMessage, response: ServerResponse) => {
     if (revoked || Date.now() >= limits.deadlineMs) { revoke(); reply(response, 503, "proxy_revoked"); return; }
     const header = request.headers.authorization;
@@ -152,13 +167,18 @@ export async function startMimoCredentialProxy(input: {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
     });
-  } catch { clearTimeout(expiry); revoke(); throw new Error("mimo_credential_proxy_listen_failed"); }
+  } catch { clearTimeout(expiry); revoke(); await destroyDispatcher(); throw new Error("mimo_credential_proxy_listen_failed"); }
   const address = server.address();
-  if (!address || typeof address === "string") { clearTimeout(expiry); revoke(); server.close(); invalid(); }
+  if (!address || typeof address === "string") { clearTimeout(expiry); revoke(); server.close(); await destroyDispatcher(); invalid(); }
+  let closing: Promise<void> | undefined;
   return Object.freeze({ baseUrl: `http://127.0.0.1:${address.port}/v1`, capability, revoke,
-    async close() {
+    close() {
+      if (closing) return closing;
       clearTimeout(expiry); revoke();
-      await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+      closing = Promise.all([destroyDispatcher(), new Promise<void>(resolve => {
+        server.close(() => resolve()); server.closeAllConnections();
+      })]).then(() => undefined);
+      return closing;
     },
   });
 }

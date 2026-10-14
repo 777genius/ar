@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import { Agent } from "undici";
 import { startMimoCredentialProxy, type MimoCredentialProxyLimits } from "../hosted-mimo-credential-proxy";
 
 const key = "TEST-mimo-shared-key-do-not-expose";
@@ -460,4 +462,68 @@ it("rejects unauthenticated callers without consulting retained custody", async 
     expect((await fetch(proxy.baseUrl + "/responses", { method: "POST" })).status).toBe(401);
     expect(current).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
   } finally { await proxy.close(); }
+});
+
+/** Actual loopback HTTP transport, with the old implicit idle budget scaled down.
+ * A test-only fetch redirect prevents any request reaching the fixed live API. */
+async function actualTransportFixture(requestBudgetMs: number, pauseMs: number, idle: "body" | "headers" = "body") {
+  let upstreamRequests = 0;
+  const server = createServer((_request, response) => {
+    upstreamRequests += 1;
+    if (idle === "body") {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"type":"response.created"}\n\n');
+    }
+    const timer = setTimeout(() => {
+      if (idle === "headers") response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end('data: {"type":"response.completed"}\n\n');
+    }, pauseMs);
+    response.once("close", () => clearTimeout(timer));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("TEST-address");
+  const shortIdle = new Agent({ bodyTimeout: 25, headersTimeout: 25 });
+  const realFetch = globalThis.fetch;
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+    if (String(url) === "https://token-plan-sgp.xiaomimimo.com/v1/responses") {
+      const dispatcher = (init as RequestInit & { dispatcher?: Agent } | undefined)?.dispatcher ?? shortIdle;
+      return realFetch(`http://127.0.0.1:${address.port}/responses`, { ...init, dispatcher } as RequestInit & { dispatcher: Agent });
+    }
+    throw Error("TEST-unexpected-upstream-url");
+  });
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from(key), model: "mimo-v2.6-pro",
+    limits: { ...limits(), deadlineMs: Date.now() + 10000, requestTimeoutMs: requestBudgetMs } });
+  return { proxy, requests: () => upstreamRequests,
+    post: () => realFetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+      authorization: `Bearer ${proxy.capability}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "mimo-v2.6-pro", stream: true }) }),
+    async close() { fetchSpy.mockRestore(); await proxy.close(); await shortIdle.destroy();
+      server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
+  };
+}
+
+it.each(["body", "headers"] as const)("uses the owned request budget for actual upstream %s idle instead of an implicit shorter timeout", async idle => {
+  const f = await actualTransportFixture(3000, 1500, idle);
+  try { expect(await (await f.post()).text()).toContain("response.completed"); expect(f.requests()).toBe(1); }
+  finally { await f.close(); }
+});
+
+it("keeps the original abort budget and destroys only its own dispatcher once on revoke and close", async () => {
+  const destroyed = vi.spyOn(Agent.prototype, "destroy");
+  const f = await actualTransportFixture(50, 1500);
+  try {
+    await expect((await f.post()).text()).rejects.toThrow();
+    f.proxy.revoke(); await f.proxy.close(); await f.proxy.close();
+    // Undici's promise overload recursively invokes its callback overload.
+    expect(destroyed.mock.calls.filter(args => args.length === 0)).toHaveLength(1);
+    expect(new Set(destroyed.mock.contexts).size).toBe(1); expect(f.requests()).toBe(1);
+  } finally { destroyed.mockRestore(); await f.close(); }
+});
+
+it("creates no owned dispatcher when a trusted upstream transport is injected", async () => {
+  const destroyed = vi.spyOn(Agent.prototype, "destroy");
+  const f = await fixture(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+  try { await (await f.post()).text(); await f.proxy.close(); expect(destroyed).not.toHaveBeenCalled(); }
+  finally { destroyed.mockRestore(); await f.proxy.close(); }
 });
