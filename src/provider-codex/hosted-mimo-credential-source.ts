@@ -59,10 +59,14 @@ export function resolveAuthorizedHostedMimoCredential(redactor: RedactorPort): s
 
 /** Coding keys go only to the outside owned proxy, never session.env. A plain
  * DTO cannot substitute for the independently minted retained-origin proof. */
-export function resolveHostedMimoCodingProxyCredential(proof: HostedMimoCodingWorkerOrigin, redactor: RedactorPort): string {
+export function resolveHostedMimoCodingProxyCredential(proof: HostedMimoCodingWorkerOrigin, redactor: RedactorPort,
+  assertActive: () => void): string {
+  assertActive();
   assertHostedMimoCodingWorkerOriginCurrent(proof);
+  assertActive();
   const credential = readHostedMimoCredentialAtPath(hostedMimoCredentialPath, redactor);
   assertHostedMimoCodingWorkerOriginCurrent(proof);
+  assertActive();
   return credential;
 }
 

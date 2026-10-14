@@ -5,6 +5,9 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { InMemoryWorkerAccountCapacityStore, AccessBoundary, NetworkAccessMode, createAccessPolicyService, type ProjectAccessScope, buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { execFile } from "node:child_process";
+import * as childProcess from "node:child_process";
+import * as nativeFiles from "node:fs";
+import * as runtimeArtifact from "../research-runtime-artifact";
 import { promisify } from "node:util";
 import * as workspaceChanges from "../codex-goal-workspace-changes";
 import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
@@ -15,8 +18,9 @@ import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAut
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
 import { admitResearchProcessFactory, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
-import { cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
-import { researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
+import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker,
+  terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
+import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { bindResearchMimoWritableFootprint, observeResearchMimoAllocationWritableRoots, prepareResearchProviderRoot } from "../research-provider-root";
 import { researchMimoCodingBootstrapPaths } from "../research-mimo-coding-root";
 import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority } from "../application/project-control/codex-goal-project-account-reservation";
@@ -98,6 +102,116 @@ async function grantAndRequest() {
   return authorization.request;
 }
 const start = () => startRegisteredResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
+
+describe("explicit registered abort before the first bind (labelled Host fixture)", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // All Host effects still go through the existing offline kernel/service
+    // fixture. Exercise the Linux contract locally without a real Host launch.
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
+      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(digest);
+    });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  async function incomplete() {
+    state.mimo = true; await initializeRegisteredFixture(); await grantAndRequest();
+    const original = childProcess.spawnSync;
+    const bind = vi.spyOn(childProcess, "spawnSync").mockImplementation(((command: string, args: string[], options: unknown) => {
+      if (command === "/usr/bin/mount" && args[0] === "--bind") return { status: 1, stdout: "", stderr: "" };
+      return Reflect.apply(original, childProcess, [command, args, options]);
+    }) as typeof original);
+    await expect(start()).rejects.toThrow(); bind.mockRestore();
+    const current = researchCurrentStart(selected().jobId), jobId = current.spec.request.jobId;
+    const requestBytes = researchRead("/TEST-operator/request.json");
+    writeFileSync(local(join(researchJobAuthority(jobId), "project-worker-request.json")), requestBytes, { mode: 0o600 });
+    const expected = { jobId, startId: current.spec.startId, specSha256: researchHash(current.bytes), requestSha256: current.spec.requestSha256 };
+    const proof: UnsubmittedResearchStartSubmitterProof = { ...expected, ownerSha256: "1".repeat(64), auditSha256: "2".repeat(64), assertTerminal: vi.fn() };
+    const manifest = await readCodexGoalJob({ registryRootDir: registry, jobId });
+    return { current, expected, proof, manifest };
+  }
+  it("discharges only the exact unsubmitted reservation and preserves real inputs without a result", async () => {
+    const { current, expected, proof, manifest } = await incomplete(), authority = researchJobAuthority(expected.jobId);
+    const paths = [join(authority, "grant.json"), join(authority, "project-worker-request.json"), join(current.directory, "spec.json"),
+      manifest.promptPath, receiptPath(), codexGoalJobManifestPath({ registryRootDir: registry, jobId: expected.jobId })];
+    const before = paths.map(path => researchRead(path));
+    // The retained first-pin failure is not a successful normal cancellation:
+    // its historical pinned handoff contract still fails closed.
+    await expect(cancelRegisteredResearchLaunch(expected)).rejects.toThrow();
+    await expect(abortUnsubmittedRegisteredResearchLaunch(expected, proof)).resolves.toEqual({ ...expected, terminal: true, abortedBeforeSubmission: true });
+    expect(paths.map(path => researchRead(path))).toEqual(before);
+    expect(existsSync(local(join(authority, "active.json")))).toBe(false);
+    expect(terminalResearchStart(expected.jobId).spec.startId).toBe(expected.startId);
+    expect(existsSync(local(join(current.directory, "durable-pin.json")))).toBe(false);
+    expect(existsSync(local(join(current.directory, "mimo-publication.json")))).toBe(false);
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "released" });
+    expect(vi.mocked(proof.assertTerminal).mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(host.calls.filter(call => call.command === "/usr/bin/systemd-run" || call.command === "/usr/bin/mount" ||
+      call.command === "/usr/bin/systemctl" && ["stop", "kill"].includes(call.args[0]!))).toEqual([]);
+    expect(host.authReads).toBe(0);
+  });
+  it.each(["submitter", "closing", "late-closing", "queued", "live", "mount", "binding", "provider", "receipt"] as const)("retains active on %s uncertainty", async fault => {
+    const { current, expected, proof } = await incomplete(), active = researchRead(join(researchJobAuthority(expected.jobId), "active.json"));
+    if (fault === "submitter") vi.mocked(proof.assertTerminal).mockImplementation(() => { throw Error("TEST owner still active"); });
+    if (fault === "closing") researchPublish(join(current.directory, "closing.json"), { schemaVersion: 1, specSha256: "0".repeat(64) });
+    if (fault === "late-closing") vi.mocked(proof.assertTerminal).mockImplementation(() => {
+      if (existsSync(local(join(current.directory, "closing.json")))) researchPublish(join(current.directory, "closing.json"), {});
+    });
+    if (fault === "queued") host.jobs.add(current.spec.unit);
+    if (fault === "live") host.units.set(current.spec.unit, { active: true, pid: process.pid, invocation: "3".repeat(32), description: "TEST live replacement" });
+    if (fault === "mount") host.pins.set(join(current.directory, "pins/job/nested"), current.spec.request.workspacePath);
+    if (fault === "binding") researchPublish(join(current.directory, "binding.json"), {});
+    if (fault === "provider") researchPublish(join(current.directory, "providers", "subscription-runtime-research-provider-11111111-1111-1111-1111-111111111111.service.json"), {});
+    if (fault === "receipt") mutateReceipt();
+    await expect(abortUnsubmittedRegisteredResearchLaunch(expected, proof)).rejects.toThrow();
+    expect(researchRead(join(researchJobAuthority(expected.jobId), "active.json"))).toEqual(active);
+    expect(existsSync(local(join(current.directory, "unsubmitted-abort.json")))).toBe(false);
+  });
+  it("retains Unknown across interruption before active release and resumes only the exact proof", async () => {
+    const { current, expected, proof, manifest } = await incomplete();
+    const unlink = nativeFiles.unlinkSync;
+    const fail = vi.spyOn(nativeFiles, "unlinkSync").mockImplementation(path => {
+      if (path === join(researchJobAuthority(expected.jobId), "active.json")) throw Error("TEST interrupted release");
+      return unlink(path);
+    });
+    await expect(abortUnsubmittedRegisteredResearchLaunch(expected, proof)).rejects.toThrow("TEST interrupted release");
+    fail.mockRestore();
+    expect(existsSync(local(join(current.directory, "unsubmitted-abort.json")))).toBe(true);
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "unknown" });
+    await expect(start()).rejects.toThrow(); // Original grant/request cannot resubmit this active closing start.
+    await abortUnsubmittedRegisteredResearchLaunch(expected, proof);
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "released" });
+  });
+  it.each(["queued", "mount", "binding", "artifact", "closing", "receipt", "descendant", "missing-events"] as const)("fresh abort reader refuses post-prepare %s drift", async fault => {
+    const { current, expected, proof, manifest } = await incomplete();
+    await abortUnsubmittedRegisteredResearchLaunch(expected, proof);
+    const read = await prepareResearchJobWriterObservation(manifest);
+    if (fault === "queued") host.jobs.add(current.spec.unit);
+    if (fault === "mount") host.pins.set(join(current.directory, "pins/workspace"), current.spec.request.workspacePath);
+    if (fault === "binding") researchPublish(join(current.directory, "binding.json"), {});
+    if (fault === "artifact") writeFileSync(local("/TEST-artifact/dist/main.js"), "changed TEST artifact", { mode: 0o644 });
+    if (fault === "closing") researchPublish(join(current.directory, "closing.json"), {});
+    if (fault === "receipt") mutateReceipt();
+    if (fault === "descendant" || fault === "missing-events") {
+      const group = "/sys/fs/cgroup/system.slice/" + current.spec.unit, stat = nativeFiles.lstatSync, readFile = nativeFiles.readFileSync;
+      vi.spyOn(nativeFiles, "lstatSync").mockImplementation(((path: string) => path === group
+        ? stat(current.directory) : stat(path)) as typeof stat);
+      vi.spyOn(nativeFiles, "readFileSync").mockImplementation(((path: string, options: unknown) => {
+        if (path === group + "/cgroup.events") {
+          if (fault === "missing-events") throw Object.assign(Error("TEST events absent within existing group"), { code: "ENOENT" });
+          return "populated 1\nfrozen 0\n";
+        }
+        return Reflect.apply(readFile, nativeFiles, [path, options]);
+      }) as typeof readFile);
+    }
+    expect(await read()).toEqual({ status: "unknown" });
+  });
+  it("does not infer release from an incomplete native namespace or a serialized owner flag", async () => {
+    const { expected, proof, manifest } = await incomplete();
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "unknown" });
+    await expect(abortUnsubmittedRegisteredResearchLaunch(expected, { ...proof, assertTerminal: true } as unknown as UnsubmittedResearchStartSubmitterProof)).rejects.toThrow();
+  });
+});
 function mutateReceipt() {
   const receipt = JSON.parse(readFileSync(local(receiptPath()), "utf8"));
   writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, status: "admitted" }), { mode: 0o600 });
