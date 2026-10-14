@@ -53,7 +53,11 @@ export function decodeHostedMimoCreateTimeoutJournal(text: string, expected: Rea
     const r = row as Record<string, unknown>;
     if (r._PID !== "1" || r._UID !== "0" || r._COMM !== "systemd" || r.UNIT !== expected.unit) continue;
     requireFact(r._TRANSPORT === "journal" && r._MACHINE_ID === expected.machineId && r._BOOT_ID === expected.bootId &&
-      r.INVOCATION_ID === expected.invocationId && typeof r.__MONOTONIC_TIMESTAMP === "string" && /^[1-9][0-9]{0,19}$/.test(r.__MONOTONIC_TIMESTAMP));
+      typeof r.__MONOTONIC_TIMESTAMP === "string" && /^[1-9][0-9]{0,19}$/.test(r.__MONOTONIC_TIMESTAMP));
+    // Unit-scoped PID1 diagnostics can lack invocation/lifecycle metadata.
+    // Ignore only absent keys; malformed or conflicting lifecycle rows refuse.
+    if (["INVOCATION_ID", "MESSAGE_ID", "JOB_RESULT", "UNIT_RESULT"].every(key => !Object.hasOwn(r, key))) continue;
+    requireFact(r.INVOCATION_ID === expected.invocationId);
     manager.push(r);
   }
   const starts = manager.filter(r => r.MESSAGE_ID === "39f53479d3a045ac8e11786248231fbf" && r.JOB_RESULT === "done");
