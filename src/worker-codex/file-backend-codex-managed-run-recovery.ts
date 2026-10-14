@@ -138,6 +138,11 @@ export class FileBackendCodexManagedRunCoordinator {
     private readonly options: FileBackendCodexManagedRunCoordinatorOptions,
   ) {}
 
+  hasManagedRunSession(runId: string): boolean {
+    return this.options.agentDriver?.hasManagedRunSession(runId) === true ||
+      [...this.#terminalResumes.values()].some(held => held.runId === runId);
+  }
+
   /** The worker owns CAS/export; the driver only captures its exact retained session. */
   async cancelRetainedSessions():Promise<void> {
     const driver = this.options.agentDriver; if (!driver) return;
@@ -192,6 +197,16 @@ export class FileBackendCodexManagedRunCoordinator {
       );
     }
     this.assertResumeHandleMatchesWorker(input.resumeHandle);
+    // A terminal result still owns its exact use even after the driver removes
+    // its waiting cache. Settle that use before considering durable recovery.
+    for (const [use, held] of this.#terminalResumes) {
+      if (held.runId !== input.runId) continue;
+      const result = await this.settleTerminalResume(use);
+      return await this.taskResultToOutput(result, {
+        kind: "resume", input,
+        previousRecord: await this.options.managedRunStore.get({runId: input.runId}),
+      });
+    }
     const abortSignal = input.abortSignal ?? new AbortController().signal;
     const durableRecord = await this.options.managedRunStore.get({
       runId: input.runId,

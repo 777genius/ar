@@ -35,6 +35,7 @@ export * from "./terminal-checkpoint/domain/terminal-checkpoint-identity";
 export * from "./terminal-checkpoint/domain/terminal-checkpoint-seal";
 export * from "./status-view";
 export * from "./project-control-broker";
+export * from "./project-control/domain/interrupted-project-create";
 export * from "./worker-health";
 export * from "./worker-pool";
 export * from "./hosted-custody";

@@ -11,7 +11,7 @@ vi.mock("node:url", async original => {
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   const result = { ...fs } as Record<string, unknown>;
-  for (const name of ["existsSync", "mkdirSync", "rmdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
+  for (const name of ["existsSync", "mkdirSync", "rmdirSync", "writeFileSync", "readFileSync", "openSync", "readdirSync", "linkSync", "unlinkSync", "renameSync", "rmSync", "statSync", "lstatSync", "realpathSync"]) {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => unknown>)[name]!;
     result[name] = (...args: unknown[]) => {
       const answer = fn(...args.map(boundary.map));
@@ -144,7 +144,7 @@ async function fixture() {
   const save = () => file(input, JSON.stringify(plan)); save();
   return { input, config, state, registry, source, old, oldPath, oldBytes, binding, plan, save, git };
 }
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 it("retires exact legacy registration; fresh canonical birth releases only the replacement", async () => {
   const f = await fixture();
   expect(await observeProtectedCodexGoalJobBirth(f.old)).toEqual({ status: "unknown" });

@@ -6,6 +6,7 @@ import type {
   WorkspaceLock,
   WorkspaceLockPort,
 } from "@vioxen/subscription-runtime/worker-core";
+import { SafeExecutionError } from "@vioxen/subscription-runtime/worker-core";
 import { LocalWorkspaceIntegrationLock } from "@vioxen/subscription-runtime/worker-local";
 import { projectControlCanonicalWorkspacePath } from "./application/project-control/codex-goal-project-workspace-scope";
 
@@ -55,10 +56,20 @@ export async function withProjectAdmissionPublicationLock<T>(input: {
 }): Promise<T> {
   const locks = projectControlWorkspaceLocks(input.registryRootDir);
   const registryPath = await realpath(resolve(input.registryRootDir));
-  const lock = await locks.acquire({
-    workspacePath: registryPath,
-    owner: input.owner,
-  });
+  const deadline = performance.now() + 5_000;
+  let lock: WorkspaceLock;
+  for (;;) {
+    try {
+      lock = await locks.acquire({ workspacePath: registryPath, owner: input.owner });
+      break;
+    } catch (error) {
+      if (!(error instanceof SafeExecutionError) || error.code !== "safe_execution_workspace_locked") throw error;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(50, remaining)));
+      if (performance.now() >= deadline) throw error;
+    }
+  }
   try {
     if (await realpath(resolve(input.registryRootDir)) !== registryPath ||
       lock.workspacePath !== registryPath) {
