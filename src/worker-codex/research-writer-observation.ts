@@ -13,7 +13,7 @@ import { assertRegisteredResearchHandoffCurrent } from "./research-registered-ha
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
-import { researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
+import { prepareUnsubmittedResearchStartRelease, researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
 
 function optionalPrivateRecord(path: string): Buffer | undefined {
@@ -147,14 +147,34 @@ async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<P
   return nativeAuthorityAbsent(manifest) && hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ? birth : { status: "unknown" };
 }
 export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  const aborted = await prepareUnsubmittedWriterObservation(manifest);
+  if (aborted) return await aborted();
   const original = await prepareOriginalNativeWriterObservation(manifest);
   if (original) return await original();
   const absent = nativeAuthorityAbsent(manifest);
   const native = await observeNativeResearchJobWriterAuthority(manifest);
   return native.status !== "unknown" || !absent ? native : await observeNonNativeWriter(manifest);
 }
-export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
-  const original = await prepareOriginalNativeWriterObservation(manifest);
+type WriterReader = () => Promise<ProjectAdmissionWriterObservation>;
+type ForeignModulePreparer = (manifest: CodexGoalJobManifest) => Promise<unknown>;
+type WriterModuleImporter = (url: string) => Promise<Record<string, unknown>>;
+const importWriterModule: WriterModuleImporter = async url => await import(url);
+
+/** One admission preparation owns only verified module functions. Every job
+ * still prepares a separate reader and freshly checks its retained authority. */
+export function createResearchJobWriterObservationPreparer(importModule: WriterModuleImporter = importWriterModule):
+  (manifest: CodexGoalJobManifest) => Promise<WriterReader> {
+  const modules = new Map<string, ForeignModulePreparer>();
+  return manifest => prepareWriterObservation(manifest, importModule, modules);
+}
+export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader> {
+  return prepareWriterObservation(manifest, importWriterModule);
+}
+async function prepareWriterObservation(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
+  modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader> {
+  const aborted = await prepareUnsubmittedWriterObservation(manifest);
+  if (aborted) return aborted;
+  const original = await prepareOriginalWriter(manifest, importModule, modules);
   if (original) return original;
   const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
   return async () => {
@@ -163,13 +183,31 @@ export async function prepareResearchJobWriterObservation(manifest: CodexGoalJob
   };
 }
 
+async function prepareUnsubmittedWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader | undefined> {
+  try {
+    const read = await prepareUnsubmittedResearchStartRelease(manifest.jobId);
+    if (!read) return;
+    const terminal = terminalResearchStart(manifest.jobId), r = terminal.spec.request;
+    if (r.jobId !== manifest.jobId || r.taskId !== manifest.taskId || r.jobRootDir !== manifest.jobRootDir ||
+        r.workspacePath !== manifest.workspacePath || r.promptPath !== manifest.promptPath || r.modelBackend !== manifest.modelBackend) return;
+    read();
+    return async () => {
+      try { read(); return { status: "released" }; }
+      catch { return { status: "unknown" }; }
+    };
+  } catch { return; } // Malformed/incomplete origins keep existing closed behavior.
+}
+
 /** Preparation is outside publication. Retained native authority is checked by
  * its original composition; its prepared cold reader cannot become a new launch.
  * A direct foreign observation inside publication retains unknown instead of
  * importing another module with an independent reentrancy capability. */
 export async function prepareOriginalNativeWriterObservation(manifest: CodexGoalJobManifest,
-  importModule: (url: string) => Promise<Record<string, unknown>> = async url => await import(url)):
-  Promise<(() => Promise<ProjectAdmissionWriterObservation>) | undefined> {
+  importModule: WriterModuleImporter = importWriterModule): Promise<WriterReader | undefined> {
+  return prepareOriginalWriter(manifest, importModule);
+}
+async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
+  modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader | undefined> {
   const origin = researchJobRuntimeProvenance(manifest);
   if (!origin || origin.runtimeDirectory === installedResearchRuntimeDirectory()) return undefined;
   const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
@@ -180,11 +218,19 @@ export async function prepareOriginalNativeWriterObservation(manifest: CodexGoal
       assertQualifiedResearchRuntimeArtifact(origin.runtimeDirectory, origin.artifactSha256);
       origin.assertCurrent();
     };
-    guard();
-    const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
-    guard();
-    if (typeof module.prepareResearchJobWriterObservation !== "function") return unknown;
-    const read = await module.prepareResearchJobWriterObservation(manifest) as () => Promise<ProjectAdmissionWriterObservation>;
+    const key = JSON.stringify([origin.runtimeDirectory, origin.artifactSha256]);
+    let prepare = modules?.get(key);
+    if (!prepare) {
+      guard(); // Each actual import has fresh executable qualification on both sides.
+      const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
+      guard();
+      const candidate = module.prepareResearchJobWriterObservation;
+      if (typeof candidate !== "function") return unknown;
+      prepare = manifest => Reflect.apply(candidate, module, [manifest]) as Promise<unknown>;
+      modules?.set(key, prepare);
+    }
+    origin.assertCurrent();
+    const read = await prepare(manifest) as WriterReader;
     guard();
     if (typeof read !== "function") return unknown;
     return async () => {

@@ -1,13 +1,41 @@
 import { trustedMimoProjectOperationLaunch } from "./trusted-custody-systemd-launch";
-import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSync, openSync, closeSync,
+  fsyncSync, fstatSync, linkSync, unlinkSync, constants } from "node:fs";
 import { join, dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
-import { researchCustody, researchHash, researchRecord } from "./research-launch-files";
+import { researchCustody, researchHash, researchRecord, researchPublish } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
 import { readdirSync } from "node:fs";
+import { InterruptedProjectCreateErrorCode, InterruptedProjectCreateDisposition, InterruptedProjectCreateTermination,
+  type InterruptedProjectCreateOutcome } from "@vioxen/subscription-runtime/worker-core";
+import { z } from "zod";
+import { capturePublicationBusyStartRearm, assertPublicationBusyStartRearmCurrent, publicationBusyRearmPath,
+  isPublicationBusyResult, type PublicationBusyStartRearmProof } from "./hosted-mimo-publication-busy-rearm";
 
+// Canonical settlement representation belongs to the native operation store.
+const settlementSha = z.string().regex(/^[a-f0-9]{64}$/), settlementId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/), settlementHexId = z.string().regex(/^[a-f0-9]{32}$/);
+export const mimoInterruptedOutcome: InterruptedProjectCreateOutcome = Object.freeze({ termination: InterruptedProjectCreateTermination.RuntimeTimeout,
+  disposition: InterruptedProjectCreateDisposition.RetainedUnregisteredFailure, registrationPublished: false, payloadStarted: false, partialsPreserved: true });
+export const mimoInterruptedFailureBytes = JSON.stringify({ ok: false, error: InterruptedProjectCreateErrorCode.RuntimeTimeout }) + "\n";
+export const mimoInterruptedIntentSchema = z.object({ schemaVersion: z.literal(1), planSha256: settlementSha, machineId: settlementHexId, projectId: settlementId, workstreamId: settlementId, jobId: settlementId,
+  ownerSha256: settlementSha, requestSha256: settlementSha, bindingSha256: settlementSha, resultSha256: settlementSha,
+  witness: z.object({ unit: z.string().regex(/^subscription-runtime-mimo-project-[a-f0-9]{64}\.service$/), bootId: settlementHexId, invocationId: settlementHexId,
+    startedMonotonicUs: z.string().regex(/^[1-9][0-9]{0,19}$/), failedMonotonicUs: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict(),
+  partials: z.object({ attemptSha256: settlementSha, promptSha256: settlementSha, contractSha256: settlementSha, stateSha256: settlementSha, receiptSha256: settlementSha }).strict(),
+  outcome: z.object({ termination: z.literal(InterruptedProjectCreateTermination.RuntimeTimeout), disposition: z.literal(InterruptedProjectCreateDisposition.RetainedUnregisteredFailure),
+    registrationPublished: z.literal(false), payloadStarted: z.literal(false), partialsPreserved: z.literal(true) }).strict(), cpuCause: z.literal("unproven") }).strict();
+export const mimoInterruptedReceiptSchema = z.object({ schemaVersion: z.literal(1), complete: z.boolean(), intentSha256: settlementSha, resultSha256: settlementSha }).strict();
+export function readPrivateHostedMimoOperationBytes(path: string, maximum: number): Buffer {
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.uid !== 0 || before.gid !== 0 || before.nlink !== 1 || (before.mode & 0o777) !== 0o600)
+    throw new Error("mimo_project_bridge_operation_invalid");
+  const bytes = hostedMimoBridgeMetadataBytes(path, maximum), after = lstatSync(path);
+  if (before.dev !== after.dev || before.ino !== after.ino || before.ctimeMs !== after.ctimeMs || before.mode !== after.mode)
+    throw new Error("mimo_project_bridge_operation_invalid");
+  return bytes;
+}
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
 const approvedErrorCodes = new Set([
   "safe_execution_workspace_locked",
@@ -53,7 +81,8 @@ function entry() {
   return path;
 }
 function owner(request: MimoProjectBridgeRequest) {
-  const files = operationFiles(request), raw: unknown = JSON.parse(hostedMimoBridgeMetadataBytes(files.ownerPath).toString());
+  const files = operationFiles(request), ownerBytes = hostedMimoBridgeMetadataBytes(files.ownerPath);
+  const raw: unknown = JSON.parse(ownerBytes.toString());
   const hasRearm = !!raw && typeof raw === "object" && Object.hasOwn(raw, "rearmProof");
   const value = researchRecord(raw, "schemaVersion,requestSha256,generation,unit,description,entry,node" + (hasRearm ? ",rearmProof" : ""));
   const bytes = hostedMimoBridgeMetadataBytes(files.requestPath), retained = parseMimoProjectBridgeRequest(JSON.parse(bytes.toString()));
@@ -75,11 +104,73 @@ function owner(request: MimoProjectBridgeRequest) {
     const oldRequest = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(files.requestPath + ".generation-" + previousGeneration).toString()));
     if (oldOwner.generation !== previousGeneration || oldOwner.requestSha256 !== digest || canonical(oldRequest) !== canonical(retained) ||
         oldOwner.unit !== `subscription-runtime-mimo-project-${researchHash(digest + ":" + previousGeneration)}.service` ||
-        !admissionDenied(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString())) ||
-        researchHash(hostedMimoBridgeMetadataBytes(join(dirname(files.root), "admission-repair-archives", request.jobId + ".finalization.json"))) !== proof.receiptSha256)
+        !(admissionDenied(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString()))
+          ? researchHash(hostedMimoBridgeMetadataBytes(join(dirname(files.root), "admission-repair-archives", request.jobId + ".finalization.json"))) === proof.receiptSha256
+          : isPublicationBusyResult(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString())) &&
+            researchHash(readPrivateHostedMimoOperationBytes(publicationBusyRearmPath(dirname(files.root), request.jobId, previousGeneration), 65536)) === proof.receiptSha256))
       throw new Error("mimo_project_bridge_operation_invalid");
   } else if (hasRearm) throw new Error("mimo_project_bridge_operation_invalid");
-  return { ...files, value, retained };
+  return { ...files, value, retained, ownerBytes, requestBytes: bytes };
+}
+/** The same original store validates the owner for execution and reconciliation. */
+export const readHostedMimoProjectOperationOwner = owner;
+export type HostedMimoProjectOperationOwner = ReturnType<typeof owner>;
+
+/** Exclusive, synced publication; a competing/partial result is never replaced. */
+export function publishHostedMimoProjectOperationResult(current: HostedMimoProjectOperationOwner,
+  serialized: string, assertCurrent: () => void): void {
+  assertResearchInitialRoot(true); assertResearchSharedHost();
+  const original = owner(current.retained);
+  for (const key of ["root", "ownerPath", "requestPath", "resultPath"] as const)
+    if (current[key] !== original[key]) throw new Error("mimo_project_bridge_operation_invalid");
+  const directoryIdentity = lstatSync(current.root);
+  if (!directoryIdentity.isDirectory() || directoryIdentity.isSymbolicLink() || directoryIdentity.uid !== 0 || directoryIdentity.gid !== 0)
+    throw new Error("mimo_project_bridge_operation_invalid");
+  const sameOwner = () => {
+    assertCurrent();
+    const directory = lstatSync(current.root);
+    if (directory.dev !== directoryIdentity.dev || directory.ino !== directoryIdentity.ino)
+      throw new Error("mimo_project_bridge_operation_invalid");
+    if (!hostedMimoBridgeMetadataBytes(current.ownerPath).equals(current.ownerBytes) ||
+        !hostedMimoBridgeMetadataBytes(current.requestPath).equals(current.requestBytes))
+      throw new Error("mimo_project_bridge_operation_invalid");
+  };
+  sameOwner(); researchCustody(current.root, true);
+  if (Buffer.byteLength(serialized) > 1048576 || existsSync(current.resultPath) || existsSync(current.resultPath + ".tmp"))
+    throw new Error("mimo_project_bridge_operation_invalid");
+  const temp = current.resultPath + ".tmp", fd = openSync(temp,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.uid !== 0 || stat.gid !== 0 || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600)
+      throw new Error("mimo_project_bridge_operation_invalid");
+    writeFileSync(fd, serialized); fsyncSync(fd);
+    const written = fstatSync(fd);
+    sameOwner();
+    const named = lstatSync(temp), after = fstatSync(fd);
+    if (named.isSymbolicLink() || named.dev !== written.dev || named.ino !== written.ino || named.ctimeMs !== written.ctimeMs ||
+        after.ctimeMs !== written.ctimeMs || after.size !== Buffer.byteLength(serialized))
+      throw new Error("mimo_project_bridge_operation_invalid");
+    // link publishes without replacement; retain the .tmp if publication is uncertain.
+    linkSync(temp, current.resultPath); unlinkSync(temp);
+    const directory = openSync(current.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } finally { closeSync(fd); }
+}
+/** Incomplete settlement remains uncertain even when a failure result exists. */
+export function hostedMimoInterruptedCreateComplete(current: HostedMimoProjectOperationOwner): boolean {
+  try {
+    if (current.retained.operation !== MimoProjectBridgeOperation.Create || current.value.generation !== 0) return false;
+    const stem = join(dirname(current.root), "interrupted-create-settlements", current.retained.jobId);
+    const intentBytes = readPrivateHostedMimoOperationBytes(stem + ".intent.json", 16384);
+    const intent = mimoInterruptedIntentSchema.parse(JSON.parse(intentBytes.toString()));
+    const receipt = mimoInterruptedReceiptSchema.parse(JSON.parse(readPrivateHostedMimoOperationBytes(stem + ".receipt.json", 4096).toString()));
+    return receipt.complete && receipt.intentSha256 === researchHash(intentBytes) && receipt.resultSha256 === researchHash(mimoInterruptedFailureBytes) &&
+      intent.resultSha256 === receipt.resultSha256 && intent.machineId === current.retained.machineId && intent.projectId === current.retained.projectId &&
+      intent.workstreamId === current.retained.workstreamId && intent.jobId === current.retained.jobId && intent.witness.unit === current.value.unit &&
+      intent.ownerSha256 === researchHash(current.ownerBytes) && intent.requestSha256 === researchHash(current.requestBytes) &&
+      readPrivateHostedMimoOperationBytes(current.resultPath, 1048576).equals(Buffer.from(mimoInterruptedFailureBytes));
+  } catch { return false; }
 }
 function admissionDenied(value: unknown): boolean {
   return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join(",") === "error,ok" &&
@@ -98,16 +189,21 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
   if (!existsSync(current.resultPath)) return { state: "unresolved", unit: current.value.unit };
   const result = JSON.parse(hostedMimoBridgeMetadataBytes(current.resultPath, 1048576).toString()) as { ok?: unknown; result?: unknown; error?: unknown };
   if (typeof result.ok !== "boolean") throw new Error("mimo_project_bridge_operation_invalid");
+  if (result.error === InterruptedProjectCreateErrorCode.RuntimeTimeout && !hostedMimoInterruptedCreateComplete(current))
+    return { state: "unresolved", unit: current.value.unit };
   return { state: "settled", unit: current.value.unit, result, terminalVerified: state.LoadState === "loaded" &&
     ["inactive", "failed"].includes(state.ActiveState ?? "") && state.MainPID === "0" };
 }
 /** Status may reconcile an existing publication, but never submits a provider.
  * Recover only after the exact prior observer cannot execute any further work. */
 function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller-recovery"): boolean {
-  const current = owner(request), unit = current.value.unit as string;
+  const current = owner(request);
+  return coldOperationUnit(current.value.unit as string, current.value.description as string, mode);
+}
+function coldOperationUnit(unit: string, description: string, mode?: "controller-recovery"): boolean {
   const output = researchCommand("/usr/bin/systemctl", ["show", unit, "--property=Id,Description,LoadState,ActiveState,MainPID,ControlGroup"]);
   const fields = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
-  if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== current.value.description))
+  if (fields.Id !== unit || (fields.LoadState !== "not-found" && fields.Description !== description))
     throw new Error("mimo_project_bridge_operation_invalid");
   if (mode === "controller-recovery" && (fields.MainPID !== "0" || fields.ControlGroup !== "")) return false;
   if (!(fields.LoadState === "not-found" || fields.LoadState === "loaded" &&
@@ -210,6 +306,25 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
         // still acquired by the unchanged original broker in the owned unit.
         for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
         rearmProof = { ...previousStart, receiptSha256: proof.receiptSha256 };
+      } else if (prior.state === "settled" && isPublicationBusyResult(prior.result)) {
+        if (!recoverableStatus(request, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
+        const old = owner(request), evidence = [old.requestPath, old.resultPath, old.ownerPath];
+        if (evidence.some(path => existsSync(path + ".generation-" + old.value.generation))) throw new Error("mimo_project_bridge_operation_invalid");
+        const previousStart = { ownerSha256: researchHash(old.ownerBytes), requestSha256: researchHash(old.requestBytes),
+          resultSha256: researchHash(hostedMimoBridgeMetadataBytes(old.resultPath)) };
+        const proofPath = publicationBusyRearmPath(binding.stateRoot, request.jobId, old.value.generation as number);
+        const proof = await capturePublicationBusyStartRearm(request);
+        // Fresh proof grants no launch authority. Retain it before archiving;
+        // any partial publication remains uncertain and is never overwritten.
+        if (!recoverableStatus(request, "controller-recovery") ||
+            !hostedMimoBridgeMetadataBytes(old.ownerPath).equals(old.ownerBytes) ||
+            !hostedMimoBridgeMetadataBytes(old.requestPath).equals(old.requestBytes) ||
+            researchHash(hostedMimoBridgeMetadataBytes(old.resultPath)) !== previousStart.resultSha256)
+          throw new Error("mimo_project_bridge_operation_invalid");
+        researchPublish(proofPath, proof, true);
+        rearmProof = { ...previousStart, receiptSha256: researchHash(readPrivateHostedMimoOperationBytes(proofPath, 65536)) };
+        for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
+        generation = (old.value.generation as number) + 1;
       }
     }
   }
@@ -257,6 +372,15 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
     throw new Error("mimo_project_bridge_operation_invalid");
   let result: unknown, serialized: string;
   try {
+    if (request.operation === MimoProjectBridgeOperation.Start && (current.value.generation as number) > 0) {
+      const previousGeneration = (current.value.generation as number) - 1;
+      if (isPublicationBusyResult(JSON.parse(hostedMimoBridgeMetadataBytes(current.resultPath + ".generation-" + previousGeneration).toString()))) {
+        const oldOwner = JSON.parse(hostedMimoBridgeMetadataBytes(current.ownerPath + ".generation-" + previousGeneration).toString()) as { unit: string; description: string };
+        if (!coldOperationUnit(oldOwner.unit, oldOwner.description, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
+        const proof = JSON.parse(readPrivateHostedMimoOperationBytes(publicationBusyRearmPath(dirname(current.root), request.jobId, previousGeneration), 65536).toString()) as PublicationBusyStartRearmProof;
+        await assertPublicationBusyStartRearmCurrent(request, proof);
+      }
+    }
     result = { ok: true, result: await handleHostedMimoProjectBridge(request) };
     serialized = JSON.stringify(result) + "\n";
     if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
@@ -267,8 +391,7 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   }
   // Publication failures remain uncertain; never replace them with a failure
   // envelope or replay a handler whose effects may already have happened.
-  const temp = current.resultPath + ".tmp";
-  writeFileSync(temp, serialized, { flag: "wx", mode: 0o600 }); renameSync(temp, current.resultPath);
+  publishHostedMimoProjectOperationResult(current, serialized, () => {});
   const outcome = result as { ok: boolean; result?: { ok?: boolean } };
   return outcome.ok && outcome.result?.ok !== false;
 }

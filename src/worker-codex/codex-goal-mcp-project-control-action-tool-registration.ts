@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { mimoThinkingInputSchema } from "./codex-goal-mcp-input-schemas";
+import { mimoThinkingInputSchema, mimoOwnedPathsInputSchema } from "./codex-goal-mcp-input-schemas";
 import {
   jobIdInputSchema,
   jobRegistryInputSchema,
@@ -27,7 +27,7 @@ export function registerCodexGoalProjectControlActionTools(server: McpServer): v
         "Start or safely continue a stored Codex goal worker through a ProjectScopedControl controller manifest and broker policy. Pending deliverable guidance is injected before the next provider attempt. Configured remote MiMo uses mimoProjectId, mimoWorkstreamId, jobId and confirmStart after creation settled; omit local paths and controllerJobId.",
       inputSchema: {
         ...jobIdInputSchema(),
-        thinking: mimoThinkingInputSchema,
+        thinking: mimoThinkingInputSchema, ownedPaths: mimoOwnedPathsInputSchema,
         controllerJobId: z.string().optional(),
         storedStartBinding: z.object({
           schemaVersion: z.literal(1),
