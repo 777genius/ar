@@ -86,7 +86,20 @@ function physicalDeath(unit: string): void {
     try {
       const text = readFileSync(`/proc/${pid}/cgroup`, "utf8");
       requireFact(!text.split("\n").some(line => line.slice(line.indexOf(":", line.indexOf(":") + 1) + 1).split("/").includes(unit)));
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ESRCH") throw error;
+      // proc_single_show returns ESRCH if the enumerated task exits before read.
+      // A still-present or reused PID must remain uncertain, never be omitted.
+      requireFact(performance.now() < deadline);
+      try { lstatSync(`/proc/${pid}`); }
+      catch (gone) {
+        if ((gone as NodeJS.ErrnoException).code !== "ENOENT") throw gone;
+        requireFact(performance.now() < deadline);
+        continue;
+      }
+      refused();
+    }
   }
 }
 function terminalManager(current: HostedMimoProjectOperationOwner): void {
