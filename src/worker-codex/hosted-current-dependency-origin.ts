@@ -1,5 +1,5 @@
 import { withHostedActivationFence } from "./hosted-dependency-activation";
-import { observedProcessCgroup } from "./hosted-readonly-observations";
+import { observedProcessCgroup } from "../core/host-infrastructure/process-cgroup";
 import { assertHostedDependencyRetirementOwnerFacts, assertHostedDependencyRetirementSuccessorFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
@@ -122,8 +122,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
   const before = collectActualHostedManagedReadonlyOrigin(fence);
   assertSelectedDescriptors(scope,rootPurpose);
   const after = collectActualHostedManagedReadonlyOrigin(fence);
-  if (after.digest !== before.digest) invalid();
-  return after;
+  if (after.digest !== before.digest) invalid(); return after;
 }
 export type CurrentHostedDependencyOriginFacts = ReturnType<typeof selectedSnapshot>["facts"];
 /** Fixed process/history identity only; consumers still join actual owner. */
