@@ -19,6 +19,9 @@ import { researchHash, researchPublish, researchRead } from "../research-launch-
 import { runCodexGoal, codexGoalOutputPath, codexGoalProgressPath } from "../codex-goal-runner";
 import { StaticRunner } from "./file-backend-codex-worker-test-support";
 import * as scratch from "../host-scratch-temp";
+import * as runtimeArtifact from "../research-runtime-artifact";
+import * as materialization from "../codex-goal-terminal-handoff-materialization";
+import { researchArtifactDigest } from "../research-launch-files";
 
 const hostedMimoCredentialPath = "/etc/subscription-runtime/secrets/shared/mimo-token-plan-api-key";
 
@@ -216,6 +219,67 @@ describe("external owned MiMo result publication", () => {
     expect(bytes.toString()).toContain("TEST retained worker edit");
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(patch.sha256);
     expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(false);
+  });
+
+  describe("bounded refusal (explicit offline Linux Host fixture)", () => {
+    const platform = process.platform;
+    beforeEach(() => {
+      cleanupResearchFixture(); setupResearchFixture({ allocationParent: process.cwd() });
+      Object.defineProperty(process, "platform", { value: "linux" });
+    });
+    afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  it.each([
+    [8 * 1024 * 1024 + 1, "handoff_file_byte_limit_exceeded", "hosted_mimo_worker_preservation_budget_exceeded"],
+    [64, "handoff_raw_secret_rejected", "hosted_mimo_worker_preservation_privacy_refused"],
+  ] as const)("authenticates refusal %s without releasing or fabricating a result", async (size, reason, code) => {
+    const current = start(true); await initializeReportWorkspace(current);
+    const path = join(current.selected.workspacePath, "TEST-too-large.bin"), bytes = Buffer.alloc(size);
+    fs.writeFileSync(path, bytes);
+    const external = join(current.selected.jobRootDir, "TEST-dependency-target"), dependency = join(current.selected.workspacePath, "node_modules");
+    fs.mkdirSync(external, { mode: 0o700 });
+    fs.writeFileSync(join(external, "TEST-original.txt"), "TEST preserved dependency bytes\n");
+    fs.symlinkSync(external, dependency, "dir");
+    const dependencyIdentity = fs.lstatSync(dependency);
+    current.lease.stage({ status: "partial", provider: "codex", runId: current.jobId, taskId: current.selected.taskId,
+      changedFiles: ["TEST-too-large.bin"] });
+    const originalCandidate = researchRead(join(current.directory, "mimo-candidate.json"));
+    const originalActive = researchRead(join(researchJobAuthority(current.jobId), "active.json"));
+    enterResearchOperatorScope(current.unit);
+    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, sha) => {
+      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(sha);
+    });
+    await expect(finalize(current)).rejects.toThrow(code);
+    const name = fs.readdirSync(current.directory).find(name => name.startsWith("preservation-refusal."));
+    if (!name) throw new Error("Missing authenticated TEST refusal");
+    const retained = researchRead(join(current.directory, name));
+    expect(JSON.parse(retained.toString())).toMatchObject({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, candidateSha256: researchHash(originalCandidate),
+      reason, processTerminal: true, preservationComplete: false, writerReleased: false });
+    expect(fs.readFileSync(path).equals(bytes)).toBe(true);
+    expect(fs.lstatSync(dependency).ino).toBe(dependencyIdentity.ino);
+    expect(fs.readlinkSync(dependency)).toBe(external);
+    expect(fs.readFileSync(join(external, "TEST-original.txt"), "utf8")).toBe("TEST preserved dependency bytes\n");
+    expect(researchRead(join(researchJobAuthority(current.jobId), "active.json"))).toEqual(originalActive);
+    expect(researchRead(join(current.directory, "mimo-candidate.json"))).toEqual(originalCandidate);
+    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
+    expect(fs.existsSync(join(current.directory, "mimo-publication.json"))).toBe(false);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "last-terminal.json"))).toBe(false);
+    await expect(finalize(current)).rejects.toThrow(code);
+    expect(researchRead(join(current.directory, name))).toEqual(retained);
+  });
+
+  it("refuses candidate drift at the budget-error boundary without minting a refusal", async () => {
+    const current = await candidate(); enterResearchOperatorScope(current.unit);
+    vi.spyOn(materialization, "materializeReconciledTerminalCodexGoalHandoff").mockImplementation(async () => {
+      researchPublish(join(current.directory, "mimo-candidate.json"), { TEST: "foreign" });
+      throw new Error("dirty_terminal_handoff_unavailable:handoff_total_byte_limit_exceeded");
+    });
+    await expect(finalize(current)).rejects.toThrow("hosted_research_launch_denied");
+    expect(fs.readdirSync(current.directory).some(name => name.startsWith("preservation-refusal."))).toBe(false);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(true);
+    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
+  });
+
   });
 
   // RED: another operator releases/restarts the same job during final publication.

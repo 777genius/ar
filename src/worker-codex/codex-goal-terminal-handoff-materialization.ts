@@ -79,9 +79,12 @@ export type TerminalHandoffPublicationDependencies = {
   readonly assertTerminalHandoffPublicationAuthorized?: () => Promise<void>;
   readonly withTerminalHandoffPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
 };
+export enum TerminalHandoffCaptureMode { PreserveWorkspace = "preserve_workspace" }
 export type TerminalHandoffPublicationAuthority = {
   readonly assertPublicationAuthorized: (paths?: readonly string[]) => Promise<void>;
   readonly withPublicationAuthority?: <T>(effect: () => Promise<T>) => Promise<T>;
+  /** Trusted owner composition only, never serialized job input or a release permit. */
+  readonly captureMode?: TerminalHandoffCaptureMode;
 };
 export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   readonly managedContext?: HostedDependencyRootPurposeContext;
@@ -108,7 +111,12 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
     // dependency roots proven unsafe by the bounded dependency scanner before
     // freezing the terminal workspace. All other symlinks still fail closed in
     // handoff materialization.
-    if (managedContext === undefined) await sanitizeNodeDependencyEnvironment({ workspacePath: input.workspacePath });
+    if (managedContext === undefined) {
+      // Native preservation must retain every original byte/link even when a
+      // later privacy/budget check refuses export. Packet guards still apply.
+      if (trusted?.captureMode !== TerminalHandoffCaptureMode.PreserveWorkspace)
+        await sanitizeNodeDependencyEnvironment({ workspacePath: input.workspacePath });
+    }
     // Protected packet output is nonmutating: removedPaths stays empty. It
     // neither scans generated NM nor retires a Ready baseline for serialization.
     else sanitizeManagedTerminalOutput(managedContext);
