@@ -122,8 +122,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
     if (scope !== undefined) invalid(); assertRootPurposeDescriptors([...rootPurpose.descriptors.values()]);
   } else if (scope === undefined) assertHostedProcessDescriptors(); else assertHostedRetainedToolDescriptors(scope);
   const after = collectActualHostedManagedReadonlyOrigin(fence);
-  if (after.digest !== before.digest) invalid();
-  return after;
+  if (after.digest !== before.digest) invalid(); return after;
 }
 export type CurrentHostedDependencyOriginFacts = ReturnType<typeof selectedSnapshot>["facts"];
 /** Fixed process/history identity only; consumers still join actual owner. */
