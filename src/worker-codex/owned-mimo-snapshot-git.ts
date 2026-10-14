@@ -10,6 +10,22 @@ import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adap
 
 const execute = promisify(execFile);
 export const ownedMimoSnapshotGitBudgetMs = 30_000;
+export enum MimoSnapshotTimingScope { InitialAccess = "initial_access", InitialSnapshot = "initial_snapshot" }
+export enum MimoSnapshotTimingOutcome { Completed = "completed", Failed = "failed" }
+export type MimoSnapshotTiming = Readonly<{
+  scope: MimoSnapshotTimingScope; outcome: MimoSnapshotTimingOutcome; elapsedMs: number;
+  admissionCount: number; admissionElapsedMs: number; successfulGitCount: number; successfulGitElapsedMs: number;
+}>;
+type TimingCounters = { admissionCount: number; admissionElapsedMs: number; successfulGitCount: number;
+  successfulGitElapsedMs: number; invalid: boolean };
+enum TimingCounterKind { Admission = "admission", SuccessfulGit = "successful_git" }
+const timingNow = (): number | undefined => {
+  try { const value = performance.now(); return Number.isFinite(value) ? value : undefined; } catch { return undefined; }
+};
+const elapsedTiming = (started: number | undefined): number | undefined => {
+  const now = timingNow(), value = now === undefined || started === undefined ? undefined : now - started;
+  return value !== undefined && value >= 0 && value <= 86_400_000 ? value : undefined;
+};
 export enum MimoSnapshotGitStderrCategory {
   Absent = "absent", Permission = "permission", ReadOnly = "read_only", Ownership = "ownership",
   IndexLock = "index_lock", NotRepository = "not_repository", Other = "other",
@@ -55,15 +71,58 @@ export class MimoSnapshotGitFailure extends Error {
 export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
   readonly #workspace: string;
   readonly #assertCurrent: () => void;
+  readonly #observe: ((timing: MimoSnapshotTiming) => void) | undefined;
+  readonly #observed = new Set<MimoSnapshotTimingScope>();
+  #timing: TimingCounters | undefined;
   #failure: Error | undefined;
-  constructor(workspace: string, assertCurrent: () => void) {
+  constructor(workspace: string, assertCurrent: () => void, observe?: (timing: MimoSnapshotTiming) => void) {
     if (!isAbsolute(workspace) || resolve(workspace) !== workspace) throw new Error("owned_mimo_snapshot_git_invalid");
     this.#workspace = workspace; this.#assertCurrent = assertCurrent;
+    this.#observe = observe;
+  }
+  /** At most two initial observations. Overlapping reads have no truthful
+   * aggregate and suppress observation; they do not change execution. */
+  async observeInitial<T>(scope: MimoSnapshotTimingScope, operation: () => Promise<T>): Promise<T> {
+    if (!this.#observe) return operation();
+    if (this.#timing) {
+      this.#timing.invalid = true;
+      this.#observed.add(MimoSnapshotTimingScope.InitialAccess);
+      this.#observed.add(MimoSnapshotTimingScope.InitialSnapshot);
+      return operation();
+    }
+    if (this.#observed.has(scope)) return operation();
+    this.#observed.add(scope);
+    const counters: TimingCounters = { admissionCount: 0, admissionElapsedMs: 0,
+      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false };
+    this.#timing = counters;
+    const started = timingNow(); let outcome = MimoSnapshotTimingOutcome.Failed;
+    try { const result = await operation(); outcome = MimoSnapshotTimingOutcome.Completed; return result; }
+    finally {
+      this.#timing = undefined;
+      const elapsedMs = elapsedTiming(started);
+      if (!counters.invalid && elapsedMs !== undefined) {
+        try { this.#observe(Object.freeze({ scope, outcome, elapsedMs,
+          admissionCount: counters.admissionCount, admissionElapsedMs: counters.admissionElapsedMs,
+          successfulGitCount: counters.successfulGitCount, successfulGitElapsedMs: counters.successfulGitElapsedMs })); }
+        catch { /* Optional observations never replace the original result or error. */ }
+      }
+    }
+  }
+  #record(kind: TimingCounterKind, started: number | undefined): void {
+    const counters = this.#timing;
+    if (!counters) return;
+    const elapsed = elapsedTiming(started), count = kind === TimingCounterKind.Admission ? ++counters.admissionCount : ++counters.successfulGitCount;
+    if (elapsed === undefined || count > 1000) { counters.invalid = true; return; }
+    if (kind === TimingCounterKind.Admission) counters.admissionElapsedMs += elapsed;
+    else counters.successfulGitElapsedMs += elapsed;
+    if (counters.admissionElapsedMs > 86_400_000 || counters.successfulGitElapsedMs > 86_400_000) counters.invalid = true;
   }
   #invalid(): never { this.#failure = new Error("owned_mimo_snapshot_git_invalid"); throw this.#failure; }
   assertHealthy(): void {
+    const started = this.#timing ? timingNow() : undefined;
     try { this.#assertCurrent(); if (this.#failure) throw this.#failure; }
     catch (error) { this.#failure = error instanceof Error ? error : new Error("owned_mimo_snapshot_git_invalid"); throw this.#failure; }
+    finally { this.#record(TimingCounterKind.Admission, started); }
   }
   async run(input: Parameters<SafeExecutionCommandRunner["run"]>[0]) {
     const command = input.command, cwd = input.cwd, args = [...input.args], signal = input.abortSignal;
@@ -80,6 +139,7 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
         cwd, env: { ...managedDependencyGitEnvironment(), GIT_NO_LAZY_FETCH: "1" }, timeout: ownedMimoSnapshotGitBudgetMs,
         maxBuffer: maximum, ...(signal === undefined ? {} : { signal }),
       });
+      this.#record(TimingCounterKind.SuccessfulGit, started);
       return { stdout: String(result.stdout), stderr: "" };
     } catch (error) { this.#failure = new MimoSnapshotGitFailure(facts(error, performance.now() - started)); throw this.#failure; }
     finally { this.assertHealthy(); }
@@ -90,21 +150,22 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
  * execution must not convert a failed read into a successful initial snapshot. */
 export function ownedMimoWorkspaceSnapshotter(runner: OwnedMimoSnapshotGitRunner): WorkspaceSnapshotter {
   const delegate = new DefaultWorkspaceSnapshotter({ commandRunner: runner, gitBinaryPath: "/usr/bin/git", commandTimeoutMs: ownedMimoSnapshotGitBudgetMs });
-  return { async capture(input) {
+  return { capture: input => runner.observeInitial(MimoSnapshotTimingScope.InitialSnapshot, async () => {
     runner.assertHealthy();
     const snapshot = await delegate.capture(input);
     runner.assertHealthy();
     return snapshot;
-  } };
+  }) };
 }
 
 /** Preserve the original access implementation, including cancellation facts
  * that its ordinary compatibility path otherwise maps to a not-Git error. */
 export function ownedMimoWorkspaceAccess(runner: OwnedMimoSnapshotGitRunner): SafeExecutionWorkspaceAccess {
   const delegate = new NodeSafeExecutionWorkspaceAccess({ commandRunner: runner, gitBinaryPath: "/usr/bin/git", commandTimeoutMs: ownedMimoSnapshotGitBudgetMs });
-  return { canonicalizePath: input => delegate.canonicalizePath(input), async assertGitWorkspace(input) {
+  return { canonicalizePath: input => delegate.canonicalizePath(input), assertGitWorkspace: input =>
+    runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => {
     runner.assertHealthy();
     try { await delegate.assertGitWorkspace(input); }
     finally { runner.assertHealthy(); }
-  } };
+  }) };
 }

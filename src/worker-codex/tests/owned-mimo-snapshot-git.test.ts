@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { OwnedMimoSnapshotGitRunner, MimoSnapshotGitFailure, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "../owned-mimo-snapshot-git";
+import { OwnedMimoSnapshotGitRunner, MimoSnapshotGitFailure, MimoSnapshotTimingScope,
+  type MimoSnapshotTiming, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "../owned-mimo-snapshot-git";
 
 const boundary = vi.hoisted(() => ({ failure: undefined as unknown, options: undefined as Record<string, unknown> | undefined }));
 vi.mock("node:child_process", async original => {
@@ -109,4 +110,60 @@ it("uses a finite 30s child budget, classifies timeout and never inherits ambien
   const childEnv = boundary.options?.env as Record<string, unknown>;
   expect([childEnv.GIT_CONFIG_COUNT, childEnv.GIT_CONFIG_NOSYSTEM, childEnv.GIT_NO_LAZY_FETCH, childEnv.GIT_OPTIONAL_LOCKS]).toEqual(["0", "1", "1", "0"]);
   expect(Object.hasOwn(childEnv, "TEST_SECRET_PAYLOAD")).toBe(false); expect(Object.hasOwn(childEnv, "GIT_DIR")).toBe(false);
+});
+
+it("observes only initial access/snapshot while separating real Git from unchanged admission checks", async () => {
+  await linked();
+  const observations: MimoSnapshotTiming[] = [], guard = vi.fn(() => {
+    const until = performance.now() + 1; while (performance.now() < until) { /* TEST admission cost */ }
+  });
+  const runner = new OwnedMimoSnapshotGitRunner(workspace, guard, timing => observations.push(timing));
+  const access = ownedMimoWorkspaceAccess(runner), snapshot = ownedMimoWorkspaceSnapshotter(runner);
+  await access.assertGitWorkspace({ workspacePath: workspace });
+  expect(await snapshot.capture({ workspacePath: workspace })).toMatchObject({ mode: "git", dirty: false });
+  expect(guard).toHaveBeenCalledTimes(24);
+  expect(observations.map(t => [t.scope, t.outcome, t.admissionCount, t.successfulGitCount]))
+    .toEqual([["initial_access", "completed", 4, 1], ["initial_snapshot", "completed", 20, 9]]);
+  for (const timing of observations) {
+    expect(Object.isFrozen(timing)).toBe(true);
+    expect(timing.admissionElapsedMs).toBeGreaterThanOrEqual(timing.admissionCount);
+    expect(timing.successfulGitElapsedMs).toBeGreaterThan(0);
+    expect(timing.elapsedMs).toBeGreaterThanOrEqual(timing.admissionElapsedMs + timing.successfulGitElapsedMs);
+    expect(Object.keys(timing).sort()).toEqual(["scope", "outcome", "elapsedMs", "admissionCount", "admissionElapsedMs", "successfulGitCount", "successfulGitElapsedMs"].sort());
+  }
+  expect(JSON.stringify(observations)).not.toContain(workspace);
+  await access.assertGitWorkspace({ workspacePath: workspace }); await snapshot.capture({ workspacePath: workspace });
+  expect(guard).toHaveBeenCalledTimes(48); expect(observations).toHaveLength(2);
+});
+
+it("throwing observers preserve success, actual abort and sticky ownership failure", async () => {
+  await linked();
+  const observer = vi.fn(() => { throw Error("TEST observation unavailable"); });
+  const runner = new OwnedMimoSnapshotGitRunner(workspace, () => {}, observer);
+  await expect(ownedMimoWorkspaceAccess(runner).assertGitWorkspace({ workspacePath: workspace })).resolves.toBeUndefined();
+  const controller = new AbortController(); controller.abort();
+  await expect(ownedMimoWorkspaceSnapshotter(runner).capture({ workspacePath: workspace, abortSignal: controller.signal }))
+    .rejects.toMatchObject({ name: "AbortError", code: "ABORT_ERR" });
+  expect(observer.mock.calls).toHaveLength(2);
+  const refused = Error("TEST original admission refusal");
+  const denied = new OwnedMimoSnapshotGitRunner(workspace, () => { throw refused; }, observer);
+  await expect(ownedMimoWorkspaceAccess(denied).assertGitWorkspace({ workspacePath: workspace })).rejects.toBe(refused);
+  await expect(ownedMimoWorkspaceAccess(denied).assertGitWorkspace({ workspacePath: workspace })).rejects.toBe(refused);
+});
+
+it("suppresses staggered same-scope overlap and later snapshot timing without changing any result", async () => {
+  const observer = vi.fn(), runner = new OwnedMimoSnapshotGitRunner(workspace, () => {}, observer);
+  let release!: () => void, releaseSecond!: () => void;
+  const first = runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => {
+    runner.assertHealthy(); await new Promise<void>(resolve => { release = resolve; }); return "TEST first";
+  });
+  const second = runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => {
+    runner.assertHealthy(); await new Promise<void>(resolve => { releaseSecond = resolve; });
+    runner.assertHealthy(); return "TEST second";
+  });
+  release(); await expect(first).resolves.toBe("TEST first");
+  await expect(runner.observeInitial(MimoSnapshotTimingScope.InitialSnapshot, async () => {
+    runner.assertHealthy(); releaseSecond(); await second; return "TEST third";
+  })).resolves.toBe("TEST third");
+  await expect(second).resolves.toBe("TEST second"); expect(observer).not.toHaveBeenCalled();
 });
