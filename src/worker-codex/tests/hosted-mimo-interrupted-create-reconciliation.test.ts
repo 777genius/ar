@@ -170,3 +170,44 @@ it.each(["missing", "spoofed", "wrong-invocation", "duplicate", "success"])("rej
   expect(() => decodeHostedMimoCreateTimeoutJournal(rows.map(row => JSON.stringify(row)).join("\n") + "\n", { machineId: machine, unit: state.unit, bootId: boot, invocationId: invocation, operationTimeoutMs: 900000 })).toThrow();
   expect(state.fs!.existsSync(mapped(prefix + ".result.json"))).toBe(false);
 });
+
+it("accepts the actual timeout metadata shape with later unbound PID1 unit diagnostics", () => {
+  const rows = journal().trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+  rows[0]!.__MONOTONIC_TIMESTAMP = "2023952390033";
+  rows[1]!.__MONOTONIC_TIMESTAMP = "2024852535503";
+  // Exact sanitized shape/timing of the a6 manager diagnostics: no message,
+  // invocation or lifecycle markers. No Host request or producer is invoked.
+  for (const timestamp of ["2024875073094", "2024921724452", "2024964090744"]) rows.push({
+    _PID: "1", _UID: "0", _COMM: "systemd", _TRANSPORT: "journal", _MACHINE_ID: machine,
+    _BOOT_ID: boot, UNIT: state.unit, __MONOTONIC_TIMESTAMP: timestamp,
+  });
+  expect(decodeHostedMimoCreateTimeoutJournal(rows.map(row => JSON.stringify(row)).join("\n") + "\n", {
+    machineId: machine, unit: state.unit, bootId: boot, invocationId: invocation, operationTimeoutMs: 900000,
+  })).toEqual({ unit: state.unit, bootId: boot, invocationId: invocation,
+    startedMonotonicUs: "2023952390033", failedMonotonicUs: "2024852535503" });
+  expect(state.fs!.existsSync(mapped(prefix + ".result.json"))).toBe(false);
+});
+
+it.each(["message-id", "job-result", "unit-result", "null-invocation", "empty-invocation", "null-message-id", "foreign-invocation", "wrong-boot", "wrong-machine", "wrong-source", "bad-time"] as const)(
+  "rejects a malformed/conflicting %s row alongside the valid timeout pair", fault => {
+    const rows = journal().trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+    const diagnostic: Record<string, unknown> = { _PID: "1", _UID: "0", _COMM: "systemd", _TRANSPORT: "journal",
+      _MACHINE_ID: machine, _BOOT_ID: boot, UNIT: state.unit, __MONOTONIC_TIMESTAMP: "902000000" };
+    if (fault === "message-id") diagnostic.MESSAGE_ID = "39f53479d3a045ac8e11786248231fbf";
+    if (fault === "job-result") diagnostic.JOB_RESULT = "done";
+    if (fault === "unit-result") diagnostic.UNIT_RESULT = "timeout";
+    if (fault === "null-invocation") diagnostic.INVOCATION_ID = null;
+    if (fault === "empty-invocation") diagnostic.INVOCATION_ID = "";
+    if (fault === "null-message-id") diagnostic.MESSAGE_ID = null;
+    if (fault === "foreign-invocation") diagnostic.INVOCATION_ID = "5".repeat(32);
+    if (fault === "wrong-boot") diagnostic._BOOT_ID = "5".repeat(32);
+    if (fault === "wrong-machine") diagnostic._MACHINE_ID = "5".repeat(32);
+    if (fault === "wrong-source") diagnostic._TRANSPORT = "stdout";
+    if (fault === "bad-time") diagnostic.__MONOTONIC_TIMESTAMP = "invalid";
+    rows.push(diagnostic);
+    expect(() => decodeHostedMimoCreateTimeoutJournal(rows.map(row => JSON.stringify(row)).join("\n") + "\n", {
+      machineId: machine, unit: state.unit, bootId: boot, invocationId: invocation, operationTimeoutMs: 900000,
+    })).toThrow("project_control_interrupted_create_reconciliation_refused");
+    expect(state.fs!.existsSync(mapped(prefix + ".result.json"))).toBe(false);
+  },
+);
