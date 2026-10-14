@@ -471,7 +471,6 @@ function resolveRootPurpose(context:RootPurposeFacade,purpose:HostedDependencyRo
   return {origin,state};
 }
 export type HostedDependencyRootPurposeContext = RootPurposeFacade;
-
 export type HostedDependencyRootDescriptor = RootDescriptor;
 export function readOriginalHostedDependencyRootDescriptor(resource: RootDescriptor): number {
   const {origin,material} = RootDescriptor.resolve(resource,rootInternalAccess), state = contexts.get(origin)?.rootPurpose;

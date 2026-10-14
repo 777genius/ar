@@ -33,6 +33,25 @@ Each worker has one account cycle, one attempt, no reconnect/prewarm/continuatio
 
 Use the existing project status and stop tools for the same registered job. A submission timeout is uncertain: reconcile its retained attempt before retrying. Never replace its job ID, remove its ownership records or launch an unmanaged replacement to work around uncertainty.
 
+### Shared current runtime and retained attempts
+
+A retained native start that failed before submission can lack the durable handoff pin required by normal cancellation. Keep that start fenced; do not reconstruct pins, delete its active slot, or replay Start. The trusted native composition exposes `abortUnsubmittedRegisteredResearchLaunch` for this distinct case. It requires the exact retained start/spec/request and a process-local proof from a reviewed finite owner adapter that the original submitting service has terminated. Under the original controller, workspace, registry and job fences, it verifies that no runtime/provider submission or pin mount exists, publishes an explicit abort witness, and releases the matching active slot last. Its `abortedBeforeSubmission` result is reservation settlement, not a completed model task, a clean-workspace claim or a worker result. The compatible writer reader independently revalidates the retained witness and physical closure. This contract is not a serialized bridge operation; missing or uncertain owner evidence remains blocked.
+
+Trusted routing activation uses the single root-private file `/etc/subscription-runtime/mimo-project-runtime-routing.json`. Schema 1 retains controller-origin routing. Schema 2 has exactly `schemaVersion: 2`, `legacyRuntimeDirectory`, `legacyArtifactSha256`, `currentRuntimeDirectory` and `currentArtifactSha256`. Both directories name immutable `/opt/subscription-runtime/releases/<40-character revision>` artifacts; the current directory must exactly match the protected `/opt/subscription-runtime/mimo-project-bridge-current` purpose pointer. This is host composition, never project YAML or caller authority.
+
+Use the existing reviewed installation/activation procedure: qualify and install the common release, activate its purpose pointer, then compare-and-swap the protected routing metadata from the reviewed previous bytes to schema 2 with the matching artifact digest. Until schema 2 is published, the new bridge conservatively retains schema 1 behavior. Later releases require the same paired pointer/metadata transition; drift refuses operations until they agree. There is no per-project runtime installation or controller provenance rewrite.
+
+With schema 2, new Create uses the common current runtime. Start may select current only with an exact protected no-first-effect birth, positively absent native and ordinary writer namespaces, and a fresh admission check. Before submission, it exclusively publishes a private exact-job origin intent in the fixed state-root `mimo-runtime-starts` depot. An uncertain pre-spec submission retains that origin. Status, Stop and retained Start use the protected native execution origin, then the exact intent, then original job birth or the qualified legacy baseline. An incomplete native namespace cannot fall back without an exact retained intent; an intent never grants writer release. Metadata, pointer, executable bytes and original authority witnesses are checked again before calls.
+
+After an owned failed Start has settled, a trusted host operator can explicitly call `recoverHostedMimoProjectPreEffectStartIntent` with the exact job selection, prior intent and manifest SHA256, qualified schema-2 routing and its current metadata/pointer witness. Recovery requires a released compatible birth and absent native, ordinary and both lexical/physical first-effect namespaces under protected publication. It preserves the original intent bytes in private `mimo-runtime-starts/pre-effect-history` before publishing the current origin. It does not launch the model or alter admission, birth, execution or account state. Reconcile a transport timeout against the same intent and receipt; do not replay an uncertain Start. Any executed or unknown owner remains fenced.
+
+An exact retained `protected_job_birth_publication_busy` Start can be explicitly submitted again with the identical request after its owned unit is cold, has zero PID, an empty cgroup and no queued job. The bridge rearms only when the current canonical controller, immutable binding, clean worker workspace at the configured source commit and original admission receipt still match, the receipt is `validated_not_launched` with zero launch authorizations, both compatible positive birth records remain intact, and account reservation, native authority, ordinary writer authority and both first-effect records are absent. It exclusively persists the proof and archives the old request, owner and result as the previous generation. The next owned unit revalidates the proof before invoking the unchanged normal Start handler. Unknown/consumed authority, another failure code or a partial rearm publication refuses recovery; it never deletes claims or births, rewrites admission or launches a provider from the proof itself.
+
+
+For a never-launched job with a verified admitted input patch, the first-launch admission proof accepts an absent progress PID only while the prepared job remains free of execution artifacts. The exact patch receipt, ownership, workspace lease and staged bytes are still checked; this does not authorize continuation of an earlier attempt.
+
+The current runtime reads compatible protected v1 birth witnesses under its own publication mutex. Native writer observations remain owned by the original runtime, prepared outside that mutex and rechecked through cold protected byte witnesses inside it. Existing scope, source, route and writer guards remain authoritative. Unknown provenance cannot be promoted to a fresh Start. Mixed controller/job origins still fail the existing controller-repair equality guard; this change does not authorize that repair or mutate old leases. Retained artifacts must remain installed until their attempts can be safely closed.
+
 Deploy this capability only after exact-artifact native sandbox qualification and an uninstrumented real model Coding E2E, including native shell/build/tests, canonical handoff and owned shutdown. A TEST-only instrumented artifact does not qualify a production release. Run qualification only in newly allocated TEST projects, not existing user repositories. A standalone worker proof does not qualify the registered project broker, scope, reservation and finalization path; validate those boundaries separately with the exact deployed revision.
 
 ## Remote agents and the trusted bridge
@@ -96,6 +115,40 @@ The snapshot must already contain the reviewed, tracked controller/lane packets 
 Preparation validates enabled routing and proof before creating fresh protected state/scratch roots. It clones only the reviewed local snapshot without hardlinks, freezes the exact commit/ref, creates the purpose-owned controller through the ordinary registry API with explicit account-q and derived project-only roots/prefixes, then invokes `--onboard`. The initial scope includes `<registryRootDir>/archives` and `<registryRootDir>/consumed-output-ledger`; the ordinary controller creation API establishes their custody. Preparation also establishes the private reviewed-output workspace lock ancestry. A freshly prepared controller therefore needs no subsequent scope repair. It never launches a model or tests on the project, changes an existing scope, opens disabled routing, or changes shared ownership. A retained `preparation.json` marks partial effects; existing roots/bindings are refused and require operator reconciliation rather than replay.
 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
+
+## Operator troubleshooting
+
+On a Linux root host with scratch isolation enabled, the ordinary `codex-goal-cli` main entry can enter a private mount namespace.
+Lifecycle commands in that namespace cannot satisfy the host MiMo initial-root namespace contract.
+Use the [trusted hosted bridge](#remote-agents-and-the-trusted-bridge) in its finite owned initial-host-root service.
+Do not bypass namespace checks with environment markers or edit reservations, leases or ownership records manually.
+
+For a generation-zero Create interrupted before registration, an operator can explicitly retain a failed attempt through
+`hosted-mimo-project-bridge-cli --reconcile-interrupted-create /absolute/private-plan.json` in a finite owned initial-host-root service.
+The root-owned mode-0600 plan has exactly `schemaVersion: 1`, `machineId`, `projectId`, `workstreamId`, `jobId`,
+`expectedBindingSha256`, `expectedOwnerSha256`, `expectedRequestSha256`, `expectedBootId` and `expectedInvocationId`.
+The runtime derives the original unit and paths. It requires structured PID-1 timeout evidence for the same boot/invocation,
+physical process and queue absence, unchanged builtin admission partials, and no manifest, birth, first effect or Start authority.
+Missing proof refuses reconciliation; a collected unit or default systemd success alone is insufficient.
+The canonical failure becomes settled only with its matching complete settlement receipt. Incomplete publication stays unresolved.
+This preserves all partials and reports `project_control_interrupted_create_timeout`; it never replays Create, adopts a root,
+permits Start or clears orphan debt. Preserve the original ID and receipts rather than replacing an uncertain attempt.
+
+Status can mutate canonical state. With a retained candidate, it reconciles the same native/provider attempt,
+publishes the canonical result and handoff, then releases the active reservation last.
+Without a candidate, Status reporting native `terminal` does not prove writer release.
+Use one qualified same-job Stop: the [registered cancellation contract](../src/worker-codex/research-launch-lifecycle.ts)
+returns `cleanWorkspace: true` for a clean workspace without requiring a handoff packet.
+The project adapter exposes `cleanWorkspace: "true"`; verify exact start/spec in `last-terminal.json` and absent `active.json`.
+Keep the retained failure evidence; cancellation does not fabricate a candidate or successful result.
+
+A bootstrap exit 70 before any provider can be a scratch admission failure.
+Read only the [finite startup diagnostics](../src/worker-codex/research-launch-diagnostics.ts), including the volume role and available/required bytes.
+Reserve the 5 GiB floor plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.
+Preserve the exact job/start/spec identity on failure or timeout; improved capacity does not authorize replay of an immutable Start.
+
+For fresh enrollment, preload the reviewed source through the [protected snapshot preparation contract](#preparing-an-existing-project-without-launching-work).
+Keep the exact source and prerequisite proofs; do not replace source preparation with a base64 seed embedded in the worker prompt.
 
 ## Recovering an unlaunched legacy controller
 

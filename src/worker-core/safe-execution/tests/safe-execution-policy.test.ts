@@ -238,12 +238,17 @@ describe("safe execution policy decisions", () => {
     const budgetFailure = new SubscriptionWorkerError(
       "subscription_worker_run_failed",
       "Codex task exhausted its weighted-token budget.",
-      { details: { code: "budget_exceeded" } },
+      { details: { code: "budget_exceeded", incompleteReason: "max_output_tokens",
+        phase: "turn_error_after_output", outputCharCount: "250" } },
     );
     expect(defaultSafeExecutionErrorClassifier(budgetFailure)).toEqual({
       reason: "budget_exceeded",
       safeMessage: "Codex task exhausted its weighted-token budget.",
       retryable: false,
+      details: { code: "budget_exceeded", incompleteReason: "max_output_tokens",
+        phase: "turn_error_after_output", outputCharCount: "250",
+        rawCause: "Codex task exhausted its weighted-token budget.",
+        subscriptionWorkerCode: "subscription_worker_run_failed" },
     });
 
     const modelFailure = new SubscriptionWorkerError(

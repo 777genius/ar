@@ -54,7 +54,7 @@ describe("original SDK creator at manifest placement publication",()=>{
  });
  it("rejects a foreign SDK command before the retained-state gate",()=>{
   const launch=sdkRecipe(state.snapshots,job);launch.args[0]=runtime+"/dist/worker-codex/codex-goal-cli.js";launch.args[2]="foreign_start";
-  const selected=prepare(launch);expect(()=>issueFreshHostedManifestPlacement(state.fence,selected)).toThrow("hosted_dependency_parent_recipe_unsupported");
+  const selected=prepare(launch);expect(()=>issueFreshHostedManifestPlacement(state.fence,selected)).toThrow("hosted_original_usable_parent_recipe_unsupported");
  });
  it("keeps the original direct run placement behavior",()=>{
   const selected=prepare({command:process.execPath,args:[runtime+"/dist/worker-codex/codex-goal-cli.js","run"],cwd:job+"/workspace"});
