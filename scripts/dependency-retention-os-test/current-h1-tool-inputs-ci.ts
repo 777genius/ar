@@ -61,8 +61,10 @@ const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes
 /** Fixed ROOT protocol inventory, including the five selected-plan regressions.
  * Count changes require source review; every required ROOT case must really run. */
 export function assertCiRootProtocolTap(tap:string):void {
- assert(/^# tests 41$/m.test(tap)&&/^# pass 40$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
+ assert(/^# tests 43$/m.test(tap)&&/^# pass 42$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
  for(const name of [
+  "qualified package lock reproduces the previously measured complete signed image",
+  "qualified acquisition pins every dependency and retains all five original seeds",
   "real acquired file hashes retained bytes and refuses post-read deadline/identity mutation",
   "retained original archive rejects equal-byte replacement between verification and extraction",
   "selected entry rejects inherited hooks without invocation",
