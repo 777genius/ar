@@ -13,7 +13,7 @@ import { assertRegisteredResearchHandoffCurrent } from "./research-registered-ha
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
-import { researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
+import { prepareUnsubmittedResearchStartRelease, researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
 
 function optionalPrivateRecord(path: string): Buffer | undefined {
@@ -147,6 +147,8 @@ async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<P
   return nativeAuthorityAbsent(manifest) && hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ? birth : { status: "unknown" };
 }
 export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  const aborted = await prepareUnsubmittedWriterObservation(manifest);
+  if (aborted) return await aborted();
   const original = await prepareOriginalNativeWriterObservation(manifest);
   if (original) return await original();
   const absent = nativeAuthorityAbsent(manifest);
@@ -170,6 +172,8 @@ export async function prepareResearchJobWriterObservation(manifest: CodexGoalJob
 }
 async function prepareWriterObservation(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
   modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader> {
+  const aborted = await prepareUnsubmittedWriterObservation(manifest);
+  if (aborted) return aborted;
   const original = await prepareOriginalWriter(manifest, importModule, modules);
   if (original) return original;
   const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
@@ -177,6 +181,21 @@ async function prepareWriterObservation(manifest: CodexGoalJobManifest, importMo
     const observation = await native();
     return observation.status !== "unknown" || !absent ? observation : await observeNonNativeWriter(manifest);
   };
+}
+
+async function prepareUnsubmittedWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader | undefined> {
+  try {
+    const read = await prepareUnsubmittedResearchStartRelease(manifest.jobId);
+    if (!read) return;
+    const terminal = terminalResearchStart(manifest.jobId), r = terminal.spec.request;
+    if (r.jobId !== manifest.jobId || r.taskId !== manifest.taskId || r.jobRootDir !== manifest.jobRootDir ||
+        r.workspacePath !== manifest.workspacePath || r.promptPath !== manifest.promptPath || r.modelBackend !== manifest.modelBackend) return;
+    read();
+    return async () => {
+      try { read(); return { status: "released" }; }
+      catch { return { status: "unknown" }; }
+    };
+  } catch { return; } // Malformed/incomplete origins keep existing closed behavior.
 }
 
 /** Preparation is outside publication. Retained native authority is checked by
