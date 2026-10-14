@@ -137,7 +137,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     this.agentDriver = runtimeParts.agentDriver;
     const managedDriver = this.agentDriver instanceof CodexJsonAgentDriver ? this.agentDriver : undefined;
     this.sessionBinding = new FileBackendCodexSessionBinding(
-      managedDriver ? (runId) => managedDriver.hasManagedRunSession(runId) : undefined);
+      managedDriver ? (runId) => this.managedRuns.hasManagedRunSession(runId) : undefined);
     this.sessionStore = runtimeParts.sessionStore;
     this.runtime = runtimeParts.runtime;
     this.ownedWorkspace = runtimeParts.ownedWorkspace;

@@ -9,6 +9,7 @@ import { CodexJsonAgentDriver } from "../../provider-codex/codex-json-agent-driv
 import { sessionArtifactFromCodexAuthJson } from "../../provider-codex/codex-auth-json-codec";
 import type { CodexExecutionEngine, CodexExecutionWaitingForInputResult } from "../../provider-codex/codex-json-execution-engine";
 import { FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
+import { FileBackendCodexSessionBinding } from "../file-backend-codex-session-binding";
 import { LocalFileManagedRunStore } from "../file-backend-codex-managed-run-store";
 import { StaticRunner, codexAuthJson, waitUntil } from "./file-backend-codex-worker-test-support";
 const nativeWebEvidence:NativeWebEvidence = {turns:[{threadId:"TEST-thread",acknowledgedTurnId:"TEST-turn",records:[],unknown:false,truncated:false}],truncated:false};
@@ -46,7 +47,7 @@ async function fixture(mode:"failed"|"completed"|"waiting",rejectCompletion=fals
     if (result.status !== "waiting_for_input") throw new Error("fixture did not create real driver waiting cache");
     const output = await coordinator.taskResultToOutput(result,{kind:"run",runId:waiting.runId,job:{prompt:"original test task"},attempt:1});
     if (output.status !== "waiting_for_input") throw new Error("fixture did not persist real waiting result"); seed = false; events.length = 0;
-    return {events,write,persist,exported,complete,driver,resume:() => coordinator.resume({runId:output.runId,requestId:output.request.id,answer:"test answer",resumeHandle:output.resumeHandle}),
+    return {events,write,persist,exported,complete,driver,coordinator,resume:() => coordinator.resume({runId:output.runId,requestId:output.request.id,answer:"test answer",resumeHandle:output.resumeHandle}),
       cleanup:async () => { write.release(); persist.release(); exported.release(); complete.release(); await coordinator.cancelRetainedSessions().catch(() => undefined); await driver.dispose().catch(() => undefined); await rm(root,{recursive:true,force:true}); }};
   } catch (error) { await coordinator.cancelRetainedSessions().catch(() => undefined); await driver.dispose().catch(() => undefined); await rm(root,{recursive:true,force:true}); throw error; }
 }
@@ -66,6 +67,23 @@ describe("managed resume exact-use completion ordering", () => {
     try {
       await waitUntil(() => f.events.includes("write.begin")); f.write.release(); await waitUntil(() => f.events.includes("export.begin")); f.exported.release(); await waitUntil(() => f.events.includes("complete.begin")); f.complete.release();
       await expect(pending).rejects.toMatchObject({details:{code:"unknown_runtime_failure",sessionFinalization:"pending"},...(withNativeWeb ? {nativeWeb:nativeWebEvidence} : {})}); expect(f.events).not.toContain("complete.done"); expect(f.events).not.toContain("recovery");
+    } finally { await f.cleanup(); }
+  });
+  it("keeps binding admission and settles the old terminal on repeated resume", async () => {
+    const f = await fixture("failed",true);
+    const binding = new FileBackendCodexSessionBinding(id => f.coordinator.hasManagedRunSession(id));
+    let imports = 0;
+    const resume = () => binding.reserveResume("test-run",async () => { imports++; },f.resume);
+    try {
+      f.write.release(); f.exported.release(); f.complete.release();
+      await expect(resume()).rejects.toMatchObject({details:{sessionFinalization:"pending"}});
+      expect(f.driver.hasManagedRunSession("test-run")).toBe(false);
+      expect(binding.isInUse()).toBe(true);
+      await expect(binding.reserve(async () => undefined)).rejects.toMatchObject({details:{reason:"codex_session_binding_busy"}});
+      await expect(resume()).rejects.toMatchObject({details:{sessionFinalization:"pending"}});
+      expect(imports).toBe(0);
+      expect(f.events).not.toContain("recovery");
+      expect(binding.isInUse()).toBe(true);
     } finally { await f.cleanup(); }
   });
   it("holds auth export and use completion until resumed direct session write finishes", async () => {

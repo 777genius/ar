@@ -1,5 +1,5 @@
 import { types } from "node:util";
-import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { assertHostedDependencyBindingInventoryRevision, HostedDependencyReferenceKind } from "./hosted-dependency-workspace";
 import { HostedCustodyReservationState, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -220,7 +220,7 @@ export async function writeHostedTestEgressGrant(
       for (const [jobId,root,path] of [[candidate.jobId,candidate.jobRootDir,candidate.workspace.canonicalPath],
         [validated.jobId,validated.jobRootDir,workspace.canonicalPath]] as const) {
         const creator = inventory.ordinaryCreators.find(row=>row.jobId===jobId)!;
-        assertHostedDependencyParentRecipe(creator.launch.args,root,path);
+        readHostedDependencyParentRecipe(creator.launch,root,path);
       }
       const assertReferenceHistoryAbsent = () => {
         let present = true;
