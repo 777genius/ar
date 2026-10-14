@@ -144,7 +144,7 @@ async function fixture() {
   const save = () => file(input, JSON.stringify(plan)); save();
   return { input, config, state, registry, source, old, oldPath, oldBytes, binding, plan, save, git };
 }
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 it("retires exact legacy registration; fresh canonical birth releases only the replacement", async () => {
   const f = await fixture();
   expect(await observeProtectedCodexGoalJobBirth(f.old)).toEqual({ status: "unknown" });
