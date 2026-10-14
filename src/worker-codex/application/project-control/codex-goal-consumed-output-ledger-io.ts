@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { inspectRetainedTerminalArchive } from "@vioxen/subscription-runtime/worker-local";
 import { type Stats } from "node:fs";
 import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises";
@@ -15,6 +16,8 @@ import {
   assertReviewedWorkerContinuationContext,
   type ReviewedWorkerOutputSnapshot,
 } from "../../reviewed-worker-output";
+import { assertIncorporationLedgerBinding, incorporationBytes, incorporationHash, incorporationEvidenceReferences,
+  incorporationPermitSchema, incorporationReceiptSchema } from "../../published-output-reconciliation/domain/publication-incorporation";
 
 export async function readCodexGoalConsumedOutputLedgers(input: {
   readonly roots: readonly string[];
@@ -194,7 +197,8 @@ export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSour
           continue;
         }
         try {
-          const value: unknown = JSON.parse(await readFile(ledgerPath, "utf8"));
+          const ledgerBytes = await readFile(ledgerPath);
+          const value: unknown = JSON.parse(ledgerBytes.toString("utf8"));
           if (!ledgerFilenameMatchesPayload(entry.name, value)) {
             failures.push({
               subject: ledgerPath,
@@ -204,8 +208,10 @@ export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSour
             });
             continue;
           }
+          await this.assertPublicationIncorporation(value);
           entries.push({
             ledgerPath,
+            ledgerSha256: createHash("sha256").update(ledgerBytes).digest("hex"),
             value,
           });
         } catch (error) {
@@ -223,6 +229,43 @@ export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSour
 
   async pathExists(path: string): Promise<boolean> {
     return await this.evidenceFileMetadata(path) !== undefined;
+  }
+
+  private async assertPublicationIncorporation(value: unknown): Promise<void> {
+    if (!isRecord(value)) return;
+    const pointer = value.publicationIncorporation;
+    const marked = typeof value.note === "string" && value.note.startsWith("Reconciled reviewed publication incorporation ");
+    if (pointer === undefined && !marked) return;
+    if (!isRecord(pointer) || typeof pointer.path !== "string" || typeof pointer.sha256 !== "string") {
+      throw new Error("published_output_receipt_required");
+    }
+    if (!isRecord(value.backup) || typeof value.backup.statusPath !== "string" ||
+        typeof value.backup.patchPath !== "string" ||
+        pointer.path !== join(dirname(value.backup.statusPath), "publication-incorporation.json")) {
+      throw new Error("published_output_receipt_backup_binding_mismatch");
+    }
+    const read = async (path: string) => {
+      if (!await this.evidenceFileMetadata(path)) throw new Error("published_output_receipt_missing");
+      return (await inspectRetainedTerminalArchive(path, { collect: true,
+        expectedCanonicalPath: await realpath(path) })).bytes!;
+    };
+    const bytes = await read(pointer.path);
+    if (incorporationHash(bytes) !== pointer.sha256) throw new Error("published_output_receipt_hash_mismatch");
+    const receipt = incorporationReceiptSchema.parse(JSON.parse(bytes.toString("utf8")));
+    assertIncorporationLedgerBinding(receipt, value);
+    const permit = await read(join(dirname(pointer.path), "permit.json"));
+    if (incorporationHash(permit) !== receipt.permitSha256 ||
+        !incorporationBytes(incorporationPermitSchema.parse(JSON.parse(permit.toString("utf8"))))
+          .equals(incorporationBytes(receipt.permit)) ||
+        receipt.statusSha256 !== await this.pathSha256(value.backup.statusPath) ||
+        receipt.permit.patchSha256 !== await this.pathSha256(value.backup.patchPath)) {
+      throw new Error("published_output_receipt_evidence_binding_mismatch");
+    }
+    for (const proof of incorporationEvidenceReferences(receipt.permit)) {
+      if (incorporationHash(await read(join(dirname(pointer.path), `proof-${proof.sha256}.json`))) !== proof.sha256) {
+        throw new Error("published_output_raw_evidence_hash_mismatch");
+      }
+    }
   }
 
   async pathSize(path: string): Promise<number | undefined> {

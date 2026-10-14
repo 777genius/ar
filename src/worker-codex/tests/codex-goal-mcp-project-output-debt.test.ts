@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   LocalFileRunEventStore,
   LocalFileWorkerAccountCapacityStore,
@@ -32,11 +32,11 @@ import {
   createCodexGoalMcpServer,
   projectControllerPendingGuidancePromptContext,
 } from "../codex-goal-mcp";
+import { materializeCodexGoalHandoffArtifacts } from "../codex-goal-handoff-artifacts";
 import { localProjectControlEvidenceCustodySupported } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
   auditDecision,
-  callToolJson,
   git,
   gitInitRepository,
   gitStdout,
@@ -52,7 +52,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("codex goal MCP server", () => {
-  it("blocks producer refill but allows reviewer drain when orphan dirty output exists", async () => {
+  it("admits independent modern mutations with bounded orphan-output advisory and preserves historical bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-admission-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -106,6 +106,18 @@ describe("codex goal MCP server", () => {
         join(brokenWorkspace, ".git"),
         `gitdir: ${join(root, "missing-gitdir")}\n`,
       );
+      const historicalPaths = [join(orphanWorkspace, "memory.py"), join(linkedOrphanTarget, "linked.py"), join(brokenWorkspace, ".git")];
+      const historicalBytes = await Promise.all(historicalPaths.map(path => readFile(path)));
+      const expectAdvisory = (operation: unknown, canonicalPath: string): void => {
+        expect(operation).toMatchObject({ admission: { scope: "unrelated_history", target: { canonicalPath } } });
+        const { backlog } = (operation as { admission: { backlog: { count: number; preview: { subject: string }[] } } }).admission;
+        expect(backlog.count).toBeGreaterThanOrEqual(3);
+        expect(backlog.preview).toHaveLength(3);
+        for (const item of backlog.preview) {
+          expect(item).toMatchObject({ severity: "info", evidence: [] });
+          expect(item.subject.length).toBeLessThanOrEqual(240);
+        }
+      };
 
       await Promise.all([
         server.connect(serverTransport),
@@ -177,16 +189,23 @@ describe("codex goal MCP server", () => {
         confirmRefill: true,
       });
       expect(producer).toMatchObject({
-        ok: false,
-        error: "project_control_admission_denied:output_debt_present",
+        ok: true, workerRole: "producer", startSkipped: true,
       });
+      expectAdvisory(producer, producerWorkspace);
+      for (const operation of [producer.worktree, producer.createJob]) {
+        expect(operation).not.toHaveProperty("admission");
+      }
+      const directProducerWorkspace = join(root, "worktrees", "infinity-context-memory-direct-producer-v1");
+      // This sequence needs a real workspace so protected publication can prove
+      // no start. The separate future-registration case deliberately stays Unknown.
+      await git(sourceWorkspacePath, ["worktree", "add", "--detach", directProducerWorkspace, "HEAD"]);
       const directProducer = await callToolJson(client, "codex_goal_project_create_job", {
         registryRootDir,
         controllerJobId: "infinity-context-controller-v1",
         jobId: "infinity-context-memory-direct-producer-v1",
         jobRootDir: join(root, "worker-jobs", "infinity-context-memory-direct-producer-v1"),
         authRootDir: join(root, "auth"),
-        workspacePath: join(root, "worktrees", "infinity-context-memory-direct-producer-v1"),
+        workspacePath: directProducerWorkspace,
         promptPath: join(
           root,
           "worker-jobs",
@@ -199,12 +218,12 @@ describe("codex goal MCP server", () => {
         confirmCreate: true,
       });
       expect(directProducer).toMatchObject({
-        ok: false,
-        error: "project_control_admission_denied:output_debt_present",
+        ok: true, result: { status: "applied" },
       });
+      expectAdvisory(directProducer.result, directProducerWorkspace);
       await expect(access(
         join(root, "worker-jobs", "registry", "infinity-context-memory-direct-producer-v1"),
-      )).rejects.toThrow();
+      )).resolves.toBeUndefined();
       const directWorktreePath = join(
         root,
         "worktrees",
@@ -224,10 +243,10 @@ describe("codex goal MCP server", () => {
         },
       );
       expect(directWorktree).toMatchObject({
-        ok: false,
-        error: "project_control_admission_denied:output_debt_present",
+        ok: true, result: { status: "applied" },
       });
-      await expect(access(directWorktreePath)).rejects.toThrow();
+      expectAdvisory(directWorktree.result, directWorktreePath);
+      await expect(access(directWorktreePath)).resolves.toBeUndefined();
 
       const reviewer = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,
@@ -250,6 +269,10 @@ describe("codex goal MCP server", () => {
         workerRole: "reviewer",
         startSkipped: true,
       });
+      expectAdvisory(reviewer, reviewerWorkspace);
+      for (const operation of [reviewer.worktree, reviewer.createJob]) {
+        expect(operation).not.toHaveProperty("admission");
+      }
 
       const legacyTarget = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,
@@ -276,6 +299,7 @@ describe("codex goal MCP server", () => {
         ok: false,
         error: "project_control_denied:path_outside_scope",
       });
+      expect(await Promise.all(historicalPaths.map(path => readFile(path)))).toEqual(historicalBytes);
     } finally {
       await client.close();
       await server.close();
@@ -283,7 +307,7 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("admits only contract-path-disjoint producer refill past completed output", async () => {
+  it("admits physically independent producer refill and fences the retained output workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-disjoint-output-debt-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -370,24 +394,93 @@ describe("codex goal MCP server", () => {
       const heldJobRoot = join(root, "worker-jobs", heldJobId);
       await mkdir(join(heldWorkspace, "src", "held"), { recursive: true });
       await writeFile(join(heldWorkspace, "src", "held", "output.ts"), "export const held = true;\n");
-      await writeFile(
-        join(heldJobRoot, `${heldJobId}.latest-result.json`),
-        `${JSON.stringify({ status: "completed" })}\n`,
-      );
-
+      const heldResultPath = join(heldJobRoot, `${heldJobId}.latest-result.json`);
+      const stoppedPid = Number((await execFileAsync(process.execPath, ["-p", "process.pid"], { cwd: root })).stdout.trim());
+      await writeFile(join(heldJobRoot, `${heldJobId}.progress.json`), JSON.stringify({
+        taskId: heldJobId, status: "completed", resultStatus: "done", pid: stoppedPid,
+      }));
+      await writeFile(heldResultPath, `${JSON.stringify({ status: "completed" })}\n`);
+      const rawHeldPaths = [heldResultPath, join(heldJobRoot, `${heldJobId}.progress.json`),
+        join(heldWorkspace, "src", "held", "output.ts")];
+      const rawHeldBytes = await Promise.all(rawHeldPaths.map(path => readFile(path)));
+      await expect(refill("infinity-context-disjoint-v1", ["src/disjoint/"])).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(await Promise.all(rawHeldPaths.map(path => readFile(path)))).toEqual(rawHeldBytes);
+      const handoff = await materializeCodexGoalHandoffArtifacts({ workerJobId: heldJobId,
+        taskId: heldJobId, workspacePath: heldWorkspace, jobRootDir: heldJobRoot });
+      if (!handoff) throw new Error("native held output required");
+      await writeFile(heldResultPath, JSON.stringify({ status: "done", changedFiles: handoff.changedPaths,
+        evidence: [], blockers: [], nextAction: "review_completed", artifacts: handoff.artifacts,
+        details: { baseCommit: handoff.baseCommit } }));
+      const retainedPaths = [heldResultPath, handoff.manifestPath, handoff.patchPath, join(heldWorkspace, "src", "held", "output.ts")];
+      const retainedBytes = await Promise.all(retainedPaths.map((path) => readFile(path)));
       await expect(
         refill("infinity-context-disjoint-v1", ["src/disjoint/"]),
       ).resolves.toMatchObject({ ok: true });
-      const overlapping = await refill(
-        "infinity-context-overlap-v1",
-        ["src/held/"],
-      );
+      // Relative path names in another physical workspace cannot confer a
+      // collision with the retained writer's original workspace.
+      await expect(refill("infinity-context-relative-overlap-v1", ["src/held/"]))
+        .resolves.toMatchObject({ ok: true });
+      // Keep the original controller's required builtin refill admission. A
+      // separate protected legacy controller exercises public direct creation
+      // at the actual retained workspace, before any new job is published.
+      const overlapControllerId = "overlap-controller-v1";
+      const overlapControllerWorkspace = join(root, "overlap-control-workspace");
+      await mkdir(overlapControllerWorkspace, { mode: 0o700 });
+      await gitInitRepository(overlapControllerWorkspace);
+      await writeFile(join(overlapControllerWorkspace, "README.md"), "Independent TEST controller.\n");
+      await git(overlapControllerWorkspace, ["add", "README.md"]);
+      await git(overlapControllerWorkspace, ["commit", "-m", "test: isolated overlap controller"]);
+      await expect(callToolJson(client, "codex_goal_create_job", {
+        registryRootDir,
+        jobId: overlapControllerId,
+        jobRootDir: join(root, "worker-jobs", overlapControllerId),
+        workspacePath: overlapControllerWorkspace,
+        promptPath: join(root, "worker-jobs", overlapControllerId, "prompt.md"),
+        taskId: overlapControllerId,
+        accounts: ["account-a"],
+        accessBoundary: AccessBoundary.ProjectScopedControl,
+        networkAccess: NetworkAccessMode.Restricted,
+        projectAccessScope: {
+          projectId: "infinity-context",
+          workspaceRoots: [overlapControllerWorkspace],
+          worktreeRoots: [worktreeRoot],
+          registryRoot: registryRootDir,
+          jobIdPrefixes: ["infinity-context-", "overlap-controller-"],
+          tmuxSessionPrefixes: ["infinity-context-", "overlap-controller-"],
+          allowedAccountIds: ["account-a"],
+        },
+      })).resolves.toMatchObject({ ok: true });
+      const overlapJobRoot = join(root, "worker-jobs", "infinity-context-overlap-v1");
+      const overlapping = await callToolJson(client, "codex_goal_project_create_job", {
+        registryRootDir,
+        controllerJobId: overlapControllerId,
+        jobId: "infinity-context-overlap-v1",
+        jobRootDir: overlapJobRoot,
+        workspacePath: heldWorkspace,
+        promptPath: join(overlapJobRoot, "prompt.md"),
+        taskId: "infinity-context-overlap-v1",
+        accounts: ["account-a"],
+        workerRole: "producer",
+        confirmCreate: true,
+      });
       expect(overlapping).toMatchObject({
         ok: false,
         error: "project_control_admission_denied:output_debt_present",
+        admission: {
+          allowed: false,
+          reason: "output_debt_present",
+          resource: heldWorkspace,
+          examples: expect.arrayContaining([expect.objectContaining({ reason: "unconsumed_completed_job", subject: heldWorkspace })]),
+          action: "Inspect the reported resource and owner; use an independent sibling workspace for conflicting writes.",
+        },
       });
-      await expect(access(join(worktreeRoot, "infinity-context-overlap-v1")))
+      await expect(access(overlapJobRoot))
         .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(registryRootDir, "infinity-context-overlap-v1")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await Promise.all(retainedPaths.map((path) => readFile(path)))).toEqual(retainedBytes);
     } finally {
       await client.close();
       await server.close();

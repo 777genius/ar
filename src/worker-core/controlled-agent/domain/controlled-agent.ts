@@ -37,6 +37,7 @@ export enum ControlledAgentToolName {
   ProjectCreateWorktree = "codex_goal_project_create_worktree",
   ProjectCreateJob = "codex_goal_project_create_job",
   ProjectStart = "codex_goal_project_start",
+  ProjectAdoptAuthorityTuple = "codex_goal_project_adopt_authority_tuple",
   ProjectRefillWorker = "codex_goal_project_refill_worker",
   ProjectPrepareVerifier = "codex_goal_project_prepare_verifier",
   ProjectMigrateConsumedOutputLedgerEpoch = "codex_goal_project_migrate_consumed_output_ledger_epoch",
@@ -58,6 +59,7 @@ export enum ControlledAgentToolGroup {
   ControllerLifecycle = "controller_lifecycle",
   WorkerLifecycle = "worker_lifecycle",
   IntegrationLifecycle = "integration_lifecycle",
+  AuthorityAdoption = "authority_adoption",
 }
 
 export enum ControlledAgentRunStatus {
@@ -164,6 +166,8 @@ export type ControlledAgentRun = {
   readonly providerRunId?: string;
   readonly owner?: ControlledAgentProcessOwner;
   readonly capacityAccountId?: string;
+  /** Non-secret opaque identity captured from the admitted session seed. */
+  readonly capacitySessionId?: string;
   readonly capacityDemand?: WorkerRuntimeDemand;
   readonly safeMessage?: string;
   readonly startedAt: string;
@@ -189,7 +193,7 @@ export type ControlledAgentLaunchPlanInput = {
   readonly boundary: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly provider: ControlledAgentProviderEnforcementCapabilities;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
   readonly now?: Date;
 };
 

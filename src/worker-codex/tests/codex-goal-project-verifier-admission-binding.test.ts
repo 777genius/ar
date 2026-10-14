@@ -66,7 +66,12 @@ describe("project verifier admission binding", () => {
         manifest: fixture.manifest,
         scope: fixture.scope,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      baseSha: fixture.phaseStartSha,
+      inputPatchHash: fixture.artifactSha256,
+      packetRevision: "phase-08-s0-r1",
+      phaseStartSha: null,
+    });
 
     await writeFile(sourcePath, "attacker replaced staged adoption\n");
     await git(fixture.workspacePath, ["add", "README.md"]);
@@ -118,7 +123,12 @@ describe("project verifier admission binding", () => {
     await expect(assertProjectPreStartAdmissionLaunchBinding({
       manifest: fixture.manifest,
       scope: fixture.scope,
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      baseSha: fixture.phaseStartSha,
+      inputPatchHash: fixture.artifactSha256,
+      packetRevision: "phase-08-s0-r1",
+      phaseStartSha: null,
+    });
 
     await writeFile(sourcePath, "export const value = 2;\n");
     await git(fixture.workspacePath, ["add", "src/example.ts"]);
@@ -167,7 +177,12 @@ describe("project verifier admission binding", () => {
     await expect(assertProjectPreStartAdmissionLaunchBinding({
       manifest: fixture.manifest,
       scope: fixture.scope,
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      baseSha: fixture.phaseStartSha,
+      inputPatchHash: fixture.artifactSha256,
+      packetRevision: "phase-08-s0-r1",
+      phaseStartSha: null,
+    });
   });
 
   it("rejects a mismatched artifact digest and unstaged workspace input", async () => {

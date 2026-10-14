@@ -10,7 +10,13 @@ export type CodexGoalProcessSnapshotRow = {
   readonly ppid: number;
   readonly stat?: string;
   readonly cpu: number;
+  readonly startedAt?: string;
   readonly command: string;
+};
+
+export type CodexGoalProcessIdentity = {
+  readonly pid: number;
+  readonly startedAt: string;
 };
 
 export type CodexGoalProcessSnapshot = {
@@ -18,6 +24,8 @@ export type CodexGoalProcessSnapshot = {
   readonly cpuActive?: boolean;
   readonly command?: string;
   readonly supervisorCommand?: string;
+  readonly supervisorStartedAt?: string;
+  readonly processTreeIdentities?: readonly CodexGoalProcessIdentity[];
   readonly appServerAlive?: boolean;
   readonly appServerPid?: number;
   readonly workloadProcessAlive?: boolean;
@@ -28,18 +36,26 @@ export type CodexGoalProcessSnapshot = {
 export async function readCodexGoalProcessSnapshotRows(): Promise<
   readonly CodexGoalProcessSnapshotRow[]
 > {
-  const { stdout } = await execFileAsync("ps", [
-    "-axo",
-    "pid=,ppid=,stat=,%cpu=,command=",
-  ], { timeout: 1_000 });
-  return parseProcessSnapshotRows(stdout);
+  const { stdout } = await execFileAsync(
+    "ps",
+    ["-axo", "pid=,ppid=,stat=,%cpu=,lstart=,command="],
+    { timeout: 1_000 },
+  );
+  const rows = parseProcessSnapshotRows(stdout);
+  if (!rows.some((row) => row.pid === process.pid)) {
+    throw new Error("codex_goal_process_table_observer_missing");
+  }
+  return rows;
 }
 
 export function inspectCodexGoalProcessSnapshotRows(
   pid: number,
   rows: readonly CodexGoalProcessSnapshotRow[],
 ): CodexGoalProcessSnapshot {
-  return redactProcessSnapshot(summarizeCodexGoalProcessTree(pid, rows));
+  const summary = summarizeCodexGoalProcessTree(pid, rows);
+  // A successfully read process table can affirm absence. An unavailable
+  // observation is returned as unknown by inspectCodexGoalProcessSnapshot.
+  return redactProcessSnapshot({ ...summary, alive: summary.alive ?? false });
 }
 
 export async function inspectCodexGoalProcessSnapshot(
@@ -55,6 +71,8 @@ export async function inspectCodexGoalProcessSnapshot(
       summary.cpuActive !== undefined ||
       summary.command !== undefined ||
       summary.supervisorCommand !== undefined ||
+      summary.supervisorStartedAt !== undefined ||
+      summary.processTreeIdentities !== undefined ||
       summary.appServerAlive !== undefined ||
       summary.appServerPid !== undefined ||
       summary.workloadProcessAlive !== undefined ||
@@ -67,36 +85,49 @@ export async function inspectCodexGoalProcessSnapshot(
     // Fall back to direct pid inspection below.
   }
   try {
-    const { stdout } = await execFileAsync("ps", [
-      "-p",
-      String(pid),
-      "-o",
-      "stat=",
-      "-o",
-      "%cpu=",
-      "-o",
-      "command=",
-    ], { timeout: 1_000 });
+    const { stdout } = await execFileAsync(
+      "ps",
+      [
+        "-p",
+        String(pid),
+        "-o",
+        "stat=",
+        "-o",
+        "%cpu=",
+        "-o",
+        "lstart=",
+        "-o",
+        "command=",
+      ],
+      { timeout: 1_000 },
+    );
     const line = stdout.trim();
-    if (!line) return {};
-    const match = line.match(/^(\S+)\s+(\S+)\s+([\s\S]*)$/);
+    if (!line) return { alive: false };
+    const match = line.match(
+      /^(\S+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+([\s\S]*)$/,
+    );
     const statText = match?.[1] ?? "";
     if (processStatIsZombie(statText)) {
-      const command = match?.[3]?.trim();
+      const command = match?.[4]?.trim();
       return {
         alive: false,
         cpuActive: false,
         ...(command ? { command: redactStatusText(command) } : {}),
         ...(command ? { supervisorCommand: redactStatusText(command) } : {}),
+        ...(match?.[3] ? { supervisorStartedAt: match[3] } : {}),
       };
     }
     const cpu = match ? Number(match[2]) : Number.NaN;
-    const command = match?.[3]?.trim();
+    const command = match?.[4]?.trim();
     return {
       alive: true,
       ...(Number.isFinite(cpu) ? { cpuActive: cpu > 0.1 } : {}),
       ...(command ? { command: redactStatusText(command) } : {}),
       ...(command ? { supervisorCommand: redactStatusText(command) } : {}),
+      ...(match?.[3] ? { supervisorStartedAt: match[3] } : {}),
+      ...(match?.[3]
+        ? { processTreeIdentities: [{ pid, startedAt: match[3] }] }
+        : {}),
     };
   } catch {
     return {};
@@ -108,13 +139,21 @@ function redactProcessSnapshot(
 ): CodexGoalProcessSnapshot {
   return {
     ...(summary.alive === undefined ? {} : { alive: summary.alive }),
-    ...(summary.cpuActive === undefined ? {} : { cpuActive: summary.cpuActive }),
+    ...(summary.cpuActive === undefined
+      ? {}
+      : { cpuActive: summary.cpuActive }),
     ...(summary.command === undefined
       ? {}
       : { command: redactStatusText(summary.command) }),
     ...(summary.supervisorCommand === undefined
       ? {}
       : { supervisorCommand: redactStatusText(summary.supervisorCommand) }),
+    ...(summary.supervisorStartedAt === undefined
+      ? {}
+      : { supervisorStartedAt: summary.supervisorStartedAt }),
+    ...(summary.processTreeIdentities === undefined
+      ? {}
+      : { processTreeIdentities: summary.processTreeIdentities }),
     ...(summary.appServerAlive === undefined
       ? {}
       : { appServerAlive: summary.appServerAlive }),
@@ -148,7 +187,9 @@ export function summarizeCodexGoalProcessTree(
     rowsByParent.set(row.ppid, group);
   }
   const treeRows: CodexGoalProcessSnapshotRow[] = [];
-  const queue = rows.filter((row) => row.pid === rootPid && !processSnapshotRowIsZombie(row));
+  const queue = rows.filter(
+    (row) => row.pid === rootPid && !processSnapshotRowIsZombie(row),
+  );
   const seen = new Set<number>();
   while (queue.length > 0) {
     const row = queue.shift();
@@ -158,19 +199,33 @@ export function summarizeCodexGoalProcessTree(
     queue.push(...(rowsByParent.get(row.pid) ?? []));
   }
   if (treeRows.length === 0) return {};
-  const activeRows = treeRows.filter((row) => row.cpu > processCpuActiveThreshold);
+  const activeRows = treeRows.filter(
+    (row) => row.cpu > processCpuActiveThreshold,
+  );
   const totalCpu = treeRows.reduce((sum, row) => sum + row.cpu, 0);
-  const commandRow = bestProcessCommandRow(activeRows.length > 0 ? activeRows : treeRows);
+  const commandRow = bestProcessCommandRow(
+    activeRows.length > 0 ? activeRows : treeRows,
+  );
   const supervisorCommand = treeRows[0]?.command;
-  const appServerRow = treeRows.find((row) => isCodexAppServerCommand(row.command));
-  const infrastructurePids = appServerRow === undefined
-    ? undefined
-    : codexInfrastructureProcessIds(appServerRow, rowsByParent);
-  const workloadRows = appServerRow === undefined
-    ? undefined
-    : processDescendants(appServerRow.pid, rowsByParent).filter(
-      (row) => !infrastructurePids?.has(row.pid),
-    );
+  const supervisorStartedAt = treeRows[0]?.startedAt;
+  const processTreeIdentities = treeRows.flatMap((row) =>
+    row.startedAt === undefined
+      ? []
+      : [{ pid: row.pid, startedAt: row.startedAt }],
+  );
+  const appServerRow = treeRows.find((row) =>
+    isCodexAppServerCommand(row.command),
+  );
+  const infrastructurePids =
+    appServerRow === undefined
+      ? undefined
+      : codexInfrastructureProcessIds(appServerRow, rowsByParent);
+  const workloadRows =
+    appServerRow === undefined
+      ? undefined
+      : processDescendants(appServerRow.pid, rowsByParent).filter(
+          (row) => !infrastructurePids?.has(row.pid),
+        );
   const workloadCommandRow =
     workloadRows === undefined || workloadRows.length === 0
       ? undefined
@@ -180,6 +235,8 @@ export function summarizeCodexGoalProcessTree(
     cpuActive: activeRows.length > 0 || totalCpu > processCpuActiveThreshold,
     ...(commandRow?.command ? { command: commandRow.command } : {}),
     ...(supervisorCommand ? { supervisorCommand } : {}),
+    ...(supervisorStartedAt ? { supervisorStartedAt } : {}),
+    ...(processTreeIdentities.length > 0 ? { processTreeIdentities } : {}),
     appServerAlive: appServerRow !== undefined,
     ...(appServerRow ? { appServerPid: appServerRow.pid } : {}),
     ...(workloadRows === undefined
@@ -248,7 +305,9 @@ function parseProcessSnapshotRows(
   return stdout
     .split(/\r?\n/)
     .map((line): CodexGoalProcessSnapshotRow | null => {
-      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+([0-9.]+)\s*([\s\S]*)$/);
+      const match = line.match(
+        /^\s*(\d+)\s+(\d+)\s+(\S+)\s+([0-9.]+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s*([\s\S]*)$/,
+      );
       if (!match) return null;
       const pid = Number(match[1]);
       const ppid = Number(match[2]);
@@ -266,15 +325,14 @@ function parseProcessSnapshotRows(
         ppid,
         stat: statText,
         cpu,
-        command: match[5]?.trim() ?? "",
+        ...(match[5] ? { startedAt: match[5] } : {}),
+        command: match[6]?.trim() ?? "",
       };
     })
     .filter((row): row is CodexGoalProcessSnapshotRow => row !== null);
 }
 
-function processSnapshotRowIsZombie(
-  row: CodexGoalProcessSnapshotRow,
-): boolean {
+function processSnapshotRowIsZombie(row: CodexGoalProcessSnapshotRow): boolean {
   return processStatIsZombie(row.stat) || /\b<defunct>\b/i.test(row.command);
 }
 
@@ -286,7 +344,8 @@ function bestProcessCommandRow(
   rows: readonly CodexGoalProcessSnapshotRow[],
 ): CodexGoalProcessSnapshotRow | undefined {
   return rows.slice().sort((left, right) => {
-    const buildScore = Number(isBuildLikeProcessCommand(right.command)) -
+    const buildScore =
+      Number(isBuildLikeProcessCommand(right.command)) -
       Number(isBuildLikeProcessCommand(left.command));
     if (buildScore !== 0) return buildScore;
     return right.cpu - left.cpu;
@@ -294,9 +353,12 @@ function bestProcessCommandRow(
 }
 
 function isBuildLikeProcessCommand(command: string | undefined): boolean {
-  return command === undefined ||
-    /\b(build|test|check|lint|tsc|vite|vitest|jest|pytest|cargo|gradle|mvn)\b/i
-      .test(command);
+  return (
+    command === undefined ||
+    /\b(build|test|check|lint|tsc|vite|vitest|jest|pytest|cargo|gradle|mvn)\b/i.test(
+      command,
+    )
+  );
 }
 
 function redactStatusText(value: string): string {

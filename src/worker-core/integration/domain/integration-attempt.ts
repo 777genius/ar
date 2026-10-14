@@ -143,6 +143,19 @@ export type PushAttempt = {
   readonly pushedAt: string;
 };
 
+/** Remote publication is asserted by a trusted operator, not checked by this runtime. */
+export type ExternalPublicationAttestation = {
+  readonly provenance: "operator_attestation";
+  readonly operator: string;
+  readonly verifiedAt: string;
+  readonly verificationMethod: "authenticated_gh_api";
+  readonly repository: string;
+  readonly remote: string;
+  readonly branch: string;
+  readonly commitSha: string;
+  readonly evidenceSha256: string;
+};
+
 export type IntegrationAttempt = {
   readonly attemptId: string;
   readonly projectId: string;
@@ -167,6 +180,7 @@ export type IntegrationAttempt = {
   readonly checkRuns: readonly CheckRun[];
   readonly commitCandidate?: CommitCandidate;
   readonly pushAttempt?: PushAttempt;
+  readonly externalPublicationAttestation?: ExternalPublicationAttestation;
   readonly promotionAttempts?: readonly PushAttempt[];
   readonly rejectReason?: string;
   readonly createdAt: string;

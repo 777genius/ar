@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
-  codexProviderApiEgressPolicy, codexProviderEgressPolicy, CodexProviderEgressProfileId,
+  codexHostedDefaultEgressPolicy, codexProviderWebSearchMode, codexProviderApiEgressPolicy, codexProviderEgressPolicy, CodexProviderEgressProfileId,
   codexProviderEgressPolicyFromEnv, codexProviderEgressConfigToml, codexProviderEgressCliConfigArgs, codexProviderEgressEnv,
 } from "../codex-provider-egress-policy";
 import { codexJsonHomeConfigToml, CodexWorkerCacheSessionPoolMaterializer } from "../codex-session-materializer";
@@ -18,9 +18,9 @@ import type { CodexAppServerChildProcess, CodexAppServerProcessFactory } from ".
 
 const testPolicy = () => codexProviderEgressPolicy(CodexProviderEgressProfileId.TestNpmQualification);
 const managedPolicy = () => codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
-const policies = [codexProviderApiEgressPolicy(), testPolicy(), managedPolicy()];
+const policies = [codexHostedDefaultEgressPolicy(), codexProviderApiEgressPolicy(), testPolicy(), managedPolicy(), codexProviderEgressPolicy(CodexProviderEgressProfileId.PublicResearchV1)];
 describe("finite TEST egress propagation", () => {
-  it("keeps defaults API-only, freezes domains, and refuses unknown profiles", () => {
+  it("keeps explicit legacy policies API-only, freezes domains, and refuses unknown profiles", () => {
     expect(codexProviderApiEgressPolicy().domains).toEqual(["api.openai.com"]);
     expect(testPolicy().domains).toEqual(["api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev"]);
     expect(managedPolicy().domains).toEqual(["api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev", "api.github.com", "raw.githubusercontent.com"]);
@@ -36,6 +36,19 @@ describe("finite TEST egress propagation", () => {
     expect(() => (testPolicy().domains as string[]).push("*")).toThrow();
     expect(() => codexProviderEgressPolicy("other" as CodexProviderEgressProfileId)).toThrow();
     expect(codexProviderEgressConfigToml()).not.toContain("registry.npmjs.org");
+  });
+  it("selects full shell Internet and live native web for the hosted default while retaining restricted profiles", () => {
+    const policy = codexHostedDefaultEgressPolicy();
+    expect(policy.profileId).toBe(CodexProviderEgressProfileId.FullInternetV1);
+    expect(policy.domains).toEqual([]);
+    expect(codexProviderWebSearchMode(policy)).toBe("live");
+    expect(codexProviderEgressCliConfigArgs(policy)).toEqual([
+      "--config", "sandbox_workspace_write.network_access=true",
+      "--config", "features.network_proxy.enabled=false",
+      "--config", "features.network_proxy.domains={  }",
+    ]);
+    expect(codexProviderEgressCliConfigArgs(codexProviderApiEgressPolicy())).toContain("features.network_proxy.enabled=true");
+    expect(codexProviderEgressPolicy(CodexProviderEgressProfileId.PublicResearchV1).domains).toEqual(["api.openai.com"]);
   });
   it.each(policies)("reconstructs a fixed domain set even if a caller tampers: $profileId", policy => {
     const forged = { profileId: policy.profileId, domains: ["evil.example", "*.github.com", "https://api.github.com/"] };
@@ -76,7 +89,7 @@ describe("finite TEST egress propagation", () => {
     expect(plan.args.join(" ")).not.toContain("registry.npmjs.org");
     expect(plan.args.join(" ")).not.toContain("tuf-repo-cdn.sigstore.dev");
   });
-  it("isolates and reopens all three cache roots with the same worker key", async () => {
+  it("isolates and reopens all profile cache roots with the same worker key", async () => {
     const root = await mkdtemp(join(tmpdir(), "test-egress-cache-"));
     const materializers: CodexWorkerCacheSessionPoolMaterializer[] = [];
     const auth = JSON.stringify({ auth_mode: "chatgpt", tokens: { id_token: "fixture-id", access_token: "fixture-access", refresh_token: "fixture-refresh", account_id: "fixture-account" }, last_refresh: "2026-09-06T00:00:00.000Z" });
@@ -101,8 +114,8 @@ describe("finite TEST egress propagation", () => {
         } finally { await session.release(); }
         await m.dispose();
       }
-      expect(new Set(homes.slice(0, 3)).size).toBe(3);
-      expect(homes.slice(3)).toEqual(homes.slice(0, 3));
+      expect(new Set(homes.slice(0, policies.length)).size).toBe(policies.length);
+      expect(homes.slice(policies.length)).toEqual(homes.slice(0, policies.length));
     } finally {
       await Promise.all(materializers.map(m => m.dispose()));
       await rm(root, { recursive: true, force: true });

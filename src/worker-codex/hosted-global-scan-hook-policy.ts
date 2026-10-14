@@ -1,7 +1,7 @@
 import {
   blockedGlobalFilesystemScanCommand,
   unverifiableGlobalFilesystemScanCommand,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "../worker-core/host-command/global-filesystem-scan-policy";
 import { staticExecCommandsFromCodeModeSource } from "./code-mode-exec-command-parser";
 
 export type CodexPreToolUseHookResult = {

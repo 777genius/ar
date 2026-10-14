@@ -8,6 +8,9 @@ import {
   StartControlledAgentRunBlockReason,
   buildControlledAgentProcessOwner,
   startControlledAgentRun,
+  reconcileControlledAgentRun,
+  ReconcileControlledAgentRunReason,
+  type ControllerStateStorePort,
   type ControlledAgentEvent,
   type ControlledAgentLaunchPlanInput,
   type ControlledAgentRun,
@@ -160,6 +163,7 @@ describe("startControlledAgentRun", () => {
       provider,
       capacity: {
         accountId: "account-d",
+        sessionId: "opaque-synthetic-session",
         demand: {
           provider: "codex",
           model: "gpt-5.5",
@@ -189,6 +193,7 @@ describe("startControlledAgentRun", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected start success");
     expect(result.run.capacityAccountId).toBe("account-d");
+    expect(result.run.capacitySessionId).toBe("opaque-synthetic-session");
     expect(result.run.capacityDemand).toEqual({
       provider: "codex",
       model: "gpt-5.5",
@@ -196,6 +201,7 @@ describe("startControlledAgentRun", () => {
       serviceTier: "fast",
     });
     expect(savedRuns[0]?.capacityAccountId).toBe("account-d");
+    expect(savedRuns[0]?.capacitySessionId).toBe("opaque-synthetic-session");
   });
 
   it("does not call the provider when enforcement is incomplete", async () => {
@@ -276,6 +282,136 @@ describe("startControlledAgentRun", () => {
     expect(savedSessions).toHaveLength(0);
     expect(savedRuns).toHaveLength(0);
   });
+
+  describe.each(["stale owner", "ownerless", "blocked session"] as const)(
+    "%s cleanup obligation",
+    (recovery) => {
+      it.each([
+        { name: "returned Failed", message: "TEST cleanup unresolved", throws: false, status: ControlledAgentRunStatus.Failed },
+        { name: "returned Failed without a message", message: undefined, throws: false, status: ControlledAgentRunStatus.Failed },
+        { name: "thrown failure", message: "TEST cleanup threw", throws: true, status: ControlledAgentRunStatus.Failed },
+        { name: "successful cleanup", message: "TEST stopped", throws: false, status: ControlledAgentRunStatus.Stopped },
+        { name: "already stopped cleanup", message: "TEST already stopped", throws: false, status: ControlledAgentRunStatus.Stopped },
+      ] as const)("handles $name without losing cleanup custody", async (failure) => {
+        const owner = buildControlledAgentProcessOwner({
+          kind: ControlledAgentProcessOwnerKind.DurableMcp,
+          ownerId: "TEST-stale-owner",
+          now: new Date("2026-07-05T10:50:00.000Z"),
+        });
+        const oldSession: ControlledAgentSession = {
+          ...activeSession(),
+          sessionId: "TEST-session",
+          activeRunId: "TEST-old-run",
+          status: recovery === "blocked session"
+            ? ControlledAgentRunStatus.Blocked
+            : ControlledAgentRunStatus.Running,
+          ...(recovery === "ownerless" ? {} : { owner }),
+        };
+        const oldRun: ControlledAgentRun = {
+          ...activeRun(),
+          sessionId: oldSession.sessionId,
+          runId: oldSession.activeRunId!,
+          providerRunId: "TEST-old-provider-run",
+          capacityAccountId: "TEST-account",
+          ...(recovery === "ownerless" ? {} : { owner }),
+        };
+        let session = structuredClone(oldSession);
+        const runs = new Map([[oldRun.runId, structuredClone(oldRun)]]);
+        const writes: Array<ControlledAgentSession | ControlledAgentRun> = [];
+        const events: ControlledAgentEvent[] = [];
+        const calls: string[] = [];
+        let cleanupResolved = false;
+        const stateStore: ControllerStateStorePort = {
+          readSession: () => structuredClone(session),
+          readRun: (runId) => structuredClone(runs.get(runId) ?? null),
+          readLatestRunForSession: () => structuredClone(runs.get(oldRun.runId) ?? null),
+          saveSession(value) { writes.push(value); session = structuredClone(value); },
+          saveRun(value) { writes.push(value); runs.set(value.runId, structuredClone(value)); },
+        };
+        const provider: ControlledAgentProviderPort = {
+          start() { calls.push("start"); return { providerRunId: "TEST-replacement" }; },
+          status(input) {
+            expect(input.run).toEqual(oldRun);
+            return { status: ControlledAgentRunStatus.Stale, providerAttached: true };
+          },
+          async stop(input) {
+            calls.push("stop");
+            expect(input.session).toEqual(oldSession);
+            expect(input.run).toEqual(oldRun);
+            if (cleanupResolved) return { status: ControlledAgentRunStatus.Stopped };
+            if (failure.throws) throw new Error(failure.message);
+            return {
+              status: failure.status,
+              ...(failure.message === undefined ? {} : { safeMessage: failure.message }),
+            };
+          },
+        };
+        const deps = {
+          provider, stateStore,
+          events: { append(event: ControlledAgentEvent) { events.push(event); } },
+          ownerLiveness: { isLive: () => recovery === "blocked session" },
+          recoverOwnerlessActiveRunAfterMs: 10 * 60 * 1000,
+          clock: { now: () => new Date("2026-07-05T11:15:01.000Z") },
+          idGenerator: { randomId: () => "TEST-new-id" },
+        };
+        const input = { ...launchInput(true), sessionId: oldSession.sessionId };
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await startControlledAgentRun(input, deps);
+          if (failure.status === ControlledAgentRunStatus.Stopped) {
+            expect(result.ok).toBe(true);
+            if (!result.ok) throw new Error("expected successful recovery");
+            expect(calls).toEqual(["stop", "start"]);
+            expect(runs.get(oldRun.runId)).toMatchObject({
+              providerRunId: oldRun.providerRunId,
+              capacityAccountId: oldRun.capacityAccountId,
+              status: recovery === "blocked session"
+                ? ControlledAgentRunStatus.Blocked
+                : ControlledAgentRunStatus.Failed,
+              stoppedAt: "2026-07-05T11:15:01.000Z",
+            });
+            expect(session.activeRunId).toBe(result.run.runId);
+            expect(result.run.providerRunId).toBe("TEST-replacement");
+            expect(events).toHaveLength(1);
+            return;
+          }
+          expect(result).toEqual({
+            ok: false,
+            reason: StartControlledAgentRunBlockReason.ExistingActiveRunCleanupFailed,
+            session: oldSession,
+            run: oldRun,
+            safeMessage: failure.message ??
+              "Provider reported failed cleanup for an existing controlled-agent run.",
+          });
+          expect(session).toEqual(oldSession);
+          expect(runs.get(oldRun.runId)).toEqual(oldRun);
+          expect(writes).toEqual([]);
+          expect(events).toEqual([]);
+        }
+        expect(calls).toEqual(["stop", "stop"]);
+
+        const unresolved = await reconcileControlledAgentRun(oldSession.sessionId, deps);
+        expect(unresolved.ok).toBe(false);
+        if (unresolved.ok) throw new Error("expected unresolved cleanup");
+        expect(unresolved.reason).toBe(ReconcileControlledAgentRunReason.ProviderCleanupFailed);
+        expect(session).toEqual(oldSession);
+        expect(runs.get(oldRun.runId)).toEqual(oldRun);
+        expect(writes).toEqual([]);
+        expect(events).toEqual([]);
+
+        cleanupResolved = true;
+        const reconciled = await reconcileControlledAgentRun(oldSession.sessionId, deps);
+        expect(reconciled.ok).toBe(true);
+        expect(calls).toEqual(["stop", "stop", "stop", "stop"]);
+        expect(session.activeRunId).toBeUndefined();
+        expect(runs.get(oldRun.runId)).toMatchObject({
+          providerRunId: oldRun.providerRunId,
+          capacityAccountId: oldRun.capacityAccountId,
+          status: ControlledAgentRunStatus.Stale,
+          stoppedAt: "2026-07-05T11:15:01.000Z",
+        });
+      });
+    },
+  );
 
   it("recovers a blocked persisted controller session instead of treating its active run as healthy", async () => {
     const owner = buildControlledAgentProcessOwner({

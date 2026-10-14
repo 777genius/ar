@@ -1,7 +1,8 @@
-import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, link, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "../hosted-test-egress-contract";
 import {
   assertHostedTestEgressOperator, canonicalHostedTestIdentity,
@@ -9,8 +10,23 @@ import {
 } from "../hosted-test-egress-files";
 import { buildCodexGoalExecutorOptions, codexGoalAccountSlots } from "../codex-goal-runner";
 
-describe("trusted hosted TEST egress custody", () => {
+const custody = vi.hoisted(() => ({ ancestors: new Set<string>() }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, lstat: async (...args: Parameters<typeof fs.lstat>) => {
+    const stat = await fs.lstat(...args);
+    // Model trusted host ancestry only outside the disposable fixture. Every
+    // fixture directory, symlink, file, mode and owner uses real filesystem IO.
+    if (custody.ancestors.has(String(args[0]))) {
+      return Object.assign(stat, { uid: 0, mode: Number(stat.mode) & ~0o022 });
+    }
+    return stat;
+  } };
+});
+
+describe.each(["inherited", "symlinked"] as const)("trusted hosted TEST egress custody (%s TMPDIR)", temporaryDirectory => {
   let root: string;
+  let temporaryDirectoryFixture: string | undefined;
   let authority: string;
   let identity: { jobId: string; jobRootDir: string; workspacePath: string };
   const uid = process.getuid?.() ?? 0;
@@ -20,13 +36,36 @@ describe("trusted hosted TEST egress custody", () => {
   });
   const filename = () => join(authority, hostedTestEgressGrantName(identity.jobId));
   beforeEach(async () => {
-    // Under the disposable checkout: /tmp is intentionally not trusted grant custody.
-    root = await mkdtemp(join(process.cwd(), ".test-egress-"));
+    if (temporaryDirectory === "symlinked") {
+      temporaryDirectoryFixture = await mkdtemp(join(await realpath(tmpdir()), "test-egress-tmpdir-"));
+      const target = join(temporaryDirectoryFixture, "target");
+      const alias = join(temporaryDirectoryFixture, "alias");
+      await mkdir(target, { mode: 0o700 });
+      await symlink(target, alias);
+      vi.stubEnv("TMPDIR", alias);
+      expect(tmpdir()).toBe(alias);
+      expect(await realpath(tmpdir())).toBe(target);
+    }
+    root = await mkdtemp(join(await realpath(tmpdir()), "test-egress-"));
+    expect(root).toBe(await realpath(root));
+    custody.ancestors.clear();
+    for (let path = dirname(root); ; path = dirname(path)) {
+      custody.ancestors.add(path);
+      if (path === dirname(path)) break;
+    }
     authority = join(root, "authority");
     identity = { jobId: "test-exact-job", jobRootDir: join(root, "job"), workspacePath: join(root, "workspace") };
     await Promise.all([authority, identity.jobRootDir, identity.workspacePath].map(p => mkdir(p, { mode: 0o700 })));
   });
-  afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
+  afterEach(async () => {
+    vi.restoreAllMocks(); vi.unstubAllEnvs(); custody.ancestors.clear();
+    try {
+      if (root) await rm(root, { recursive: true, force: true });
+    } finally {
+      if (temporaryDirectoryFixture) await rm(temporaryDirectoryFixture, { recursive: true, force: true });
+      temporaryDirectoryFixture = undefined;
+    }
+  });
 
   it("keeps authority under the path hidden by already-deployed namespaces", () => {
     expect(hostedTestEgressGrantRoot).toBe("/run/user/0/subscription-runtime-host-policy/codex-egress");
@@ -37,6 +76,37 @@ describe("trusted hosted TEST egress custody", () => {
     await writeFile(filename(), JSON.stringify(grant()), { mode: 0o600 });
     expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(grant());
     expect(await readHostedTestEgressGrantFile(authority, { ...identity, jobId: "other" }, uid)).toBeNull();
+  });
+  it("admits a separately named production research grant from real private bytes and rejects tuple drift", async () => {
+    const research = { ...grant(), profileId: CodexProviderEgressProfileId.PublicResearchV1 };
+    await writeFile(filename(), JSON.stringify(research), { mode: 0o600 });
+    expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(research);
+    for (const field of ["jobId", "jobRootDir", "workspacePath"] as const) {
+      await writeFile(filename(), JSON.stringify({ ...research, [field]: research[field] + "-other" }), { mode: 0o600 });
+      await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
+    }
+  });
+  it("reads an exact MiMo grant from private custody and rejects changed effective confinement", async () => {
+    // Regression: the worker reader accepting a widened grant would admit it.
+    const mimoGrant = {
+      schemaVersion: 2 as const, ...identity,
+      profileId: CodexProviderEgressProfileId.MimoTokenPlan,
+      accountId: "account-q" as const, hostedProfile: HostedMimoProfile.Controller,
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      executionEngine: "app-server-goal" as const,
+      namedPermissions: true as const, globalScanGuard: true as const,
+      nativeToolSurface: "disabled" as const,
+    };
+    await writeFile(filename(), JSON.stringify(mimoGrant), { mode: 0o600 });
+    expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(mimoGrant);
+    await writeFile(filename(), JSON.stringify({ ...mimoGrant, globalScanGuard: false }), { mode: 0o600 });
+    await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
+  });
+  it("refuses a writable fixture ancestor before reading a valid grant", async () => {
+    await writeFile(filename(), JSON.stringify(grant()), { mode: 0o600 });
+    await chmod(root, 0o777);
+    await expect(readHostedTestEgressGrantFile(authority, identity, uid))
+      .rejects.toThrow("hosted_test_egress_custody_invalid");
   });
   it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("roundtrips a frozen closed TEST grant: %s", profileId => {
     const value = { ...grant(), profileId };
@@ -64,8 +134,8 @@ describe("trusted hosted TEST egress custody", () => {
     await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
   });
   it("refuses a traversing directory tuple and any workspace containing the authority root", async () => {
-    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: root + "/workspace/../workspace" })).rejects.toThrow();
-    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: "/" })).rejects.toThrow();
+    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: root + "/workspace/../workspace" }, uid)).rejects.toThrow();
+    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: "/" }, uid)).rejects.toThrow();
   });
   it("refuses file/parent symlinks and hard links", async () => {
     const other = join(root, "other.json");
@@ -88,7 +158,7 @@ describe("trusted hosted TEST egress custody", () => {
   it("refuses a substituted workspace symlink", async () => {
     const other = join(root, "replacement"); await mkdir(other);
     await rm(identity.workspacePath, { recursive: true }); await symlink(other, identity.workspacePath);
-    await expect(canonicalHostedTestIdentity(identity)).rejects.toThrow();
+    await expect(canonicalHostedTestIdentity(identity, uid)).rejects.toThrow();
   });
   it("refuses a real rename-capable identity ancestor and its intermediate symlink replacement", async () => {
     const parent = join(root, "identities");
@@ -115,7 +185,7 @@ describe("trusted hosted TEST egress custody", () => {
       config: {
         ...identity, taskId: identity.jobId, promptPath: join(root, "prompt"),
         authRootDir: join(root, "synthetic-auth"), accounts: codexGoalAccountSlots(["fake"]),
-        sourceEnv: { SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-npm-qualification" },
+        sourceEnv: { SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.PublicResearchV1 },
       },
       stateRootDir: join(root, "synthetic-state"), encryptionKey: new Uint8Array(32),
     });

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { findRawLaunches } from './check-managed-launch-boundary.mjs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { findRawLaunches, checkManagedLaunchBoundary } from './check-managed-launch-boundary.mjs';
 
 for (const source of [
   'spawn("/usr/bin/systemd-run", args)',
@@ -23,4 +26,49 @@ for (const source of [
 ]) assert.deepEqual(findRawLaunches(source), [], `Unexpected violation: ${source}`);
 
 assert.deepEqual(findRawLaunches('# systemd-run comment\nsudo /usr/bin/systemd-run --wait true', 'launch.sh'), [2]);
+// A directory-wide exemption would let an unrelated provider bypass the boundary.
+const root = await mkdtemp(join(tmpdir(), 'TEST-managed-launch-boundary-'));
+try {
+  for (const directory of ['src/provider-codex/app-server/adapters', 'packages', 'scripts', 'host-integration']) {
+    await mkdir(join(root, directory), { recursive: true });
+  }
+  const testOperators = join(root, 'host-integration/runtime-admission');
+  await mkdir(testOperators);
+  await writeFile(join(testOperators, 'linked-native-mimo-operator.mts'), 'const command = \"/usr/bin/systemd-run\";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  const unapprovedOperator = join(testOperators, 'unapproved-operator.mts');
+  await writeFile(unapprovedOperator, 'const command = \"/usr/bin/systemd-run\";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['host-integration/runtime-admission/unapproved-operator.mts:1']);
+  await writeFile(unapprovedOperator, 'const command = trustedCommand;\n');
+  const adapters = join(root, 'src/provider-codex/app-server/adapters');
+  await writeFile(join(adapters, 'hosted-dependency-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  const leaf = join(adapters, 'hosted-dependency-systemd-command.ts');
+  const declaration = 'export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";\n';
+  await writeFile(leaf, declaration);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'),
+    'import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";\n' +
+    'if (invocation.command !== hostedDependencySystemdRunExecutable) fail();\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  for (const source of [declaration + 'spawn("/usr/bin/systemd-run", args);\n', declaration + declaration,
+    declaration + 'import "./foreign-launcher";\n', declaration.replace('/usr/bin/systemd-run', '/usr/bin/other')]) {
+    await writeFile(leaf, source);
+    assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+      ['src/provider-codex/app-server/adapters/hosted-dependency-systemd-command.ts:1']);
+  }
+  await writeFile(leaf, declaration);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'), 'spawn("/usr/bin/systemd-run", args);\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['src/provider-codex/app-server/adapters/hosted-retained-tool-files.ts:1']);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'), 'const command = "/usr/bin/systemd-run";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['src/provider-codex/app-server/adapters/hosted-retained-tool-files.ts:1']);
+  await writeFile(join(adapters, 'hosted-retained-tool-files.ts'), 'const command = trustedCommand;\n');
+  await writeFile(join(adapters, 'unapproved-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['src/provider-codex/app-server/adapters/unapproved-provider-launch.ts:1']);
+} finally {
+  await rm(root, { recursive: true, force: true });
+}
 console.log('Managed-launch boundary self-tests OK.');

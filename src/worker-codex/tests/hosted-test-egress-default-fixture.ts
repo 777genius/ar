@@ -1,3 +1,5 @@
+import "./absent-host-readonly-authority-fixture";
+import "./absent-host-scratch-fixture";
 import { vi } from "vitest";
 
 // Existing runner fixtures have no host authorization and must never inspect host grants.

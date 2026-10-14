@@ -6,6 +6,12 @@ export type CodexAccountDisplayMetadata = {
   readonly email?: string;
   readonly shortName?: string;
   readonly operatorLabel?: string;
+  readonly quarantined?: boolean;
+  readonly quarantineReason?: string;
+  readonly quarantinedAt?: string;
+  readonly resetCount?: number;
+  readonly plan?: string;
+  readonly unpaid?: string;
 };
 
 const metadataFileNames = [
@@ -36,6 +42,18 @@ export function codexAccountDisplayMetadataForSlot(
     ...(email ? { email } : {}),
     shortName,
     ...(displayName ? { operatorLabel: `${displayName} - ${shortName}` } : {}),
+    ...(metadata?.quarantined ? { quarantined: true } : {}),
+    ...(metadata?.quarantineReason
+      ? { quarantineReason: metadata.quarantineReason }
+      : {}),
+    ...(metadata?.quarantinedAt
+      ? { quarantinedAt: metadata.quarantinedAt }
+      : {}),
+    ...(metadata?.resetCount !== undefined
+      ? { resetCount: metadata.resetCount }
+      : {}),
+    ...(metadata?.plan ? { plan: metadata.plan } : {}),
+    ...(metadata?.unpaid ? { unpaid: metadata.unpaid } : {}),
   };
 }
 
@@ -45,7 +63,9 @@ export function codexAccountDisplayRecord(
 ): Readonly<Record<string, string>> {
   const display = codexAccountDisplayMetadataForSlot(slotId, metadata);
   return Object.fromEntries(
-    Object.entries(display).filter(([, value]) => value !== undefined),
+    Object.entries(display)
+      .filter(([, value]) => typeof value === "string" || typeof value === "number")
+      .map(([key, value]) => [key, String(value)]),
   );
 }
 
@@ -72,13 +92,25 @@ function parseMetadataRoot(
   const root = isRecord(value.accounts) ? value.accounts : value;
   const entries = Object.entries(root)
     .map(([slotId, raw]) => [slotId, parseMetadataEntry(raw)] as const)
-    .filter((entry): entry is readonly [string, CodexAccountDisplayMetadata] =>
-      entry[1] !== null,
+    .filter(
+      (entry): entry is readonly [string, CodexAccountDisplayMetadata] =>
+        entry[1] !== null,
     );
-  return Object.fromEntries(entries);
+  const metadata = new Map(entries);
+  if (isRecord(value.accounts)) {
+    for (const [slotId, raw] of Object.entries(value)) {
+      if (slotId === "accounts") continue;
+      const quarantine = parseQuarantineMetadata(raw);
+      if (!quarantine) continue;
+      metadata.set(slotId, { ...(metadata.get(slotId) ?? {}), ...quarantine });
+    }
+  }
+  return Object.fromEntries(metadata);
 }
 
-function parseMetadataEntry(value: unknown): CodexAccountDisplayMetadata | null {
+function parseMetadataEntry(
+  value: unknown,
+): CodexAccountDisplayMetadata | null {
   if (typeof value === "string") {
     const displayName = value.trim();
     return displayName ? { displayName } : null;
@@ -92,12 +124,58 @@ function parseMetadataEntry(value: unknown): CodexAccountDisplayMetadata | null 
   ]);
   const email = firstString([value.email]);
   const shortName = firstString([value.shortName, value.letter]);
-  if (!displayName && !email && !shortName) return null;
+  const quarantine = parseQuarantineMetadata(value);
+  const resetCount = parseResetCount(value.resetCount);
+  const plan = firstString([value.plan]);
+  const unpaid = parseUnpaidDate(value.unpaid);
+  if (
+    !displayName &&
+    !email &&
+    !shortName &&
+    resetCount === undefined &&
+    !plan &&
+    !unpaid &&
+    !quarantine
+  ) {
+    return null;
+  }
   return {
     ...(displayName ? { displayName } : {}),
     ...(email ? { email } : {}),
     ...(shortName ? { shortName } : {}),
+    ...(quarantine ?? {}),
+    ...(resetCount !== undefined ? { resetCount } : {}),
+    ...(plan ? { plan } : {}),
+    ...(unpaid ? { unpaid } : {}),
   };
+}
+
+function parseQuarantineMetadata(
+  value: unknown,
+): Pick<CodexAccountDisplayMetadata, "quarantined" | "quarantineReason" | "quarantinedAt"> | null {
+  if (!isRecord(value) || value.quarantined !== true) return null;
+  const quarantineReason = firstString([value.quarantineReason]);
+  const quarantinedAt = firstString([value.quarantinedAt]);
+  return {
+    quarantined: true,
+    ...(quarantineReason ? { quarantineReason } : {}),
+    ...(quarantinedAt ? { quarantinedAt } : {}),
+  };
+}
+
+function parseUnpaidDate(value: unknown): string | undefined {
+  const date = firstString([value]);
+  return date && /^\d{2}\.\d{2}\.\d{4}$/.test(date) ? date : undefined;
+}
+
+function parseResetCount(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return undefined;
 }
 
 function firstString(values: readonly unknown[]): string | undefined {

@@ -1,3 +1,4 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -13,6 +14,7 @@ export function codexGoalLaunchSummary(launch: CodexGoalLaunchInput): JsonObject
     reasoningEffort: launch.config.reasoningEffort,
     serviceTier: launch.config.serviceTier,
     executionEngine: launch.config.executionEngine ?? "app-server-goal",
+    modelBackend: launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt,
     taskTimeoutMs: launch.config.taskTimeoutMs,
     appServerStartupTimeoutMs: launch.config.appServerStartupTimeoutMs,
     progressPath: launch.config.progressPath,

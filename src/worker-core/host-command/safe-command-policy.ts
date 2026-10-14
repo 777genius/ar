@@ -55,11 +55,11 @@ export function validateCommandAgainstPolicy(input: {
   }
   if (
     executableName === "git" &&
-    input.policy.deniedGitSubcommands.includes(args[1] ?? "")
+    input.policy.deniedGitSubcommands.includes(gitSubcommand(args))
   ) {
     return commandDenied(CommandValidationDecisionReason.DeniedGitSubcommand, {
       executableName,
-      evidence: [`git ${args[1] ?? ""} is denied by command policy`],
+      evidence: [`git ${gitSubcommand(args)} is denied by command policy`],
     });
   }
   if (
@@ -145,6 +145,16 @@ function commandDenied(
 function executableBaseName(value: string): string {
   const normalized = value.replaceAll("\\", "/");
   return normalized.split("/").filter(Boolean).at(-1) ?? value;
+}
+
+function gitSubcommand(args: readonly string[]): string {
+  for (let index = 1; index < args.length; index++) {
+    const arg = args[index]!;
+    if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(arg)) { index++; continue; }
+    if (arg === "--") return args[index + 1] ?? "";
+    if (!arg.startsWith("-")) return arg;
+  }
+  return "";
 }
 
 function simpleCommandTokens(command: string): readonly string[] {

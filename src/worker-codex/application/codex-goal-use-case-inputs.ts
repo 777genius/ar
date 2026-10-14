@@ -1,3 +1,4 @@
+import { assertNoUnsupportedMimoRemoteRoute } from "../mimo-project-bridge-client";
 import type {
   WorkerControlActor,
   WorkerControlDeliveryMode,
@@ -7,11 +8,21 @@ import type {
 import { resolveCodexGoalJobRegistryRoot } from "../codex-goal-jobs";
 import type { CodexGoalOutputFormat } from "../codex-goal-ops";
 import type { CodexGoalRunConfig } from "../codex-goal-runner";
+import type { CodexGoalMimoAccountSlot } from "../codex-goal-mimo-account-slots";
 
 export type CodexGoalInput = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly jobId?: string;
   readonly configPath?: string;
+  readonly sessionHomeProfile?: CodexGoalRunConfig["sessionHomeProfile"];
+  readonly storage?: CodexGoalRunConfig["storage"];
+  readonly storageRootDir?: string;
   readonly jobRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
+  readonly encryptionKeyPath?: string;
+  readonly runtimeEventsPath?: string;
+  readonly agentTempRootDir?: string;
+  readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
   readonly workspacePath?: string;
@@ -19,6 +30,7 @@ export type CodexGoalInput = {
   readonly codexGoalObjective?: string;
   readonly taskId?: string;
   readonly accounts?: string | readonly string[];
+  readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
   readonly outputPath?: string;
   readonly progressPath?: string;
   readonly progressHeartbeatMs?: number;
@@ -27,16 +39,22 @@ export type CodexGoalInput = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
+  readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
   readonly maxAccountCycles?: number;
+  readonly childLifetime?: CodexGoalRunConfig["childLifetime"];
+  readonly maxGoalTurns?: number;
+  readonly safeExecutionPolicy?: CodexGoalRunConfig["safeExecutionPolicy"];
   readonly editMode?: CodexGoalRunConfig["editMode"];
   readonly providerSandboxMode?: CodexGoalRunConfig["providerSandboxMode"];
   readonly accessBoundary?: CodexGoalRunConfig["accessBoundary"];
   readonly projectAccessScope?: CodexGoalRunConfig["projectAccessScope"];
   readonly allowDangerFullAccess?: boolean;
   readonly networkAccess?: CodexGoalRunConfig["networkAccess"];
+  readonly workerMode?: CodexGoalRunConfig["workerMode"];
   readonly allowDuplicateAccountIdentities?: boolean;
   readonly requireGitWorkspace?: boolean;
   readonly prewarmOnStart?: boolean;
@@ -48,6 +66,10 @@ export type CodexGoalInput = {
 };
 
 export type CodexGoalJobRegistryInput = {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly mimoProjectId?: string;
+  readonly mimoWorkstreamId?: string;
+  readonly storageRootDir?: string;
   readonly registryRootDir?: string;
   readonly cwd?: string;
 };
@@ -134,8 +156,12 @@ export type CodexGoalWorkerControlInput = CodexGoalJobIdInput & {
 };
 
 export function registryRootFromInput(args: CodexGoalJobRegistryInput): string {
+  assertNoUnsupportedMimoRemoteRoute(args);
+  const env = args.sourceEnv ?? process.env;
   return resolveCodexGoalJobRegistryRoot({
-    ...(args.registryRootDir ? { registryRootDir: args.registryRootDir } : {}),
+    registryRootDir: args.registryRootDir ?? env.SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT ?? env.CODEX_GOAL_REGISTRY_ROOT,
+    storageRootDir: args.storageRootDir ?? env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT,
+    sourceEnv: env,
     ...(args.cwd ? { cwd: args.cwd } : {}),
   });
 }

@@ -13,28 +13,53 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   localProjectControlEvidenceCustodySupported,
   LocalProjectControlEvidenceCustody,
   writeAll,
 } from "../project-control-evidence-custody-local-adapter";
 
-const fixturePath = fileURLToPath(new URL(
-  "./project-control-evidence-custody-crash-fixture.ts", import.meta.url,
-));
 const fixtureDeadlineMs = 10_000;
 const fixtureMaxStderrBytes = 64 * 1024;
-const fixtureBootstrap = [
-  "import { registerHooks } from 'node:module';",
-  "registerHooks({ resolve(specifier, context, nextResolve) {",
-  "try { return nextResolve(specifier, context); } catch (error) {",
-  "if (error?.code !== 'ERR_MODULE_NOT_FOUND' || !specifier.startsWith('.')) throw error;",
-  "return nextResolve(`${specifier}.ts`, context);",
-  "}}});",
-  `await import(${JSON.stringify(pathToFileURL(fixturePath).href)});`,
-].join("\n");
+// Node 26 has no transform-types flag, and the adapter uses a constructor
+// parameter property. The pinned project TypeScript therefore translates this
+// closed canonical allowlist (the adapter, its two imported leaves and the
+// fixture) into a temporary ESM tree; no loader hook or open-ended transpile.
+const fixtureClosure = [
+  "../project-control-evidence-custody-local-adapter",
+  "../project-control-evidence-custody-materialization",
+  "../project-control-custody-directory-publication",
+  "./project-control-evidence-custody-crash-fixture",
+] as const;
+let stagedFixtureRoot: string | undefined;
+let stagedFixturePath = "";
+beforeAll(async () => {
+  stagedFixtureRoot = await mkdtemp(join(tmpdir(), "custody-fixture-"));
+  const stagedName = (specifier: string): string => `${specifier.split("/").pop()}.mjs`;
+  for (const specifier of fixtureClosure) {
+    const source = await readFile(fileURLToPath(new URL(`${specifier}.ts`, import.meta.url)), "utf8");
+    let translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+    // Map each allowlisted sibling to its staged leaf, with or without a suffix.
+    for (const sibling of fixtureClosure) {
+      const leaf = sibling.split("/").pop()!;
+      translated = translated.replace(new RegExp(`(["'])(?:\\./|\\.\\./)${leaf}(?:\\.ts)?\\1`, "g"), `"./${leaf}.mjs"`);
+    }
+    // Fail closed if any relative or package import escaped the allowlist.
+    for (const found of translated.matchAll(/(?:from|import\()\s*["']([^"']+)["']/g)) {
+      const target = found[1]!;
+      if (target.startsWith("node:") || target.startsWith("./") && target.endsWith(".mjs")) continue;
+      throw new Error(`custody fixture import outside the closed allowlist: ${target}`);
+    }
+    await writeFile(join(stagedFixtureRoot, stagedName(specifier)), translated);
+  }
+  stagedFixturePath = join(stagedFixtureRoot, stagedName(fixtureClosure[3]));
+});
+afterAll(async () => {
+  if (stagedFixtureRoot !== undefined) await rm(stagedFixtureRoot, { recursive: true, force: true });
+});
 
 describe.runIf(localProjectControlEvidenceCustodySupported)(
   "local project-control evidence custody durability", () => {
@@ -364,6 +389,29 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     expect(ensured).toEqual([join(root, "one"), join(root, "one", "two")]);
   });
 
+  it("allows denied siblings of custody paths while rejecting denied custody and lock subtrees", async () => {
+    const anchor = await mkdtemp(join(tmpdir(), "custody-denied-siblings-"));
+    const ledger = join(anchor, "control", "ledger");
+    const archives = join(anchor, "control", "archives");
+    const deniedRoots = [join(anchor, "private"), join(anchor, "control", "private")];
+    await mkdir(join(anchor, "control"), { recursive: true });
+    for (const path of deniedRoots) await writeFile(path, "untouched");
+    const custody = new LocalProjectControlEvidenceCustody();
+    try {
+      const certification = await custody.materializeApprovedProjectControlCustody({
+        approvedAnchor: anchor, ledgerRoots: [ledger], evidenceRoots: [archives], deniedRoots,
+      });
+      try { await certification.revalidate(); } finally { await certification.close(); }
+      for (const path of deniedRoots) expect(await readFile(path, "utf8")).toBe("untouched");
+      for (const denied of [anchor, join(anchor, "control"), ledger, join(ledger, "items"),
+        join(anchor, "control", ".consumed-output-ledger-mutation-locks", "private")]) {
+        await expect(custody.materializeApprovedProjectControlCustody({
+          approvedAnchor: anchor, ledgerRoots: [ledger], evidenceRoots: [archives], deniedRoots: [denied],
+        })).rejects.toThrow("evidence_custody_bootstrap_root_denied");
+      }
+    } finally { await rm(anchor, { recursive: true, force: true }); }
+  });
+
   it("materializes new and pre-existing custody directories under a held anchor", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-"));
     const anchor = join(outer, "project");
@@ -382,7 +430,9 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     await certification.close();
 
     expect((await lstat(ledger)).isDirectory()).toBe(true);
+    expect(await readdir(join(ledger, "items"))).toEqual([]);
     expect((await lstat(archives)).isDirectory()).toBe(true);
+    expect(await readdir(archives)).toEqual([]);
     const derivedLock = join(
       dirname(ledger),
       ".consumed-output-ledger-mutation-locks",
@@ -390,6 +440,27 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     );
     expect((await lstat(join(ledger, ".mutation-locks"))).isDirectory()).toBe(true);
     expect((await lstat(derivedLock)).isDirectory()).toBe(true);
+  });
+
+  it.each(["ledger", "archives"].flatMap(root => ["file", "symlink", "dangling"].map(kind => ({ root, kind }))))("rejects $kind at required $root custody directory", async ({ root, kind }) => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-items-"));
+    const ledger = join(outer, root);
+    const target = join(outer, "target");
+    const required = root === "ledger" ? join(ledger, "items") : ledger;
+    if (root === "ledger") await mkdir(ledger);
+    if (kind === "file") await writeFile(required, "sentinel");
+    else {
+      if (kind === "symlink") await mkdir(target);
+      await symlink(target, required);
+    }
+    try {
+      await expect(new LocalProjectControlEvidenceCustody().materializeApprovedProjectControlCustody({
+        approvedAnchor: outer, ledgerRoots: root === "ledger" ? [ledger] : [],
+        evidenceRoots: root === "archives" ? [ledger] : [], deniedRoots: [],
+      })).rejects.toThrow(root === "ledger" ? "evidence_custody_bootstrap_items_unsafe" : "evidence_custody_bootstrap_root_unsafe");
+      if (kind === "file") expect(await readFile(required, "utf8")).toBe("sentinel");
+      if (kind === "symlink") expect(await readdir(target)).toEqual([]);
+    } finally { await rm(outer, { recursive: true, force: true }); }
   });
 
   it("rejects custody symlinks, non-directories, boundary escape, and unsafe locks", async () => {
@@ -470,6 +541,24 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     }
   });
 
+  it.each(["ledger", "archives"].flatMap(root => ["directory", "symlink"].map(kind => ({ root, kind }))))(
+    "rejects required $root custody replacement with $kind before publication", async ({ root, kind }) => {
+      const outer = await mkdtemp(join(tmpdir(), "custody-items-drift-"));
+      const target = join(outer, root);
+      const certification = await new LocalProjectControlEvidenceCustody().materializeApprovedProjectControlCustody({
+        approvedAnchor: outer, ledgerRoots: root === "ledger" ? [target] : [],
+        evidenceRoots: root === "archives" ? [target] : [], deniedRoots: [],
+      });
+      try {
+        const required = root === "ledger" ? join(target, "items") : target;
+        const saved = `${required}.saved`;
+        await rename(required, saved);
+        if (kind === "directory") await mkdir(required);
+        else await symlink(saved, required);
+        await expect(certification.revalidate()).rejects.toThrow("identity_drift");
+      } finally { await certification.close(); await rm(outer, { recursive: true, force: true }); }
+    });
+
   it("rejects a legacy lock replaced by a late symlink", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-late-legacy-link-"));
     const anchor = join(outer, "project");
@@ -544,12 +633,7 @@ async function runFixture(input: {
   readonly onSpawn?: (pid: number) => void;
 }): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [
-      "--experimental-transform-types",
-      "--input-type=module",
-      "--eval",
-      fixtureBootstrap,
-    ], {
+    const child = spawn(process.execPath, [stagedFixturePath], {
       env: {
         ...process.env,
         CUSTODY_FIXTURE_ROOT: input.root,

@@ -3,9 +3,29 @@ coverage
 .DS_Store
 .worktrees/
 dist
+host-integration/managed-launcher/hosted-host-policy.mjs
 .env
 .env.*
 *.log
 *.tgz
 tmp
 *.tsbuildinfo
+
+# Scratch artifacts left behind by ad hoc automated/rehearsal runs
+# (migration rehearsals, release-authority rollouts, remote edit sessions).
+.rr-*
+rr-*.patch
+rr-*.prompt.md
+.remote-*
+.codex-tmp-*
+.codex-check-migration-rehearsal.*
+.codex-migration-*.sql
+.codex-psql17-wrapper
+.codex-remote-edit/
+.codex-run-release-migration.*
+.gate-install.exit
+.runtime-registry-root-fix/
+.tmp-*
+
+# Exact standalone codec emission, published only by the pinned build.
+host-integration/managed-launcher/host-inventory-codec.cjs

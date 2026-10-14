@@ -1,3 +1,4 @@
+import { seedWorker } from "./worker-auth";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -30,6 +31,7 @@ import {
   AgentRuntimeAccessBoundary,
   AgentRuntimeBudgetMetric,
   AgentRuntimeExecutionMode,
+  deriveRuntimeStorageRoots,
   isProviderFailureCode,
 } from "@vioxen/subscription-runtime/core";
 import {
@@ -125,6 +127,20 @@ export { AuthSourceKind, ClaudeAgentRuntimeBackend };
 export type {
   AgentRuntimeTaskRunnerRunOptions,
 };
+
+type ResolvedLocalAgentRuntimeTaskRunnerInput = CreateLocalAgentRuntimeTaskRunnerInput & {
+  readonly stateRootDir: string;
+};
+
+export function resolveLocalAgentRuntimeTaskRunnerInput(input: CreateLocalAgentRuntimeTaskRunnerInput): ResolvedLocalAgentRuntimeTaskRunnerInput {
+  const storageRootDir = input.storageRootDir ??
+    (input.stateRootDir === undefined ? input.env.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined);
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
+  const stateRootDir = input.stateRootDir ??
+    (roots ? join(roots.stateRootDir, "agent-runtime-task", input.provider) : undefined);
+  if (stateRootDir === undefined) throw new Error("agent_runtime_task_state_root_required");
+  return { ...input, stateRootDir };
+}
 export type { LocalAgentRuntimeTaskRunnerAuthSource } from "./auth-source";
 
 export type CreateLocalAgentRuntimeTaskRunnerInput =
@@ -143,7 +159,7 @@ export function createLocalAgentRuntimeTaskRunner(
   input: CreateLocalAgentRuntimeTaskRunnerInput,
 ): AgentRuntimeTaskRunner {
   assertAgentRuntimeTaskExecutionProfile(input.provider, input);
-  return new LocalAgentRuntimeTaskRunner(input);
+  return new LocalAgentRuntimeTaskRunner(resolveLocalAgentRuntimeTaskRunnerInput(input));
 }
 
 export function createDefaultAgentRuntimeTaskWorker(
@@ -223,7 +239,7 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
   private readonly logicalThreadCoordinator: LogicalThreadCoordinator;
 
   constructor(
-    private readonly input: CreateLocalAgentRuntimeTaskRunnerInput,
+    private readonly input: ResolvedLocalAgentRuntimeTaskRunnerInput,
   ) {
     this.codexRuntimeFeatureProbe =
       input.codexRuntimeFeatureProbe ?? new CodexCliRuntimeFeatureProbe();
@@ -363,6 +379,7 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
           authSource = authSourceForProvider({
             provider: this.input.provider,
             authSource: this.input.authSource,
+            env: this.input.env,
           });
         } catch (error) {
           return makeFailedAgentRuntimeTaskResult({
@@ -770,43 +787,6 @@ function claudeRuntimeModuleLoaders(
     runtimeModuleLoader: async () => import(pathToFileURL(runtimePath).href),
     providerModuleLoader: async () => import(pathToFileURL(providerPath).href),
   };
-}
-
-async function seedWorker(input: {
-  readonly provider: ProviderName;
-  readonly authSource: LocalAgentRuntimeTaskRunnerAuthSource | undefined;
-  readonly worker: AgentRuntimeTaskWorker;
-}): Promise<void> {
-  if (
-    input.authSource === undefined ||
-    input.authSource.kind === AuthSourceKind.PreseededSession
-  ) {
-    return;
-  }
-  if (input.provider === AgentRuntimeTaskProvider.Claude) {
-    if (
-      input.authSource.kind !==
-      AuthSourceKind.ClaudeOAuthToken
-    ) {
-      throw new Error("Claude agent runtime requires a claude-oauth-token auth source");
-    }
-    if (!input.worker.seedClaudeOAuth) {
-      throw new Error("selected worker does not support Claude OAuth seeding");
-    }
-    await input.worker.seedClaudeOAuth({ oauthToken: input.authSource.oauthToken });
-    return;
-  }
-
-  if (
-    input.authSource.kind !==
-    AuthSourceKind.CodexAuthJsonFile
-  ) {
-    throw new Error("Codex agent runtime requires a codex-auth-json-file auth source");
-  }
-  if (!input.worker.seedCodexAuthJsonFile) {
-    throw new Error("selected worker does not support Codex auth seeding");
-  }
-  await input.worker.seedCodexAuthJsonFile(input.authSource.path);
 }
 
 async function runWorkerTask(input: {

@@ -1,19 +1,27 @@
+import { assertHostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
+import { CodexModelBackend } from "../../codex-model-backend";
+import type { CodexAppServerClientOptions } from "./app-server-client-options";
+import { nativeWebId } from "@vioxen/subscription-runtime/core";
+import { AppServerNativeWebCapture } from "./app-server-native-web";
+import { appServerThreadToolPolicy } from "./app-server-thread-tool-policy";
+import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
+import { codexProviderHasPublicSources } from "../../codex-provider-egress-policy";
+import { attachAppServerTextDeltaSink, clearAppServerReconnectTimer, emitAppServerTextDelta } from "./app-server-turn-state";
+import { assertAppServerExecutionActive, observeAppServerExecutionLifetime, sendAppServerLifetimeRequest, AppServerExecutionLifetime, AppServerChildLifetime } from "./app-server-child-lifetime";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { AppServerAdmission, AppServerExecutionLease, appServerTurnCapacity } from "./app-server-admission";
 import { AppServerUsageError } from "../domain/app-server-usage-error";
 import { appServerTurnStartParams } from "./app-server-turn-start-params";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
-import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type {
-  CodexMaterializedSession,
   CodexReasoningEffort,
   CodexSandboxMode,
   CodexServiceTier,
 } from "../../codex-json-execution-engine";
 import type {
   CodexAppServerChildProcess,
-  CodexAppServerChildProcessSignaler,
-  CodexAppServerProcessFactory,
 } from "./app-server-process-port";
 import {
   appServerGoalObjectiveLimitError,
@@ -21,10 +29,9 @@ import {
 } from "../domain/app-server-goal-policy";
 import {
   codexAppServerSandboxPolicy,
+  codexAgentTempRootFromEnv,
   codexAppServerThreadRuntimePolicy,
   type AppServerWarning,
-  type CodexAppServerCommandApprovalPolicy,
-  type CodexAppServerNativeToolSurface,
   type CodexAppServerSandboxPolicy,
   type CodexThreadGoal,
   type CodexThreadGoalStatus,
@@ -36,20 +43,14 @@ import {
 } from "../domain/app-server-errors";
 import { CodexAppServerThreadForkError } from "./app-server-thread-fork-error";
 import {
-  type AppServerTurnResult,
+  type AppServerAcknowledgedTurnResult,
   createTurnState,
   type PendingRequest,
   type TurnState,
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
-import {
-  codexAppServerRolloutBudgetConfig,
-  type CodexAppServerRolloutBudget,
-} from "../domain/app-server-rollout-budget";
-import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
 import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
-import { readCodexModelCatalogPage } from "../protocol/app-server-model-catalog";
 import {
   encodeJsonRpcMessage,
   type CodexAppServerJsonRpcResponse,
@@ -58,12 +59,6 @@ import {
   AppServerJsonRpcLineDecoder,
   appServerJsonRpcFrameLimit,
 } from "../protocol/app-server-json-rpc-line-decoder";
-import {
-  CodexModelUnavailableError,
-  hasCodexModel,
-  isCodexModelUnavailableMessage,
-  type CodexModelCatalogEntry,
-} from "../domain/model-catalog";
 import {
   agentMessageText,
   nestedString,
@@ -77,21 +72,21 @@ import {
   AppServerExecutionMayHaveStartedError,
   AppServerRequestMayHaveReachedProviderError,
 } from "../domain/app-server-execution-safety";
-import { sendAppServerRequest } from "./app-server-request-sender";
 import { codexAppServerProcessArgs } from "./app-server-process-args";
 import { handleAppServerServerRequest } from "./app-server-server-request-handler";
 import { stopAppServerProcess } from "./app-server-process-stopper";
-import { appServerApprovalPolicy } from "./app-server-approval-policy";
-import { appServerThreadToolPolicy } from "./app-server-thread-tool-policy";
 import { handleAppServerReconnectProgress } from "./app-server-reconnect-handler";
 import { handleAppServerStdout } from "./app-server-stdout-handler";
 import {
   AppServerRateLimitsMonitor,
   isCodexAppServerRateLimitsRejectedError,
-  type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
-
+import { appServerThreadStartParams } from "./app-server-thread-start-params";
+import { PublicResearchToolSession } from "./public-research-source-tool";
+import { codexProviderWebSearchMode, CodexWebSearchMode, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
+import { AppServerDynamicToolHandler } from "./app-server-dynamic-tool-handler";
+import { modelUnavailableError } from "./app-server-model-unavailable";
 export {
   CodexAppServerTurnError,
   type AppServerTurnFailureDetails,
@@ -99,25 +94,32 @@ export {
 } from "./app-server-turn-failure";
 export { CodexAppServerThreadForkError, turnFailureError };
 
-export type { AppServerTurnResult } from "./app-server-turn-state";
+export type { AppServerTurnResult, AppServerAcknowledgedTurnResult } from "./app-server-turn-state";
 
 const maxRetainedTurnStates = appServerTurnCapacity;
 const maxRetainedEarlyTurnIds = 128;
 const maxRetainedTurnAliases = 128;
+const maxRetainedServerRequestIds = 4096;
 
 export class CodexAppServerClient {
+  private readonly publicResearchTools = new PublicResearchToolSession();
   private readonly executionAdmission = new AppServerAdmission();
   private readonly turnAdmission = new AppServerAdmission();
   private nextId = 1;
+  readonly executionLifetime: AppServerExecutionLifetime | undefined;
+  private readonly childLifetime: AppServerChildLifetime | undefined;
   private child: CodexAppServerChildProcess | null = null;
   private readonly stdoutDecoder: AppServerJsonRpcLineDecoder;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly serverRequestIds = new Set<string>();
   private readonly tokenUsage = new AppServerTokenUsageTracker((warning) => this.warnings.push(warning));
+  private readonly nativeWebCaptures = new Map<string, AppServerNativeWebCapture>();
   private readonly turns = new Map<string, TurnState>();
   private readonly startingTurnThreads = new Set<string>();
   private readonly pendingTurnIdsByThread = new Map<string, string>();
   private readonly earlyTurnIdsByThread = new Map<string, string>();
   private readonly turnIdAliases = new Map<string, string>();
+  private readonly dynamicTools: AppServerDynamicToolHandler;
   private readonly warnings = createBoundedAppServerWarningCollector();
   private exited = false;
   private terminalError: Error | null = null;
@@ -125,26 +127,32 @@ export class CodexAppServerClient {
   private readonly rateLimitsMonitor: AppServerRateLimitsMonitor | null;
 
   constructor(
-    private readonly options: {
-      readonly codexBinaryPath: string;
-      readonly sourceEnv: Readonly<Record<string, string | undefined>>;
-      readonly processFactory: CodexAppServerProcessFactory;
-      readonly signalChildProcess: CodexAppServerChildProcessSignaler;
-      readonly session: CodexMaterializedSession;
-      readonly workspacePath: string;
-      readonly executionProfile: ResolvedCodexExecutionProfile;
-      readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-      readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
-      readonly rolloutBudget?: CodexAppServerRolloutBudget;
-      readonly bypassHookTrust?: boolean;
-      readonly timeoutMs: number;
-      readonly startupTimeoutMs: number;
-      readonly reconnectGraceMs: number;
-      readonly maxOutputBytes: number;
-      readonly abortSignal: AbortSignal;
-      readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
-    },
+    private readonly options: CodexAppServerClientOptions,
   ) {
+    this.options = Object.freeze({ ...options });
+    options = this.options;
+    this.executionLifetime = observeAppServerExecutionLifetime(options.session, error => this.failProtocol(error));
+    this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {
+      isTerminal: () => this.terminalError !== null,
+      activeTurns: () => [...this.pendingTurnIdsByThread],
+      recordTerminal: error => this.recordTerminalError(error),
+      interrupt: (threadId, turnId) => { this.child?.stdin.write(encodeJsonRpcMessage({ id: this.nextId++, method: "turn/interrupt", params: { threadId, turnId } })); },
+      stop: () => this.stopChild(),
+    }) : undefined;
+    this.dynamicTools = new AppServerDynamicToolHandler({
+      ...(options.hostedControllerTools ? { adapter: options.hostedControllerTools } : {}),
+      isActiveTurn: (threadId, turnId) => {
+        const expected = this.pendingTurnIdsByThread.get(threadId);
+        const early = this.startingTurnThreads.has(threadId)
+          ? this.earlyTurnIdsByThread.get(threadId) : undefined;
+        const canonical = this.turnIdAliases.get(turnId) ?? turnId;
+        return (expected === canonical || early === turnId) &&
+          !this.findTurn(turnId)?.completed && !this.findTurn(turnId)?.error;
+      },
+      logicalTurnId: (turnId) => this.turnIdAliases.get(turnId) ?? turnId,
+      isTerminal: () => this.terminalError !== null,
+      respond: (id, result) => this.respondServerRequest(id, result),
+    });
     this.stdoutDecoder = new AppServerJsonRpcLineDecoder(
       appServerJsonRpcFrameLimit(options.maxOutputBytes),
     );
@@ -177,7 +185,12 @@ export class CodexAppServerClient {
       : null;
   }
 
+  get childBudget(): ChildExecutionBudget | undefined { return this.options.childBudget; }
+
   async start(): Promise<void> {
+    this.executionLifetime?.assertActive(this.options.abortSignal);
+    this.executionLifetime?.beforeProviderStart();
+    this.childLifetime?.beforeProviderStart(this.options.nativeToolSurface, Boolean(this.options.hostedControllerTools));
     throwIfAborted(this.options.abortSignal);
     this.exited = false;
     this.terminalError = null;
@@ -190,12 +203,25 @@ export class CodexAppServerClient {
     };
     const hostJobId = (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
     if (hostJobId !== undefined) env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID = hostJobId;
+    const coding = this.options.nativeToolSurface === HostedMimoProfile.CodingV1;
+    const agentTemp = !coding && this.options.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan && this.options.processFactory.originalProviderStorageContext
+      ? codexAgentTempRootFromEnv(this.options.sourceEnv ?? process.env) : null;
+    if (agentTemp && (env.TMPDIR !== agentTemp || env.TMP !== agentTemp || env.TEMP !== agentTemp)) {
+      throw new Error("original_provider_storage_context_invalid");
+    }
+    this.assertExecutionActive(this.options.abortSignal);
+    if (coding || this.options.hostedCodingAuthority !== undefined) assertHostedMimoCodingEngineAuthority(this.options.hostedCodingAuthority,
+      { processFactory: this.options.processFactory, codexBinaryPath: this.options.codexBinaryPath, workspacePath: this.options.workspacePath });
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: codexAppServerProcessArgs(this.options),
-      cwd: this.options.session.home,
+      cwd: coding ? this.options.workspacePath : this.options.session.home,
       env,
+      ...(!coding && this.options.processFactory.originalProviderStorageContext ? { storageContext: { workspace: this.options.workspacePath,
+        home: this.options.session.home, codexHome: this.options.session.codexHome,
+        ...(agentTemp ? { agentTemp } : {}) } } : {}),
     });
+    this.options.onProcessCreated?.(this.child);
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
@@ -215,6 +241,7 @@ export class CodexAppServerClient {
       this.recordTerminalError(error);
     });
 
+    this.childLifetime?.armDeadline();
     const response = await this.send(
       "initialize",
       {
@@ -236,6 +263,8 @@ export class CodexAppServerClient {
     if (response.error) {
       throw new Error(`codex_app_server_initialize_failed:${response.error.message ?? "unknown"}`);
     }
+    this.assertExecutionActive(this.options.abortSignal);
+    this.executionLifetime?.markInitialized();
     try {
       await this.rateLimitsMonitor?.prime();
     } catch (error) {
@@ -248,6 +277,7 @@ export class CodexAppServerClient {
   }
 
   async stop(): Promise<void> {
+    this.executionLifetime?.close();
     if (this.stopping) return await this.stopping;
     this.recordTerminalError(new Error("codex_app_server_stopped"));
     const stopping = this.stopChild();
@@ -263,8 +293,41 @@ export class CodexAppServerClient {
     this.warnings.push(warning);
   }
 
+  releasePublicResearchThread(threadId: string): void {
+    this.publicResearchTools.closeThread(threadId);
+  }
+
   acquireExecution(): AppServerExecutionLease {
-    return new AppServerExecutionLease(this.executionAdmission.acquire(), (id) => this.tokenUsage.pin(id));
+    return new AppServerExecutionLease(this.executionAdmission.acquire(), (id) => {
+      const release = this.tokenUsage.pin(id);
+      return () => { this.publicResearchTools.closeThread(id); release(); };
+    });
+  }
+
+  /** Reopen only after the goal runner has validated its retained runtime scope.
+   * Codex 0.159.2 has no dynamicTools parameter on resume or fork. Those tools
+   * must be inherited from the rollout; a target canary must prove that behavior. */
+  async resumePublicResearchThread(input: Parameters<typeof appServerThreadStartParams>[0] & {
+    readonly threadId: string; readonly timeoutMs: number; readonly abortSignal: AbortSignal;
+  }): Promise<void> {
+    if (!codexProviderHasPublicSources(this.options.providerEgressPolicy)) return;
+    const plan = appServerThreadStartParams({ ...input, goalMode: true }, this.options);
+    const response = await this.send("thread/resume", { threadId: input.threadId,
+      ...this.retainedThreadParams(plan.params) }, input);
+    if (response.error || nestedString(response.result, ["thread", "id"]) !== input.threadId) {
+      throw new Error("codex_app_server_research_resume_failed");
+    }
+    if (plan.researchToolsEnabled) this.publicResearchTools.admit(input.threadId);
+  }
+
+  private retainedThreadParams(params: ReturnType<typeof appServerThreadStartParams>["params"]) {
+    // Exact supported resume/fork schema subset; never claim to re-register
+    // dynamic tools through fields the target does not support.
+    return { config: params.config, cwd: params.cwd, model: params.model,
+      modelProvider: params.modelProvider, serviceTier: "serviceTier" in params ? params.serviceTier : null,
+      runtimeWorkspaceRoots: params.runtimeWorkspaceRoots, approvalPolicy: params.approvalPolicy,
+      ...("permissions" in params ? { permissions: params.permissions } : { sandbox: params.sandbox }),
+      baseInstructions: params.baseInstructions, developerInstructions: params.developerInstructions };
   }
 
   async startThread(input: {
@@ -279,88 +342,12 @@ export class CodexAppServerClient {
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
   }): Promise<string> {
-    const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
-      disableTools: this.options.executionProfile.disableTools,
-      nativeToolSurface: this.options.nativeToolSurface,
-      goalMode: input.goalMode,
-    });
-    const threadPolicy = codexAppServerThreadRuntimePolicy({
-      workspacePath: input.workspacePath,
-      ...(input.sandboxMode === undefined
-        ? {}
-        : { sandboxMode: input.sandboxMode }),
-      sourceEnv: this.options.sourceEnv,
-      baseDeveloperInstructions:
-        this.options.executionProfile.developerInstructions,
-      ...(input.systemPrompt === undefined
-        ? {}
-        : { systemPrompt: input.systemPrompt }),
-    });
-    const toolConfig = codexAppServerToolConfig({
-      nativeToolSurface: this.options.nativeToolSurface,
-      fastMode: input.serviceTier === "fast",
-      goalMode: input.goalMode === true,
-      trustedHooksEnabled: this.options.bypassHookTrust === true,
-    });
-    const response = await this.send(
-      "thread/start",
-      {
-        runtimeWorkspaceRoots: threadPolicy.runtimeWorkspaceRoots,
-        model: input.model,
-        modelProvider: null,
-        serviceTier: input.serviceTier ?? null,
-        cwd: input.workspacePath,
-        approvalPolicy: appServerApprovalPolicy(this.options.commandApprovalPolicy),
-        approvalsReviewer: null,
-        sandbox: threadPolicy.sandboxMode,
-        config: {
-          model_reasoning_effort: input.reasoningEffort,
-          model_verbosity: "low",
-          ...(input.serviceTier === undefined
-            ? {}
-            : { service_tier: input.serviceTier }),
-          approval_policy:
-            this.options.commandApprovalPolicy === undefined
-              ? "never"
-              : "on-request",
-          sandbox_mode: threadPolicy.sandboxMode,
-          web_search: "disabled",
-          ...toolConfig,
-          features: {
-            ...(readRecord(toolConfig.features) ?? {}),
-            ...codexAppServerRolloutBudgetConfig(this.options.rolloutBudget),
-          },
-          apps: {
-            _default: {
-              enabled: false,
-              destructive_enabled: false,
-              open_world_enabled: false,
-            },
-          },
-        },
-        serviceName: "subscription-runtime",
-        baseInstructions: this.options.executionProfile.baseInstructions,
-        developerInstructions: threadPolicy.developerInstructions,
-        personality: null,
-        ephemeral: input.goalMode ? false : true,
-        sessionStartSource: "startup",
-        threadSource: "user",
-        ...(disableTools
-          ? {
-              environments: [],
-              dynamicTools: [],
-              experimentalRawEvents: false,
-            }
-          : disableNativeEnvironments
-            ? {
-                environments: [],
-              }
-            : {}),
-      },
-      input,
-    );
+    this.assertExecutionActive(input.abortSignal);
+    const plan = appServerThreadStartParams(input, this.options);
+    const response = await this.send("thread/start", plan.params, input);
     if (response.error) {
-      const modelError = await this.modelUnavailableError({
+      const modelError = await modelUnavailableError({
+        sendPage: (cursor) => this.send("model/list", { cursor, limit: 100, includeHidden: true }, input),
         requestedModel: input.model,
         ...(response.error.message === undefined
           ? {}
@@ -373,82 +360,35 @@ export class CodexAppServerClient {
     }
 
     const threadId = nestedString(response.result, ["thread", "id"]);
-    if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    this.assertExecutionActive(input.abortSignal);
+    if (!threadId?.trim() || (this.executionLifetime && !/^[A-Za-z0-9_.:-]{1,128}$/.test(threadId))) throw new Error("codex_app_server_thread_id_missing");
+    if (this.options.hostedControllerTools) this.dynamicTools.addThread(threadId);
+    if (plan.researchToolsEnabled) this.publicResearchTools.admit(threadId);
     return threadId;
   }
 
-  async forkThread(input: {
+  async forkThread(input: Parameters<typeof appServerThreadStartParams>[0] & {
     readonly usageLease?: AppServerExecutionLease;
     readonly threadId: string;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
   }): Promise<string> {
     throwIfAborted(input.abortSignal);
-    const response = await this.send(
-      "thread/fork",
-      { threadId: input.threadId },
-      input,
-    );
-    if (response.error) {
-      throw new CodexAppServerThreadForkError(
-        response.error.message ?? "unknown",
-      );
-    }
+    const plan = appServerThreadStartParams(input, this.options);
+    const response = await this.send("thread/fork", { threadId: input.threadId,
+      // Preserve ordinary behavior. Captured research/closed tool policy is
+      // explicitly overlaid whenever the runtime has selected a finite profile.
+      ...(codexProviderHasPublicSources(this.options.providerEgressPolicy)
+        ? { ...this.retainedThreadParams(plan.params), deferGoalContinuation: true }
+        : this.options.providerEgressPolicy ? { config: { web_search: plan.params.config.web_search } } : {}),
+    }, input);
+    if (response.error) throw new CodexAppServerThreadForkError(response.error.message ?? "unknown");
     const threadId = nestedString(response.result, ["thread", "id"]);
-    if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    this.assertExecutionActive(input.abortSignal);
+    if (!threadId?.trim() || (this.executionLifetime && !/^[A-Za-z0-9_.:-]{1,128}$/.test(threadId))) throw new Error("codex_app_server_thread_id_missing");
+    if (this.options.hostedControllerTools) this.dynamicTools.addThread(threadId);
+    if (plan.researchToolsEnabled) this.publicResearchTools.admit(threadId);
     return threadId;
-  }
-
-  private async modelUnavailableError(input: {
-    readonly requestedModel: string;
-    readonly providerMessage?: string;
-    readonly timeoutMs: number;
-    readonly abortSignal: AbortSignal;
-  }): Promise<CodexModelUnavailableError | null> {
-    if (!isCodexModelUnavailableMessage(input.providerMessage ?? "")) {
-      return null;
-    }
-    const availableModels = await this.readAvailableModels(input).catch(
-      () => null,
-    );
-    if (
-      availableModels === null ||
-      hasCodexModel(availableModels, input.requestedModel)
-    ) {
-      return null;
-    }
-    return new CodexModelUnavailableError({
-      requestedModel: input.requestedModel,
-      availableModels,
-    });
-  }
-
-  private async readAvailableModels(input: {
-    readonly timeoutMs: number;
-    readonly abortSignal: AbortSignal;
-  }): Promise<readonly CodexModelCatalogEntry[] | null> {
-    const entries: CodexModelCatalogEntry[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-
-    for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
-      const response = await this.send(
-        "model/list",
-        { cursor, limit: 100, includeHidden: true },
-        input,
-      );
-      if (response.error) return null;
-      const page = readCodexModelCatalogPage(response.result);
-      if (!page) return null;
-      entries.push(...page.data);
-      if (entries.length > 500) return null;
-      if (page.nextCursor === null)
-        return entries.length === 0 ? null : entries;
-      if (seenCursors.has(page.nextCursor)) return null;
-      seenCursors.add(page.nextCursor);
-      cursor = page.nextCursor;
-    }
-    return null;
   }
 
   async setGoal(input: {
@@ -515,17 +455,23 @@ export class CodexAppServerClient {
     readonly reasoningEffort: CodexReasoningEffort;
     readonly serviceTier?: CodexServiceTier;
     readonly workspacePath: string;
+    readonly sandboxMode?: CodexSandboxMode;
     readonly outputSchema?: unknown;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
     readonly turnNumber?: number;
     readonly onTextDelta?: (text: string) => void;
-  }): Promise<AppServerTurnResult> {
+  }): Promise<AppServerAcknowledgedTurnResult> {
+    if (!nativeWebId(input.threadId)) throw new Error("codex_app_server_thread_id_invalid");
+    const targetedThreadId = input.threadId;
     const release = this.turnAdmission.acquire(input.threadId);
     const usage = this.tokenUsage.activate(input.threadId);
+    const nativeWeb = new AppServerNativeWebCapture(input.threadId);
     try {
+      this.nativeWebCaptures.set(input.threadId, nativeWeb);
       this.startingTurnThreads.add(input.threadId);
+      this.publicResearchTools.beginTurn(input.threadId, input.abortSignal);
       const startedAt = Date.now();
       const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
         disableTools: this.options.executionProfile.disableTools,
@@ -534,14 +480,32 @@ export class CodexAppServerClient {
       });
       let response: CodexAppServerJsonRpcResponse;
       try {
+        const hostedPermissions = this.options.hostedPermissionProfiles
+          ? hostedCodexPermissionProfileId(
+              input.sandboxMode === undefined ? {} : { sandboxMode: input.sandboxMode },
+            )
+          : null;
         response = await this.send(
           "turn/start",
-          appServerTurnStartParams(input, {
+          appServerTurnStartParams({
+            ...input,
+            ...(this.options.modelBackend === undefined
+              ? {}
+              : { modelBackend: this.options.modelBackend }),
+          }, {
             disableTools, disableNativeEnvironments,
             ...(this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
-            sandboxPolicy: this.sandboxPolicyFor(input),
+            ...(hostedPermissions
+              ? { permissions: hostedPermissions }
+              : { sandboxPolicy: codexAppServerSandboxPolicy({ ...input, sourceEnv: this.options.sourceEnv }) }),
           }),
-          input,
+          { ...input, observeResponse: response => {
+            const id = nestedString(response.result, ["turn", "id"]);
+            if (!response.error && id) {
+              nativeWeb.bind(id);
+              this.publicResearchTools.bindTurn(input.threadId, id);
+            }
+          } },
         );
       } catch (error) {
         this.clearStartingTurn(input.threadId);
@@ -564,9 +528,8 @@ export class CodexAppServerClient {
           },
         );
       }
-
       const turnId = nestedString(response.result, ["turn", "id"]);
-      if (!turnId) {
+      if (!nativeWebId(turnId)) {
         this.clearStartingTurn(input.threadId);
         throw turnFailureError(new AppServerRequestMayHaveReachedProviderError(
           new Error("codex_app_server_turn_id_missing"),
@@ -577,6 +540,7 @@ export class CodexAppServerClient {
           elapsedMs: Date.now() - startedAt,
         });
       }
+      const identity = { threadId: targetedThreadId, acknowledgedTurnId: turnId };
       let turn: TurnState;
       try {
         turn = await this.waitForTurn(turnId, input);
@@ -590,63 +554,48 @@ export class CodexAppServerClient {
       }
       this.startingTurnThreads.delete(input.threadId);
       this.clearIdleTurnState();
-      if (!turn.error) return turn;
+      const evidence = nativeWeb.result();
+      const receipt = evidence === undefined ? {} : { nativeWeb: evidence };
+      if (!turn.error) return { ...turn, ...identity, ...receipt };
       return {
         ...turn,
+        ...identity,
+        ...receipt,
         usage: turn.usage ?? usage.usage,
         error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
-          phase:
-            turn.outputText.length > 0
-              ? "turn_error_after_output"
-              : "turn_error_before_output",
+          phase: turn.outputText.length > 0 ? "turn_error_after_output" : "turn_error_before_output",
           turnNumber: input.turnNumber,
           outputText: turn.outputText,
           elapsedMs: Date.now() - startedAt,
         }),
       };
     } catch (error) {
-      if (usage.usage) throw new AppServerUsageError(error, usage.usage, true);
+      const evidence = nativeWeb.result();
+      if (usage.usage || evidence) throw new AppServerUsageError(error, usage.usage, true, evidence);
       throw error;
     } finally {
+      this.nativeWebCaptures.delete(input.threadId);
+      this.publicResearchTools.endTurn(input.threadId);
       this.tokenUsage.deactivate(input.threadId);
       release();
     }
   }
 
-  private send(
+  private async send(
     method: string,
     params: unknown,
     input: {
       readonly usageLease?: AppServerExecutionLease;
+      readonly observeResponse?: (response: CodexAppServerJsonRpcResponse) => void;
       readonly timeoutMs?: number;
       readonly abortSignal?: AbortSignal;
     } = {},
   ): Promise<CodexAppServerJsonRpcResponse> {
-    if (!this.child) throw new Error("codex_app_server_not_started");
-    throwIfAborted(input.abortSignal);
-    if (this.terminalError) throw this.terminalError;
-    const id = this.nextId;
-    this.nextId += 1;
-
-    return sendAppServerRequest({
-      id,
-      method,
-      params,
-      timeoutMs: input.timeoutMs ?? this.options.timeoutMs,
-      ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
-      ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
-      pending: this.pending,
-      write: (message) => this.child!.stdin.write(message),
-    });
-  }
-
-  private sandboxPolicyFor(input: {
-    readonly sandboxMode?: CodexSandboxMode;
-    readonly workspacePath: string;
-  }): CodexAppServerSandboxPolicy {
-    return codexAppServerSandboxPolicy({
-      ...input,
-      sourceEnv: this.options.sourceEnv,
+    return await sendAppServerLifetimeRequest(method, params, input, {
+      child: this.child, terminalError: this.terminalError, id: this.nextId++,
+      pending: this.pending, timeoutMs: this.options.timeoutMs,
+      childBudget: this.options.childBudget, childLifetime: this.childLifetime,
+      executionLifetime: this.executionLifetime,
     });
   }
 
@@ -659,13 +608,14 @@ export class CodexAppServerClient {
       readonly onTextDelta?: (text: string) => void;
     },
   ): Promise<TurnState> {
+    const remainingMs = this.executionLifetime || this.options.childBudget ? this.assertExecutionActive(input.abortSignal) : undefined;
     const earlyTurnId = this.earlyTurnIdsByThread.get(input.threadId);
     if (earlyTurnId) {
       this.earlyTurnIdsByThread.delete(input.threadId);
       this.aliasTurnId(earlyTurnId, turnId);
     }
     const existing = this.turns.get(turnId);
-    if (existing) this.attachTextDeltaSink(existing, input.onTextDelta);
+    if (existing) attachAppServerTextDeltaSink(existing, input.onTextDelta, () => this.resolveTurn(existing));
     if (existing?.completed || existing?.error) {
       this.clearTurnTracking(turnId, input.threadId);
       return Promise.resolve(existing);
@@ -678,7 +628,7 @@ export class CodexAppServerClient {
     }
 
     const turn = existing ?? createTurnState();
-    if (!existing) this.attachTextDeltaSink(turn, input.onTextDelta);
+    if (!existing) attachAppServerTextDeltaSink(turn, input.onTextDelta, () => this.resolveTurn(turn));
     if (turn.completed || turn.error) {
       this.clearTurnTracking(turnId, input.threadId);
       return Promise.resolve(turn);
@@ -686,7 +636,7 @@ export class CodexAppServerClient {
     return waitForAppServerTurn({
       turn,
       turnId,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: remainingMs === undefined ? input.timeoutMs : Math.min(input.timeoutMs, remainingMs),
       abortSignal: input.abortSignal,
       register: () => {
         this.turns.set(turnId, turn);
@@ -705,6 +655,8 @@ export class CodexAppServerClient {
 
   private onMessage(message: unknown): void {
     if (this.terminalError) return;
+    try { this.assertExecutionActive(); } catch { return; }
+    if (this.childLifetime && !this.childLifetime.eventAllowed()) return;
     if (!message || typeof message !== "object") return;
     const record = message as Record<string, unknown>;
     if (
@@ -721,12 +673,21 @@ export class CodexAppServerClient {
     }
 
     const params = readRecord(record.params);
-    if (typeof record.id === "number" && typeof record.method === "string") {
+    if ((typeof record.id === "number" || typeof record.id === "string") && typeof record.method === "string") {
       this.onServerRequest(record.id, record.method, params);
       return;
     }
 
     if (typeof record.method !== "string") return;
+    if (record.method === "thread/closed" || record.method === "thread/archived") {
+      const threadId = stringField(params, "threadId");
+      if (threadId) this.publicResearchTools.closeThread(threadId);
+      return;
+    }
+    if (record.method === "serverRequest/resolved") {
+      this.dynamicTools.resolve(params?.threadId, params?.requestId);
+      return;
+    }
     if (record.method === "account/rateLimits/updated") {
       this.rateLimitsMonitor?.notifyRateLimitsUpdated();
       return;
@@ -738,7 +699,7 @@ export class CodexAppServerClient {
     if (record.method === "item/agentMessage/delta") {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
-      this.clearReconnectGraceTimer(turn);
+      clearAppServerReconnectTimer(turn);
       const delta = stringField(params, "delta") ?? "";
       if (appendTurnOutput({
         turn, text: delta, maxOutputBytes: this.options.maxOutputBytes,
@@ -768,13 +729,20 @@ export class CodexAppServerClient {
       return;
     }
     if (record.method === "item/completed") {
+      const threadId = stringField(params, "threadId");
       const turnId = stringField(params, "turnId");
+      // A terminal TurnState fences input even before capture ownership is known.
+      // Only the response ACK may admit the retained preterminal buffer.
+      const state = turnId ? this.findTurn(turnId) : null;
+      if (threadId && !state?.completed && !state?.error) {
+        this.nativeWebCaptures.get(threadId)?.observe(params, false);
+      }
       const item = readRecord(params?.item);
       if (item?.type === "agentMessage") {
         const text = agentMessageText(item);
         if (text) {
           const turn = this.ensureTurn(turnId);
-          this.clearReconnectGraceTimer(turn);
+          clearAppServerReconnectTimer(turn);
           replaceTurnOutput({
             turn, text, maxOutputBytes: this.options.maxOutputBytes,
             reject: () => this.resolveTurn(turn),
@@ -784,9 +752,20 @@ export class CodexAppServerClient {
       return;
     }
     if (record.method === "turn/completed") {
+      const threadId = stringField(params, "threadId");
+      if (threadId) this.nativeWebCaptures.get(threadId)?.observe(params, true);
       const turn = readRecord(params?.turn);
       const turnId = stringField(turn, "id");
+      if (turnId) this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
+      if (turnId) this.dynamicTools.cancelTurn(turnId);
       const state = this.ensureTurn(turnId);
+      const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
+      // Completion is specific: never seal unrelated captures for an unknown ID.
+      for (const [thread, capture] of this.nativeWebCaptures) {
+        if (turnId && (capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+          this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
+          this.earlyTurnIdsByThread.get(thread) === turnId)) capture.finish();
+      }
       state.completed = true;
       const status = readRecord(turn?.status);
       const statusType = stringField(turn, "status") ??
@@ -805,6 +784,7 @@ export class CodexAppServerClient {
         stringField(params, "turnId") ??
         stringField(params, "turn_id") ??
         stringField(readRecord(params?.turn), "id");
+      if (turnId) this.dynamicTools.cancelTurn(turnId);
       const reason =
         stringField(params, "reason") ??
         stringField(readRecord(params?.status), "reason") ??
@@ -812,16 +792,7 @@ export class CodexAppServerClient {
       const error = new Error(
         `codex_app_server_turn_aborted:${reason}:${turnId ?? "unknown"}`,
       );
-      if (!turnId) {
-        for (const turn of this.turns.values()) {
-          turn.error = error;
-          this.resolveTurn(turn);
-        }
-        return;
-      }
-      const turn = this.ensureTurn(turnId);
-      turn.error = error;
-      this.resolveTurn(turn);
+      this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
       return;
     }
     if (record.method === "error") {
@@ -836,16 +807,7 @@ export class CodexAppServerClient {
         "codex_app_server_error",
         errorPayload,
       );
-      if (!turnId) {
-        for (const turn of this.turns.values()) {
-          turn.error = error;
-          this.resolveTurn(turn);
-        }
-        return;
-      }
-      const turn = this.ensureTurn(turnId);
-      turn.error = error;
-      this.resolveTurn(turn);
+      this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
     }
   }
 
@@ -864,7 +826,7 @@ export class CodexAppServerClient {
     turn: TurnState,
     message: string,
   ): void {
-    this.clearReconnectGraceTimer(turn);
+    clearAppServerReconnectTimer(turn);
     turn.reconnectGraceTimer = setTimeout(() => {
       if (turn.completed || turn.error) return;
       turn.error = new Error(
@@ -875,17 +837,37 @@ export class CodexAppServerClient {
   }
 
   private onServerRequest(
-    id: number,
+    id: string | number,
     method: string,
     params: Record<string, unknown> | null,
   ): void {
+    if ((typeof id === "string" && (id.length === 0 || id.length > 128)) ||
+        (typeof id === "number" && !Number.isSafeInteger(id))) {
+      this.failProtocol(new Error("codex_app_server_server_request_id_invalid"));
+      return;
+    }
+    const requestKey = `${typeof id}:${id}`;
+    if (this.serverRequestIds.has(requestKey)) return;
+    if (this.serverRequestIds.size >= maxRetainedServerRequestIds) {
+      this.failProtocol(new Error("codex_app_server_server_request_id_limit_exceeded"));
+      return;
+    }
+    this.serverRequestIds.add(requestKey);
     handleAppServerServerRequest({
       id,
       method,
       params,
-      ...(this.options.commandApprovalPolicy === undefined
-        ? {}
-        : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+      ...(this.options.publicSourceReader ? { publicSourceTools: {
+        reader: this.options.publicSourceReader, session: this.publicResearchTools,
+      } } : {}),
+      ...(this.options.hostedControllerTools ? {
+        dynamicToolCall: (requestId: string | number, requestParams: Record<string, unknown> | null) => {
+          void this.dynamicTools.call(requestId, requestParams);
+        },
+      } : {}),
+      ...(this.options.childBudget
+        ? { commandApprovalPolicy: { reviewCommand: () => ({ approved: false, reason: "child_native_tools_denied" }) } }
+        : this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
       warn: (warning) => this.warnings.push(warning),
       respond: (requestId, result) => this.respondServerRequest(requestId, result),
       respondError: (requestId, message) => this.respondServerRequestError(requestId, message),
@@ -893,31 +875,26 @@ export class CodexAppServerClient {
   }
 
   private respondServerRequest(
-    id: number,
+    id: string | number,
     result: Record<string, unknown>,
   ): void {
-    try {
-      this.child?.stdin.write(encodeJsonRpcMessage({ id, result }));
-    } catch (error) {
-      this.recordTerminalError(
-        new Error(
-          `codex_app_server_unsupported_response_failed:${safeMessage(error)}`,
-        ),
-      );
-    }
+    this.writeServerResponse({ id, result });
   }
 
-  private respondServerRequestError(id: number, message: string): void {
+  private respondServerRequestError(id: string | number, message: string): void {
+    this.writeServerResponse({ id, error: { code: -32000, message } });
+  }
+
+  private writeServerResponse(payload: {
+    readonly id: string | number;
+    readonly result?: Record<string, unknown>;
+    readonly error?: { readonly code: number; readonly message: string };
+  }): void {
     try {
-      this.child?.stdin.write(
-        encodeJsonRpcMessage({
-          id,
-          error: {
-            code: -32000,
-            message,
-          },
-        }),
-      );
+      if (this.terminalError) return;
+      this.assertExecutionActive();
+      const write = () => this.child?.stdin.write(encodeJsonRpcMessage(payload)) ?? false;
+      if (this.childLifetime) this.childLifetime.write("tool/response", write); else write();
     } catch (error) {
       this.recordTerminalError(
         new Error(
@@ -948,12 +925,37 @@ export class CodexAppServerClient {
   }
 
   private resolveTurn(turn: TurnState): void {
-    this.clearReconnectGraceTimer(turn);
+    clearAppServerReconnectTimer(turn);
     const waiters = turn.waiters.splice(0);
     for (const waiter of waiters) waiter(turn);
   }
 
+  private failTurnOrAll(turnId: string | null | undefined, error: Error, threadId?: string | null): void {
+    const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
+    // Seal capture input synchronously, before any failure waiter can settle.
+    // Early/output identities select the owner; only response ACK binds receipts.
+    for (const [thread, capture] of this.nativeWebCaptures) {
+      if (!turnId || thread === threadId || capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+        this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
+        this.earlyTurnIdsByThread.get(thread) === turnId) capture.finish();
+    }
+    if (!turnId) {
+      for (const thread of this.startingTurnThreads) this.publicResearchTools.endTurn(thread);
+      for (const thread of this.pendingTurnIdsByThread.keys()) this.publicResearchTools.endTurn(thread);
+      for (const turn of this.turns.values()) {
+        turn.error = error;
+        this.resolveTurn(turn);
+      }
+      return;
+    }
+    this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
+    const turn = this.ensureTurn(turnId);
+    turn.error = error;
+    this.resolveTurn(turn);
+  }
+
   private failOutstanding(error: Error): void {
+    this.publicResearchTools.stop();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -972,6 +974,8 @@ export class CodexAppServerClient {
 
   private recordTerminalError(error: Error): void {
     this.terminalError = this.terminalError ?? error;
+    this.executionLifetime?.close(error);
+    this.dynamicTools.close();
     this.stdoutDecoder.clear();
     this.failOutstanding(this.terminalError);
   }
@@ -984,7 +988,17 @@ export class CodexAppServerClient {
     void this.stopChild().catch(() => undefined);
   }
 
+  /** Scoped process stop request only; this does not prove host custody release. */
+  requestChildCleanup(error: unknown): void {
+    if (this.childLifetime) this.childLifetime.cleanup(error); else this.failProtocol(error);
+  }
+
+  assertExecutionActive(signal?: AbortSignal): number {
+    return assertAppServerExecutionActive(this.executionLifetime, this.options.childBudget, this.terminalError, signal);
+  }
+
   private stopChild(): Promise<void> {
+    this.childLifetime?.disposeTimer();
     if (this.stopping) return this.stopping;
     const child = this.child;
     this.child = null;
@@ -997,8 +1011,10 @@ export class CodexAppServerClient {
   }
 
   private clearTurnTracking(turnId: string, threadId: string): void {
+    this.publicResearchTools.endTurn(threadId);
+    this.dynamicTools.cancelTurn(turnId);
     const turn = this.turns.get(turnId);
-    if (turn) this.clearReconnectGraceTimer(turn);
+    if (turn) clearAppServerReconnectTimer(turn);
     this.turns.delete(turnId);
     this.pendingTurnIdsByThread.delete(threadId);
     this.earlyTurnIdsByThread.delete(threadId);
@@ -1023,6 +1039,7 @@ export class CodexAppServerClient {
       return;
     }
     this.turnIdAliases.set(actualTurnId, expectedTurnId);
+    this.dynamicTools.aliasTurn(actualTurnId, expectedTurnId);
     const actual = this.turns.get(actualTurnId);
     if (!actual) return;
     const expected = this.turns.get(expectedTurnId);
@@ -1059,8 +1076,10 @@ export class CodexAppServerClient {
   }
 
   private clearStartingTurn(threadId: string): void {
-    this.startingTurnThreads.delete(threadId);
+    this.publicResearchTools.endTurn(threadId);
     const earlyTurnId = this.earlyTurnIdsByThread.get(threadId);
+    if (earlyTurnId) this.dynamicTools.cancelTurn(earlyTurnId);
+    this.startingTurnThreads.delete(threadId);
     if (earlyTurnId) this.turns.delete(earlyTurnId);
     this.earlyTurnIdsByThread.delete(threadId);
     this.clearIdleTurnState();
@@ -1068,36 +1087,13 @@ export class CodexAppServerClient {
 
   private clearIdleTurnState(): void {
     if (this.hasActiveTurnWork()) return;
-    for (const turn of this.turns.values()) this.clearReconnectGraceTimer(turn);
+    for (const turn of this.turns.values()) clearAppServerReconnectTimer(turn);
     this.turns.clear();
     this.earlyTurnIdsByThread.clear();
     this.turnIdAliases.clear();
   }
 
-  private clearReconnectGraceTimer(turn: TurnState): void {
-    if (!turn.reconnectGraceTimer) return;
-    clearTimeout(turn.reconnectGraceTimer);
-    turn.reconnectGraceTimer = null;
-  }
-
-  private attachTextDeltaSink(
-    turn: TurnState,
-    sink: ((text: string) => void) | undefined,
-  ): void {
-    turn.onTextDelta = sink ?? null;
-    if (turn.outputText) this.emitTextDelta(turn, turn.outputText);
-  }
-
   private emitTextDelta(turn: TurnState, text: string): void {
-    if (!turn.onTextDelta || turn.error) return;
-    try {
-      turn.onTextDelta(text);
-    } catch (error) {
-      turn.error = new Error("codex_app_server_text_delta_sink_failed", {
-        cause: error,
-      });
-      this.resolveTurn(turn);
-    }
+    emitAppServerTextDelta(turn, text, () => this.resolveTurn(turn));
   }
-
 }

@@ -1,12 +1,17 @@
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
 import { withControlledAgentEgress } from "./controlled-agent/codex-controlled-agent-profile";
 import { createCodexGoalObservationContext } from "./application/codex-goal-observation-context";
-import { readFile } from "node:fs/promises";
+import { readCodexEffectiveSeed, type CodexEffectiveSeed } from "./codex-effective-seed";
 import { resolve } from "node:path";
 import type { SessionArtifact } from "@vioxen/subscription-runtime/core";
-import { sessionArtifactFromCodexAuthJson } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexModelBackend,
+  codexMimoApiKeyEnvVarDefault,
+  sessionArtifactFromCodexAuthJson,
+} from "@vioxen/subscription-runtime/provider-codex";
 import {
   RunEventProviderKind,
+  WorkerAccountCapacitySignalScope,
   type ProjectAccessScope,
   type ProviderControlledAgentInput,
   type ProviderControlledAgentResult,
@@ -20,6 +25,7 @@ import {
   buildCodexControlledAgentProfile,
   CodexControlledAgentProvider,
   type CodexControlledAgentProfile,
+  withControlledAgentModelBackend,
 } from "./controlled-agent";
 import { CodexRunObservationAdapter } from "./codex-run-observation";
 import {
@@ -33,6 +39,8 @@ import {
   selectProjectControllerCodexAccountSlot,
 } from "./application/project-control/codex-goal-project-controller-account-selection";
 import type { ProjectControllerOptions } from "./application/project-control/codex-goal-project-controller-options";
+import { codexSessionCapacityAccountId } from "./codex-session-capacity-identity";
+import { codexAccountCapacityStore } from "./application/codex-account-capacity-store";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -111,11 +119,20 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
       throw new Error("project_control_controller_auth_root_outside_scope");
     }
     const admitted = await admitHostedControllerLaunch(launch);
-    const profile = withControlledAgentEgress(input.profile.rawProfile as CodexControlledAgentProfile, admitted.policy);
+    const modelBackend =
+      launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     const account = await controlledAgentCodexAccount({
       scope: input.scope,
       launch,
     });
+    const profile = withControlledAgentEgress(
+      withControlledAgentModelBackend(
+        input.profile.rawProfile as CodexControlledAgentProfile,
+        modelBackend,
+        account.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault,
+      ),
+      admitted.policy,
+    );
     const controllerObjective = await input.controllerObjective();
     return {
       provider: new CodexControlledAgentProvider({
@@ -123,6 +140,12 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
         processFactory: admitted.processFactory,
         sourceEnv: launch.config.sourceEnv ?? process.env,
         sessionArtifact: account.sessionArtifact,
+        ...(account.seedSource ? { seedSource: account.seedSource } : {}),
+        ...(account.onSessionInvalid ? { onSessionInvalid: account.onSessionInvalid } : {}),
+        modelBackend,
+        ...(account.mimoApiKeyEnvVarName === undefined
+          ? {}
+          : { mimoApiKeyEnvVarName: account.mimoApiKeyEnvVarName }),
         workspacePath: launch.config.workspacePath,
         codexBinaryPath: launch.config.codexBinaryPath ?? "codex",
         controllerObjective,
@@ -140,6 +163,7 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
       }),
       account: {
         name: account.name,
+        ...(account.capacitySessionId ? { capacitySessionId: account.capacitySessionId } : {}),
         ...(account.authJsonSha256Prefix === undefined
           ? {}
           : { authJsonSha256Prefix: account.authJsonSha256Prefix }),
@@ -168,13 +192,19 @@ function codexControllerProfile(
   };
 }
 
-async function controlledAgentCodexAccount(input: {
+/** Scoped host-side controller seed reader. It supplies data and captured
+ * invalidation linkage; it grants no launch or provider admission authority. */
+export async function controlledAgentCodexAccount(input: {
   readonly scope: ProjectAccessScope;
   readonly launch: CodexGoalLaunchInput;
 }): Promise<{
   readonly name: string;
+  readonly capacitySessionId?: string;
   readonly authJsonSha256Prefix?: string;
-  readonly sessionArtifact: SessionArtifact;
+  readonly sessionArtifact: SessionArtifact | null;
+  readonly seedSource?: CodexEffectiveSeed;
+  readonly onSessionInvalid?: () => void;
+  readonly mimoApiKeyEnvVarName?: string;
 }> {
   if (!input.scope.authRoot) {
     throw new Error("project_control_controller_auth_root_scope_required");
@@ -185,6 +215,17 @@ async function controlledAgentCodexAccount(input: {
   const slots = await listCodexGoalAccountStatuses({
     authRootDir: input.launch.config.authRootDir,
     accounts: input.launch.config.accounts.map((account) => account.name),
+    ...(input.launch.config.modelBackend === undefined
+      ? {}
+      : { modelBackend: input.launch.config.modelBackend }),
+    mimoAccounts:
+      input.launch.config.mimoAccounts ??
+      input.launch.config.accounts.map((account) => ({
+        name: account.name,
+        ...(account.envVarName === undefined
+          ? {}
+          : { envVarName: account.envVarName }),
+      })),
     stateRootDir: codexGoalStateRootDir(input.launch),
   });
   const selected = selectProjectControllerCodexAccountSlot({
@@ -194,12 +235,39 @@ async function controlledAgentCodexAccount(input: {
   if (!selected) {
     throw new Error("project_control_controller_no_available_account");
   }
-  const authJsonBytes = await readFile(selected.authJsonPath, "utf8");
+  if (
+    (input.launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt) ===
+    CodexModelBackend.XiaomiMimoTokenPlan
+  ) {
+    return {
+      name: selected.name,
+      sessionArtifact: null,
+      ...(selected.envVarName === undefined
+        ? {}
+        : { mimoApiKeyEnvVarName: selected.envVarName }),
+    };
+  }
+  const seedSource = await readCodexEffectiveSeed(selected.authJsonPath);
+  const authJsonBytes = seedSource.bytes;
+  const capacitySessionId = codexSessionCapacityAccountId(JSON.parse(authJsonBytes));
   return {
     name: selected.name,
+    ...(capacitySessionId ? { capacitySessionId } : {}),
     ...(selected.authJsonSha256Prefix === undefined
       ? {}
       : { authJsonSha256Prefix: selected.authJsonSha256Prefix }),
     sessionArtifact: sessionArtifactFromCodexAuthJson(authJsonBytes),
+    seedSource,
+    onSessionInvalid: () => {
+      // Fence both captured identities; never reread a concurrent new login.
+      const store = codexAccountCapacityStore(input.launch.config.authRootDir);
+      for (const bytes of [seedSource.bytes, seedSource.source]) {
+        const sessionId = codexSessionCapacityAccountId(JSON.parse(bytes));
+        if (sessionId) store.observe({ accountId: sessionId,
+          scope: WorkerAccountCapacitySignalScope.AccountWide,
+          capacity: { availability: "disabled", reason: "provider_session_invalid", details: { capacitySessionId: sessionId } },
+          observedAt: new Date() });
+      }
+    },
   };
 }

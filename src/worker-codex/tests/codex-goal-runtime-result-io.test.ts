@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   GitPatchPreserver,
+  assertGitWorkspaceRawPatchIdentitySupported,
   captureGitWorkspaceChangedFiles,
   createCodexGoalResultRecorder,
 } from "../codex-goal-runtime-result-io";
@@ -13,6 +14,79 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("codex goal runtime result IO", () => {
+  it("denies byte conversions without executing filters and accepts disabled conversions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-conversions-"));
+    const workspacePath = join(root, "workspace");
+    const marker = join(root, "filter-executed");
+    try {
+      await mkdir(workspacePath);
+      await execFileAsync("git", ["init"], { cwd: workspacePath });
+      // Unusual path bytes must be passed through Git's NUL stdin protocol.
+      await writeFile(join(workspacePath, "space and\nnewline.txt"), "raw\n");
+      const attributesPath = join(workspacePath, ".git", "info", "attributes");
+      await execFileAsync("git", ["config", "filter.hide.clean", `touch '${marker}'`], { cwd: workspacePath });
+      await execFileAsync("git", ["config", "filter.hide.process", `touch '${marker}'`], { cwd: workspacePath });
+      for (const attribute of ["filter=hide", "text", "text=auto", "eol=crlf",
+        "working-tree-encoding=UTF-16", "ident", "crlf=input"]) {
+        await writeFile(attributesPath, `*.txt ${attribute}\n`);
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+      }
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      await writeFile(attributesPath, "*.txt -filter -text -eol -working-tree-encoding -ident -crlf\n");
+      for (const autocrlf of ["true", "input"]) {
+        await execFileAsync("git", ["config", "core.autocrlf", autocrlf], { cwd: workspacePath });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+      }
+      await execFileAsync("git", ["config", "core.autocrlf", "false"], { cwd: workspacePath });
+      // core.eol alone does not convert bytes when text conversion is disabled.
+      await execFileAsync("git", ["config", "core.eol", "crlf"], { cwd: workspacePath });
+      await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath)).resolves.toBeUndefined();
+      await writeFile(attributesPath, "");
+      await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath)).resolves.toBeUndefined();
+      for (const name of ["unset", "unspecified"]) {
+        await writeFile(attributesPath, `*.txt filter=${name}\n`);
+        await execFileAsync("git", ["config", `filter.${name}.clean`, `touch '${marker}'`], { cwd: workspacePath });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+        await execFileAsync("git", ["config", "--unset", `filter.${name}.clean`], { cwd: workspacePath });
+      }
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["--assume-unchanged", "--skip-worktree"] as const)(
+    "rejects clean-looking raw accounting with %s without changing the index",
+    async (flag) => {
+      const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-index-flags-"));
+      const path = "space and\nnewline.txt";
+      try {
+        await execFileAsync("git", ["init"], { cwd: root });
+        await writeFile(join(root, path), "value=1\n");
+        await execFileAsync("git", ["add", "--", path], { cwd: root });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root)).resolves.toBeUndefined();
+        await execFileAsync("git", ["update-index", flag, "--", path], { cwd: root });
+        const indexBefore = await readFile(join(root, ".git", "index"));
+        // Even matching bytes with these flags cannot establish raw identity.
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root))
+          .rejects.toThrow("failed_no_output_git_index_flags_present");
+        await writeFile(join(root, path), "value=999\n");
+        const { stdout } = await execFileAsync("git", ["diff", "--", path], { cwd: root });
+        expect(stdout).toBe("");
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root))
+          .rejects.toThrow("failed_no_output_git_index_flags_present");
+        expect(await readFile(join(root, ".git", "index"))).toEqual(indexBefore);
+        expect(await readFile(join(root, path), "utf8")).toBe("value=999\n");
+        await execFileAsync("git", ["update-index", flag === "--assume-unchanged"
+          ? "--no-assume-unchanged" : "--no-skip-worktree", "--", path], { cwd: root });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root)).resolves.toBeUndefined();
+      } finally { await rm(root, { recursive: true, force: true }); }
+    },
+  );
+
   it("writes latest-result atomically through the local writer adapter", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-result-"));
     const outputPath = join(root, "latest-result.json");
@@ -110,6 +184,46 @@ describe("codex goal runtime result IO", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["command", "textconv"] as const)(
+    "round-trips raw tracked and untracked binary bytes with a hiding diff %s",
+    async (driverKind) => {
+      const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-diff-driver-"));
+      const workspacePath = join(root, "workspace");
+      const outputPath = join(root, "preserved.patch");
+      const trackedBytes = Buffer.from([0, 255, 3, 4, 5]);
+      const untrackedBytes = Buffer.from([0, 254, 6, 7, 8]);
+      try {
+        await mkdir(workspacePath);
+        await execFileAsync("git", ["init"], { cwd: workspacePath });
+        await execFileAsync("git", ["config", "user.email", "runtime-test@example.com"], { cwd: workspacePath });
+        await execFileAsync("git", ["config", "user.name", "Runtime Test"], { cwd: workspacePath });
+        await writeFile(join(workspacePath, "tracked.dat"), Buffer.from([0, 1, 2]));
+        await execFileAsync("git", ["add", "tracked.dat"], { cwd: workspacePath });
+        await execFileAsync("git", ["commit", "-m", "test: initialize TEST diff fixture"], { cwd: workspacePath });
+        const driverPath = join(root, "hide-diff");
+        await writeFile(driverPath, driverKind === "command"
+          ? "#!/bin/sh\nexit 0\n"
+          : "#!/bin/sh\nprintf 'hidden\\n'\n", { mode: 0o700 });
+        await writeFile(join(workspacePath, ".git", "info", "attributes"), "*.dat diff=hide\n");
+        await execFileAsync("git", ["config", "diff.hide." + driverKind, driverPath], { cwd: workspacePath });
+        await writeFile(join(workspacePath, "tracked.dat"), trackedBytes);
+        await writeFile(join(workspacePath, "untracked.dat"), untrackedBytes);
+
+        await expect(captureGitWorkspaceChangedFiles({ workspacePath }))
+          .resolves.toEqual(["tracked.dat", "untracked.dat"]);
+        await new GitPatchPreserver().preserve({ workspacePath, outputPath });
+        await execFileAsync("git", ["reset", "--hard", "HEAD"], { cwd: workspacePath });
+        await rm(join(workspacePath, "untracked.dat"));
+        await execFileAsync("git", ["apply", "--check", outputPath], { cwd: workspacePath });
+        await execFileAsync("git", ["apply", outputPath], { cwd: workspacePath });
+        await expect(readFile(join(workspacePath, "tracked.dat"))).resolves.toEqual(trackedBytes);
+        await expect(readFile(join(workspacePath, "untracked.dat"))).resolves.toEqual(untrackedBytes);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("reports net patch paths when a staged input file is moved in the worktree", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-patch-paths-"));

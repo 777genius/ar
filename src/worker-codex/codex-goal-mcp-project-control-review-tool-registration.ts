@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { mimoThinkingInputSchema } from "./codex-goal-mcp-input-schemas";
 import {
   jobIdInputSchema,
   type ProjectControlMcpArgs,
@@ -19,9 +20,10 @@ export function registerCodexGoalProjectControlReviewTools(server: McpServer): v
     {
       title: "Project Control Stop Codex Goal Worker",
       description:
-        "Stop a stored Codex goal worker through a ProjectScopedControl controller manifest and broker policy.",
+        "Stop a stored Codex goal worker through a ProjectScopedControl controller manifest and broker policy. Configured remote MiMo uses mimoProjectId, mimoWorkstreamId, jobId and confirmStop without local paths or controllerJobId; inspect owned operation settlement with codex_goal_status_by_id.",
       inputSchema: {
         ...jobIdInputSchema(),
+        thinking: mimoThinkingInputSchema,
         controllerJobId: z.string().optional(),
         confirmStop: z.boolean().optional(),
         forceStop: z.boolean().optional().describe(

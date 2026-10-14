@@ -91,6 +91,6 @@ export function projectControllerLaunchInput(
     boundary: AccessBoundary.ProjectScopedControl,
     projectAccessScope: controller.scope,
     provider: profile.enforcement,
-    networkAccess: NetworkAccessMode.Restricted,
+    networkAccess: NetworkAccessMode.Unrestricted,
   });
 }

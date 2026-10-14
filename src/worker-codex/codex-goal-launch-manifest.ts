@@ -1,3 +1,5 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./application/codex-goal-storage-data";
 import {
   createCodexGoalJob,
   updateCodexGoalJob,
@@ -49,14 +51,22 @@ export function codexGoalLaunchManifestInputFromLaunch(
   launch: CodexGoalLaunchInput,
   metadata: CodexGoalLaunchManifestMetadata = {},
 ): CodexGoalJobManifestInput {
+  assertCodexGoalStorageTransportSupported(launch.config);
   const jobId = launch.config.jobId ?? launch.config.taskId;
   return {
+    ...parseCodexGoalStorageData(launch.config),
     jobId,
+    ...(launch.config.durableHandoffRootDir
+      ? { durableHandoffRootDir: launch.config.durableHandoffRootDir } : {}),
     ...(metadata.description ? { description: metadata.description } : {}),
     ...(metadata.tags?.length ? { tags: metadata.tags } : {}),
     jobRootDir: launch.config.jobRootDir,
     authRootDir: launch.config.authRootDir,
     ...(launch.config.stateRootDir ? { stateRootDir: launch.config.stateRootDir } : {}),
+    ...(launch.config.runtimeHomeRootDir ? { runtimeHomeRootDir: launch.config.runtimeHomeRootDir } : {}),
+    ...(launch.config.encryptionKeyPath ? { encryptionKeyPath: launch.config.encryptionKeyPath } : {}),
+    ...(launch.config.runtimeEventsPath ? { runtimeEventsPath: launch.config.runtimeEventsPath } : {}),
+    ...(launch.config.agentTempRootDir ? { agentTempRootDir: launch.config.agentTempRootDir } : {}),
     workspacePath: launch.config.workspacePath,
     promptPath: launch.config.promptPath,
     ...(launch.config.codexGoalObjective
@@ -77,14 +87,19 @@ export function codexGoalLaunchManifestInputFromLaunch(
       ? { reasoningEffort: launch.config.reasoningEffort }
       : {}),
     ...(launch.config.serviceTier ? { serviceTier: launch.config.serviceTier } : {}),
+    ...(launch.config.storage ? { modelBackend: launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt } : {}),
     ...(launch.config.executionEngine
       ? { executionEngine: launch.config.executionEngine }
       : {}),
+    ...(launch.config.checkpointRequired || launch.config.checkpointPublisherSocketPath
+      ? { checkpointRequired: true } : {}),
     ...(launch.config.taskTimeoutMs ? { taskTimeoutMs: launch.config.taskTimeoutMs } : {}),
     ...(launch.config.appServerStartupTimeoutMs
       ? { appServerStartupTimeoutMs: launch.config.appServerStartupTimeoutMs }
       : {}),
     ...(launch.config.staleLockMs ? { staleLockMs: launch.config.staleLockMs } : {}),
+    ...(launch.config.childLifetime ? { childLifetime: launch.config.childLifetime,
+      maxGoalTurns: launch.config.maxGoalTurns!, safeExecutionPolicy: launch.config.safeExecutionPolicy! } : {}),
     ...(launch.config.maxAccountCycles
       ? { maxAccountCycles: launch.config.maxAccountCycles }
       : {}),
@@ -125,7 +140,9 @@ export function codexGoalLaunchManifestPatch(
   manifest: CodexGoalJobManifestInput,
 ): CodexGoalJobManifestPatch {
   const { jobId: _jobId, createdAt: _createdAt, ...patch } = manifest;
-  return patch;
+  // This is a complete launch projection, not a partial metadata edit. An
+  // omitted pair must remain visible to the existing NEW downgrade fence.
+  return { ...patch, storage: manifest.storage, sessionHomeProfile: manifest.sessionHomeProfile };
 }
 
 function isFileAlreadyExistsError(error: unknown): boolean {

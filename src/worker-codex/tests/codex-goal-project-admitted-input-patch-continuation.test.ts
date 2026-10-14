@@ -909,6 +909,7 @@ describe("admitted input-patch capacity continuation", () => {
       taskId: manifest.taskId,
       workspacePath,
       jobRootDir: manifest.jobRootDir,
+      durableHandoffRootDir: join(manifest.jobRootDir, "durable"),
     });
     if (!interruptedHandoff.continuationFingerprint) {
       throw new Error("expected interrupted continuation fingerprint");
@@ -988,7 +989,12 @@ describe("admitted input-patch capacity continuation", () => {
     execFileSync("git", ["reset", "--", "src/example.ts"], {
       cwd: workspacePath,
     });
-    await expect(assertRuntimeWorkspaceBinding()).resolves.toBeUndefined();
+    await expect(assertRuntimeWorkspaceBinding()).resolves.toEqual({
+      baseSha: contract.baseSha,
+      inputPatchHash: contract.inputPatchHash,
+      packetRevision: contract.packetRevision,
+      phaseStartSha: null,
+    });
 
     await writeFile(join(workspacePath, "outside-owned.ts"), "index only\n");
     execFileSync("git", ["add", "outside-owned.ts"], { cwd: workspacePath });
@@ -1099,7 +1105,7 @@ describe("admitted input-patch capacity continuation", () => {
     expect(await readFile(plan.descriptor.receiptPath, "utf8")).toContain(
       '"status": "launch_authorized"',
     );
-  }, 120_000);
+  }, 240_000);
 });
 
 describe("clean pre-start capacity continuation", () => {

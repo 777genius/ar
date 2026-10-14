@@ -14,13 +14,18 @@ import {
 import { withHandoffLiveIndexSnapshot } from
   "./codex-goal-handoff-worktree-index";
 
+import { resolveManagedDependencyGitContext, assertManagedDependencyGitContext,
+  assertManagedDependencyGitAuthoredPath, type HandoffGitSelection } from "./managed-dependency-git";
+
 type HandoffWorkspaceLayer = "staged" | "unstaged" | "clean";
 
 /** Classify one authoritative Git layer without mutating the live index. */
 export async function captureHandoffWorkspaceLayer(
   workspacePath: string,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<HandoffWorkspaceLayer> {
+  const managedContext = resolveManagedDependencyGitContext(workspacePath, gitBinaryPath);
+  if (managedContext !== undefined) gitBinaryPath = managedContext;
   const [headTree, indexPath, sharedIndexPath, repositoryObjectsPath] =
     await Promise.all([
       gitText(workspacePath, ["rev-parse", "--verify", "HEAD^{tree}"],
@@ -33,12 +38,13 @@ export async function captureHandoffWorkspaceLayer(
         "--git-path", "objects"], undefined, gitBinaryPath),
     ]);
   return withHandoffLiveIndexSnapshot({
+    ...(managedContext === undefined ? {} : { managedContext }),
     sourceIndexPath: indexPath,
     ...(sharedIndexPath ? { sharedIndexPath } : {}),
-    operation: async ({ temporaryDirectory, indexPath: temporaryIndexPath }) => {
+    operation: async ({ temporaryDirectory, indexPath: temporaryIndexPath, env: protectedEnv }) => {
       const temporaryObjectsPath = join(temporaryDirectory, "objects");
-      await mkdir(temporaryObjectsPath, { recursive: true, mode: 0o700 });
-      const env = {
+      if (protectedEnv === undefined) await mkdir(temporaryObjectsPath, { recursive: true, mode: 0o700 });
+      const env = protectedEnv ?? {
         ...process.env,
         GIT_OBJECT_DIRECTORY: temporaryObjectsPath,
         GIT_ALTERNATE_OBJECT_DIRECTORIES: repositoryObjectsPath,
@@ -73,7 +79,7 @@ export async function captureHandoffWorkspaceLayer(
 
 async function gitIndexWorktreeModeDriftPaths(
   workspacePath: string,
-  gitBinaryPath?: string,
+  gitBinaryPath?: HandoffGitSelection,
 ): Promise<readonly string[]> {
   const output = await gitOutput(workspacePath, ["ls-files", "--stage", "-z"],
     16 * 1024 * 1024, undefined, gitBinaryPath);
@@ -87,6 +93,8 @@ async function gitIndexWorktreeModeDriftPaths(
       !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(objectId ?? "") ||
       stage !== "0") throw new Error("handoff_index_entry_invalid");
     if (mode !== "100644" && mode !== "100755") continue;
+    const context = resolveManagedDependencyGitContext(workspacePath, gitBinaryPath);
+    if (context !== undefined) assertManagedDependencyGitAuthoredPath(context, path);
     let item;
     try {
       item = await lstat(resolve(workspacePath, path));
@@ -94,6 +102,7 @@ async function gitIndexWorktreeModeDriftPaths(
       if (isNodeError(error, "ENOENT")) continue;
       throw error;
     }
+    if (context !== undefined) assertManagedDependencyGitContext(context);
     if (!item.isFile()) continue;
     const worktreeMode = (item.mode & 0o111) === 0 ? "100644" : "100755";
     if (worktreeMode !== mode) changed.push(path);

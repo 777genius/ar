@@ -8,8 +8,8 @@ import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtim
 import {
   AccessBoundary,
   NetworkAccessMode,
-  RunProcessAliveReason,
   RunProcessSupervisorKind,
+  RunProcessAliveReason,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexGoalAccountSlots,
@@ -26,7 +26,6 @@ import {
   reconcileCodexGoalRuntimeResult,
   resolveCodexGoalWorkerLiveness,
   startCodexGoalTmux,
-  stopCodexGoalDirectProcess,
   summarizeCodexGoalProcessTree,
   type CodexGoalLaunchInput,
 } from "../codex-goal-ops";
@@ -48,7 +47,7 @@ describe("codex goal ops", () => {
     const tmux = buildCodexGoalTmuxCommand(launch);
 
     expect(noTmux).toContain("subscription-runtime-codex-goal run --no-tmux");
-    expect(noTmux).toContain("--accounts account-a");
+    expect(noTmux).toContain("--accounts account-a"); expect(noTmux).toContain("--durable-handoff-root");
     expect(noTmux).toContain(
       "--codex-goal-objective 'Short objective with docs links.'",
     );
@@ -299,6 +298,8 @@ describe("codex goal ops", () => {
       `${JSON.stringify({
         "account-a": {
           email: "operator@example.com",
+          plan: "free",
+          unpaid: "19.08.2026",
         },
         "account-g": {
           displayName: "usa18303530342",
@@ -317,6 +318,8 @@ describe("codex goal ops", () => {
       email: "operator@example.com",
       shortName: "a",
       operatorLabel: "operator@example.com - a",
+      plan: "free",
+      unpaid: "19.08.2026",
     });
     expect(accounts[1]).toMatchObject({
       name: "account-g",
@@ -548,7 +551,7 @@ describe("codex goal ops", () => {
     expect(brief.nextBestReason).toBe("worker completed");
   });
 
-  it("reconciles a missing runtime result into a strict partial result with a patch", async () => {
+  it("reconciles a missing runtime result only after a durable packet is verified", async () => {
     const fixture = await createGoalFixture();
     await execFileAsync("git", ["config", "user.email", "test@example.com"], {
       cwd: fixture.config.workspacePath,
@@ -589,15 +592,14 @@ describe("codex goal ops", () => {
       nextAction: "preserve_patch",
       reason: "missing_runtime_result",
     });
+    const details = result.details as Record<string, unknown>;
+    expect(details.handoffPacketPath).toEqual(expect.stringContaining("task-1."));
+    expect(details.handoffManifestSha256).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
     expect(result.evidence).toEqual(expect.arrayContaining([
       "supervisor_reconciled_result",
       "latest_result_missing",
-      `patch_preserved:${join(fixture.config.jobRootDir, "task-1.preserved.patch")}`,
     ]));
-    expect(await readFile(join(fixture.config.jobRootDir, "task-1.preserved.patch"), "utf8"))
-      .toContain("after");
-    expect(await readFile(join(fixture.config.jobRootDir, "task-1.preserved.patch"), "utf8"))
-      .toContain("new file");
+    expect(result).toHaveProperty("artifacts");
   });
 
   it("reconciles a dead worker with a missing runtime result into strict failure", async () => {
@@ -1121,51 +1123,6 @@ describe("codex goal ops", () => {
     });
   });
 
-  it("stops only trusted no-tmux direct worker pids", () => {
-    const kill = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
-    try {
-      expect(stopCodexGoalDirectProcess({
-        progressPid: 123,
-        progressProcessAlive: true,
-        progressCommand: "node subscription-runtime-codex-goal run --no-tmux",
-      })).toEqual({
-        preview: "kill -TERM 123",
-        status: "terminated",
-        pid: 123,
-      });
-      expect(kill).toHaveBeenCalledWith(123, "SIGTERM");
-    } finally {
-      kill.mockRestore();
-    }
-  });
-
-  it("refuses untrusted no-tmux direct worker pids without signaling them", () => {
-    const kill = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
-    try {
-      expect(stopCodexGoalDirectProcess({
-        progressPid: 123,
-        progressProcessAlive: true,
-        progressCommand: "[kworker/R-slub_]",
-      })).toEqual({
-        preview: "kill -TERM 123",
-        status: "untrusted_process",
-        pid: 123,
-      });
-      expect(stopCodexGoalDirectProcess({
-        progressPid: 124,
-        progressProcessAlive: true,
-        progressCommand: "bash unrelated-script.sh",
-      })).toEqual({
-        preview: "kill -TERM 124",
-        status: "untrusted_process",
-        pid: 124,
-      });
-      expect(kill).not.toHaveBeenCalled();
-    } finally {
-      kill.mockRestore();
-    }
-  });
-
   it("keeps a live dirty worker in wait state instead of manual review", async () => {
     const fixture = await createGoalFixture();
     const launch = launchInput(fixture.config, fixture.root);
@@ -1466,6 +1423,7 @@ async function createGoalFixture(): Promise<{
     root,
     config: {
       jobRootDir,
+      durableHandoffRootDir: join(root, "durable"),
       authRootDir,
       workspacePath,
       promptPath,

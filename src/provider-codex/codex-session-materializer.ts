@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryMaterializedHome } from "./app-server/adapters/hosted-ordinary-writer-extent";
 import type {
   RedactorPort,
   SessionArtifact,
@@ -5,6 +6,7 @@ import type {
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { managedScratchToolEnvironmentKeys } from "./app-server/adapters/managed-provider-scratch-environment";
 import {
   codexAuthJsonFromArtifact,
   sessionArtifactFromCodexAuthJson,
@@ -13,12 +15,20 @@ import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import {
   CodexProviderEgressProfileId,
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderApiEgressPolicy,
   codexProviderEgressPolicy,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
+  codexProviderWebSearchMode,
   type CodexProviderEgressPolicy,
 } from "./codex-provider-egress-policy";
 import type { CodexMaterializedSession } from "./codex-json-execution-engine";
+import {
+  CodexModelBackend,
+  codexModelBackendExcludesConfigKey,
+  codexModelBackendModelProvidersConfigToml,
+} from "./codex-model-backend";
 
 export type CodexSessionPrewarmResult = {
   readonly mode: "ephemeral" | "worker-cache";
@@ -134,6 +144,8 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
    * durable state when this is used for logical-thread continuation.
    */
   readonly preserveOnDispose?: boolean;
+  /** Prepare host-owned storage before the initial auth/config snapshot, under the slot lease. */
+  readonly prepareHome?: (codexHome: string) => Promise<void>;
   /**
    * Remove the materialized auth.json before preserving the remaining cache.
    * A restarted worker can restore it from the encrypted session store while
@@ -152,7 +164,6 @@ type WorkerCacheEntry = {
 
 export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterializer {
   readonly mode = "worker-cache" as const;
-  private readonly cacheKeyHash: string;
   private entry: WorkerCacheEntry | null = null;
   private tail: Promise<void> = Promise.resolve();
 
@@ -166,8 +177,6 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       options.providerEgressPolicy?.profileId ?? CodexProviderEgressProfileId.ProviderApi,
     );
     this.options = { ...options, providerEgressPolicy };
-    this.cacheKeyHash = stableHash(providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi
-      ? `${options.cacheKey}:${providerEgressPolicy.profileId}` : options.cacheKey).slice(0, 32);
   }
 
   async materialize(input: {
@@ -223,6 +232,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     const releaseLock = await this.acquireExclusiveUse();
     try {
       if (!this.entry) return;
+      assertHostedOrdinaryMaterializedHome(this.entry.home, this.entry.codexHome);
       if (this.options.preserveOnDispose) {
         if (this.options.scrubAuthOnDispose) {
           await rm(join(this.entry.codexHome, "auth.json"), { force: true });
@@ -246,9 +256,12 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     const sessionHash = sessionArtifactHash(input.session);
 
     const entry = this.entry ?? (await this.createEntry());
+    assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
     if (!entry.initialized) {
       await mkdir(entry.home, { recursive: true, mode: 0o700 });
       await mkdir(entry.codexHome, { recursive: true, mode: 0o700 });
+      await this.options.prepareHome?.(entry.codexHome);
+      assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
       await writeCodexJsonHomeSnapshot({
         codexHome: entry.codexHome,
         authJson,
@@ -261,6 +274,10 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       return entry;
     }
 
+    assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
+    // Idempotent on every reuse: a host-side release must never leave a live owner on an unbound target.
+    await this.options.prepareHome?.(entry.codexHome);
+    assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
     await writeCodexJsonConfig({
       codexHome: entry.codexHome,
       ...(this.options.configToml === undefined
@@ -269,6 +286,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     });
 
     if (entry.sessionHash !== sessionHash) {
+      assertHostedOrdinaryMaterializedHome(entry.home, entry.codexHome);
       await writeCodexAuthJson({
         codexHome: entry.codexHome,
         authJson,
@@ -280,7 +298,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
 
   private async createEntry(): Promise<WorkerCacheEntry> {
     const cacheRoot = this.options.rootDir
-      ? join(this.options.rootDir, `codex-${this.cacheKeyHash}`)
+      ? codexWorkerCacheRoot(this.options.rootDir, this.options.cacheKey, this.options.providerEgressPolicy!.profileId)
       : await createCodexRuntimeTempRoot({
           prefix: "subscription-runtime-codex-cache-",
         });
@@ -324,6 +342,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   readonly configToml?: string;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly preserveOnDispose?: boolean;
+  readonly prepareHome?: (codexHome: string) => Promise<void>;
   readonly scrubAuthOnDispose?: boolean;
 };
 
@@ -345,7 +364,7 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
 
     this.slots = Array.from({ length: options.slots }, (_, index) => {
       return new CodexWorkerCacheSessionMaterializer({
-        cacheKey: `${options.cacheKey}:slot:${index + 1}`,
+        cacheKey: codexWorkerCacheSlotKey(options.cacheKey, index),
         ...(options.providerEgressPolicy ? { providerEgressPolicy: options.providerEgressPolicy } : {}),
         ...(options.rootDir ? { rootDir: options.rootDir } : {}),
         ...(options.configToml === undefined
@@ -354,6 +373,7 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
         ...(options.preserveOnDispose !== undefined
           ? { preserveOnDispose: options.preserveOnDispose }
           : {}),
+        ...(options.prepareHome ? { prepareHome: options.prepareHome } : {}),
         ...(options.scrubAuthOnDispose !== undefined
           ? { scrubAuthOnDispose: options.scrubAuthOnDispose }
           : {}),
@@ -469,14 +489,42 @@ async function snapshotCodexSession(input: {
 export function codexJsonHomeConfigToml(input?: {
   readonly hooksEnabled?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
+  readonly namedPermissions?: boolean;
+  readonly shellEnvironmentSet?: Readonly<Record<string, string>>;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps today's output byte-identical. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only used when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
 }): string {
+  const modelBackend = input?.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const shellEnvKeys = [
+    "PATH", "HOME", "CI", "CODEX_HOME",
+    ...(input?.namedPermissions ? ["TMPDIR", "TMP", "TEMP", ...managedScratchToolEnvironmentKeys] : []),
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL",
+  ];
+  const shellEnvironmentSet = Object.entries(input?.shellEnvironmentSet ?? {});
+  for (const [key] of shellEnvironmentSet) {
+    if (key.toUpperCase() === "PATH" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error("codex_shell_environment_set_key_invalid");
+    if (!shellEnvKeys.includes(key)) shellEnvKeys.push(key);
+  }
+  const providerEgressPolicy =
+    input?.providerEgressPolicy ??
+    (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? codexMimoTokenPlanEgressPolicy()
+      : codexProviderApiEgressPolicy());
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
-    'sandbox_mode = "read-only"',
-    'web_search = "disabled"',
+    ...(input?.namedPermissions ? [] : ['sandbox_mode = "read-only"']),
+    ...(input?.namedPermissions ? ['default_permissions = "hosted-project-read"'] : []),
+    `web_search = ${JSON.stringify(codexProviderWebSearchMode(providerEgressPolicy, modelBackend))}`,
     "disable_response_storage = true",
-    'model_verbosity = "low"',
+    ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
+      ? []
+      : ['model_verbosity = "low"']),
     "",
     "[features]",
     "apps = false",
@@ -497,9 +545,19 @@ export function codexJsonHomeConfigToml(input?: {
     "",
     "[shell_environment_policy]",
     'inherit = "all"',
-    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
+    `include_only = [${shellEnvKeys.map((key) => JSON.stringify(key)).join(", ")}]`,
+    ...(input?.shellEnvironmentSet === undefined ? [] : [
+      `set = { ${shellEnvironmentSet.map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(", ")} }`,
+    ]),
     "",
-    codexProviderEgressConfigToml(input?.providerEgressPolicy),
+    ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
+      codexModelBackendModelProvidersConfigToml({
+        backend: modelBackend,
+        envKeyName: input?.mimoApiKeyEnvVarName ?? "MIMO_TOKEN_PLAN_API_KEY",
+      }),
+    ]),
+    codexProviderEgressConfigToml(providerEgressPolicy,
+      input?.namedPermissions ? { namedPermissions: true } : undefined),
   ].join("\n");
 }
 
@@ -533,4 +591,15 @@ function onceSync(fn: () => void): () => void {
     called = true;
     fn();
   };
+}
+
+/** Canonical retained-home paths. Planning performs no filesystem effects. */
+export function codexWorkerCacheSlotKey(cacheKey: string, index: number): string {
+  return `${cacheKey}:slot:${index + 1}`;
+}
+function codexWorkerCacheKeyHash(cacheKey: string, profileId: CodexProviderEgressProfileId): string {
+  return stableHash(profileId !== CodexProviderEgressProfileId.ProviderApi ? `${cacheKey}:${profileId}` : cacheKey).slice(0, 32);
+}
+export function codexWorkerCacheRoot(rootDir: string, cacheKey: string, profileId: CodexProviderEgressProfileId): string {
+  return join(rootDir, `codex-${codexWorkerCacheKeyHash(cacheKey, profileId)}`);
 }

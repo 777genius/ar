@@ -34,7 +34,21 @@ export type PreparedReviewedGitCommit = {
   readonly originalIndexTree: string;
 };
 
+export type InspectedIntegrationCommit = {
+  readonly commitSha: string;
+  readonly tree: string;
+  readonly parentCommits: readonly string[];
+  readonly author: CommitIdentity;
+  readonly committer: CommitIdentity;
+  readonly message: string;
+  readonly files: readonly string[];
+};
+
 export interface GitPort {
+  inspectIntegrationCommit?(input: { readonly workspacePath: string; readonly commitSha: string }): Promise<InspectedIntegrationCommit>;
+  reviewedOutputTreeFromPatch?(attempt: IntegrationAttempt): Promise<string>;
+  currentHead?(input: { readonly workspacePath: string }): Promise<string>;
+  remoteRepository?(input: { readonly workspacePath: string; readonly remote: string }): Promise<string>;
   reconcileReviewedCommit?(attempt: IntegrationAttempt): Promise<GitCommitResult | undefined>;
   verifyMergeOutputTree?(attempt: IntegrationAttempt): Promise<string>;
   verifyReviewedOutputTree?(attempt: IntegrationAttempt): Promise<string>;

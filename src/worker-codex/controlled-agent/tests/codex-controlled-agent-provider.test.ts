@@ -12,6 +12,7 @@ import {
   type ControlledAgentProviderStartInput,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexModelBackend,
   CodexProviderEgressProfileId, codexProviderEgressPolicy,
   type CodexAppServerChildProcess,
   sessionArtifactFromCodexAuthJson,
@@ -19,6 +20,8 @@ import {
 import {
   buildCodexControlledAgentProfile,
   CodexControlledAgentProvider,
+  withControlledAgentEgress,
+  withControlledAgentModelBackend,
 } from "../index";
 
 const validAuthJson = JSON.stringify({
@@ -162,6 +165,82 @@ describe("CodexControlledAgentProvider", () => {
           startedAt: "2026-07-05T00:00:00.000Z",
           updatedAt: "2026-07-05T00:00:00.000Z",
         },
+      });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["MIMO_CONTROLLER_KEY", "MIMO_OPTION_KEY"])("propagates MiMo backend and credential override %s through the controlled execution path", async optionEnvVarName => {
+    // Regression: a differing option used to inject one variable while the
+    // copied profile config directed Codex to read the other.
+    const root = await mkdtemp(join(tmpdir(), "codex-controlled-agent-mimo-"));
+    const workspacePath = join(root, "workspace");
+    const stateDir = join(root, "state");
+    const fakeFactory = new MinimalAppServerFactory();
+    const profile = withControlledAgentEgress(
+      withControlledAgentModelBackend(
+        buildCodexControlledAgentProfile({
+          stateDir,
+          mcpCommand: "subscription-runtime-codex-goal-mcp-test",
+          mcpArgs: ["--stdio"],
+          rawShellMode: "disabled-by-provider",
+        }),
+        CodexModelBackend.XiaomiMimoTokenPlan,
+        "MIMO_CONTROLLER_KEY",
+      ),
+      codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification),
+    );
+    const provider = new CodexControlledAgentProvider({
+      profile,
+      sessionArtifact: null,
+      workspacePath,
+      codexBinaryPath: "/bin/codex-test",
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      mimoApiKeyEnvVarName: optionEnvVarName,
+      sourceEnv: { [optionEnvVarName]: "tp-controller-key" },
+      processFactory: fakeFactory.create,
+      serviceTier: "fast",
+      maxGoalTurns: 1,
+    });
+    try {
+      provider.start(startInput());
+      await waitForProviderStatus(
+        () => provider.status({ session: startInput().session, run: providerRun() }),
+        ControlledAgentRunStatus.Completed,
+        false,
+      );
+      const threadStart = fakeFactory.requests.find(
+        (request) => request.method === "thread/start",
+      );
+      expect(threadStart?.params).toMatchObject({ modelProvider: "mimo" });
+      expect(threadStart?.params).not.toHaveProperty("serviceTier");
+      const config = threadStart?.params?.config as Record<string, unknown>;
+      expect(config.model_verbosity).toBeUndefined();
+      expect(config.service_tier).toBeUndefined();
+      expect((config.features as Record<string, unknown>).fast_mode).toBeUndefined();
+      expect(fakeFactory.environments[0]).toMatchObject({
+        [optionEnvVarName]: "tp-controller-key",
+        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE:
+          CodexProviderEgressProfileId.MimoTokenPlan,
+      });
+      const effectiveConfig = await fakeFactory.configs[0];
+      if (optionEnvVarName === "MIMO_CONTROLLER_KEY") {
+        expect(effectiveConfig).toBe(profile.configToml);
+      }
+      expect(effectiveConfig).toContain("[model_providers.mimo]");
+      expect(effectiveConfig).toContain(`env_key = "${optionEnvVarName}"`);
+      expect(effectiveConfig).not.toContain(
+        `env_key = "${optionEnvVarName === "MIMO_CONTROLLER_KEY" ? "MIMO_OPTION_KEY" : "MIMO_CONTROLLER_KEY"}"`,
+      );
+      expect(effectiveConfig).toContain("enabled_tools");
+      expect(effectiveConfig).toContain("codex_goal_project_start");
+      expect(effectiveConfig).toContain('sandbox_mode = "read-only"');
+      expect(effectiveConfig).toContain('inherit = "none"');
+      expect(effectiveConfig).not.toContain("tp-controller-key");
+    } finally {
+      await provider.stop({
+        session: startInput().session,
+        run: providerRun(),
       });
       await rm(root, { recursive: true, force: true });
     }
@@ -347,6 +426,7 @@ type FakeAppServerRequest = {
 
 class MinimalAppServerFactory {
   readonly codexHomes: string[] = [];
+  readonly configs: Promise<string>[] = [];
   readonly environments: Readonly<Record<string, string>>[] = [];
   readonly prompts: string[] = [];
   readonly processes: MinimalAppServerProcess[] = [];
@@ -361,6 +441,7 @@ class MinimalAppServerFactory {
   }): CodexAppServerChildProcess => {
     this.environments.push(input.env);
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
+    this.configs.push(readFile(join(input.env.CODEX_HOME ?? "", "config.toml"), "utf8"));
     const process = new MinimalAppServerProcess((request) => {
       this.requests.push(request);
       if (request.method === "turn/start") {
@@ -531,9 +612,9 @@ it("composes actual controller dispatch, binding, adapter, state and provider wi
   const factory = new MinimalAppServerFactory(), order: string[] = [];
   const egress = await import("../../hosted-test-egress-admission"), readonly = await import("../../hosted-readonly-admission");
   const ops = await import("../../codex-goal-ops"), selection = await import("../../application/project-control/codex-goal-project-controller-account-selection");
-  let admissions = 0;
   const grant = vi.spyOn(egress, "admitHostedTestEgress").mockImplementation(async () => {
-    expect(await stateLocation.controllerStateLocationForRelocation(controller)).toBe(admissions++ === 0 ? undefined : stateDir);
+    // The first possible allocation effect must already be visible to census.
+    expect(await stateLocation.controllerStateLocationForRelocation(controller)).toBe(stateDir);
     order.push("grant"); return codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
   });
   const admitted = vi.spyOn(readonly, "admitHostedReadonlyInputs").mockImplementation(() => {

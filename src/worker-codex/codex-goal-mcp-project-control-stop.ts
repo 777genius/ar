@@ -1,3 +1,4 @@
+import { isProjectMimoWorkerLaunch } from "./project-mimo-worker-launch";
 import { codexGoalProgressPath } from "./codex-goal-runner";
 import {
   buildCodexGoalStopTmuxCommand,
@@ -6,7 +7,7 @@ import {
   type CodexGoalLaunchInput,
 } from "./codex-goal-ops";
 import { projectControlAuditPath } from "./codex-goal-mcp-project-broker";
-import { projectControlRealPathOutsideWorkspaceScope } from
+import { projectControlCanonicalWorkspacePath, projectControlRealPathOutsideWorkspaceScope } from
   "./codex-goal-mcp-project-scope";
 import {
   writeCodexGoalStopEvent,
@@ -45,6 +46,8 @@ export async function projectControlStopStoredJobView(
     authRootDir: loaded.launch.config.authRootDir,
     accounts: loaded.launch.config.accounts.map((account) => account.name),
     stateRootDir: codexGoalStateRootDir(loaded.launch),
+    ...(isProjectMimoWorkerLaunch(loaded.launch) ? { modelBackend: loaded.launch.config.modelBackend,
+      mimoAccounts: loaded.launch.config.mimoAccounts ?? loaded.launch.config.accounts.map(account => ({ name: account.name })) } : {}),
   });
   const brief = await buildCodexGoalBrief({
     jobId: loaded.manifest.jobId,
@@ -92,17 +95,12 @@ export async function projectControlStopStoredJobView(
     };
   }
 
-  return await withValidatedProjectWorkspaceLock({
-    locks: projectControlWorkspaceLocks(controller.registryRootDir),
-    scope: controller.scope,
-    requestedWorkspacePath: loaded.manifest.workspacePath,
-    owner: `project-stop:${controller.controller.jobId}:${loaded.manifest.jobId}`,
-    effect: async (workspace) => {
+  const stop = async (canonicalWorkspacePath: string): Promise<JsonObject> => {
       const lockedLaunch: CodexGoalLaunchInput = {
         ...loaded.launch,
         config: {
           ...loaded.launch.config,
-          workspacePath: workspace.canonicalWorkspacePath,
+          workspacePath: canonicalWorkspacePath,
         },
       };
       const broker = deps.codexProjectControlBroker({
@@ -110,6 +108,7 @@ export async function projectControlStopStoredJobView(
         controller: controller.controller,
         scope: controller.scope,
         stopLaunch: lockedLaunch,
+        forceStopAfterMaterializationFailure: Boolean(args.forceStop),
       });
       const realWorkspacePath = await projectControlRealPathOutsideWorkspaceScope(
         loaded.launch.config.workspacePath,
@@ -124,6 +123,14 @@ export async function projectControlStopStoredJobView(
           ? { tmuxSession: loaded.launch.tmuxSession }
           : {}),
       });
+      const handoffPacketPath = result.evidence?.handoffPacketPath;
+      const handoffManifestSha256 = result.evidence?.handoffManifestSha256;
+      const handoffPreservationError = result.evidence?.handoffPreservationError;
+      if (result.status === "applied" &&
+        (!handoffPacketPath || !handoffManifestSha256) &&
+        !handoffPreservationError && result.evidence?.cleanWorkspace !== "true") {
+        throw new Error("project_control_stop_handoff_evidence_missing");
+      }
       await writeCodexGoalStoppedProgress({
         progressPath: loaded.launch.config.progressPath ?? codexGoalProgressPath({
           jobRootDir: loaded.launch.config.jobRootDir,
@@ -142,6 +149,9 @@ export async function projectControlStopStoredJobView(
           : {}),
         stopCommand: String(result.resourceId ?? stopCommandPreview),
         forceStop: Boolean(args.forceStop),
+        ...(handoffPacketPath ? { handoffPacketPath } : {}),
+        ...(handoffManifestSha256 ? { handoffManifestSha256 } : {}),
+        ...(handoffPreservationError ? { handoffPreservationError } : {}),
         statusBefore: status,
         statusAfter,
         brief,
@@ -167,7 +177,21 @@ export async function projectControlStopStoredJobView(
         statusBefore: status,
         statusAfter,
         result: result as unknown as JsonObject,
+        ...(handoffPacketPath ? { handoffPacketPath } : {}),
+        ...(handoffManifestSha256 ? { handoffManifestSha256 } : {}),
+        ...(handoffPreservationError
+          ? { handoffPreservationError, preservationDegraded: true }
+          : {}),
       };
-    },
+  };
+  if (isProjectMimoWorkerLaunch(loaded.launch)) {
+    const canonical = await projectControlCanonicalWorkspacePath(loaded.manifest.workspacePath, controller.scope);
+    return await stop(canonical);
+  }
+  return await withValidatedProjectWorkspaceLock({
+    locks: projectControlWorkspaceLocks(controller.registryRootDir), scope: controller.scope,
+    requestedWorkspacePath: loaded.manifest.workspacePath,
+    owner: `project-stop:${controller.controller.jobId}:${loaded.manifest.jobId}`,
+    effect: async workspace => await stop(workspace.canonicalWorkspacePath),
   });
 }

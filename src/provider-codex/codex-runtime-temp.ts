@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryEffectPaths } from "./app-server/adapters/hosted-ordinary-writer-extent";
 import { chmod, lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -5,13 +6,22 @@ import { codexAgentTempRootFromEnv } from "./app-server/domain/app-server-types"
 
 export async function ensureCodexAgentTempRoot(input: {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly sandboxTraverse?: boolean;
 }): Promise<string | null> {
   const sourceEnv = input.sourceEnv ?? process.env;
   const agentTempRoot = codexAgentTempRootFromEnv(sourceEnv);
   const jobRoot = sourceEnv.SUBSCRIPTION_RUNTIME_JOB_ROOT?.trim();
   const runtimeTempRoot = sourceEnv.SUBSCRIPTION_RUNTIME_TMPDIR?.trim();
   if (!agentTempRoot || !jobRoot || !runtimeTempRoot) return null;
+  const jobRootStat = await lstat(jobRoot);
+  const currentUid = process.getuid?.();
+  if (!jobRootStat.isDirectory() || jobRootStat.isSymbolicLink() ||
+      (currentUid !== undefined && jobRootStat.uid !== currentUid) ||
+      (jobRootStat.mode & 0o022) !== 0) {
+    throw new Error("codex_agent_temp_job_root_invalid");
+  }
   const realJobRoot = await realpath(jobRoot);
+  assertHostedOrdinaryEffectPaths([runtimeTempRoot, agentTempRoot]);
   await mkdir(runtimeTempRoot, { recursive: true, mode: 0o700 });
   const runtimeTempStat = await lstat(runtimeTempRoot);
   if (runtimeTempStat.isSymbolicLink()) {
@@ -28,7 +38,11 @@ export async function ensureCodexAgentTempRoot(input: {
   if ((await realpath(agentTempRoot)) !== join(realJobRoot, "tmp", "agent")) {
     throw new Error("codex_agent_temp_root_mismatch");
   }
-  await chmod(agentTempRoot, 0o700);
+  if (input.sandboxTraverse) {
+    await chmod(jobRoot, 0o701);
+    await chmod(runtimeTempRoot, 0o701);
+  }
+  await chmod(agentTempRoot, input.sandboxTraverse ? 0o701 : 0o700);
   return agentTempRoot;
 }
 
@@ -67,6 +81,7 @@ export async function createCodexRuntimeTempRoot(input: {
   let lastError: unknown;
   for (const candidate of candidates) {
     try {
+      assertHostedOrdinaryEffectPaths([candidate]);
       await mkdir(candidate, { recursive: true, mode: 0o700 });
       return await mkdtemp(join(candidate, input.prefix));
     } catch (error) {
@@ -90,6 +105,7 @@ export async function createTrustedCodexRuntimeTempRoot(input: {
   if (resolve(runtimeTempRoot) !== resolve(jobRoot, "tmp")) {
     throw new Error("codex_refresh_bootstrap_temp_root_mismatch");
   }
+  assertHostedOrdinaryEffectPaths([jobRoot, runtimeTempRoot]);
   await mkdir(jobRoot, { recursive: true, mode: 0o700 });
   if ((await lstat(jobRoot)).isSymbolicLink()) {
     throw new Error("codex_refresh_bootstrap_job_root_symlink");

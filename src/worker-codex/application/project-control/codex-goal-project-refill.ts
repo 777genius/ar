@@ -23,6 +23,10 @@ import {
 } from "./codex-goal-project-git";
 import { nodeErrorCode } from "./codex-goal-project-utils";
 import {
+  prepareWorkerToolRoot, removeWorkerToolRoot, WorkerToolRootStatus,
+  WorkerToolRootSkipReason, type WorkerToolRootOutcome,
+} from "../../worker-tool-root";
+import {
   projectControlRealPathIfExists,
   projectControlRealPathOutsideWorkspaceScope,
 } from "./codex-goal-project-workspace-scope";
@@ -57,9 +61,15 @@ export async function createOrReuseProjectWorktree(input: {
   readonly broker: ProjectControlBroker;
   readonly scope: ProjectAccessScope;
   readonly createWorktreeInput: CodexGoalProjectCreateWorktreeInput;
+  readonly workerToolRoot?: {
+    readonly jobId: string;
+    readonly commitAllowed: boolean;
+    readonly commitIdentity?: ProjectAccessScope["commitIdentity"];
+  };
 }): Promise<{
   readonly result: ProjectControlOperationResult;
   readonly created: boolean;
+  readonly workerToolRoot?: WorkerToolRootOutcome;
 }> {
   const result = await input.broker.createWorktree(input.createWorktreeInput);
   const created =
@@ -78,7 +88,15 @@ export async function createOrReuseProjectWorktree(input: {
     }
     throw error;
   }
-  return { result, created };
+  const workerToolRoot = input.workerToolRoot
+    ? created ? await prepareWorkerToolRoot({
+      ...input.workerToolRoot,
+      workspacePath: input.createWorktreeInput.path,
+      sourceRepositoryPath: input.createWorktreeInput.expectedSourceRealPath,
+      base: input.createWorktreeInput.expectedRevision,
+    }) : { status: WorkerToolRootStatus.Skipped, reason: WorkerToolRootSkipReason.WorktreeReused }
+    : undefined;
+  return { result, created, ...(workerToolRoot ? { workerToolRoot } : {}) };
 }
 
 async function assertReusableProjectWorktree(
@@ -271,6 +289,7 @@ export async function rollbackProjectRefillPartial(input: {
   readonly jobId: string;
   readonly worktreeCreated: boolean;
   readonly promptWritten: boolean;
+  readonly toolRootPrepared?: boolean;
 }): Promise<readonly string[]> {
   const rolledBack: string[] = [];
   if (input.promptWritten) {
@@ -292,6 +311,14 @@ export async function rollbackProjectRefillPartial(input: {
       rolledBack.push("worktree");
     } catch {
       rolledBack.push("worktree-remove-failed");
+    }
+    if (input.toolRootPrepared) {
+      try {
+        await removeWorkerToolRoot(input.workspacePath);
+        rolledBack.push("tool-root");
+      } catch {
+        rolledBack.push("tool-root-remove-failed");
+      }
     }
   }
   return rolledBack;

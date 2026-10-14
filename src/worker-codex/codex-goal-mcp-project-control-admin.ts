@@ -1,21 +1,27 @@
+import { hostedMimoCredentialSourceReady } from "@vioxen/subscription-runtime/provider-codex";
+import { durableConfirmFilePublication } from "./project-control-operation-file-store";
+import { enableProjectControllerCheckpoint } from "./codex-goal-mcp-project-control-checkpoint-admin";
 import { createHash } from "node:crypto";
-import { lstat, readdir } from "node:fs/promises";
+import { assertProjectControlCanonicalScopeRepair } from "./codex-goal-project-scope-recovery";
+import { applyConfirmedControllerScopeRecovery, configuredProjectControlCustodyDirectories, type ScopeRecoveryFaultPoint } from "./codex-goal-project-custody-recovery";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-  LocalConsumedOutputLedgerMutationLock,
-} from "@vioxen/subscription-runtime/worker-local";
-import {
   AccessBoundary,
-  ProjectAdmissionWorkerRole,
   ProjectOperation,
   evaluateProjectAdmission,
   type ProjectAccessScope,
-  type ProjectControlCustodyBootstrapCertification,
+  ProjectControlRecoveryOutcome,
+  type ProjectControlRecoveryStore,
+  type ConsumedOutputLedgerMutationLockPort,
+  type ProjectControlRecoveryStoreFactory,
+  type ProjectControlRecoveryDirectories,
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexGoalAccountSelectionMode,
+  codexGoalJobManifestPath,
   codexGoalJobToArgs,
-  bootstrapInitialProjectControlCustody,
   readCodexGoalJob,
   summarizeCodexGoalJob,
   updateCodexGoalJob,
@@ -71,7 +77,6 @@ import {
 } from "./application/project-control/codex-goal-project-admission";
 import {
   assertProjectControlEvidenceRootsCanonical,
-  assertProjectControlScopeRepairAllowed,
   projectControlAddedAllowedAccountIds,
   projectScopeFieldFingerprint,
 } from "./codex-goal-mcp-project-scope";
@@ -133,6 +138,10 @@ export type CodexGoalMcpProjectControlAdminDeps = {
   ) => Promise<LoadedProjectControlController>;
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
+  readonly recoveryStore?: ProjectControlRecoveryStoreFactory;
+  readonly recoveryDirectories?: ProjectControlRecoveryDirectories;
+  readonly mutationLocks?: ConsumedOutputLedgerMutationLockPort;
+  readonly recoveryFault?: (point: ScopeRecoveryFaultPoint) => Promise<void>;
 };
 
 export async function projectControlAdmissionSnapshotView(
@@ -162,19 +171,11 @@ export async function projectControlAdmissionSnapshotView(
         snapshot,
       })
     : undefined;
-  const operationalDecision = decision ?? evaluateProjectAdmission({
-    request: {
-      operation: ProjectOperation.CreateJob,
-      projectId: controller.scope.projectId,
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-    },
-    snapshot,
-  });
   const operations = await buildCodexProjectOperationsSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
     admissionSnapshot: snapshot,
-    admissionDecision: operationalDecision,
+    ...(decision ? { admissionDecision: decision } : {}),
     deps: deps.admissionDeps,
   });
   const detailView = projectAdmissionDetailView({
@@ -217,6 +218,7 @@ export async function projectControlRepairLegacyOutputDebtView(
   const summariesByJobId = new Map(summaries.map((summary) => [summary.jobId, summary]));
   const confirm = booleanValue(args.confirmLegacyOutputRepair) === true;
   const executeRepair = async () => {
+    if (!deps.mutationLocks) throw new Error("project_control_mutation_locks_required");
     const result = await repairLegacyConsumedOutputDebt({
       projectId: controller.scope.projectId,
       registryRootDir: controller.registryRootDir,
@@ -224,7 +226,7 @@ export async function projectControlRepairLegacyOutputDebtView(
       allowedJobIdPrefixes: controller.scope.jobIdPrefixes ?? [],
       admissionSnapshot: snapshot,
       confirm,
-      mutationLocks: new LocalConsumedOutputLedgerMutationLock(),
+      mutationLocks: deps.mutationLocks,
       prove: async (candidate) => proveLegacyConsumedOutputSafe({
         candidate,
         registryRootDir: controller.registryRootDir,
@@ -546,9 +548,10 @@ export async function projectControlUpdateControllerScopeView(
   if (!proposedScope) {
     throw new Error("project_control_project_access_scope_required");
   }
-  assertProjectControlScopeRepairAllowed({
+  await assertProjectControlCanonicalScopeRepair({
     existing: controller.scope,
     proposed: proposedScope,
+    workspacePath: controller.controller.workspacePath,
   });
   await assertProjectControlEvidenceRootsCanonical(
     proposedScope.consumedOutputEvidenceRoots ?? [],
@@ -593,9 +596,13 @@ export async function projectControlUpdateControllerScopeView(
     owner: `controller-scope-update:${controller.controller.jobId}`,
   });
   let manifest;
-  let custodyCertification:
-    ProjectControlCustodyBootstrapCertification | undefined;
+  let recoveryStore: ProjectControlRecoveryStore | undefined;
+  let operationId: string | undefined;
   try {
+    // Retain configured state before the locked reload's canonical checks and
+    // the store factory can yield; later enumeration must not adopt new inodes.
+    const configuredIdentities = await deps.recoveryDirectories?.identities(
+      configuredProjectControlCustodyDirectories(controller.scope));
     const current = await deps.loadProjectControlController(args);
     const currentManifestSha256 = createHash("sha256")
       .update(JSON.stringify(current.controller))
@@ -603,42 +610,62 @@ export async function projectControlUpdateControllerScopeView(
     if (currentManifestSha256 !== expectedManifestSha256) {
       throw new Error("project_control_controller_scope_cas_mismatch");
     }
-    assertProjectControlScopeRepairAllowed({
+    await assertProjectControlCanonicalScopeRepair({
       existing: current.scope,
       proposed: proposedScope,
+      workspacePath: current.controller.workspacePath,
+    });
+    await assertProjectControlAddedAccountsUsable({
+      existing: current.scope,
+      proposed: proposedScope,
+      ...(current.scope.authRoot ?? current.controller.authRootDir
+        ? { authRootDir: current.scope.authRoot ?? current.controller.authRootDir }
+        : {}),
     });
     await assertProjectControlEvidenceRootsCanonical(
       proposedScope.consumedOutputEvidenceRoots ?? [],
       proposedScope,
     );
-    if ((proposedScope.consumedOutputLedgerRoots?.length ?? 0) > 0 ||
-      (proposedScope.consumedOutputEvidenceRoots?.length ?? 0) > 0) {
-      if (!deps.evidenceCustody) {
-        throw new Error("project_control_evidence_custody_required");
-      }
-      custodyCertification = await bootstrapInitialProjectControlCustody(
-        { ...current.controller, projectAccessScope: proposedScope },
-        deps.evidenceCustody,
-      );
-      await custodyCertification?.revalidate();
-    }
-    manifest = await updateCodexGoalJob({
-      registryRootDir: current.registryRootDir,
-      jobId: current.controller.jobId,
-      patch: { projectAccessScope: proposedScope },
-      ...(deps.evidenceCustody
-        ? { evidenceCustody: deps.evidenceCustody }
-        : {}),
+    if (!deps.evidenceCustody) throw new Error("project_control_evidence_custody_required");
+    if (!deps.recoveryStore || !deps.recoveryDirectories) throw new Error("project_control_recovery_dependencies_required");
+    recoveryStore = await deps.recoveryStore({
+      parent: current.controller.jobRootDir, taskId: current.controller.taskId,
     });
+    const result = await applyConfirmedControllerScopeRecovery({
+      confirmed: true, controller: current.controller, proposed: proposedScope,
+      custody: deps.evidenceCustody, store: recoveryStore, directories: deps.recoveryDirectories,
+      configuredIdentities: configuredIdentities ?? [],
+      ...(deps.recoveryFault ? { fault: deps.recoveryFault } : {}),
+      confirmManifestDurability: () => durableConfirmFilePublication(codexGoalJobManifestPath({
+        registryRootDir: current.registryRootDir, jobId: current.controller.jobId,
+      })),
+      publish: (now, revalidate) => updateCodexGoalJob({
+        registryRootDir: current.registryRootDir, jobId: current.controller.jobId,
+        patch: { projectAccessScope: proposedScope }, now,
+        evidenceCustody: deps.evidenceCustody!,
+        beforeManifestPublication: revalidate,
+        expectedParsedManifestSha256: currentManifestSha256,
+      }),
+    });
+    operationId = result.operationId;
+    if (result.outcome !== ProjectControlRecoveryOutcome.Committed || !result.manifest) {
+      return { ok: false, outcome: ProjectControlRecoveryOutcome.PartialSuccess,
+        reason: "project_control_recovery_incomplete", operationId,
+        controllerJobId: current.controller.jobId,
+        auditPath: projectControlAuditPath(current.controller) };
+    }
+    manifest = result.manifest;
   } finally {
     try {
-      await custodyCertification?.close();
+      await recoveryStore?.close();
     } finally {
       await locks.release(lease);
     }
   }
   return {
     ok: true,
+    outcome: ProjectControlRecoveryOutcome.Committed,
+    operationId,
     mode: "project_control_update_controller_scope",
     controllerJobId: controller.controller.jobId,
     registryRootDir: controller.registryRootDir,
@@ -658,18 +685,19 @@ async function assertProjectControlAddedAccountsUsable(input: {
     proposed: input.proposed.allowedAccountIds,
   });
   if (addedAccountIds.length === 0) return;
-  if (!input.authRootDir) {
-    throw new Error("project_control_scope_allowedAccountIds_auth_root_required");
-  }
   if (addedAccountIds.some((accountId) => !/^[a-z0-9][a-z0-9._-]*$/.test(accountId))) {
     throw new Error("project_control_scope_allowedAccountIds_account_id_invalid");
   }
+  const sharedMimoReady = addedAccountIds.includes("account-q") && hostedMimoCredentialSourceReady();
+  const accounts = addedAccountIds.filter(accountId => accountId !== "account-q" || !sharedMimoReady);
+  if (accounts.length === 0) return;
+  if (!input.authRootDir) throw new Error("project_control_scope_allowedAccountIds_auth_root_required");
   const statuses = await listCodexGoalAccountStatuses({
     authRootDir: input.authRootDir,
-    accounts: addedAccountIds,
+    accounts,
   });
   if (
-    statuses.length !== addedAccountIds.length ||
+    statuses.length !== accounts.length ||
     statuses.some((status) => status.status !== "ready")
   ) {
     throw new Error("project_control_scope_allowedAccountIds_account_unavailable");
@@ -683,13 +711,10 @@ export async function projectControlRepairJobManifestView(
   const controller = await deps.loadProjectControlController(args);
   const jobId = requiredRawString(args.jobId, "jobId");
   if (jobId === controller.controller.jobId) {
-    return {
-      ok: false,
-      error: "project_control_controller_manifest_repair_unsupported",
-      requiredTool: "codex_goal_project_update_controller_scope",
-      safeMessage:
-        "Controller manifests use codex_goal_project_update_controller_scope for scoped repairs.",
-    };
+    return await enableProjectControllerCheckpoint(args, controller, deps);
+  }
+  if (args.checkpointRequired !== undefined) {
+    throw new Error("project_control_repair_child_checkpoint_policy_denied");
   }
 
   const existing = await readCodexGoalJob({
@@ -713,8 +738,10 @@ export async function projectControlRepairJobManifestView(
       allowedAccountIds: controller.scope.allowedAccountIds ?? [],
     });
     patch.accounts = requestedAccounts;
+    patch.accountSelectionMode = CodexGoalAccountSelectionMode.Explicit;
   } else {
     const repairedAccounts = await projectControlDefaultAccountNames({
+      ...(existing.modelBackend === undefined ? {} : { modelBackend: existing.modelBackend }),
       ...(existing.authRootDir ? { authRootDir: existing.authRootDir } : {}),
       requestedAccounts: existing.accounts,
       allowedAccountIds: controller.scope.allowedAccountIds ?? [],
@@ -722,6 +749,7 @@ export async function projectControlRepairJobManifestView(
     if (projectScopeFieldFingerprint(existing.accounts) !==
       projectScopeFieldFingerprint(repairedAccounts)) {
       patch.accounts = repairedAccounts;
+      patch.accountSelectionMode = CodexGoalAccountSelectionMode.Automatic;
     }
   }
   const repairedAccounts = Array.isArray(patch.accounts)

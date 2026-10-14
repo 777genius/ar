@@ -1,3 +1,5 @@
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
 import { assertCodexGoalAccessLaunchAllowed } from "../codex-goal-access-plan";
 
@@ -22,6 +24,9 @@ export function buildCodexGoalForegroundArgv(
   lifecycle?: HostedGoalLifecycleRequest,
 ): string[] {
   const config = input.config;
+  const storageData = parseCodexGoalStorageData(config);
+  assertCodexGoalStorageTransportSupported(config);
+  if (config.childLifetime && lifecycle && lifecycle.operation !== HostedGoalLifecycleOperation.Start) throw new Error("child_continuation_denied");
   assertCodexGoalAccessLaunchAllowed(config);
   const args = [
     ...input.cliCommand,
@@ -42,10 +47,18 @@ export function buildCodexGoalForegroundArgv(
     "--format",
     input.format ?? "text",
   ];
+  if (storageData.storage) args.push("--session-home-profile-json", JSON.stringify(storageData.sessionHomeProfile),
+    "--storage-json", JSON.stringify(storageData.storage));
   pushOptional(args, "--registry-root", input.registryRootDir);
   pushOptional(args, "--description", input.registryMetadata?.description);
   pushOptional(args, "--tags", input.registryMetadata?.tags?.join(","));
   pushOptional(args, "--state-root", config.stateRootDir);
+  pushOptional(args, "--runtime-home-root", config.runtimeHomeRootDir);
+  pushOptional(args, "--encryption-key-path", config.encryptionKeyPath);
+  pushOptional(args, "--runtime-events", config.runtimeEventsPath);
+  pushOptional(args, "--agent-temp-root", config.agentTempRootDir);
+  pushOptional(args, "--log", input.logPath);
+  pushOptional(args, "--durable-handoff-root", config.durableHandoffRootDir);
   pushOptional(args, "--job-id", config.jobId);
   pushOptional(args, "--codex-goal-objective", config.codexGoalObjective);
   pushOptional(args, "--output", config.outputPath);
@@ -54,7 +67,10 @@ export function buildCodexGoalForegroundArgv(
   pushOptional(args, "--model", config.model);
   pushOptional(args, "--effort", config.reasoningEffort);
   pushOptional(args, "--service-tier", config.serviceTier);
-  pushOptional(args, "--execution-engine", config.executionEngine);
+  pushOptional(args, "--execution-engine", config.executionEngine ?? (storageData.storage ? "app-server-goal" : undefined));
+  pushOptional(args, "--checkpoint-publisher-socket", config.checkpointPublisherSocketPath);
+  if (config.checkpointRequired) args.push("--require-turn-checkpoint");
+  pushOptional(args, "--model-backend", config.modelBackend ?? (storageData.storage ? CodexModelBackend.OpenAiChatGpt : undefined));
   pushOptionalNumber(args, "--timeout-ms", config.taskTimeoutMs);
   pushOptionalNumber(
     args,
@@ -64,6 +80,10 @@ export function buildCodexGoalForegroundArgv(
   pushOptionalNumber(args, "--progress-heartbeat-ms", config.progressHeartbeatMs);
   pushOptionalNumber(args, "--stale-lock-ms", config.staleLockMs);
   pushOptionalNumber(args, "--max-account-cycles", config.maxAccountCycles);
+  pushOptionalNumber(args, "--max-goal-turns", config.maxGoalTurns);
+  pushOptionalNumber(args, "--max-attempts", config.safeExecutionPolicy?.maxAttempts);
+  pushOptional(args, "--continuation-mode", config.safeExecutionPolicy?.continuationMode);
+  if (config.childLifetime) args.push("--child-lifetime-json", JSON.stringify(config.childLifetime));
   pushOptional(args, "--edit-mode", config.editMode);
   pushOptional(args, "--provider-sandbox-mode", config.providerSandboxMode);
   pushOptional(args, "--access-boundary", config.accessBoundary);
@@ -85,7 +105,6 @@ export function buildCodexGoalForegroundArgv(
     if (lifecycle.forceStart) args.push("--lifecycle-force-start");
     pushOptionalNumber(args, "--lifecycle-stale-after-ms", lifecycle.staleAfterMs);
     pushOptional(args, "--tmux-session", input.tmuxSession);
-    pushOptional(args, "--log", input.logPath);
   }
   return args;
 }

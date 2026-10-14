@@ -1,6 +1,10 @@
 import { verifyLocalMergeOutputTree, assertLocalMergeWorkspaceTree } from "./project-integration-local-merge-tree";
 import { reconcileReviewedIntegrationCommit } from "./project-integration-reviewed-tree-recovery";
 import { commitReviewedIntegrationTree } from "./project-integration-reviewed-tree-commit";
+import {
+  inspectPublishedIntegrationCommit,
+  publishedIntegrationRemoteRepository,
+} from "./project-integration-published-commit-inspection";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -44,6 +48,7 @@ import {
   type CommitIdentityPort,
   type GitApplyWorkerOutputResult,
   type GitCommitResult,
+  type InspectedIntegrationCommit,
   type GitDiffCheckResult,
   type GitPort,
   type PreparedReviewedGitCommit,
@@ -77,6 +82,33 @@ export class LocalGitIntegrationAdapter implements GitPort {
   constructor(
     private readonly options: LocalGitIntegrationAdapterOptions = {},
   ) {}
+
+  async currentHead(input: { readonly workspacePath: string }): Promise<string> {
+    const workspacePath = await canonicalDirectory(input.workspacePath);
+    return (await this.git(["rev-parse", "HEAD"], workspacePath)).stdout.trim();
+  }
+
+  async remoteRepository(input: { readonly workspacePath: string; readonly remote: string }): Promise<string> {
+    return publishedIntegrationRemoteRepository({
+      ...input,
+      git: (args, cwd) => this.git(args, cwd),
+    });
+  }
+
+  async inspectIntegrationCommit(input: {
+    readonly workspacePath: string;
+    readonly commitSha: string;
+  }): Promise<InspectedIntegrationCommit> {
+    return inspectPublishedIntegrationCommit({
+      ...input,
+      git: (args, cwd) => this.git(args, cwd),
+    });
+  }
+
+  async reviewedOutputTreeFromPatch(attempt: IntegrationAttempt): Promise<string> {
+    const workspacePath = await canonicalDirectory(attempt.targetWorkspacePath);
+    return (await this.reviewedPatchTree(attempt, workspacePath)).outputTree;
+  }
 
   async getStatus(input: {
     readonly workspacePath: string;
@@ -742,13 +774,14 @@ export {
 export type LocalWorkspaceIntegrationLockOptions = {
   readonly rootDir: string;
   readonly staleLockMs?: number;
+  readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 };
 
 export class LocalWorkspaceIntegrationLock implements WorkspaceLockPort {
   private readonly store: LocalFileWorkspaceLockStore;
 
   constructor(private readonly options: LocalWorkspaceIntegrationLockOptions) {
-    this.store = new LocalFileWorkspaceLockStore(options.rootDir);
+    this.store = new LocalFileWorkspaceLockStore(options.rootDir, options.assertPublicationCurrent);
   }
 
   async acquire(input: {

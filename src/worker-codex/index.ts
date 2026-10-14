@@ -1,4 +1,6 @@
 export * from "./account-diagnostics-adapter";
+export { readCodexEffectiveSeed, materializeCodexEffectiveSeed, publishCodexEffectiveSeed,
+  type CodexEffectiveSeed } from "./codex-effective-seed";
 export * from "./command-policy-runner";
 export * from "./controlled-agent";
 export * from "./codex-provider-runtime-adapter";
@@ -7,11 +9,17 @@ export * from "./codex-goal-jobs";
 export * from "./codex-goal-ops";
 export * from "./codex-goal-mcp-client";
 export * from "./codex-run-observation";
+export {
+  CodexSessionHomeProfileKind,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
+export * from "./file-backend-codex-executor-factories";
 export * from "./file-backend-codex-safe-executor";
 export * from "./file-backend-codex-worker";
 export * from "./node-process-runner";
 export * from "./observability";
 export * from "./project-integration-mcp";
+export { enterScratchPrivateMountNamespace, hostNamespaceInvocation, launchTmuxInHostNamespace } from "./scratch-mount-namespace";
 export * from "./temp-workspace";
 export * from "./application/project-control/codex-goal-consumed-output-ledger-epoch";
 export * from "./application/project-control/codex-goal-legacy-job-summary-retirement";
@@ -33,3 +41,7 @@ export {
   type WorkerLaunchSpec,
   type WorkerLaunchState,
 } from "./application/project-control/worker-launch-spec";
+export * from "./source-worker-request-codec";
+export * from "./source-worker-request-store";
+
+export { createCodexSubscriptionPreparationOwner, prepareCodexSubscriptionConsumer } from "./hosted-controller/codex-subscription-consumer-preparation";

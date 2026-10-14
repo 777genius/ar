@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
@@ -5,6 +6,7 @@ import type {
   RuntimeEvent,
   RuntimeMetric,
 } from "@vioxen/subscription-runtime/core";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 
 export type CodexGoalRuntimeEventLevel = "info" | "warning" | "error";
 
@@ -21,6 +23,7 @@ export type CodexGoalRuntimeEvent = {
 export function createCodexGoalRuntimeEventWriter(input: {
   readonly eventPath: string;
   readonly taskId: string;
+  readonly terminalCheckpointJobRootDir?: string;
 }) {
   let writes = Promise.resolve();
   const write = (
@@ -29,23 +32,32 @@ export function createCodexGoalRuntimeEventWriter(input: {
     level: CodexGoalRuntimeEventLevel = "info",
   ) => {
     writes = writes.then(async () => {
-      await mkdir(dirname(input.eventPath), { recursive: true, mode: 0o700 });
-      const compactedAttributes = compactEventAttributes(attributes);
-      const entry: CodexGoalRuntimeEvent = {
-        schemaVersion: 1,
-        taskId: input.taskId,
-        event,
-        level,
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        ...(compactedAttributes === undefined
-          ? {}
-          : { attributes: compactedAttributes }),
+      const publish = async () => {
+        assertHostedOrdinaryEffectPaths([input.eventPath]);
+        await mkdir(dirname(input.eventPath), { recursive: true, mode: 0o700 });
+        const compactedAttributes = compactEventAttributes(attributes);
+        const entry: CodexGoalRuntimeEvent = {
+          schemaVersion: 1,
+          taskId: input.taskId,
+          event,
+          level,
+          timestamp: new Date().toISOString(),
+          pid: process.pid,
+          ...(compactedAttributes === undefined
+            ? {}
+            : { attributes: compactedAttributes }),
+        };
+        assertHostedOrdinaryEffectPaths([input.eventPath]);
+        await appendFile(input.eventPath, `${JSON.stringify(entry)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
       };
-      await appendFile(input.eventPath, `${JSON.stringify(entry)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+      if (input.terminalCheckpointJobRootDir) {
+        await new LocalTerminalCheckpointAdmission(input.terminalCheckpointJobRootDir).withWriter(publish);
+      } else {
+        await publish();
+      }
     });
     return writes;
   };

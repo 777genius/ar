@@ -8,11 +8,11 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   AccessBoundary,
   InMemoryAttemptJournal,
@@ -41,7 +41,6 @@ import {
   reviewedWorkerOutputRoot,
 } from "../reviewed-worker-output";
 import {
-  callToolJson,
   git,
   gitInitRepository,
   gitStdout,
@@ -422,6 +421,18 @@ describe("project verifier preparation", () => {
           join(producerWorkspacePath, "feature.txt"),
           "producer\n",
         );
+        await Promise.all([
+          server.connect(serverTransport),
+          client.connect(clientTransport),
+        ]);
+        await createProducerJob({
+          client,
+          root,
+          registryRootDir,
+          producerJobRoot,
+          producerWorkspacePath,
+        });
+
         const handoff = await materializeCodexGoalHandoffArtifacts({
           workerJobId: "project-producer",
           taskId: "project-producer",
@@ -479,17 +490,6 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
             fakeRunnerPath;
         }
 
-        await Promise.all([
-          server.connect(serverTransport),
-          client.connect(clientTransport),
-        ]);
-        await createProducerJob({
-          client,
-          root,
-          registryRootDir,
-          producerJobRoot,
-          producerWorkspacePath,
-        });
         await createControllerJob({
           client,
           root,
@@ -632,7 +632,12 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
               expectedInputPatchArtifactSha256:
                 handoff.manifest.artifacts.patch.sha256,
             }),
-          ).resolves.toBeUndefined();
+          ).resolves.toEqual({
+            baseSha: producerBase,
+            inputPatchHash: handoff.manifest.artifacts.patch.sha256,
+            packetRevision: "remediation-r1",
+            phaseStartSha: null,
+          });
           expect(await revision(verifierWorkspacePath)).toBe(canonicalSha);
           const verifierManifest = parseCodexGoalJobManifest(
             JSON.parse(
@@ -656,7 +661,12 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
               scope,
               workspaceMode: "admitted_input_patch",
             }),
-          ).resolves.toBeUndefined();
+          ).resolves.toEqual({
+            baseSha: producerBase,
+            inputPatchHash: handoff.manifest.artifacts.patch.sha256,
+            packetRevision: "review-r1",
+            phaseStartSha: null,
+          });
           await authorizeProjectPreStartAdmissionLaunch({
             manifest: verifierManifest,
             scope,
@@ -900,6 +910,18 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
       await git(producerWorkspacePath, ["config", "user.name", "Test User"]);
       await writeFile(join(producerWorkspacePath, "feature.txt"), "producer\n");
       await writeFile(join(producerWorkspacePath, "added.txt"), "added\n");
+      await Promise.all([
+        server.connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      await createProducerJob({
+        client,
+        root,
+        registryRootDir,
+        producerJobRoot,
+        producerWorkspacePath,
+      });
+
       const handoff = await materializeCodexGoalHandoffArtifacts({
         workerJobId: "project-producer",
         taskId: "project-producer",
@@ -920,17 +942,6 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
         })}\n`,
       );
 
-      await Promise.all([
-        server.connect(serverTransport),
-        client.connect(clientTransport),
-      ]);
-      await createProducerJob({
-        client,
-        root,
-        registryRootDir,
-        producerJobRoot,
-        producerWorkspacePath,
-      });
       const allowedAccountIds = ["account-c", "account-g"];
       await createControllerJob({
         client,

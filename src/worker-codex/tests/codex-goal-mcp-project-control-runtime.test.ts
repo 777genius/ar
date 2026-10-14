@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -551,6 +551,7 @@ describe("codex goal MCP project-control server", () => {
       await mkdir(jobRootDir, { recursive: true });
       await mkdir(workspacePath, { recursive: true });
       await execFileAsync("git", ["init"], { cwd: workspacePath });
+      await commitEmptyBase(workspacePath);
       await writeFile(promptPath, "Do a sandbox task.\n");
       await writeFakeAuth(authRootDir, "account-a", {
         lastRefresh: "2026-06-03T00:00:00.000Z",
@@ -600,6 +601,8 @@ describe("codex goal MCP project-control server", () => {
           mode: "stop",
           jobId: "job-stop",
           tmuxSession,
+          handoffPacketPath: expect.stringContaining(".packet"),
+          handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         });
         const stopEventPath = String(stopped.stopEventPath);
         expect(stopEventPath).toContain(`${taskId}.stop-event.json`);
@@ -611,6 +614,8 @@ describe("codex goal MCP project-control server", () => {
           tmuxSession,
           forceStop: true,
           reason: "manual_force_stop",
+          handoffPacketPath: stopped.handoffPacketPath,
+          handoffManifestSha256: stopped.handoffManifestSha256,
         });
         expect(JSON.stringify(stopEvent)).not.toContain("refresh-secret");
         expect(JSON.stringify(stopEvent)).not.toContain("access-secret");
@@ -640,6 +645,7 @@ describe("codex goal MCP project-control server", () => {
       await mkdir(jobRootDir, { recursive: true });
       await mkdir(workspacePath, { recursive: true });
       await execFileAsync("git", ["init"], { cwd: workspacePath });
+      await commitEmptyBase(workspacePath);
       await writeFile(promptPath, "Do a sandbox task.\n");
       await writeFakeAuth(authRootDir, "account-a", {
         lastRefresh: "2026-06-03T00:00:00.000Z",
@@ -752,6 +758,7 @@ describe("codex goal MCP project-control server", () => {
       await mkdir(jobRootDir, { recursive: true });
       await mkdir(workspacePath, { recursive: true });
       await execFileAsync("git", ["init"], { cwd: workspacePath });
+      await commitEmptyBase(workspacePath);
       await writeFile(promptPath, "Do a sandbox task.\n");
       await writeFile(codexSlow, "#!/bin/sh\nsleep 30\n");
       await chmod(codexSlow, 0o700);
@@ -794,6 +801,49 @@ describe("codex goal MCP project-control server", () => {
           requireGitWorkspace: true,
         });
 
+        await writeFile(join(workspacePath, ".env"), "unsafe=secret\n");
+        const degradedForcedPause = await callToolJson(
+          client,
+          "codex_goal_maintenance_pause",
+          {
+            registryRootDir,
+            jobId,
+            confirmPause: true,
+            forcePause: true,
+            reason: "forced-dirty-pause",
+          },
+        );
+        expect(degradedForcedPause).toMatchObject({
+          ok: true,
+          mode: "maintenance_pause",
+          preservationDegraded: true,
+          handoffPreservationError: expect.stringContaining(
+            "handoff_sensitive_path_rejected",
+          ),
+        });
+        await expect(execFileAsync("tmux", [
+          "has-session", "-t", tmuxSession,
+        ])).rejects.toBeDefined();
+        const degradedMarker = JSON.parse(
+          await readFile(String(degradedForcedPause.maintenancePausePath), "utf8"),
+        );
+        expect(degradedMarker).toMatchObject({
+          forcePause: true,
+          reason: "forced-dirty-pause",
+          handoffPreservationError: degradedForcedPause.handoffPreservationError,
+        });
+        expect(degradedMarker).not.toHaveProperty("handoffPacketPath");
+        await unlink(join(workspacePath, ".env"));
+        await execFileAsync("tmux", [
+          "new-session",
+          "-d",
+          "-s",
+          tmuxSession,
+          "-c",
+          root,
+          "sleep 300",
+        ]);
+
         const paused = await callToolJson(client, "codex_goal_maintenance_pause", {
           registryRootDir,
           jobId,
@@ -807,6 +857,8 @@ describe("codex goal MCP project-control server", () => {
           jobId,
           taskId,
           tmuxSession,
+          handoffPacketPath: expect.stringContaining(".packet"),
+          handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         });
         const progress = JSON.parse(
           await readFile(join(jobRootDir, `${taskId}.progress.json`), "utf8"),
@@ -824,6 +876,8 @@ describe("codex goal MCP project-control server", () => {
           tmuxSession,
           forcePause: false,
           reason: "resize",
+          handoffPacketPath: paused.handoffPacketPath,
+          handoffManifestSha256: paused.handoffManifestSha256,
         });
         expect(JSON.stringify(marker)).not.toContain("refresh-secret");
         expect(JSON.stringify(marker)).not.toContain("access-secret");
@@ -862,6 +916,36 @@ describe("codex goal MCP project-control server", () => {
           tmuxSession,
         });
         await expect(access(outputPath)).rejects.toThrow();
+
+        await execFileAsync("tmux", ["kill-session", "-t", tmuxSession])
+          .catch(() => undefined);
+        await execFileAsync("tmux", [
+          "new-session",
+          "-d",
+          "-s",
+          tmuxSession,
+          "-c",
+          root,
+          "sleep 300",
+        ]);
+        await writeFile(join(workspacePath, ".env"), "unsafe=secret\n");
+        const degradedForcedStop = await callToolJson(client, "codex_goal_stop", {
+          registryRootDir,
+          jobId,
+          confirmStop: true,
+          forceStop: true,
+        });
+        expect(
+          degradedForcedStop,
+          JSON.stringify(degradedForcedStop),
+        ).toMatchObject({
+          ok: true,
+          preservationDegraded: true,
+          resultReconciliation: {
+            status: "skipped",
+            reason: "durable_handoff_preservation_failed",
+          },
+        });
       } finally {
         await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]).catch(() => undefined);
         await client.close();
@@ -873,3 +957,11 @@ describe("codex goal MCP project-control server", () => {
     }
   });
 });
+
+async function commitEmptyBase(workspacePath: string): Promise<void> {
+  await execFileAsync("git", [
+    "-c", "user.name=Test",
+    "-c", "user.email=test@example.com",
+    "commit", "--allow-empty", "-m", "base",
+  ], { cwd: workspacePath });
+}

@@ -14,6 +14,20 @@ import {
 } from "../index";
 
 describe("controlled-agent launch plan", () => {
+  it("does not require network restriction capability for Internet while retaining broker and filesystem isolation", () => {
+    const input = { controllerJobId: "TEST-internet-controller", sessionId: "TEST-session", stateDir: "/TEST/state",
+      boundary: AccessBoundary.ProjectScopedControl, projectAccessScope: projectScope(),
+      provider: providerCaps({ canRestrictNetwork: false }) };
+    const plan = buildControlledAgentLaunchPlan({ ...input, networkAccess: NetworkAccessMode.Unrestricted });
+    expect(plan.status).toBe(LaunchPlanStatus.Ready);
+    if (plan.status !== LaunchPlanStatus.Ready) throw new Error("expected Internet launch");
+    expect(plan.networkPolicy.mode).toBe(NetworkAccessMode.Unrestricted);
+    expect(plan.environmentPolicy).toEqual({ isolateHome: true, isolateTemp: true, exposeAuthRoot: false });
+    expect(plan.session.toolSurface.deniedRawCapabilities).toContain("raw_shell");
+    expect(buildControlledAgentLaunchPlan({ ...input, networkAccess: NetworkAccessMode.Restricted })).toMatchObject({
+      status: LaunchPlanStatus.Blocked, reason: ControlledAgentLaunchBlockReason.ProviderCannotRestrictNetwork,
+    });
+  });
   it("builds a project-scoped broker-only launch plan when provider enforcement is strong", () => {
     const plan = buildControlledAgentLaunchPlan({
       controllerJobId: "infinity-context-controller-v1",

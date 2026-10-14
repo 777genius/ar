@@ -7,7 +7,7 @@ import {
   QuotaWindowKind,
   type AccountObservation,
 } from "@vioxen/agent-account-observability";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryWorkerAccountCapacityStore,
   WorkerAccountCapacityClaimStatus,
@@ -53,6 +53,84 @@ describe("recordCodexLiveQuotaCapacity", () => {
     });
   });
 
+  it.each([
+    { reason: "quota_limited" },
+    { reason: "quota_limited", source: "provider_turn" },
+    { reason: "quota_recheck_in_progress" },
+    { reason: "quota_recheck_identity_changed", source: "codex_app_server_live_quota" },
+    { reason: "quota_recheck_failed", source: "codex_app_server_live_quota" },
+    { reason: "quota_recheck_invalid_limited", source: "codex_app_server_live_quota" },
+    { reason: "quota_recheck_inconclusive", source: "codex_app_server_live_quota" },
+    { reason: "provider_session_invalid" },
+  ])("retains execution or non-quota blocker $reason ($source)", ({ reason, source }) => {
+    const store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({
+      accountId: "account-a",
+      observedAt: new Date("2026-07-12T09:00:00.000Z"),
+      capacity: {
+        availability: "cooldown",
+        reason,
+        cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
+        ...(source ? { details: { capacitySource: source } } : {}),
+      },
+    });
+    const before = store.readState({ accountId: "account-a", now: checkedAt });
+
+    expect(recordCodexLiveQuotaCapacity({
+      accountId: "account-a",
+      observation: availableObservation(),
+      store,
+    })).toBe(false);
+    expect(store.readState({ accountId: "account-a", now: checkedAt })).toEqual(before);
+
+    // A limited poll followed by an available poll must not launder provenance.
+    expect(recordCodexLiveQuotaCapacity({
+      accountId: "account-a",
+      observation: observation({ resetAt: new Date("2026-07-15T19:00:00.000Z") }),
+      store,
+    })).toBe(false);
+    expect(recordCodexLiveQuotaCapacity({
+      accountId: "account-a",
+      observation: availableObservation(),
+      store,
+    })).toBe(false);
+    expect(store.readState({ accountId: "account-a", now: checkedAt })).toEqual(before);
+  });
+
+  it("does not clear an actively claimed tagged quota recheck", () => {
+    const store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({
+      accountId: "account-a",
+      observedAt: new Date("2026-07-12T09:00:00.000Z"),
+      capacity: {
+        availability: "quota_exhausted",
+        reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
+        cooldownUntil: checkedAt,
+      },
+    });
+    const state = store.readState({ accountId: "account-a", now: checkedAt })!;
+    const claim = store.tryClaimRecheck({
+      state,
+      ownerId: "worker-a",
+      now: checkedAt,
+      ttlMs: 30_000,
+      mode: WorkerAccountCapacityRecheckMode.DueOnly,
+    });
+    expect(claim.status).toBe(WorkerAccountCapacityClaimStatus.Claimed);
+    expect(store.read({ accountId: "account-a", now: checkedAt })).toMatchObject({
+      reason: "quota_recheck_in_progress",
+      details: { capacitySource: "codex_app_server_live_quota" },
+    });
+    // The active claim remains an independent fence against metadata clearing.
+    expect(recordCodexLiveQuotaCapacity({
+      accountId: "account-a",
+      observation: availableObservation(),
+      store,
+    })).toBe(false);
+    expect(store.readState({ accountId: "account-a", now: checkedAt })).not.toBeNull();
+  });
+
   it("does not create a permanent blocker without a future exact reset", () => {
     const store = new InMemoryWorkerAccountCapacityStore();
 
@@ -74,6 +152,7 @@ describe("recordCodexLiveQuotaCapacity", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
       },
     });
@@ -97,6 +176,7 @@ describe("recordCodexLiveQuotaCapacity", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
       },
     });
@@ -126,6 +206,7 @@ describe("recordCodexLiveQuotaCapacity", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
       },
     });
@@ -158,6 +239,7 @@ describe("recordCodexLiveQuotaCapacity", () => {
         capacity: {
           availability: "quota_exhausted",
           reason: "quota_limited",
+          details: { capacitySource: "codex_app_server_live_quota" },
           cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
         },
       });
@@ -173,7 +255,8 @@ describe("recordCodexLiveQuotaCapacity", () => {
     expect(store.read({ accountId: "account-a", now: checkedAt })).toBeNull();
   });
 
-  it("does not clear a quota signal newer than the available observation", () => {
+  it.each([AccountAvailability.Available, AccountAvailability.Limited])(
+    "does not replace a newer quota signal with an older %s observation", (availability) => {
     const store = new InMemoryWorkerAccountCapacityStore();
     const newerSignalAt = new Date("2026-07-12T10:01:00.000Z");
     store.observe({
@@ -182,22 +265,23 @@ describe("recordCodexLiveQuotaCapacity", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
         lastLimitSignalAt: newerSignalAt,
       },
     });
+    const before = store.readState({ accountId: "account-a", now: checkedAt });
 
     expect(
       recordCodexLiveQuotaCapacity({
         accountId: "account-a",
-        observation: availableObservation(),
+        observation: availability === AccountAvailability.Available
+          ? availableObservation()
+          : observation({ resetAt: new Date("2026-07-12T11:00:00.000Z") }),
         store,
       }),
     ).toBe(false);
-    expect(store.read({ accountId: "account-a", now: newerSignalAt })).toMatchObject({
-      availability: "quota_exhausted",
-      reason: "quota_limited",
-    });
+    expect(store.readState({ accountId: "account-a", now: checkedAt })).toEqual(before);
   });
 
   it("lets newer authoritative live quota shorten a previous reset", () => {
@@ -223,6 +307,41 @@ describe("recordCodexLiveQuotaCapacity", () => {
     });
   });
 
+  it.each(["newer_quota", "newer_nonquota", "removed"])(
+    "does not replace %s state installed between the read and claim", (replacement) => {
+    const store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({ accountId: "account-a", observedAt: new Date("2026-07-12T09:00:00.000Z"), capacity: {
+      availability: "quota_exhausted", reason: "quota_limited",
+      cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
+      details: { capacitySource: "codex_app_server_live_quota" },
+    } });
+    const tryClaim = store.tryClaimRecheck.bind(store);
+    let retained: ReturnType<typeof store.readState> = null;
+    vi.spyOn(store, "tryClaimRecheck").mockImplementation((input) => {
+      if (replacement === "removed") {
+        store.clear({ accountId: "account-a" });
+      } else {
+        store.observe({ accountId: "account-a", observedAt: new Date("2026-07-12T10:01:00.000Z"), capacity: {
+          availability: "quota_exhausted",
+          reason: replacement === "newer_quota" ? "quota_limited" : "quota_recheck_failed",
+          cooldownUntil: new Date("2026-07-13T12:00:00.000Z"),
+          details: { capacitySource: "codex_app_server_live_quota" },
+        } });
+      }
+      retained = store.readState({ accountId: "account-a", now: checkedAt });
+      const result = tryClaim(input);
+      expect(result.status).toBe(replacement === "removed"
+        ? WorkerAccountCapacityClaimStatus.Missing : WorkerAccountCapacityClaimStatus.Conflict);
+      return result;
+    });
+
+    expect(recordCodexLiveQuotaCapacity({ accountId: "account-a", store,
+      observation: observation({ resetAt: new Date("2026-07-15T19:00:00.000Z") }),
+    })).toBe(false);
+    expect(store.readState({ accountId: "account-a", now: checkedAt })).toEqual(retained);
+    expect(retained === null).toBe(replacement === "removed");
+  });
+
   it("keeps fresh live quota when another recheck already owns the claim", () => {
     const store = new InMemoryWorkerAccountCapacityStore();
     store.observe({
@@ -231,6 +350,7 @@ describe("recordCodexLiveQuotaCapacity", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: checkedAt,
       },
     });
@@ -303,6 +423,7 @@ describe("recordCodexAppServerRateLimitsSnapshot", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
       },
     });
@@ -335,6 +456,7 @@ describe("recordCodexAppServerRateLimitsSnapshot", () => {
       capacity: {
         availability: "quota_exhausted",
         reason: "quota_limited",
+        details: { capacitySource: "codex_app_server_live_quota" },
         cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
       },
     });

@@ -1,3 +1,4 @@
+import { type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { isAppServerAdmissionError } from "./app-server-admission";
 import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
@@ -46,6 +47,7 @@ export class AppServerTurnRunner {
   }): Promise<{
     readonly status?: "completed";
     readonly outputText: string;
+    readonly nativeWeb?: NativeWebEvidence;
     readonly usage?: AgentUsage;
     readonly warnings: readonly AppServerWarning[];
   }> {
@@ -56,6 +58,8 @@ export class AppServerTurnRunner {
       const threadId =
         preparedThread?.threadId ?? (await this.options.client.startThread({ ...input, usageLease }));
       usageLease.retain(threadId);
+      this.options.client.assertExecutionActive(input.abortSignal);
+      this.options.client.executionLifetime?.markReady(threadId);
       let emittedText = false;
       const onTextDelta = input.onTextDelta === undefined
         ? undefined
@@ -93,12 +97,13 @@ export class AppServerTurnRunner {
           });
         },
       );
-      if (turn.error) throw new AppServerUsageError(turn.error, turn.usage);
+      if (turn.error) throw new AppServerUsageError(turn.error, turn.usage, true, turn.nativeWeb);
       if (!turn.outputText.trim()) {
         throw new AppServerUsageError(
           new Error("codex_app_server_final_message_missing"),
           turn.usage,
           true,
+          turn.nativeWeb,
         );
       }
       if (input.prepareNext ?? true) {
@@ -107,6 +112,7 @@ export class AppServerTurnRunner {
       warnings.push(...this.options.client.drainWarnings());
       return {
         outputText: turn.outputText,
+        ...(turn.nativeWeb === undefined ? {} : { nativeWeb: turn.nativeWeb }),
         ...(turn.usage === undefined ? {} : { usage: turn.usage }),
         warnings,
       };
@@ -151,6 +157,7 @@ export class AppServerTurnRunner {
       prepared.sandboxMode !== (input.sandboxMode ?? "read-only") ||
       prepared.systemPrompt !== normalizeSystemPrompt(input.systemPrompt)
     ) {
+      this.options.client.releasePublicResearchThread(prepared.threadId);
       this.options.client.pushBackgroundWarning({
         code: "codex_app_server_prepared_thread_discarded",
         safeMessage:
@@ -191,6 +198,10 @@ export class AppServerTurnRunner {
     if (this.preparedThread && this.preparedThreadMatches(input)) return;
     if (this.prepareThreadInFlight) return await this.prepareThreadInFlight;
 
+    if (this.preparedThread) {
+      this.options.client.releasePublicResearchThread(this.preparedThread.threadId);
+      this.preparedThread = null;
+    }
     this.prepareThreadInFlight = this.options.client.startThread(input)
       .then((threadId) => {
         this.preparedThread = {

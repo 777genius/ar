@@ -6,7 +6,10 @@ import { StaticRunner, validAuthJson } from "./file-backend-codex-worker-test-su
 import { parseCodexGoalCliArgs } from "../codex-goal-cli";
 import { describe, expect, it } from "vitest";
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
-import { jobManifestInputFromArgs } from "../application/codex-goal-manifest-input";
+import {
+  jobManifestInputFromArgs,
+  jobManifestPatchFromArgs,
+} from "../application/codex-goal-manifest-input";
 
 const input = {
   jobId: "fake-default-profile", taskId: "fake-task", jobRootDir: "/tmp/fake-default-profile",
@@ -55,5 +58,11 @@ describe("public Codex worker defaults", () => {
     const override = { ...input, model: "gpt-5.6-sol", reasoningEffort: "medium" as const };
     expect((await goalLaunchInput(override)).config).toMatchObject({ model: "gpt-5.6-sol", reasoningEffort: "medium" });
     expect(jobManifestInputFromArgs(override)).toMatchObject({ model: "gpt-5.6-sol", reasoningEffort: "medium" });
+  });
+  it("rejects invalid modelBackend values in manifest patches immediately", () => {
+    expect(() => jobManifestPatchFromArgs({
+      ...input,
+      modelBackend: "not-a-codex-model-backend" as never,
+    })).toThrow("modelBackend must be openai-chatgpt or xiaomi-mimo-token-plan");
   });
 });

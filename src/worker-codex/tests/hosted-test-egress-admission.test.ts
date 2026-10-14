@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressGrant } from "../hosted-test-egress-contract";
 import { admitHostedTestEgress } from "../hosted-test-egress-admission";
 import { canonicalHostedTestIdentity, hostedTestEgressGrantRoot, writeHostedTestEgressGrant } from "../hosted-test-egress-files";
@@ -18,6 +18,13 @@ const directory = (uid = 0, mode = 0o755, symlink = false) => ({
 const identity = { jobId: "synthetic", jobRootDir: "/TEST/jobs/job", workspacePath: "/TEST/workspaces/workspace" };
 const input = { ...identity, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
 const grant: HostedTestEgressGrant = { schemaVersion: 1, ...identity, profileId: CodexProviderEgressProfileId.TestNpmQualification };
+
+// This finite transport suite represents an explicitly Required Host. Real
+// protected mode bytes and default-off behavior are composed separately.
+vi.mock("../../provider-codex/app-server/adapters/hosted-host-policy", async original => {
+  const policy = await original<typeof import("../../provider-codex/app-server/adapters/hosted-host-policy")>();
+  return { ...policy, readHostedActivationMode: () => policy.HostedActivationMode.Required };
+});
 
 // Isolated egress transport tests: synthetic host permission only. The actual
 // exclusive TEST supervisor denies ordinary profiles; its gate is tested separately.
@@ -57,6 +64,18 @@ describe("finite admission eligibility and identity ancestor custody (synthetic 
     expect(policy.domains).toEqual(["api.openai.com"]);
     expect(fs.lstat).not.toHaveBeenCalled(); expect(fs.open).not.toHaveBeenCalled();
     expect(fs.readFile).not.toHaveBeenCalled();
+  });
+  it("selects the fixed MiMo domain for a non-root ordinary goal", async () => {
+    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    const policy = await admitHostedTestEgress({
+      ...identity,
+      sourceEnv: {},
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    });
+    expect(policy.profileId).toBe(CodexProviderEgressProfileId.MimoTokenPlan);
+    expect(policy.domains).toEqual(["token-plan-sgp.xiaomimimo.com"]);
+    expect(fs.lstat).not.toHaveBeenCalled();
+    expect(fs.open).not.toHaveBeenCalled();
   });
   it.each(["EACCES", "EIO", "ENOTDIR"])("rejects trusted-host %s instead of treating it as absence; sanitizes the diagnostic", async code => {
     fs.lstat.mockRejectedValue(Object.assign(new Error("PRIVATE_SENTINEL"), { code }));

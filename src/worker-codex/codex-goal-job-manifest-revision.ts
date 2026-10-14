@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { withLocalControllerActivityLease } from "@vioxen/subscription-runtime/store-local-file";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import type { LocalControllerMaintenanceFence } from "@vioxen/subscription-runtime/store-local-file";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
-import { projectControlWorkspaceLocks } from "./codex-goal-project-workspace-lock";
+import { projectControlWorkspaceLocks, projectControlWorkspaceLockRoot } from "./codex-goal-project-workspace-lock";
+import { currentHostedOrdinaryWriterExtent, assertHostedOrdinaryRegistryPublication } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 
 /** Fingerprint persisted bytes, including fields unknown to this version. */
 export async function codexGoalManifestRevision(path: string): Promise<string> {
@@ -15,17 +17,28 @@ export async function codexGoalManifestRevision(path: string): Promise<string> {
 /** Serializes registry publication and relocation collision checks together. */
 export async function withCodexGoalRegistryMutation<T>(input: {
   readonly registryRootDir: string;
-  readonly effect: () => Promise<T>;
+  /** Trusted registered callers already witnessed an existing registry. Never
+   * recreate a lost root or its ancestors before their qualified lock/effect. */
+  readonly requireExistingRegistryRoot?: true;
+  readonly effect: (assertPublicationCurrent: (paths: readonly string[], jobRootDir?: string) => void) => Promise<T>;
 }): Promise<T> {
-  await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
+  const original = currentHostedOrdinaryWriterExtent();
+  const assertOrdinaryPublication = (paths: readonly string[] = [], jobRootDir?: string) => {
+    if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
+    assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), paths, jobRootDir);
+  };
+  assertOrdinaryPublication();
+  if (!input.requireExistingRegistryRoot) await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
   const registryRootDir = await realpath(input.registryRootDir);
-  const locks = projectControlWorkspaceLocks(registryRootDir);
+  assertOrdinaryPublication();
+  const locks = projectControlWorkspaceLocks(registryRootDir, assertOrdinaryPublication);
   const lease = await locks.acquire({
     workspacePath: join(registryRootDir, ".manifest-mutation"),
     owner: "job-registry-mutation",
   });
   try {
-    return await input.effect();
+    assertOrdinaryPublication();
+    return await input.effect(assertOrdinaryPublication);
   } finally {
     await locks.release(lease);
   }
@@ -35,11 +48,28 @@ export async function withCodexGoalManifestUpdate<T>(input: {
   readonly registryRootDir: string;
   readonly manifestPath: string;
   readonly expectedManifestSha256?: string;
-  readonly effect: () => Promise<T>;
+  readonly effect: (assertPublicationCurrent: (paths: readonly string[], jobRootDir?: string) => void) => Promise<T>;
 }): Promise<T> {
-  return await withCodexGoalRegistryMutation({
+  const original = currentHostedOrdinaryWriterExtent();
+  assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), [input.manifestPath]);
+  // Read the job identity before taking the registry mutex. The job admission
+  // stays held through the caller's final manifest publication.
+  const initialBytes = await readFile(input.manifestPath);
+  if (input.expectedManifestSha256 !== undefined &&
+      createHash("sha256").update(initialBytes).digest("hex") !== input.expectedManifestSha256) {
+    throw new Error("job_manifest_revision_mismatch");
+  }
+  const initial: unknown = JSON.parse(initialBytes.toString("utf8"));
+  if (!initial || typeof initial !== "object" || !("jobRootDir" in initial) ||
+      typeof initial.jobRootDir !== "string" || !initial.jobRootDir.trim()) {
+    throw new Error("job_manifest_activity_identity_invalid");
+  }
+  const jobRootDir = initial.jobRootDir.trim();
+  if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
+  assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), [input.manifestPath], jobRootDir);
+  return new LocalTerminalCheckpointAdmission(jobRootDir).withWriter(() => withCodexGoalRegistryMutation({
     registryRootDir: input.registryRootDir,
-    effect: async () => {
+    effect: async assertPublicationCurrent => {
       if (input.expectedManifestSha256 !== undefined &&
         await codexGoalManifestRevision(input.manifestPath) !== input.expectedManifestSha256) {
         throw new Error("job_manifest_revision_mismatch");
@@ -49,7 +79,7 @@ export async function withCodexGoalManifestUpdate<T>(input: {
       const manifest: unknown = JSON.parse(await readFile(input.manifestPath, "utf8"));
       if (!manifest || typeof manifest !== "object" ||
         !("jobRootDir" in manifest) || typeof manifest.jobRootDir !== "string" ||
-        manifest.jobRootDir.trim().length === 0) {
+        manifest.jobRootDir.trim() !== jobRootDir) {
         throw new Error("job_manifest_activity_identity_invalid");
       }
       // Activity leases are shared and can nest inside a broker activity lease.
@@ -58,10 +88,10 @@ export async function withCodexGoalManifestUpdate<T>(input: {
       return await withLocalControllerActivityLease({
         controllerJobRootDir: manifest.jobRootDir.trim(),
         owner: "job-manifest-update",
-        effect: input.effect,
+        effect: () => input.effect(assertPublicationCurrent),
       });
     },
-  });
+  }));
 }
 
 /** Ledger migration already owns exclusive maintenance; never release it to publish. */
@@ -73,7 +103,17 @@ export async function publishCodexGoalLedgerScopeUnderMaintenance(input: {
   readonly fence: LocalControllerMaintenanceFence;
   readonly consumedOutputLedgerRoot: string;
 }): Promise<void> {
-  await withCodexGoalRegistryMutation({
+  const initialBytes = await readFile(input.manifestPath);
+  if (createHash("sha256").update(initialBytes).digest("hex") !== input.expectedManifestSha256) {
+    throw new Error("job_manifest_revision_mismatch");
+  }
+  const initial: unknown = JSON.parse(initialBytes.toString("utf8"));
+  if (!initial || typeof initial !== "object" || !("jobRootDir" in initial) ||
+      typeof initial.jobRootDir !== "string" || !initial.jobRootDir.trim()) {
+    throw new Error("job_manifest_activity_identity_invalid");
+  }
+  const jobRootDir = initial.jobRootDir.trim();
+  await new LocalTerminalCheckpointAdmission(jobRootDir).withWriter(() => withCodexGoalRegistryMutation({
     registryRootDir: input.registryRootDir,
     effect: async () => {
       if (await codexGoalManifestRevision(input.manifestPath) !== input.expectedManifestSha256) {
@@ -83,7 +123,7 @@ export async function publishCodexGoalLedgerScopeUnderMaintenance(input: {
       if (manifest.accessBoundary !== AccessBoundary.ProjectScopedControl ||
         !manifest.projectAccessScope ||
         manifest.jobId !== input.controllerJobId ||
-        typeof manifest.jobRootDir !== "string" || !manifest.jobRootDir.trim()) {
+        typeof manifest.jobRootDir !== "string" || manifest.jobRootDir.trim() !== jobRootDir) {
         throw new Error("job_manifest_activity_identity_invalid");
       }
       const expectedFencePath = join(resolve(manifest.jobRootDir.trim()),
@@ -102,5 +142,5 @@ export async function publishCodexGoalLedgerScopeUnderMaintenance(input: {
         updatedAt: new Date().toISOString(),
       } });
     },
-  });
+  }));
 }

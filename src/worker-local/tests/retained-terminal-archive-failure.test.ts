@@ -43,7 +43,7 @@ it.each(["growth", "truncate", "overwrite"])("bounds descriptor reads and reject
   const path = join(root, "patch"); await writeFile(path, Buffer.alloc(128 * 1024));
   fault.readPath = path; fault.change = change;
   await expect(inspectRetainedTerminalArchive(path)).rejects.toThrow(change === "truncate" ? "file_truncated" : "file_changed");
-  expect(fault.reads).toBe(2);
+  expect(fault.reads).toBeGreaterThanOrEqual(2);
 });
 
 

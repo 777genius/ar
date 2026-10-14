@@ -22,6 +22,13 @@ runner-github-action -> core
 `core` must never import Claude, Codex, BullMQ, GitHub or file-system custody
 adapters. Providers are sibling modules, not special cases inside `core`.
 
+Managed `systemd-run` recipes are confined to the managed launcher, the trusted
+custody launcher, and the exact dependency provider launcher adapter. The latter
+requires a live host fence, retained origin, current Running owner and protected
+provider reservation before synchronous submission into a finite root. Its TEST
+qualification profile is opt-in; this exception permits no adjacent module or
+request-selected systemd properties. Native qualification is a separate gate.
+
 `account-diagnostics` is a provider-neutral application module. It owns the
 status model, merge policy and cached capacity bridge, while Codex and Claude
 diagnostic adapters live under their worker modules. See
@@ -75,3 +82,16 @@ project-scoped coordinators and explicit full-access escape hatches.
 See `docs/runtime-ddd-feature-architecture.md` for the balanced strict DDD,
 Clean Architecture and feature-slice rules for complex runtime features such as
 project-scoped control and policy-controlled integration rights.
+
+### Approved output archive disposition
+
+Project Control exposes a narrow root-admin adapter for recoverable archival of an obsolete approved output through its existing terminal ledger and evidence custody. Original approval and source remain intact; archived does not mean integrated or rejected. See [the owning operation documentation](published-output-reconciliation.md#retain-an-obsolete-approved-output). No new module boundary, shared contract, graph node, schema migration or runtime routing is introduced.
+
+The native terminal writer retains ledger/items descriptors through no-follow
+publication and invokes its existing mutation guard after staging/fsync. The
+archive adapter binds full first-consumption validation to that guard under the
+source workspace lease. Result and progress observations use canonical custody
+reads. The immutable decision note anchors receipt digest and archive identity;
+a separate immutable checkpoint under the pinned evidence root binds interrupted
+preparation. These are local IO and archive checks in the existing owners, with
+no changes to shared terminal semantics or orchestrator policy.

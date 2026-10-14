@@ -1,3 +1,4 @@
+import type { NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import type { AppServerExecutionLease } from "./app-server-admission";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import type { CodexAppServerJsonRpcResponse } from "../protocol/app-server-json-rpc";
@@ -35,11 +36,22 @@ export type TurnState = {
  * "this turn's usage is untrusted", because only the first may be backfilled.
  */
 export type AppServerTurnResult = {
+  /** The thread targeted by turn/start, when reported by the implementation. */
+  readonly threadId?: string;
+  /** The turn ID from the turn/start ACK, never a notification alias. */
+  readonly acknowledgedTurnId?: string;
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly usage: AgentUsage | undefined;
   readonly usagePoisoned: boolean;
   readonly completed: boolean;
   readonly error: Error | null;
+};
+
+/** Protocol facts guaranteed by the concrete client on every returned result. */
+export type AppServerAcknowledgedTurnResult = AppServerTurnResult & {
+  readonly threadId: string;
+  readonly acknowledgedTurnId: string;
 };
 
 export type PendingRequest = {
@@ -65,4 +77,23 @@ export function createTurnState(): TurnState {
     waiters: [],
     reconnectGraceTimer: null,
   };
+}
+
+export function emitAppServerTextDelta(turn: TurnState, text: string, resolve: () => void): void {
+  if (!turn.onTextDelta || turn.error) return;
+  try { turn.onTextDelta(text); }
+  catch (error) {
+    turn.error = new Error("codex_app_server_text_delta_sink_failed", { cause: error });
+    resolve();
+  }
+}
+
+export function clearAppServerReconnectTimer(turn: TurnState): void {
+  if (!turn.reconnectGraceTimer) return;
+  clearTimeout(turn.reconnectGraceTimer);
+  turn.reconnectGraceTimer = null;
+}
+export function attachAppServerTextDeltaSink(turn: TurnState, sink: ((text: string) => void) | undefined, resolve: () => void): void {
+  turn.onTextDelta = sink ?? null;
+  if (turn.outputText) emitAppServerTextDelta(turn, turn.outputText, resolve);
 }

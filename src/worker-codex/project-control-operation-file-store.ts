@@ -182,9 +182,12 @@ export async function durableReplaceJsonFile(input: {
   readonly value: unknown;
   readonly mode?: number;
   readonly ensureParent?: boolean;
+  readonly beforePublication?: () => Promise<void>;
+  readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 }): Promise<void> {
   const parent = dirname(input.path);
   if (input.ensureParent !== false) {
+    input.assertPublicationCurrent?.([parent]);
     await mkdir(parent, { recursive: true, mode: 0o700 });
     await syncDirectory(dirname(parent));
   }
@@ -193,14 +196,19 @@ export async function durableReplaceJsonFile(input: {
     `.${input.path.slice(parent.length + 1)}.${process.pid}.${randomUUID()}.tmp`,
   );
   try {
+    input.assertPublicationCurrent?.([temporaryPath]);
     await writeSyncedFile({
       path: temporaryPath,
       value: input.value,
       mode: input.mode ?? 0o600,
+      ...(input.assertPublicationCurrent ? { assertPublicationCurrent: input.assertPublicationCurrent } : {}),
     });
+    await input.beforePublication?.();
+    input.assertPublicationCurrent?.([temporaryPath, input.path]);
     await rename(temporaryPath, input.path);
     await syncDirectory(parent);
   } finally {
+    input.assertPublicationCurrent?.([temporaryPath]);
     await unlink(temporaryPath).catch(ignoreMissingFile);
   }
 }
@@ -843,9 +851,12 @@ async function writeSyncedFile(input: {
   readonly path: string;
   readonly value: unknown;
   readonly mode: number;
+  readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 }): Promise<void> {
+  input.assertPublicationCurrent?.([input.path]);
   const handle = await open(input.path, "wx", input.mode);
   try {
+    input.assertPublicationCurrent?.([input.path]);
     await handle.writeFile(`${JSON.stringify(input.value, null, 2)}\n`, "utf8");
     await handle.sync();
   } finally {

@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import { ProjectAuthorityInitializeStatus, ProjectAuthorityMode, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { parseCodexGoalProjectAccessScopeJson } from "../codex-goal-access-plan";
 import { projectControlCreateCodexGoalJobView } from "../codex-goal-mcp-project-control-jobs";
 import {
@@ -114,7 +114,12 @@ describe("project pre-start admission", () => {
     await expect(assertProjectPreStartAdmissionLaunchBinding({
       manifest: storedWithAdmission,
       scope: fixture.scope,
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      packetRevision: fixture.contract.packetRevision,
+      baseSha: fixture.contract.baseSha,
+      phaseStartSha: null,
+      inputPatchHash: fixture.contract.inputPatchHash,
+    });
     const externalAdmission = fixture.scope.preStartAdmission;
     if (!externalAdmission || externalAdmission.mode !== "serial") {
       throw new Error("test_external_admission_required");
@@ -657,7 +662,12 @@ describe("builtin project pre-start admission", () => {
       manifest: dirtyManifest,
       scope: dirtyFixture.scope,
       workspaceMode: "reviewed_dirty_continuation",
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      packetRevision: dirtyFixture.contract.packetRevision,
+      baseSha: dirtyFixture.contract.baseSha,
+      phaseStartSha: null,
+      inputPatchHash: dirtyFixture.contract.inputPatchHash,
+    });
     await writeFile(dirtyFixture.manifest.promptPath, "changed prompt\n");
     await expect(assertProjectPreStartAdmissionLaunchBinding({
       manifest: dirtyManifest,
@@ -735,7 +745,12 @@ describe("builtin project pre-start admission", () => {
       manifest,
       scope: fixture.scope,
       workspaceMode: "reviewed_dirty_continuation",
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      packetRevision: contract.packetRevision,
+      baseSha: contract.baseSha,
+      phaseStartSha: null,
+      inputPatchHash: contract.inputPatchHash,
+    });
   });
 
   it("rebinds only the repaired manifest for an authorized reviewed dirty continuation", async () => {
@@ -783,7 +798,12 @@ describe("builtin project pre-start admission", () => {
         scope: fixture.scope,
         workspaceMode: "reviewed_dirty_continuation",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      packetRevision: fixture.contract.packetRevision,
+      baseSha: fixture.contract.baseSha,
+      phaseStartSha: null,
+      inputPatchHash: fixture.contract.inputPatchHash,
+    });
 
     const receipt = JSON.parse(
       await readFile(plan.descriptor.receiptPath, "utf8"),
@@ -899,7 +919,12 @@ describe("builtin project pre-start admission", () => {
       manifest,
       scope: fixture.scope,
       workspaceMode: "reviewed_dirty_continuation",
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      packetRevision: fixture.contract.packetRevision,
+      baseSha: fixture.contract.baseSha,
+      phaseStartSha: null,
+      inputPatchHash: fixture.contract.inputPatchHash,
+    });
 
     await authorizeProjectPreStartAdmissionLaunch({
       manifest,
@@ -913,5 +938,27 @@ describe("builtin project pre-start admission", () => {
       status: "launch_authorized",
       launchAuthorizationCount: 1,
     });
+  });
+
+  it("durably initializes explicit Hosted Web Core authority before launch authorization", async () => {
+    const fixture = await createBuiltinFixture();
+    const plan = fixture.plan();
+    const manifest = { ...fixture.storedManifest, projectPreStartAdmission: plan.descriptor };
+    const scope = { ...fixture.scope, preStartAdmission: {
+      required: true as const, mode: "serial-builtin" as const,
+      authorityMode: ProjectAuthorityMode.HostedWebCoreV1,
+    } };
+    await prepareProjectPreStartAdmission({ plan, manifest, scope });
+    const initialized: unknown[] = [];
+    const authorityStore = {
+      async initialize(expected: unknown) { initialized.push(expected); return ProjectAuthorityInitializeStatus.Initialized; },
+      async compareAndSet() { throw new Error("unexpected_cas"); },
+    };
+    await expect(authorizeProjectPreStartAdmissionLaunch({ manifest, scope }))
+      .rejects.toThrow("project_authority_explicit_pre_start_configuration_required");
+    await authorizeProjectPreStartAdmissionLaunch({ manifest, scope, authorityStore });
+    expect(initialized).toEqual([{ packetRevision: fixture.contract.packetRevision,
+      baseSha: fixture.contract.baseSha, phaseStartSha: null,
+      inputPatchHash: fixture.contract.inputPatchHash }]);
   });
 });

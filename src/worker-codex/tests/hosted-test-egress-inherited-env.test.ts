@@ -1,3 +1,4 @@
+import "./absent-host-scratch-fixture";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,13 +56,16 @@ describe("direct factory hosted environment selection", () => {
     { name: "explicit hosted managed", explicit: true, profile: CodexProviderEgressProfileId.TestManagedQualification },
     { name: "inherited hosted API", explicit: false, profile: CodexProviderEgressProfileId.ProviderApi },
     { name: "inherited hosted default ignores spoofed TEST marker", explicit: false, profile: undefined },
-  ])("$name retains hosted namespace and hooks", async ({ explicit, profile }) => {
+    { name: "empty explicit environment retains inherited hosted default", explicit: false, profile: undefined, emptySourceEnv: true },
+  ])("$name retains hosted namespace and hooks", async scenario => {
+    const { explicit, profile } = scenario;
+    const emptySourceEnv = "emptySourceEnv" in scenario;
     const fake = new FakeAppServerFactory();
     const launches: Parameters<CodexAppServerProcessFactory>[0][] = [];
     const explicitEnv = { ...hostedEnv, PATH: "/synthetic/explicit/bin" };
     if (explicit) delete process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
     const options: Partial<FileBackendCodexWorkerOptions> = {
-      ...(explicit ? { sourceEnv: explicitEnv } : {}),
+      ...(emptySourceEnv ? { sourceEnv: {} } : explicit ? { sourceEnv: explicitEnv } : {}),
       ...(profile === undefined ? {} : { providerEgressPolicy: codexProviderEgressPolicy(profile) }),
       appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
     };
@@ -71,7 +75,7 @@ describe("direct factory hosted environment selection", () => {
       return;
     }
     const driver = runtime(root, options).agentDriver as CodexJsonAgentDriver;
-    const expectedPolicy = codexProviderEgressPolicy(profile ?? CodexProviderEgressProfileId.ProviderApi);
+    const expectedPolicy = codexProviderEgressPolicy(profile ?? CodexProviderEgressProfileId.FullInternetV1);
     try {
       const result = await driver.runTask({
         session: sessionArtifactFromCodexAuthJson(validAuthJson), redactor,
@@ -82,14 +86,20 @@ describe("direct factory hosted environment selection", () => {
       expect(launches.length).toBeGreaterThan(0);
       for (const launch of launches) {
         expect(launch.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND).toBe("hosted-codex-job");
-        expect(launch.env.PATH?.split(":" )).toContain(explicit ? explicitEnv.PATH : hostedEnv.PATH);
+        if (!emptySourceEnv) expect(launch.env.PATH?.split(":" )).toContain(explicit ? explicitEnv.PATH : hostedEnv.PATH);
         expect(launch.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(expectedPolicy.profileId);
-        expect(launch.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(expectedPolicy));
+        expect(launch.args.slice(-4)).toEqual(codexProviderEgressCliConfigArgs(expectedPolicy,
+          { namedPermissions: true }));
+        expect(launch.args.join(" ")).not.toContain("sandbox_workspace_write");
         expect(launch.args).toContain("--dangerously-bypass-hook-trust");
         // Only the synthetic materialized home's config is read; no real session is used.
         const config = await readFile(join(launch.env.CODEX_HOME!, "config.toml"), "utf8");
         expect(config).toContain("[[hooks.PreToolUse]]");
-        expect(config.includes("registry.npmjs.org")).toBe(expectedPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi);
+        expect(config.includes("registry.npmjs.org")).toBe(profile === CodexProviderEgressProfileId.TestNpmQualification);
+        if (profile === undefined) {
+          expect(launch.args).toContain("features.network_proxy.enabled=false");
+          expect(config).toContain("[features.network_proxy]\nenabled = false\ndomains = {  }");
+        }
         expect(config.includes("api.github.com")).toBe(false);
         const invocation = codexAppServerProcessInvocation({
           ...launch, platform: "linux",
@@ -103,8 +113,8 @@ describe("direct factory hosted environment selection", () => {
     } finally { await driver.dispose(); }
   });
 
-  it.each([false, true])("refuses TEST without a selected hosted marker (explicit=%s)", explicit => {
-    if (!explicit) delete process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
+  it.each([false, true])("refuses TEST without explicit or inherited hosted containment (explicit=%s)", explicit => {
+    delete process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
     const spawn = vi.fn(() => { throw new Error("must not spawn"); });
     expect(() => runtime(root, {
       ...(explicit ? { sourceEnv: {} } : {}),

@@ -9,53 +9,512 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
+# Source/test gates use the configured RUNNER pool. Metadata-only proof checks
+# and result aggregation use the independent CI_CONTROL_RUNNER pool.
 jobs:
-  quality:
-    runs-on: ubuntu-latest
+  ci-proof-reuse:
+    # Only trusted main-push code reads prior PR artifacts/logs. PRs run every lane.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    outputs:
+      reuse_unit: ${{ steps.proof.outputs.reuse_unit }}
+      reuse_crash: ${{ steps.proof.outputs.reuse_crash }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          node-version: 22
+          persist-credentials: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: &node_linux_prerequisite_script |
+          set -euo pipefail
+          # The official Linux Node.js binary needs libatomic.so.1 before setup-node can run it.
+          have_libatomic() { grep -q 'libatomic\.so\.1 ' < <(/sbin/ldconfig -p 2>/dev/null); }
+          if have_libatomic; then exit 0; fi
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::libatomic.so.1 is missing and this Linux runner has no apt-get"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1
+          have_libatomic
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 26.11.1
+      - name: Install encrypted checkpoint restore test dependency
+        run: |
+          if ! command -v restic >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends restic
+          fi
+          restic version
+      # The helper uses strict enums, which Node cannot execute directly. Compile
+      # it with the lock-pinned project TypeScript; no lifecycle scripts run.
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
+      - name: Verify reusable PR lane proofs
+        id: proof
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" detect
+
+  quality:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 26.11.1
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run typecheck
+      - run: npm run typecheck:ci-tools
+      - run: npm run test:ci-tools
       - run: npm run build
       - run: npm run check:dist
       - run: npm run check:boundaries
 
-  unit-tests:
-    runs-on: ubuntu-latest
+  unit-test-shards:
+    if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_unit == 'true') }}
+    needs: [ci-proof-reuse]
+    name: Unit tests (${{ matrix.shard }}/4)
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &unit_test_checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Fetch scrubbed public legacy ledger fixture
         run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - &unit_test_node_prerequisite
+        name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
+      - &unit_test_node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - name: Install encrypted checkpoint restore test dependency
+        run: |
+          if ! command -v restic >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends restic
+          fi
+          restic version
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
+      - name: Capture CI proof identity before source execution
+        id: capture
+        continue-on-error: true
+        env:
+          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+          CI_PROOF_FAMILY: unit
+          CI_PROOF_LANE: ${{ matrix.shard }}
+          CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
+      - &unit_test_install
+        run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - name: Run unit shard in a private TEST home
+        shell: bash
+        run: &private_test_home |
+          set -euo pipefail
+          # ARC's /home/runner is shared-writable. Allocate new TEST inventory
+          # directly beneath /home; never chmod/adopt the existing runner HOME.
+          for subscription_test_parent in / /home; do
+            test -d "$subscription_test_parent" && test ! -L "$subscription_test_parent"
+            test "$(readlink -f -- "$subscription_test_parent")" = "$subscription_test_parent"
+            subscription_test_parent_mode=$(stat -c '%a' -- "$subscription_test_parent")
+            (( (8#$subscription_test_parent_mode & 022) == 0 ))
+          done
+          subscription_test_home=$(sudo -n mktemp -d /home/subscription-ci-TEST-XXXXXX)
+          subscription_test_home_identity=$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")
+          cleanup_subscription_test_home() {
+            local subscription_test_original_status=$?
+            local subscription_test_cleanup_status=0
+            if [[ "$subscription_test_home" =~ ^/home/subscription-ci-TEST-[[:alnum:]]{6}$ ]] &&
+              [[ "$subscription_test_home_identity" == *:700 ]] &&
+              test -d "$subscription_test_home" && test ! -L "$subscription_test_home" &&
+              test "$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")" = "$subscription_test_home_identity"; then
+              # Clear children without privilege. /home is root-owned, so only
+              # unlinking the empty acquired HOME requires elevated rmdir.
+              find "$subscription_test_home" -xdev -depth -mindepth 1 -delete || subscription_test_cleanup_status=$?
+              if test -d "$subscription_test_home" && test ! -L "$subscription_test_home" &&
+                test "$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")" = "$subscription_test_home_identity"; then
+                sudo -n rmdir -- "$subscription_test_home" || subscription_test_cleanup_status=$?
+              else
+                echo "::error::Private TEST home identity changed after clearing children; cleanup refused"
+                subscription_test_cleanup_status=1
+              fi
+            else
+              echo "::error::Private TEST home identity changed; cleanup refused"
+              subscription_test_cleanup_status=1
+            fi
+            if (( subscription_test_original_status != 0 )); then exit "$subscription_test_original_status"; fi
+            exit "$subscription_test_cleanup_status"
+          }
+          trap cleanup_subscription_test_home EXIT
+          sudo -n chown "$(id -u):$(id -g)" "$subscription_test_home"
+          subscription_test_home_identity=$(stat -c '%d:%i:%u:%a' -- "$subscription_test_home")
+          test "$(stat -c '%u:%g:%a' -- "$subscription_test_home")" = "$(id -u):$(id -g):700"
+          export HOME="$subscription_test_home"
+          case "$CI_TEST_TARGET" in
+            1/4|2/4|3/4|4/4)
+              # Every shard needs dist fixtures; retain the configured two
+              # isolated forks and the full default test selection.
+              npm run build
+              npm run test:unit -- --shard="$CI_TEST_TARGET"
+              ;;
+            ancillary)
+              npm run test:before-unit
+              npm run test:after-unit
+              ;;
+            *)
+              echo "::error::Unknown CI test target"
+              exit 1
+              ;;
+          esac
+        env:
+          CI_TEST_TARGET: ${{ matrix.shard }}/4
+          SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+      - name: Publish successful CI lane proof
+        continue-on-error: true
+        if: ${{ success() && steps.capture.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-proof-v1-${{ github.run_attempt }}-unit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-proof-unit-${{ matrix.shard }}/receipt.json
+          if-no-files-found: error
+          retention-days: 2
+
+  unit-test-ancillary:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - *unit_test_checkout
+      - *unit_test_node_prerequisite
+      - *unit_test_node
+      - *unit_test_install
+      - name: Run non-Vitest test phases once in a private TEST home
+        shell: bash
+        run: *private_test_home
+        env:
+          CI_TEST_TARGET: ancillary
+          SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+
+  unit-tests:
+    if: ${{ always() }}
+    needs: [ci-proof-reuse, unit-test-shards, unit-test-ancillary]
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - name: Require all four unit shards and ancillary phases
+        env:
+          UNIT_TEST_SHARDS_RESULT: ${{ needs.unit-test-shards.result }}
+          UNIT_TEST_ANCILLARY_RESULT: ${{ needs.unit-test-ancillary.result }}
+          CI_PROOF_RESULT: ${{ needs.ci-proof-reuse.result }}
+          REUSE_UNIT: ${{ needs.ci-proof-reuse.outputs.reuse_unit }}
+        run: |
+          set -euo pipefail
+          test "$UNIT_TEST_ANCILLARY_RESULT" = success
+          if [ "$UNIT_TEST_SHARDS_RESULT" = success ]; then
+            echo "All four unit shards executed successfully; ancillary phases passed."
+          elif [ "$UNIT_TEST_SHARDS_RESULT" = skipped ] &&
+               [ "$CI_PROOF_RESULT" = success ] && [ "$REUSE_UNIT" = true ]; then
+            echo "All four unit shards verified from exact-tree PR proofs; ancillary phases passed."
+          else
+            echo "::error::Unit shard execution or verified proof is missing"
+            exit 1
+          fi
+
+  archive-root-tests:
+    # The unchanged archive TEST runs as native UID 0 in the existing disposable
+    # SOURCE container. Its command and completed JSON report are mandatory there.
+    needs: native-probe-source
+    if: ${{ always() }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - name: Require completed SOURCE and native root archive TEST container
+        env:
+          NATIVE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
+        run: test "$NATIVE_SOURCE_RESULT" = success
+
+  observer-mount-tests:
+    # This native mount gate requires the stock Ubuntu VM namespace contract.
+    # Keep the shared ARC runner and its security policy unchanged.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 26.11.1
+          cache: npm
+      - name: Require genuine runner identity and disposable namespace capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          id
+          cat /etc/os-release
+          node --version
+          cat /proc/self/uid_map
+          wc -c /proc/self/mountinfo
+          readlink /proc/self/ns/user /proc/self/ns/mnt /proc/self/ns/pid
+          test "$(id -u)" -gt 0
+          test "$(id -g)" -gt 0
+          test "$(stat -c %u -- "$GITHUB_WORKSPACE")" = "$(id -u)"
+          grep -q '^VERSION_ID="24\.04"$' /etc/os-release
+          node -e 'if (process.versions.node !== "26.11.1") process.exit(1)'
+          sudo -n -l
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+            /usr/bin/unshare --user --map-root-user --mount --pid --fork \
+            --mount-proc --propagation private --kill-child=SIGKILL -- /bin/true
+      - name: Fetch locked TEST dependencies
+        run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run build:packages
+      - name: Typecheck scratch preparation and the native TEST helper
+        run: |
+          node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json
+          node node_modules/typescript/bin/tsc -p scripts/test-scratch-mount-propagation.tsconfig.json
+      - name: Require scratch preparation and adjacent research contracts
+        run: |
+          npm run build
+          node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
+            src/worker-codex/tests/host-scratch-temp.test.ts \
+            src/worker-codex/tests/host-scratch-mount.test.ts \
+            src/worker-codex/tests/host-scratch-mount-observation-cost.test.ts \
+            src/worker-codex/tests/research-provider-service.test.ts \
+            src/worker-codex/tests/research-provider-root.test.ts \
+            src/worker-codex/tests/research-launch-diagnostics.test.ts \
+            src/worker-codex/tests/research-launch-diagnostics-privacy.test.ts
+      - name: Require real shared-source leaf isolation in a fresh TEST namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir scratch-mount-evidence
+          sudo -n /usr/bin/env -i PATH=/usr/bin:/bin \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+            /usr/bin/unshare --mount --propagation private \
+            "$(command -v node)" --experimental-strip-types scripts/test-scratch-mount-propagation.mts \
+            | tee scratch-mount-evidence/result.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: scratch-mount-propagation-evidence
+          path: scratch-mount-evidence/result.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Typecheck the focused namespace helper
+        run: node node_modules/typescript/bin/tsc -p scripts/test-dependency-observer-mount-namespace.tsconfig.json
+      - name: Require actual observer mount negatives and FD-close oracle
+        env:
+          TEST_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          sudo -n --preserve-env=CI,GITHUB_ACTIONS,GITHUB_WORKSPACE,RUNNER_TEMP,TEST_SOURCE_SHA \
+            "$(command -v node)" --experimental-strip-types scripts/test-dependency-observer-mount-namespace.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: observer-mount-evidence
+          path: observer-mount-evidence/result.json
+          if-no-files-found: error
+          retention-days: 7
 
   package:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run check:packed-consumer
 
+  native-probe-source:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # Keep JavaScript actions on the host runner. The TEST container receives
+      # only a Git archive via Docker's API, never runner/auth/socket mounts.
+      - name: Run disposable NativeProbe SOURCE container
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          owned=$(mktemp -d "$RUNNER_TEMP/native-probe-source-TEST-XXXXXX")
+          printf 'evidence=%s\n' "$owned" >> "$GITHUB_OUTPUT"
+          name="native-probe-source-TEST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf '%s\n' "$name" > "$owned/container-name.txt"
+          git rev-parse HEAD > "$owned/source-commit.txt"
+          git rev-parse HEAD^{tree} > "$owned/source-tree.txt"
+          git archive --format=tar HEAD > "$owned/source.tar"
+          sha256sum "$owned/source.tar" > "$owned/source-archive.sha256"
+          # Fixed disposable TEST profile; preserves upstream denials except
+          # size88 clone3 needed for actual pidfd births. No host policy change.
+          profile=host-integration/native-probe/ci-source-seccomp.json
+          printf '%s  %s\n' '5589a5a9c0c4a09dc755d8d8af511905b513f94e2d15bb0b7d6cdd89b710e087' "$profile" | sha256sum --check --strict
+          cp "$profile" "$owned/ci-source-seccomp.json"
+          sha256sum "$owned/ci-source-seccomp.json" > "$owned/seccomp-profile.sha256"
+          docker version --format '{{json .}}' > "$owned/docker-version.json"
+          uname -srvm > "$owned/runner-kernel.txt"
+          cat > "$owned/command.sh" <<'TEST_COMMAND'
+          set -euo pipefail
+          umask 077
+          mkdir -p /native-probe-source-workspace/{source,tmp,home,cache}
+          tar -xf /source.tar -C /native-probe-source-workspace/source
+          cd /native-probe-source-workspace/source
+          mkdir -p delivery/a0-native-probe
+          # Archive fixtures observe a real isolated tmux socket, never a mocked absence.
+          timeout --signal=TERM --kill-after=5s 90s apt-get update
+          timeout --signal=TERM --kill-after=5s 90s apt-get install --yes --no-install-recommends tmux=3.3a-3
+          dpkg-query --show --showformat='${Version}\n' tmux
+          tmux -V
+          npm ci
+          npm run typecheck:native-probe
+          npm run typecheck:native-probe:root-source
+          npm run test:native-probe
+          npm run build:packages
+          SR_ARCHIVE_TEST_PRIVILEGE=root \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
+            node node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
+            --outputFile=delivery/a0-native-probe/archive-root-result.json
+          node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
+            --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
+            --target ES2022 --module NodeNext --moduleResolution NodeNext \
+            scripts/require-archive-root-result.mts
+          node --experimental-strip-types scripts/require-archive-root-result.mts
+          TEST_COMMAND
+          timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
+            --security-opt "seccomp=$owned/ci-source-seccomp.json" \
+            --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
+            node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 \
+            /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
+            HOME=/native-probe-source-workspace/home \
+            TMPDIR=/native-probe-source-workspace/tmp \
+            XDG_CONFIG_HOME=/native-probe-source-workspace/home \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            npm_config_cache=/native-probe-source-workspace/cache \
+            SR_NATIVE_PROBE_TMP=/native-probe-source-workspace/tmp \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 15m \
+            /bin/bash /command.sh > "$owned/container-id.txt" 2> "$owned/create.stderr"
+          id=$(cat "$owned/container-id.txt")
+          [[ "$id" =~ ^[a-f0-9]{64}$ ]]
+          printf 'container=%s\n' "$id" >> "$GITHUB_OUTPUT"
+          timeout 30s docker cp "$owned/source.tar" "$id:/source.tar" \
+            > "$owned/input-copy.stdout" 2> "$owned/input-copy.stderr"
+          timeout 30s docker cp "$owned/command.sh" "$id:/command.sh" \
+            >> "$owned/input-copy.stdout" 2>> "$owned/input-copy.stderr"
+          set +e
+          timeout --signal=TERM --kill-after=10s 16m docker start --attach "$id" \
+            > "$owned/container.stdout" 2> "$owned/container.stderr"
+          attach_rc=$?
+          set -e
+          printf '%s\n' "$attach_rc" > "$owned/attach-exit.txt"
+          docker inspect "$id" > "$owned/container-inspect.json"
+          identity=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}' "$id")
+          [[ "$identity" == "$id|/$name|$owner" ]]
+          state=$(docker inspect --format '{{.State.Status}}' "$id")
+          if [[ "$state" != exited ]]; then
+            printf '::error::Owned container %s is %s; retained without cleanup. Evidence: %s\n' "$id" "$state" "$owned"
+            exit 1
+          fi
+          container_rc=$(docker inspect --format '{{.State.ExitCode}}' "$id")
+          printf '%s\n' "$container_rc" > "$owned/container-exit.txt"
+          # Stream tar archives without following container symlinks or exposing
+          # root-owned fixtures to runner-side extraction/upload traversal.
+          timeout 30s docker cp "$id:/native-probe-source-workspace/source/delivery/a0-native-probe" - \
+            > "$owned/source-evidence.tar" 2> "$owned/evidence-copy.stderr"
+          timeout 30s docker cp "$id:/native-probe-source-workspace/tmp" - \
+            > "$owned/remaining-test-tmp.tar" 2> "$owned/tmp-copy.stderr"
+          printf 'exported=true\n' >> "$GITHUB_OUTPUT"
+          # A test failure stays a failure even though its diagnostics exported.
+          if [[ "$container_rc" != 0 ]]; then exit "$container_rc"; fi
+          exit "$attach_rc"
+      - name: Export NativeProbe SOURCE evidence
+        id: native_artifact
+        if: ${{ always() && steps.native.outputs.evidence != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-probe-source-checks
+          path: ${{ steps.native.outputs.evidence }}
+          if-no-files-found: error
+      - name: Remove only exported stopped TEST container
+        if: ${{ always() && steps.native.outputs.container != '' }}
+        shell: bash
+        env:
+          OWNED_CONTAINER: ${{ steps.native.outputs.container }}
+          EVIDENCE_EXPORTED: ${{ steps.native.outputs.exported }}
+          ARTIFACT_RESULT: ${{ steps.native_artifact.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVIDENCE_EXPORTED" != true || "$ARTIFACT_RESULT" != success ]]; then
+            printf '::warning::Retaining owned container %s: evidence export incomplete.\n' "$OWNED_CONTAINER"
+            exit 1
+          fi
+          [[ "$OWNED_CONTAINER" =~ ^[a-f0-9]{64}$ ]]
+          expected="/native-probe-source-TEST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          actual=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}|{{.State.Status}}|{{.State.Running}}' "$OWNED_CONTAINER")
+          if [[ "$actual" != "$OWNED_CONTAINER|$expected|$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT|exited|false" ]]; then
+            printf '::error::Owned container %s custody/stop check failed; retained.\n' "$OWNED_CONTAINER"
+            exit 1
+          fi
+          docker rm "$OWNED_CONTAINER"
+          # Runner-owned files remain available through job end and in artifact.
+
   crash-boundary-shards:
+    if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_crash == 'true') }}
+    needs: [ci-proof-reuse]
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -63,64 +522,108 @@ jobs:
       matrix:
         lane: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch scrubbed public legacy ledger fixture
         run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 26.11.1
           cache: npm
-      - run: npm ci
+      - name: Prepare CI proof helper with locked project TypeScript
+        run: |
+          for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+          npm run build:ci-proof-reuse -- --outDir "$RUNNER_TEMP/ci-proof-helper"
+      - name: Capture CI proof identity before source execution
+        id: capture
+        continue-on-error: true
+        env:
+          CI_PROOF_RUNNER_LABEL: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+          CI_PROOF_FAMILY: crash
+          CI_PROOF_LANE: ${{ matrix.lane }}
+          CI_PROOF_RECEIPT_PATH: ${{ runner.temp }}/ci-proof-crash-${{ matrix.lane }}/receipt.json
+        run: node "$RUNNER_TEMP/ci-proof-helper/cli.mjs" capture
+      # Bounded retry: `npm ci` is a pure download step and runner
+      # registry egress can be intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
       - name: Certify crash-boundary shards in lane ${{ matrix.lane }}
         env:
           CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY: "1"
           SHARD_LANE: ${{ matrix.lane }}
         run: |
-          shard="$SHARD_LANE"
-          while [ "$shard" -le 53 ]; do
-            file="src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-${shard}.test.ts"
-            timeout --signal=TERM --kill-after=10s 240s \
-              npm run test:crash-shard -- "$file"
-            shard=$((shard + 8))
-          done
+          npm run test:crash-lane -- "$SHARD_LANE"
+      - name: Publish successful CI lane proof
+        continue-on-error: true
+        if: ${{ success() && steps.capture.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-proof-v1-${{ github.run_attempt }}-crash-${{ matrix.lane }}
+          path: ${{ runner.temp }}/ci-proof-crash-${{ matrix.lane }}/receipt.json
+          if-no-files-found: error
+          retention-days: 2
 
   crash-boundary-shards-complete:
     permissions:
       contents: read
     if: ${{ always() }}
-    needs: [crash-boundary-shards]
-    runs-on: ubuntu-latest
+    needs: [ci-proof-reuse, crash-boundary-shards]
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards.result }}
-        run: test "$CRASH_BOUNDARY_SHARDS_RESULT" = "success"
+          CI_PROOF_RESULT: ${{ needs.ci-proof-reuse.result }}
+          REUSE_CRASH: ${{ needs.ci-proof-reuse.outputs.reuse_crash }}
+        run: |
+          set -euo pipefail
+          if [ "$CRASH_BOUNDARY_SHARDS_RESULT" = success ]; then
+            echo "All eight crash lanes executed successfully."
+          elif [ "$CRASH_BOUNDARY_SHARDS_RESULT" = skipped ] &&
+               [ "$CI_PROOF_RESULT" = success ] && [ "$REUSE_CRASH" = true ]; then
+            echo "All eight crash lanes verified from exact-tree PR proofs."
+          else
+            echo "::error::Crash lane execution or verified proof is missing"
+            exit 1
+          fi
 
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, package, crash-boundary-shards-complete]
-    runs-on: ubuntu-latest
+    needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
     steps:
       - name: Verify all CI gates passed
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
+          OBSERVER_MOUNT_RESULT: ${{ needs.observer-mount-tests.result }}
+          ARCHIVE_ROOT_TESTS_RESULT: ${{ needs.archive-root-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
+          NATIVE_PROBE_SOURCE_RESULT: ${{ needs.native-probe-source.result }}
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
+             [ "$OBSERVER_MOUNT_RESULT" = "success" ] && \
+             [ "$ARCHIVE_ROOT_TESTS_RESULT" = "success" ] && \
              [ "$PACKAGE_RESULT" = "success" ] && \
+             [ "$NATIVE_PROBE_SOURCE_RESULT" = "success" ] && \
              [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
           fi
 
           echo "quality: $QUALITY_RESULT"
           echo "unit-tests: $UNIT_TESTS_RESULT"
+          echo "observer-mount-tests: $OBSERVER_MOUNT_RESULT"
+          echo "archive-root-tests: $ARCHIVE_ROOT_TESTS_RESULT"
           echo "package: $PACKAGE_RESULT"
+          echo "native-probe-source: $NATIVE_PROBE_SOURCE_RESULT"
           echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1

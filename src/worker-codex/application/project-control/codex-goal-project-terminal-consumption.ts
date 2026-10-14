@@ -6,6 +6,7 @@ import {
   type ConsumedOutputLedger,
   type ConsumedOutputRecord,
 } from "@vioxen/subscription-runtime/worker-core";
+import { freshCleanGitWorkspace } from "./codex-goal-project-workspace-history";
 
 const DIRTY_OUTPUT_TERMINAL_STATUSES = new Set([
   "integrated",
@@ -15,14 +16,17 @@ const DIRTY_OUTPUT_TERMINAL_STATUSES = new Set([
   "archived",
 ]);
 
-export function stoppedWorkspaceTerminalConsumption(input: {
+const CLEAN_NO_OUTPUT_TERMINAL_STATUS = "failed_no_output";
+
+export async function stoppedWorkspaceTerminalConsumption(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
   readonly workerAlive: boolean;
   readonly workerExplicitlyStopped: boolean;
+  readonly workspaceDirty: boolean | undefined;
   readonly workspacePath: string | undefined;
   readonly resolvedWorkspacePath: string | undefined;
-}): ConsumedOutputRecord | undefined {
+}): Promise<ConsumedOutputRecord | undefined> {
   if (
     input.workerAlive ||
     !input.workerExplicitlyStopped ||
@@ -39,7 +43,12 @@ export function stoppedWorkspaceTerminalConsumption(input: {
   if (
     record?.jobId !== input.jobId ||
     record?.structurallyValid !== true ||
-    !DIRTY_OUTPUT_TERMINAL_STATUSES.has(record.status)
+    !DIRTY_OUTPUT_TERMINAL_STATUSES.has(record.status) &&
+    !(record.status === CLEAN_NO_OUTPUT_TERMINAL_STATUS &&
+      record.valid === true &&
+      input.workspaceDirty === false &&
+      record.hasAuthoredOutput === false &&
+      record.backupWorkspaceDirty === false)
   ) {
     return undefined;
   }
@@ -52,7 +61,10 @@ export function stoppedWorkspaceTerminalConsumption(input: {
   const recordPaths = [record.workspace, record.resolvedWorkspace]
     .filter((path): path is string => path !== undefined)
     .map((path) => resolve(path));
-  return recordPaths.some((path) => currentPaths.has(path)) ? record : undefined;
+  if (!recordPaths.some((path) => currentPaths.has(path))) return undefined;
+  if (record.status === CLEAN_NO_OUTPUT_TERMINAL_STATUS &&
+    !await freshCleanGitWorkspace(input.workspacePath)) return undefined;
+  return record;
 }
 
 export function terminalConsumptionCoversStoppedRisk(
@@ -61,6 +73,9 @@ export function terminalConsumptionCoversStoppedRisk(
 ): boolean {
   if (!record) return false;
   if (typeof value !== "string") return false;
+  if (record.status === CLEAN_NO_OUTPUT_TERMINAL_STATUS) {
+    return value === "none";
+  }
   return value === "none" || value === "dirty_workspace_without_worker";
 }
 

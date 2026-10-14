@@ -513,6 +513,14 @@ function testBroker(
     scope,
   }, {
     admission,
+      authority: {
+        async initialize() {
+          throw new Error("project_authority_not_configured_for_test");
+        },
+        async compareAndSet() {
+          throw new Error("project_authority_not_configured_for_test");
+        },
+      },
     registry: { createJob: applied, writeReviewMarker: applied },
     supervisor: {
       startWorker: async () => {

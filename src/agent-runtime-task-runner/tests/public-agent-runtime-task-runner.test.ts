@@ -9,6 +9,24 @@ import {
 } from "../index";
 
 describe("public Agent Runtime task runner API", () => {
+  it("accepts root-only inputs for both provider variants and rejects invalid roots with explicit state", async () => {
+    const common = { storageRootDir: "/external/runtime",
+      encryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      workspaceRoot: "/sandbox/workspace", env: {} };
+    const codex = createLocalAgentRuntimeTaskRunner({ ...common,
+      provider: AgentRuntimeTaskProvider.Codex,
+      providerRuntime: { reasoningEffort: AgentRuntimeTaskReasoningEffort.High },
+    });
+    const claude = createLocalAgentRuntimeTaskRunner({ ...common,
+      provider: AgentRuntimeTaskProvider.Claude,
+      providerRuntime: { backend: ClaudeAgentRuntimeBackend.Background },
+    });
+    await Promise.all([codex.dispose(), claude.dispose()]);
+    expect(() => createLocalAgentRuntimeTaskRunner({ ...common,
+      provider: AgentRuntimeTaskProvider.Codex, storageRootDir: "/external/../root",
+      stateRootDir: "/legacy/state",
+    })).toThrow("Invalid runtime storageRootDir");
+  });
   it("accepts only the exact supported Codex execution profile", async () => {
     const runner = createLocalAgentRuntimeTaskRunner({
       provider: AgentRuntimeTaskProvider.Codex,

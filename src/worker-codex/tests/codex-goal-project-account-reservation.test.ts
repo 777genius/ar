@@ -8,18 +8,27 @@ import {
   InMemoryWorkerAccountLeaseStore,
   type SafeExecutionTaskRecord,
 } from "@vioxen/subscription-runtime/worker-core";
-import type { CodexGoalJobManifest } from "../codex-goal-jobs";
-import type { CodexGoalLaunchInput } from "../codex-goal-ops";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexGoalAccountSelectionMode,
+} from "../codex-goal-jobs";
+import { fixture, singleAccountFixture } from "./codex-goal-project-account-reservation-fixture";
 import {
   codexProjectContinuationReservationInput,
+  assertCodexProjectReservedLaunchAuthority,
+  consumeCodexProjectReservedLaunchAuthority,
   codexProjectAccountLeaseMode,
+  assertCodexProjectReservedAccountReceiptCurrent,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
 } from "../application/project-control/codex-goal-project-account-reservation";
+import { researchRegisteredExecutionFromReservation } from "../research-registered-execution";
 import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
 } from "../codex-goal-project-workspace-lock";
+
+export { fixture } from "./codex-goal-project-account-reservation-fixture";
 
 const roots: string[] = [];
 
@@ -30,6 +39,100 @@ afterEach(async () => {
 });
 
 describe("project account reservation", () => {
+  // RED: cloning, mutating, or replaying a supported selection would mint a
+  // fresh execution budget without the original immutable reservation lineage.
+  it("binds original selection, declared config and nested account metadata once", async () => {
+    const scoped = fixture("/TEST-reservation-authority", "test-reservation");
+    const reservation = await reserveCodexProjectAccount({ ...scoped,
+      deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+    const input = { manifest: scoped.manifest, sourceLaunch: scoped.launch, reservedLaunch: reservation.launch };
+    const authority = assertCodexProjectReservedLaunchAuthority(input);
+    expect(authority).toMatchObject({ maxAccountCycles: 1, fresh: true, accountId: reservation.accountId });
+    expect(() => assertCodexProjectReservedLaunchAuthority({ ...input, reservedLaunch: { ...reservation.launch } })).toThrow();
+    Object.assign(scoped.launch.config, { model: "TEST-mutated" });
+    expect(() => assertCodexProjectReservedLaunchAuthority(input)).toThrow();
+    Object.assign(scoped.launch.config, { model: "gpt-5.6-sol" });
+    const selected = reservation.launch.config.accounts[0]!;
+    Object.assign(selected, { envVarName: "TEST_FOREIGN_AUTH" });
+    expect(() => assertCodexProjectReservedLaunchAuthority(input)).toThrow();
+    delete (selected as { envVarName?: string }).envVarName;
+    expect(consumeCodexProjectReservedLaunchAuthority(input)).toBe(authority);
+    expect(() => consumeCodexProjectReservedLaunchAuthority(input)).toThrow();
+  });
+  it("does not bless declared config mutation across asynchronous selection", async () => {
+    const scoped = fixture("/TEST-reservation-drift", "test-reservation");
+    const pending = reserveCodexProjectAccount({ ...scoped,
+      deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+    Object.assign(scoped.launch.config, { prewarmOnStart: true });
+    await expect(pending).rejects.toThrow("project_control_reserved_launch_source_changed");
+  });
+  it("keeps ordinary continuation budget historical and denies the fresh research projection", async () => {
+    const scoped = fixture("/TEST-reservation-continuation", "test-reservation");
+    const reservation = await reserveCodexProjectAccount({ ...scoped, continuation: { previousAttemptCount: 3 },
+      deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+    const authority = assertCodexProjectReservedLaunchAuthority({ manifest: scoped.manifest,
+      sourceLaunch: scoped.launch, reservedLaunch: reservation.launch });
+    expect(reservation.launch.config.maxAccountCycles).toBe(4);
+    expect(authority.fresh).toBe(false);
+    expect(() => researchRegisteredExecutionFromReservation(authority, reservation.launch)).toThrow(
+      "hosted_research_registered_execution_unsupported");
+  });
+
+  it("keeps explicit first choice until a recorded failure allows continuation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-explicit-continuation-"));
+    roots.push(root);
+    const base = fixture(root, "job-1");
+    const scoped = {
+      manifest: {
+        ...base.manifest,
+        accounts: ["account-v", "account-o"],
+        accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+      },
+      launch: {
+        ...base.launch,
+        config: {
+          ...base.launch.config,
+          accounts: [{ name: "account-v" }, { name: "account-o" }],
+        },
+      },
+    };
+    const deps = {
+      capacityStore: new InMemoryWorkerAccountCapacityStore(),
+      leaseMode: "shared" as const,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    };
+    expect((await reserveCodexProjectAccount({ ...scoped, deps })).accountId)
+      .toBe("account-v");
+    const journal = new InMemoryAttemptJournal();
+    await expect(codexProjectContinuationReservationInput({
+      status: {
+        recommendedAction: "continue_after_capacity",
+        resultReason: "account_unavailable",
+      },
+      launch: scoped.launch,
+      journal,
+    })).rejects.toThrow("project_control_continuation_attempt_history_required");
+    await recordUnavailableAttempt(
+      journal,
+      "account-v",
+      scoped.launch.config.workspacePath,
+      "account_unavailable",
+    );
+    const continuation = await codexProjectContinuationReservationInput({
+      status: {
+        recommendedAction: "continue_after_capacity",
+        resultReason: "account_unavailable",
+      },
+      launch: scoped.launch,
+      journal,
+    });
+    expect((await reserveCodexProjectAccount({
+      ...scoped,
+      ...continuation,
+      deps,
+    })).accountId).toBe("account-o");
+  });
+
   it.each(["account_unavailable", "capacity_unavailable"] as const)(
     "selects another shared account after %s",
     async (failureReason) => {
@@ -575,7 +678,7 @@ describe("project account reservation", () => {
 
     const firstReservation = await reserveCodexProjectAccount({ ...first, deps });
     const secondReservation = await reserveCodexProjectAccount({ ...second, deps });
-    const firstReplay = await reserveCodexProjectAccount({ ...first, deps });
+    const firstReplay = await reserveCodexProjectAccount({ ...first, deps: { ...deps, now: new Date(now.getTime() + 1_000) } });
     expect(firstReservation.mode).toBe("exclusive");
     expect(firstReplay.mode).toBe("exclusive");
     if (firstReservation.mode !== "exclusive" || firstReplay.mode !== "exclusive") {
@@ -592,6 +695,16 @@ describe("project account reservation", () => {
       accountId: firstReservation.accountId,
       fencingToken: firstReservation.fencingToken,
     });
+
+    // The first start must not clean the renewed successor's receipt after
+    // losing the workspace lease during an admission handoff.
+    await expect(assertCodexProjectReservedAccountReceiptCurrent({ manifest: first.manifest, reservedLaunch: firstReservation.launch }))
+      .rejects.toThrow("project_control_account_reservation_changed_before_start");
+    await expect(releaseCodexProjectAccount({
+      manifest: first.manifest, launch: firstReservation.launch, reason: "stale start failed", deps: { leaseStore, now },
+    })).resolves.toBe(false);
+    await expect(assertCodexProjectReservedAccountReceiptCurrent({ manifest: first.manifest, reservedLaunch: firstReplay.launch }))
+      .resolves.toBeUndefined();
 
     await expect(releaseCodexProjectAccount({
       ...first,
@@ -699,67 +812,6 @@ describe("project account reservation", () => {
     })).resolves.toBe(true);
   });
 });
-
-function singleAccountFixture(
-  root: string,
-  jobId: string,
-): ReturnType<typeof fixture> {
-  const value = fixture(root, jobId);
-  return {
-    manifest: { ...value.manifest, accounts: ["account-a"] },
-    launch: {
-      ...value.launch,
-      config: {
-        ...value.launch.config,
-        accounts: [{ name: "account-a" }],
-      },
-    },
-  };
-}
-
-function fixture(
-  root: string,
-  jobId: string,
-  reasoningEffort: "xhigh" | "high" = "xhigh",
-): {
-  readonly manifest: CodexGoalJobManifest;
-  readonly launch: CodexGoalLaunchInput;
-} {
-  const jobRootDir = join(root, jobId);
-  const manifest: CodexGoalJobManifest = {
-    schemaVersion: 1,
-    jobId,
-    createdAt: "2026-07-13T00:00:00.000Z",
-    updatedAt: "2026-07-13T00:00:00.000Z",
-    jobRootDir,
-    workspacePath: join(root, "workspace"),
-    promptPath: join(jobRootDir, "prompt.md"),
-    taskId: `${jobId}-task`,
-    accounts: ["account-a", "account-b"],
-  };
-  return {
-    manifest,
-    launch: {
-      config: {
-        jobId,
-        jobRootDir,
-        authRootDir: join(root, "auth"),
-        workspacePath: manifest.workspacePath,
-        promptPath: manifest.promptPath,
-        taskId: manifest.taskId,
-        accounts: [{ name: "account-a" }, { name: "account-b" }],
-        model: "gpt-5.6-sol",
-        reasoningEffort,
-        serviceTier: "fast",
-        taskTimeoutMs: 60_000,
-      },
-      tmuxSession: `${jobId}-tmux`,
-      cwd: manifest.workspacePath,
-      logPath: join(jobRootDir, "worker.log"),
-      cliCommand: ["node", "runtime.js"],
-    },
-  };
-}
 
 async function recordUnavailableAttempt(
   journal: InMemoryAttemptJournal,

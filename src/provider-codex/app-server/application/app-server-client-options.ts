@@ -1,0 +1,43 @@
+import type { HostedMimoCodingEngineAuthority } from "../../hosted-mimo-coding-engine-authority";
+import type { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
+import type { CodexModelBackend } from "../../codex-model-backend";
+import type { CodexMaterializedSession } from "../../codex-json-execution-engine";
+import type { CodexAppServerChildProcess, CodexAppServerChildProcessSignaler, CodexAppServerProcessFactory } from "./app-server-process-port";
+import type { CodexAppServerCommandApprovalPolicy, CodexAppServerNativeToolSurface } from "../domain/app-server-types";
+import type { HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import type { CodexAppServerRolloutBudget } from "../domain/app-server-rollout-budget";
+import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
+import type { PublicResearchSourceReader } from "./public-research-source-port";
+import type { CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
+
+export type CodexAppServerClientOptions = {
+  readonly codexBinaryPath: string;
+  readonly childBudget?: ChildExecutionBudget;
+  readonly sourceEnv: Readonly<Record<string, string | undefined>>;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly publicSourceReader?: PublicResearchSourceReader;
+  readonly hostedPermissionProfiles?: boolean;
+  readonly processFactory: CodexAppServerProcessFactory;
+  /** Internal cleanup custody observes the child without replacing its admitted factory. */
+  readonly onProcessCreated?: (child: CodexAppServerChildProcess) => void;
+  readonly signalChildProcess: CodexAppServerChildProcessSignaler;
+  readonly session: CodexMaterializedSession;
+  readonly workspacePath: string;
+  readonly executionProfile: ResolvedCodexExecutionProfile;
+  readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
+  readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
+  readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly nativeGoalControls?: true;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
+  readonly rolloutBudget?: CodexAppServerRolloutBudget;
+  readonly bypassHookTrust?: boolean;
+  readonly timeoutMs: number;
+  readonly startupTimeoutMs: number;
+  readonly reconnectGraceMs: number;
+  readonly maxOutputBytes: number;
+  readonly abortSignal: AbortSignal;
+  readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
+  readonly modelBackend?: CodexModelBackend;
+};

@@ -97,7 +97,7 @@ function isNodeError(
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-function localProjectIntegrationDeps(
+export function localProjectIntegrationDeps(
   controller: ProjectIntegrationMcpController,
 ): ProjectIntegrationMcpUseCaseDeps {
   const rootDir = join(controller.controller.jobRootDir, "project-integration");

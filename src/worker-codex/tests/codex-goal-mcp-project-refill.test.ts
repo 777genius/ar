@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   LocalFileRunEventStore,
   LocalFileWorkerAccountCapacityStore,
@@ -31,9 +32,9 @@ import {
   createCodexGoalMcpServer,
   projectControllerPendingGuidancePromptContext,
 } from "../codex-goal-mcp";
+import { assertRefilledWorkerCheckpointRequired } from "./codex-goal-project-refill-checkpoint-assertions";
 import {
   auditDecision,
-  callToolJson,
   git,
   gitInitRepository,
   gitStdout,
@@ -141,6 +142,7 @@ describe("codex goal MCP server", () => {
         promptPath: join(controllerJobRoot, "prompt.md"),
         taskId: "infinity-context-controller-v1",
         accounts: ["account-a"],
+        checkpointRequired: true,
         accessBoundary: AccessBoundary.ProjectScopedControl,
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
@@ -206,6 +208,7 @@ describe("codex goal MCP server", () => {
         promptBody: "Run a focused memory fastgate and report cleanly.\n",
         taskId: "infinity-context-memory-fastgate-v1",
         accounts: ["account-a"],
+        checkpointRequired: false,
         workerRole: "fastgate",
         preStartAdmission: builtinAdmission,
         confirmPreStartAdmission: true,
@@ -213,6 +216,8 @@ describe("codex goal MCP server", () => {
         confirmRefill: true,
       });
       if (result.ok !== true) throw new Error(JSON.stringify(result));
+      await assertRefilledWorkerCheckpointRequired({ registryRootDir, root, phaseStartSha,
+        childJobId: "infinity-context-memory-fastgate-v1" });
 
       expect(result).toMatchObject({
         ok: true,
@@ -229,7 +234,7 @@ describe("codex goal MCP server", () => {
           accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
           reasoningEffort: "high",
           serviceTier: "default",
-          networkAccess: NetworkAccessMode.Restricted,
+          networkAccess: NetworkAccessMode.Unrestricted,
           tags: expect.arrayContaining([
             "project-control-refill",
             "worker-role-fastgate",
@@ -567,34 +572,23 @@ describe("codex goal MCP server", () => {
     try {
       await mkdir(sourceWorkspacePath, { recursive: true });
       await writeFile(fakeRunnerPath, `
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { runProjectControlOperationFile } from ${JSON.stringify(
+  pathToFileURL(resolve("dist/worker-codex/project-control-operation-lifecycle.js")).href,
+)};
 const index = process.argv.indexOf("--operation-file");
 const operationFilePath = process.argv[index + 1];
-const operation = JSON.parse(await readFile(operationFilePath, "utf8"));
-const now = new Date().toISOString();
-operation.status = "completed";
-operation.runningAt = operation.runningAt ?? now;
-operation.completedAt = now;
-operation.updatedAt = now;
-operation.runner = {
-  hostname: "fake-runner",
-  pid: process.pid,
-  command: process.argv,
-  startedAt: now
-};
-operation.result = {
-  ok: true,
-  mode: "fake_bounded_refill",
-  jobId: operation.targetJobId,
-  executionMode: operation.args.executionMode,
-  sourceRef: operation.args.sourceRef,
-  expectedSourceCommit: operation.args.expectedSourceCommit,
-  newBranch: operation.args.newBranch
-};
-await mkdir(dirname(operation.resultPath), { recursive: true });
-await writeFile(operation.resultPath, JSON.stringify(operation.result, null, 2) + "\\n");
-await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
+await runProjectControlOperationFile({
+  operationFilePath,
+  invokeTool: async (_toolName, args) => ({
+    ok: true,
+    mode: "fake_bounded_refill",
+    jobId: args.jobId,
+    executionMode: args.executionMode,
+    sourceRef: args.sourceRef,
+    expectedSourceCommit: args.expectedSourceCommit,
+    newBranch: args.newBranch
+  })
+});
 `);
       process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH = fakeRunnerPath;
 
@@ -624,7 +618,9 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
           enum: ["workspace-write", "danger-full-access"],
         },
       });
-      expect(refillTool?.inputSchema.required).toContain("workspacePath");
+      // Hosted MiMo resolves workspace paths from its protected binding;
+      // local requests still validate these paths in the handler below.
+      expect(refillTool?.inputSchema.required ?? []).not.toContain("workspacePath");
       expect(verifierTool?.inputSchema.properties).toMatchObject({
         mergeBinding: {
           type: "object",
