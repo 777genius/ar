@@ -6,7 +6,7 @@ import { researchJobRuntimeNamespaceAbsent, researchJobRuntimeProvenance } from 
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
-import type { CodexGoalJobManifest } from "./codex-goal-jobs";
+import { parseStoredCodexGoalJobManifest, type CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
 import { assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
@@ -187,12 +187,15 @@ async function prepareUnsubmittedWriterObservation(manifest: CodexGoalJobManifes
   try {
     const read = await prepareUnsubmittedResearchStartRelease(manifest.jobId);
     if (!read) return;
-    const terminal = terminalResearchStart(manifest.jobId), r = terminal.spec.request;
-    if (r.jobId !== manifest.jobId || r.taskId !== manifest.taskId || r.jobRootDir !== manifest.jobRootDir ||
-        r.workspacePath !== manifest.workspacePath || r.promptPath !== manifest.promptPath || r.modelBackend !== manifest.modelBackend) return;
+    const terminal = terminalResearchStart(manifest.jobId);
+    const matchesManifest = (): boolean => {
+      try { return researchHash(JSON.stringify(parseStoredCodexGoalJobManifest(manifest))) === terminal.spec.registeredHandoff?.manifestSha256; }
+      catch { return false; }
+    };
+    if (!matchesManifest()) return async () => ({ status: "unknown" });
     read();
     return async () => {
-      try { read(); return { status: "released" }; }
+      try { if (!matchesManifest()) return { status: "unknown" }; read(); return { status: "released" }; }
       catch { return { status: "unknown" }; }
     };
   } catch { return; } // Malformed/incomplete origins keep existing closed behavior.

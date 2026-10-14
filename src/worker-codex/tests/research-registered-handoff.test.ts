@@ -150,6 +150,28 @@ describe("explicit registered abort before the first bind (labelled Host fixture
       call.command === "/usr/bin/systemctl" && ["stop", "kill"].includes(call.args[0]!))).toEqual([]);
     expect(host.authReads).toBe(0);
   });
+  it.each([
+    ["model", "prepare"], ["model", "read"],
+    ["reasoningEffort", "prepare"], ["reasoningEffort", "read"],
+    ["accounts", "prepare"], ["accounts", "read"],
+    ["invalidAccounts", "prepare"], ["invalidAccounts", "read"],
+  ] as const)("refuses caller-only %s contradiction at %s without changing the registered manifest", async (field, phase) => {
+    const { expected, proof, manifest } = await incomplete();
+    await abortUnsubmittedRegisteredResearchLaunch(expected, proof);
+    const manifestPath = codexGoalJobManifestPath({ registryRootDir: registry, jobId: expected.jobId });
+    const registeredBytes = researchRead(manifestPath);
+    // A reordered caller object must normalize to the same registered identity.
+    const supplied = Object.fromEntries(Object.entries(manifest).reverse()) as typeof manifest;
+    const prepared = phase === "read" ? await prepareResearchJobWriterObservation(supplied) : undefined;
+    if (prepared) expect(await prepared()).toEqual({ status: "released" });
+    Object.assign(supplied, field === "model" ? { model: "TEST-contradictory-model" }
+      : field === "reasoningEffort" ? { reasoningEffort: "none" }
+      : { accounts: field === "invalidAccounts" ? [] : ["TEST-contradictory-account"] });
+    expect(await (prepared ?? await prepareResearchJobWriterObservation(supplied))()).toEqual({ status: "unknown" });
+    expect(researchRead(manifestPath)).toEqual(registeredBytes);
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "released" });
+    expect(host.authReads).toBe(0);
+  });
   it.each(["submitter", "closing", "late-closing", "queued", "live", "mount", "binding", "provider", "receipt"] as const)("retains active on %s uncertainty", async fault => {
     const { current, expected, proof } = await incomplete(), active = researchRead(join(researchJobAuthority(expected.jobId), "active.json"));
     if (fault === "submitter") vi.mocked(proof.assertTerminal).mockImplementation(() => { throw Error("TEST owner still active"); });
