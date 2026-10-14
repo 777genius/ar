@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../core/host-infrastructure/process-cgroup";
 import { copyBoundedHostedByteInput } from "./hosted-bounded-byte-input";
 import { captureManagedSessionArtifactFacts, captureManagedSessionMaterializationInput, captureManagedSessionWriteIntent, assertManagedSessionCredentialWritebackFacts, assertManagedSessionDischargedFacts as assertSessionExecutionUseDischarged } from "./hosted-managed-dependency-session-artifact-facts";
 import { formManagedDependencyProviderStartFacts } from "./hosted-managed-provider-start-facts";
@@ -110,7 +111,7 @@ function material(expected: DependencyProtectedReference, path: string, maximum 
 }
 function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedToolFiles, rootPurpose?: RootPurposeState) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   if (/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(group)) {
     const ordinary = readHostedOrdinaryProcessOrigin(fence,scope);
     return { digest:hash(JSON.stringify(ordinary)), facts:Object.freeze({kind:CurrentHostedDependencyOriginKind.Ordinary,ordinary}) };

@@ -573,7 +573,9 @@ class RuntimeKernel {
         task: input.task,
         runContext: input.runContext,
       });
-      if (task.status === "failed" && shouldGuardedRefresh(task.failure)) {
+      if (task.status === "failed" &&
+          !task.warnings.some(warning => warning.code === "task_session_finalization_pending") &&
+          shouldGuardedRefresh(task.failure)) {
         this.emit("provider.refresh.guard.started", input.runContext.runId, {
           reason: task.failure.code,
         });

@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../core/host-infrastructure/process-cgroup";
 import { freezeFacts } from "./hosted-dependency-immutable-facts";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -59,7 +60,7 @@ function material(expected: DependencyProtectedReference, path: string, maximum 
 }
 export function collectActualHostedManagedReadonlyOrigin(fence: HostedActivationFence) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
+  const group = observedProcessCgroup(readFileSync("/proc/self/cgroup","utf8"));
   const match = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/(subscription-runtime-outer-([a-f0-9-]{36})\.service)$/.exec(group);
   if (!match || !match[1] || !match[2]) invalid();
   const remaining = systemdObservationBudget();
@@ -121,7 +122,7 @@ export function collectActualHostedManagedReadonlyOrigin(fence: HostedActivation
     hostRoot = statSync("/",{bigint:true}), rootOne = statSync("/proc/1/root",{bigint:true});
   if (!hostRoot.isDirectory() || [rootSelf,rootParent,rootOne].some(s => !s.isDirectory() || s.dev !== hostRoot.dev || s.ino !== hostRoot.ino)) invalid();
   const supervisor = inventory.units.find(row => row.name === inventory.supervisorUnit); if (!supervisor) invalid();
-  const shown = spawnSync("/usr/bin/systemctl",["show","--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID","--",supervisor.name],
+  const shown = spawnSync("/usr/bin/systemctl",["show","--all","--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID","--",supervisor.name],
     {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:remaining(),maxBuffer:65536,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
   if (shown.error || shown.signal || shown.status !== 0 || shown.stderr) invalid();
   const lines = shown.stdout.trim().split("\n"); if (lines.length !== 5) invalid();
