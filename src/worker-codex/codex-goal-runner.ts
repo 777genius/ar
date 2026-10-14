@@ -8,6 +8,7 @@ import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapte
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
+import { OwnedMimoSnapshotGitRunner, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "./owned-mimo-snapshot-git";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
 import { admitHostedDependencyEntry, assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction,
@@ -521,6 +522,10 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   const ownedMimoCoding = ownedMimoWorker &&
     ownedMimoWorkerStart(input.appServerProcessFactory)?.request.hostedProfile === HostedMimoProfile.CodingV1;
   if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
+  // Signed dependency workspaces retain their independent purpose-qualified route.
+  const ownedSnapshotGit = ownedMimoWorker && !dependencyGit
+    ? new OwnedMimoSnapshotGitRunner(config.workspacePath, () => { assertProviderAdmission?.(); }) : undefined;
+  const snapshotGit = dependencyGit ?? ownedSnapshotGit;
   const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
     deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
     binding: { allocationId: config.jobId ?? config.taskId, incarnationId: randomUUID() },
@@ -548,9 +553,11 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     sourceEnv: config.sourceEnv,
   });
   return {
-    ...(dependencyGit ? {
-      snapshotter: new DefaultWorkspaceSnapshotter({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
-      workspaceAccess: new NodeSafeExecutionWorkspaceAccess({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+    ...(snapshotGit ? {
+      snapshotter: ownedSnapshotGit ? ownedMimoWorkspaceSnapshotter(ownedSnapshotGit)
+        : new DefaultWorkspaceSnapshotter({ commandRunner: snapshotGit, gitBinaryPath: "/usr/bin/git" }),
+      workspaceAccess: ownedSnapshotGit ? ownedMimoWorkspaceAccess(ownedSnapshotGit)
+        : new NodeSafeExecutionWorkspaceAccess({ commandRunner: snapshotGit, gitBinaryPath: "/usr/bin/git" }),
     } : {}),
     ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),

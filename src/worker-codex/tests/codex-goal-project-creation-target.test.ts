@@ -1,5 +1,6 @@
+import { finalizeRetainedAdmissionArchive } from "../../../host-integration/runtime-admission/mimo-job-admission-repair.mjs";
 import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
-import { access, chmod, link, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, link, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -143,6 +144,18 @@ describe("scoped creation targets", () => {
             workspacePath: manifest.workspacePath, ownedPaths: ["src/example.ts"] }, summaries, overviewItems,
           binding: { start: { manifest, launch: selected, workspaceLease } } });
         const expected = { jobId: manifest.jobId, workspacePath: manifest.workspacePath };
+        await expect(identity()).resolves.toEqual(expected);
+        const backup = join(manifest.jobRootDir, ".admission-repair-" + "a".repeat(64)), depot = join(f.root, "admission-repair-archives");
+        await mkdir(backup, { mode: 0o700 }); await mkdir(depot, { mode: 0o700 });
+        const priorHashes = { contract: "", state: "", receipt: "" };
+        for (const name of ["contract", "state", "receipt"] as const) {
+          const artifact = await readFile(plan.descriptor[`${name}Path`]); priorHashes[name] = researchHash(artifact);
+          await writeFile(join(backup, name + ".json"), artifact, { mode: 0o600 });
+        }
+        await expect(identity()).resolves.toBeUndefined(); // Real old guard rejects our formerly colocated archive.
+        await finalizeRetainedAdmissionArchive({ source: backup, destination: join(depot, manifest.jobId + "." + "a".repeat(64)),
+          priorPlanSha256: "a".repeat(64), priorHashes,
+          assertCurrent: async () => { expect(await readFile(plan.descriptor.receiptPath)).toEqual(preparedBytes); } });
         await expect(identity()).resolves.toEqual(expected);
         await expect(identity({ ...reservation.launch })).resolves.toBeUndefined();
         await writeFile(receiptPath, Buffer.concat([bytes, Buffer.from("\n")]));

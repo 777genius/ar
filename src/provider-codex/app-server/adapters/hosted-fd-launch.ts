@@ -117,7 +117,13 @@ export class HostedFdLaunch {
         },
         final: done => this.#waitReleased().then(() => this.#input.end(done), error => done(error as Error)),
         destroy: (error, done) => {
-          if (!this.#released || error || !gate.writableFinished) this.invalidate();
+          // Node destroys child.stdin inside its native exit handler, before
+          // emitting close/raw EOF. release(frame, true) may have completed only
+          // the private input, leaving this public gate unused. Final success
+          // still requires close and both raw EOFs in assertOriginalZeroWaitClosed.
+          const completedPrivateInput = this.#released && this.#input.writableFinished &&
+            this.#physicalChild.exitCode === 0 && this.#physicalChild.signalCode === null;
+          if (error || !this.#released || (!gate.writableFinished && !completedPrivateInput)) this.invalidate();
           this.#input.destroy(error ?? undefined); done(error);
         } });
       // highWaterMark only signals backpressure: callers may keep writing while

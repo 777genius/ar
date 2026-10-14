@@ -23,6 +23,18 @@ or endpoint; requests remain bounded JSON on stdin.
 
 Start requests contain `operation: "start"`, `jobId`, exact 32-character `machineId`, absolute `argv[0]`, and integer `runtimeSeconds`, `stopSeconds`, `memoryMiB`, `tasksMax`, `cpuPercent`. Caller `cwd` and unknown fields are rejected. New IDs match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`; legacy IDs remain supported for status/stop. Status and stop requests contain `operation`, `jobId`, and `machineId`. The endpoint runs as root and new jobs use the system systemd manager. New records persist `manager: "system"` before launch; records without a manager retain root's user-manager status/stop. Unknown manager values fail closed and callers cannot select a manager. Both managers must be reachable for collision checks before new starts. The payload enters a private PID/user namespace and sees UID/GID 65532, mapped to the host root identity for compatible file ownership.
 
+Optional `startupSeconds` is an own safe-integer field from 1 through 900.
+An omitted field uses 600 seconds; providers always use a fixed 600-second
+startup budget and accept no override or caller-supplied limits. An explicit
+600 remains a distinct job binding rather than being normalized to omission.
+
+Each job reserves original monotonic work through startup plus runtime and
+cleanup through that work plus stop. Exact original end boundaries are refused.
+
+After an uncertain transport result, reconciliation requires the same job ID
+and identical request fingerprint. A changed startup or storage binding is
+rejected and never authorizes a second submit.
+
 The client caches one multiplex transport per host/machine identity. A private socket-directory lock serializes all calls across independent CLI processes, including master creation; this conservative first slice therefore runs only one short command per host. All callers for a host identity must use the same private socket directory. Queue waits are bounded to 30 seconds. Lock ownership records include PID and process start time; stale or ambiguous locks fail closed for operator reconciliation, never automatic takeover while a job result could be uncertain. SSH never silently falls back to a standalone connection. One bounded transport retry uses the identical job request.
 
 The installed endpoint verifies machine identity; the root-owned managed launcher is the sole storage authority and reads one canonical external path from `/etc/subscription-runtime/storage-root`. Missing or invalid configuration denies new starts. The fixed runtime floor is 5 GiB and 50,000 free inodes. The file must be regular, bounded to 16 KiB, root-owned, and not group/world writable; symlink paths are rejected. No job request or task environment selects the storage root.
