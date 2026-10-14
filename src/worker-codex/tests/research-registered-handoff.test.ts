@@ -18,7 +18,7 @@ import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAut
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
 import { admitResearchProcessFactory, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
-import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker,
+import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, recoverOwnedMimoWorkerPreservation,
   terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
 import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { bindResearchMimoWritableFootprint, observeResearchMimoAllocationWritableRoots, prepareResearchProviderRoot } from "../research-provider-root";
@@ -902,5 +902,36 @@ describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census
     if (fault === "spec") researchPublish(join(current.directory, "spec.json"), { ...current.spec, artifactSha256: "e".repeat(64) });
     expect(await read()).toEqual({ status: "unknown" }); expect(host.calls.filter(call => call.command === "/usr/bin/systemctl")).toHaveLength(calls);
     expect(host.authReads).toBe(0);
+  });
+});
+
+
+describe("qualified preservation recovery (explicit offline Linux Host fixture)", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
+      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(digest);
+    });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {
+    const current = await registeredMimoCandidate(true);
+    const retained = ["spec.json", "binding.json", "mimo-candidate.json", "durable-pin.json"].map(name =>
+      [name, researchRead(join(current.directory, name))] as const);
+    expect(await recoverOwnedMimoWorkerPreservation({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: current.spec.requestSha256 })).toMatchObject({ status: "partial" });
+    for (const [name, bytes] of retained) expect(researchRead(join(current.directory, name))).toEqual(bytes);
+    const output = JSON.parse(readFileSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`), "utf8"));
+    expect(output.status).toBe("partial"); expect(output.details.handoffPacketPath.startsWith(sink + "/")).toBe(true);
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(false);
+    expect(runtimeArtifact.assertQualifiedResearchRuntimeArtifact).toHaveBeenCalled();
+  });
+  it("denies a changed original request before release or result publication", async () => {
+    const current = await registeredMimoCandidate(true);
+    await expect(recoverOwnedMimoWorkerPreservation({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: "0".repeat(64) })).rejects.toThrow("hosted_research_launch_denied");
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(true);
+    expect(existsSync(local(join(current.directory, "mimo-publication.json")))).toBe(false);
   });
 });
