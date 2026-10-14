@@ -480,6 +480,8 @@ jobs:
           grep -Fxq 'Version 6.0.3' dependency-h1-tool-inputs-ci-source-evidence/typescript-version.txt
           sha256sum \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.ts \
+            scripts/dependency-retention-os-test/current-h1-qualified-package-image.ts \
+            scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts \
@@ -505,6 +507,8 @@ jobs:
           node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json 2>&1 | tee dependency-h1-tool-inputs-ci-source-evidence/strict-emit.log
           sha256sum \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js \
+            scripts/dependency-retention-os-test/current-h1-qualified-package-image.js \
+            scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.js \

@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { types } from "node:util";
 import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, PythonEnvelopeKind, type SignedPackage, type CapturedEnvelope, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
+import { qualifiedH1PackagePins, qualifiedH1PackageRequestArguments, qualifiedH1PackageVectorSha256 } from "./current-h1-qualified-package-image.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
@@ -146,7 +147,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   // One closed TEST invocation after this own process established GID0. This
   // is not a runner port and cannot select another test/path/command.
   const sibling=dirname(fileURLToPath(import.meta.url));
-  const physicalTestArgv=["--test","--test-reporter=tap",join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-publication.node-test.js"),join(sibling,"current-h1-archive-format-census.node-test.js"),join(sibling,"current-h1-archive-members.node-test.js"),join(sibling,"current-h1-archive-path-graph.node-test.js"),join(sibling,"current-h1-selected-toolroot.node-test.js")];
+  const physicalTestArgv=["--test","--test-reporter=tap",join(sibling,"current-h1-qualified-package-image.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-index.node-test.js"),join(sibling,"current-h1-tool-inputs-package.node-test.js"),join(sibling,"current-h1-tool-inputs-ci-publication.node-test.js"),join(sibling,"current-h1-archive-format-census.node-test.js"),join(sibling,"current-h1-archive-members.node-test.js"),join(sibling,"current-h1-archive-path-graph.node-test.js"),join(sibling,"current-h1-selected-toolroot.node-test.js")];
   const physicalTests=spawnSync(process.execPath,physicalTestArgv,{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"root-tests.tap"),physicalTests.stdout??"");file(join(evidence,"root-tests.stderr"),physicalTests.stderr??"");assert(!physicalTests.error&&physicalTests.status===0&&physicalTests.signal===null,"fixed root CI protocol/custody tests");
   assertCiRootProtocolTap(physicalTests.stdout);
@@ -154,6 +155,8 @@ export async function mainCiSignedToolInputs():Promise<void> {
   file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),rootTestArgv:physicalTestArgv,tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
   dir(state);for(const name of ["etc","etc/parts","etc/auth-parts","etc/preferences-parts","etc/trusted-parts","lists","lists/partial","archives","archives/partial","log"])dir(join(state,name));
   for(const name of ["status","etc/main.conf","etc/auth.conf","etc/preferences","etc/trusted.gpg"])file(join(state,name),"");
+  assert.equal(hash(JSON.stringify(qualifiedH1PackagePins)),qualifiedH1PackageVectorSha256,"qualified package lock bytes");
+  file(join(evidence,"qualified-package-lock.json"),JSON.stringify({sourceSha,sha256:qualifiedH1PackageVectorSha256,packages:qualifiedH1PackagePins,arguments:qualifiedH1PackageRequestArguments,nativeQualified:false})+"\n");
   phase=CiDataPhase.Key;const keyBytes=await downloadArchiveKey(Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))));tick();file(keyring,keyBytes);file(join(evidence,"ubuntu-archive-keyring.gpg"),keyBytes);
   const sources=ciUbuntuSources.map(s=>`deb [signed-by=${keyring}] ${s.base} ${s.pocket} main universe`).join("\n")+"\n";file(join(etc,"sources.list"),sources);
   const conf=[`Dir::State "${state}";`,`Dir::State::lists "${state}/lists";`,`Dir::State::status "${state}/status";`,`Dir::Cache "${state}";`,`Dir::Cache::archives "${state}/archives";`,`Dir::Cache::pkgcache "";`,`Dir::Cache::srcpkgcache "";`,`Dir::Log "${state}/log";`,
@@ -174,14 +177,14 @@ export async function mainCiSignedToolInputs():Promise<void> {
    }
   }
   file(join(evidence,"complete-indices.json"),JSON.stringify(indices.map(({bytes,...row})=>row))+"\n");
-  phase=CiDataPhase.Seeds;command(CiTool.AptGet,["--yes","--download-only","--no-install-recommends","install",...exactH1PackageSeeds],4*1024*1024,300000,env);
+  phase=CiDataPhase.Seeds;command(CiTool.AptGet,["--yes","--download-only","--no-install-recommends","install",...qualifiedH1PackageRequestArguments],4*1024*1024,300000,env);
   const debs=readdirSync(join(state,"archives")).filter(n=>n.endsWith(".deb")).sort();assert(debs.length>0&&debs.length<200);const packages:AcquiredSignedPackage[]=[],packageOrigins:{archive:string;indices:string[]}[]=[];
   for(const name of debs){assertCiPublicEvidenceBasename(name);assert(name.endsWith(".deb"));const original=retainOriginalAcquiredArchive(join(state,"archives",name),tick);archives.set(name,original);original.rejoin();const fields=command(CiTool.DpkgDeb,["--field",`/proc/${process.pid}/fd/${original.fd}`,"Package","Version","Architecture"],4*1024*1024,30000,env).toString("utf8");original.rejoin();let row:AcquiredSignedPackage|undefined;const origins:string[]=[];
    for(const index of indices){tick();const current=joinCompleteUbuntuIndex(fields,index.bytes,original);tick();if(current){if(row)assert.equal(JSON.stringify(current),JSON.stringify(row));row=current;origins.push(index.origin+"/"+index.path);}}assert(row,"original same-stanza signed archive origin absent");packages.push(row);packageOrigins.push({archive:name,indices:origins});const data=fullBytes(join(state,"archives",name),32*1024*1024,tick);assert.equal(hash(data),original.sha256);file(join(evidence,name),data);original.rejoin();
   }
   assertExactH1PackageSeeds(packages);packages.sort((a,b)=>a.package.localeCompare(b.package));file(join(evidence,"signed-packages.json"),JSON.stringify({sourceSha,packages,packageOrigins,qualifiedNative:false})+"\n");
   phase=CiDataPhase.RawFormat;
-  const rawPackageVector=packages.map(({package:name,version,arch,sha256,size})=>({package:name,version,arch,sha256,size})),rawPackageVectorSha256=hash(JSON.stringify(rawPackageVector)),previousVectorSha256="d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b";
+  const rawPackageVector=packages.map(({package:name,version,arch,sha256,size})=>({package:name,version,arch,sha256,size})),rawPackageVectorSha256=hash(JSON.stringify(rawPackageVector)),previousVectorSha256=qualifiedH1PackageVectorSha256;
   file(join(evidence,"archive-format-image.json"),JSON.stringify({purpose:"ACTUAL_SIGNED_SURVEY_IMAGE_NOT_NATIVE_AUTHORITY",sourceSha,packages:rawPackageVector,sha256:rawPackageVectorSha256,previous01dfVectorSha256:previousVectorSha256,matchesPreviouslyVerified01dfImage:rawPackageVectorSha256===previousVectorSha256})+"\n");
   const formats:{archive:string;stream:string;streamBytes:number;streamSha256:string;survey:RawArchiveSurvey}[]=[],rawNames=new Map<string,{archive:string;offset:number}[]>(),memberRecords:{archive:string;record:string;bytes:number;sha256:string;rows:number}[]=[];const originalMembers:FixedGnuArchiveMembers[]=[];
   const selectedOriginals:SelectedRetainedStreamData[]=[];let rawBytes=0,rawHeaders=0;
@@ -191,16 +194,20 @@ export async function mainCiSignedToolInputs():Promise<void> {
    const stream=`archive-fsys-${formats.length+1}.tar`;file(join(evidence,stream),captured.bytes);original.rejoin();
    formats.push({archive:name,stream,streamBytes:captured.bytes.length,streamSha256:captured.survey.streamSha256,survey:captured.survey});
    file(join(evidence,`archive-format-${formats.length}.json`),JSON.stringify({purpose:"RAW_ARCHIVE_OBSERVATIONS_NOT_MEMBER_AUTHORITY",sourceSha,originalArchive:captured.archive,tool:captured.tool,status:captured.status,signal:captured.signal,stderr:captured.stderr,stream,survey:captured.survey})+"\n");
-   assert.equal(rawPackageVectorSha256,previousVectorSha256,"fixed GNU member image changed: DATA HOLD");
+   for(const header of captured.survey.headers)if([0,48,49,50].includes(header.type)){const key=header.format+":"+header.prefixBase64+":"+header.nameBase64,rows=rawNames.get(key)??[];rows.push({archive:name,offset:header.offset});rawNames.set(key,rows);}
+   // A changed signed image yields raw observations only. Complete the bounded
+   // survey before refusing it; member authority and physical output require
+   // the exact previously qualified image below.
+   if(rawPackageVectorSha256!==previousVectorSha256){tick();continue;}
    const originalPackages=packages.filter(row=>row.sha256===original.sha256&&row.size===original.size);assert.equal(originalPackages.length,1,"single original signed package for GNU stream");const pkg=originalPackages[0];assert(pkg);original.rejoin();
    const members=readFixedGnuBasicMembers(captured.bytes,pkg,{sha256:captured.survey.streamSha256,bytes:captured.bytes.length,archiveSha256:original.sha256,archiveBytes:original.size},deadline);tick();original.rejoin();
    const serialized=serializeFixedGnuMembers(members,deadline),record=`archive-members-${formats.length}.json`;file(join(evidence,record),serialized.bytes);tick();original.rejoin();
    selectedOriginals.push(Object.freeze({archive:original,bytes:captured.bytes,members}));
    originalMembers.push(members);memberRecords.push({archive:name,record,bytes:serialized.bytes.length,sha256:serialized.sha256,rows:members.rows.length});
-   for(const header of captured.survey.headers)if([0,48,49,50].includes(header.type)){const key=header.format+":"+header.prefixBase64+":"+header.nameBase64,rows=rawNames.get(key)??[];rows.push({archive:name,offset:header.offset});rawNames.set(key,rows);}
    tick();
   }
   file(join(evidence,"archive-format-census.json"),JSON.stringify({purpose:"COMPLETE_ORIGINAL_FSYS_STREAMS_RAW_HEADERS_ONLY",sourceSha,packageVectorSha256:rawPackageVectorSha256,matchesPreviouslyVerified01dfImage:rawPackageVectorSha256===previousVectorSha256,archives:formats.length,bytes:rawBytes,observedHeaders:rawHeaders,completeEffectiveMemberCensus:false,nativeQualified:false,formats:formats.map(({survey,...row})=>({...row,status:survey.status,reason:survey.reason})),rawRepeatedNonDirectoryHeaders:[...rawNames].filter(([,rows])=>rows.length>1).map(([rawNameKey,rows])=>({rawNameKey,rows}))})+"\n");
+  assert.equal(rawPackageVectorSha256,previousVectorSha256,"fixed GNU member image changed: DATA HOLD");
   tick();assert.equal(memberRecords.reduce((count,row)=>count+row.rows,0),rawHeaders,"complete GNU row count");file(join(evidence,"archive-members-census.json"),JSON.stringify({purpose:"SIGNED_GNU_BASIC_MEMBER_PROVENANCE_DATA_ONLY",sourceSha,packageVectorSha256:rawPackageVectorSha256,archives:memberRecords.length,rows:rawHeaders,serializedBytes:memberRecords.reduce((count,row)=>count+row.bytes,0),records:memberRecords,namespaceGraphQualified:false,nativeQualified:false})+"\n");tick();
   const graphDeadline=Math.min(deadline,performance.now()+30000),rejoinGraphOriginals=()=>{tick();assert(performance.now()<graphDeadline,"original graph phase deadline");for(const original of archives.values())original.rejoin();tick();assert(performance.now()<graphDeadline,"original graph phase deadline");};
   rejoinGraphOriginals();const graphInputs=Object.freeze(originalMembers),graphData=preflightFixedH1ArchiveRole(graphInputs,rawPackageVectorSha256,graphDeadline);rejoinGraphOriginals();

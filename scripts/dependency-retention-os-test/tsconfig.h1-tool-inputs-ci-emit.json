@@ -1,4 +1,4 @@
 {
  "compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"noUncheckedIndexedAccess":true,"exactOptionalPropertyTypes":true,"skipLibCheck":true,"noEmitOnError":true,"rewriteRelativeImportExtensions":true,"types":["node"],"rootDir":"../.."},
- "files":["./current-h1-tool-inputs-ci.ts","./current-h1-tool-inputs-ci-index.node-test.ts","./current-h1-tool-inputs-package.node-test.ts","./current-h1-tool-inputs-ci-publication.node-test.ts","./current-h1-archive-format-census.node-test.ts","./current-h1-archive-members.node-test.ts","./current-h1-archive-path-graph.node-test.ts","./current-h1-selected-toolroot.node-test.ts"]
+ "files":["./current-h1-tool-inputs-ci.ts","./current-h1-qualified-package-image.node-test.ts","./current-h1-tool-inputs-ci-index.node-test.ts","./current-h1-tool-inputs-package.node-test.ts","./current-h1-tool-inputs-ci-publication.node-test.ts","./current-h1-archive-format-census.node-test.ts","./current-h1-archive-members.node-test.ts","./current-h1-archive-path-graph.node-test.ts","./current-h1-selected-toolroot.node-test.ts"]
 }
