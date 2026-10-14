@@ -187,10 +187,11 @@ jobs:
           export HOME="$subscription_test_home"
           case "$CI_TEST_TARGET" in
             1/4|2/4|3/4|4/4)
-              # Every shard needs dist fixtures; retain the configured two
-              # isolated forks and the full default test selection.
+              # Every shard needs dist fixtures and the configured two forks.
+              # The six original placement cases run in the required Root TEST
+              # selection below; they cannot authenticate Root in this lane.
               npm run build
-              npm run test:unit -- --shard="$CI_TEST_TARGET"
+              npm run test:unit -- --shard="$CI_TEST_TARGET" --exclude=src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts
               ;;
             ancillary)
               npm run test:before-unit
@@ -427,12 +428,24 @@ jobs:
           [[ -z "$(find /var/lib/subscription-runtime-host-policy -mindepth 1 -maxdepth 1 -print -quit)" ]]
           install -d -m 0700 /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
             /var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs
+          # Observe the actual principal before Vitest can project fixture facts.
+          node --input-type=module-typescript - <<'ROOT_TEST_AUTHORITY'
+          import assert from 'node:assert/strict';
+          import { readFileSync, readlinkSync } from 'node:fs';
+          assert.equal(process.platform, 'linux');
+          assert.equal(process.getuid?.(), 0);
+          assert.match(readFileSync('/proc/self/uid_map', 'utf8').trim(), /^0\s+0\s+4294967295$/);
+          for (const ns of ['user', 'mnt', 'pid']) {
+            assert.equal(readlinkSync(`/proc/self/ns/${ns}`), readlinkSync(`/proc/1/ns/${ns}`));
+          }
+          ROOT_TEST_AUTHORITY
           SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
             src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
             src/worker-codex/tests/codex-goal-sdk-standalone-workspace.test.ts \
+            src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json
           node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
