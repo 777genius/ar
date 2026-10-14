@@ -72,6 +72,16 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
     };
   }
   const message = codexFailureMessage(error);
+  if (error instanceof CodexAppServerTurnError &&
+      error.failureDetails.phase !== "turn_start_rejected" &&
+      /Incomplete response returned, reason: max_output_tokens(?=:details=|$)/.test(message)) {
+    return {
+      code: "budget_exceeded", retryable: false, reconnectRequired: false,
+      safeMessage: "Provider response exhausted its output-token limit; retained output is incomplete. Do not replay this turn automatically.",
+      causeCategory: "max_output_tokens",
+      details: { ...codexFailureDetails(error, message), incompleteReason: "max_output_tokens" },
+    };
+  }
   const state = classifyCodexRuntimeFailure(message);
   const details = codexFailureDetails(error, message);
 

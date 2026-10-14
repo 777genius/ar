@@ -63,12 +63,17 @@ environment overrides or output modes are accepted. The launcher constructs all
 systemd flags and hardening itself. Provider resource limits are fixed in code;
 I/O limits cover the root and admitted storage filesystems. Custody is a separate
 trusted controller and is not an accepted launcher operation.
-Jobs and providers share a fixed 600-second startup budget for systemd namespace
-setup before the initial exec, separate from runtime and stop budgets. It does
-not extend provider readiness, client, MCP or task deadlines. Requests cannot
-override it. Transport timeouts still require reconciliation with the same
-job ID; they do not authorize a replacement launch. This finite budget does not
-prove native startup completes on a particular host.
+Jobs accept an optional `startupSeconds` own field as a safe integer from 1
+through 900. Omission uses the existing 600-second default; providers use a
+fixed 600-second startup budget and accept neither an override nor
+caller-supplied `limits`. For jobs, startup combines with runtime for the
+original work reservation, and stop combines with that work for cleanup. An
+explicit 600 remains explicit job identity rather than being normalized to
+omission. The startup budget covers systemd namespace setup before initial exec
+and does not extend provider readiness, client, MCP or task deadlines. Transport
+timeouts still require reconciliation with the same job ID; they do not
+authorize a replacement launch. This finite budget does not prove native
+startup completes on a particular host.
 The launcher derives `storageRoot/jobs/jobId` with fixed `workspace`, `state`,
 `logs`, `output`, `home`, `tmp` and `payload-logs` children, creating and validating each after
 storage admission. Job identifiers accept letters, digits, dots, underscores

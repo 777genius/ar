@@ -27,8 +27,8 @@ describe("public MCP schema for remote MiMo project workers", () => {
     try {
       const identity = { mimoProjectId: "test-project", mimoWorkstreamId: "test-work", jobId: "test-worker" };
       const calls: ReadonlyArray<{ name: string; arguments: Record<string, unknown> }> = [
-        { name: "codex_goal_project_create_job", arguments: { ...identity, promptBody: "Harmless TEST edit", sourceCommit: "b".repeat(40), confirmCreate: true } },
-        { name: "codex_goal_project_refill_worker", arguments: { ...identity, promptBody: "Harmless TEST edit", expectedSourceCommit: "b".repeat(40), confirmRefill: true, startWorker: false } },
+        { name: "codex_goal_project_create_job", arguments: { ...identity, ownedPaths: ["src/feature/one.ts"], thinking: true, promptBody: "Harmless TEST edit", sourceCommit: "b".repeat(40), confirmCreate: true } },
+        { name: "codex_goal_project_refill_worker", arguments: { ...identity, ownedPaths: ["src/feature/nested/"], thinking: false, promptBody: "Harmless TEST edit", expectedSourceCommit: "b".repeat(40), confirmRefill: true, startWorker: false } },
         { name: "codex_goal_project_start", arguments: { ...identity, confirmStart: true } },
         { name: "codex_goal_status_by_id", arguments: identity },
         { name: "codex_goal_project_stop", arguments: { ...identity, confirmStop: true } },
@@ -38,6 +38,8 @@ describe("public MCP schema for remote MiMo project workers", () => {
         const metadata = inventory.tools.find(tool => tool.name === call.name);
         expect(metadata?.inputSchema.properties).toHaveProperty("mimoProjectId");
         expect(metadata?.inputSchema.properties).toHaveProperty("mimoWorkstreamId");
+        if (call.name === "codex_goal_project_create_job" || call.name === "codex_goal_project_refill_worker")
+          expect(metadata?.inputSchema.properties?.thinking).toMatchObject({ type: "boolean" });
         const result = await client.callTool(call);
         expect(result.isError).not.toBe(true);
         expect(result.structuredContent).toMatchObject({ ok: true, pending: true });
@@ -47,6 +49,38 @@ describe("public MCP schema for remote MiMo project workers", () => {
         expect(request).not.toHaveProperty("workspacePath"); expect(request).not.toHaveProperty("controllerJobId");
       }
       expect(peer.requests[0]).toMatchObject({ prompt: "Harmless TEST edit", sourceCommit: "b".repeat(40) });
+      expect(peer.requests.slice(0, 2).map(request => request.ownedPaths)).toEqual([["src/feature/one.ts"], ["src/feature/nested/"]]);
+      expect(peer.requests.slice(0, 2).map(request => request.reasoningEffort)).toEqual(["high", "none"]);
+      expect(peer.requests.every(request => !Object.hasOwn(request, "thinking"))).toBe(true);
+      for (const name of ["codex_goal_project_create_job", "codex_goal_project_refill_worker"]) {
+        const localNarrowing = await client.callTool({ name, arguments: {
+          jobId: "local-test", ownedPaths: ["src/feature/one.ts"], confirmCreate: true, confirmRefill: true,
+        } });
+        expect(localNarrowing.isError).toBe(true);
+        expect(localNarrowing.content).toEqual([expect.objectContaining({ text: expect.stringContaining("mimo_project_remote_backend_conflict") })]);
+        expect(peer.requests).toHaveLength(5);
+      }
+      const rejected = await client.callTool({ name: "codex_goal_project_create_job", arguments: {
+        ...identity, thinking: true, reasoningEffort: "none", promptBody: "TEST", sourceCommit: "b".repeat(40), confirmCreate: true,
+      } });
+      expect(rejected.isError).toBe(true);
+      expect(peer.requests).toHaveLength(5);
+      for (const name of ["codex_goal_project_start", "codex_goal_status_by_id", "codex_goal_project_stop"]) {
+        const metadata = inventory.tools.find(tool => tool.name === name);
+        expect(metadata?.inputSchema.properties?.thinking).toMatchObject({ type: "boolean" });
+        const narrowedControl = await client.callTool({ name, arguments: {
+          ...identity, ownedPaths: ["src/feature/one.ts"], confirmStart: true, confirmStop: true,
+        } });
+        expect(narrowedControl.isError).toBe(true);
+        expect(peer.requests).toHaveLength(5);
+        for (const thinking of [false, true]) {
+          const control = await client.callTool({ name, arguments: {
+            ...identity, thinking, confirmStart: true, confirmStop: true,
+          } });
+          expect(control.isError).toBe(true);
+          expect(peer.requests).toHaveLength(5);
+        }
+      }
     } finally { await client.close(); await server.close(); }
   });
 });
