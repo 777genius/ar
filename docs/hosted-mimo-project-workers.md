@@ -2,7 +2,7 @@
 
 Agents select MiMo through the existing `codex_goal_project_refill_worker` or `codex_goal_project_create_job` MCP tools. There is no separate credential argument or provider process to launch manually. The project broker reserves the account, verifies the registered manifest and launch-admission receipt, and submits the owned runtime/provider services.
 
-Set these provider fields alongside the usual project, controller, workspace, prompt and admission inputs:
+For direct native broker calls on the Linux host as the initial root operator, set these provider fields alongside the usual project, controller, workspace, prompt and admission inputs. Remote agents using `mimoProjectId` and `mimoWorkstreamId` must use the narrower [MiMo project client DTO](mimo-project-client-transport.md); the host derives these provider fields, and the remote client rejects caller-supplied account, engine, cycle and prewarm overrides.
 
 ```json
 {
