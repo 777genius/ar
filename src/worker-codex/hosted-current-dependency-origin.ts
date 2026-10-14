@@ -10,7 +10,7 @@ import { finishOriginalHostedDependencyColdTree, revokeOriginalHostedDependencyC
 import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "./hosted-dependency-activation";
-import { observedProcessCgroup } from "./hosted-readonly-observations";
+import { observedProcessCgroup } from "../core/host-infrastructure/process-cgroup";
 import { assertHostedDependencyRetirementOwnerFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
@@ -136,8 +136,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
   const before = collectActualHostedManagedReadonlyOrigin(fence);
   assertSelectedDescriptors(scope,rootPurpose);
   const after = collectActualHostedManagedReadonlyOrigin(fence);
-  if (after.digest !== before.digest) invalid();
-  return after;
+  if (after.digest !== before.digest) invalid(); return after;
 }
 export type CurrentHostedDependencyOriginFacts = ReturnType<typeof selectedSnapshot>["facts"];
 /** Fixed process/history identity only; consumers still join actual owner. */
@@ -474,7 +473,6 @@ function resolveRootPurpose(context:RootPurposeFacade,purpose:HostedDependencyRo
   return {origin,state};
 }
 export type HostedDependencyRootPurposeContext = RootPurposeFacade;
-
 export type HostedDependencyRootDescriptor = RootDescriptor;
 export function readOriginalHostedDependencyRootDescriptor(resource: RootDescriptor): number {
   const {origin,material} = RootDescriptor.resolve(resource,rootInternalAccess), state = contexts.get(origin)?.rootPurpose;

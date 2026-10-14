@@ -1,3 +1,4 @@
+import { workerLaunchOwnsPath } from "../application/project-control/worker-launch-spec";
 import { describe, expect, it } from "vitest";
 import {
   parseWorkerLaunchRequest,
@@ -217,3 +218,12 @@ function workerLaunchStateRecord() {
     supersededFrom: null,
   };
 }
+
+it("contains declared directories without widening an exact file or a sibling prefix", () => {
+  const enrolled = { ownedPaths: ["src/feature/", "README.md"] };
+  for (const path of ["src/feature/", "src/feature/nested/", "src/feature/one.ts", "README.md"])
+    expect(workerLaunchOwnsPath(enrolled, path)).toBe(true);
+  for (const path of ["src/", "src/feature-extra/", "README.md/", "README.md/child", "../src/feature/"])
+    expect(workerLaunchOwnsPath(enrolled, path)).toBe(false);
+  expect(workerLaunchOwnsChangedPath(enrolled, "src/feature/nested/")).toBe(false);
+});
