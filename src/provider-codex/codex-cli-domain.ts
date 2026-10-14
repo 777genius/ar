@@ -204,6 +204,7 @@ function isCodexTimeoutFailure(normalizedMessage: string): boolean {
     normalizedMessage.includes("node_process_runner_timeout") ||
     normalizedMessage.includes("codex_app_server_request_timeout") ||
     normalizedMessage.includes("codex_app_server_turn_timeout") ||
+    normalizedMessage === "codex_app_server_deadline_expired" ||
     /\btimeout\b/.test(normalizedMessage) ||
     /\btimed out\b/.test(normalizedMessage)
   );

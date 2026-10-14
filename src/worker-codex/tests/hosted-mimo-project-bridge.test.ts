@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fileURLToPath } from "node:url";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), fds: new Map<number, string>(), fd: 1,
-  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn(), executableDigest: vi.fn() }));
+  allowed: ["account-q"], jobPrefixes: ["test-"], tmuxPrefixes: ["test-"], refill: vi.fn(), start: vi.fn(), stop: vi.fn(), load: vi.fn(), command: vi.fn(), executableDigest: vi.fn(), repair: vi.fn(), finalize: vi.fn(), readJob: vi.fn(), provenance: vi.fn(), assertOrigin: vi.fn() }));
+vi.mock("../../../host-integration/runtime-admission/mimo-job-admission-repair.mts", () => ({ repairHostedMimoJobAdmissionPlan: state.repair, finalizeHostedMimoJobAdmissionRepair: state.finalize }));
+vi.mock("../protected-job-birth", async original => ({ ...await original<object>(), protectedCodexGoalJobRuntimeProvenance: state.provenance }));
+vi.mock("../codex-goal-jobs", async original => ({ ...await original<object>(), readCodexGoalJob: state.readJob }));
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   const bytes = (p: string) => { const b = state.files.get(p); if (!b) throw Object.assign(new Error("TEST missing"), { code: "ENOENT" }); return b; };
@@ -16,29 +20,68 @@ vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), 
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
 // Admission schema has its own real contracts. Here the independent boundary
 // is ownership/routing/dispatch, never the contents of the operator template.
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 vi.mock("../codex-goal-mcp-project-control-tool-handlers", () => ({ projectControlRefillWorkerFromSealedSource: state.refill, projectControlStartStoredJob: state.start, projectControlStopStoredJob: state.stop }));
-vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: state.allowed, jobIdPrefixes: state.jobPrefixes, tmuxSessionPrefixes: state.tmuxPrefixes } }), loadJobLaunch: state.load }));
+vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: async () => ({ controller: { jobId: "test-controller" }, scope: { projectId: "test-project", allowedAccountIds: state.allowed, jobIdPrefixes: state.jobPrefixes, tmuxSessionPrefixes: state.tmuxPrefixes } }), loadJobLaunch: state.load }));
 vi.mock("../project-mimo-worker-launch", () => ({ reconcileProjectMimoWorker: vi.fn(), observeProjectMimoWorker: vi.fn() }));
 vi.mock("../codex-goal-ops", () => ({ collectCodexGoalStatus: async () => ({ state: "done" }) }));
 vi.mock("../codex-goal-mcp-status-input", () => ({ codexGoalStatusInputFromLaunch: () => ({}) }));
-import { researchCustody } from "../research-launch-files";
+import { researchCustody, researchHash } from "../research-launch-files";
 import { onboardHostedMimoProject } from "../hosted-mimo-project-bridge-onboard";
 import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST prompt", sourceCommit: "b".repeat(40) };
 const root = "/srv/worker-state/mimo-projects/test-project/test-stream", scratch = "/srv/workers/mimo-projects/test-project/test-stream";
 const config = "/etc/subscription-runtime/mimo-projects/test-project/test-stream.json";
+const helperPath = fileURLToPath(new URL("../../../host-integration/runtime-admission/mimo-job-admission-repair.mts", import.meta.url));
 const binding = { schemaVersion: 1, projectId: request.projectId, workstreamId: request.workstreamId, machineId: request.machineId, routingEnabled: true,
   stateRoot: root, scratchRoot: scratch, registryRootDir: root + "/registry", controllerJobId: "test-controller", sourceWorkspacePath: scratch + "/source",
-  sourceCommit: request.sourceCommit, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/codex", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract: { executionPolicy: { mode: "sandbox-only", sandboxRoot: scratch + "/source/sandbox", forbiddenRealProjects: ["/TEST/real-project"] } } } };
+  sourceCommit: request.sourceCommit, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/codex", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract: { ownedPaths: ["src/feature/", "README.md"], mandatoryDocs: ["README.md"], reviewKind: "implementation", canonicalSha: request.sourceCommit, executionPolicy: { mode: "sandbox-only", sandboxRoot: scratch + "/source/sandbox", forbiddenRealProjects: ["/TEST/real-project"] } } } };
 const control = (operation: MimoProjectBridgeOperation) => { const { prompt: _p, sourceCommit: _s, ...r } = request; return { ...r, operation }; };
 beforeEach(() => {
   state.files.clear(); state.fds.clear(); vi.clearAllMocks(); state.allowed = ["account-q"]; state.jobPrefixes = ["test-"]; state.tmuxPrefixes = ["test-"];
   state.files.set("/etc/machine-id", Buffer.from(request.machineId)); state.files.set(config, Buffer.from(JSON.stringify(binding)));
+  state.files.set(helperPath, Buffer.from("TEST fixed helper bytes"));
+  state.readJob.mockResolvedValue({ jobId: request.jobId, jobRootDir: root + "/jobs/test-job", workspacePath: scratch + "/workspaces/test-job" });
+  state.provenance.mockReturnValue({ runtimeDirectory: "/opt/subscription-runtime/releases/" + "7".repeat(40), artifactSha256: "d".repeat(64), assertCurrent: state.assertOrigin });
+  state.repair.mockResolvedValue({ ok: true, jobId: request.jobId });
+  state.finalize.mockResolvedValue({ ok: true, jobId: request.jobId });
   state.files.set("/etc/subscription-runtime/projects/test-project.d/test-stream.yml", Buffer.from(`project_id: test-project\nworkstream_id: test-stream\nstate_root: /srv/worker-state/jobs/test-project/test-stream\nscratch_root: /srv/workers/jobs/test-project/test-stream\nrouting_enabled: true\n`));
   const response = { content: [{ type: "text", text: '{"ok":true}' }] }; state.refill.mockResolvedValue(response); state.start.mockResolvedValue(response); state.stop.mockResolvedValue(response);
   state.load.mockResolvedValue({ launch: { config: { jobRootDir: root + "/jobs/test-job", workspacePath: scratch + "/workspaces/test-job", modelBackend: "xiaomi-mimo-token-plan", accounts: [{ name: "account-q" }], projectAccessScope: { projectId: request.projectId } } } });
+});
+function repairRequest() {
+  return { ...control(MimoProjectBridgeOperation.RepairAdmission), repairPlan: { schemaVersion: 1, machineId: request.machineId,
+    projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId,
+    expectedBindingSha256: researchHash(state.files.get(config)!), expectedControllerManifestSha256: "d".repeat(64), expectedManifestSha256: "e".repeat(64),
+    expectedContractSha256: "f".repeat(64), expectedStateSha256: "0".repeat(64), expectedReceiptSha256: "1".repeat(64), ownedPaths: ["src/TEST.hpp"] } };
+}
+it("dispatches only a same-job repair to the fixed helper with matched original provenance", async () => {
+  await handleHostedMimoProjectBridge(request); state.refill.mockClear();
+  const repair = repairRequest();
+  await expect(handleHostedMimoProjectBridge(repair)).resolves.toEqual({ ok: true, jobId: request.jobId });
+  expect(state.repair).toHaveBeenCalledWith(repair.repairPlan, "/opt/subscription-runtime/releases/" + "7".repeat(40), "d".repeat(64));
+  expect(state.assertOrigin).toHaveBeenCalledTimes(2);
+  expect(state.load).not.toHaveBeenCalled(); expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.stop).not.toHaveBeenCalled();
+});
+it("dispatches an identity-only finalizer to the fixed helper with matched original provenance", async () => {
+  await handleHostedMimoProjectBridge(request); state.refill.mockClear();
+  await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.FinalizeAdmissionRepair))).resolves.toEqual({ ok: true, jobId: request.jobId });
+  expect(state.finalize).toHaveBeenCalledWith({ schemaVersion: 1, machineId: request.machineId, projectId: request.projectId,
+    workstreamId: request.workstreamId, jobId: request.jobId }, "/opt/subscription-runtime/releases/" + "7".repeat(40), "d".repeat(64));
+  expect(state.assertOrigin).toHaveBeenCalledTimes(2);
+  expect(state.load).not.toHaveBeenCalled(); expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.repair).not.toHaveBeenCalled();
+});
+it.each(["binding", "job", "missing-origin", "different-origin", "helper-custody"])("refuses repair %s drift before invoking helper", async fault => {
+  await handleHostedMimoProjectBridge(request);
+  const repair = repairRequest();
+  if (fault === "binding") repair.repairPlan.expectedBindingSha256 = "0".repeat(64);
+  if (fault === "job") state.readJob.mockResolvedValue({ jobId: "other", jobRootDir: root + "/jobs/test-job", workspacePath: scratch + "/workspaces/test-job" });
+  if (fault === "missing-origin") state.provenance.mockReturnValue(undefined);
+  if (fault === "different-origin") state.provenance.mockReturnValueOnce({ runtimeDirectory: "/opt/subscription-runtime/releases/" + "8".repeat(40), artifactSha256: "d".repeat(64), assertCurrent: state.assertOrigin });
+  if (fault === "helper-custody") state.files.delete(helperPath);
+  await expect(handleHostedMimoProjectBridge(repair)).rejects.toThrow();
+  expect(state.repair).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.load).not.toHaveBeenCalled();
 });
 describe("trusted MiMo bridge dispatch and retention", () => {
   it("derives paths and authority, then refuses replay", async () => {
@@ -164,3 +207,23 @@ it("rejects original YAML scratch-root drift independently of protected scratch"
   await expect(handleHostedMimoProjectBridge(request)).rejects.toThrow("mimo_project_bridge_route_closed");
   expect(state.refill).not.toHaveBeenCalled();
 });
+
+it("forwards a subset-bound contract with every other enrolled field preserved", async () => {
+  const ownedPaths = ["src/feature/one.ts", "src/feature/nested/", "README.md"];
+  await handleHostedMimoProjectBridge({ ...request, thinking: true, ownedPaths });
+  const forwarded = state.refill.mock.calls[0]![0];
+  expect(forwarded.reasoningEffort).toBe("high");
+  expect(forwarded.expectedSourceCommit).toBe(binding.sourceCommit);
+  expect(forwarded.preStartAdmission).toEqual({ ...binding.admission, contract: {
+    ...binding.admission.contract, ownedPaths,
+    executionPolicy: { ...binding.admission.contract.executionPolicy, sandboxRoot: scratch + "/workspaces/test-job/sandbox" },
+  } });
+  expect(binding.admission.contract.ownedPaths).toEqual(["src/feature/", "README.md"]);
+});
+it.each([["candidate/"], ["src/feature-extra/x.ts"], ["README.md/"], ["src/"],
+  ["../src/feature/x.ts"], ["/src/feature/x.ts"], ["src/feature/*"], []].map(ownedPaths => ({ ownedPaths })))(
+  "refuses ownership $ownedPaths before retaining an attempt or calling the broker", async ({ ownedPaths }) => {
+    await expect(handleHostedMimoProjectBridge({ ...request, ownedPaths })).rejects.toThrow();
+    expect(state.refill).not.toHaveBeenCalled();
+    expect(state.files.has(root + "/mimo-bridge-attempts/test-job.json")).toBe(false);
+  });

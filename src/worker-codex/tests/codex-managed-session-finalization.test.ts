@@ -23,7 +23,7 @@ class TestSessionDriver extends FakeProviderSessionDriver {
   override readonly capabilities = {...fakeProviderCapabilities,providerId:"codex"};
 }
 // Domain scheduling handles only. No original-origin/native authority is fabricated.
-async function fixture(mode:"failed"|"cancelled"|"unchanged"|"waiting"|"missing") {
+async function fixture(mode:"failed"|"cancelled"|"unchanged"|"waiting"|"missing"|"reconnect") {
   const root = await mkdtemp(join(tmpdir(),"TEST-codex-finalize-")), events:string[] = [], materialized:CodexMaterializedSession[] = [];
   const redactor = new DefaultRedactor(), abort = new AbortController(), physical = new CodexEphemeralSessionMaterializer();
   let completions = 0, engineCalls = 0, home = "", failCompletion = false;
@@ -34,7 +34,7 @@ async function fixture(mode:"failed"|"cancelled"|"unchanged"|"waiting"|"missing"
       if (mode === "waiting") return {status:"waiting_for_input",runId:"TEST-run",outputText:"waiting",warnings:[],request:{id:"TEST-request",kind:"missing_context",audience:"orchestrator",question:"continue"},resumeHandle:{providerId:"codex",runId:"TEST-run",workspacePath:root}};
       if (mode === "missing") await rm(join(home,"auth.json"));
       else if (mode !== "unchanged") await writeFile(join(home,"auth.json"),auth("SYNTHETIC_NEXT"));
-      const error = new Error(mode === "cancelled" ? "codex_app_server_aborted" : "TEST-provider-failure");
+      const error = new Error(mode === "cancelled" ? "codex_app_server_aborted" : (mode === "reconnect" ? "Unauthorized" : "TEST-provider-failure"));
       if (mode === "cancelled") abort.abort(error); throw error;
     },resume:async input => { engineCalls++; await writeFile(join(input.session.codexHome,"auth.json"),auth("SYNTHETIC_NEXT")); throw new Error("TEST-provider-failure"); }};
   const driver = new CodexJsonAgentDriver({engine,model:"gpt-test",sessionMaterializer:{mode:"ephemeral",materialize:async input => {
@@ -70,6 +70,24 @@ describe("post-drain TEST credential finalization", () => {
       expect(f.events.indexOf("snapshot")).toBeLessThan(f.events.indexOf("release"));
       expect(f.events.indexOf("write-ack")).toBeLessThan(f.events.indexOf("complete"));
     } finally { proceed.release(); await pending.catch(() => undefined); await f.cleanup(); }
+  });
+
+  it("returns pending reconnect failure before guarded lazy refresh can wait on its own use", async () => {
+    const f = await fixture("reconnect"); let begins = 0;
+    const provider = new class extends TestSessionDriver {
+      override readonly capabilities = {...fakeProviderCapabilities,providerId:"codex",refreshMode:"lazy-refresh" as const};
+      async inspectSessionFreshness() { return {status:"fresh" as const,reason:"recent_refresh" as const,warnings:[]}; }
+    }();
+    const store:SessionStorePort = {storeId:f.memory.storeId,custody:f.memory.custody,capabilities:f.memory.capabilities,read:input => f.memory.read(input),
+      write:async () => { throw new Error("TEST-CAS-held"); }};
+    const runtime = createSubscriptionRuntime({...makeFakeRuntimeDeps({provider,agent:f.driver,store}),
+      sessionExecutionLifecycle:{begin:async () => { begins++; if (begins > 1) throw new Error("guarded-refresh-entered-held-tail"); return f.use; }},
+      workspace:{...makeFakeRuntimeDeps().workspace,create:async () => ({path:f.root})}});
+    try {
+      const result = await runtime.refreshThenRunTask({providerInstanceId:"codex:TEST",task:f.input.task,runContext:{runId:"TEST-lazy",attempt:1,abortSignal:f.abort.signal}});
+      expect(result).toMatchObject({status:"completed",task:{status:"failed",failure:{code:"needs_reconnect"},warnings:expect.arrayContaining([expect.objectContaining({code:"task_session_finalization_pending"})])}});
+      expect(begins).toBe(1); expect(provider.refreshCount).toBe(0); expect(f.engineCalls).toBe(1); expect(f.completions).toBe(0);
+    } finally { await f.cleanup(); }
   });
 
   // No-input retry reuses the real driver's private terminal entry and the exact first CAS intent.
