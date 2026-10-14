@@ -1,3 +1,4 @@
+import { validNarrowWorkerOwnedPaths } from "./application/project-control/worker-launch-ownership.js";
 import type { CodexReasoningEffort } from "@vioxen/subscription-runtime/provider-codex";
 
 export enum MimoProjectBridgeOperation { Create = "create", Start = "start", Status = "status", Stop = "stop", RepairAdmission = "repair-admission", FinalizeAdmissionRepair = "finalize-admission-repair" }
@@ -10,20 +11,22 @@ export type MimoAdmissionRepairPlan = Readonly<{
 export type MimoProjectBridgeRequest = Readonly<{
   kind: "MimoProject"; schemaVersion: 1; machineId: string; projectId: string; workstreamId: string;
   operation: MimoProjectBridgeOperation; jobId: string; prompt?: string; sourceCommit?: string; reasoningEffort?: CodexReasoningEffort; thinking?: boolean;
-  repairPlan?: MimoAdmissionRepairPlan;
+  ownedPaths?: readonly string[]; repairPlan?: MimoAdmissionRepairPlan;
 }>;
 export function parseMimoProjectBridgeRequest(value: unknown): MimoProjectBridgeRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("mimo_project_bridge_request_invalid");
-  const row = value as Record<string, unknown>;
+  const row = { ...value } as Record<string, unknown>;
   const create = row.operation === MimoProjectBridgeOperation.Create;
   const repair = row.operation === MimoProjectBridgeOperation.RepairAdmission;
   const hasReasoning = Object.hasOwn(row, "reasoningEffort");
+  const hasOwnedPaths = Object.hasOwn(row, "ownedPaths");
   const hasThinking = Object.hasOwn(row, "thinking");
   const efforts: readonly CodexReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh"];
   if (hasReasoning && (!create || !efforts.includes(row.reasoningEffort as CodexReasoningEffort))) throw new Error("mimo_project_bridge_request_invalid");
   if (hasThinking && (!create || typeof row.thinking !== "boolean" ||
       hasReasoning && row.thinking !== (row.reasoningEffort !== "none"))) throw new Error("mimo_project_bridge_request_invalid");
-  const keys = "kind,schemaVersion,machineId,projectId,workstreamId,operation,jobId" + (create ? ",prompt,sourceCommit" + (hasReasoning ? ",reasoningEffort" : "") + (hasThinking ? ",thinking" : "") : repair ? ",repairPlan" : "");
+  if (hasOwnedPaths && (!create || !validNarrowWorkerOwnedPaths(row.ownedPaths) || Buffer.byteLength(JSON.stringify(row)) > 65536)) throw new Error("mimo_project_bridge_request_invalid");
+  const keys = "kind,schemaVersion,machineId,projectId,workstreamId,operation,jobId" + (create ? ",prompt,sourceCommit" + (hasReasoning ? ",reasoningEffort" : "") + (hasThinking ? ",thinking" : "") + (hasOwnedPaths ? ",ownedPaths" : "") : repair ? ",repairPlan" : "");
   if (Object.keys(row).sort().join(",") !== keys.split(",").sort().join(",") || row.kind !== "MimoProject" || row.schemaVersion !== 1 ||
       typeof row.machineId !== "string" || !/^[a-f0-9]{32}$/.test(row.machineId) ||
       !Object.values(MimoProjectBridgeOperation).includes(row.operation as MimoProjectBridgeOperation)) throw new Error("mimo_project_bridge_request_invalid");
@@ -47,6 +50,7 @@ export function parseMimoProjectBridgeRequest(value: unknown): MimoProjectBridge
     const plan = row.repairPlan as MimoAdmissionRepairPlan;
     return Object.freeze({ ...row, repairPlan: Object.freeze({ ...plan, ownedPaths: Object.freeze([...plan.ownedPaths]) }) }) as MimoProjectBridgeRequest;
   }
+  if (hasOwnedPaths) row.ownedPaths = Object.freeze([...(row.ownedPaths as string[])]);
   if (hasThinking) {
     const { thinking, ...request } = row;
     return Object.freeze({ ...request, reasoningEffort: hasReasoning ? row.reasoningEffort : thinking ? "high" : "none" }) as MimoProjectBridgeRequest;
