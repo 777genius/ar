@@ -8,6 +8,7 @@ import { ProjectOperation } from "@vioxen/subscription-runtime/worker-core";
 import { codexProjectAdmissionGate } from "../application/project-control/codex-goal-project-mutation-admission";
 import { listCodexGoalJobs, readCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import { prepareOriginalNativeWriterObservation } from "../research-writer-observation";
+import * as writers from "../research-writer-observation";
 import * as provenance from "../research-job-runtime-provenance";
 import * as files from "../research-launch-files";
 
@@ -16,7 +17,7 @@ beforeEach(() => setupResearchFixture({ allocationParent: nativeFs.realpathSync(
 afterEach(cleanupResearchFixture);
 
 describe("inert original-runtime admission preparation census", () => {
-  it("freshly traverses each original artifact for every registered writer preparation and retained read", async () => {
+  it("reuses the verified foreign module preparer only within one admission preparation and retains fresh readers", async () => {
     const registryRootDir = "/TEST-project/registry";
     const originals = ["a", "b"].map(letter => "/opt/subscription-runtime/releases/" + letter.repeat(40));
     const digests = originals.map(directory => {
@@ -57,20 +58,25 @@ describe("inert original-runtime admission preparation census", () => {
       const reader = vi.fn(async () => ({ status: "released" as const })); readers.set(manifest.jobId, reader); return reader;
     } }));
     const prepared = new Map<string, () => Promise<import("@vioxen/subscription-runtime/worker-core").ProjectAdmissionWriterObservation>>();
+    const wrap = (prepare: (manifest: CodexGoalJobManifest) => Promise<() => Promise<import("@vioxen/subscription-runtime/worker-core").ProjectAdmissionWriterObservation>>) => async (manifest: CodexGoalJobManifest) => {
+      const reader = await prepare(manifest); prepared.set(manifest.jobId, reader); return reader;
+    };
+    const begin = vi.fn(() => {
+      return wrap(writers.createResearchJobWriterObservationPreparer(imports));
+    });
+    const prepareFallback = async (manifest: CodexGoalJobManifest) => (await prepareOriginalNativeWriterObservation(manifest, imports))!;
     const gate = codexProjectAdmissionGate({ registryRootDir, controllerJobId: "TEST-controller",
-      scope: { projectId: "TEST-census", jobIdPrefixes: ["TEST-"] }, deps: {
+      scope: { projectId: "TEST-census", jobIdPrefixes: ["TEST-"] }, deps: Object.assign({
         listJobs: listCodexGoalJobs, readJob: readCodexGoalJob,
         buildOverviewItems: async () => [],
-        prepareWriterObservation: async manifest => {
-          const reader = await prepareOriginalNativeWriterObservation(manifest, imports);
-          expect(reader).toBeTypeOf("function"); prepared.set(manifest.jobId, reader!); return reader!;
-        },
-      } });
+        prepareWriterObservation: wrap(prepareFallback),
+      }, { createWriterObservationPreparer: begin }) });
     await gate.prepare!({ operation: ProjectOperation.CreateJob });
     expect(prepared.size).toBe(3); expect(readers.size).toBe(3);
-    expect(traversals).toEqual([6, 3]); expect(imports).toHaveBeenCalledTimes(3);
+    expect(traversals).toEqual([4, 3]); expect(imports).toHaveBeenCalledTimes(2);
+    expect(begin).toHaveBeenCalledTimes(1);
     for (const manifest of jobs) expect(await prepared.get(manifest.jobId)!()).toEqual({ status: "released" });
-    expect(traversals).toEqual([10, 5]);
+    expect(traversals).toEqual([8, 5]);
     // A retained reader is not an authority cache: changed executable bytes
     // refuse before calling the old terminal reader again.
     const read = vi.mocked(readers.get(jobs[0]!.jobId)!);
@@ -78,6 +84,61 @@ describe("inert original-runtime admission preparation census", () => {
     fs.writeFileSync(join(originals[0]!, "dist/TEST.js"), "TEST changed executable", { mode: 0o600 });
     expect(await prepared.get(jobs[0]!.jobId)!()).toEqual({ status: "unknown" });
     expect(read).not.toHaveBeenCalled(); expect(current).toHaveBeenCalled();
+    fs.writeFileSync(join(originals[0]!, "dist/TEST.js"), "TEST original runtime " + originals[0], { mode: 0o600 });
+    await gate.prepare!({ operation: ProjectOperation.CreateJob });
+    expect(begin).toHaveBeenCalledTimes(2); expect(imports).toHaveBeenCalledTimes(4);
+    expect(readers.size).toBe(3);
+  });
+
+  function foreignFixture() {
+    const directory = "/opt/subscription-runtime/releases/" + "f".repeat(40);
+    for (const name of ["dist", "host-integration", "node_modules"]) fs.mkdirSync(join(directory, name), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(join(directory, "package.json"), '{"type":"module"}', { mode: 0o600 });
+    const file = join(directory, "dist/TEST.js"); fs.writeFileSync(file, "TEST initial", { mode: 0o600 });
+    let artifactSha256 = files.researchArtifactDigest(directory);
+    const current = vi.fn();
+    vi.spyOn(provenance, "researchJobRuntimeProvenance").mockImplementation(() => ({
+      runtimeDirectory: directory, artifactSha256, assertCurrent: current,
+    }));
+    const manifest = (index: number): CodexGoalJobManifest => ({ schemaVersion: 1, jobId: "TEST-bound-" + index,
+      taskId: "TEST-bound-" + index, jobRootDir: "/TEST-project/jobs/TEST-bound-" + index,
+      workspacePath: "/TEST-project/workspaces/TEST-bound-" + index, promptPath: "/TEST-project/jobs/TEST-bound-" + index + "/prompt.md",
+      createdAt: "2026-10-14T00:00:00.000Z", updatedAt: "2026-10-14T00:00:00.000Z", accounts: ["TEST-a"] });
+    return { directory, file, current, manifest, change: () => fs.writeFileSync(file, "TEST changed", { mode: 0o600 }),
+      adoptChangedDigest: () => { artifactSha256 = files.researchArtifactDigest(directory); } };
+  }
+
+  it.each(["import", "prepare", "read"] as const)("refuses artifact mutation during %s before any positive observation escapes", async stage => {
+    const f = foreignFixture(), nativeRead = vi.fn(async () => {
+      if (stage === "read") f.change();
+      return { status: "released" as const };
+    });
+    const nativePrepare = vi.fn(async () => { if (stage === "prepare") f.change(); return nativeRead; });
+    const load = vi.fn(async () => { if (stage === "import") f.change(); return { prepareResearchJobWriterObservation: nativePrepare }; });
+    const prepare = writers.createResearchJobWriterObservationPreparer(load);
+    const read = await prepare(f.manifest(0));
+    expect(await read()).toEqual({ status: "unknown" });
+    expect(nativePrepare).toHaveBeenCalledTimes(stage === "import" ? 0 : 1);
+    expect(nativeRead).toHaveBeenCalledTimes(stage === "read" ? 1 : 0);
+    expect(f.current).toHaveBeenCalled();
+  });
+
+  it("keeps readers bound to each manifest and does not reuse a preparer under a different digest", async () => {
+    const f = foreignFixture(), seen: string[] = [];
+    const load = vi.fn(async () => ({ prepareResearchJobWriterObservation: async (manifest: CodexGoalJobManifest) => {
+      seen.push(manifest.jobId);
+      return async () => ({ status: "allocated" as const, roots: [{ device: "TEST-device", backingPath: manifest.workspacePath }] });
+    } }));
+    const prepare = writers.createResearchJobWriterObservationPreparer(load), first = f.manifest(0), second = f.manifest(1);
+    const firstRead = await prepare(first), secondRead = await prepare(second);
+    expect(load).toHaveBeenCalledTimes(1); expect(seen).toEqual([first.jobId, second.jobId]);
+    expect(await firstRead()).toEqual({ status: "allocated", roots: [{ device: "TEST-device", backingPath: first.workspacePath }] });
+    expect(await secondRead()).toEqual({ status: "allocated", roots: [{ device: "TEST-device", backingPath: second.workspacePath }] });
+    f.change(); f.adoptChangedDigest();
+    const changedRead = await prepare(f.manifest(2));
+    expect(load).toHaveBeenCalledTimes(2); // Same canonical path, independently qualified changed digest.
+    expect(await firstRead()).toEqual({ status: "unknown" });
+    expect(await changedRead()).toEqual({ status: "allocated", roots: [{ device: "TEST-device", backingPath: f.manifest(2).workspacePath }] });
   });
 
   it("retains warmed witnesses when alternating artifact scans exceed the shared finite file-cache bound", () => {
