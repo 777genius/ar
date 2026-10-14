@@ -88,7 +88,7 @@ fi
 printf '%s\n' 'sr-transport ALL=(root) NOPASSWD: /opt/subscription-runtime/host-jobs/ssh-endpoint ""' | /usr/sbin/visudo -cf - >/dev/null || fail 'invalid sudoers policy'
 # Preflight every staged input, including the nested installer, before either
 # installer can write. Source leaves never inherit Node's symlink exception.
-for source_file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs ssh-endpoint ssh-ingress-shell ../managed-launcher/install ../managed-launcher/launch.mjs ../managed-launcher/payload-guard.mjs ../managed-launcher/profiles.mjs; do
+for source_file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs ssh-endpoint ssh-ingress-shell ../native-probe/installed-data-package.json ../managed-launcher/install ../managed-launcher/launch.mjs ../managed-launcher/payload-guard.mjs ../managed-launcher/storage-pressure-guard.mjs ../managed-launcher/profiles.mjs; do
   staged_source="$source_dir/$source_file"
   [ -f "$staged_source" ] && [ ! -L "$staged_source" ] || fail "staged source must be an existing regular nonsymlink file: $staged_source"
   trust_chain "$staged_source"
@@ -101,6 +101,21 @@ for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-polic
     trust_chain "$installed_leaf"
   fi
 done
+# Exact emitted canonical-ingress closure. Build first; never install TS as JS.
+probe_files='hosted-native-probe/research-operator-ingress.js core/research-operator-request.js hosted-native-probe/mimo-project-ingress.js worker-codex/hosted-mimo-project-bridge-contract.js hosted-native-probe/ingress.js hosted-native-probe/protocol.js hosted-native-probe/original-owner-client.js hosted-native-probe/original-owner-adapter.js worker-core/hosted-custody/ports/native-probe.js worker-core/hosted-custody/application/native-probe.js worker-core/hosted-custody/domain/native-probe.js core/scoped-retained-resource-contract.js core/scoped-termination-contract.js'
+for probe_file in $probe_files; do
+  staged_source="$source_dir/../../dist/$probe_file"
+  [ -f "$staged_source" ] && [ ! -L "$staged_source" ] || fail "staged source must be an existing regular nonsymlink file: $staged_source"
+  trust_chain "$staged_source"
+  installed_leaf="$target/native-probe/$probe_file"
+  trust_chain "$installed_leaf"
+  [ ! -L "$installed_leaf" ] || fail 'installed destination must not be symlinked'
+  if [ -e "$installed_leaf" ]; then [ -f "$installed_leaf" ] || fail 'installed destination must be a regular file'; fi
+done
+installed_leaf="$target/native-probe/package.json"
+trust_chain "$installed_leaf"
+[ ! -L "$installed_leaf" ] || fail 'installed destination must not be symlinked'
+if [ -e "$installed_leaf" ]; then [ -f "$installed_leaf" ] || fail 'installed destination must be a regular file'; fi
 # All preflight checks precede either installer writing files.
 sh "$source_dir/../managed-launcher/install"
 if [ "$node_exists" = false ]; then
@@ -108,6 +123,12 @@ if [ "$node_exists" = false ]; then
   ln -s "$canonical_node" "$fixed_node" || fail 'fixed Node appeared during installation'
 fi
 install -d -o root -g root -m 755 "$target"
+install -d -o root -g root -m 755 "$target/native-probe"
+install -o root -g root -m 644 "$source_dir/../native-probe/installed-data-package.json" "$target/native-probe/package.json"
+for probe_file in $probe_files; do
+  install -d -o root -g root -m 755 "$(dirname -- "$target/native-probe/$probe_file")"
+  install -o root -g root -m 644 "$source_dir/../../dist/$probe_file" "$target/native-probe/$probe_file"
+done
 for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs; do
   install -o root -g root -m 644 "$source_dir/$file" "$target/$file"
 done

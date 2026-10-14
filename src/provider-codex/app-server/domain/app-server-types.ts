@@ -1,3 +1,5 @@
+import type { HostedMimoProfile } from "../../hosted-mimo-profile";
+import type { NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { codexProviderEgressNetworkAccessFromEnv } from "../../codex-provider-egress-policy";
 import type {
@@ -20,6 +22,7 @@ export type AppServerWaitingForInputResult = {
   readonly status: "waiting_for_input";
   readonly runId: string;
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly request: ManagedRunInputRequest;
   readonly resumeHandle: ManagedRunResumeHandle;
   readonly usage?: AgentUsage;
@@ -29,6 +32,7 @@ export type AppServerWaitingForInputResult = {
 export type AppServerCompletedResult = {
   readonly status?: "completed";
   readonly outputText: string;
+  readonly nativeWeb?: NativeWebEvidence;
   readonly usage?: AgentUsage;
   readonly warnings: readonly AppServerWarning[];
 };
@@ -62,7 +66,7 @@ export type CodexThreadGoal = {
   readonly usage?: AgentUsage;
 };
 
-export type CodexAppServerNativeToolSurface = "default" | "disabled";
+export type CodexAppServerNativeToolSurface = "default" | "disabled" | HostedMimoProfile.CodingV1;
 
 export type CodexAppServerCommandApprovalInput = {
   readonly source:
@@ -170,6 +174,7 @@ export function mergeDeveloperInstructions(input: {
 export function codexAppServerThreadRuntimePolicy(input: {
   readonly workspacePath: string;
   readonly sandboxMode?: CodexSandboxMode;
+  readonly allowExtraWritableRoots?: boolean;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly baseDeveloperInstructions: string | null;
   readonly systemPrompt?: string | undefined;
@@ -181,7 +186,9 @@ export function codexAppServerThreadRuntimePolicy(input: {
       ...(sandboxMode === "workspace-write"
         ? codexAgentTempWritableRootsFromEnv(input.sourceEnv)
         : []),
-      ...codexExtraWritableRootsFromEnv(input.sourceEnv),
+      ...(input.allowExtraWritableRoots === false
+        ? []
+        : codexExtraWritableRootsFromEnv(input.sourceEnv)),
     ]),
     sandboxMode,
     developerInstructions: mergeDeveloperInstructions({

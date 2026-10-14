@@ -1,6 +1,10 @@
 import { chmod, writeFile } from "node:fs/promises";
 import type {
   SubscriptionAgentRuntimeTaskCliIo,
+  AgentRuntimeTaskWorkerFactoryInput,
+  AgentRuntimeTaskWorkerJob,
+  AgentRuntimeTaskWorkerFactory,
+  AgentRuntimeTaskWorker,
 } from "../agent-runtime-task-runner-cli";
 
 export function fakeAgentRuntimeTaskCliIo(input: {
@@ -151,4 +155,38 @@ function runAppServer() {
     "utf8",
   );
   await chmod(path, 0o700);
+}
+
+export function fakeAgentRuntimeTaskWorkerFactory(calls: {
+  factory?: AgentRuntimeTaskWorkerFactoryInput;
+  seed?: string;
+  ambientSeed?: { homeDir: string; configDir?: string };
+  job?: AgentRuntimeTaskWorkerJob;
+}): AgentRuntimeTaskWorkerFactory {
+  return (input) => {
+    calls.factory = input;
+    const worker: AgentRuntimeTaskWorker = {
+      async start() {},
+      async seedClaudeOAuth(seed) {
+        calls.seed = seed.oauthToken;
+      },
+      async seedClaudeAmbientHome(seed) {
+        calls.ambientSeed = { ...seed };
+      },
+      async seedCodexAuthJsonFile(path) {
+        calls.seed = path;
+      },
+      async run(job) {
+        calls.job = job;
+        return {
+          outputText: `worker:${job.prompt}`,
+          structuredOutput: { ok: true },
+          telemetry: { finishReason: "completed" },
+          warnings: [],
+        };
+      },
+      async dispose() {},
+    };
+    return worker;
+  };
 }

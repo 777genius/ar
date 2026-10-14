@@ -136,6 +136,9 @@ export class InMemoryWorkerAccountCapacityStore
       return { status: WorkerAccountCapacityClaimStatus.Conflict } as const;
     }
     const state = stateFromRecord(current, input.now);
+    if (state.capacity.reason === "provider_session_invalid") {
+      return { status: WorkerAccountCapacityClaimStatus.NotDue, state } as const;
+    }
     if (
       input.mode === WorkerAccountCapacityRecheckMode.DueOnly &&
       state.phase === WorkerAccountCapacityPhase.RecheckDue

@@ -16,6 +16,7 @@ export enum AgentRuntimeTaskProvider {
 
 export enum AuthSourceKind {
   ClaudeOAuthToken = "claude-oauth-token",
+  ClaudeAmbientHome = "claude-ambient-home",
   CodexAuthJsonFile = "codex-auth-json-file",
   PreseededSession = "preseeded-session",
 }
@@ -86,6 +87,11 @@ export type ClaudeAgentRuntimeAuthSource =
       readonly oauthToken: string;
     }
   | {
+      readonly kind: AuthSourceKind.ClaudeAmbientHome;
+      readonly homeDir: string;
+      readonly configDir?: string;
+    }
+  | {
       readonly kind: AuthSourceKind.PreseededSession;
     };
 
@@ -120,7 +126,6 @@ export type CodexAgentRuntimeConfig = {
 };
 
 type LocalAgentRuntimeTaskRunnerCommonInput = {
-  readonly stateRootDir: string;
   readonly encryptionKey: Uint8Array | string;
   readonly workspaceRoot: string;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -131,8 +136,12 @@ type LocalAgentRuntimeTaskRunnerCommonInput = {
   readonly onDisposeError?: (message: string) => void;
 };
 
+type LocalAgentRuntimeTaskRunnerStorageInput =
+  | { readonly stateRootDir: string; readonly storageRootDir?: string }
+  | { readonly storageRootDir: string; readonly stateRootDir?: string };
+
 export type CreateLocalAgentRuntimeTaskRunnerInput =
-  LocalAgentRuntimeTaskRunnerCommonInput &
+  LocalAgentRuntimeTaskRunnerCommonInput & LocalAgentRuntimeTaskRunnerStorageInput &
     (
       | {
           readonly provider: AgentRuntimeTaskProvider.Claude;

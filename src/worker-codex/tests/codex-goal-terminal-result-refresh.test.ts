@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { materializeCodexGoalHandoffArtifacts } from "../codex-goal-handoff-artifacts";
+import { createCodexGoalJob } from "../codex-goal-jobs";
+import { readVerifiableProducerHandoff } from "../application/project-control/codex-goal-project-verifier-handoff";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { reconcileCodexGoalRuntimeResult } from "../codex-goal-ops";
+import { refreshCompletedCodexGoalResultArtifacts } from "../codex-goal-terminal-result-refresh";
 import { ensureTerminalCodexGoalHandoffArtifacts } from "../application/ensure-codex-goal-handoff-artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +29,27 @@ describe("completed Codex goal result refresh", () => {
     ));
   });
 
+  it("fences the exported refresh before artifact or result publication", async () => {
+    const root = await mkdtemp(join(tmpdir(), "test-terminal-refresh-fence-"));
+    cleanup.push(root);
+    const gate = new LocalTerminalCheckpointAdmission(root);
+    const claim = await gate.claim("test-refresh-fence", {
+      projectId: "test-project", workstreamId: "test-workstream", jobId: "test-job",
+      taskId: "test-task", executionGeneration: "test-generation", attemptNumber: 1,
+      ownershipEpoch: 1, runtimeSha: "a".repeat(40), registryRevisionSha256: "b".repeat(64),
+    });
+    try {
+      await expect(refreshCompletedCodexGoalResultArtifacts({
+        config: { jobRootDir: root, jobId: "test-job", taskId: "test-task",
+          workspacePath: join(root, "workspace") },
+        outputPath: join(root, "test-task.latest-result.json"),
+        existingResult: { status: "done", artifacts: [], evidence: [], blockers: [],
+          nextAction: "review_completed" } as never,
+        changedFiles: [], preservePatch: false,
+      })).rejects.toThrow("terminal_checkpoint_job_fenced");
+    } finally { await gate.release(claim, false); }
+  });
+
   it("refreshes artifacts without downgrading a completed strict result", async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), "codex-terminal-refresh-")),
@@ -31,6 +57,7 @@ describe("completed Codex goal result refresh", () => {
     cleanup.push(root);
     const workspacePath = join(root, "workspace");
     const jobRootDir = join(root, "job");
+    const durableHandoffRootDir = join(root, "durable");
     const outputPath = join(jobRootDir, "task-1.latest-result.json");
     await mkdir(workspacePath);
     await mkdir(jobRootDir);
@@ -54,6 +81,7 @@ describe("completed Codex goal result refresh", () => {
       config: {
         jobId: "job-1",
         jobRootDir,
+        durableHandoffRootDir,
         outputPath,
         taskId: "task-1",
         workspacePath,
@@ -72,12 +100,8 @@ describe("completed Codex goal result refresh", () => {
     });
     const result = JSON.parse(await readFile(outputPath, "utf8")) as
       Record<string, unknown>;
-    const canonicalJobRoot = await realpath(jobRootDir);
     const artifacts = result.artifacts as readonly Record<string, unknown>[];
-    const patch = artifacts.find((artifact) => artifact.kind === "patch");
-    const generation = String(patch?.path).match(
-      /task-1\.([a-f0-9]{64})\.handoff\.patch$/,
-    )?.[1];
+    const patch = artifacts.find((artifact) => artifact.kind === "handoff_headRelative");
 
     expect(reconciliation).toMatchObject({
       wrote: true,
@@ -90,27 +114,77 @@ describe("completed Codex goal result refresh", () => {
       blockers: [],
       nextAction: "review_completed",
       changedFiles: ["tracked.txt"],
-      artifacts: [
-        { kind: "patch", sha256: generation },
-        { kind: "summary" },
-        { kind: "manifest" },
-      ],
+      details: {
+        handoffPacketPath: expect.stringContaining("task-1."),
+        handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
     });
-    expect(generation).toMatch(/^[a-f0-9]{64}$/);
-    expect(patch?.path).toBe(
-      join(canonicalJobRoot, `task-1.${generation}.handoff.patch`),
-    );
-    expect(artifacts[1]?.path).toBe(
-      join(canonicalJobRoot, `task-1.${generation}.handoff.summary.json`),
-    );
-    expect(artifacts[2]?.path).toBe(
-      join(canonicalJobRoot, `task-1.${generation}.handoff.manifest.json`),
-    );
+    expect(artifacts.map((artifact) => artifact.kind)).toEqual(expect.arrayContaining([
+      "handoff_packet", "handoff_manifest", "handoff_index",
+      "handoff_worktree", "handoff_headRelative", "handoff_untracked_archive",
+    ]));
+    expect(String(patch?.path).startsWith(await realpath(durableHandoffRootDir))).toBe(true);
     expect(result.evidence).toEqual(expect.arrayContaining([
       "worker_completed",
       "supervisor_refreshed_terminal_result_artifacts",
       `patch_preserved:${patch?.path}`,
     ]));
+  });
+
+  it.each([false, true])("retains review evidence only for the captured workspace (mutated: %s)", async (mutated) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "codex-refresh-review-")));
+    cleanup.push(root);
+    const workspacePath = join(root, "workspace");
+    const jobRootDir = join(root, "job");
+    const durableHandoffRootDir = join(root, "durable");
+    const outputPath = join(jobRootDir, "task-1.latest-result.json");
+    await mkdir(workspacePath);
+    await git(workspacePath, ["init"]);
+    await git(workspacePath, ["config", "user.email", "test@example.com"]);
+    await git(workspacePath, ["config", "user.name", "Test User"]);
+    await writeFile(join(workspacePath, "tracked.txt"), "base\n");
+    await git(workspacePath, ["add", "."]);
+    await git(workspacePath, ["commit", "-m", "base"]);
+    await writeFile(join(workspacePath, "tracked.txt"), "captured\n");
+    const review = await materializeCodexGoalHandoffArtifacts({
+      workerJobId: "worker-1", taskId: "task-1", workspacePath, jobRootDir,
+    });
+    if (!review) throw new Error("expected review handoff");
+    await writeFile(outputPath, JSON.stringify({
+      status: "done", changedFiles: review.changedPaths, evidence: [], blockers: [],
+      nextAction: "review_completed", artifacts: review.artifacts,
+      details: { baseCommit: review.baseCommit },
+    }));
+    const producer = await createCodexGoalJob({
+      registryRootDir: join(root, "registry"),
+      manifest: {
+        jobId: "worker-1", taskId: "task-1", workspacePath, jobRootDir,
+        durableHandoffRootDir, outputPath, promptPath: join(jobRootDir, "prompt.md"),
+        authRootDir: join(root, "auth"), accounts: ["test-account"],
+      },
+    });
+    if (mutated) await writeFile(join(workspacePath, "tracked.txt"), "changed after capture\n");
+    await reconcileCodexGoalRuntimeResult({
+      config: { jobId: "worker-1", taskId: "task-1", workspacePath, jobRootDir, durableHandoffRootDir, outputPath },
+      status: {
+        tmuxAlive: false, resultExists: true, resultStatus: "done", workspaceExists: true,
+        workspaceDirty: true, changedFiles: ["tracked.txt"], recommendedAction: "review_completed", warnings: [],
+      },
+      forceWrite: true,
+    });
+    const result = JSON.parse(await readFile(outputPath, "utf8"));
+    expect(result.details.handoffPacketPath).toContain(".packet");
+    if (mutated) {
+      expect(result.artifacts).not.toEqual(expect.arrayContaining([...review.artifacts]));
+      await expect(readVerifiableProducerHandoff({ producer })).rejects.toThrow("project_control_verifier_handoff_result_invalid");
+    } else {
+      expect(result.artifacts).toEqual(expect.arrayContaining([...review.artifacts]));
+      await expect(readVerifiableProducerHandoff({ producer })).resolves.toMatchObject({
+        patchSha256: review.manifest.artifacts.patch.sha256,
+        baseCommit: review.baseCommit,
+        changedPaths: ["tracked.txt"],
+      });
+    }
   });
 
   it("lazily backfills an already-completed untracked-only job for handoff review", async () => {
@@ -120,6 +194,7 @@ describe("completed Codex goal result refresh", () => {
     cleanup.push(root);
     const workspacePath = join(root, "workspace");
     const jobRootDir = join(root, "worker-jobs", "worker-1");
+    const durableHandoffRootDir = join(root, "durable");
     const outputPath = join(jobRootDir, "task-1.latest-result.json");
     await mkdir(workspacePath, { recursive: true });
     await mkdir(jobRootDir, { recursive: true });
@@ -147,6 +222,7 @@ describe("completed Codex goal result refresh", () => {
         config: {
           jobId: "worker-1",
           jobRootDir,
+          durableHandoffRootDir,
           authRootDir: join(root, "auth"),
           workspacePath,
           promptPath: join(jobRootDir, "prompt.md"),
@@ -158,12 +234,7 @@ describe("completed Codex goal result refresh", () => {
     });
     const result = JSON.parse(await readFile(outputPath, "utf8")) as
       Record<string, unknown>;
-    const canonicalJobRoot = await realpath(jobRootDir);
     const artifacts = result.artifacts as readonly Record<string, unknown>[];
-    const patch = artifacts.find((artifact) => artifact.kind === "patch");
-    const generation = String(patch?.path).match(
-      /task-1\.([a-f0-9]{64})\.handoff\.patch$/,
-    )?.[1];
 
     expect(status).toMatchObject({
       resultStatus: "done",
@@ -172,19 +243,16 @@ describe("completed Codex goal result refresh", () => {
     expect(result).toMatchObject({
       status: "done",
       changedFiles: ["S0.md"],
-      details: { baseCommit: expect.stringMatching(/^[a-f0-9]{40}$/) },
-      artifacts: [{ kind: "patch", sha256: generation }, { kind: "summary" }, { kind: "manifest" }],
+      details: {
+        baseCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
+        handoffPacketPath: expect.stringContaining("task-1."),
+        handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
     });
-    expect(generation).toMatch(/^[a-f0-9]{64}$/);
-    expect(patch?.path).toBe(
-      join(canonicalJobRoot, `task-1.${generation}.handoff.patch`),
-    );
-    expect(artifacts[1]?.path).toBe(
-      join(canonicalJobRoot, `task-1.${generation}.handoff.summary.json`),
-    );
-    expect(artifacts[2]?.path).toBe(
-      join(canonicalJobRoot, `task-1.${generation}.handoff.manifest.json`),
-    );
+    expect(artifacts.map((artifact) => artifact.kind)).toEqual(expect.arrayContaining([
+      "handoff_packet", "handoff_manifest", "handoff_index",
+      "handoff_worktree", "handoff_untracked_archive",
+    ]));
   });
 });
 

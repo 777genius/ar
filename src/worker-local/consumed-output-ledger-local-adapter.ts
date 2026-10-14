@@ -12,7 +12,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   ConsumedOutputLedgerWriterPort,
@@ -37,6 +37,13 @@ import {
   acquireConsumedOutputLedgerMaintenanceLock,
   releaseConsumedOutputLedgerMaintenanceLock,
 } from "./consumed-output-ledger-maintenance-lock";
+import {
+  LocalAdoptionLedgerPreparation,
+  localGitOutputBytes,
+  safeLedgerName,
+  sha256Bytes,
+} from "./consumed-output-ledger-adoption-local-adapter";
+export { decodeAdoptionCapturedBytes } from "./consumed-output-ledger-adoption-local-adapter";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +53,11 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     private readonly custodyRoot?: string,
     private readonly evidenceRoots?: readonly string[],
   ) {}
+
+  private get ordinaryPortableMode(): boolean {
+    return !localProjectControlEvidenceCustodySupported &&
+      this.custodyRoot === undefined && this.evidenceRoots === undefined;
+  }
 
   async assertCanRecord(input: {
     readonly ledgerRoot: string;
@@ -59,7 +71,9 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     let existing: string;
     try {
-      existing = await readFile(ledgerPath, "utf8");
+      existing = this.ordinaryPortableMode ? await readFile(ledgerPath, "utf8")
+        : Buffer.from((await new LocalProjectControlEvidenceCustody()
+        .readImmutableFile(ledgerPath, 16 * 1024 * 1024)).bytes).toString("utf8");
     } catch (error) {
       if (isNodeErrorCode(error, "ENOENT")) return;
       throw error;
@@ -88,7 +102,7 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
       });
       await this.mutationLocks.assertHeld(mutationLease);
       await assertLedgerRootActive(input.ledgerRoot);
-      receipt = await this.recordLocked(input);
+      receipt = await this.recordLocked(input, mutationLease);
       await this.mutationLocks.assertHeld(mutationLease);
     } catch (error) {
       operationError = error;
@@ -107,7 +121,7 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
   private async recordLocked(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
-  }): Promise<TerminalOutputDecisionReceipt> {
+  }, mutationLease: ConsumedOutputLedgerMutationLease): Promise<TerminalOutputDecisionReceipt> {
     // Revalidate immediately before publication so a path swap after the
     // preflight cannot publish a ledger record bound to out-of-scope evidence.
     await assertTerminalEvidenceInCanonicalRoots(
@@ -115,31 +129,40 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
       this.evidenceRoots,
     );
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
-    await mkdir(dirname(ledgerPath), { recursive: true });
-    const contents = `${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`;
-    const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
-    let removeTemp = true;
+    // Custody-bound and Linux writes retain canonical root/items descriptors.
+    // Recheck the native guard after staging/fsync, at the publication boundary.
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "after_temp_fsync") return;
+      await assertTerminalEvidenceInCanonicalRoots(input.decision, this.evidenceRoots);
+      await assertLedgerRootActive(input.ledgerRoot);
+      await this.mutationLocks.assertHeld(mutationLease);
+    });
     try {
-      try {
-        await writeFile(tmpPath, contents, { flag: "wx" });
-      } catch (error) {
-        // A failed partial write belongs to us; an existing temporary file does not.
-        if (isNodeErrorCode(error, "EEXIST")) removeTemp = false;
-        throw error;
+      const existing = this.ordinaryPortableMode ? await readFile(ledgerPath, "utf8")
+        : Buffer.from((await custody.readImmutableFile(ledgerPath, 16 * 1024 * 1024)).bytes).toString("utf8");
+      if (!sameTerminalDecision(existing, input.decision)) {
+        throw new Error("consumed_output_ledger_terminal_conflict");
       }
-      try {
-        await link(tmpPath, ledgerPath);
+      return { ledgerPath, decision: input.decision, idempotentReplay: true };
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
+    }
+    const contents = Buffer.from(`${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`);
+    try {
+      if (this.ordinaryPortableMode) {
+        await publishExactBytes(ledgerPath, contents);
         return { ledgerPath, decision: input.decision, idempotentReplay: false };
-      } catch (error) {
-        if (!isNodeErrorCode(error, "EEXIST")) throw error;
-        const existing = await readFile(ledgerPath, "utf8");
-        if (!sameTerminalDecision(existing, input.decision)) {
-          throw new Error("consumed_output_ledger_terminal_conflict");
-        }
-        return { ledgerPath, decision: input.decision, idempotentReplay: true };
       }
-    } finally {
-      if (removeTemp) await unlink(tmpPath).catch(() => undefined);
+      const result = await custody.publishImmutableBytes({
+        root: input.ledgerRoot, directories: ["items"], fileName: basename(ledgerPath),
+        bytes: contents, expectedSha256: sha256Bytes(contents),
+      });
+      return { ledgerPath, decision: input.decision, idempotentReplay: !result.created };
+    } catch (error) {
+      if (error instanceof Error && ["evidence_custody_immutable_conflict", "integrated_output_ledger_preparation_conflict"].includes(error.message)) {
+        throw new Error("consumed_output_ledger_terminal_conflict", { cause: error });
+      }
+      throw error;
     }
   }
 }
@@ -173,6 +196,7 @@ async function assertTerminalEvidenceInCanonicalRoots(
     decision.backup.numstatPath,
     decision.backup.untrackedArchivePath,
     decision.preexistingWorkspacePatch?.path,
+    decision.publicationIncorporation?.path,
   ].filter((path): path is string => path !== undefined);
   for (const input of directories) {
     const lexical = resolve(input);
@@ -562,10 +586,6 @@ export async function captureLocalTerminalOutputBackup(input: {
   };
 }
 
-function sha256Bytes(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
 export type LocalIntegratedOutputLedgerAdapterOptions = {
   readonly ledgerRoots: readonly string[];
   readonly evidenceRoots: readonly string[];
@@ -576,6 +596,7 @@ export type LocalIntegratedOutputLedgerAdapterOptions = {
 
 export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedgerPort {
   private readonly writer: LocalConsumedOutputLedgerWriter;
+  private readonly adoptionPreparation: LocalAdoptionLedgerPreparation;
 
   constructor(
     private readonly options: LocalIntegratedOutputLedgerAdapterOptions,
@@ -585,6 +606,27 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
       options.custodyRoot,
       options.evidenceRoots,
     );
+    this.adoptionPreparation = new LocalAdoptionLedgerPreparation({
+      readPrepared: (input) => this.readPrepared(input),
+      requiredLedgerRoot: () => this.requiredLedgerRoot(),
+      requiredActiveEvidenceRoot: () => this.requiredActiveEvidenceRoot(),
+      gitOutput: (cwd, args) => this.gitOutput(cwd, args),
+      gitOutputBytes: (cwd, args) => this.gitOutputBytes(cwd, args),
+    });
+  }
+
+  async prepareAdoption(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly commitSha: string;
+  }): Promise<IntegratedOutputLedgerPreparation> {
+    return this.adoptionPreparation.prepareAdoption(input);
+  }
+
+  async readPrepared(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly commitSha: string;
+  }): Promise<IntegratedOutputLedgerPreparation | undefined> {
+    return this.adoptionPreparation.readPrepared(input);
   }
 
   async prepare(input: {
@@ -838,33 +880,6 @@ async function localGitOutput(input: {
   return result.stdout;
 }
 
-async function localGitOutputBytes(input: {
-  readonly cwd: string;
-  readonly args: readonly string[];
-  readonly gitBinaryPath?: string;
-}): Promise<Buffer> {
-  try {
-    const result = await execFileAsync(
-      input.gitBinaryPath ?? "git",
-      [...input.args],
-      {
-        cwd: input.cwd,
-        encoding: "buffer",
-        maxBuffer: MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES,
-        timeout: 60_000,
-      },
-    );
-    assertRetainedTerminalArchivePatchSize(result.stdout.byteLength);
-    return result.stdout;
-  } catch (error) {
-    if (isNodeErrorCode(error, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") &&
-        error instanceof Error && error.message.includes("stdout")) {
-      assertRetainedTerminalArchivePatchSize(MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES + 1);
-    }
-    throw error;
-  }
-}
-
 function sameTerminalDecision(
   existingJson: string,
   decision: TerminalOutputDecision,
@@ -974,10 +989,6 @@ function terminalLedgerPath(
     "items",
     `${safeLedgerName(decision.jobId)}${attemptSuffix}.json`,
   );
-}
-
-function safeLedgerName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function isNodeErrorCode(error: unknown, code: string): boolean {

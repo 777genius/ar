@@ -35,6 +35,7 @@ export type StartControlledAgentRunDeps = {
   readonly recoverOwnerlessActiveRunAfterMs?: number;
   readonly capacity?: {
     readonly accountId: string;
+    readonly sessionId?: string;
     readonly demand?: WorkerRuntimeDemand;
   };
   readonly clock?: { now(): Date };
@@ -107,7 +108,7 @@ export class StartControlledAgentRunUseCase {
         : "Controlled-agent owner process is no longer live.";
       const now = (this.deps.clock?.now() ?? new Date()).toISOString();
       try {
-        await this.deps.provider.stop({
+        const cleanup = await this.deps.provider.stop({
           session: existingSession,
           run: existingRun,
           reason: existingActiveRunRecoverySafeMessage(
@@ -115,6 +116,16 @@ export class StartControlledAgentRunUseCase {
             staleSafeMessage,
           ),
         });
+        if (cleanup.status === ControlledAgentRunStatus.Failed) {
+          return {
+            ok: false,
+            reason: StartControlledAgentRunBlockReason.ExistingActiveRunCleanupFailed,
+            session: existingSession,
+            run: existingRun,
+            safeMessage: cleanup.safeMessage ??
+              "Provider reported failed cleanup for an existing controlled-agent run.",
+          };
+        }
       } catch (error) {
         return {
           ok: false,
@@ -168,6 +179,8 @@ export class StartControlledAgentRunUseCase {
       ...(this.deps.owner === undefined ? {} : { owner: this.deps.owner }),
       ...(this.deps.capacity === undefined ? {} : {
         capacityAccountId: this.deps.capacity.accountId,
+        ...(this.deps.capacity.sessionId === undefined
+          ? {} : { capacitySessionId: this.deps.capacity.sessionId }),
         ...(this.deps.capacity.demand === undefined
           ? {}
           : { capacityDemand: this.deps.capacity.demand }),

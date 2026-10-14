@@ -3,6 +3,7 @@ import {
   NetworkAccessMode,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexGoalAccountSelectionMode,
   readCodexGoalJob,
   summarizeCodexGoalJob,
   type CodexGoalJobManifestInput,
@@ -10,8 +11,7 @@ import {
 import { projectAdmissionWorkerRoleArg } from "./application/project-control/codex-goal-project-admission";
 import { projectControlChildManifestInput } from "./application/project-control/codex-goal-project-child-manifest";
 import {
-  projectControlDefaultAccountNames,
-  rotateProjectControlAccountNames,
+  projectControlCreateAccountNames,
 } from "./codex-goal-mcp-project-accounts";
 import {
   type CodexProjectControlBrokerInput,
@@ -52,6 +52,7 @@ export async function projectControlCreateCodexGoalJobView(
   const requested = projectControlChildManifestInput({
     args: args as JobCreateMcpArgs,
     scope: controller.scope,
+    controllerCheckpointRequired: controller.controller.checkpointRequired,
     registryRootDir: controller.registryRootDir,
   });
   if (
@@ -63,24 +64,27 @@ export async function projectControlCreateCodexGoalJobView(
   const accessBoundary =
     requested.accessBoundary ?? AccessBoundary.IsolatedWorkspaceWrite;
   const workerRole = projectAdmissionWorkerRoleArg(args.workerRole);
-  const accounts = rotateProjectControlAccountNames(
-    await projectControlDefaultAccountNames({
-      ...(requested.authRootDir ? { authRootDir: requested.authRootDir } : {}),
-      requestedAccounts: requested.accounts,
-      allowedAccountIds: controller.scope.allowedAccountIds ?? [],
-    }),
-    requested.jobId,
-  );
+  const accounts = await projectControlCreateAccountNames({
+    ...(requested.modelBackend === undefined ? {} : { modelBackend: requested.modelBackend }),
+    ...(requested.authRootDir ? { authRootDir: requested.authRootDir } : {}),
+    requestedAccounts: requested.accounts,
+    allowedAccountIds: controller.scope.allowedAccountIds ?? [],
+    jobId: requested.jobId,
+  });
   const createManifest: CodexGoalJobManifestInput = {
     ...requested,
     accounts,
+    accountSelectionMode: requested.accounts.length > 0 &&
+      accounts.some((account) => requested.accounts.includes(account))
+      ? CodexGoalAccountSelectionMode.Explicit
+      : CodexGoalAccountSelectionMode.Automatic,
     accessBoundary,
     projectAccessScope: projectControlChildScope(
       controller.scope,
       requested.workspacePath,
     ),
     allowDangerFullAccess: false,
-    networkAccess: requested.networkAccess ?? NetworkAccessMode.Restricted,
+    networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
     ...(workerRole
       ? {
           tags: uniqueProjectControlStrings([

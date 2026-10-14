@@ -1,9 +1,12 @@
+import { optionalWorkerMode } from "./project-control-worker-mode";
+import { parseChildLifetime, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
   AccessBoundary,
   AccessDecisionReason,
   LaunchPlanStatus,
   NetworkAccessMode,
+  ProjectAuthorityMode,
   buildLaunchPlan,
   parseAccessBoundary,
   parseNetworkAccessMode,
@@ -17,10 +20,11 @@ export type CodexGoalAccessConfig = {
   readonly accessBoundary?: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
 };
 
 export type CodexGoalAccessPlanConfig = CodexGoalAccessConfig & {
+  readonly childLifetime?: ChildLifetime | undefined;
   readonly editMode?: ProviderTaskControls["editMode"];
   readonly providerSandboxMode?: ProviderTaskControls["providerSandboxMode"];
 };
@@ -45,9 +49,6 @@ export function optionalCodexGoalNetworkAccess(
 ): CodexGoalAccessConfig["networkAccess"] | undefined {
   if (value === undefined) return undefined;
   const parsed = parseNetworkAccessMode(value, fieldName);
-  if (parsed === NetworkAccessMode.Unrestricted) {
-    throw new Error(`${fieldName}_unrestricted_requires_danger_full_access`);
-  }
   return parsed;
 }
 
@@ -104,18 +105,17 @@ export function buildCodexGoalAccessLaunchPlan(
   }
   const networkBlocker = codexGoalNetworkAccessBlocker(config);
   if (networkBlocker) return networkBlocker;
+  if (config.childLifetime && parseChildLifetime(config.childLifetime).accessBoundary !== config.accessBoundary) throw new Error("child_access_boundary_conflict");
   return buildLaunchPlan({
     boundary: config.accessBoundary,
     ...(config.projectAccessScope === undefined
       ? {}
       : { scope: config.projectAccessScope }),
-    adapter: codexGoalLaunchAdapterCapabilities,
+    adapter: config.childLifetime ? { ...codexGoalLaunchAdapterCapabilities, canDisableRawShell: true } : codexGoalLaunchAdapterCapabilities,
     ...(config.allowDangerFullAccess === undefined
       ? {}
       : { allowDangerFullAccess: config.allowDangerFullAccess }),
-    ...(config.networkAccess === undefined
-      ? {}
-      : { networkAccess: config.networkAccess }),
+    networkAccess: config.networkAccess ?? NetworkAccessMode.Unrestricted,
   });
 }
 
@@ -127,18 +127,42 @@ export function commandPolicyForHostedCodexGoal(input: {
     input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
     input.accessLaunchPlan.commandPolicy.validateCommands
   ) {
-    return input.accessLaunchPlan.commandPolicy;
+    return {
+      ...input.accessLaunchPlan.commandPolicy,
+      deniedExecutableNames: [...new Set([...input.accessLaunchPlan.commandPolicy.deniedExecutableNames, ...hostedDeniedExecutables])],
+      deniedGitSubcommands: [...new Set([...input.accessLaunchPlan.commandPolicy.deniedGitSubcommands, ...hostedDeniedGitSubcommands])],
+    };
   }
   if (input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
     return undefined;
   }
   return {
     validateCommands: true,
-    deniedExecutableNames: [],
-    deniedGitSubcommands: [],
+    deniedExecutableNames: hostedDeniedExecutables,
+    deniedGitSubcommands: hostedDeniedGitSubcommands,
     deniedPathPrefixes: [],
-    deniedInlineCodeExecutables: [],
-    deniedScriptExecutables: [],
+    deniedInlineCodeExecutables: ["python", "python3", "node"],
+    deniedScriptExecutables: ["sh", "bash", "zsh"],
+  };
+}
+
+// Command admission remains independent of Internet permission. The native
+// filesystem profile is still the authority for .git, .codex and private roots.
+const hostedDeniedExecutables = ["sudo", "su", "docker", "docker-compose", "podman", "tmux", "systemctl", "service"];
+const hostedDeniedGitSubcommands = ["push", "commit", "merge", "rebase", "reset", "clean", "update-ref", "gc", "repack"];
+
+export function codexGoalHostedExecutionBoundary(input: {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly projectAccessScope?: ProjectAccessScope;
+  readonly accessBoundary?: AccessBoundary;
+  readonly commandPolicy?: CommandPolicy | undefined;
+}) {
+  return {
+    sourceEnv: input.sourceEnv ?? process.env,
+    enforceProjectReadBoundary: input.projectAccessScope !== undefined &&
+      (input.accessBoundary === AccessBoundary.ReadOnly ||
+        input.accessBoundary === AccessBoundary.IsolatedWorkspaceWrite),
+    ...(input.commandPolicy === undefined ? {} : { commandPolicy: input.commandPolicy }),
   };
 }
 
@@ -221,6 +245,7 @@ export function parseCodexGoalProjectAccessScope(
       "consumedOutputEvidenceRoots",
       fieldName,
     ),
+    ...(value.workerMode === undefined ? {} : { workerMode: optionalWorkerMode(value.workerMode, `${fieldName}.workerMode`)! }),
     ...(value.commitIdentity === undefined
       ? {}
       : { commitIdentity: parseCommitIdentity(value.commitIdentity, `${fieldName}.commitIdentity`) }),
@@ -265,7 +290,7 @@ function parseProjectPreStartAdmissionScope(
 ): NonNullable<ProjectAccessScope["preStartAdmission"]> {
   if (!isRecord(value)) throw new Error(`${fieldName}_invalid`);
   if (value.mode === "serial-builtin") {
-    const allowedFields = new Set(["required", "mode"]);
+    const allowedFields = new Set(["required", "mode", "authorityMode"]);
     for (const field of Object.keys(value)) {
       if (!allowedFields.has(field)) {
         throw new Error(`${fieldName}.unexpected_field:${field}`);
@@ -274,17 +299,31 @@ function parseProjectPreStartAdmissionScope(
     return {
       required: booleanValue(value.required, `${fieldName}.required`),
       mode: "serial-builtin",
+      ...parseAuthorityMode(value.authorityMode, fieldName, value.required),
     };
   }
   if (value.mode !== "serial") throw new Error(`${fieldName}.mode_invalid`);
   return {
     required: booleanValue(value.required, `${fieldName}.required`),
     mode: "serial",
+    ...parseAuthorityMode(value.authorityMode, fieldName, value.required),
     validatorBundle: parseProjectPreStartAdmissionValidators(
       value.validatorBundle,
       `${fieldName}.validatorBundle`,
     ),
   };
+}
+
+function parseAuthorityMode(value: unknown, fieldName: string, required: unknown):
+  { readonly authorityMode?: ProjectAuthorityMode } {
+  if (value === undefined) return {};
+  if (value !== ProjectAuthorityMode.HostedWebCoreV1) {
+    throw new Error(`${fieldName}.authorityMode_invalid`);
+  }
+  if (required !== true) {
+    throw new Error(`${fieldName}.authorityMode_requires_required`);
+  }
+  return { authorityMode: ProjectAuthorityMode.HostedWebCoreV1 };
 }
 
 function parseProjectPreStartAdmissionValidators(
@@ -352,6 +391,8 @@ function codexGoalNetworkAccessBlocker(
   if (
     config.accessBoundary === undefined ||
     config.accessBoundary === AccessBoundary.DangerFullAccess ||
+    config.networkAccess === undefined ||
+    config.networkAccess === NetworkAccessMode.Unrestricted ||
     config.networkAccess === NetworkAccessMode.Restricted
   ) {
     return null;
@@ -361,7 +402,7 @@ function codexGoalNetworkAccessBlocker(
     boundary: config.accessBoundary,
     reason: AccessDecisionReason.CannotEnforceAccessBoundary,
     evidence: [
-      'Codex goal adapter cannot enforce network_access=disabled; set networkAccess="restricted" until OS/container egress isolation exists',
+      'Codex goal adapter cannot enforce network_access=disabled; use the default full Internet policy or an explicitly restricted profile',
     ],
   };
 }

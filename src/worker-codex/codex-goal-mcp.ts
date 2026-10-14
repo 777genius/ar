@@ -26,6 +26,7 @@ import {
   registerCodexGoalLaunchTools,
 } from "./codex-goal-mcp-operation-tools";
 import { registerCodexGoalAccountTools } from "./codex-goal-mcp-account-tools";
+import { enterScratchPrivateMountNamespace } from "./scratch-mount-namespace";
 import { subscriptionRuntimePackageVersion } from
   "./subscription-runtime-package-version";
 export { buildCodexGoalBrief } from "./codex-goal-mcp-brief";
@@ -40,6 +41,9 @@ export {
 
 export type CodexGoalMcpServerOptions = CodexGoalWorkerControlToolOptions & {
   readonly providerRuntimeRegistry?: ProviderRuntimeRegistry;
+  readonly storageRootDir?: string;
+  readonly registryRootDir?: string;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
 };
 
 export function createCodexGoalMcpServer(
@@ -50,25 +54,34 @@ export function createCodexGoalMcpServer(
     version: subscriptionRuntimePackageVersion,
   });
 
-  registerCodexGoalJobResource(server);
+  const sourceEnv: Readonly<Record<string, string | undefined>> = Object.freeze({ ...(options.sourceEnv ?? process.env),
+    ...(options.storageRootDir === undefined ? {} : { SUBSCRIPTION_RUNTIME_STORAGE_ROOT: options.storageRootDir }),
+    ...(options.registryRootDir === undefined ? {} : { SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT: options.registryRootDir }),
+  });
+  const storageDefaults = { sourceEnv };
+  registerCodexGoalJobResource(server, {
+    storageRootDir: options.storageRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_STORAGE_ROOT,
+    registryRootDir: options.registryRootDir ?? sourceEnv.SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT ?? sourceEnv.CODEX_GOAL_REGISTRY_ROOT,
+    sourceEnv,
+  });
   registerCodexGoalPrompts(server);
-  registerCodexGoalJobTools(server);
-  registerCodexGoalRunEventTools(server, options);
-  registerCodexGoalWorkerControlTools(server, options);
+  registerCodexGoalJobTools(server, storageDefaults);
+  registerCodexGoalRunEventTools(server, options, storageDefaults);
+  registerCodexGoalWorkerControlTools(server, options, storageDefaults);
   registerCodexGoalAccountTools(server);
-  registerCodexGoalLaunchTools(server);
+  registerCodexGoalLaunchTools(server, storageDefaults);
   registerCodexGoalProjectControlTools(server, options);
-  registerCodexGoalInspectionTools(server);
+  registerCodexGoalInspectionTools(server, storageDefaults);
 
   return server;
 }
 
-function registerCodexGoalJobResource(server: McpServer): void {
+function registerCodexGoalJobResource(server: McpServer, input: Parameters<typeof resolveCodexGoalJobRegistryRoot>[0]): void {
   server.registerResource(
     "codex-goal-job",
     new ResourceTemplate("codex-goal://jobs/{jobId}", {
       list: async () => {
-        const registryRootDir = resolveCodexGoalJobRegistryRoot();
+        const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
         const jobs = await listCodexGoalJobs({ registryRootDir });
         return {
           resources: jobs.map((job) => ({
@@ -86,7 +99,7 @@ function registerCodexGoalJobResource(server: McpServer): void {
       mimeType: "application/json",
     },
     async (uri, { jobId }) => {
-      const registryRootDir = resolveCodexGoalJobRegistryRoot();
+      const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
       const manifest = await readCodexGoalJob({
         registryRootDir,
         jobId: String(jobId),
@@ -106,6 +119,7 @@ function registerCodexGoalJobResource(server: McpServer): void {
 }
 
 if (await isMainModule()) {
+  enterScratchPrivateMountNamespace();
   try {
     const server = createCodexGoalMcpServer();
     await server.connect(new StdioServerTransport());

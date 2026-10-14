@@ -560,7 +560,7 @@ describe("codex goal runner", () => {
     }
   });
 
-  it("fails closed for Codex access-boundary jobs without explicit restricted network", async () => {
+  it("fails closed for an explicitly disabled network even though Internet is the default", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-goal-access-"));
     const promptPath = join(root, "prompt.md");
     const config: CodexGoalRunConfig = {
@@ -569,6 +569,7 @@ describe("codex goal runner", () => {
       workspacePath: join(root, "workspace"),
       promptPath,
       taskId: "task-access-network",
+      networkAccess: NetworkAccessMode.Disabled,
       accounts: codexGoalAccountSlots(["account-a"]),
       accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
       projectAccessScope: {
@@ -593,7 +594,7 @@ describe("codex goal runner", () => {
     }
   });
 
-  it("threads isolated workspace command policy into worker options", () => {
+  it("retains command validation alongside the provider filesystem sandbox", () => {
     const root = "/tmp/subscription-runtime-goal-access";
     const options = buildCodexGoalExecutorOptions({
       stateRootDir: join(root, "state"),
@@ -623,11 +624,10 @@ describe("codex goal runner", () => {
     expect(options).toMatchObject({ runtimeHomeRootDir: join(root, "home"), stateRootDir: join(root, "state") });
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
-      deniedGitSubcommands: ["push"],
     });
   });
 
-  it("enables the global-scan-only policy for hosted jobs without an access plan", () => {
+  it("retains Git and service command denials for hosted jobs without an access plan", () => {
     const root = "/tmp/subscription-runtime-hosted-scan-policy";
     const options = buildCodexGoalExecutorOptions({
       stateRootDir: join(root, "state"),
@@ -645,13 +645,13 @@ describe("codex goal runner", () => {
       },
     });
 
-    expect(options.accounts[0]?.worker.commandPolicy).toEqual({
+    expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
-      deniedExecutableNames: [],
-      deniedGitSubcommands: [],
+      deniedExecutableNames: expect.arrayContaining(["systemctl", "sudo"]),
+      deniedGitSubcommands: expect.arrayContaining(["commit", "push", "reset"]),
       deniedPathPrefixes: [],
-      deniedInlineCodeExecutables: [],
-      deniedScriptExecutables: [],
+      deniedInlineCodeExecutables: ["python", "python3", "node"],
+      deniedScriptExecutables: ["sh", "bash", "zsh"],
     });
   });
 
@@ -729,6 +729,7 @@ describe("codex goal runner", () => {
       workspacePath,
       promptPath,
       taskId: "task-patch",
+      durableHandoffRootDir: join(root, "durable"),
       accounts: codexGoalAccountSlots(["account-a"]),
       outputPath: join(root, "job", "task-patch.latest-result.json"),
     };
@@ -776,21 +777,26 @@ describe("codex goal runner", () => {
         nextAction: "preserve_patch",
       });
       expect(result.details).toMatchObject({ baseCommit });
-      const canonicalJobRoot = await realpath(config.jobRootDir);
+      const canonicalDurableRoot = await realpath(config.durableHandoffRootDir!);
       const patchArtifact = (
         result.artifacts as readonly Record<string, unknown>[]
-      ).find((artifact) => artifact.kind === "patch");
+      ).find((artifact) => artifact.kind === "handoff_headRelative");
       const patchPath = String(patchArtifact?.path);
-      const generation = patchPath.match(
-        /task-patch\.([a-f0-9]{64})\.handoff\.patch$/,
-      )?.[1];
-      expect(patchPath.startsWith(`${canonicalJobRoot}/`)).toBe(true);
-      expect(generation).toBe(patchArtifact?.sha256);
+      expect(patchPath.startsWith(`${canonicalDurableRoot}/`)).toBe(true);
+      expect(patchArtifact?.sha256).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
       expect(result.evidence).toEqual(expect.arrayContaining([
         `patch_preserved:${patchPath}`,
       ]));
       expect(await readFile(patchPath, "utf8")).toContain("after");
-      expect(await readFile(patchPath, "utf8")).toContain("new file");
+      const untrackedArtifact = (
+        result.artifacts as readonly Record<string, unknown>[]
+      ).find((artifact) => artifact.kind === "handoff_untracked_archive");
+      expect(String(untrackedArtifact?.path).startsWith(
+        `${canonicalDurableRoot}/`,
+      )).toBe(true);
+      expect((await readFile(String(untrackedArtifact?.path))).includes(
+        Buffer.from("new file\n"),
+      )).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -806,6 +812,7 @@ describe("codex goal runner", () => {
     const config: CodexGoalRunConfig = {
       jobId: "project-remediation",
       jobRootDir: join(root, "job"),
+      durableHandoffRootDir: join(root, "durable"),
       authRootDir: join(root, "auth"),
       workspacePath,
       promptPath,
@@ -870,14 +877,13 @@ describe("codex goal runner", () => {
         changedFiles: ["new-packet.md", "packet.md"],
         nextAction: "review_completed",
         details: {
-          handoffArtifactError: "handoff_mixed_index_worktree_state",
+          handoffPacketPath: expect.stringContaining("task-remediation."),
+          handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          handoffIndexSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          handoffWorktreeSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         },
       });
-      expect(result.evidence).toEqual(expect.arrayContaining([
-        "handoff_artifact_materialization_failed:handoff_mixed_index_worktree_state",
-        "patch_preserve_unavailable",
-      ]));
-      expect(result).not.toHaveProperty("artifacts");
+      expect(result).toHaveProperty("artifacts");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -889,6 +895,7 @@ describe("codex goal runner", () => {
     const workspacePath = join(root, "workspace");
     const config: CodexGoalRunConfig = {
       jobRootDir: join(root, "job"),
+      durableHandoffRootDir: join(root, "durable"),
       authRootDir: join(root, "auth"),
       workspacePath,
       promptPath,
@@ -914,7 +921,7 @@ describe("codex goal runner", () => {
         cwd: workspacePath,
       });
 
-      await runCodexGoal(config, {
+      await expect(runCodexGoal(config, {
         createExecutor: () => ({
           async run() {
             await writeFile(join(workspacePath, "auth.json"), "{}\n");
@@ -926,28 +933,12 @@ describe("codex goal runner", () => {
           },
           async dispose() {},
         }),
-      });
-      const result = JSON.parse(await readFile(config.outputPath!, "utf8")) as
-        Record<string, unknown>;
-
-      expect(result).toMatchObject({
-        status: "done",
-        changedFiles: ["auth.json"],
-        details: {
-          handoffArtifactError: "handoff_sensitive_path_rejected",
-        },
-      });
-      expect(result.evidence).toEqual(expect.arrayContaining([
-        "handoff_artifact_materialization_failed:handoff_sensitive_path_rejected",
-        "patch_preserve_unavailable",
-      ]));
-      expect(result.evidence).not.toContain(
-        "continuation_workspace_fingerprint_captured",
+      })).rejects.toThrow(
+        "dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected",
       );
-      expect(result.details).not.toHaveProperty(
-        "continuationWorkspaceFingerprintSha256",
-      );
-      expect(result).not.toHaveProperty("artifacts");
+      await expect(readFile(config.outputPath!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

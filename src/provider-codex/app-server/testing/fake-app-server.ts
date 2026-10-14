@@ -10,6 +10,8 @@ export type FakeTokenUsageNotification = {
 };
 
 export type FakeAppServerFactoryOptions = {
+  /** Explicit retained provider state for process-restart regression fixtures. */
+  readonly initialGoals?: Readonly<Record<string, { readonly objective: string; readonly status: string }>>;
   readonly failThreadStart?: boolean;
   readonly failThreadStartNumbers?: readonly number[];
   readonly threadStartError?: string;
@@ -87,7 +89,7 @@ export type FakeAppServerRequest = {
 };
 
 export type FakeAppServerResponse = {
-  readonly id: number;
+  readonly id: string | number;
   readonly result?: unknown;
   readonly error?: unknown;
 };
@@ -101,6 +103,7 @@ export class FakeAppServerFactory {
   readonly responses: FakeAppServerResponse[] = [];
   readonly processes: FakeAppServerProcess[] = [];
   readonly spawnArgs: string[][] = [];
+  readonly envs: Readonly<Record<string, string>>[] = [];
 
   constructor(private readonly options: FakeAppServerFactoryOptions = {}) {}
 
@@ -113,6 +116,7 @@ export class FakeAppServerFactory {
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
     this.cwds.push(input.cwd);
     this.spawnArgs.push([...input.args]);
+    this.envs.push({ ...input.env });
     const process = new FakeAppServerProcess({
       ...this.options,
       onPrompt: (prompt) => this.prompts.push(prompt),
@@ -162,6 +166,7 @@ export class FakeAppServerProcess extends EventEmitter {
 
   constructor(private readonly options: FakeAppServerFactoryOptions) {
     super();
+    for (const [threadId, goal] of Object.entries(options.initialGoals ?? {})) this.goals.set(threadId, { ...goal });
   }
 
   kill(): boolean {
@@ -271,6 +276,10 @@ export class FakeAppServerProcess extends EventEmitter {
         }
         continue;
       }
+      if (request.method === "thread/resume") {
+        this.respond(request.id, { thread: { id: String(request.params?.threadId ?? "") } });
+        continue;
+      }
       if (request.method === "thread/goal/set") {
         const threadId = String(request.params?.threadId ?? "");
         const objective = String(request.params?.objective ?? "");
@@ -337,6 +346,11 @@ export class FakeAppServerProcess extends EventEmitter {
                   turn: { id: turnId, status: "inProgress" },
                 },
               }),
+              ...(this.options.emitServerRequestOnTurn ? [JSON.stringify({
+                id: this.options.emitServerRequestOnTurn.id ?? 9_002,
+                method: this.options.emitServerRequestOnTurn.method,
+                params: this.options.emitServerRequestOnTurn.params,
+              })] : []),
               ...outputDeltas.map((delta) => JSON.stringify({
                 method: "item/agentMessage/delta",
                 params: { turnId, delta },

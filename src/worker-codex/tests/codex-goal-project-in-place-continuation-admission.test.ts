@@ -54,7 +54,7 @@ describe("controlled runtime in-place continuation admission", () => {
     );
   });
 
-  it("admits only exact owned paths through the real broker", async () => {
+  it("fences unproved held output before admitting only exact self continuation paths", async () => {
     const root = await mkdtemp(
       join(tmpdir(), "subscription-runtime-in-place-continuation-"),
     );
@@ -76,15 +76,16 @@ describe("controlled runtime in-place continuation admission", () => {
         tmuxSessionPrefixes: ["project-"],
         allowedAccountIds: ["account-a"],
       };
+      let includeUnprovedHeldOutput = true;
       const deps: CodexProjectAdmissionDeps = {
         listJobs: async () => [
           jobSummary({ root, registryRoot, workspacePath }),
-          jobSummary({
+          ...(includeUnprovedHeldOutput ? [jobSummary({
             root,
             registryRoot,
             workspacePath: heldWorkspacePath,
             jobId: "project-held",
-          }),
+          })] : []),
         ],
         buildOverviewItems: async () => [
           {
@@ -99,7 +100,7 @@ describe("controlled runtime in-place continuation admission", () => {
             recommendedAction: "inspect_dirty_failure",
             changedFiles: ["src/resume.ts"],
           },
-          {
+          ...(includeUnprovedHeldOutput ? [{
             ok: true,
             jobId: "project-held",
             workspacePath: heldWorkspacePath,
@@ -111,7 +112,7 @@ describe("controlled runtime in-place continuation admission", () => {
             recommendedAction: "review_completed",
             lifecycleMarkerTypes: ["review"],
             changedFiles: ["docs/held.md"],
-          },
+          }] : []),
         ],
       };
       const ownedPaths = ["src/resume.ts"];
@@ -142,6 +143,9 @@ describe("controlled runtime in-place continuation admission", () => {
           ownedPaths: requestedOwnedPaths,
         });
 
+      await expect(start(ownedPaths)).rejects.toMatchObject({ decision: { allowed: false } });
+      expect(starts).toEqual([]);
+      includeUnprovedHeldOutput = false;
       await expect(start(ownedPaths)).resolves.toMatchObject({
         status: "applied",
       });
@@ -322,6 +326,14 @@ function continuationBrokerPorts(
     resourceId,
   });
   return {
+    authority: {
+      async initialize() {
+        throw new Error("project_authority_not_configured_for_test");
+      },
+      async compareAndSet() {
+        throw new Error("project_authority_not_configured_for_test");
+      },
+    },
     admission,
     registry: {
       createJob: async (input) => applied(input.jobId),

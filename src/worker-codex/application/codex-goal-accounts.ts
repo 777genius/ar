@@ -5,6 +5,7 @@ import {
   listCodexGoalAccountStatuses,
   shellQuote,
 } from "../codex-goal-ops";
+import type { CodexGoalAccountSlotStatus } from "../codex-goal-account-status";
 import { defaultCodexGoalAuthRoot } from "./codex-goal-account-roots";
 import { resolvePath } from "./codex-goal-input-values";
 
@@ -16,9 +17,7 @@ export type CodexAccountPoolArgs = {
   readonly poolRootDir?: string;
 };
 
-export type CodexGoalAccountSlots = Awaited<
-  ReturnType<typeof listCodexGoalAccountStatuses>
->;
+export type CodexGoalAccountSlots = readonly CodexGoalAccountSlotStatus[];
 
 export type CodexGoalAccountSlot = CodexGoalAccountSlots[number];
 
@@ -27,6 +26,7 @@ export async function codexAccountStatusPayload(input: {
   readonly stateRootDir?: string;
   readonly accounts?: readonly string[];
   readonly liveCheck?: boolean;
+  readonly quotaOnlyLiveCheck?: boolean;
   readonly recheckDueCapacity?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
@@ -37,6 +37,7 @@ export async function codexAccountStatusPayload(input: {
     ...(input.accounts?.length ? { accounts: input.accounts } : {}),
     ...(input.stateRootDir ? { stateRootDir: input.stateRootDir } : {}),
     ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
+    ...(input.quotaOnlyLiveCheck ? { quotaOnlyLiveCheck: true } : {}),
     ...(input.recheckDueCapacity ? { recheckDueCapacity: true } : {}),
     ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
     ...(input.liveCheckTimeoutMs
@@ -49,6 +50,7 @@ export async function codexAccountStatusPayload(input: {
   const readySlots = slots.filter((slot) => slot.status === "ready");
   const missingSlots = slots.filter((slot) => slot.status === "auth_missing");
   const invalidSlots = slots.filter((slot) => slot.status === "auth_invalid");
+  const quarantinedSlots = slots.filter((slot) => slot.quarantined);
   const capacityBlockedSlots = slots.filter((slot) =>
     slot.capacityAvailability && slot.capacityAvailability !== "available"
   );
@@ -58,6 +60,7 @@ export async function codexAccountStatusPayload(input: {
     ...authRootDiagnostic,
     capacityAware: true,
     liveCheck: Boolean(input.liveCheck),
+    quotaOnlyLiveCheck: Boolean(input.quotaOnlyLiveCheck),
     recheckDueCapacity: Boolean(input.recheckDueCapacity),
     ...(input.stateRootDir ? { stateRootDir: input.stateRootDir } : {}),
     count: slots.length,
@@ -68,6 +71,7 @@ export async function codexAccountStatusPayload(input: {
       ready: readySlots.length,
       missing: missingSlots.length,
       invalid: invalidSlots.length,
+      quarantined: quarantinedSlots.length,
       deduped: dedupedSlots.length,
       availableDeduped: availableDedupedSlots.length,
       capacityBlocked: capacityBlockedSlots.length,
@@ -80,6 +84,7 @@ export async function codexAccountStatusPayload(input: {
     availableDedupedAccountNames: availableDedupedSlots.map((slot) => slot.name),
     dedupedAccountLabels: dedupedSlots.map(accountOperatorLabel),
     availableDedupedAccountLabels: availableDedupedSlots.map(accountOperatorLabel),
+    quarantinedAccountNames: quarantinedSlots.map((slot) => slot.name),
     dedupeRecommendation: duplicates.length
       ? "Use dedupedAccountNames for worker pools. It keeps the newest ready slot per identity group."
       : "No duplicate identity groups detected.",
@@ -152,7 +157,7 @@ export function accountOperatorLabel(slot: CodexGoalAccountSlot): string {
   return slot.operatorLabel ?? slot.displayName ?? slot.email ?? slot.name;
 }
 
-export function dedupeCodexGoalAccountSlots(slots: CodexGoalAccountSlots) {
+export function dedupeCodexGoalAccountSlots(slots: CodexGoalAccountSlots): CodexGoalAccountSlot[] {
   const byIdentity = new Map<string, CodexGoalAccountSlot>();
   const uniqueSlots: CodexGoalAccountSlot[] = [];
   for (const slot of slots) {
@@ -184,14 +189,14 @@ export function dedupeCodexGoalAccountSlots(slots: CodexGoalAccountSlots) {
   ];
 }
 
-export function availableCodexGoalAccountSlots(slots: CodexGoalAccountSlots) {
+export function availableCodexGoalAccountSlots(slots: CodexGoalAccountSlots): CodexGoalAccountSlot[] {
   return slots.filter(isAccountSlotAvailable);
 }
 
 export function visibleCodexGoalAccountPoolSlots(
   poolName: string,
   slots: CodexGoalAccountSlots,
-) {
+): CodexGoalAccountSlot[] {
   const likelyAuthPool = isLikelyAuthPoolName(poolName);
   return slots.filter((slot) =>
     slot.status !== "auth_missing" ||

@@ -143,7 +143,11 @@ describe("worker control validated history", () => {
       const cache = new ValidatedHistoryCache();
       const parse = (text: string) => { try { return [JSON.parse(text) as { value: number }]; } catch { return []; } };
       await writeFile(path, '{"value":1}');
-      io.afterRead = async () => { await writeFile(path, '{"value":2}'); };
+      io.afterRead = async () => {
+        // Force a distinct signature even on filesystems with coarse timestamps.
+        await writeFile(path + ".replacement", '{"value":2}');
+        await rename(path + ".replacement", path);
+      };
       expect(await cache.read(path, parse)).toEqual([{ value: 1 }]);
       expect(await cache.read(path, parse)).toEqual([{ value: 2 }]);
       await writeFile(path, '{"value":');

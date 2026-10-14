@@ -2,14 +2,120 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { InMemoryWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/worker-core";
 import { codexAccountCapacityStore } from "../application/codex-account-capacity-store";
+import { reserveCodexProjectAccount } from "../application/project-control/codex-goal-project-account-reservation";
+import type { CodexGoalJobManifest, CodexGoalJobManifestInput } from "../codex-goal-jobs";
+import { projectControlCreateCodexGoalJobView } from "../codex-goal-mcp-project-control-create-job";
 import {
   projectControlDefaultAccountNames,
   projectControlRefillAccountNames,
   rotateProjectControlAccountNames,
 } from "../codex-goal-mcp-project-accounts";
 
-describe("project-control refill account rotation", () => {
+describe("project-control account selection", () => {
+  it("keeps an explicit ready selection through create-job and shared reservation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-create-accounts-"));
+    const authRootDir = join(root, "auth");
+    const discovered = ["account-o", "account-p", "account-q", "account-v"];
+    try {
+      await Promise.all(discovered.map((account) => writeFakeAuth(authRootDir, account)));
+      const preview = async (jobId: string, accounts?: string[]) => {
+        const result = await projectControlCreateCodexGoalJobView({
+          jobId,
+          workspacePath: join(root, "worktrees", jobId),
+          ...(accounts ? { accounts } : {}),
+        }, {
+          loadProjectControlController: async () => ({
+            registryRootDir: join(root, "jobs", "registry"),
+            controller: {
+              schemaVersion: 1,
+              jobId: "controller",
+              createdAt: "2026-07-13T00:00:00.000Z",
+              updatedAt: "2026-07-13T00:00:00.000Z",
+              jobRootDir: join(root, "jobs", "controller"),
+              workspacePath: join(root, "controller-workspace"),
+              promptPath: join(root, "jobs", "controller", "prompt.md"),
+              taskId: "controller-task",
+              accounts: ["v"],
+            },
+            scope: {
+              projectId: "synthetic",
+              registryRoot: join(root, "jobs", "registry"),
+              worktreeRoots: [join(root, "worktrees")],
+              jobIdPrefixes: ["job-"],
+              allowedAccountIds: discovered,
+              authRoot: authRootDir,
+            },
+          }),
+          codexProjectControlBroker: () => {
+            throw new Error("preview_must_not_create_broker");
+          },
+        });
+        return result.manifestPreview as CodexGoalJobManifestInput;
+      };
+
+      const requested = await preview("job-1", ["account-v"]);
+      expect(requested.accounts).toEqual(["account-v"]);
+      expect((await preview("job-1", ["account-v", "account-o"])).accounts).toEqual(["account-v", "account-o"]);
+      expect(await projectControlDefaultAccountNames({
+        authRootDir,
+        requestedAccounts: ["account-v"],
+        allowedAccountIds: discovered,
+      })).toEqual(discovered);
+
+      const reservation = await reserveCodexProjectAccount({
+        manifest: {
+          ...requested,
+          schemaVersion: 1,
+          createdAt: "2026-07-13T00:00:00.000Z",
+          updatedAt: "2026-07-13T00:00:00.000Z",
+        } as CodexGoalJobManifest,
+        launch: {
+          config: {
+            jobId: requested.jobId,
+            jobRootDir: requested.jobRootDir,
+            authRootDir,
+            workspacePath: requested.workspacePath,
+            promptPath: requested.promptPath,
+            taskId: requested.taskId,
+            accounts: requested.accounts.map((name) => ({ name })),
+          },
+          tmuxSession: requested.jobId,
+          cwd: requested.workspacePath,
+          logPath: join(requested.jobRootDir, "worker.log"),
+          cliCommand: ["node", "synthetic.js"],
+        },
+        deps: {
+          capacityStore: new InMemoryWorkerAccountCapacityStore(),
+          leaseMode: "shared",
+          now: new Date("2026-07-13T00:00:00.000Z"),
+        },
+      });
+      expect(reservation.accountId).toBe("account-v");
+      expect(reservation.launch.config.accounts.map((account) => account.name)).toEqual(["account-v"]);
+
+      expect((await preview("job-0")).accounts).toEqual(["account-p", "account-q", "account-v", "account-o"]);
+      expect((await preview("job-1")).accounts).toEqual(["account-q", "account-v", "account-o", "account-p"]);
+
+      codexAccountCapacityStore(authRootDir).observe({
+        accountId: "account-v",
+        observedAt: new Date(),
+        capacity: {
+          availability: "quota_exhausted",
+          reason: "quota_limited",
+          cooldownUntil: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      expect((await preview("job-1", ["account-v"])).accounts).toEqual(
+        rotateProjectControlAccountNames(["account-o", "account-p", "account-q"], "job-1"),
+      );
+      expect((await preview("job-1", ["account-v", "account-o"])).accounts).toEqual(["account-o"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("distributes sequential jobs across distinct starting accounts", () => {
     const accounts = ["account-a", "account-b", "account-c"];
 
@@ -70,6 +176,41 @@ describe("project-control refill account rotation", () => {
         },
       });
 
+      await expect(
+        projectControlRefillAccountNames({
+          authRootDir,
+          requestedAccounts: ["account-a", "account-b"],
+          allowedAccountIds: ["account-a", "account-b"],
+        }),
+      ).resolves.toEqual(["account-a"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes quarantined accounts from default and refill selection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-quarantine-selection-"));
+    const authRootDir = join(root, "auth");
+    try {
+      await Promise.all([
+        writeFakeAuth(authRootDir, "account-a"),
+        writeFakeAuth(authRootDir, "account-b"),
+      ]);
+      await writeFile(
+        join(authRootDir, "account-labels.json"),
+        `${JSON.stringify({
+          accounts: { "account-b": { email: "operator@example.com" } },
+          "account-b": { quarantined: true },
+        })}\n`,
+      );
+
+      await expect(
+        projectControlDefaultAccountNames({
+          authRootDir,
+          requestedAccounts: ["account-a", "account-b"],
+          allowedAccountIds: ["account-a", "account-b"],
+        }),
+      ).resolves.toEqual(["account-a"]);
       await expect(
         projectControlRefillAccountNames({
           authRootDir,

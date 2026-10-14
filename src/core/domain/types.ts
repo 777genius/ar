@@ -1,3 +1,4 @@
+import type { NativeWebEvidence } from "./native-web-receipt";
 export type CustodyMode =
   | "no-plaintext-backend"
   | "backend-custody"
@@ -333,6 +334,7 @@ export enum AgentRuntimeFailureCode {
   BudgetExceeded = "budget_exceeded",
   ProviderRuntimeUnavailable = "provider_runtime_unavailable",
   CleanupUnconfirmed = "cleanup_unconfirmed",
+  CheckpointUnprotected = "checkpoint_unprotected",
   UnknownRuntimeFailure = "unknown_runtime_failure",
 }
 
@@ -518,6 +520,7 @@ export type ProviderTaskControls = {
 };
 
 export type ProviderTaskTelemetry = {
+  readonly nativeWeb?: NativeWebEvidence;
   readonly providerRunId?: string;
   readonly providerSessionId?: string;
   readonly durationMs?: number;

@@ -1,38 +1,27 @@
+import { codexMimoApiKeyEnvVarDefault } from "../../codex-model-backend";
+import { hostedMimoCodingBootstrapForFrame } from "../../hosted-mimo-coding-bootstrap-registry";
+import { hostedMimoCodingGuestHome, hostedMimoCodingGuestCodexHome, type HostedMimoCodingBootstrap } from "../../hosted-mimo-coding-bootstrap";
+// The fixed research handshake includes OS setup, retained ownership and the
+// final material/authority checks. Readiness does not start a shorter budget.
+export { hostedResearchSetupTimeoutMs } from "../../hosted-mimo-coding-bootstrap";
+
 export type HostedAppServerLaunchFrame = {
   readonly schemaVersion: 1;
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  readonly coding?: HostedMimoCodingBootstrap;
 };
 
 export function encodeHostedAppServerLaunchFrame(
   frame: HostedAppServerLaunchFrame,
 ): string {
-  return `${JSON.stringify(frame)}\n`;
+  if (frame.coding !== undefined) throw new Error("hosted_app_server_coding_frame_unissued");
+  const coding = hostedMimoCodingBootstrapForFrame(frame);
+  return `${JSON.stringify(coding ? { ...frame, cwd: coding.workspacePath,
+    env: { ...Object.fromEntries(Object.entries(frame.env).filter(([name]) => ["PATH", "CI", codexMimoApiKeyEnvVarDefault].includes(name))), HOME: hostedMimoCodingGuestHome, CODEX_HOME: hostedMimoCodingGuestCodexHome,
+      TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp" }, coding } : frame)}\n`;
 }
 
-export function decodeHostedAppServerLaunchFrame(
-  value: string,
-): HostedAppServerLaunchFrame {
-  const parsed = JSON.parse(value) as Partial<HostedAppServerLaunchFrame>;
-  if (
-    parsed.schemaVersion !== 1 ||
-    typeof parsed.command !== "string" ||
-    parsed.command.length === 0 ||
-    !Array.isArray(parsed.args) ||
-    !parsed.args.every((item) => typeof item === "string") ||
-    typeof parsed.cwd !== "string" ||
-    parsed.cwd.length === 0 ||
-    parsed.env === null ||
-    typeof parsed.env !== "object" ||
-    Array.isArray(parsed.env) ||
-    !Object.entries(parsed.env).every(
-      ([key, item]) =>
-        /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof item === "string",
-    )
-  ) {
-    throw new Error("hosted_app_server_launch_frame_invalid");
-  }
-  return parsed as HostedAppServerLaunchFrame;
-}
+export { decodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame-decoder";

@@ -33,8 +33,7 @@ export async function duplicateWorkspaceIdentityJobIds(
     ) {
       // Overview projects failed Git reads as workspaceDirty:false. Require a
       // successful fresh observation, not existence or a warning heuristic.
-      const status = await gitStatusShort(workspacePath);
-      if (status.ok && status.lines.length === 0) continue;
+      if (await freshCleanGitWorkspace(workspacePath)) continue;
     }
     const identity = await optionalRealPathForAdmission(workspacePath) ??
       resolve(workspacePath);
@@ -48,6 +47,12 @@ export async function duplicateWorkspaceIdentityJobIds(
       .flat(),
   );
 }
+
+export async function freshCleanGitWorkspace(path: string): Promise<boolean> {
+  const status = await gitStatusShort(path);
+  return status.ok && status.lines.length === 0;
+}
+
 async function gitStatusShort(
   path: string,
   git: ProjectControlGitPort = defaultProjectControlGitPort,

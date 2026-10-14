@@ -10,6 +10,38 @@ continue a task without prior chat context.
 For a short copy-paste handoff, give another agent
 `docs/codex-worker-agent-quickstart.md` first, then this runbook for details.
 
+## Optional Host activation
+
+Host activation is disabled by default on an unenrolled Linux Host. Only the
+protected, root-owned `/etc/subscription-runtime/host-activation-mode` containing
+exactly `required\n` enables Required admission. A missing file or safe missing
+ancestor means Disabled; unsafe ancestry, aliases, unreadable files, changed
+records and any other contents deny admission. Environment variables, job
+configuration and CLI flags cannot select or disable this mode.
+
+Disabled does not remove existing authority. Retained installation, activation,
+ordinary-origin, enrollment or epoch records, including pending records, require
+strict recovery. Per-job grants, custody, revocation and dependency records also
+cannot become baseline authority after volatile state is lost. Removing the mode
+file does not unenroll a Host. Inventory presence alone does not enable activation.
+
+An already contained job keeps the installed managed launcher, namespace,
+filesystem, credential and named-permission guards in Disabled mode. Its default
+Codex policy is `codex-full-internet-v1`; supported app-server engines and the
+global scan guard remain required. Foreground routing and status do not depend on
+activation, and do not consult a foreign tmux session. Live baseline direct-run
+stop currently refuses an unowned process; use the existing provider/inbox
+interrupt path. Required ordinary and managed lifetimes retain their fenced stop
+and FD release protocols.
+
+Unmarked native jobs keep their existing layout and lifecycle, including accepted
+project read boundaries, named permissions and separate materialized auth homes.
+This setting does not migrate them to the managed OS namespace. Linux non-root
+local jobs retain their existing API policy without reading Host-private roots.
+The launcher receives a generated copy of the TypeScript policy authority; build,
+archive and installer gates verify its presence and byte parity. Source checks do
+not replace disposable Linux namespace/systemd qualification before installation.
+
 ## When to use this workflow
 
 Use the pool workflow when a task is long-running, writes code, benefits from a
@@ -477,7 +509,7 @@ Use the highest-level surface that still gives the operator enough control:
 | CLI MCP fallback `subscription-runtime-codex-goal tool <name>` | Agents in Codex threads where native MCP tools did not load | Same MCP server via SDK, but called through shell commands |
 | CLI direct commands `subscription-runtime-codex-goal run/status/doctor/tail` | Humans, shell scripts, tmux and simple cron monitors | Smaller surface than MCP, but easy to inspect |
 | `runCodexGoal()` TypeScript API | Host apps or orchestrators that want to own scheduling, UI, notifications or persistence | Caller must preserve the safety policy and account status checks |
-| `FileBackendCodexSafeExecutor` | Advanced integrations that need custom workers, custom account definitions or custom execution policy | Most flexible, most responsibility |
+| `createOneShotExecutor()` / `createContinuationExecutor()` | Advanced integrations that need custom workers, custom account definitions or custom execution policy | Explicit CODEX_HOME lifecycle; caller must still own disposal and safety policy |
 
 The recommended order for agents is native MCP first, CLI MCP fallback second,
 direct API only when the agent is editing a host integration. Direct API should
@@ -541,8 +573,8 @@ await runCodexGoal({
 });
 ```
 
-Use `FileBackendCodexSafeExecutor` directly only when `runCodexGoal()` is too
-high level. Common reasons:
+Use the typed safe-executor factories only when `runCodexGoal()` is too high
+level. Common reasons:
 
 - the host app already owns task queues and wants to construct `run()` input
   itself;
@@ -561,6 +593,32 @@ Even in direct API mode, keep these invariants:
 - inject one shared `accountCapacityStore` for every executor using the same
   auth pool; the Codex goal runner does this automatically from `authRootDir`;
 - never print raw auth files, tokens or provider payloads.
+
+Choose the session-home lifecycle once in the composition root, not per task:
+
+```ts
+import {
+  createContinuationExecutor,
+  createOneShotExecutor,
+} from "@vioxen/subscription-runtime/worker-codex";
+
+const executor = createOneShotExecutor(options);
+
+const resumable = createContinuationExecutor({
+  ...options,
+  sessionId: "stable-application-session-id",
+});
+```
+
+`createOneShotExecutor()` rejects logical-thread and managed-run recovery input
+and removes its materialized `CODEX_HOME` when the executor is disposed.
+`createContinuationExecutor()` requires a non-empty stable `sessionId`, retains
+the matching home across executor restarts and scrubs `auth.json` on disposal.
+Always dispose either executor in `finally`.
+
+Direct `new FileBackendCodexSafeExecutor(options)` remains preserve-on-dispose
+for backward compatibility. New host integrations should use a typed factory so
+agents and job payloads never choose a retention boolean.
 
 ## MCP adapter for agents
 
@@ -1157,13 +1215,24 @@ Use `account-labels.json` for operator-facing labels:
 
 ```json
 {
-  "account-a": { "email": "operator@example.com" },
+  "account-a": {
+    "email": "operator@example.com",
+    "resetCount": 2,
+    "plan": "free",
+    "unpaid": "19.08.2026"
+  },
   "account-g": { "displayName": "usa18303530342" }
 }
 ```
 
 Status tools may then show both the stable slot and label, for example
 `operator@example.com - a - limited`.
+The optional `resetCount` field is operator metadata for quota tables. Use a
+non-negative integer when known; omit it when unknown so operator tables print
+`-`.
+The optional `plan` field records the operator-confirmed subscription plan.
+The optional `unpaid` field records the date in `DD.MM.YYYY` format and is
+shown as the last quota-table column; omit it when unknown.
 
 Device auth is preferred for handoff because it gives a short-lived code and
 does not depend on a specific browser callback window.
@@ -1202,6 +1271,48 @@ and account availability. The `5h free` and `7d free` columns include a compact
 progress bar, available rows are bolded and sorted first, and the end of the
 output includes the total `7d free` capacity across the account pool. Accounts
 with `0%` weekly free are kept below accounts with usable weekly capacity.
+
+### Local Codex limit alarm
+
+Install the macOS background monitor once:
+
+```sh
+npm run ops:codex-limit-alarm:install
+open http://127.0.0.1:47831
+```
+
+The LaunchAgent checks the current local Codex Desktop/CLI account from
+`~/.codex/auth.json` every 10 minutes by reusing the quota table JSON contract.
+It does not inspect or contact the remote worker pool. The dashboard shows the
+current account's 5h and 7d free capacity, supports an immediate check and has
+`Test sound` and `Stop sound` controls.
+
+**Sound is off by default.** A fresh install only monitors and shows status;
+it never plays sound until you press `Включить звук` (enable) on the dashboard
+once. This choice persists across monitor restarts (`~/Library/Application
+Support/Codex Limit Alarm/state.json`), so you only need to enable it once per
+machine. `Test sound` still works while disabled, for checking the sound
+device independently of arming the alarm.
+
+Once enabled, the repeating alarm starts when the current account has less
+than 10% free in a known main 5h or 7d quota window. Exactly 10% does not
+trigger it. Relogin requirements and observation outages are shown but do not
+trigger the sound. `Stop sound` acknowledges the current low-quota incident;
+later checks remain silent until every known main window recovers to at least
+10%. Recovery rearms the alarm for the next low-quota incident.
+Acknowledgement survives monitor restarts. Pressing `Выключить звук` disarms
+the alarm entirely until re-enabled, silencing any active sound immediately.
+
+The service binds only to `127.0.0.1:47831`. Mutating dashboard actions require
+a per-process control token, and the monitor never exposes auth payloads or
+tokens. Logs are written to `~/Library/Logs/CodexLimitAlarm.log` and
+`~/Library/Logs/CodexLimitAlarm.error.log`.
+
+Remove it with:
+
+```sh
+npm run ops:codex-limit-alarm:uninstall
+```
 
 Expected statuses:
 
@@ -1249,7 +1360,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FileBackendCodexSafeExecutor } from "@vioxen/subscription-runtime/worker-codex";
+import { createContinuationExecutor } from "@vioxen/subscription-runtime/worker-codex";
 
 const root = process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT;
 const authRoot = process.env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT;
@@ -1285,8 +1396,9 @@ const accountNames = (process.env.CODEX_ACCOUNTS ?? "account-a")
   .map((name) => name.trim())
   .filter(Boolean);
 
-const executor = new FileBackendCodexSafeExecutor({
+const executor = createContinuationExecutor({
   executorId: process.env.SUBSCRIPTION_RUNTIME_EXECUTOR_ID ?? taskId,
+  sessionId: taskId,
   stateRootDir,
   workspacePath,
   maxAccountCycles: Number(process.env.SUBSCRIPTION_RUNTIME_MAX_ACCOUNT_CYCLES ?? 5),

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { callToolJson, describe, tmpdir } from "./codex-goal-mcp-project-admission-test-fixture";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type {
@@ -14,6 +14,7 @@ import {
   AccessBoundary,
   NetworkAccessMode,
 } from "@vioxen/subscription-runtime/worker-core";
+import { createFixture, createScope, type Fixture } from "./codex-goal-project-refill-fixture";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
 import {
@@ -30,34 +31,16 @@ import {
   git,
   gitInitRepository,
   gitStdout,
-  callToolJson,
 } from "./codex-goal-mcp-test-support";
 
-type Fixture = {
-  readonly root: string;
-  readonly sourceWorkspacePath: string;
-  readonly phaseStartSha: string;
-};
-
-async function createFixture(): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-worktree-"));
-  const sourceWorkspacePath = join(root, "source");
-  await mkdir(sourceWorkspacePath, { recursive: true });
-  await gitInitRepository(sourceWorkspacePath);
-  await writeFile(join(sourceWorkspacePath, "README.md"), "base\n");
-  await git(sourceWorkspacePath, ["add", "README.md"]);
-  await git(sourceWorkspacePath, ["commit", "-m", "test: base"]);
-  const phaseStartSha = (await gitStdout(
-    sourceWorkspacePath,
-    ["rev-parse", "HEAD"],
-  )).trim();
-  await git(sourceWorkspacePath, [
-    "update-ref",
-    "refs/remotes/origin/main",
-    phaseStartSha,
-  ]);
-  return { root, sourceWorkspacePath, phaseStartSha };
-}
+beforeEach(() => {
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 function createInput(
   fixture: Fixture,
@@ -91,14 +74,6 @@ async function createFastForwardInput(
   };
 }
 
-function createScope(fixture: Fixture): ProjectAccessScope {
-  return {
-    projectId: "test-project",
-    workspaceRoots: [fixture.sourceWorkspacePath],
-    worktreeRoots: [join(fixture.root, "worktrees")],
-  };
-}
-
 function brokerWithCreate(
   createWorktree: (
     input: CodexGoalProjectCreateWorktreeInput,
@@ -111,9 +86,9 @@ function applied(path: string): ProjectControlOperationResult {
   return { status: "applied", resourceId: path };
 }
 
-describe("project refill worktree identity", () => {
+describe("explanatory: project refill worktree identity", () => {
   it("creates a public broker worktree at the pinned remote head without moving the tracking ref", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const remotePath = join(fixture.root, "remote.git");
     const publisherPath = join(fixture.root, "publisher");
     const registryRootDir = join(fixture.root, "worker-jobs", "registry");
@@ -198,7 +173,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("rejects source symlink substitution after revision resolution", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const outside = await mkdtemp(join(tmpdir(), "subscription-runtime-outside-source-"));
     const sourceLink = join(fixture.root, "source-link");
     try {
@@ -219,7 +194,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("materializes and then reuses the exact branch and source revision", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "exact");
     const branch = "fix/exact";
     const input = createInput(fixture, path, branch);
@@ -293,7 +268,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("preserves both exact changed paths when Git could detect a staged rename", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const producerPath = join(fixture.root, "worktrees", "rename-producer");
     const targetPath = join(fixture.root, "worktrees", "rename-target");
     const patchPath = join(fixture.root, "rename.patch");
@@ -377,7 +352,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("removes only a broker-created staged worktree after post-create validation fails", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const producerPath = join(fixture.root, "worktrees", "rollback-producer");
     const createdPath = join(fixture.root, "worktrees", "rollback-created");
     const existingPath = join(fixture.root, "worktrees", "rollback-existing");
@@ -463,7 +438,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("fast-forwards an existing clean branch to a pinned descendant", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "fast-forward");
     const branch = "fix/fast-forward";
     try {
@@ -495,7 +470,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("keeps an already-current pinned worktree idempotent", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "current-fast-forward");
     const branch = "fix/current-fast-forward";
     try {
@@ -517,7 +492,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("rejects a separate repository even when branch and revisions match", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "foreign-repository");
     const branch = "fix/foreign-repository";
     try {
@@ -546,7 +521,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("disables hooks and preserves concurrent data after post-mutation verification fails", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "rollback-fast-forward");
     const branch = "fix/rollback-fast-forward";
     try {
@@ -597,7 +572,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("rejects a dirty existing worktree before fast-forward", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "dirty-fast-forward");
     const branch = "fix/dirty-fast-forward";
     try {
@@ -621,7 +596,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("rejects a stale expected current revision", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "stale-fast-forward");
     const branch = "fix/stale-fast-forward";
     try {
@@ -645,7 +620,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("rejects a non-ancestor pinned revision", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "diverged-fast-forward");
     const branch = "fix/diverged-fast-forward";
     try {
@@ -680,7 +655,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("rejects an existing clean worktree on a different branch", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "wrong-branch");
     try {
       await git(fixture.sourceWorkspacePath, [
@@ -703,7 +678,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("never removes an existing worktree after an applied broker transition fails validation", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "existing-applied");
     const branch = "fix/existing-applied";
     try {
@@ -725,7 +700,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("removes a newly materialized worktree at the wrong source revision", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "wrong-revision");
     const branch = "fix/wrong-revision";
     try {
@@ -751,7 +726,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("does not swallow a create failure when a clean path appeared", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const path = join(fixture.root, "worktrees", "raced");
     const branch = "fix/raced";
     try {
@@ -783,7 +758,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("propagates Git rejection when the requested branch is already in use", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const firstPath = join(fixture.root, "worktrees", "first");
     const secondPath = join(fixture.root, "worktrees", "second");
     const branch = "fix/in-use";
@@ -816,7 +791,7 @@ describe("project refill worktree identity", () => {
   });
 
   it("denies realpath escapes before inspecting an untrusted source repository", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(tmpdir());
     const registryRootDir = join(fixture.root, "worker-jobs", "registry");
     const controllerJobRoot = join(fixture.root, "worker-jobs", "controller");
     const worktreeRoot = join(fixture.root, "worktrees");

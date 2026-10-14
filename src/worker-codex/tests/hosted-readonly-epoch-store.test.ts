@@ -280,6 +280,38 @@ describe("fixed epoch durable store with real disposable files", () => {
     expect(readFileSync(join(fixture.root, "readonly-epoch.next"), "utf8")).toBe(pending);
   });
 
+  // Real epoch/next files remain untouched when an opted physical dependency
+  // tuple lacks its independently protected host/material/adoption. No live profile is
+  // mocked as qualified; this negative exercises the actual before-write path.
+  it.each([false, true])("holds an incomplete protected tuple before Ready publication (replay=%s)", replay => {
+    const protectedRoot = prefix + "/dependency-test-jobs/jobs/TEST-C";
+    const prior = { ...initial(), identity: { ...initial().identity, jobId: "TEST-R",
+      jobRootDir: protectedRoot, workspacePath: protectedRoot + "/workspace" } };
+    writeFileSync(local(readonlyEnrollmentPath), JSON.stringify({ ...prior, generation: 1 }), { mode: 0o600 });
+    writeFileSync(local(readonlyEpochPath), JSON.stringify(prior), { mode: 0o600 });
+    const before = readFileSync(local(readonlyEpochPath));
+    const ready = { ...prior, phase: HostedCustodyPhase.Ready };
+    const store = new HostedReadonlyEpochStore();
+    if (replay) {
+      const pending = JSON.stringify(ready) + "\n";
+      writeFileSync(join(fixture.root,"readonly-epoch.next"),pending,{ mode: 0o600 });
+      let resumed = false;
+      expect(() => store.recoverSerialized(() => { resumed = true; })).toThrow();
+      expect(resumed).toBe(false);
+      expect(readFileSync(join(fixture.root,"readonly-epoch.next"),"utf8")).toBe(pending);
+    } else expect(() => store.serialized(() => store.publishEpoch(ready))).toThrow();
+    expect(readFileSync(local(readonlyEpochPath))).toEqual(before);
+    if (replay) expect(() => store.readEpoch()).toThrow("publication_recovery_required");
+    else expect(store.readEpoch().phase).toBe(HostedCustodyPhase.Closed);
+  });
+
+  it("exposes its actual fence only during the synchronous publication lifetime", () => {
+    const store = new HostedReadonlyEpochStore();
+    expect(() => store.publicationFence()).toThrow("common_fence_required");
+    store.serialized(() => { expect(store.publicationFence().held).toBe(true); });
+    expect(() => store.publicationFence()).toThrow("common_fence_required");
+  });
+
 });
 
 it("outer reservations persist before submission and cannot clear, replace or reopen while unresolved", () => {

@@ -1,10 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hostedReadonlyMountProperties } from "../app-server/adapters/hosted-readonly-mounts";
 import { admittedReadonlyCodexProcessFactory, codexAppServerProcessInvocation, spawnCodexAppServerProcess } from
   "../app-server/adapters/node-app-server-process";
 
 const { spawn } = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn, spawnSync: vi.fn() }));
+// Explicit Required Host; this suite tests mount/ticket transport, not policy IO.
+vi.mock("../app-server/adapters/hosted-host-policy", async original => {
+  const policy = await original<typeof import("../app-server/adapters/hosted-host-policy")>();
+  return { ...policy, readHostedActivationMode: () => policy.HostedActivationMode.Required };
+});
+beforeEach(() => { vi.spyOn(process, "platform", "get").mockReturnValue("linux"); vi.spyOn(process, "getuid").mockReturnValue(0); });
+afterEach(() => vi.restoreAllMocks());
 
 const workspacePath = "/fixture/workspace";
 const jobId = "fixture";
@@ -99,10 +106,19 @@ describe("bounded hosted readonly mount adapter", () => {
   });
   it("rejects unenrolled hosted defaults and caller-supplied tickets before process creation", () => {
     spawn.mockClear();
-    // Ordinary default now requires real private origin; this fixture has none.
+    // Required ordinary admission needs a real private origin; this fixture has none.
     expect(() => spawnCodexAppServerProcess(invocation)).toThrow();
     expect(() => spawnCodexAppServerProcess(invocation, undefined, undefined, {})).toThrow("synchronous_fence_required");
     expect(() => admittedReadonlyCodexProcessFactory({ jobId, workspacePath, readonlyPaths })(invocation)).toThrow("synchronous_fence_required");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+  it("keeps the hosted MiMo provider process gate closed before any child submission", () => {
+    // Regression: a fabricated egress marker must not become provider authority.
+    spawn.mockClear();
+    expect(() => spawnCodexAppServerProcess({ ...invocation,
+      env: { ...invocation.env,
+        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-provider-mimo-token-plan" },
+    })).toThrow("hosted_mimo_activation_closed");
     expect(spawn).not.toHaveBeenCalled();
   });
   it("permits one synchronous submission and rejects replay or delayed submission outside the fence", () => {

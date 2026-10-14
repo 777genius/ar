@@ -100,6 +100,30 @@ const result = await runner.run({
 });
 ```
 
+### Local Claude CLI session
+
+The local task-runner CLI can explicitly reuse an already authenticated Claude
+CLI home without exporting an OAuth token:
+
+```sh
+subscription-runtime-run-agent-runtime-task \
+  --provider claude \
+  --claude-ambient-home "$HOME" \
+  --ephemeral \
+  --input /path/to/task.json
+```
+
+Set `cwd` in `/path/to/task.json` to the test workspace. `--ephemeral` creates
+temporary runtime state for this example. For retained tasks, supply `--state-root`
+and the configured encryption-key environment variable instead.
+
+Use `--claude-ambient-config-dir` only when the Claude CLI state is outside its
+normal location below `HOME`. This mode is local-only and disabled unless the
+flag is supplied. The runtime passes the selected paths to the Claude child but
+does not read, copy, persist or rewrite credentials. Hosted and sandbox-marked
+execution rejects this mode; those workers continue to use the isolated
+`claude-oauth-token` session path.
+
 ### Continuous Goal execution
 
 Protocol v1 is frozen as `SingleRun`. Protocol v2 requires an explicit

@@ -1,3 +1,5 @@
+import { CodexModelBackend } from "./codex-model-backend";
+
 export const codexProviderEgressProfileEnvVar =
   "SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE";
 
@@ -5,20 +7,83 @@ export enum CodexProviderEgressProfileId {
   ProviderApi = "codex-provider-api",
   TestNpmQualification = "codex-test-npm-qualification",
   TestManagedQualification = "codex-test-managed-qualification",
+  MimoTokenPlan = "codex-provider-mimo-token-plan",
+  PublicResearchV1 = "codex-public-research-v1",
+  FullInternetV1 = "codex-full-internet-v1",
+  ManagedPublicInternetV1 = "codex-managed-public-internet-v1",
 }
 export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
 export type CodexProviderEgressPolicy = {
   readonly profileId: CodexProviderEgressProfileId;
   readonly domains: readonly string[];
+  /** Optional finite anonymous-reader destinations for legacy restricted profiles. */
+  readonly publicSourceDomains?: readonly string[];
 };
+
+export enum CodexSourcePurpose {
+  ProviderApi = "provider-api",
+  PublicResearch = "public-research",
+}
+
+export enum CodexWebSearchMode {
+  Disabled = "disabled",
+  Live = "live",
+}
+
+// Compatibility is pinned by the v1 profile identity. Changing this set or its
+// read-only semantics requires another explicit profile and Host grant.
+const publicResearchDomains = Object.freeze([
+  "postgresql.org", "www.postgresql.org", "docs.rs", "crates.io",
+  "static.crates.io", "pglite.dev", "orm.drizzle.team", "v2.tauri.app",
+  "nodejs.org",
+]);
+
+export function codexProviderHasPublicSources(policy: CodexProviderEgressPolicy | undefined): boolean {
+  return policy?.profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
+    policy?.profileId === CodexProviderEgressProfileId.FullInternetV1 ||
+    policy?.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1;
+}
+
+export function codexHostedDefaultEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1);
+}
+
+export function codexProviderSourcePurpose(policy: CodexProviderEgressPolicy): CodexSourcePurpose {
+  return codexProviderHasPublicSources(policy)
+    ? CodexSourcePurpose.PublicResearch : CodexSourcePurpose.ProviderApi;
+}
+
+/** Only a captured trusted policy can select native discovery, never an env marker. */
+export function codexProviderWebSearchMode(
+  policy: CodexProviderEgressPolicy | undefined,
+  backend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
+): CodexWebSearchMode {
+  return backend === CodexModelBackend.OpenAiChatGpt &&
+    codexProviderHasPublicSources(policy)
+    ? CodexWebSearchMode.Live : CodexWebSearchMode.Disabled;
+}
 
 export function codexProviderEgressPolicy(
   profileId: CodexProviderEgressProfileId,
 ): CodexProviderEgressPolicy {
   switch (profileId) {
+    case CodexProviderEgressProfileId.ManagedPublicInternetV1:
+      // ff6 native proxy independently denies private literals and DNS results.
+      // A wildcard grants public destinations without an explicit local exception.
+      return Object.freeze({ profileId, domains: Object.freeze(["*"]) });
+    case CodexProviderEgressProfileId.FullInternetV1:
+      return Object.freeze({ profileId, domains: Object.freeze([]) });
     case CodexProviderEgressProfileId.ProviderApi:
       return Object.freeze({ profileId, domains: Object.freeze(["api.openai.com"]) });
+    case CodexProviderEgressProfileId.PublicResearchV1:
+      return Object.freeze({
+        profileId,
+        // Public source access is brokered so HTTPS, GET, DNS, credentials and
+        // redirects can be enforced. Domain-only shell proxy rules cannot do it.
+        domains: Object.freeze(["api.openai.com"]),
+        publicSourceDomains: publicResearchDomains,
+      });
     case CodexProviderEgressProfileId.TestNpmQualification:
       return Object.freeze({
         profileId,
@@ -34,6 +99,11 @@ export function codexProviderEgressPolicy(
           "api.github.com", "raw.githubusercontent.com",
         ]),
       });
+    case CodexProviderEgressProfileId.MimoTokenPlan:
+      // Host confirmed 2026-09-25 during a manual Stage 0 smoke test with a
+      // real Token Plan key. Never merged with the OpenAI domain: MiMo runs
+      // are a distinct credential and must not silently gain ChatGPT egress.
+      return Object.freeze({ profileId, domains: Object.freeze(["token-plan-sgp.xiaomimimo.com"]) });
     default:
       throw new Error("codex_provider_egress_profile_invalid");
   }
@@ -43,6 +113,10 @@ export function codexProviderApiEgressPolicy(): CodexProviderEgressPolicy {
   return codexProviderEgressPolicy(CodexProviderEgressProfileId.ProviderApi);
 }
 
+export function codexMimoTokenPlanEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.MimoTokenPlan);
+}
+
 /** A marker transports an already admitted policy; it never authorizes a job. */
 export function codexProviderEgressPolicyFromEnv(
   sourceEnv: Readonly<Record<string, string | undefined>> | undefined,
@@ -50,7 +124,11 @@ export function codexProviderEgressPolicyFromEnv(
   const profileId = sourceEnv?.[codexProviderEgressProfileEnvVar]?.trim();
   if (profileId === CodexProviderEgressProfileId.ProviderApi ||
       profileId === CodexProviderEgressProfileId.TestNpmQualification ||
-      profileId === CodexProviderEgressProfileId.TestManagedQualification) {
+      profileId === CodexProviderEgressProfileId.TestManagedQualification ||
+      profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
+      profileId === CodexProviderEgressProfileId.FullInternetV1 ||
+      profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ||
+      profileId === CodexProviderEgressProfileId.MimoTokenPlan) {
     return codexProviderEgressPolicy(profileId);
   }
   return null;
@@ -70,29 +148,32 @@ export function codexProviderEgressNetworkAccessFromEnv(
 
 export function codexProviderEgressConfigToml(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): string {
   return [
     "# Provider egress is selected by trusted host admission.",
-    "[sandbox_workspace_write]",
-    "network_access = true",
-    "",
+    ...(input?.namedPermissions ? [] : ["[sandbox_workspace_write]", "network_access = true", ""]),
     "[features.network_proxy]",
-    "enabled = true",
+    `enabled = ${policy.profileId !== CodexProviderEgressProfileId.FullInternetV1}`,
     `domains = { ${tomlDomainRules(policy)} }`,
+    ...codexManagedPublicNetworkConfigLines(policy),
+    ...(policy.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ? ["credential_broker = false"] : []),
     "",
   ].join("\n");
 }
 
 export function codexProviderEgressCliConfigArgs(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): readonly string[] {
   return [
+    ...(input?.namedPermissions ? [] : ["--config", "sandbox_workspace_write.network_access=true"]),
     "--config",
-    "sandbox_workspace_write.network_access=true",
-    "--config",
-    "features.network_proxy.enabled=true",
+    `features.network_proxy.enabled=${policy.profileId !== CodexProviderEgressProfileId.FullInternetV1}`,
     "--config",
     `features.network_proxy.domains={ ${tomlDomainRules(policy)} }`,
+    ...codexManagedPublicNetworkConfigLines(policy).concat(policy.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ? ["credential_broker = false"] : [])
+      .flatMap(line => ["--config", `features.network_proxy.${line.replace(" = ", "=")}`]),
   ];
 }
 
@@ -100,4 +181,15 @@ function tomlDomainRules(policy: CodexProviderEgressPolicy): string {
   // Reconstruct the finite policy rather than trusting a caller's domain array.
   return codexProviderEgressPolicy(policy.profileId).domains
     .map((domain) => `${JSON.stringify(domain)} = "allow"`).join(", ");
+}
+
+/** Version-pinned native ProxyOnly companion configuration. A captured profile
+ * selects these fixed flags; caller domains, URLs and local exceptions cannot. */
+export function codexManagedPublicNetworkConfigLines(policy: CodexProviderEgressPolicy): readonly string[] {
+  return policy.profileId === CodexProviderEgressProfileId.ManagedPublicInternetV1 ? [
+    'mode = "full"',
+    "allow_local_binding = false", "allow_upstream_proxy = false",
+    "enable_socks5 = false", "enable_socks5_udp = false",
+    "dangerously_allow_non_loopback_proxy = false", "dangerously_allow_all_unix_sockets = false",
+  ] : [];
 }

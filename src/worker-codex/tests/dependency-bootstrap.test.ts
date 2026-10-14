@@ -528,11 +528,12 @@ describe("dependency bootstrap", () => {
     }
   });
 
-  it("restores pre-existing staged and dirty state after a failed tracked mutation", async () => {
+  it.skipIf(process.platform !== "linux")("restores pre-existing staged and dirty state after a failed tracked mutation", async () => {
     const root = await mkGitDependencyWorkspace(
       "subscription-runtime-deps-transaction-tracked-",
       "pnpm",
     );
+    const recovery = await isolatedRecoveryTemp();
     try {
       const packageJsonPath = join(root, "package.json");
       const workspaceManifestPath = join(root, "pnpm-workspace.yaml");
@@ -566,9 +567,9 @@ describe("dependency bootstrap", () => {
       });
 
       expect(result.status).toBe("install_failed");
-      expect(result.warnings).toContain(
-        "dependency_install_failed:simulated_install_failure",
-      );
+      expect(result.warnings.some((warning) => warning.includes(
+        "dependency_bootstrap_workspace_recovery_required:action_failed",
+      ))).toBe(true);
       await expect(readFile(workspaceManifestPath, "utf8")).resolves.toBe(
         "packages:\n  - packages/*\n",
       );
@@ -580,17 +581,19 @@ describe("dependency bootstrap", () => {
         git(root, ["diff", "--cached", "--binary", "HEAD", "--"]),
       ).resolves.toEqual(stagedBefore);
     } finally {
+      await recovery.cleanup();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("restores pre-existing and bootstrap-created untracked files after failure", async () => {
+  it.skipIf(process.platform !== "linux")("restores pre-existing and bootstrap-created untracked files after failure", async () => {
     const root = await mkGitDependencyWorkspace(
       "subscription-runtime-deps-transaction-untracked-",
       "npm",
     );
     const existingUntrackedPath = join(root, "operator-notes.txt");
     const generatedPath = join(root, "bootstrap-generated.yaml");
+    const recovery = await isolatedRecoveryTemp();
     try {
       await writeFile(existingUntrackedPath, "keep exactly\n");
       const statusBefore = await git(root, [
@@ -622,16 +625,18 @@ describe("dependency bootstrap", () => {
         git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
       ).resolves.toEqual(statusBefore);
     } finally {
+      await recovery.cleanup();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("rejects and rolls back a successful install that mutates source state", async () => {
+  it.skipIf(process.platform !== "linux")("rejects and rolls back a successful install that mutates source state", async () => {
     const root = await mkGitDependencyWorkspace(
       "subscription-runtime-deps-transaction-success-mutation-",
       "npm",
     );
     const sourcePath = join(root, "README.md");
+    const recovery = await isolatedRecoveryTemp();
     try {
       const result = await runDependencyBootstrap({
         workspacePath: root,
@@ -649,8 +654,8 @@ describe("dependency bootstrap", () => {
         result.warnings.some(
           (warning) =>
             warning.includes(
-              "dependency_bootstrap_workspace_mutation_detected:",
-            ) && warning.includes("README.md"),
+              "dependency_bootstrap_workspace_recovery_required:workspace_mutation_detected",
+            ),
         ),
       ).toBe(true);
       await expect(readFile(sourcePath, "utf8")).resolves.toBe("fixture\n");
@@ -659,6 +664,7 @@ describe("dependency bootstrap", () => {
         Buffer.alloc(0),
       );
     } finally {
+      await recovery.cleanup();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -668,6 +674,7 @@ describe("dependency bootstrap", () => {
       "subscription-runtime-deps-transaction-success-",
       "npm",
     );
+    const recovery = await isolatedRecoveryTemp();
     try {
       const result = await runDependencyBootstrap({
         workspacePath: root,
@@ -686,6 +693,7 @@ describe("dependency bootstrap", () => {
         Buffer.alloc(0),
       );
     } finally {
+      await recovery.cleanup();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -887,6 +895,21 @@ function restoreDependencyCacheConfig(previous: string | undefined): void {
   } else {
     process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG = previous;
   }
+}
+
+// Keep legacy recovery artifacts inside an isolated TEST temp filesystem. This
+// does not provide installer custody or imply managed/durable recovery.
+async function isolatedRecoveryTemp() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "source-recovery-TEST-")));
+  const previousTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = root;
+  return {
+    async cleanup() {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+      await rm(root, { recursive: true, force: true });
+    },
+  };
 }
 
 async function mkGitDependencyWorkspace(

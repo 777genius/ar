@@ -117,7 +117,7 @@ function providerCapabilityBlocker(
       "provider cannot isolate temporary directories",
     ]);
   }
-  if (!input.provider.canRestrictNetwork) {
+  if (input.networkAccess !== NetworkAccessMode.Unrestricted && !input.provider.canRestrictNetwork) {
     return blocked(input, ControlledAgentLaunchBlockReason.ProviderCannotRestrictNetwork, [
       "provider cannot restrict controller network access",
     ]);

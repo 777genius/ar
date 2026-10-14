@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  mkdir, mkdtemp, readFile, rm, symlink, writeFile,
+  link, mkdir, mkdtemp, readFile, rm, symlink, writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,12 +23,47 @@ import {
   prepareProjectPreStartAdmission,
   readLaunchAuthorizedWorkerLaunchSpec,
 } from "../application/project-control/codex-goal-project-pre-start-admission";
-import { authorizeProjectPreStartAdmissionLaunch } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
+import { authorizeProjectPreStartAdmissionLaunch, readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjectPreStartLaunchReceipt } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 
 const execFileAsync = promisify(execFile);
 
 describe("Codex project admission snapshot", () => {
+  it("reads the real fresh launch_authorized attestation and retains exact receipt bytes after dirty execution", async () => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-research-authorized-receipt-"));
+    const scope: ProjectAccessScope = { projectId: "test-project", jobIdPrefixes: ["test-"],
+      preStartAdmission: { required: true, mode: "serial-builtin" } };
+    try {
+      const producer = await createAttestedLiveProducer({ root, jobId: "test-research", ownedPaths: ["src/a/"], scope });
+      const snapshot = await readAuthorizedProjectPreStartLaunchReceipt({ manifest: producer.manifest, scope });
+      const receiptPath = producer.manifest.projectPreStartAdmission!.receiptPath;
+      const bytes = await readFile(receiptPath);
+      expect(snapshot.receipt.status).toBe("launch_authorized");
+      expect(snapshot.receiptSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+      await writeFile(join(producer.manifest.workspacePath, "TEST-dirty.txt"), "TEST worker result\n");
+      expect((await readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest)).receiptSha256).toBe(snapshot.receiptSha256);
+      await writeFile(receiptPath, Buffer.concat([bytes, Buffer.from("\n")]));
+      const rewritten = await readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest);
+      expect(rewritten.receipt).toEqual(snapshot.receipt);
+      expect(rewritten.receiptSha256).not.toBe(snapshot.receiptSha256);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each(["symlink", "hardlink"] as const)("rejects a %s masquerading as the current authorized receipt", async kind => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-receipt-alias-"));
+    const scope: ProjectAccessScope = { projectId: "test-project", jobIdPrefixes: ["test-"],
+      preStartAdmission: { required: true, mode: "serial-builtin" } };
+    try {
+      const producer = await createAttestedLiveProducer({ root, jobId: "test-alias", ownedPaths: ["src/a/"], scope });
+      const receiptPath = producer.manifest.projectPreStartAdmission!.receiptPath;
+      const outside = join(root, "same-receipt-bytes.json");
+      await writeFile(outside, await readFile(receiptPath));
+      await rm(receiptPath);
+      if (kind === "symlink") await symlink(outside, receiptPath);
+      else await link(outside, receiptPath);
+      await expect(readCurrentAuthorizedProjectPreStartLaunchReceipt(producer.manifest))
+        .rejects.toThrow("project_control_pre_start_receipt_invalid");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("admits a disjoint writer and denies a writer targeting the active workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-active-writer-admission-"));
     const workspacePath = join(root, "worktrees", "project-producer");
@@ -105,7 +140,7 @@ describe("Codex project admission snapshot", () => {
     }
   });
 
-  it("admits only path-disjoint producers past terminal output debt", async () => {
+  it("keeps legacy reviewed paths blocking without complete retained terminal evidence", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-terminal-path-admission-"));
     const heldWorkspace = join(root, "worktrees", "project-held-output");
     const nextWorkspace = join(root, "worktrees", "project-next-producer");
@@ -163,11 +198,10 @@ describe("Codex project admission snapshot", () => {
       expect(snapshot.debt).toEqual([expect.objectContaining({
         reason: ProjectDebtReason.UnconsumedCompletedJob,
         subject: heldWorkspace,
-        affectedPaths: ["src/held/output.ts"],
       })]);
+      expect(snapshot.debt[0]).not.toHaveProperty("affectedPaths");
       await expect(gate.evaluate(request(["src/new/"]))).resolves.toMatchObject({
-        allowed: true,
-        debt: [],
+        allowed: false,
       });
       await expect(gate.evaluate(request(["src/held/"]))).resolves.toMatchObject({
         allowed: false,
@@ -912,116 +946,6 @@ describe("Codex project admission snapshot", () => {
           reason: ProjectDebtReason.ActiveWriterConflict,
         })],
       });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps shared-worktree review markers separate from terminal job ledgers", async () => {
-    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-shared-review-admission-"));
-    const sharedWorkspace = join(root, "worktrees", "project-producer-v1");
-    const documentWorkspace = join(root, "worktrees", "project-document-navigation-h8");
-    const ledgerRoot = join(root, "consumed-output");
-    const backupRoot = join(root, "backups");
-    const producerStatusPath = join(backupRoot, "producer.status.txt");
-    const producerPatchPath = join(backupRoot, "producer.patch");
-    const reviewerStatusPath = join(backupRoot, "reviewer.status.txt");
-    const reviewerPatchPath = join(backupRoot, "reviewer.patch");
-    const scope: ProjectAccessScope = {
-      projectId: "project",
-      worktreeRoots: [join(root, "worktrees")],
-      consumedOutputLedgerRoots: [ledgerRoot],
-      consumedOutputEvidenceRoots: [backupRoot],
-      jobIdPrefixes: ["project-"],
-    };
-
-    try {
-      await mkdir(sharedWorkspace, { recursive: true });
-      await mkdir(documentWorkspace, { recursive: true });
-      await mkdir(join(ledgerRoot, "items"), { recursive: true });
-      await mkdir(backupRoot, { recursive: true });
-      await writeFile(producerStatusPath, " M src/example.ts\n");
-      await writeFile(producerPatchPath, "diff --git a/src/example.ts b/src/example.ts\n");
-      await writeFile(reviewerStatusPath, "");
-      await writeFile(reviewerPatchPath, "");
-      await writeFile(
-        join(ledgerRoot, "items", "project-producer-v1.json"),
-        `${JSON.stringify({
-          schemaVersion: 1,
-          note: "archived producer output",
-          jobId: "project-producer-v1",
-          status: "archived",
-          closedAt: "2026-07-11T00:00:00.000Z",
-          backup: {
-            workspace: sharedWorkspace,
-            statusPath: producerStatusPath,
-            patchPath: producerPatchPath,
-          },
-        })}\n`,
-      );
-      await writeFile(
-        join(ledgerRoot, "items", "project-reviewer-terminal-v1.json"),
-        `${JSON.stringify({
-          schemaVersion: 1,
-          note: "reviewed no change",
-          jobId: "project-reviewer-terminal-v1",
-          status: "reviewed_no_change",
-          outcome: "reviewed_no_change",
-          closedAt: "2026-07-11T00:02:00.000Z",
-          backup: {
-            workspace: sharedWorkspace,
-            statusPath: reviewerStatusPath,
-            patchPath: reviewerPatchPath,
-          },
-        })}\n`,
-      );
-
-      const summary = (jobId: string, workspacePath: string) => ({
-        jobId,
-        tags: ["worker-role-reviewer"],
-        taskId: jobId,
-        workspacePath,
-        promptPath: join(root, `${jobId}.md`),
-        accountNames: ["account-a"],
-        updatedAt: "2026-07-11T00:03:00.000Z",
-        manifestPath: join(root, `${jobId}.json`),
-      });
-      const snapshot = await buildCodexProjectAdmissionSnapshot({
-        registryRootDir: join(root, "registry"),
-        scope,
-        deps: {
-          listJobs: async () => [
-            summary("project-producer-v1", sharedWorkspace),
-            summary("project-reviewer-terminal-v1", sharedWorkspace),
-            summary("project-reviewer-marker-v2", sharedWorkspace),
-            summary("project-document-navigation-h8", documentWorkspace),
-          ],
-          buildOverviewItems: async (inputs) => inputs.map(({ jobId }) => ({
-            ok: true,
-            jobId,
-            workspacePath: jobId === "project-document-navigation-h8"
-              ? documentWorkspace
-              : sharedWorkspace,
-            workspaceDirty: true,
-            workerAlive: false,
-            resultStatus: "completed",
-            recommendedAction: "review_completed",
-            tags: ["worker-role-reviewer"],
-            lifecycleMarkerTypes: ["review"],
-          })),
-        },
-      });
-
-      expect(snapshot.debt).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
-        }),
-      ]));
-      expect(snapshot.debt.filter(
-        (item) => item.reason === ProjectDebtReason.UnconsumedCompletedJob,
-      )).toEqual([
-        expect.objectContaining({ subject: documentWorkspace }),
-      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

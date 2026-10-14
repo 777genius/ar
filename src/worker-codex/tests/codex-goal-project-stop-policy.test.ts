@@ -22,6 +22,7 @@ import {
   isCodexGoalProjectTerminalCapacityPause,
 } from "../application/project-control/codex-goal-project-stop-policy";
 import { callToolJson, hasTmux } from "./codex-goal-mcp-test-support";
+import { inspectCodexGoalProcessSnapshot } from "../codex-goal-process-snapshot";
 
 const execFileAsync = promisify(execFile);
 
@@ -91,6 +92,16 @@ describe("project worker stop policy", () => {
         mkdir(childJobRoot, { recursive: true }),
       ]);
       await execFileAsync("git", ["init"], { cwd: childWorkspace });
+      await execFileAsync("git", [
+        "-c",
+        "user.name=Subscription Runtime Test",
+        "-c",
+        "user.email=test@subscription-runtime.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "test base",
+      ], { cwd: childWorkspace });
       await execFileAsync("tmux", [
         "new-session",
         "-d",
@@ -100,6 +111,11 @@ describe("project worker stop policy", () => {
         childWorkspace,
         "sleep 300",
       ]);
+      const { stdout: workerPidOutput } = await execFileAsync("tmux", [
+        "display-message", "-p", "-t", `${tmuxSession}:0.0`, "#{pane_pid}",
+      ]);
+      const workerPid = Number(workerPidOutput.trim());
+      expect(Number.isSafeInteger(workerPid) && workerPid > 0).toBe(true);
       await Promise.all([
         server.connect(serverTransport),
         client.connect(clientTransport),
@@ -146,6 +162,7 @@ describe("project worker stop policy", () => {
           schemaVersion: 1,
           taskId: "project-child",
           status: "running",
+          pid: workerPid,
           updatedAt: new Date().toISOString(),
         })}\n`,
       );
@@ -199,22 +216,96 @@ describe("project worker stop policy", () => {
         readFile(join(childJobRoot, "project-child.progress.json"), "utf8"),
       ).resolves.toContain('"status":"running"');
 
-      const capacityRecoveryBroker = codexProjectControlBroker({
-        registryRootDir,
-        controller: controller.controller,
-        scope: controller.scope,
-        stopLaunch: child.launch,
-        startAdmissionWorkspaceMode:
-          "clean_capacity_continuation",
-      });
+      await writeFile(
+        join(childJobRoot, "project-child.progress.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          taskId: "project-child",
+          status: "running",
+          pid: workerPid,
+          updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+        })}\n`,
+      );
+      await writeFile(join(childWorkspace, "safe-output.txt"), "preserve me\n");
+      await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]);
+      // Missing tmux alone is not a process-absence proof. Retain the actual
+      // fixture PID and wait for the same OS observation used by the stop guard.
+      await expect.poll(() => inspectCodexGoalProcessSnapshot(workerPid), {
+        timeout: 5_000,
+      }).toMatchObject({ alive: false });
       await expect(
-        capacityRecoveryBroker.stopWorker({
+        broker.stopWorker({
           jobId: "project-child",
           registryRoot: registryRootDir,
           workspacePath: child.launch.config.workspacePath,
           tmuxSession,
         }),
-      ).resolves.toMatchObject({ status: "applied" });
+      ).resolves.toMatchObject({
+        status: "noop",
+        evidence: {
+          handoffPacketPath: expect.stringContaining(".packet"),
+          handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      await writeFile(join(childWorkspace, ".env"), "unsafe=secret\n");
+      const forcedGoneBroker = codexProjectControlBroker({
+        registryRootDir,
+        controller: controller.controller,
+        scope: controller.scope,
+        stopLaunch: child.launch,
+        forceStopAfterMaterializationFailure: true,
+      });
+      await expect(forcedGoneBroker.stopWorker({
+        jobId: "project-child",
+        registryRoot: registryRootDir,
+        workspacePath: child.launch.config.workspacePath,
+        tmuxSession,
+      })).resolves.toMatchObject({
+        status: "noop",
+        evidence: {
+          handoffPreservationError: expect.stringContaining(
+            "handoff_sensitive_path_rejected",
+          ),
+          preservationDegraded: "true",
+        },
+      });
+      await rm(join(childWorkspace, ".env"));
+      await execFileAsync("tmux", [
+        "new-session", "-d", "-s", tmuxSession, "-c", childWorkspace,
+        "sleep 300",
+      ]);
+      const { stdout: restartedPidOutput } = await execFileAsync("tmux", [
+        "display-message", "-p", "-t", `${tmuxSession}:0.0`, "#{pane_pid}",
+      ]);
+      const restartedPid = Number(restartedPidOutput.trim());
+      expect(Number.isSafeInteger(restartedPid) && restartedPid > 0).toBe(true);
+      await writeFile(join(childJobRoot, "project-child.progress.json"),
+        `${JSON.stringify({ schemaVersion: 1, taskId: "project-child", status: "running",
+          pid: restartedPid, updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() })}\n`);
+      await writeFile(join(childWorkspace, ".env"), "unsafe=secret\n");
+      const degradedStop = await callToolJson(client, "codex_goal_project_stop", {
+        registryRootDir,
+        controllerJobId: "project-controller",
+        jobId: "project-child",
+        confirmStop: true,
+        forceStop: true,
+      });
+      expect(degradedStop).toMatchObject({
+        ok: true,
+        mode: "project_control_stop",
+        preservationDegraded: true,
+        handoffPreservationError: expect.stringContaining(
+          "handoff_sensitive_path_rejected",
+        ),
+      });
+      const stopEvent = JSON.parse(
+        await readFile(String(degradedStop.stopEventPath), "utf8"),
+      );
+      expect(stopEvent).toMatchObject({
+        forceStop: true,
+        handoffPreservationError: degradedStop.handoffPreservationError,
+      });
+      expect(stopEvent).not.toHaveProperty("handoffPacketPath");
       await expect(
         execFileAsync("tmux", ["has-session", "-t", tmuxSession]),
       ).rejects.toBeDefined();

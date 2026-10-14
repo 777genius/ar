@@ -36,10 +36,16 @@ export type VerifiedInputPatchBinding = {
   readonly stagedPatchSha256: string;
 };
 
+export type ProjectPreStartArtifactSnapshot = {
+  readonly contractBytes: Uint8Array;
+  readonly stateBytes: Uint8Array;
+};
+
 export async function captureProjectPreStartBinding(
   manifest: CodexGoalJobManifest | CodexGoalJobManifestInput,
   descriptor: CodexGoalProjectPreStartAdmission,
   git: ProjectControlGitPort = defaultProjectControlGitPort,
+  artifactSnapshot?: ProjectPreStartArtifactSnapshot,
 ): Promise<ProjectPreStartBinding> {
   const workspaceHead = (
     await git.run({
@@ -112,18 +118,20 @@ export async function captureProjectPreStartBinding(
       workspaceUnstagedPaths.length > 0 || workspaceUntrackedPaths.length > 0,
     workspacePatchSha256,
     contractSha256: sha256(
-      Buffer.from(
-        await readBoundedFile(
-          descriptor.contractPath,
-          MAX_CONTRACT_BYTES,
-          "contract",
+      artifactSnapshot?.contractBytes ??
+        Buffer.from(
+          await readBoundedFile(
+            descriptor.contractPath,
+            MAX_CONTRACT_BYTES,
+            "contract",
+          ),
         ),
-      ),
     ),
     stateSha256: sha256(
-      Buffer.from(
-        await readBoundedFile(descriptor.statePath, MAX_STATE_BYTES, "state"),
-      ),
+      artifactSnapshot?.stateBytes ??
+        Buffer.from(
+          await readBoundedFile(descriptor.statePath, MAX_STATE_BYTES, "state"),
+        ),
     ),
     promptSha256: sha256(
       Buffer.from(

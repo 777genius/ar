@@ -80,6 +80,9 @@ export class ClaudeRuntimeTaskExecutionEngine
   }
 
   async *stream(input: ClaudeTaskEngineInput): AsyncIterable<ProviderTaskEvent> {
+    if (input.session.authMode !== "oauth") {
+      throw new Error("claude_ambient_home_unsupported_backend");
+    }
     const { runtime, provider } = await createClaudeBgRuntimeContext(
       {
         configDir: input.session.configDir,

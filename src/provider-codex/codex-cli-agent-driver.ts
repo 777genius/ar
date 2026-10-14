@@ -17,6 +17,8 @@ import { composeCodexPrompt } from "./codex-prompt-composer";
 import type { CodexReasoningEffort } from "./codex-json-execution-engine";
 import { codexSandboxModeForControls } from "./codex-json-execution-engine";
 import {
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderApiEgressPolicy,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
 } from "./codex-provider-egress-policy";
@@ -27,6 +29,17 @@ import {
   defaultCodexModel,
 } from "./capabilities";
 import { classifyCodexFailure } from "./failure-classifier";
+import {
+  CodexApiKeyCredentialMissingError,
+  loadCodexApiKeyCredential,
+} from "./codex-api-key-credential";
+import {
+  CodexModelBackend,
+  codexMimoApiKeyEnvVarDefault,
+  codexModelBackendDefaultModel,
+  codexModelBackendModelProvidersConfigToml,
+  codexModelBackendModelProviderName,
+} from "./codex-model-backend";
 
 export type CodexCliAgentDriverOptions = {
   readonly codexBinaryPath?: string;
@@ -34,6 +47,10 @@ export type CodexCliAgentDriverOptions = {
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only read when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
 };
 
 export class CodexCliAgentDriver implements AgentDriver {
@@ -54,7 +71,10 @@ export class CodexCliAgentDriver implements AgentDriver {
   }): Promise<ProviderTaskResult> {
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
-    if (!input.session) {
+    const modelBackend = this.options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+    const { session } = input;
+
+    if (modelBackend === CodexModelBackend.OpenAiChatGpt && !session) {
       return {
         status: "failed",
         failure: {
@@ -67,8 +87,32 @@ export class CodexCliAgentDriver implements AgentDriver {
       };
     }
 
-    const authJson = codexAuthJsonFromArtifact(input.session);
-    input.redactor.registerSecret(authJson, "codex-auth-json");
+    let mimoCredential: ReturnType<typeof loadCodexApiKeyCredential> | undefined;
+    if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+      const envVarName = this.options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
+      try {
+        mimoCredential = loadCodexApiKeyCredential({
+          backend: modelBackend,
+          envVarName,
+          ...(this.options.sourceEnv === undefined ? {} : { sourceEnv: this.options.sourceEnv }),
+          redactor: input.redactor,
+        });
+      } catch (error) {
+        if (error instanceof CodexApiKeyCredentialMissingError) {
+          return {
+            status: "failed",
+            failure: {
+              code: "provider_session_invalid",
+              retryable: false,
+              reconnectRequired: true,
+              safeMessage: `Codex MiMo backend requires ${error.envVarName} to be set.`,
+            },
+            warnings: [],
+          };
+        }
+        throw error;
+      }
+    }
 
     const tempRoot = await createCodexRuntimeTempRoot({
       prefix: "subscription-runtime-codex-",
@@ -81,12 +125,30 @@ export class CodexCliAgentDriver implements AgentDriver {
 
     try {
       const sandboxMode = codexSandboxModeForControls(input.task.controls);
-      await writeCodexHomeSnapshot({
-        codexHome: tempCodexHome,
-        authJson,
-        sandboxMode,
-      });
+      if (mimoCredential) {
+        await writeCodexMimoHomeSnapshot({
+          codexHome: tempCodexHome,
+          sandboxMode,
+          envVarName: mimoCredential.envVarName,
+        });
+      } else {
+        if (!session) {
+          throw new Error("codex_cli_agent_driver_missing_session_invariant");
+        }
+        const authJson = codexAuthJsonFromArtifact(session);
+        input.redactor.registerSecret(authJson, "codex-auth-json");
+        await writeCodexHomeSnapshot({
+          codexHome: tempCodexHome,
+          authJson,
+          sandboxMode,
+        });
+      }
       await input.onTaskStarted?.();
+      const egressPolicy = mimoCredential
+        ? codexMimoTokenPlanEgressPolicy()
+        : codexProviderApiEgressPolicy();
+      const modelProviderName = codexModelBackendModelProviderName(modelBackend);
+      const model = this.options.model ?? codexModelBackendDefaultModel(modelBackend, defaultCodexModel);
       const result = await input.runner.run({
         command: this.options.codexBinaryPath ?? "codex",
         args: [
@@ -95,7 +157,10 @@ export class CodexCliAgentDriver implements AgentDriver {
           "--sandbox",
           sandboxMode,
           "--model",
-          this.options.model ?? defaultCodexModel,
+          model,
+          ...(modelProviderName === undefined ? [] : [
+            "--config", `model_provider=${JSON.stringify(modelProviderName)}`,
+          ]),
           ...(this.options.reasoningEffort === undefined ? [] : [
             "--config", `model_reasoning_effort=${JSON.stringify(this.options.reasoningEffort)}`,
           ]),
@@ -108,8 +173,12 @@ export class CodexCliAgentDriver implements AgentDriver {
           ...pruneCodexChildEnv(this.options.sourceEnv ?? process.env),
           HOME: tempHome,
           CODEX_HOME: tempCodexHome,
-          ...codexProviderEgressEnv(),
+          ...codexProviderEgressEnv(egressPolicy),
           CI: "true",
+          // Injected after pruning: the shared child-env allowlist stays untouched by
+          // this provider-specific credential, and config.toml's shell_environment_policy
+          // (see writeCodexMimoHomeSnapshot) keeps it out of model-executed shell calls.
+          ...(mimoCredential ? { [mimoCredential.envVarName]: mimoCredential.apiKey } : {}),
         },
         stdin: new TextEncoder().encode(
           composeCodexPrompt({
@@ -181,6 +250,53 @@ async function writeCodexHomeSnapshot(input: {
     mode: 0o600,
   });
   await writeFile(join(input.codexHome, "auth.json"), input.authJson, {
+    mode: 0o600,
+  });
+}
+
+/**
+ * MiMo is a static API-key credential, not a ChatGPT OAuth session: no
+ * `auth.json` is ever written for this backend, and `env_key` reads the key
+ * from the child process env this driver injects at spawn time (never from
+ * `shell_environment_policy.include_only`, which model-executed shell tool
+ * calls can reach).
+ *
+ * `web_search = "disabled"` is required here — confirmed empirically in the
+ * 2026-09-25 Stage 0 smoke test, MiMo's gateway rejects Codex's default
+ * web_search tool with `responses_feature_not_supported`.
+ */
+async function writeCodexMimoHomeSnapshot(input: {
+  readonly codexHome: string;
+  readonly sandboxMode: ReturnType<typeof codexSandboxModeForControls>;
+  readonly envVarName: string;
+  readonly baseUrl?: string;
+}): Promise<void> {
+  const config = [
+    'approval_policy = "never"',
+    `sandbox_mode = ${JSON.stringify(input.sandboxMode)}`,
+    'web_search = "disabled"',
+    "",
+    "[history]",
+    'persistence = "none"',
+    "",
+    "[otel]",
+    'exporter = "none"',
+    'metrics_exporter = "none"',
+    'trace_exporter = "none"',
+    "log_user_prompt = false",
+    "",
+    "[shell_environment_policy]",
+    'inherit = "none"',
+    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
+    "",
+    codexModelBackendModelProvidersConfigToml({
+      backend: CodexModelBackend.XiaomiMimoTokenPlan,
+      envKeyName: input.envVarName,
+      ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
+    }),
+    codexProviderEgressConfigToml(codexMimoTokenPlanEgressPolicy()),
+  ].join("\n");
+  await writeFile(join(input.codexHome, "config.toml"), config, {
     mode: 0o600,
   });
 }

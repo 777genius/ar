@@ -1,4 +1,6 @@
+import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
+import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
@@ -8,6 +10,28 @@ import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog"
 import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
+  const seen = new Set<Error>();
+  for (let cause = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
+    if (cause instanceof ChildLifetimeError) return {
+      code: "budget_exceeded", retryable: false, reconnectRequired: false,
+      safeMessage: "Child lifetime authority is exhausted; scoped cleanup was requested.",
+      causeCategory: cause.reason, details: { childLifetimeReason: cause.reason },
+    };
+    seen.add(cause);
+  }
+  if (error instanceof AppServerTurnCheckpointError) {
+    const reason = error.cause instanceof Error &&
+      ["handoff_base_commit_mismatch", "handoff_head_changed_during_materialization", "checkpoint_head_moved_during_publish"].includes(error.cause.message)
+      ? "head_moved" : "checkpoint_unprotected";
+    return {
+      code: "checkpoint_unprotected",
+      retryable: false,
+      reconnectRequired: false,
+      safeMessage: "Completed Codex turn was not acknowledged offsite; inspect the local checkpoint and publisher before recovery. Do not replay this turn automatically.",
+      causeCategory: "checkpoint_unprotected",
+      details: { checkpointReason: reason },
+    };
+  }
   if (
     error instanceof AppServerUsageError &&
     error.constructor === AppServerUsageError &&
@@ -48,6 +72,16 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
     };
   }
   const message = codexFailureMessage(error);
+  if (error instanceof CodexAppServerTurnError &&
+      error.failureDetails.phase !== "turn_start_rejected" &&
+      /Incomplete response returned, reason: max_output_tokens(?=:details=|$)/.test(message)) {
+    return {
+      code: "budget_exceeded", retryable: false, reconnectRequired: false,
+      safeMessage: "Provider response exhausted its output-token limit; retained output is incomplete. Do not replay this turn automatically.",
+      causeCategory: "max_output_tokens",
+      details: { ...codexFailureDetails(error, message), incompleteReason: "max_output_tokens" },
+    };
+  }
   const state = classifyCodexRuntimeFailure(message);
   const details = codexFailureDetails(error, message);
 
@@ -156,7 +190,7 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
 
 function codexFailureMessage(error: unknown): string {
   const process = processFailureLike(error);
-  if (process) return `${process.stdout ?? ""}\n${process.stderr ?? ""}`;
+  if (process) return [process.stdout, process.stderr].filter(Boolean).join("\n");
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -248,6 +282,8 @@ function parseProcessFailureMessage(
 }
 
 function safeTail(value: string): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > 1000 ? compact.slice(-1000) : compact;
+  // Bound the original bytes before any transform. Normalizing whitespace can
+  // shrink an oversized secret-bearing message or change a multiline secret
+  // before the store's exact-secret redactor sees it.
+  return value.length > 1000 ? "[redacted:oversized-provider-detail]" : value;
 }

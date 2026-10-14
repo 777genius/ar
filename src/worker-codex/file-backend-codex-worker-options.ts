@@ -1,17 +1,36 @@
+import type { OpenWorkerLaunch } from "./project-control-worker-mode";
+import { assertOwnedMimoWorkerFactory, ownedMimoWorkerStart } from "./research-launch-admission";
+import { ChildExecutionBudget, deriveRuntimeStorageRoots } from "@vioxen/subscription-runtime/core";
+import { join } from "node:path";
+import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
-import type { CodexExecutionProfile, CodexProviderEgressPolicy, CodexAppServerProcessFactory, CodexAppServerRateLimitsSnapshotHandler, CodexReasoningEffort, CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
-import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
+import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type PublicResearchSourceReader, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import { SubscriptionWorkerError, type SubscriptionWorkerState, type CommandPolicy, type WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
+import type { AppServerCompletedGoalOutputValidator } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
+import {
+  assertCodexSessionHomeProfile,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
 
 export type FileBackendCodexWorkerOptions = {
+  readonly storageRootDir?: string;
+  readonly childBudget?: ChildExecutionBudget;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   readonly workerId?: string;
   readonly providerInstanceId: string;
   readonly stateRootDir: string;
   /** Payload-writable homes/cache; defaults to stateRootDir for legacy callers. */
   readonly runtimeHomeRootDir?: string;
+  /** Executor-scoped CODEX_HOME lifecycle. Omitted for legacy preservation. */
+  readonly sessionHomeProfile?: CodexSessionHomeProfile;
   readonly codexBinaryPath: string;
   readonly encryptionKey: Uint8Array | string;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing Codex jobs are unaffected. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only read when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
@@ -28,10 +47,20 @@ export type FileBackendCodexWorkerOptions = {
   readonly maxSessionAgeMs?: number;
   readonly refreshConflictRetryMaxMs?: number;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  /** Brokered project jobs require native filesystem permissions even without the host marker. */
+  readonly enforceProjectReadBoundary?: boolean;
+  readonly openWorker?: OpenWorkerLaunch;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   /** Already admitted by the trusted host; never taken from job configuration. */
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  /** Captured installed launch owner recheck, never serialized job data. */
+  readonly assertProviderAdmission?: () => void;
+  /** One bounded reader shared by all account drivers of this job executor. */
+  readonly publicSourceReader?: PublicResearchSourceReader;
+  readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
+  /** Trusted code acceptance only; not a persisted/MCP/CLI job field. */
+  readonly completedGoalOutputValidator?: AppServerCompletedGoalOutputValidator;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
   readonly executionProfile?: CodexExecutionProfile;
   readonly boundedWorkspaceTools?: {
@@ -51,8 +80,25 @@ export type FileBackendCodexWorkerOptions = {
   readonly workspacePath?: string;
   readonly clock?: ClockPort;
   readonly capacityAccountId?: string;
+  readonly onSessionInvalid?: (capacity: WorkerCapacitySnapshot) => void;
   readonly capacityPolicy?: CodexWorkerCapacityPolicy;
 };
+
+export type FileBackendCodexWorkerInput = FileBackendCodexWorkerOptions |
+  (Omit<FileBackendCodexWorkerOptions, "stateRootDir" | "storageRootDir"> & {
+    readonly storageRootDir: string;
+    readonly stateRootDir?: string;
+  });
+
+export function resolveFileBackendCodexWorkerOptions(input: FileBackendCodexWorkerInput): FileBackendCodexWorkerOptions {
+  const storageRootDir = input.storageRootDir ??
+    (input.stateRootDir === undefined ? input.sourceEnv?.SUBSCRIPTION_RUNTIME_STORAGE_ROOT : undefined);
+  const roots = storageRootDir === undefined ? undefined : deriveRuntimeStorageRoots(storageRootDir);
+  const stateRootDir = input.stateRootDir ??
+    (roots ? join(roots.stateRootDir, "codex-workers") : undefined);
+  if (stateRootDir === undefined) throw new Error("file_backend_codex_state_root_required");
+  return { ...input, stateRootDir };
+}
 
 export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): void {
   if (!options.providerInstanceId.trim()) {
@@ -64,6 +110,7 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
     throw new Error("file_backend_codex_runtime_home_root_required");
   }
+  assertCodexSessionHomeProfile(options.sessionHomeProfile);
   if (!options.codexBinaryPath.trim()) {
     throw new Error("file_backend_codex_binary_required");
   }
@@ -94,8 +141,38 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   ) {
     throw new Error("file_backend_codex_execution_engine_invalid");
   }
-  const hostedGlobalScanGuard =
-    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (
+    modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    (options.executionEngine ?? "app-server") !== "app-server-goal" &&
+    !(options.executionEngine === "app-server" && ownedMimoWorkerStart(options.appServerProcessFactory))
+  ) {
+    // Only the authenticated owned Worker can select a contained turn.
+    throw new Error("file_backend_codex_mimo_requires_app_server_goal_engine");
+  }
+  if (
+    modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan &&
+    options.mimoApiKeyEnvVarName !== undefined
+  ) {
+    throw new Error("file_backend_codex_mimo_env_var_requires_mimo_backend");
+  }
+  if (options.providerEgressPolicy !== undefined && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    // MiMo's egress domain is fixed and derived from modelBackend; it is not
+    // a host-configurable input, unlike the ChatGPT/test-qualification profiles.
+    throw new Error("file_backend_codex_mimo_provider_egress_policy_not_configurable");
+  }
+  if (options.completedTurnCheckpoint && (options.executionEngine ?? "app-server") !== "app-server-goal") {
+    throw new Error("checkpoint_requires_app_server_goal_engine");
+  }
+  if (options.completedGoalOutputValidator !== undefined &&
+      (typeof options.completedGoalOutputValidator !== "function" || options.executionEngine !== "app-server-goal" ||
+       options.executionLifetime !== undefined || options.childBudget !== undefined)) {
+    throw new Error("file_backend_codex_goal_output_validator_profile_invalid");
+  }
+  const hostedGlobalScanGuard = isHostedContainment(options.sourceEnv ?? process.env);
+  if (hostedGlobalScanGuard && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    assertOwnedMimoWorkerFactory(options.appServerProcessFactory);
+  }
   const hostedExecutionEngine = options.executionEngine ?? "app-server";
   if (
     hostedGlobalScanGuard &&
@@ -134,4 +211,20 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
 function assertPositiveInteger(value: number | undefined, code: string): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value <= 0) throw new Error(code);
+}
+
+/** Pure lifecycle precondition for public and retained-binding operations. */
+export function assertCodexWorkerStarted(state: SubscriptionWorkerState): void {
+  if (state === "disposed") {
+    throw new SubscriptionWorkerError(
+      "subscription_worker_disposed",
+      "Codex worker has been disposed.",
+    );
+  }
+  if (state === "created") {
+    throw new SubscriptionWorkerError(
+      "subscription_worker_not_started",
+      "Codex worker has not been started.",
+    );
+  }
 }

@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createCodexGoalMcpServer } from "./codex-goal-mcp";
+import { type CodexGoalMcpServerOptions, createCodexGoalMcpServer } from "./codex-goal-mcp";
 
 type JsonRecord = Record<string, unknown>;
 type SuperviseEvent =
@@ -80,6 +80,7 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_relocate_controller_workspace",
   "codex_goal_project_migrate_consumed_output_ledger_epoch",
   "codex_goal_project_reconcile_stale_integrations",
+  "codex_goal_project_link_legacy_integration_transport",
   "brokered_project_manifest_repair",
   "codex_goal_project_repair_legacy_output_debt",
   "codex_goal_project_retire_legacy_job_summary",
@@ -94,6 +95,7 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_create_worktree",
   "codex_goal_project_integrate_commit",
   "codex_goal_project_push_branch",
+  "codex_goal_project_adopt_authority_tuple",
   "codex_goal_project_open_integration_attempt",
   "codex_goal_project_apply_worker_output",
   "codex_goal_project_run_required_checks",
@@ -545,14 +547,14 @@ function controllerSupervisorSafeMessage(result: unknown): string {
   );
 }
 
-export async function listCodexGoalMcpResources(): Promise<unknown> {
-  return withCodexGoalMcpClient((client) => client.listResources());
+export async function listCodexGoalMcpResources(options: CodexGoalMcpServerOptions = {}): Promise<unknown> {
+  return withCodexGoalMcpClient((client) => client.listResources(), options);
 }
 
-export async function readCodexGoalMcpResource(input: {
+export async function readCodexGoalMcpResource(input: CodexGoalMcpServerOptions & {
   readonly uri: string;
 }): Promise<unknown> {
-  return withCodexGoalMcpClient((client) => client.readResource({ uri: input.uri }));
+  return withCodexGoalMcpClient((client) => client.readResource({ uri: input.uri }), input);
 }
 
 export async function listCodexGoalMcpPrompts(): Promise<unknown> {
@@ -614,8 +616,9 @@ export async function doctorCodexGoalControlSurface(): Promise<{
 
 async function withCodexGoalMcpClient<T>(
   action: (client: Client) => Promise<T>,
+  options: CodexGoalMcpServerOptions = {},
 ): Promise<T> {
-  const server = createCodexGoalMcpServer();
+  const server = createCodexGoalMcpServer(options);
   const client = new Client({
     name: "subscription-runtime-codex-goal-cli",
     version: "0.0.0",

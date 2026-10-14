@@ -21,7 +21,7 @@ import {
   LocalProjectControlEvidenceCustody,
 } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
-import type { CodexGoalJobManifest } from "../codex-goal-jobs";
+import { listCodexGoalJobs, readCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   buildLegacyJobSummaryRetirementPlan,
   legacyJobSummaryRetirementPlanSha256,
@@ -134,7 +134,7 @@ describe("consumed output evidence scope", () => {
       join(tmpdir(), "evidence-preflight-"),
     ));
     remediationRoots.add(root);
-    const ledgerRoot = join(root, "ledger");
+    const ledgerRoot = join(root, "controller", "ledger");
     const evidenceRoot = join(root, "archives");
     const outside = join(root, "outside.txt");
     await Promise.all([ledgerRoot, evidenceRoot].map((path) =>
@@ -329,20 +329,24 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     });
     expect(staleController.active).toEqual([fixture.summary]);
 
+    for (const jobId of ["controller", "successor-controller"]) {
+      await writeManifest(fixture.registry, manifestFor(jobId, fixture.root, join(fixture.registry, jobId)));
+    }
     const admissionDeps = {
       evidenceCustody,
-      listJobs: async () => [fixture.summary],
-      observeManifestRuntime: async () => ({ workspaceDirty: true, workerAlive: false, resultExists: false }),
+      listJobs: listCodexGoalJobs,
+      observeManifestRuntime: async (manifest: CodexGoalJobManifest) => ({
+        workspaceDirty: manifest.jobId === fixture.manifest.jobId, workerAlive: false, resultExists: false,
+      }),
       buildOverviewItems: async (inputs: readonly { jobId: string }[]) =>
-        inputs.map(({ jobId }) => ({
-          ok: true,
-          jobId,
-          workspacePath: fixture.workspace,
-          workspaceDirty: true,
-          workerAlive: false,
-          resultExists: false,
-          activeWriterRisk: "dirty_workspace_without_worker",
-          activeWriterRiskReasons: ["dirty_workspace_without_worker"],
+        Promise.all(inputs.map(async ({ jobId }) => {
+          const manifest = await readCodexGoalJob({ registryRootDir: fixture.registry, jobId });
+          const legacyDebt = jobId === fixture.manifest.jobId;
+          return { ok: true, jobId, workspacePath: manifest.workspacePath,
+            workspaceDirty: legacyDebt ? true : undefined, workerAlive: false, resultExists: false,
+            activeWriterRisk: legacyDebt ? "dirty_workspace_without_worker" : "none",
+            activeWriterRiskReasons: legacyDebt ? ["dirty_workspace_without_worker"] : [],
+          };
         })),
     };
     const admissionEvidenceRoot = join(

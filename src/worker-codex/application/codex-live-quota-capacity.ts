@@ -107,10 +107,19 @@ export function recordCodexLiveQuotaCapacity(input: {
     accountId,
     now: input.observation.checkedAt,
   });
+  // Live metadata must not relabel an execution failure or another blocker.
+  if (current && !isQuotaCapacityRecord(current.capacity)) return false;
+  // Refresh may shorten a previous reset, but cannot replace a newer signal.
+  if (
+    current?.capacity.lastLimitSignalAt &&
+    current.capacity.lastLimitSignalAt.getTime() >
+      input.observation.checkedAt.getTime()
+  ) {
+    return false;
+  }
   if (
     current &&
     current.demand === null &&
-    isQuotaCapacityRecord(current.capacity) &&
     capacity
   ) {
     const claimed = input.store.tryClaimRecheck({
@@ -121,6 +130,9 @@ export function recordCodexLiveQuotaCapacity(input: {
       mode: WorkerAccountCapacityRecheckMode.Refresh,
     });
     if (claimed.status !== WorkerAccountCapacityClaimStatus.Claimed) {
+      // Busy keeps the same revision; conflicting, removed or declined state
+      // must not be replaced by a fallback observation from this snapshot.
+      if (claimed.status !== WorkerAccountCapacityClaimStatus.Busy) return false;
       input.store.observe({
         accountId,
         scope: WorkerAccountCapacitySignalScope.AccountWide,
@@ -200,9 +212,9 @@ function clearObservedQuotaCapacity(input: {
 }
 
 function isQuotaCapacityRecord(capacity: WorkerCapacitySnapshot): boolean {
-  return capacity.reason === "quota_limited" ||
-    capacity.reason?.startsWith("quota_recheck_") === true ||
-    capacity.details?.capacitySource === codexLiveQuotaCapacitySource;
+  return capacity.details?.capacitySource === codexLiveQuotaCapacitySource &&
+    (capacity.reason === "quota_limited" ||
+      capacity.reason === "quota_recheck_in_progress");
 }
 
 export function codexLiveQuotaCapacitySnapshot(

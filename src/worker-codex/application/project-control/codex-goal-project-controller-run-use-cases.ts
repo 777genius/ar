@@ -66,6 +66,7 @@ export async function startProjectControllerControlledRun(input: {
   };
 }> {
   const capacityAccountId = stringValue(input.providerInput.account?.name);
+  const capacitySessionId = stringValue(input.providerInput.account?.capacitySessionId);
   const owner = projectControllerProcessOwner(input.deps.runtimeVersion);
   const result = await startControlledAgentRun({
     controllerJobId: input.controllerJobId,
@@ -74,7 +75,7 @@ export async function startProjectControllerControlledRun(input: {
     boundary: AccessBoundary.ProjectScopedControl,
     projectAccessScope: input.scope,
     provider: input.profile.enforcement,
-    networkAccess: NetworkAccessMode.Restricted,
+    networkAccess: NetworkAccessMode.Unrestricted,
   }, {
     provider: input.providerInput.provider,
     stateStore: input.state.store,
@@ -85,6 +86,7 @@ export async function startProjectControllerControlledRun(input: {
     ...(capacityAccountId === undefined ? {} : {
       capacity: {
         accountId: capacityAccountId,
+        ...(capacitySessionId === undefined ? {} : { sessionId: capacitySessionId }),
         demand: projectControllerCapacityDemand(input.launch.config),
       },
     }),

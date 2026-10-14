@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdtemp, mkdir, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRuntimeTool } from "@vioxen/subscription-runtime/core";
+import { codexProviderApiEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { createWorkspaceToolsMcpServer } from "../workspace-tools-mcp";
 import { BoundedWorkspaceFiles } from "../workspace-tools/bounded-workspace-files";
 import { buildCodexWorkspaceToolsProfile } from "../workspace-tools/codex-workspace-tools-profile";
@@ -41,13 +42,65 @@ describe("bounded Codex workspace tools", () => {
       newText: "left + right",
     })).resolves.toEqual({ replacements: 1 });
     await files.writeFile({ path: "src/new.ts", content: "export {};\n" });
+    await expect(files.readFile("src/new.ts")).resolves.toBe("export {};\n");
+    expect((await lstat(join(root, "src", "new.ts"))).nlink).toBe(1);
+    await files.writeFile({ path: "src/new.ts", content: "overwritten\n", overwrite: true });
+    expect((await lstat(join(root, "src", "new.ts"))).nlink).toBe(1);
+    expect((await readdir(join(root, "src"))).sort()).toEqual(["math.ts", "new.ts"]);
 
     await expect(readFile(join(root, "src", "math.ts"), "utf8")).resolves.toBe(
       "return left + right;\n",
     );
     await expect(readFile(join(root, "src", "new.ts"), "utf8")).resolves.toBe(
-      "export {};\n",
+      "overwritten\n",
     );
+  });
+
+  // These fail if an alias exposes bytes, matches edits, or is replaced.
+  it.each(["read", "search", "edit", "overwrite"] as const)(
+    "rejects a multiply linked alias during %s without exposing or replacing it",
+    async (operation) => {
+      const fixture = await hardlinkFixture();
+      try {
+        const before = await fixture.observe();
+        expect(before.alias).toEqual(before.outside);
+        expect(before.handle).toEqual(before.outside);
+        expect(before.alias.nlink).toBe(2);
+        expect((await lstat(fixture.root)).dev).toBe(before.outside.dev);
+        const files = await BoundedWorkspaceFiles.create(fixture.root);
+        const action = () => {
+          switch (operation) {
+            case "read": return files.readFile("alias.txt");
+            case "search": return files.searchFiles({ query: fixture.sentinel.trim() });
+            case "edit": return files.editFile({
+              path: "alias.txt", oldText: fixture.sentinel, newText: "replacement",
+            });
+            case "overwrite": return files.writeFile({
+              path: "alias.txt", content: "replacement", overwrite: true,
+            });
+          }
+        };
+        await expect(action()).rejects.toThrow("workspace_hardlink_rejected");
+        expect(await fixture.observe()).toEqual(before);
+        expect(await readdir(fixture.root)).toEqual(["alias.txt"]);
+      } finally {
+        await fixture.handle.close();
+      }
+    },
+  );
+
+  it("allows a remaining single link after the outside name is removed", async () => {
+    const fixture = await hardlinkFixture();
+    try {
+      await rm(fixture.outside);
+      expect((await lstat(join(fixture.root, "alias.txt"))).nlink).toBe(1);
+      const files = await BoundedWorkspaceFiles.create(fixture.root);
+      await expect(files.readFile("alias.txt")).resolves.toBe(fixture.sentinel);
+      await files.writeFile({ path: "alias.txt", content: "normal", overwrite: true });
+      await expect(files.readFile("alias.txt")).resolves.toBe("normal");
+    } finally {
+      await fixture.handle.close();
+    }
   });
 
   it("rejects traversal, git metadata, symlinks, binary files, and ambiguous edits", async () => {
@@ -68,6 +121,11 @@ describe("bounded Codex workspace tools", () => {
       "workspace_git_metadata_rejected",
     );
     await expect(files.searchFiles({ query: "upper-secret" })).resolves.toEqual([]);
+    // Regression: a scoped MiMo search must not traverse an external path or
+    // follow an in-workspace symlink to a global filesystem canary.
+    await expect(files.searchFiles({ query: "outside", path: ".." }))
+      .rejects.toThrow("workspace_path_outside_root");
+    await expect(files.searchFiles({ query: "outside" })).resolves.toEqual([]);
     await expect(files.readFile("escape.txt")).rejects.toThrow(
       "workspace_symlink_rejected",
     );
@@ -220,10 +278,62 @@ describe("bounded Codex workspace tools", () => {
     expect(profile.configToml).toContain("project_doc_max_bytes = 0");
     expect(profile.configToml).toContain('"--deny-project-instructions"');
   });
+
+  it("keeps hosted bounded tools on the named workspace read boundary", () => {
+    const profile = buildCodexWorkspaceToolsProfile({
+      workspaceRoot: "/tmp/disposable-workspace",
+      allowedTools: [AgentRuntimeTool.ReadFile],
+      hostedEgressPolicy: codexProviderApiEgressPolicy(),
+    });
+    expect(profile.configToml).toContain('default_permissions = "hosted-project-read"');
+    expect(profile.configToml).toContain('[permissions.hosted-project-read.filesystem]');
+    expect(profile.configToml).not.toContain('sandbox_mode = "read-only"');
+    expect(profile.configToml).not.toContain("[sandbox_workspace_write]");
+    expect(profile.configToml).toContain("shell_tool = false");
+  });
 });
 
 async function workspace(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "subscription-runtime-workspace-tools-"));
   roots.push(root);
   return root;
+}
+
+async function hardlinkFixture() {
+  const parent = await workspace();
+  const root = join(parent, "workspace");
+  const sibling = join(parent, "synthetic-outside");
+  await mkdir(root);
+  await mkdir(sibling);
+  const outside = join(sibling, "sentinel.txt");
+  const alias = join(root, "alias.txt");
+  const sentinel = "synthetic-nlink-sentinel\n";
+  await writeFile(outside, sentinel);
+  const handle = await open(outside, "r");
+  try {
+    await link(outside, alias);
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+  const observeName = async (path: string) => {
+    const stat = await lstat(path);
+    return { dev: stat.dev, ino: stat.ino, nlink: stat.nlink, content: await readFile(path, "utf8") };
+  };
+  return {
+    root, outside, sentinel, handle,
+    observe: async () => {
+      const stat = await handle.stat();
+      const buffer = Buffer.alloc(Buffer.byteLength(sentinel));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      return {
+        alias: await observeName(alias),
+        outside: await observeName(outside),
+        handle: {
+          dev: stat.dev, ino: stat.ino, nlink: stat.nlink,
+          content: buffer.subarray(0, bytesRead).toString("utf8"),
+        },
+      };
+    },
+  };
 }

@@ -107,6 +107,8 @@ export enum NetworkAccessMode {
   Unrestricted = "unrestricted",
 }
 
+export enum WorkerMode { Open = "open", Strict = "strict" }
+
 export function isNetworkAccessMode(value: unknown): value is NetworkAccessMode {
   return typeof value === "string" &&
     (Object.values(NetworkAccessMode) as readonly string[]).includes(value);
@@ -126,8 +128,13 @@ export enum RawShellAccessMode {
   Unrestricted = "unrestricted",
 }
 
+export enum ProjectAuthorityMode {
+  HostedWebCoreV1 = "hosted_web_core_v1",
+}
+
 export type ProjectAccessScope = {
   readonly projectId: string;
+  readonly workerMode?: WorkerMode;
   readonly projectSlug?: string;
   readonly readRoots?: readonly string[];
   readonly observedWorkspaceRoots?: readonly string[];
@@ -154,6 +161,7 @@ export type ProjectAccessScope = {
     | {
         readonly required: boolean;
         readonly mode: "serial";
+        readonly authorityMode?: ProjectAuthorityMode;
         readonly validatorBundle: readonly {
           readonly path: string;
           readonly sha256: string;
@@ -162,6 +170,7 @@ export type ProjectAccessScope = {
     | {
         readonly required: boolean;
         readonly mode: "serial-builtin";
+        readonly authorityMode?: ProjectAuthorityMode;
       };
 };
 
@@ -278,7 +287,7 @@ export type LaunchAdapterCapabilities = {
 export type LaunchPlanInput = AccessPolicyContext & {
   readonly adapter: LaunchAdapterCapabilities;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
 };
 
 export type LaunchPlan =
@@ -783,7 +792,7 @@ function launchEnforcementBlocker(input: LaunchPlanInput): LaunchPlan | null {
   }
   if (!input.adapter.canIsolateHome) missing.push("HOME isolation is unavailable");
   if (!input.adapter.canIsolateTemp) missing.push("temporary directory isolation is unavailable");
-  if (!input.adapter.canRestrictNetwork) {
+  if (input.networkAccess !== NetworkAccessMode.Unrestricted && !input.adapter.canRestrictNetwork) {
     missing.push("network restriction is unavailable");
   }
   if (

@@ -8,10 +8,12 @@ import type {
   ManagedRunResumeHandle,
   ManagedRunStorePort,
   ProviderFailure,
+  RedactorPort,
 } from "@vioxen/subscription-runtime/core";
+import { assertManagedRunIdentifiersSafe, discardLegacyAnswerSummary, redactManagedRunValue } from "./file-backend-codex-managed-run-redaction";
 
 export class LocalFileManagedRunStore implements ManagedRunStorePort {
-  constructor(private readonly rootDir: string) {}
+  constructor(private readonly rootDir: string, private readonly redactor: RedactorPort) {}
 
   async get(input: { readonly runId: string }): Promise<ManagedRunRecord | null> {
     const raw = await readFile(this.recordPath(input.runId), "utf8").catch(
@@ -21,7 +23,9 @@ export class LocalFileManagedRunStore implements ManagedRunStorePort {
       },
     );
     if (raw === null) return null;
-    return parseManagedRunRecord(JSON.parse(raw));
+    const record = parseManagedRunRecord(JSON.parse(raw));
+    assertManagedRunIdentifiersSafe(record, this.redactor);
+    return redactManagedRunValue(discardLegacyAnswerSummary(record), this.redactor);
   }
 
   async saveWaitingInput(input: {
@@ -127,10 +131,12 @@ export class LocalFileManagedRunStore implements ManagedRunStorePort {
   }
 
   private async writeRecord(record: ManagedRunRecord): Promise<void> {
+    assertManagedRunIdentifiersSafe(record, this.redactor);
+    const safeRecord = redactManagedRunValue(discardLegacyAnswerSummary(record), this.redactor);
     const path = this.recordPath(record.runId);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const tempPath = `${path}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(record, null, 2)}\n`, {
+    await writeFile(tempPath, `${JSON.stringify(safeRecord, null, 2)}\n`, {
       mode: 0o600,
     });
     await rename(tempPath, path);

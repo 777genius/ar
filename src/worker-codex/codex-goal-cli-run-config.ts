@@ -1,5 +1,11 @@
+import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./application/codex-goal-storage-paths";
+import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
+import { parseChildLifetimeJson } from "@vioxen/subscription-runtime/core";
+import { assertChildGoalConfig } from "./child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { join } from "node:path";
+import { assertJobStorageIntent, JobStorageHomeStateRequirement, JobStorageIntentKind } from "@vioxen/subscription-runtime/worker-core";
+import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
 import {
   type ParsedFlags,
   flag,
@@ -12,6 +18,7 @@ import {
   codexGoalAccountSlots,
   type CodexGoalRunConfig,
 } from "./codex-goal-runner";
+import { optionalCodexGoalModelBackend } from "./codex-goal-model-backend";
 import {
   assertCodexGoalProviderSandboxModeAllowed,
   optionalCodexGoalProviderSandboxMode,
@@ -31,9 +38,27 @@ export function runConfigFromFlags(
   values: ParsedFlags,
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
-  jobRootDir: string,
+  jobRootDir: string | undefined,
   taskId: string,
+  resolvedPaths?: ReturnType<typeof resolveCodexGoalPaths>,
 ): CodexGoalRunConfig {
+  if (values.flags.has("--storage-root")) throw new Error("--storage-root requires a value");
+  const pathOption = (flagName: string, envNames: readonly string[] = []): string | undefined => {
+    const value = option(values, env, flagName, envNames);
+    return value === undefined ? undefined : resolvePath(cwd, value);
+  };
+  const paths = resolvedPaths ?? resolveCodexGoalPaths({
+    taskId, jobId: option(values, env, "--job-id", ["SUBSCRIPTION_RUNTIME_JOB_ID"]),
+    storageRootDir: resolveCodexGoalStorageRoot(option(values, env, "--storage-root", ["SUBSCRIPTION_RUNTIME_STORAGE_ROOT"]), cwd),
+    jobRootDir: jobRootDir === undefined ? undefined : resolvePath(cwd, jobRootDir),
+    workspacePath: pathOption("--workspace", ["SUBSCRIPTION_RUNTIME_WORKSPACE_PATH", "MEMO_STACK_GOAL_WORKSPACE_PATH"]),
+    stateRootDir: pathOption("--state-root"), runtimeHomeRootDir: pathOption("--runtime-home-root"),
+    encryptionKeyPath: pathOption("--encryption-key-path"),
+    durableHandoffRootDir: pathOption("--durable-handoff-root", ["SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT"]),
+    outputPath: pathOption("--output"), progressPath: pathOption("--progress"),
+    runtimeEventsPath: pathOption("--runtime-events"), agentTempRootDir: pathOption("--agent-temp-root"),
+    logPath: pathOption("--log"), sourceEnv: env,
+  });
   const authRootDir = resolvePath(
     cwd,
     option(values, env, "--auth-root", [
@@ -54,6 +79,13 @@ export function runConfigFromFlags(
   const executionEngine = (option(values, env, "--execution-engine", [
     "CODEX_EXECUTION_ENGINE",
   ]) ?? "app-server-goal") as CodexGoalRunConfig["executionEngine"];
+  const modelBackend = optionalCodexGoalModelBackend(
+    option(values, env, "--model-backend", ["CODEX_MODEL_BACKEND"]),
+    "--model-backend",
+  );
+  const checkpointPublisherSocketPath = option(values, env, "--checkpoint-publisher-socket", [
+    "SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET",
+  ]);
   const staleLockMs = parseOptionalPositiveInteger(
     option(values, env, "--stale-lock-ms", []),
     "--stale-lock-ms",
@@ -104,19 +136,31 @@ export function runConfigFromFlags(
     ]),
     "--network-access",
   );
-  const resolvedJobRootDir = resolvePath(cwd, jobRootDir);
+  const resolvedJobRootDir = paths.jobRootDir;
   const runtimeTempRoot =
-    env.SUBSCRIPTION_RUNTIME_TMPDIR ?? join(resolvedJobRootDir, "tmp");
-  const agentTempRoot = join(runtimeTempRoot, "agent");
+    paths.sourceEnv?.SUBSCRIPTION_RUNTIME_TMPDIR ?? env.SUBSCRIPTION_RUNTIME_TMPDIR ?? join(resolvedJobRootDir, "tmp");
+  const agentTempRoot = paths.agentTempRootDir ?? join(runtimeTempRoot, "agent");
   const sourceEnv = {
-    ...env,
+    ...(paths.sourceEnv ?? env),
     SUBSCRIPTION_RUNTIME_JOB_ROOT: resolvedJobRootDir,
     SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
     TMPDIR: agentTempRoot,
     TMP: agentTempRoot,
     TEMP: agentTempRoot,
   } as const;
+  const childLifetimeJson = option(values, env, "--child-lifetime-json", []);
+  const childLifetime = childLifetimeJson === undefined ? undefined : parseChildLifetimeJson(childLifetimeJson);
+  const storageData = parseStorageData(values);
+  const { logPath: _logPath, ...configPaths } = paths;
   const config: CodexGoalRunConfigWithAppServerStartupTimeout = {
+    ...storageData,
+    ...configPaths,
+    ...(childLifetime ? { childLifetime } : {}),
+    ...(option(values, env, "--max-goal-turns", []) === undefined ? {} : { maxGoalTurns: parseOptionalPositiveInteger(option(values, env, "--max-goal-turns", []), "--max-goal-turns")! }),
+    ...(option(values, env, "--max-attempts", []) === undefined && option(values, env, "--continuation-mode", []) === undefined ? {} : { safeExecutionPolicy: {
+      ...(option(values, env, "--max-attempts", []) === undefined ? {} : { maxAttempts: parseOptionalPositiveInteger(option(values, env, "--max-attempts", []), "--max-attempts")! }),
+      ...(option(values, env, "--continuation-mode", []) === undefined ? {} : { continuationMode: option(values, env, "--continuation-mode", []) as "disabled" }),
+    } }),
     ...(option(values, env, "--job-id", ["SUBSCRIPTION_RUNTIME_JOB_ID"]) === undefined
       ? {}
       : {
@@ -125,14 +169,14 @@ export function runConfigFromFlags(
           ]) as string,
         }),
     jobRootDir: resolvedJobRootDir,
-    authRootDir,
-    workspacePath: resolvePath(
+    durableHandoffRootDir: resolvePath(
       cwd,
-      requiredOption(values, env, "--workspace", [
-        "SUBSCRIPTION_RUNTIME_WORKSPACE_PATH",
-        "MEMO_STACK_GOAL_WORKSPACE_PATH",
-      ]),
+      option(values, env, "--durable-handoff-root", [
+        "SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT",
+      ]) ?? join(resolvedJobRootDir, "durable-handoffs"),
     ),
+    authRootDir,
+    workspacePath: paths.workspacePath,
     promptPath: resolvePath(
       cwd,
       requiredOption(values, env, "--prompt", [
@@ -153,18 +197,22 @@ export function runConfigFromFlags(
     accounts,
     outputPath: resolvePath(
       cwd,
-      option(values, env, "--output", []) ??
-        join(resolvePath(cwd, jobRootDir), `${taskId}.latest-result.json`),
+      paths.outputPath ??
+        join(resolvedJobRootDir, ...(storageData.storage ? ["output"] : []), `${taskId}.latest-result.json`),
     ),
     progressPath: resolvePath(
       cwd,
-      option(values, env, "--progress", []) ??
-        join(resolvePath(cwd, jobRootDir), `${taskId}.progress.json`),
+      paths.progressPath ??
+        join(resolvedJobRootDir, ...(storageData.storage ? ["output"] : []), `${taskId}.progress.json`),
     ),
     model: option(values, env, "--model", ["CODEX_MODEL"]) ?? CODEX_WORKER_DEFAULT_MODEL,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),
+    ...(checkpointPublisherSocketPath ? { checkpointPublisherSocketPath: resolvePath(cwd, checkpointPublisherSocketPath) } : {}),
+    ...(checkpointPublisherSocketPath || flag(values, "--require-turn-checkpoint")
+      ? { checkpointRequired: true } : {}),
+    ...modelBackend,
     codexBinaryPath: option(values, env, "--codex-binary", [
       "CODEX_BINARY_PATH",
     ]) ?? "codex",
@@ -201,10 +249,62 @@ export function runConfigFromFlags(
     ...(workerReportMode === undefined ? {} : { workerReportMode }),
     sourceEnv,
   };
-  const stateRoot = option(values, env, "--state-root", []);
-  return stateRoot
-    ? { ...config, stateRootDir: resolvePath(cwd, stateRoot) }
-    : config;
+  assertVerifiedHostedChildConfig(config);
+  assertChildGoalConfig(config);
+  return config;
+}
+
+/** Data only: reconstruct closed runner variants, never receipts or ports. */
+function parseStorageData(values: ParsedFlags): Pick<CodexGoalRunConfig, "sessionHomeProfile" | "storage"> {
+  // The legacy generic parser accepts only separate option/value tokens.
+  // An equals spelling must not turn an explicit NEW opt-in into a legacy run.
+  for (const name of [...values.flags, ...values.values.keys()]) {
+    if (name.startsWith("--session-home-profile-json=") || name.startsWith("--storage-json=")) {
+      throw new Error("codex_goal_cli_storage_data_invalid");
+    }
+  }
+  const profileJson = option(values, {}, "--session-home-profile-json", []);
+  const storageJson = option(values, {}, "--storage-json", []);
+  if (values.flags.has("--session-home-profile-json") || values.flags.has("--storage-json")) {
+    throw new Error("codex_goal_cli_storage_data_invalid");
+  }
+  if (profileJson === undefined && storageJson === undefined) return {};
+  if (profileJson === undefined || storageJson === undefined) throw new Error("codex_goal_cli_storage_profile_required");
+  const profile = storageObject(profileJson);
+  const storage = storageObject(storageJson);
+  const intent = storageObjectValue(storage.intent);
+  if (Object.keys(storage).sort().join(",") !== "generationId,intent" ||
+      typeof storage.generationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(storage.generationId)) {
+    throw new Error("codex_goal_cli_storage_data_invalid");
+  }
+  let sessionHomeProfile: CodexSessionHomeProfile;
+  let parsedIntent: NonNullable<CodexGoalRunConfig["storage"]>["intent"];
+  if (profile.kind === CodexSessionHomeProfileKind.Continuation && intent.kind === JobStorageIntentKind.Continuation &&
+      Object.keys(profile).sort().join(",") === "kind,sessionId" && Object.keys(intent).sort().join(",") === "kind,sessionId" &&
+      typeof profile.sessionId === "string" && profile.sessionId.length <= 128 && profile.sessionId === intent.sessionId) {
+    sessionHomeProfile = { kind: CodexSessionHomeProfileKind.Continuation, sessionId: profile.sessionId };
+    parsedIntent = { kind: JobStorageIntentKind.Continuation, sessionId: profile.sessionId };
+  } else if (profile.kind === CodexSessionHomeProfileKind.OneShot && intent.kind === JobStorageIntentKind.NoResume &&
+      Object.keys(profile).join(",") === "kind" && Object.keys(intent).sort().join(",") === "homeStateRequirement,kind" &&
+      intent.homeStateRequirement === JobStorageHomeStateRequirement.NoneRequired) {
+    sessionHomeProfile = { kind: CodexSessionHomeProfileKind.OneShot };
+    parsedIntent = { kind: JobStorageIntentKind.NoResume, homeStateRequirement: JobStorageHomeStateRequirement.NoneRequired };
+  } else throw new Error("codex_goal_cli_storage_data_invalid");
+  assertCodexSessionHomeProfile(sessionHomeProfile);
+  assertJobStorageIntent(parsedIntent);
+  return { sessionHomeProfile, storage: { generationId: storage.generationId, intent: parsedIntent } };
+}
+
+function storageObject(json: string): Record<string, unknown> {
+  if (Buffer.byteLength(json, "utf8") > 4096) throw new Error("codex_goal_cli_storage_data_invalid");
+  let value: unknown;
+  try { value = JSON.parse(json); } catch { throw new Error("codex_goal_cli_storage_data_invalid"); }
+  return storageObjectValue(value);
+}
+
+function storageObjectValue(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("codex_goal_cli_storage_data_invalid");
+  return value as Record<string, unknown>;
 }
 
 function parseDurationMs(value: string): number {

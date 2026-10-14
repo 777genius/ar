@@ -3,6 +3,26 @@
 Install with `sudo sh host-integration/managed-launcher/install`. The installer
 copies the launcher and the shared storage-policy loader into root-owned,
 non-writable directories under `/opt/subscription-runtime`.
+The artifact also contains `managed-launcher/host-inventory-codec.cjs`, compiled
+from the shared pure host inventory codec. Install publishes that fixed sibling
+before the launcher. Missing or conflicting codec bytes refuse before any
+copied cohort is changed. All copied files must have a single hard link.
+Bootstrap installation refuses an existing inventory or collector profile; replacing a
+governed copied launcher requires its separate qualified pair transaction.
+`install --qualified-pair ORIGINAL_OPERATION_UUID` selects the fixed compiled
+ordinary issuer with protected `/usr/bin/node`. The issuer refuses any packet
+whose measured Node differs. It retains the original operation and genuine
+NEWTEST qualification in one process, then publishes the exact pair under the
+existing activation fence. Other copied files retain their exact cohort.
+The source composition requires that actual qualification producer; this
+launcher slice alone supplies no physical qualification receipt.
+The same transaction publishes the fixed collector profile. Existing Node,
+ss, wrapper/ELF pins, renderer and FD limits stay identical; only the finite
+reviewed bootstrap entries change. Old protected profile bytes are retained.
+Before the first global profile change or launcher rename, consumption is
+treated as unknown. These separate file updates are not one atomic operation.
+Restoration needs actual discharge of every applicable consumer; closing only
+the issuer's supervisor cannot prove that a foreign HostJobs route is settled.
 The fixed installation path requires `/opt` and every ancestor to be root-owned
 and not group/world writable. It avoids `/usr/local/lib`, which may be owned by
 the deployment user on hosted machines; there is no alternative install path.
@@ -43,6 +63,17 @@ environment overrides or output modes are accepted. The launcher constructs all
 systemd flags and hardening itself. Provider resource limits are fixed in code;
 I/O limits cover the root and admitted storage filesystems. Custody is a separate
 trusted controller and is not an accepted launcher operation.
+Jobs accept an optional `startupSeconds` own field as a safe integer from 1
+through 900. Omission uses the existing 600-second default; providers use a
+fixed 600-second startup budget and accept neither an override nor
+caller-supplied `limits`. For jobs, startup combines with runtime for the
+original work reservation, and stop combines with that work for cleanup. An
+explicit 600 remains explicit job identity rather than being normalized to
+omission. The startup budget covers systemd namespace setup before initial exec
+and does not extend provider readiness, client, MCP or task deadlines. Transport
+timeouts still require reconciliation with the same job ID; they do not
+authorize a replacement launch. This finite budget does not prove native
+startup completes on a particular host.
 The launcher derives `storageRoot/jobs/jobId` with fixed `workspace`, `state`,
 `logs`, `output`, `home`, `tmp` and `payload-logs` children, creating and validating each after
 storage admission. Job identifiers accept letters, digits, dots, underscores

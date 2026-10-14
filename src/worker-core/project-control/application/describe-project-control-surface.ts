@@ -23,6 +23,10 @@ const integrationLifecycleTools: readonly ProjectControlToolCapability[] = [
   capability("push_approved_commit", "integration_lifecycle", true),
 ];
 
+const authorityAdoptionTools: readonly ProjectControlToolCapability[] = [
+  capability("adopt_authority_tuple", "authority_adoption", false),
+];
+
 export class DescribeProjectControlSurfaceUseCase {
   describe(): ProjectControlSurface {
     return {
@@ -32,6 +36,7 @@ export class DescribeProjectControlSurfaceUseCase {
       policyOwner: "controller",
       tools: [
         ...workerLifecycleTools,
+        ...authorityAdoptionTools,
         ...integrationLifecycleTools,
       ],
       integrationSequence: [

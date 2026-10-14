@@ -4,6 +4,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   acquireLocalControllerMaintenanceFence,
+  LocalTerminalCheckpointAdmission,
   releaseLocalControllerMaintenanceFence,
 } from "@vioxen/subscription-runtime/store-local-file";
 import {
@@ -75,6 +76,9 @@ export async function projectControlRelocateControllerWorkspaceView(
   const oldPath = await projectControlCanonicalWorkspacePath(controller.workspacePath, scope);
   const newPath = await projectControlCanonicalWorkspacePath(requested, scope);
   if (oldPath === newPath) throw new Error("controller_relocation_different_workspace_required");
+  // Job admission precedes controller/workspace locks and the registry mutex.
+  // Keep it until both the manifest and its applied audit are published.
+  return new LocalTerminalCheckpointAdmission(controller.jobRootDir).withWriter(async () => {
   const locks = projectControlWorkspaceLocks(registryRootDir);
   const controllerLock = await locks.acquire({
     workspacePath: controllerScopeLockIdentity(registryRootDir, controller.jobId),
@@ -188,6 +192,7 @@ export async function projectControlRelocateControllerWorkspaceView(
       return await withWorkspace(0);
     } finally { await releaseLocalControllerMaintenanceFence(fence); }
   } finally { await locks.release(controllerLock); }
+  });
 }
 
 async function readRelocationRegistry(registryRootDir: string): Promise<CodexGoalJobManifest[]> {

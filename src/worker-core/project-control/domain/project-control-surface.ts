@@ -8,6 +8,7 @@ export type ProjectControlToolKind =
   | "mark_reviewed"
   | "record_failed_no_output"
   | "open_integration_attempt"
+  | "adopt_authority_tuple"
   | "apply_worker_output"
   | "run_required_checks"
   | "commit_approved_changes"
@@ -15,6 +16,7 @@ export type ProjectControlToolKind =
 
 export type ProjectControlToolGroup =
   | "worker_lifecycle"
+  | "authority_adoption"
   | "integration_lifecycle";
 
 export type ProjectControlPolicyOwner = "controller";

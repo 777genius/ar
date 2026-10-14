@@ -1,16 +1,28 @@
+import { recordInventoriedRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
+import { preclaimHostedReadonlyDependencyReader } from "./hosted-readonly-dependency-reader-entry";
+import { publishCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderParent, spawnCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderFrame, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
+import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
+import { assertHostedManagedDependencyToolRelease, assertHostedManagedDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
+import { assertHostedReadonlyDependencyReadyPublication } from "./hosted-readonly-dependency-publication";
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { parseHostedReadonlyDependencyStart, readonlyDependencyStartName } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
+import { readHostedReadonlyDependencyMaterial, readonlyDependencyMaterialDigests } from "./hosted-readonly-dependency-records";
 import { assertExclusiveHostedActivation } from "./hosted-installation-activation";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HostedCustodyPhase, HostedCustodyReservationState, HostedCustodySupervisor, reserveHostedOuterRuntime, terminalHostedOuterRuntime, type HostedCustodyEpoch,
   type HostedCustodyIdentity, type HostedCustodyReservation, type HostedCustodySupervisorPort,
 } from "@vioxen/subscription-runtime/worker-core";
-import { CodexProviderEgressProfileId, assertHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexProviderEgressProfileId, assertHostedActivationFence, withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { decodePrivateJson, readReadonlyManagedGrant, readReadonlyReview, readonlyIdentityName } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes, readHostedReadonlyPolicy } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlyCustodyRoot, readonlyCustodySnapshot, readonlyRevokedRoot, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
-import { completionBytes, completionPath, HostedReadonlyHostKernel, type HostedWaitStatus } from "./hosted-readonly-host-kernel";
+import { completionBytes, completionPath, HostedReadonlyHostKernel, readHostedReadonlyHostInventory, type HostedWaitStatus } from "./hosted-readonly-host-kernel";
+import { assertHostedForegroundResult, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 
 /** Production composition, deliberately without an injected authority, inventory
  * callback, storage path or process factory. Test substitutes live OS facts at
@@ -104,6 +116,10 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         this.verifyReadonlyMaterial(epoch.identity);
         this.verifyExclusiveInventory();
         this.verifyDescriptorBoundary();
+        if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) {
+          assertHostedReadonlyDependencyReadyPublication(this.store.publicationFence(), epoch);
+        }
+        recordInventoriedRawGoalStateOrigin({ command, args }, epoch.identity.jobRootDir);
         const startId = randomUUID();
         const record = { startId, creatorId: startId, unit: `subscription-runtime-outer-${startId}.service` };
         const launch = this.kernel.runtimeInvocation(record, command, args, cwd);
@@ -114,6 +130,18 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         createReadonlyPrivateRecord(join(readonlySupervisorRoot, `readonly-outer-start-${startId}.json`),
           Buffer.from(JSON.stringify({ schemaVersion: 1, hostId: epoch.hostId, bootId: epoch.bootId,
             jobId: epoch.identity.jobId, generation: epoch.generation, ...record }) + "\n"));
+        if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) {
+          const material = readHostedReadonlyDependencyMaterial(this.store.publicationFence(), epoch.identity);
+          const evidence = parseHostedReadonlyDependencyStart({ version: 1, ...material.evidence.installation,
+            hostId: epoch.hostId, bootId: epoch.bootId, supervisorId: epoch.supervisorId,
+            generation: epoch.generation, ...record, association: material.reference,
+            candidateJobId: material.evidence.candidate.jobId, readonlyJobId: epoch.identity.jobId,
+            jobRootDir: epoch.identity.jobRootDir, workspace: material.evidence.workspace,
+            ...readonlyDependencyMaterialDigests(material.evidence) });
+          createReadonlyPrivateRecord(join(readonlySupervisorRoot, readonlyDependencyStartName(startId)),
+            Buffer.from(JSON.stringify(evidence) + "\n"));
+          preclaimHostedReadonlyDependencyReader(this.store.publicationFence(),startId);
+        }
         this.runtimeGeneration = epoch.generation;
         this.runtimeStartId = startId;
         return submit(launch);
@@ -122,6 +150,68 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         throw error;
       }
     });
+  }
+  releaseRuntimeFrame(frame: string | Buffer, release: (fence: HostedActivationFence, revalidate: () => void) => void): void {
+    withHostedActivationFence(fence => this.store.withHeldFence(fence, () => {
+      const revalidate = () => {
+      const epoch = this.readEpoch(), record = epoch.outerRuntime;
+      if (!record || record.state !== HostedCustodyReservationState.Reserved || record.startId !== this.runtimeStartId ||
+          epoch.generation !== this.runtimeGeneration || epoch.phase !== HostedCustodyPhase.Ready || epoch.revoked) denied();
+      assertExclusiveHostedActivation(epoch);
+      const session = this.session();
+      if (session.hostId !== epoch.hostId || session.bootId !== epoch.bootId || session.supervisorId !== epoch.supervisorId) denied();
+      this.verifyReadonlyMaterial(epoch.identity);
+      const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, `readonly-outer-start-${record.startId}.json`), 4096);
+      const expected = { schemaVersion: 1, hostId: epoch.hostId, bootId: epoch.bootId,
+        jobId: epoch.identity.jobId, generation: epoch.generation, startId: record.startId, creatorId: record.creatorId, unit: record.unit };
+      if (!bytes || JSON.stringify(decodePrivateJson(bytes)) !== JSON.stringify(expected)) denied();
+      if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) assertHostedManagedDependencyToolParentFrame(fence,record.unit,frame);
+      };
+      revalidate(); release(fence, revalidate);
+    }));
+  }
+  releaseProviderFrame(unit: string, identity: HostedTestEgressIdentity, release: (fence: HostedActivationFence, revalidate: () => void) => void): void {
+    withHostedActivationFence(fence => this.store.withHeldFence(fence, () => {
+      const revalidate = () => {
+      const epoch = this.assertManagedAdmission(identity, CodexProviderEgressProfileId.TestManagedQualification);
+      const record = epoch.reservations.find(record => record.unit === unit);
+      if (!record || record.state !== HostedCustodyReservationState.Reserved) denied();
+      };
+      revalidate(); release(fence, revalidate);
+    }));
+  }
+  /** Called synchronously from the existing reserved-provider submit closure.
+   * The store's actual held publication fence cannot be supplied by a caller. */
+  publishDependencyProviderStart(context: CurrentHostedDependencyOrigin, unit: string): void {
+    publishCurrentHostedManagedDependencyProvider(context,this.store.publicationFence(),unit);
+  }
+  /** Fixed concrete adapter call while the actual reservation fence is held.
+   * Neither a fence nor a process callback escapes to the worker factory. */
+  spawnDependencyProvider(context: CurrentHostedDependencyOrigin, unit: string,
+    input: {readonly command:string;readonly args:readonly string[];readonly cwd:string;readonly env:Readonly<Record<string,string>>}) {
+    const fence = this.store.publicationFence(), current = readCurrentHostedManagedDependencyProviderParent(context,fence);
+    const identity = {jobId:current.facts.start.readonlyJobId,jobRootDir:current.binding.jobRootDir,workspacePath:current.binding.workspace.canonicalPath};
+    this.assertManagedAdmission(identity,CodexProviderEgressProfileId.TestManagedQualification);
+    this.publishDependencyProviderStart(context,unit);
+    let child: ChildProcessWithoutNullStreams;
+    try { child = spawnCurrentHostedManagedDependencyProvider(context,fence,unit,input); }
+    catch (error) {
+      const record = this.readEpoch().reservations.find(row => row.unit === unit && row.state === HostedCustodyReservationState.Reserved);
+      try { if (record) this.requestStop(record); } catch { /* Exact reservation remains held. */ }
+      throw error;
+    }
+    const guard = hostedFdLaunch(child);
+    void guard.observe().then(() => retryHostedFenceAcquisition(() => this.releaseProviderFrame(unit,identity,(held,revalidate) => {
+      const assertCurrent = () => { revalidate(); assertHostedManagedDependencyToolRelease(child,held); revalidate(); };
+      guard.release(held,readCurrentHostedManagedDependencyProviderFrame(context,held,unit,child),false,assertCurrent);
+    }),guard.remainingSetupMs())).catch(() => {
+      guard.invalidate();
+      // Stop this exact actual reservation; an ambiguous proxy/OS result keeps
+      // it held and cannot create a successor or authorize another submission.
+      try { const record = this.serialized(() => this.readEpoch().reservations.find(row => row.unit === unit &&
+        row.state === HostedCustodyReservationState.Reserved)); if (record) this.requestStop(record); } catch { /* Held on uncertainty. */ }
+    });
+    return child;
   }
   /** Outer exit/cancellation closes future admission before stop requests. This
    * never treats the wrapper/child exit as terminal proof for a hosted unit.
@@ -160,6 +250,23 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
   recordWaitCompletion(reservation: Omit<HostedCustodyReservation, "state">, status: HostedWaitStatus): void {
     this.serialized(() => createReadonlyPrivateRecord(completionPath(reservation), completionBytes(reservation, status)));
     new HostedCustodySupervisor(this).reconcile(reservation.startId);
+  }
+  withForegroundTerminal<T>(result: HostedForegroundResult, action: (owner: { jobRootDir: string; args: readonly string[]; fence: HostedActivationFence }) => T): T {
+    return withHostedActivationFence(fence => this.store.withHeldFence(fence, () => {
+      assertHostedForegroundResult(result);
+      const epoch = this.readEpoch(), record = epoch.outerRuntime;
+      if (!record || record.unit !== result.unit || record.startId !== result.startId || record.startId !== this.runtimeStartId ||
+          record.state !== (result.exitCode === 0 ? HostedCustodyReservationState.Terminal : HostedCustodyReservationState.Reserved)) denied();
+      if (result.exitCode === 0) this.kernel.fenceCreator(record, epoch.bootId);
+      else {
+        assertExclusiveHostedActivation(epoch);
+        const session = this.session();
+        if (session.hostId !== epoch.hostId || session.bootId !== epoch.bootId || session.supervisorId !== epoch.supervisorId ||
+            epoch.generation !== this.runtimeGeneration) denied();
+      }
+      this.kernel.drainQueuedStart(record); this.kernel.confirmTerminalDescendants(record);
+      return action({ jobRootDir: epoch.identity.jobRootDir, args: readHostedReadonlyHostInventory().runtimeLaunch.args, fence });
+    }));
   }
 }
 function hash(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }

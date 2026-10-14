@@ -11,6 +11,7 @@ export enum IntegrationAuditEventType {
   CommitCreated = "integration_attempt.commit_created",
   Pushed = "integration_attempt.pushed",
   Promoted = "integration_attempt.promoted",
+  ExternalCommitAdopted = "integration_attempt.external_commit_adopted",
   Rejected = "integration_attempt.rejected",
   PolicyDenied = "integration_attempt.policy_denied",
 }

@@ -1,11 +1,19 @@
+import { readPlannedProjectAdoptionProof } from "./application/project-control/codex-goal-project-adoption-target";
+import { isProjectMimoWorkerLaunch, launchProjectMimoWorker, stopProjectMimoWorker } from "./project-mimo-worker-launch";
+import { recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
+import { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
+export { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
-import { isHostedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { CodexGoalLaunchState, buildCodexGoalNoTmuxCommand } from "./codex-goal-ops";
 import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   AccessBoundary,
   ProjectControlBroker,
+  ProjectOperation,
+  ProjectControlSubmissionUncertainError,
   type ProjectAccessScope,
   type ProjectControlBrokerEvent,
   type ProjectControlBrokerPorts,
@@ -17,34 +25,40 @@ import {
   type CodexGoalJobManifestInput,
 } from "./codex-goal-jobs";
 import {
-  buildCodexGoalStopTmuxCommand,
   collectCodexGoalStatus,
   doctorCodexGoal,
   prepareCodexGoalLaunchPaths,
   resolveCodexGoalWorkerLiveness,
   startCodexGoalTmux,
-  stopCodexGoalDirectProcess,
-  stopCodexGoalTmux,
   type CodexGoalLaunchInput,
 } from "./codex-goal-ops";
 import { writeCodexGoalReviewMarker } from "./codex-goal-mcp-lifecycle-markers";
 import { buildCodexGoalBrief } from "./codex-goal-mcp-brief";
 import { codexGoalStatusInputFromLaunch as statusInput } from "./codex-goal-mcp-status-input";
+import type { CodexProjectAdmissionDeps } from "./application/project-control/codex-goal-project-admission";
 import {
-  codexProjectAdmissionGate,
-  type CodexProjectAdmissionDeps,
-} from "./application/project-control/codex-goal-project-admission";
+  createProjectBrokerAdmission,
+  type ProjectCreationAdmissionProof,
+} from "./application/project-control/codex-goal-project-broker-admission";
 import {
-  withProjectPreStartAdmissionLaunchAuthorization,
+  assertAdmissionStoredLaunchIdentity,
+  boundCreationTargetIdentity,
+  revalidateAdmissionCreatedWorktree,
+  type ProjectAdmissionTargetBinding,
+} from "./application/project-control/codex-goal-project-admission-target";
+import {
+  authorizeProjectPreStartAdmissionLaunch,
+  readCurrentAuthorizedProjectPreStartLaunchReceipt,
+  rollbackProjectPreStartAdmissionLaunch,
+  type ProjectPreStartAdmissionLaunchAuthorization,
 } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/project-control/codex-goal-project-pre-start-admission";
+import type { DependencyPreflightDiagnosticBinding } from "./dependency-bootstrap";
 import {
   assertPendingInputPatchTerminalFree,
   type ValidatedPendingInputPatchAdmission,
 } from "./application/project-control/codex-goal-project-pending-input-patch-admission";
-import {
-  assertCodexGoalProjectJobNotTerminal,
-} from "./application/project-control/codex-goal-consumed-output-ledger-io";
+import { assertCodexGoalProjectJobNotTerminal } from "./application/project-control/codex-goal-consumed-output-ledger-io";
 import {
   decideCodexGoalProjectStop,
   isCodexGoalProjectTerminalCapacityPause,
@@ -60,11 +74,21 @@ import {
   localReviewedWorkerOutputDeps,
   reviewedWorkerOutputRoot,
 } from "./reviewed-worker-output";
-import type { ProjectControlWorkspaceLease } from "./codex-goal-project-workspace-lock";
+import { LocalProjectAuthorityTupleStore } from
+  "../worker-local/project-authority-tuple-local-adapter";
+import {
+  withProjectAdmissionPublicationLock,
+  withValidatedProjectWorkspaceLock, projectControlWorkspaceLocks,
+  type ProjectControlWorkspaceLease,
+} from "./codex-goal-project-workspace-lock";
 import {
   noopOperationResult,
   type CodexGoalProjectCreateWorktreeInput,
 } from "./application/project-control/codex-goal-project-control-contracts";
+import {
+  durableHandoffStopEvidence,
+  preserveTerminalCodexGoalHandoffBeforeStop,
+} from "./codex-goal-preserve-before-stop";
 import { projectControlRealPathOutsideWorkspaceScope } from "./application/project-control/codex-goal-project-workspace-scope";
 import {
   applyVerifiedInputPatch,
@@ -124,8 +148,11 @@ export type CodexProjectControlBrokerInput = {
   readonly scope: ProjectAccessScope;
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly createManifest?: CodexGoalJobManifestInput;
+  readonly protectedBirthPreparation?: ProtectedCodexGoalJobBirthPreparation;
+  readonly createReviewedOutputAggregate?: ProjectAdmissionTargetBinding["createReviewedOutputAggregate"];
   readonly createOverwrite?: boolean;
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
+  readonly plannedAdoption?: import("./application/project-control/codex-goal-project-adoption-target").PlannedProjectAdoption;
   readonly admittedInputPatchTarget?: {
     readonly jobId: string;
     readonly workspacePath: string;
@@ -137,10 +164,12 @@ export type CodexProjectControlBrokerInput = {
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
   readonly startPendingInputPatchAdmission?: ValidatedPendingInputPatchAdmission;
   readonly startWorkspaceLease?: ProjectControlWorkspaceLease;
+  readonly startDependencyPreflightDiagnostic?: DependencyPreflightDiagnosticBinding;
+  readonly revalidateStartPublication?: (workspace: ProjectControlWorkspaceLease) => Promise<void>;
   readonly startSkipDoctor?: boolean;
-  readonly controlledRuntimeInPlaceContinuation?:
-    ProjectControlledRuntimeInPlaceContinuation;
+  readonly controlledRuntimeInPlaceContinuation?: ProjectControlledRuntimeInPlaceContinuation;
   readonly stopLaunch?: CodexGoalLaunchInput;
+  readonly forceStopAfterMaterializationFailure?: boolean;
   readonly reviewLaunch?: CodexGoalLaunchInput;
   readonly reviewWorkspaceLease?: ProjectControlWorkspaceLease;
   readonly reviewNote?: string;
@@ -150,14 +179,36 @@ export type CodexProjectControlBrokerInput = {
   >;
   readonly reviewedContinuation?: ReviewedWorkerOutputSnapshot;
   readonly rejectedUncapturedTerminalHandoffRecovery?:
-    | { readonly patchSha256: string }
-    | undefined;
+    { readonly patchSha256: string } | undefined;
 };
+
+/** Bind a trusted Host setting to the child command without persisting it in a manifest. */
+export function bindProjectChildCheckpointPublisher(input: {
+  readonly launch: CodexGoalLaunchInput;
+  readonly controllerCheckpointRequired: boolean;
+  readonly childCheckpointRequired: boolean;
+  readonly hostEnv: Readonly<Record<string, string | undefined>>;
+}): CodexGoalLaunchInput {
+  const socketPath = input.hostEnv.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET?.trim();
+  if (socketPath && (!isAbsolute(socketPath) || socketPath.includes("\0"))) {
+    throw new Error("checkpoint_socket_path_invalid");
+  }
+  const { checkpointPublisherSocketPath: _untrustedSocket, ...childConfig } = input.launch.config;
+  const checkpointRequired = input.childCheckpointRequired || input.controllerCheckpointRequired ||
+    childConfig.checkpointRequired === true || Boolean(socketPath);
+  if (checkpointRequired && !socketPath) throw new Error("checkpoint_publisher_required");
+  return { ...input.launch, config: {
+    ...childConfig,
+    ...(checkpointRequired ? { checkpointRequired: true } : {}),
+    ...(socketPath ? { checkpointPublisherSocketPath: socketPath } : {}),
+  } };
+}
 
 export function createCodexProjectControlBroker(
   input: CodexProjectControlBrokerInput,
 ): ProjectControlBroker {
-  const runtimeContinuationMode = input.startAdmissionWorkspaceMode ===
+  const runtimeContinuationMode =
+    input.startAdmissionWorkspaceMode ===
     "admitted_input_patch_runtime_continuation";
   if (
     runtimeContinuationMode !==
@@ -170,68 +221,108 @@ export function createCodexProjectControlBroker(
   const admittedInputPatchTarget =
     input.admittedInputPatchTarget ??
     ((input.startAdmissionWorkspaceMode === "admitted_input_patch" &&
-        input.startManifest &&
-        input.startWorkspaceLease) ||
-      (input.createWorktreeInput?.inputPatch && input.createWorktreeInput.jobId)
+      input.startManifest &&
+      input.startWorkspaceLease) ||
+    (input.createWorktreeInput?.inputPatch && input.createWorktreeInput.jobId)
       ? {
-          jobId: input.startManifest?.jobId ??
-            input.createWorktreeInput?.jobId ?? "",
-          workspacePath: input.startWorkspaceLease?.canonicalWorkspacePath ??
-            input.createWorktreeInput?.path ?? "",
+          jobId:
+            input.startManifest?.jobId ??
+            input.createWorktreeInput?.jobId ??
+            "",
+          workspacePath:
+            input.startWorkspaceLease?.canonicalWorkspacePath ??
+            input.createWorktreeInput?.path ??
+            "",
         }
       : undefined);
+  const authorityStore = new LocalProjectAuthorityTupleStore({
+    rootDir: join(input.registryRootDir, ".project-authority"),
+    projectId: input.scope.projectId,
+  });
+  let adoptionWorkspaceLease: ProjectControlWorkspaceLease | undefined;
+  const admission = createProjectBrokerAdmission(
+    input, admittedInputPatchTarget, codexProjectControlPathExists, () => adoptionWorkspaceLease,
+  );
   return new ProjectControlBroker(
     {
       boundary: AccessBoundary.ProjectScopedControl,
       scope: input.scope,
     },
     {
-      ...codexProjectControlPorts(input),
-      admission: codexProjectAdmissionGate({
-        registryRootDir: input.registryRootDir,
-        scope: input.scope,
-        controllerJobId: input.controller.jobId,
-        deps: input.admissionDeps,
-        ...((input.startAdmissionWorkspaceMode ===
-              "admitted_input_patch_continuation" ||
-            input.startAdmissionWorkspaceMode ===
-              "admitted_input_patch_runtime_continuation" ||
-            input.startAdmissionWorkspaceMode ===
-              "clean_capacity_continuation") &&
-            input.startManifest &&
-            input.startWorkspaceLease
-          ? {
-              capacityContinuationTarget: {
-                jobId: input.startManifest.jobId,
-                workspacePath:
-                  input.startWorkspaceLease.canonicalWorkspacePath,
-              },
-            }
-          : {}),
-        ...(input.controlledRuntimeInPlaceContinuation &&
-            input.startManifest && input.startWorkspaceLease
-          ? {
-              inPlaceContinuationTarget: {
-                jobId: input.startManifest.jobId,
-                workspacePath:
-                  input.startWorkspaceLease.canonicalWorkspacePath,
-                ownedPaths:
-                  input.controlledRuntimeInPlaceContinuation.ownedPaths,
-              },
-            }
-          : {}),
-        ...(admittedInputPatchTarget
-          ? { admittedInputPatchTarget }
-          : {}),
-      }),
+      ...codexProjectControlPorts(input, authorityStore, admission.creationProof, current => { adoptionWorkspaceLease = current; }, () => adoptionWorkspaceLease),
+      admission: admission.gate,
     },
   );
 }
 
 function codexProjectControlPorts(
   input: CodexProjectControlBrokerInput,
+  authorityStore: LocalProjectAuthorityTupleStore,
+  creationProof: () => ProjectCreationAdmissionProof | undefined,
+  setAdoptionWorkspaceLease: (current: ProjectControlWorkspaceLease | undefined) => void,
+  readAdoptionWorkspaceLease: () => ProjectControlWorkspaceLease | undefined,
 ): ProjectControlBrokerPorts {
+  let preparedAuthorization: ProjectPreStartAdmissionLaunchAuthorization | undefined;
+  const startLaunchWithPrerequisites = (): CodexGoalLaunchInput => {
+    if (!input.startLaunch) throw new Error("project_control_start_launch_required");
+    // Child env is filtered, so carry the Host socket through argv.
+    const launch = bindProjectChildCheckpointPublisher({
+      launch: input.startLaunch,
+      controllerCheckpointRequired: input.controller.checkpointRequired === true,
+      childCheckpointRequired: input.startManifest?.checkpointRequired === true,
+      hostEnv: process.env,
+    });
+    if (!input.startWorkspaceLease) throw new Error("project_control_start_workspace_lease_required");
+    if (input.startWorkspaceLease.canonicalWorkspacePath !== launch.config.workspacePath) {
+      throw new Error("project_control_start_workspace_lease_mismatch");
+    }
+    if (!input.startManifest && input.scope.preStartAdmission?.required) {
+      throw new Error("project_control_start_manifest_required");
+    }
+    return launch;
+  };
   return {
+    authority: authorityStore,
+    admissionCoordination: {
+      withPublication: async (request, effect) => {
+        if (request.operation === ProjectOperation.StartWorker && input.startWorkspaceLease) {
+          if (input.startManifest && input.startLaunch) {
+            await assertAdmissionStoredLaunchIdentity({
+              registryRootDir: input.registryRootDir, manifest: input.startManifest, launch: input.startLaunch,
+            });
+          }
+          const publish = input.startWorkspaceLease.withOrderedAdmissionPublication;
+          if (!publish || !input.revalidateStartPublication) {
+            throw new Error("project_control_ordered_start_publication_required");
+          }
+          return await publish({
+            registryRootDir: input.registryRootDir,
+            revalidate: input.revalidateStartPublication,
+            effect,
+          });
+        }
+        return await withProjectAdmissionPublicationLock({
+          registryRootDir: input.registryRootDir,
+          owner: `project-admission-publication:${input.controller.jobId}`,
+          effect: input.plannedAdoption ? async () => {
+            const target = input.plannedAdoption!.target;
+            if ((request.operation !== ProjectOperation.CreateWorktree && request.operation !== ProjectOperation.CreateJob) ||
+              request.request.workspacePath !== target.path || request.request.jobId !== target.jobId || !target.expectedRealPath) {
+              throw new Error("project_control_adoption_request_binding_mismatch");
+            }
+            return await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(input.registryRootDir),
+              scope: input.scope, requestedWorkspacePath: target.path, expectedCanonicalWorkspacePath: target.expectedRealPath,
+              owner: `project-adoption:${input.controller.jobId}:${target.jobId}`,
+              effect: async current => {
+                setAdoptionWorkspaceLease(current);
+                try { return await effect(); } finally { setAdoptionWorkspaceLease(undefined); }
+              },
+            });
+          } : effect,
+        });
+      },
+    },
+
     audit: {
       async record(event) {
         await appendProjectControlAuditEvent(input.controller, event);
@@ -246,6 +337,7 @@ function codexProjectControlPorts(
           registryRootDir: input.registryRootDir,
           manifest: input.createManifest,
           overwrite: input.createOverwrite ?? false,
+          ...(input.protectedBirthPreparation ? { protectedBirthPreparation: input.protectedBirthPreparation } : {}),
         });
         return operationResult(created.jobId);
       },
@@ -269,9 +361,11 @@ function codexProjectControlPorts(
         });
         if (input.reviewedOutputCapture) {
           assertReviewedOutputWorkerStopped(input.reviewLaunch, status);
-          await reviewedOutputDeps.continuationEnvironment.sanitizeDependencyRootLinks({
-            workspacePath: input.reviewLaunch.config.workspacePath,
-          });
+          await reviewedOutputDeps.continuationEnvironment.sanitizeDependencyRootLinks(
+            {
+              workspacePath: input.reviewLaunch.config.workspacePath,
+            },
+          );
           reviewedOutput = await captureReviewedWorkerOutputLocked(
             reviewedOutputDeps,
             {
@@ -322,21 +416,44 @@ function codexProjectControlPorts(
       },
     },
     supervisor: {
+      async prepareStartWorker() {
+        startLaunchWithPrerequisites();
+        if (!input.startManifest || !input.startLaunch) return;
+        preparedAuthorization = await authorizeProjectPreStartAdmissionLaunch({
+          manifest: input.startManifest,
+          scope: input.scope,
+          ...(input.startAdmissionWorkspaceMode
+            ? { workspaceMode: input.startAdmissionWorkspaceMode }
+            : {}),
+          ...(input.startPendingInputPatchAdmission
+            ? { expectedPendingInputPatch: input.startPendingInputPatchAdmission }
+            : {}),
+          assertLaunchEligible: async () => {
+            await assertAdmissionStoredLaunchIdentity({
+              registryRootDir: input.registryRootDir,
+              manifest: input.startManifest!,
+              launch: input.startLaunch!,
+            });
+            if (input.startPendingInputPatchAdmission) {
+              assertPendingInputPatchTerminalFree(
+                await collectCodexGoalStatus(statusInput(input.startLaunch!)),
+              );
+            }
+          },
+          authorityStore,
+        });
+        // Original claim publication owns topology. Permanently invalidate the
+        // exact root before release, so later sibling censuses cannot contend
+        // with this already authorized launch's negative-history rechecks.
+        recordProtectedCodexGoalJobFirstEffect(input.startManifest.jobRootDir);
+      },
       async startWorker() {
-        if (!input.startLaunch) {
-          throw new Error("project_control_start_launch_required");
-        }
-        const startLaunch = input.startLaunch;
-        if (!input.startWorkspaceLease) {
-          throw new Error("project_control_start_workspace_lease_required");
-        }
-        if (
-          input.startWorkspaceLease.canonicalWorkspacePath !==
-          startLaunch.config.workspacePath
-        ) {
-          throw new Error("project_control_start_workspace_lease_mismatch");
-        }
+        let submissionMayHaveOccurred = false;
         const start = async () => {
+          if (input.startManifest && input.startLaunch) await assertAdmissionStoredLaunchIdentity({
+            registryRootDir: input.registryRootDir, manifest: input.startManifest, launch: input.startLaunch,
+          });
+          const startLaunch = startLaunchWithPrerequisites();
           if (input.controlledRuntimeInPlaceContinuation) {
             if (!input.startManifest) {
               throw new Error(
@@ -362,11 +479,10 @@ function codexProjectControlPorts(
               ? { reviewedContinuation: input.reviewedContinuation }
               : {}),
             ...(input.startAdmissionWorkspaceMode ===
-                "admitted_input_patch_continuation" ||
-              input.startAdmissionWorkspaceMode ===
-                "admitted_input_patch_runtime_continuation" ||
-              input.startAdmissionWorkspaceMode ===
-                "clean_capacity_continuation"
+              "admitted_input_patch_continuation" ||
+            input.startAdmissionWorkspaceMode ===
+              "admitted_input_patch_runtime_continuation" ||
+            input.startAdmissionWorkspaceMode === "clean_capacity_continuation"
               ? { capacityContinuation: true as const }
               : {}),
             ...(input.rejectedUncapturedTerminalHandoffRecovery
@@ -380,19 +496,26 @@ function codexProjectControlPorts(
                       input.controlledRuntimeInPlaceContinuation
                         .rejectedPatchSha256,
                   }
-              : {}),
+                : {}),
           });
-          if (!input.startManifest && input.scope.preStartAdmission?.required) {
-            throw new Error("project_control_start_manifest_required");
-          }
           // Broker authorization publishes a receipt. Managed broker requests
           // must already be enclosed by the fixed CLI outer command before it.
-          await admitHostedControllerLaunch(startLaunch);
+          if (!isProjectMimoWorkerLaunch(startLaunch)) await admitHostedControllerLaunch(startLaunch);
           const previousBrokeredStart =
             process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START;
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START = "1";
           const launchWorker = async () => {
+            submissionMayHaveOccurred = true;
+            if (isProjectMimoWorkerLaunch(startLaunch)) {
+              const launched = await launchProjectMimoWorker({ registryRootDir: input.registryRootDir,
+                controllerJobId: input.controller.jobId, reservedLaunch: input.startLaunch! });
+              return { args: [], preview: `MiMo worker ${launched.jobId} (${launched.startId})`,
+                launchState: CodexGoalLaunchState.Scheduled };
+            }
             const outerStatus = await routeHostedGoalLaunch(startLaunch);
+            // Undefined is the router's explicit no-submission/local outcome.
+            // An exception remains uncertain and keeps the allocated claim.
+            if (outerStatus === undefined) submissionMayHaveOccurred = false;
             if (outerStatus !== undefined) {
               return { args: [], preview: buildCodexGoalNoTmuxCommand(startLaunch), launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed };
             }
@@ -410,34 +533,21 @@ function codexProjectControlPorts(
               );
             }
           }
+            submissionMayHaveOccurred = true;
             return await startCodexGoalTmux(startLaunch);
           };
           let command: Awaited<ReturnType<typeof startCodexGoalTmux>>;
           try {
-            command = input.startManifest
-              ? await withProjectPreStartAdmissionLaunchAuthorization(
-                {
-                  manifest: input.startManifest,
-                  scope: input.scope,
-                  ...(input.startAdmissionWorkspaceMode
-                    ? { workspaceMode: input.startAdmissionWorkspaceMode }
-                    : {}),
-                  ...(input.startPendingInputPatchAdmission
-                    ? {
-                        expectedPendingInputPatch:
-                          input.startPendingInputPatchAdmission,
-                        assertLaunchEligible: async () =>
-                          assertPendingInputPatchTerminalFree(
-                            await collectCodexGoalStatus(
-                              statusInput(startLaunch),
-                            ),
-                          ),
-                      }
-                    : {}),
-                },
-                launchWorker,
-              )
-              : await launchWorker();
+            if (input.startManifest?.projectPreStartAdmission) {
+              const current = await readCurrentAuthorizedProjectPreStartLaunchReceipt(
+                input.startManifest,
+              );
+              if (!preparedAuthorization ||
+                !isDeepStrictEqual(current.receipt, preparedAuthorization.authorizedReceipt)) {
+                throw new Error("project_control_prepared_launch_authorization_changed");
+              }
+            }
+            command = await launchWorker();
           } finally {
             if (previousBrokeredStart === undefined) {
               delete process.env
@@ -450,7 +560,24 @@ function codexProjectControlPorts(
           if (command.launchState === CodexGoalLaunchState.Failed) throw new Error("hosted_custody_foreground_failed_after_submission");
           return operationResult(`${command.launchState ?? CodexGoalLaunchState.Scheduled}: ${command.preview}`);
         };
-        return await start();
+        try {
+          return await start();
+        } catch (error) {
+          if (!submissionMayHaveOccurred && preparedAuthorization) {
+            try {
+              await rollbackProjectPreStartAdmissionLaunch(preparedAuthorization);
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [error, rollbackError],
+                "project_control_pre_start_launch_rollback_failed",
+              );
+            }
+          }
+          if (submissionMayHaveOccurred) {
+            throw new ProjectControlSubmissionUncertainError(error);
+          }
+          throw error;
+        }
       },
       async stopWorker() {
         if (!input.stopLaunch) {
@@ -467,10 +594,9 @@ function codexProjectControlPorts(
           staleAfterMs: 10 * 60_000,
           tailLines: 20,
         });
-        const capacityContinuation =
-          isCodexGoalProjectTerminalCapacityPause(
-            input.startAdmissionWorkspaceMode,
-          );
+        const capacityContinuation = isCodexGoalProjectTerminalCapacityPause(
+          input.startAdmissionWorkspaceMode,
+        );
         const stopPolicy = decideCodexGoalProjectStop({
           ...brief.workerHealth,
           terminalCapacityPause: capacityContinuation,
@@ -478,49 +604,50 @@ function codexProjectControlPorts(
         if (!stopPolicy.allowed) {
           throw new Error(stopPolicy.reason);
         }
-        if (isHostedGoalLaunch(input.stopLaunch)) {
+        if (isProjectMimoWorkerLaunch(input.stopLaunch)) {
+          const evidence = await stopProjectMimoWorker({ registryRootDir: input.registryRootDir,
+            controllerJobId: input.controller.jobId, launch: input.stopLaunch });
+          return operationResult("MiMo worker stopped with reconciled workspace", evidence);
+        }
+        if (isHostedActivatedGoalLaunch(input.stopLaunch)) {
           stopHostedGoalLaunch(input.stopLaunch);
           return operationResult("hosted stop requested; terminal custody remains unproven");
         }
-        if (input.stopLaunch.tmuxSession) {
-          if (status.tmuxAlive === false) {
-            return noopOperationResult(
-              buildCodexGoalStopTmuxCommand(input.stopLaunch.tmuxSession)
-                .preview,
-              "Worker tmux session is already gone.",
-            );
-          }
-          try {
-            const command = await stopCodexGoalTmux(
-              input.stopLaunch.tmuxSession,
-            );
-            return operationResult(command.preview);
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : String(error);
-            if (/can't find session|no server running/i.test(message)) {
-              return noopOperationResult(
-                buildCodexGoalStopTmuxCommand(input.stopLaunch.tmuxSession)
-                  .preview,
-                "Worker tmux session is already gone.",
-              );
-            }
-            throw error;
-          }
+        const { tmuxSession: _tmuxSession, ...foregroundLaunch } = input.stopLaunch;
+        const preserved = await preserveTerminalCodexGoalHandoffBeforeStop({
+          launch: isHostedGoalLaunch(input.stopLaunch) ? foregroundLaunch : input.stopLaunch,
+          status,
+          forceAfterMaterializationFailure: Boolean(
+            input.forceStopAfterMaterializationFailure,
+          ),
+        });
+        if (input.stopLaunch.tmuxSession && !isHostedGoalLaunch(input.stopLaunch)) {
+          const evidence = durableHandoffStopEvidence(preserved);
+          return status.tmuxAlive === false &&
+            !("status" in preserved.stopResult &&
+              preserved.stopResult.status === "terminated")
+            ? noopOperationResult(
+                preserved.stopResult.preview,
+                "Worker process is already gone; durable handoff evidence was preserved.",
+                evidence,
+              )
+            : operationResult(preserved.stopResult.preview, evidence);
         }
-        const command = stopCodexGoalDirectProcess(status);
-        if (command.status === "terminated") {
-          return operationResult(command.preview);
+        const command = preserved.stopResult;
+        const stopEvidence = durableHandoffStopEvidence(preserved);
+        if ("status" in command && command.status === "terminated") {
+          return operationResult(command.preview, stopEvidence);
         }
         if (
-          command.status === "process_gone" ||
-          command.status === "pid_missing"
+          "status" in command &&
+          (command.status === "process_gone" || command.status === "pid_missing")
         ) {
           return noopOperationResult(
             command.preview,
             command.status === "process_gone"
               ? "Worker process is already gone."
               : "Worker has no direct process pid to stop.",
+            stopEvidence,
           );
         }
         throw new Error("project_control_stop_untrusted_process");
@@ -557,6 +684,11 @@ function codexProjectControlPorts(
         if (!input.createWorktreeInput) {
           throw new Error("project_control_worktree_input_required");
         }
+        const proof = creationProof();
+        if (!proof) throw new Error("project_control_creation_admission_missing");
+        if (proof.missing && (!proof.identity || await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) !== proof.identity)) {
+          throw new Error("project_control_creation_admission_changed");
+        }
         if (
           await codexProjectControlPathExists(input.createWorktreeInput.path)
         ) {
@@ -569,6 +701,12 @@ function codexProjectControlPorts(
               return operationResult(input.createWorktreeInput.path);
             }
           }
+          if (input.plannedAdoption) await readPlannedProjectAdoptionProof({ registryRootDir: input.registryRootDir,
+            controllerJobId: input.controller.jobId, scope: input.scope,
+            request: { operation: ProjectOperation.CreateWorktree, jobId: input.createWorktreeInput.jobId!, workspacePath: input.createWorktreeInput.path,
+              ownedPaths: input.createWorktreeInput.ownedPaths! },
+            adoption: { ...input.plannedAdoption, workspaceLease: readAdoptionWorkspaceLease },
+          });
           return noopOperationResult(
             input.createWorktreeInput.path,
             "existing worktree candidate delegated for exact identity validation",
@@ -580,6 +718,8 @@ function codexProjectControlPorts(
             input.createWorktreeInput.expectedSourceRealPath,
           scope: input.scope,
         });
+        const admissionIdentity = proof.identity;
+        if (!proof.missing || !admissionIdentity) throw new Error("project_control_creation_admission_changed");
         await mkdir(dirname(input.createWorktreeInput.path), {
           recursive: true,
           mode: 0o700,
@@ -628,6 +768,9 @@ function codexProjectControlPorts(
                       input.createWorktreeInput.expectedRevision,
                   ]),
         ];
+        if (await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) !== admissionIdentity) {
+          throw new Error("project_control_creation_admission_changed");
+        }
         try {
           await execGit(args);
         } catch (error) {
@@ -659,6 +802,9 @@ function codexProjectControlPorts(
               changedPaths: input.createWorktreeInput.inputPatch.changedPaths,
             });
           }
+          await revalidateAdmissionCreatedWorktree({
+            expectedIdentity: admissionIdentity, target: input.createWorktreeInput, scope: input.scope,
+          });
         } catch (error) {
           await execGit([
             "-C",
@@ -666,7 +812,7 @@ function codexProjectControlPorts(
             "worktree",
             "remove",
             "--force",
-            input.createWorktreeInput.path,
+            admissionIdentity,
           ]);
           throw error;
         }
@@ -707,162 +853,6 @@ function codexProjectControlPorts(
       },
     },
   };
-}
-
-export async function fastForwardExistingProjectWorktree(input: {
-  readonly input: CodexGoalProjectCreateWorktreeInput;
-  readonly scope: ProjectAccessScope;
-  readonly afterFastForwardForTest?: () => Promise<void>;
-}): Promise<boolean> {
-  const request = input.input;
-  const fastForward = request.fastForwardExisting;
-  if (!fastForward) return false;
-  if (!request.sourceRevisionPinned) {
-    throw new Error("project_control_existing_worktree_fast_forward_unpinned");
-  }
-  if (!request.newBranch || request.sourceRef !== request.newBranch) {
-    throw new Error("project_control_existing_worktree_fast_forward_branch_required");
-  }
-  if (request.inputPatch) {
-    throw new Error("project_control_existing_worktree_fast_forward_patch_forbidden");
-  }
-  const materializedRealPath = await realpath(request.path);
-  if (!request.expectedRealPath || materializedRealPath !== request.expectedRealPath) {
-    throw new Error("project_control_existing_worktree_fast_forward_real_path_changed");
-  }
-  if (
-    await projectControlRealPathOutsideWorkspaceScope(
-      materializedRealPath,
-      input.scope,
-    )
-  ) {
-    throw new Error("project_control_existing_worktree_real_path_outside_scope");
-  }
-  const [sourceCommonDir, worktreeCommonDir] = await Promise.all([
-    resolveGitCommonDir(request.expectedSourceRealPath),
-    resolveGitCommonDir(materializedRealPath),
-  ]);
-  if (sourceCommonDir !== worktreeCommonDir) {
-    throw new Error("project_control_existing_worktree_foreign_repository");
-  }
-  const statusBefore = await execGitStdout([
-    "-C",
-    materializedRealPath,
-    "status",
-    "--porcelain",
-  ]);
-  if (statusBefore.trim().length > 0) {
-    throw new Error("project_control_existing_worktree_fast_forward_dirty");
-  }
-  await assertGitCurrentBranch({
-    workspacePath: materializedRealPath,
-    branch: request.newBranch,
-  });
-  const current = (
-    await execGitStdout(["-C", materializedRealPath, "rev-parse", "HEAD"])
-  ).trim().toLowerCase();
-  const expectedCurrent = fastForward.expectedCurrentRevision.toLowerCase();
-  const expectedNext = request.expectedRevision.toLowerCase();
-  if (current === expectedNext) {
-    if (expectedCurrent === expectedNext) return false;
-    try {
-      if (await isGitAncestor({
-        workspacePath: materializedRealPath,
-        ancestor: expectedCurrent,
-        descendant: expectedNext,
-      })) return false;
-    } catch {
-      // The regular current-mismatch error below is the stable public result.
-    }
-  }
-  if (current !== expectedCurrent) {
-    throw new Error("project_control_existing_worktree_fast_forward_current_mismatch");
-  }
-  if (!await isGitAncestor({
-    workspacePath: materializedRealPath,
-    ancestor: expectedCurrent,
-    descendant: expectedNext,
-  })) {
-    throw new Error("project_control_existing_worktree_fast_forward_non_ancestor");
-  }
-  await execGit([
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-C",
-    materializedRealPath,
-    "merge",
-    "--ff-only",
-    "--no-stat",
-    expectedNext,
-  ]);
-  await input.afterFastForwardForTest?.();
-  try {
-    const confirmed = (
-      await execGitStdout(["-C", materializedRealPath, "rev-parse", "HEAD"])
-    ).trim().toLowerCase();
-    const statusAfter = await execGitStdout([
-      "-C",
-      materializedRealPath,
-      "status",
-      "--porcelain",
-    ]);
-    if (confirmed !== expectedNext || statusAfter.trim().length > 0) {
-      throw new Error("project_control_existing_worktree_fast_forward_verification_failed");
-    }
-  } catch (error) {
-    const rollback = await rollbackFastForwardRevision({
-      workspacePath: materializedRealPath,
-      expectedCurrent,
-      expectedNext,
-    });
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}; rollback=${rollback}`);
-  }
-  return true;
-}
-
-async function resolveGitCommonDir(workspacePath: string): Promise<string> {
-  const commonDir = (
-    await execGitStdout(["-C", workspacePath, "rev-parse", "--git-common-dir"])
-  ).trim();
-  return await realpath(
-    isAbsolute(commonDir) ? commonDir : join(workspacePath, commonDir),
-  );
-}
-
-async function rollbackFastForwardRevision(input: {
-  readonly workspacePath: string;
-  readonly expectedCurrent: string;
-  readonly expectedNext: string;
-}): Promise<string> {
-  const observed = (
-    await execGitStdout(["-C", input.workspacePath, "rev-parse", "HEAD"])
-  ).trim().toLowerCase();
-  if (observed !== input.expectedNext) return "skipped_head_changed";
-  const status = await execGitStdout([
-    "-C",
-    input.workspacePath,
-    "status",
-    "--porcelain",
-  ]);
-  if (status.trim().length > 0) return "skipped_dirty";
-  try {
-    await execGit([
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-C",
-      input.workspacePath,
-      "reset",
-      "--merge",
-      input.expectedCurrent,
-    ]);
-  } catch {
-    return "failed_preserved";
-  }
-  const restored = (
-    await execGitStdout(["-C", input.workspacePath, "rev-parse", "HEAD"])
-  ).trim().toLowerCase();
-  return restored === input.expectedCurrent ? "revision" : "failed_preserved";
 }
 
 async function codexProjectControlPathExists(path: string): Promise<boolean> {
@@ -919,9 +909,13 @@ export function projectControlAuditPath(
   );
 }
 
-function operationResult(resourceId: string): ProjectControlOperationResult {
+function operationResult(
+  resourceId: string,
+  evidence?: Readonly<Record<string, string>>,
+): ProjectControlOperationResult {
   return {
     status: "applied",
     resourceId,
+    ...(evidence ? { evidence } : {}),
   };
 }

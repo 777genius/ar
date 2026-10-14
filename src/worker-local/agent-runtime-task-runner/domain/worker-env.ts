@@ -8,6 +8,7 @@ export function pruneClaudeChildEnv(
     "LANG",
     "LC_ALL",
     "PATH",
+    "SUBSCRIPTION_RUNTIME_SANDBOX_KIND",
     "TEMP",
     "TMP",
     "TMPDIR",

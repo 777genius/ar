@@ -10,6 +10,9 @@ import {
   registerCodexGoalProjectControlJobTools,
 } from "./codex-goal-mcp-project-control-job-tool-registration";
 import {
+  registerCodexGoalProjectAuthorityTools,
+} from "./codex-goal-mcp-project-authority-tool-registration";
+import {
   registerCodexGoalProjectControlReviewTools,
 } from "./codex-goal-mcp-project-control-review-tool-registration";
 import {
@@ -28,6 +31,7 @@ export function registerCodexGoalProjectControlTools(
   options: CodexGoalProjectControlToolOptions = {},
 ): void {
   registerCodexGoalProjectControlJobTools(server);
+  registerCodexGoalProjectAuthorityTools(server);
   registerCodexGoalProjectControlAdminTools(server);
   registerCodexGoalProjectControllerTools(server, options);
   registerCodexGoalProjectControlActionTools(server);

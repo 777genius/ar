@@ -21,6 +21,8 @@ export class LocalReviewedOutputIntegrationIntegrity implements ReviewedOutputIn
       expectedWorkerJobId: output.workerJobId,
     });
     if (
+      snapshot.controllerJobId !== attempt.controllerJobId ||
+      JSON.stringify(snapshot.reviewDecision) !== JSON.stringify(attempt.reviewDecision) ||
       snapshot.reviewedOutputFileByteAllowance !== output.reviewedOutputFileByteAllowance ||
       snapshot.patchSha256 !== output.patchSha256 ||
       snapshot.patchPath !== (output.sourcePatchPath ?? output.patchPath) ||

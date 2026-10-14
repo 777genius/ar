@@ -1,11 +1,17 @@
+import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
+import { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
+export { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 import { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
 export { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
 import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manifest";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { launchTmuxInHostNamespace } from "./scratch-mount-namespace";
+import { constants, lstatSync } from "node:fs";
+import { mkdir, open, readFile } from "node:fs/promises";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import {
   AccessBoundary,
@@ -16,7 +22,8 @@ import {
   type RuntimeResultEnvelope,
   type RuntimeResultStatus,
 } from "@vioxen/subscription-runtime/worker-core";
-import { codexChildPath } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
+import { resolveCodexGoalMimoEnvVarName } from "./codex-goal-mimo-account-slots";
 import {
   createCodexGoalResultRecorder,
   GitPatchPreserver,
@@ -29,8 +36,11 @@ import {
   type CodexGoalRunConfig,
 } from "./codex-goal-runner";
 import { assertCodexGoalAccessLaunchAllowed } from "./codex-goal-access-plan";
-import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { refreshCompletedCodexGoalResultArtifacts } from "./codex-goal-terminal-result-refresh";
+import {
+  terminalCodexGoalHandoffResultDetails,
+  materializeReconciledTerminalCodexGoalHandoff,
+} from "./codex-goal-terminal-handoff-materialization";
 import { listCodexGoalAccountStatuses } from "./codex-goal-account-status";
 import {
   doctorCodexGoal,
@@ -44,6 +54,7 @@ import {
   isCodexGoalStoppedProgressStatus,
   resolveCodexGoalWorkerLiveness,
   stopCodexGoalDirectProcess,
+  waitForCodexGoalProcessTreeTermination,
 } from "./application/codex-goal-process-liveness";
 import * as goalResult from "./application/codex-goal-visible-result";
 import {
@@ -76,6 +87,7 @@ export {
   isCodexGoalStoppedProgressStatus,
   resolveCodexGoalWorkerLiveness,
   stopCodexGoalDirectProcess,
+  waitForCodexGoalProcessTreeTermination,
 };
 export type {
   CodexGoalDirectStopCommand,
@@ -113,28 +125,18 @@ export type CodexGoalStatusInput = {
   readonly tmuxSession?: string;
   readonly logPath?: string;
   readonly progressPath?: string;
+  readonly runtimeEventsPath?: string;
   readonly accessBoundary?: AccessBoundary;
 };
 
-export type CodexGoalRecommendedAction =
-  | "start_worker"
-  | "wait_for_worker"
-  | "review_completed"
-  | "continue_after_capacity"
-  | "continue_after_timeout"
-  | "continue_after_provider_output"
-  | "ask_user"
-  | "inspect_dirty_workspace"
-  | "inspect_dirty_failure"
-  | "inspect_failure"
-  | "check_log_or_result";
-
 export type CodexGoalStatus = {
+  readonly nativeLifecycle?: CodexGoalNativeLifecycle;
   readonly tmuxAlive?: boolean;
   readonly resultPath?: string;
   readonly resultExists?: boolean;
   readonly resultStatus?: string;
   readonly resultReason?: string;
+  readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
   readonly resultUpdatedAt?: string;
   readonly workspaceExists?: boolean;
   readonly workspaceDirty?: boolean;
@@ -152,6 +154,11 @@ export type CodexGoalStatus = {
   readonly progressProcessAlive?: boolean;
   readonly progressCpuActive?: boolean;
   readonly progressCommand?: string;
+  readonly progressProcessStartedAt?: string;
+  readonly progressProcessTreeIdentities?: readonly {
+    readonly pid: number;
+    readonly startedAt: string;
+  }[];
   readonly appServerProcessAlive?: boolean;
   readonly appServerProcessPid?: number;
   readonly workloadProcessAlive?: boolean;
@@ -175,7 +182,12 @@ export type CodexGoalStatus = {
 export type CodexGoalRuntimeResultReconcileInput = {
   readonly config: Pick<
     CodexGoalRunConfig,
-    "jobRootDir" | "jobId" | "outputPath" | "taskId" | "workspacePath"
+    | "durableHandoffRootDir"
+    | "jobRootDir"
+    | "jobId"
+    | "outputPath"
+    | "taskId"
+    | "workspacePath"
   >;
   readonly status?: CodexGoalStatus;
   readonly reason?: string;
@@ -200,9 +212,7 @@ export type CodexGoalRuntimeResultReconcilerPort = {
   ): Promise<CodexGoalRuntimeResultReconcileResult>;
 };
 
-export class CodexGoalRuntimeResultReconciler
-  implements CodexGoalRuntimeResultReconcilerPort
-{
+export class CodexGoalRuntimeResultReconciler implements CodexGoalRuntimeResultReconcilerPort {
   async reconcile(
     input: CodexGoalRuntimeResultReconcileInput,
   ): Promise<CodexGoalRuntimeResultReconcileResult> {
@@ -213,10 +223,30 @@ export class CodexGoalRuntimeResultReconciler
 
 export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string {
   const config = input.config;
+  if (config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      (config.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") {
+    throw new Error("hosted_mimo_activation_closed");
+  }
   const args = buildCodexGoalForegroundArgv(input);
   const envAssignments: string[] = [
     `PATH=${shellQuote(codexChildPath(process.env))}`,
   ];
+  const mimoKeyFile = process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE;
+  if (config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoKeyFile) {
+    const mimoAccountsByName = new Map((config.mimoAccounts ?? [])
+      .map((account) => [account.name, account] as const));
+    if (config.accounts.some((account) =>
+      resolveCodexGoalMimoEnvVarName(account, mimoAccountsByName) !== codexMimoApiKeyEnvVarDefault)) {
+      throw new Error("codex_goal_mimo_key_file_account_mapping_unsupported");
+    }
+    if (!isAbsolute(mimoKeyFile)) throw new Error("codex_goal_mimo_key_file_invalid");
+    const file = lstatSync(mimoKeyFile);
+    if (!file.isFile() || file.nlink !== 1 || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0) {
+      throw new Error("codex_goal_mimo_key_file_invalid");
+    }
+    envAssignments.push(`${codexMimoApiKeyEnvVarDefault}=$(cat -- ${shellQuote(mimoKeyFile)})`);
+    envAssignments.push(`SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE=${shellQuote(mimoKeyFile)}`);
+  }
   for (
     const [key, value] of hostedGlobalScanGuardEnvironment(
       config.sourceEnv ?? process.env,
@@ -309,7 +339,8 @@ export async function startCodexGoalTmux(
   const command = buildCodexGoalTmuxCommand(input);
   const tmuxExecutable = await resolveCodexGoalTmuxExecutable();
   try {
-    await execFileAsync(tmuxExecutable, command.args);
+    // The tmux server outlives this runner: start it in the host namespace, not in ours.
+    await launchTmuxInHostNamespace(tmuxExecutable, command.args, execFileAsync);
   } catch (error) {
     throw new Error(tmuxCodexGoalStartFailedMessage(error));
   }
@@ -327,13 +358,33 @@ export async function prepareCodexGoalLaunchPaths(
   ];
   const dirs = new Set(
     paths
-      .filter((path): path is string => typeof path === "string" && path.length > 0)
+      .filter(
+        (path): path is string => typeof path === "string" && path.length > 0,
+      )
       .map((path) => (path === input.config.jobRootDir ? path : dirname(path))),
   );
 
-  await Promise.all(
-    [...dirs].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
-  );
+  await Promise.all([...dirs].map((dir) => {
+    assertHostedOrdinaryGoalExtent(input.config, [dir], input.registryRootDir);
+    return mkdir(dir, { recursive: true, mode: 0o700 });
+  }));
+  assertHostedOrdinaryGoalExtent(input.config, [input.logPath], input.registryRootDir);
+  const log = await open(input.logPath,
+    constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY |
+      constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    0o600);
+  try {
+    const info = await log.stat();
+    const currentUid = process.getuid?.();
+    if (!info.isFile() || info.nlink !== 1 ||
+        (currentUid !== undefined && info.uid !== currentUid)) {
+      throw new Error("codex_goal_log_file_invalid");
+    }
+    assertHostedOrdinaryGoalExtent(input.config, [input.logPath], input.registryRootDir);
+    await log.chmod(0o600);
+  } finally {
+    await log.close();
+  }
 }
 
 export function buildCodexGoalStopTmuxCommand(
@@ -362,17 +413,20 @@ export async function collectCodexGoalStatus(
   observation?: CodexGoalObservationContext,
 ): Promise<CodexGoalStatus> {
   const warnings: string[] = [];
-  const resultPath = input.resultPath ?? (input.jobRootDir && input.taskId
-    ? codexGoalOutputPath({
-        jobRootDir: input.jobRootDir,
-        taskId: input.taskId,
-      })
-    : undefined);
+  const resultPath =
+    input.resultPath ??
+    (input.jobRootDir && input.taskId
+      ? codexGoalOutputPath({
+          jobRootDir: input.jobRootDir,
+          taskId: input.taskId,
+        })
+      : undefined);
   const resultExists = resultPath ? await fileExists(resultPath) : undefined;
   const resultFile = resultPath ? await logFileStatus(resultPath) : {};
-  const result = resultPath && resultExists
-    ? await readCodexGoalResultSummary(resultPath)
-    : {};
+  const result =
+    resultPath && resultExists
+      ? await readCodexGoalResultSummary(resultPath)
+      : {};
   let tmuxAlive: boolean | undefined;
   if (input.tmuxSession) {
     const tmux = await inspectCodexGoalTmuxSession(input.tmuxSession);
@@ -382,33 +436,41 @@ export async function collectCodexGoalStatus(
   }
   const workspace = input.workspacePath
     ? await (observation
-      ? observation.workspaceStatus(input.workspacePath)
-      : gitWorkspaceStatus(input.workspacePath))
+        ? observation.workspaceStatus(input.workspacePath)
+        : gitWorkspaceStatus(input.workspacePath))
     : {};
   if (workspace.warning) warnings.push(workspace.warning);
-  const log = input.logPath ?? (input.jobRootDir && input.taskId
-    ? join(input.jobRootDir, `${input.taskId}.log`)
-    : undefined);
+  const log =
+    input.logPath ??
+    (input.jobRootDir && input.taskId
+      ? join(input.jobRootDir, `${input.taskId}.log`)
+      : undefined);
   const logStatus = log ? await logFileStatus(log) : {};
-  const progressPath = input.progressPath ?? (input.jobRootDir && input.taskId
-    ? codexGoalProgressPath({
-        jobRootDir: input.jobRootDir,
-        taskId: input.taskId,
-      })
-    : undefined);
-  const progress = progressPath ? await readCodexGoalProgressSummary(progressPath) : {};
-  const progressProcess = progress.pid === undefined
-    ? {}
-    : await (observation
-      ? observation.processSnapshot(progress.pid)
-      : inspectCodexGoalProcessSnapshot(progress.pid));
+  const progressPath =
+    input.progressPath ??
+    (input.jobRootDir && input.taskId
+      ? codexGoalProgressPath({
+          jobRootDir: input.jobRootDir,
+          taskId: input.taskId,
+        })
+      : undefined);
+  const progress = progressPath
+    ? await readCodexGoalProgressSummary(progressPath)
+    : {};
+  const progressProcess =
+    progress.pid === undefined
+      ? {}
+      : await (observation
+          ? observation.processSnapshot(progress.pid)
+          : inspectCodexGoalProcessSnapshot(progress.pid));
   if (progress.warning) warnings.push(progress.warning);
-  const currentAttemptWorkerAlive = goalResult.isCodexGoalAttemptProcess({
-    alive: progressProcess.alive,
-    command: progressProcess.supervisorCommand ?? progressProcess.command,
-    taskId: input.taskId,
-    progressPath,
-  }) || tmuxAlive === true;
+  const currentAttemptWorkerAlive =
+    goalResult.isCodexGoalAttemptProcess({
+      alive: progressProcess.alive,
+      command: progressProcess.supervisorCommand ?? progressProcess.command,
+      taskId: input.taskId,
+      progressPath,
+    }) || tmuxAlive === true;
   const visibleResult = goalResult.resolveVisibleCodexGoalResult({
     exists: resultExists,
     ...result,
@@ -417,12 +479,13 @@ export async function collectCodexGoalStatus(
     workerAlive: currentAttemptWorkerAlive,
   });
   if (visibleResult.warning) warnings.push(visibleResult.warning);
-  const runtimeEventsPath = input.jobRootDir && input.taskId
-    ? codexGoalRuntimeEventsPath({
-        jobRootDir: input.jobRootDir,
-        taskId: input.taskId,
-      })
-    : undefined;
+  const runtimeEventsPath = input.runtimeEventsPath ?? (
+    input.jobRootDir && input.taskId
+      ? codexGoalRuntimeEventsPath({
+          jobRootDir: input.jobRootDir,
+          taskId: input.taskId,
+        })
+      : undefined);
   const runtimeEventsStatus = runtimeEventsPath
     ? await logFileStatus(runtimeEventsPath)
     : {};
@@ -433,18 +496,33 @@ export async function collectCodexGoalStatus(
     input.accessBoundary === AccessBoundary.ProjectScopedControl &&
     visibleResult.exists === false
   ) {
-    warnings.push("project_scoped_control broker-only anchor; use project broker tools, not raw worker start");
+    warnings.push(
+      "project_scoped_control broker-only anchor; use project broker tools, not raw worker start",
+    );
   }
   if (lastRuntimeEvent.warning) warnings.push(lastRuntimeEvent.warning);
   return {
     ...(tmuxAlive === undefined ? {} : { tmuxAlive }),
     ...(resultPath === undefined ? {} : { resultPath }),
-    ...(visibleResult.exists === undefined ? {} : { resultExists: visibleResult.exists }),
-    ...(visibleResult.status === undefined ? {} : { resultStatus: visibleResult.status }),
-    ...(visibleResult.reason === undefined ? {} : { resultReason: visibleResult.reason }),
-    ...(visibleResult.updatedAt === undefined ? {} : { resultUpdatedAt: visibleResult.updatedAt }),
-    ...(workspace.exists === undefined ? {} : { workspaceExists: workspace.exists }),
-    ...(workspace.dirty === undefined ? {} : { workspaceDirty: workspace.dirty }),
+    ...(visibleResult.exists === undefined
+      ? {}
+      : { resultExists: visibleResult.exists }),
+    ...(visibleResult.status === undefined
+      ? {}
+      : { resultStatus: visibleResult.status }),
+    ...(visibleResult.reason === undefined
+      ? {}
+      : { resultReason: visibleResult.reason }),
+    ...(result.foregroundOutput === undefined ? {} : { foregroundOutput: result.foregroundOutput }),
+    ...(visibleResult.updatedAt === undefined
+      ? {}
+      : { resultUpdatedAt: visibleResult.updatedAt }),
+    ...(workspace.exists === undefined
+      ? {}
+      : { workspaceExists: workspace.exists }),
+    ...(workspace.dirty === undefined
+      ? {}
+      : { workspaceDirty: workspace.dirty }),
     ...(workspace.changedFiles === undefined
       ? {}
       : { changedFiles: workspace.changedFiles }),
@@ -457,8 +535,12 @@ export async function collectCodexGoalStatus(
       ? {}
       : { logByteLength: logStatus.byteLength }),
     ...(progressPath === undefined ? {} : { progressPath }),
-    ...(progress.exists === undefined ? {} : { progressExists: progress.exists }),
-    ...(progress.status === undefined ? {} : { progressStatus: progress.status }),
+    ...(progress.exists === undefined
+      ? {}
+      : { progressExists: progress.exists }),
+    ...(progress.status === undefined
+      ? {}
+      : { progressStatus: progress.status }),
     ...(progress.updatedAt === undefined
       ? {}
       : { progressUpdatedAt: progress.updatedAt }),
@@ -472,9 +554,21 @@ export async function collectCodexGoalStatus(
     ...(progressProcess.cpuActive === undefined
       ? {}
       : { progressCpuActive: progressProcess.cpuActive }),
-    ...(progressProcess.command === undefined
+    ...(progressProcess.supervisorCommand === undefined &&
+    progressProcess.command === undefined
       ? {}
-      : { progressCommand: progressProcess.command }),
+      : {
+          progressCommand:
+            progressProcess.supervisorCommand ?? progressProcess.command,
+        }),
+    ...(progressProcess.supervisorStartedAt === undefined
+      ? {}
+      : { progressProcessStartedAt: progressProcess.supervisorStartedAt }),
+    ...(progressProcess.processTreeIdentities === undefined
+      ? {}
+      : {
+          progressProcessTreeIdentities: progressProcess.processTreeIdentities,
+        }),
     ...(progressProcess.appServerAlive === undefined
       ? {}
       : { appServerProcessAlive: progressProcess.appServerAlive }),
@@ -523,9 +617,15 @@ export async function collectCodexGoalStatus(
       : { lastRuntimeEventLevel: lastRuntimeEvent.level }),
     recommendedAction: recommendCodexGoalAction({
       tmuxAlive: currentAttemptWorkerAlive,
-      ...(visibleResult.status === undefined ? {} : { resultStatus: visibleResult.status }),
-      ...(visibleResult.reason === undefined ? {} : { resultReason: visibleResult.reason }),
-      ...(progress.status === undefined ? {} : { progressStatus: progress.status }),
+      ...(visibleResult.status === undefined
+        ? {}
+        : { resultStatus: visibleResult.status }),
+      ...(visibleResult.reason === undefined
+        ? {}
+        : { resultReason: visibleResult.reason }),
+      ...(progress.status === undefined
+        ? {}
+        : { progressStatus: progress.status }),
       ...(input.accessBoundary === undefined
         ? {}
         : { accessBoundary: input.accessBoundary }),
@@ -535,13 +635,23 @@ export async function collectCodexGoalStatus(
       ...(workspace.dirty === undefined
         ? {}
         : { workspaceDirty: workspace.dirty }),
-      ...(visibleResult.exists === undefined ? {} : { resultExists: visibleResult.exists }),
+      ...(visibleResult.exists === undefined
+        ? {}
+        : { resultExists: visibleResult.exists }),
     }),
     warnings,
   };
 }
 
 export async function reconcileCodexGoalRuntimeResult(
+  input: CodexGoalRuntimeResultReconcileInput,
+): Promise<CodexGoalRuntimeResultReconcileResult> {
+  return new LocalTerminalCheckpointAdmission(input.config.jobRootDir).withWriter(
+    () => reconcileCodexGoalRuntimeResultAdmitted(input),
+  );
+}
+
+async function reconcileCodexGoalRuntimeResultAdmitted(
   input: CodexGoalRuntimeResultReconcileInput,
 ): Promise<CodexGoalRuntimeResultReconcileResult> {
   const status = input.status ?? await collectCodexGoalStatus({
@@ -577,20 +687,22 @@ export async function reconcileCodexGoalRuntimeResult(
     });
   }
 
-  const nonStrictExistingResult = status.resultExists === true && !existingStrictResult;
+  const nonStrictExistingResult =
+    status.resultExists === true && !existingStrictResult;
   const progressStaleForReconcile = staleProgress(status);
   const workerLiveness = resolveCodexGoalWorkerLiveness({
     status,
     progressStale: progressStaleForReconcile,
   });
-  const noOutputAgeMs = ageMsFromIso(status.logUpdatedAt) ?? status.progressHeartbeatAgeMs;
+  const noOutputAgeMs =
+    ageMsFromIso(status.logUpdatedAt) ?? status.progressHeartbeatAgeMs;
   const heartbeatOnlyNoOutputForReconcile = Boolean(
     input.heartbeatOnlyNoOutput ||
-      (status.resultExists === false &&
-        changedFiles.length === 0 &&
-        (status.logExists === false || status.logByteLength === 0) &&
-        noOutputAgeMs !== undefined &&
-        noOutputAgeMs > 10 * 60_000),
+    (status.resultExists === false &&
+      changedFiles.length === 0 &&
+      (status.logExists === false || status.logByteLength === 0) &&
+      noOutputAgeMs !== undefined &&
+      noOutputAgeMs > 10 * 60_000),
   );
   const classification = classifyRuntimeRunState({
     status: workerLiveness.alive ? "running" : "failed",
@@ -614,36 +726,42 @@ export async function reconcileCodexGoalRuntimeResult(
     classification,
     changedFilesCount: changedFiles.length,
   });
-  const reason = input.reason ??
+  const reason =
+    input.reason ??
     status.resultReason ??
     (nonStrictExistingResult ? "non_strict_runtime_result" : undefined) ??
     reasonForReconciledResult({
       classification,
-      ...(status.resultExists === undefined ? {} : { resultExists: status.resultExists }),
-      ...(status.resultStatus === undefined ? {} : { resultStatus: status.resultStatus }),
-      ...(status.tmuxAlive === undefined ? {} : { tmuxAlive: status.tmuxAlive }),
+      ...(status.resultExists === undefined
+        ? {}
+        : { resultExists: status.resultExists }),
+      ...(status.resultStatus === undefined
+        ? {}
+        : { resultStatus: status.resultStatus }),
+      ...(status.tmuxAlive === undefined
+        ? {}
+        : { tmuxAlive: status.tmuxAlive }),
     });
-  const artifacts = input.preservePatch === false || changedFiles.length === 0
-    ? []
-    : await preserveCodexGoalPatchArtifact({
-        workspacePath: input.config.workspacePath,
-        outputPath: join(input.config.jobRootDir, `${input.config.taskId}.preserved.patch`),
-      });
-  const baseCommit = await readLocalGitHeadCommit(input.config.workspacePath);
+  const { handoff, artifacts, changedPaths: exactChangedFiles, baseCommit } =
+    await materializeReconciledTerminalCodexGoalHandoff({
+      config: input.config,
+      changedFiles,
+    });
   const nextAction = actionForRuntimeState({
     status: runtimeStatus,
     classification,
     reason,
     changedFilesCount: changedFiles.length,
   });
-  const result = await createCodexGoalResultRecorder({ outputPath }).record({
+  const result = await createCodexGoalResultRecorder({ outputPath,
+    terminalCheckpointJobRootDir: input.config.jobRootDir }).record({
     status: runtimeStatus,
     provider: "codex",
     runId: input.config.jobId ?? input.config.taskId,
     taskId: input.config.taskId,
     classification,
     reason,
-    changedFiles,
+    changedFiles: exactChangedFiles,
     evidence: [
       "supervisor_reconciled_result",
       ...(status.resultExists === false ? ["latest_result_missing"] : []),
@@ -651,12 +769,16 @@ export async function reconcileCodexGoalRuntimeResult(
         ? [`latest_result_non_strict:${status.resultStatus ?? "unknown"}`]
         : []),
       ...(!workerLiveness.alive ? ["worker_not_alive"] : []),
-      ...(status.progressStatus ? [`progress_status:${status.progressStatus}`] : []),
+      ...(status.progressStatus
+        ? [`progress_status:${status.progressStatus}`]
+        : []),
       ...status.warnings.map((warning) => `status_warning:${warning}`),
       ...(status.logByteLength === undefined
         ? []
         : [`log_byte_length:${status.logByteLength}`]),
-      ...(heartbeatOnlyNoOutputForReconcile ? ["heartbeat_only_no_output"] : []),
+      ...(heartbeatOnlyNoOutputForReconcile
+        ? ["heartbeat_only_no_output"]
+        : []),
       ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
       ...(changedFiles.length > 0 && artifacts.length === 0
         ? ["patch_preserve_unavailable"]
@@ -668,6 +790,7 @@ export async function reconcileCodexGoalRuntimeResult(
     details: {
       source: "codex_goal_runtime_result_reconcile",
       ...(baseCommit === undefined ? {} : { baseCommit }),
+      ...terminalCodexGoalHandoffResultDetails(handoff),
     },
   });
   return {
@@ -687,58 +810,6 @@ export async function tailCodexGoalLog(
   return readBoundedCodexGoalLogTail(logPath, lines);
 }
 
-export function recommendCodexGoalAction(input: {
-  readonly tmuxAlive?: boolean;
-  readonly resultStatus?: string;
-  readonly resultReason?: string;
-  readonly progressStatus?: string;
-  readonly workspaceExists?: boolean;
-  readonly workspaceDirty?: boolean;
-  readonly resultExists?: boolean;
-  readonly accessBoundary?: AccessBoundary;
-}): CodexGoalRecommendedAction {
-  if (input.tmuxAlive) return "wait_for_worker";
-  if (input.workspaceExists === false) return "inspect_failure";
-  if (input.progressStatus === "maintenance_paused") return "start_worker";
-  if (input.resultStatus === "done" || input.resultStatus === "completed") {
-    return "review_completed";
-  }
-  if (input.resultStatus === "waiting_capacity") {
-    return "continue_after_capacity";
-  }
-  if (
-    input.accessBoundary === AccessBoundary.ProjectScopedControl &&
-    !input.resultExists
-  ) {
-    return "check_log_or_result";
-  }
-  if (!input.resultExists) {
-    return input.workspaceDirty ? "inspect_dirty_workspace" : "start_worker";
-  }
-  if (
-    input.resultReason === "quota_limited" ||
-    input.resultReason === "capacity_unavailable" ||
-    input.resultReason === "account_unavailable" ||
-    input.resultReason === "reconnect_required"
-  ) {
-    return "continue_after_capacity";
-  }
-  if (input.resultReason === "task_timeout") return "continue_after_timeout";
-  if (input.resultReason === "provider_output_invalid") {
-    return input.workspaceDirty
-      ? "inspect_dirty_failure"
-      : "continue_after_provider_output";
-  }
-  if (input.resultStatus === "blocked") return "ask_user";
-  if (
-    input.resultStatus === "partial" ||
-    input.resultStatus === "failed" ||
-    input.resultStatus === "aborted"
-  ) {
-    return input.workspaceDirty ? "inspect_dirty_failure" : "inspect_failure";
-  }
-  return "check_log_or_result";
-}
 
 function runtimeStatusForReconciledResult(input: {
   readonly classification: RunProgressClassification;
@@ -761,7 +832,10 @@ function reasonForReconciledResult(input: {
   readonly tmuxAlive?: boolean;
 }): string {
   if (input.resultExists === false) return "missing_runtime_result";
-  if (input.resultExists === true && !isStrictRuntimeResultStatus(input.resultStatus)) {
+  if (
+    input.resultExists === true &&
+    !isStrictRuntimeResultStatus(input.resultStatus)
+  ) {
     return "non_strict_runtime_result";
   }
   if (input.tmuxAlive === false) return "worker_stopped_before_result";
@@ -783,10 +857,12 @@ function ageMsFromIso(value: string | undefined): number | undefined {
 function isStrictRuntimeResultStatus(
   value: string | undefined,
 ): value is RuntimeResultStatus {
-  return value === "done" ||
+  return (
+    value === "done" ||
     value === "partial" ||
     value === "blocked" ||
-    value === "failed";
+    value === "failed"
+  );
 }
 
 async function readStrictRuntimeResultEnvelope(
@@ -795,9 +871,12 @@ async function readStrictRuntimeResultEnvelope(
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
     if (!isRecord(parsed)) return null;
-    if (!isStrictRuntimeResultStatus(
-      typeof parsed.status === "string" ? parsed.status : undefined,
-    )) return null;
+    if (
+      !isStrictRuntimeResultStatus(
+        typeof parsed.status === "string" ? parsed.status : undefined,
+      )
+    )
+      return null;
     if (!stringArrayField(parsed.changedFiles)) return null;
     if (!stringArrayField(parsed.evidence)) return null;
     if (!stringArrayField(parsed.blockers)) return null;
@@ -809,13 +888,16 @@ async function readStrictRuntimeResultEnvelope(
 }
 
 function stringArrayField(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
 }
 
 function isRuntimeRecommendedAction(
   value: unknown,
 ): value is RuntimeRecommendedAction {
-  return value === "wait" ||
+  return (
+    value === "wait" ||
     value === "wait_with_limit" ||
     value === "continue" ||
     value === "recover" ||
@@ -824,19 +906,8 @@ function isRuntimeRecommendedAction(
     value === "switch_account" ||
     value === "ask_user" ||
     value === "launch_next_slice" ||
-    value === "review_completed";
-}
-
-async function preserveCodexGoalPatchArtifact(input: {
-  readonly workspacePath: string;
-  readonly outputPath: string;
-}) {
-  try {
-    const artifact = await new GitPatchPreserver().preserve(input);
-    return artifact ? [artifact] : [];
-  } catch {
-    return [];
-  }
+    value === "review_completed"
+  );
 }
 
 export function shellQuote(value: string): string {

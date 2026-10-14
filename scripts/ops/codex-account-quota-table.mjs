@@ -14,20 +14,30 @@ if (args.help) {
   process.exit(0);
 }
 
+const codexHome = optionalExpandedPath(args.codexHome);
 const authRoot = expandHome(stringArg(args.authRoot) ?? defaultAuthRoot);
 const accounts = parseOptionalList(stringArg(args.accounts));
+if (codexHome && accounts?.length) {
+  throw new Error("--codex-home cannot be combined with --accounts");
+}
 const timezone = stringArg(args.timezone) ?? defaultTimezone;
 const minLaunchIntervalMs = numberArg(
   args.minLaunchIntervalMs,
   defaultMinLaunchIntervalMs,
 );
+const observationTimeoutMs = numberArg(args.timeoutMs, 60_000);
 const outputJson = Boolean(args.json);
 
 const observability = await importObservabilityPackage();
-const labels = await readLabels(authRoot);
-const accountSlots = accounts?.length
-  ? accounts
-  : await listAccountSlots(authRoot);
+const { observeCodexEffectiveQuota } = await import(
+  "../../dist/worker-codex/codex-effective-quota-probe.js"
+);
+const labels = codexHome ? {} : await readLabels(authRoot);
+const accountSlots = codexHome
+  ? ["current"]
+  : accounts?.length
+    ? accounts
+    : await listAccountSlots(authRoot);
 
 const throttle = new observability.InMemoryAppServerLaunchThrottle({
   minIntervalMs: minLaunchIntervalMs,
@@ -37,7 +47,10 @@ const reader = new observability.CodexAppServerQuotaReader({
     appServerLaunchThrottle: throttle,
   }),
 });
-const policy = new observability.ObservationPolicy();
+const observer = new observability.CodexAccountObserver({
+  appServerReader: reader,
+  authReader: new observability.CodexAuthJsonReader(),
+});
 const checkedAt = new Date();
 const rows = [];
 
@@ -46,11 +59,12 @@ for (const slot of accountSlots) {
     await readSlot({
       slot,
       authRoot,
+      codexHome,
       labels,
       timezone,
-      reader,
-      policy,
+      observer,
       observability,
+      observationTimeoutMs,
     }),
   );
 }
@@ -62,7 +76,7 @@ if (outputJson) {
     JSON.stringify(
       {
         checkedAt: formatAbsolute(checkedAt, timezone),
-        authRoot,
+        ...(codexHome ? { codexHome } : { authRoot }),
         rows: sortedRows,
       },
       null,
@@ -80,41 +94,48 @@ if (outputJson) {
 async function readSlot(input) {
   const label = input.labels[input.slot] ?? {};
   const letter = slotLetter(input.slot);
-  const fallbackEmail = label.email ?? label.displayName ?? "-";
+  const fallbackEmail =
+    label.email ??
+    label.displayName ??
+    (input.codexHome ? "current Codex account" : "-");
+  const resetCount = formatResetCount(label.resetCount);
+  const unpaid = formatUnpaid(label.unpaid);
   const account = {
     provider: input.observability.AgentProvider.Codex,
     slotId: input.slot,
-    authHome: join(input.authRoot, input.slot),
-    authJsonPath: join(input.authRoot, input.slot, "auth.json"),
+    authHome: input.codexHome ?? join(input.authRoot, input.slot),
+    authJsonPath: input.codexHome
+      ? join(input.codexHome, "auth.json")
+      : join(input.authRoot, input.slot, "auth.json"),
     ...(label.email ? { email: label.email } : {}),
     ...(label.displayName ? { displayName: label.displayName } : {}),
   };
 
   try {
     const now = new Date();
-    const read = await input.reader.readAuthAndQuota({
-      account,
-      now,
-      timeoutMs: 60_000,
+    const observation = await observeCodexEffectiveQuota({
+      observer: input.observer,
+      observation: { account, now, timeoutMs: input.observationTimeoutMs },
+      authRootDir: input.codexHome ? dirname(input.codexHome) : input.authRoot,
+      sourcePath: account.authJsonPath,
     });
-    const main = input.observability.codexMainQuotaSummary(read.quota);
-    const mainQuota = read.quota
-      ? {
-          ...read.quota,
-          windows: [main.fiveHour, main.sevenDay].filter(Boolean),
-        }
-      : null;
-    const decision = input.policy.decide({
-      auth: read.auth,
-      quota: mainQuota,
-    });
+    const main = input.observability.codexMainQuotaSummary(observation.quota);
+    const decision = observation.decision;
     const fiveFree = freePercent(main.fiveHour);
     const sevenFree = freePercent(main.sevenDay);
     return {
-      email: read.auth.identity?.email ?? fallbackEmail,
+      email: observation.auth.identity?.email ?? fallbackEmail,
       letter,
-      authStatus: read.auth.status,
-      status: decision.availability,
+      resetCount,
+      unpaid,
+      authStatus: observation.auth.status,
+      status: formatStatus({
+        availability: decision.availability,
+        reason: decision.reason,
+        authStatus: observation.auth.status,
+      }),
+      rawStatus: decision.availability,
+      reason: decision.reason ?? "-",
       available: decision.schedulerEligible,
       fiveHourFree: formatFree(fiveFree),
       fiveHourFreeNumber: fiveFree,
@@ -129,11 +150,22 @@ async function readSlot(input) {
     };
   } catch (error) {
     const relogin = isReloginError(error);
+    const quotaHeld = errorText(error) === "codex_account_quota_held";
+    const probeFailure = isQuotaProbeFailure(error);
     return {
       email: fallbackEmail,
       letter,
+      resetCount,
+      unpaid,
       authStatus: relogin ? "relogin_required" : "unknown",
-      status: relogin ? "relogin_required" : "unknown",
+      status: relogin
+        ? "❌ relogin required"
+        : quotaHeld ? "⏳ quota held"
+        : probeFailure
+          ? "⚠️ quota probe failed"
+          : "⚠️ inspect required",
+      rawStatus: relogin ? "relogin_required" : quotaHeld ? "quota_exhausted" : "unknown",
+      reason: relogin ? "refresh_token_revoked" : quotaHeld ? "quota_limited" : safeErrorReason(error),
       available: false,
       fiveHourFree: "-",
       fiveHourFreeNumber: null,
@@ -166,36 +198,50 @@ function numeric(value) {
 
 function markdownTable(rows) {
   const lines = [
-    "| Почта | Буква | Статус | 5h free | Reset 5h Kyiv | 7d free | Reset 7d Kyiv | Доступен |",
-    "|---|---:|---|---:|---|---:|---|---:|",
+    "| Почта | Буква | Resets | Статус | 5h free | Reset 5h Kyiv | 7d free | Reset 7d Kyiv | Доступен | Unpaid |",
+    "|---|---:|---:|---|---:|---|---:|---|---:|---|",
   ];
   for (const row of rows) {
     const cells = [
       row.email,
       row.letter,
+      row.resetCount,
       row.status,
       formatFreeBar(row.fiveHourFreeNumber),
       row.fiveHourReset,
       formatFreeBar(row.sevenDayFreeNumber),
       row.sevenDayReset,
       row.available ? "да" : "нет",
+      row.unpaid,
     ];
-    lines.push(`| ${cells.map((cell) => formatCell(cell, row.available)).join(" | ")} |`);
+    lines.push(
+      `| ${cells.map((cell) => formatCell(cell, row.available)).join(" | ")} |`,
+    );
   }
   return lines.join("\n");
 }
 
 function weeklyFreeSummary(rows) {
-  const known = rows.filter((row) => typeof row.sevenDayFreeNumber === "number");
+  const known = rows.filter(
+    (row) => typeof row.sevenDayFreeNumber === "number",
+  );
   const totalFree = known.reduce((sum, row) => sum + row.sevenDayFreeNumber, 0);
-  const totalCapacity = rows.length * 100;
-  const totalPercent = totalCapacity > 0 ? (totalFree / totalCapacity) * 100 : null;
+  const knownCapacity = known.length * 100;
+  const knownPercent =
+    knownCapacity > 0 ? (totalFree / knownCapacity) * 100 : null;
   const equivalents = totalFree / 100;
-  const capacity = rows.length;
-  return [
-    `7d free total: ${formatFreeBar(totalPercent)}`,
-    `(${formatPercent(totalFree)} / ${formatPercent(totalCapacity)}, ${formatNumber(equivalents)} of ${capacity} account-equivalents, known ${known.length}/${rows.length})`,
-  ].join(" ");
+  const lines = [
+    `Known 7d free: ${formatFreeBar(knownPercent)} (${formatPercent(totalFree)} / ${formatPercent(knownCapacity)}, ${formatNumber(equivalents)} of ${known.length} measured accounts)`,
+  ];
+  if (known.length < rows.length) {
+    const poolCapacity = rows.length * 100;
+    const lowerBoundPercent =
+      poolCapacity > 0 ? (totalFree / poolCapacity) * 100 : null;
+    lines.push(
+      `Pool lower bound: ${formatFreeBar(lowerBoundPercent)} (${known.length}/${rows.length} accounts measured; unknown/relogin accounts are not counted as real 0%)`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function formatCell(value, available) {
@@ -205,6 +251,24 @@ function formatCell(value, available) {
 
 function escapeMarkdownTable(value) {
   return value.replaceAll("|", "\\|");
+}
+
+function formatStatus(input) {
+  if (input.authStatus === "unavailable") return "❌ auth missing";
+  if (input.authStatus === "unknown") return "⚠️ auth unknown";
+  if (
+    input.availability === "unknown" &&
+    input.reason === "quota_observation_failed" &&
+    input.authStatus === "authenticated"
+  ) {
+    return "⚠️ quota probe failed, auth ready";
+  }
+  if (input.availability === "available") return "✅ available";
+  if (input.availability === "limited") return "⚠️ limited";
+  if (input.availability === "relogin_required") return "❌ relogin required";
+  if (input.availability === "auth_unknown") return "⚠️ auth unknown";
+  if (input.availability === "unhealthy") return "⚠️ unhealthy";
+  return "⚠️ inspect required";
 }
 
 async function importObservabilityPackage() {
@@ -217,7 +281,7 @@ async function importObservabilityPackage() {
     return await import(pathToFileURL(distPath).href);
   } catch (error) {
     throw new Error(
-      `failed to import built observability package. Run npm run build:packages first. ${errorText(error)}`,
+      `failed to import built observability package. Run npm run build first. ${errorText(error)}`,
     );
   }
 }
@@ -237,7 +301,9 @@ async function readLabels(authRoot) {
     "accounts.metadata.json",
   ]) {
     try {
-      const parsed = JSON.parse(await readFile(join(authRoot, fileName), "utf8"));
+      const parsed = JSON.parse(
+        await readFile(join(authRoot, fileName), "utf8"),
+      );
       return isRecord(parsed.accounts) ? parsed.accounts : parsed;
     } catch {}
   }
@@ -258,7 +324,8 @@ function parseArgs(argv) {
     }
     if (!item.startsWith("--")) throw new Error(`unexpected argument: ${item}`);
     const value = argv[index + 1];
-    if (!value || value.startsWith("--")) throw new Error(`missing value for ${item}`);
+    if (!value || value.startsWith("--"))
+      throw new Error(`missing value for ${item}`);
     parsed[toCamel(item.slice(2))] = value;
     index += 1;
   }
@@ -270,9 +337,11 @@ function printUsage() {
   npm run ops:codex-account-quota
   node scripts/ops/codex-account-quota-table.mjs \\
     [--auth-root ~/.cache/subscription-runtime/live-codex-auth] \\
+    [--codex-home ~/.codex] \\
     [--accounts account-d,account-i] \\
     [--timezone Europe/Kiev] \\
     [--min-launch-interval-ms 10000] \\
+    [--timeout-ms 60000] \\
     [--json]
 
 Prints a safe operator table for Codex account main quota windows only:
@@ -282,6 +351,11 @@ tokens or raw provider payloads.`);
 
 function stringArg(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalExpandedPath(value) {
+  const path = stringArg(value);
+  return path ? expandHome(path) : undefined;
 }
 
 function numberArg(value, fallback) {
@@ -325,6 +399,23 @@ function freePercent(window) {
 
 function formatFree(value) {
   return typeof value === "number" ? `${value}%` : "-";
+}
+
+function formatResetCount(value) {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) return String(Number(trimmed));
+  }
+  return "-";
+}
+
+function formatUnpaid(value) {
+  return typeof value === "string" && /^\d{2}\.\d{2}\.\d{4}$/.test(value.trim())
+    ? value.trim()
+    : "-";
 }
 
 function formatFreeBar(value) {
@@ -377,7 +468,9 @@ function dateParts(value, timezone) {
     minute: "2-digit",
     hour12: false,
   }).formatToParts(value);
-  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const byType = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
   return {
     year: byType.year,
     month: byType.month,
@@ -388,9 +481,19 @@ function dateParts(value, timezone) {
 }
 
 function isReloginError(error) {
-  return /token_invalidated|authentication token has been invalidated|refresh token was revoked|refresh_token_invalidated|token_revoked/i.test(
+  return /provider_session_invalid|token_invalidated|authentication token has been invalidated|refresh token was revoked|refresh_token_invalidated|token_revoked/i.test(
     errorText(error),
   );
+}
+
+function isQuotaProbeFailure(error) {
+  return /codex_app_server_quota_read_failed|json_rpc_request_timeout|timeout|app-server/i.test(
+    errorText(error),
+  );
+}
+
+function safeErrorReason(error) {
+  return errorText(error).replace(/\s+/g, " ").slice(0, 120);
 }
 
 function errorText(error) {

@@ -91,6 +91,7 @@ export function normalizeWorkerCapacitySnapshot(
 export function isResettableWorkerCapacity(
   capacity: WorkerCapacitySnapshot,
 ): boolean {
+  if (capacity.reason === "provider_session_invalid") return false;
   return (
     capacity.availability === "cooldown" ||
     capacity.availability === "quota_exhausted"
