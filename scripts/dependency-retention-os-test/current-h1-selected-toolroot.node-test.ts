@@ -109,7 +109,14 @@ test("selected ROOT preserves every object yield and live joins with one detache
     if(b?.subarray(0,8).equals(Buffer.from('{"rows":'))){planPasses++;planBytes+=b.length;}return encoding===undefined?update(data):update(data,encoding);}) as typeof h.update;return h;
   }) as typeof originalHash;
   mutableFs.fstatSync=((...args:Parameters<typeof originalStat>)=>{statCalls++;return originalStat(...args);}) as typeof originalStat;syncBuiltinESMExports();setImmediate(countYield);
-  const result=await writeOwnedSelectedToolrootData(f.input);assert.equal(planPasses,1,"old joinAll recanonicalizes the entire plan at each real checkpoint");
+  let result:Awaited<ReturnType<typeof writeOwnedSelectedToolrootData>>;
+  try { result=await writeOwnedSelectedToolrootData(f.input); }
+  catch(error) {
+   const facts=readSelectedPhysicalHoldFacts(error);
+   if(facts)process.stderr.write(JSON.stringify({test:"selected-root-positive-canonicalization",...facts})+"\n");
+   throw error;
+  }
+  assert.equal(planPasses,1,"old joinAll recanonicalizes the entire plan at each real checkpoint");
   assert.equal(planBytes,Buffer.byteLength(JSON.stringify({rows:[...f.input.rows].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),provenance:f.input.provenance})),"byte work is exactly one canonical plan body");
   const minimum=2+7+2+24+3+8;assert(yields>=minimum);assert(f.originalRejoins()-before>=minimum*2);assert(statCalls>=minimum*2);
   assert.equal(result.measurement.objects,37);assert.equal(result.fixedImageQualified,false);
