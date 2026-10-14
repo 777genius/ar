@@ -55,3 +55,18 @@ For same-job Status reconciliation and candidate-free Stop completion, follow [o
 An installed, authenticated host endpoint and enrolled project binding are required. A local route file alone does not enable execution. Contained clients require their own authorized transport channel; do not expose host SSH credentials or the shared MiMo key to a worker to obtain one.
 
 Fresh registered MiMo jobs use the trusted CodingV1/64 policy; callers cannot select profiles or turn budgets. A qualified deployment supports native code editing, shell execution and project builds/tests within the admitted workspace. This requires exact-artifact native sandbox and real model Coding E2E evidence, not a legacy eight-turn research Worker proof. Each enabled project/workstream must be enrolled by the trusted operator and have a matching local route; disabled routing stays disabled. Merely updating the local MCP or this route file cannot activate a host release.
+
+Hosted MiMo Create/refill accepts optional `ownedPaths` to narrow the enrolled
+admission contract for a fresh job. Use exact relative files or trailing-slash
+directories, at most 256 unique entries and 48 KiB of JSON; each path is at most
+4096 bytes; the complete wire request must fit the existing 64 KiB ingress budget. Every entry must be contained in an enrolled ownership boundary.
+Omitting the field inherits the enrolled ownership unchanged. Control operations
+reject it, and a same-job replay does not revise an existing admission.
+
+The host replaces only the contract's `ownedPaths`: exact enrolled source SHA,
+packets, mandatory documents/scripts/fixtures/checks, review kind and execution
+policy remain inherited. Runtime computes the resulting workKey and validates
+that contract before broker worktree/job creation. `candidate/*` is not glob
+syntax; `candidate/` is authorized only if covered by the enrolled contract.
+Paths outside enrollment require a separately reviewed enrollment. Ownership is
+an admission and output claim, not OS enforcement of per-file writes.
