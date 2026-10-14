@@ -6,7 +6,8 @@ import type { CodexGoalJobManifestInput } from "../codex-goal-jobs";
 // Only host UID/path/kernel/manager boundaries are mapped. Receipt schemas,
 // retained-owner verification and actual exclusive synced filesystem publication are real.
 const state = vi.hoisted(() => ({ fs: undefined as typeof import("node:fs") | undefined, root: "", unit: "", queue: false,
-  birth: false, native: false, foreign: false, race: false, incomplete: false, now: 0, expiry: "none" as "none" | "base-read" | "publication-read" }));
+  birth: false, native: false, foreign: false, race: false, incomplete: false, now: 0, expiry: "none" as "none" | "base-read" | "publication-read",
+  procReadError: "" as "" | "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "EIO", procDisappearance: "none" as "none" | "gone" | "reused" }));
 const R = "/srv/worker-state/mimo-projects/test-project/test-stream", W = "/srv/workers/mimo-projects/test-project/test-stream/workspaces/test-job";
 const boot = "3".repeat(32), invocation = "4".repeat(32), machine = "a".repeat(32), source = "b".repeat(40);
 function mapped(path: import("node:fs").PathLike): import("node:fs").PathLike {
@@ -27,7 +28,19 @@ function stats(value: import("node:fs").Stats, path?: string): import("node:fs")
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>(); state.fs = fs;
   return { ...fs, lstatSync: (p: string) => stats(fs.lstatSync(mapped(p)), p), fstatSync: (fd: number) => stats(fs.fstatSync(fd)),
-    readFileSync: (p: string | number, options?: unknown) => fs.readFileSync(typeof p === "number" ? p : mapped(p), options as BufferEncoding),
+    readFileSync: (p: string | number, options?: unknown) => {
+      if (p === "/proc/42/cgroup" && state.procReadError) {
+        if (state.procDisappearance !== "none") {
+          fs.rmSync(mapped("/proc/42"), { recursive: true });
+          if (state.procDisappearance === "reused") {
+            fs.mkdirSync(mapped("/proc/42"));
+            fs.writeFileSync(mapped("/proc/42/cgroup"), "0::/system.slice/TEST-reused.service\n");
+          }
+        }
+        throw Object.assign(Error("TEST process observation failed"), { code: state.procReadError });
+      }
+      return fs.readFileSync(typeof p === "number" ? p : mapped(p), options as BufferEncoding);
+    },
     realpathSync: (p: string) => typeof mapped(p) === "string" && mapped(p) !== p ? p : fs.realpathSync(p),
     readdirSync: (p: string, options?: unknown) => fs.readdirSync(mapped(p), options as { withFileTypes: true }),
     mkdirSync: (p: string, options?: unknown) => fs.mkdirSync(mapped(p), options as import("node:fs").MakeDirectoryOptions),
@@ -93,6 +106,7 @@ beforeEach(() => {
   state.root = state.fs!.mkdtempSync(join(tmpdir(), "TEST-interrupted-create-"));
   state.queue = state.birth = state.native = state.foreign = state.race = state.incomplete = false;
   state.now = 0; state.expiry = "none"; vi.spyOn(performance, "now").mockImplementation(() => state.now);
+  state.procReadError = ""; state.procDisappearance = "none";
   const digest = researchHash(JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))));
   const suffix = researchHash(digest + ":0"); state.unit = "subscription-runtime-mimo-project-" + suffix + ".service";
   const req = write(prefix + ".request.json", JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)))) + "\n");
@@ -131,6 +145,21 @@ it("publishes a canonical failed pair through the real store and leaves all part
   expect(state.fs!.statSync(mapped(prefix + ".result.json")).mode & 0o777).toBe(0o600);
   expect(state.fs!.readFileSync(mapped(stem + ".intent.json"), "utf8")).not.toContain("TEST secret");
   await expect(reconcileHostedMimoInterruptedCreate(planPath)).rejects.toThrow();
+});
+it.each(["ENOENT", "ESRCH"] as const)("settles after a %s census read only when the process is positively gone", async code => {
+  state.procReadError = code; state.procDisappearance = "gone";
+  await reconcileHostedMimoInterruptedCreate(planPath);
+  expect(state.fs!.existsSync(mapped("/proc/42"))).toBe(false);
+  expect(hostedMimoInterruptedCreateComplete(readHostedMimoProjectOperationOwner(parseMimoProjectBridgeRequest(request)))).toBe(true);
+});
+it.each([
+  ["ENOENT", "none"], ["ESRCH", "none"], ["ESRCH", "reused"],
+  ["EACCES", "gone"], ["EPERM", "gone"], ["EIO", "gone"],
+] as const)("refuses a %s census read with %s process evidence without publication", async (code, disappearance) => {
+  state.procReadError = code; state.procDisappearance = disappearance;
+  await expect(reconcileHostedMimoInterruptedCreate(planPath)).rejects.toThrow();
+  for (const path of [prefix + ".result.json", prefix + ".result.json.tmp", stem + ".intent.json", stem + ".receipt.json"])
+    expect(state.fs!.existsSync(mapped(path))).toBe(false);
 });
 it.each(["queued", "live", "birth", "native", "manifest", "registry-partial", "wrong-attempt", "Start", "foreign-owner", "owner-race"])("refuses unsafe interrupted Create %s without publishing failure", async fault => {
   if (fault === "queued") state.queue = true;
