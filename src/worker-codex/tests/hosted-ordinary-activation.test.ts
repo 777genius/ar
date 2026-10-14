@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   withHostedActivationFence,
   type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import * as commonFence from "../../provider-codex/app-server/adapters/hosted-activation-fence";
+import * as activationFence from "../../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedInstallationActivation, readHostedOrdinaryBirth } from "../hosted-installation-activation";
 
 // Real disposable no-follow reads and mkdir contention. Only private root paths,
@@ -136,6 +138,57 @@ describe("strict positive ordinary evidence", () => {
 });
 
 describe("private reader and shared synchronous fence", () => {
+  it("shares genuine capability, busy-error and synchronous lifetime across both import paths", () => {
+    for (const [owner, peer] of [[commonFence, activationFence], [activationFence, commonFence]] as const) {
+      let saved: HostedActivationFence | undefined;
+      let nestedRan = false;
+      const failure = new Error("callback failed");
+      expect(() => owner.withHostedActivationFence(fence => {
+        saved = fence;
+        owner.assertHostedActivationFence(fence);
+        peer.assertHostedActivationFence(fence);
+        expect(() => peer.assertHostedActivationFence({ held: true })).toThrow("common_fence_required");
+        let busy: unknown;
+        try { peer.withHostedActivationFence(() => { nestedRan = true; }); }
+        catch (error) { busy = error; }
+        expect(nestedRan).toBe(false);
+        expect(busy).toBeInstanceOf(Error);
+        expect(owner.isHostedActivationFenceBusy(busy)).toBe(true);
+        expect(peer.isHostedActivationFenceBusy(busy)).toBe(true);
+        expect(peer.isHostedActivationFenceBusy(new Error("hosted_activation_fence_busy"))).toBe(false);
+        // Failed nested acquisition must not invalidate the owner's held fence.
+        peer.assertHostedActivationFence(fence);
+        throw failure;
+      })).toThrow(failure);
+      expect(() => owner.assertHostedActivationFence(saved!)).toThrow("common_fence_required");
+      expect(() => peer.assertHostedActivationFence(saved!)).toThrow("common_fence_required");
+      expect(() => peer.withHostedActivationFence(fence => owner.assertHostedActivationFence(fence))).not.toThrow();
+      expect(() => owner.withHostedActivationFence(fence => {
+        saved = fence;
+        peer.assertHostedActivationFence(fence);
+        return Promise.resolve();
+      })).toThrow("synchronous_fence_required");
+      expect(() => peer.assertHostedActivationFence(saved!)).toThrow("common_fence_required");
+      expect(() => peer.withHostedActivationFence(fence => {
+        owner.assertHostedActivationFence(fence);
+        expect(() => owner.assertHostedActivationFence(saved!)).toThrow("common_fence_required");
+      })).not.toThrow();
+    }
+    // These readonly dependency records are part of the existing private grammar.
+    for (const [directory, leaf] of [["readonly-dependency-bindings", "12-34.json"],
+      ["readonly-dependency-starts", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json"]] as const) {
+      mkdirSync(join(fixture.root, directory), { mode: 0o700 });
+      const name = `${directory}/${leaf}`, bytes = put(name, Buffer.from("retained test bytes"));
+      expect(commonFence.readHostedActivationBytes(name)).toEqual(bytes);
+      expect(activationFence.readHostedActivationBytes(name)).toEqual(bytes);
+    }
+    for (const reader of [commonFence.readHostedActivationBytes, activationFence.readHostedActivationBytes]) {
+      expect(reader("readonly-epoch.json")).toBeNull();
+      for (const name of ["../host-installation.json", "/host-installation.json", "readonly-dependency-bindings/../host-installation.json"]) {
+        expect(() => reader(name)).toThrow("hosted_activation_evidence_invalid");
+      }
+    }
+  });
   it("does not require or create a managed epoch to hold the common mutex", () => {
     let saved: HostedActivationFence | undefined;
     withHostedActivationFence(fence => {

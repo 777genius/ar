@@ -1,3 +1,4 @@
+import { mimoProjectClientMaxRouteBytes } from "./mimo-project-client-route-limits";
 import { constants, closeSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -68,8 +69,8 @@ export function configureMimoProjectClientRoute(route: unknown, path = defaultPa
       return { ...result, changed: false };
     }
     const updated = parseMimoProjectClientRoutes({ schemaVersion: 1, routes: [...routes, selected] });
-    const bytes = JSON.stringify({ schemaVersion: 1, routes: updated }, null, 2) + "\n";
-    if (Buffer.byteLength(bytes) > 65536) throw new Error("mimo_project_client_config_invalid");
+    const bytes = JSON.stringify({ schemaVersion: 1, routes: updated }) + "\n";
+    if (Buffer.byteLength(bytes) > mimoProjectClientMaxRouteBytes) throw new Error("mimo_project_client_config_invalid");
     temporary = path + ".publication-" + randomUUID();
     const file = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try { temporaryIdentity = fstatSync(file); writeFileSync(file, bytes); fsyncSync(file); }

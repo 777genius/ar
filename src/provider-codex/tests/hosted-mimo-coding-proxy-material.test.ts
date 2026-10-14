@@ -11,23 +11,55 @@ import { createHostedMimoCodingProxyMaterial } from "../hosted-mimo-coding-proxy
 import { hostedMimoCodingBootstrapForFrame } from "../hosted-mimo-coding-bootstrap-registry";
 import { codexMimoApiKeyEnvVarDefault } from "../codex-model-backend";
 import { AppServerExecutionLifetime } from "../app-server/application/app-server-child-lifetime";
-afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); });
-function setup(digest: string) {
-  const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs: 60000, codexBinaryPath: "/opt/codex" };
-  const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 50000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
+afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+function setup(digest: string, taskTimeoutMs = 60000) {
+  const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs, codexBinaryPath: "/opt/codex" };
+  const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + taskTimeoutMs - 10000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
   const proxy = { capability: "TEST-cap-" + digest, baseUrl: "http://127.0.0.1:1234/v1", revoke: vi.fn(), close: vi.fn(async () => {}) };
   mocks.read.mockReturnValue(origin); mocks.current.mockImplementation(() => {}); mocks.credential.mockReturnValue("TEST-real-key-never-bootstrap"); mocks.start.mockResolvedValue(proxy);
   const input = { model: origin.model, lifetime, redactor: { registerSecret: vi.fn(), redact: (value: string) => value, assertNoKnownSecret: vi.fn() } };
   return { origin, lifetime, proxy, input };
 }
+it.each([60000, 1200000, 7200000])("uses MiMo's reasoning/output allowance without outliving the task (%i)", async timeout => {
+  const f = setup(`budget-${timeout}`, timeout);
+  const material = await createHostedMimoCodingProxyMaterial(f.input);
+  try {
+    const limits = mocks.start.mock.calls[0]![0].limits;
+    expect(limits.maxOutputTokens).toBe(131072);
+    expect(limits.deadlineMs).toBe(f.lifetime.deadlineEpochMs);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(timeout - 10000);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(3600000);
+    expect(limits.requestTimeoutMs).toBeGreaterThan(Math.min(timeout - 11000, 3599000));
+    expect(Number.isSafeInteger(limits.requestTimeoutMs)).toBe(true);
+    if (timeout === 7200000) expect(limits.requestTimeoutMs).toBe(3600000);
+    const bootstrap = hostedMimoCodingBootstrapForFrame({ command: "/opt/codex", cwd: "/workspace", env: {
+      CODEX_HOME: "/job/home/mimo-1/codex-home", [codexMimoApiKeyEnvVarDefault]: f.proxy.capability,
+    } })!;
+    const provider = bootstrap.configToml.split("[model_providers.mimo]\n")[1]!.split("\n[")[0]!;
+    expect(provider.match(/^stream_idle_timeout_ms = (\d+)$/gm)).toEqual([`stream_idle_timeout_ms = ${limits.requestTimeoutMs}`]);
+  } finally { await material?.close(); }
+});
 it("keeps key out of bootstrap, zeroes key bytes, binds executable/workspace and consumes start once", async () => {
-  const f = setup("a".repeat(64)); const material = await createHostedMimoCodingProxyMaterial(f.input);
+  const f = setup("a".repeat(64));
+  // The retained monotonic remainder is tighter than the captured epoch cut.
+  vi.spyOn(f.lifetime, "remainingMs").mockReturnValue(12345.875);
+  const epochRemaining = f.lifetime.deadlineEpochMs - Date.now();
+  const material = await createHostedMimoCodingProxyMaterial(f.input);
   try {
     expect(material?.capability).toBe(f.proxy.capability);
     expect(Buffer.from(mocks.start.mock.calls[0]![0].apiKey).every(byte => byte === 0)).toBe(true);
     const frame = { command: "/opt/codex", cwd: "/workspace", env: { CODEX_HOME: "/job/home/mimo-1/codex-home", [codexMimoApiKeyEnvVarDefault]: f.proxy.capability } };
     const bootstrap = hostedMimoCodingBootstrapForFrame(frame)!;
     expect(bootstrap.specSha256).toBe(f.origin.digest); expect(bootstrap.configToml).toContain(f.proxy.baseUrl);
+    const limits = mocks.start.mock.calls[0]![0].limits;
+    const provider = bootstrap.configToml.split("[model_providers.mimo]\n")[1]!.split("\n[")[0]!;
+    expect(provider.match(/^stream_idle_timeout_ms = (\d+)$/gm)).toEqual(["stream_idle_timeout_ms = 12345"]);
+    expect(limits.requestTimeoutMs).toBe(12345);
+    expect(Number.isSafeInteger(limits.requestTimeoutMs)).toBe(true);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(12345.875);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(epochRemaining);
+    expect(limits.deadlineMs).toBe(f.lifetime.deadlineEpochMs);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(f.origin.taskTimeoutMs);
     expect(bootstrap.configToml).toContain('[features.network_proxy]\nenabled = true\ndomains = { "*" = "allow" }');
     expect(bootstrap.configToml.match(/allow_local_binding = false/g)).toHaveLength(3);
     expect(bootstrap.configToml.match(/allow_upstream_proxy = false/g)).toHaveLength(3);
@@ -42,9 +74,22 @@ it("keeps key out of bootstrap, zeroes key bytes, binds executable/workspace and
   } finally { await material?.close(); }
   expect(f.proxy.close).toHaveBeenCalledOnce();
 });
+it("refuses a sub-millisecond request budget before credentials or proxy effects", async () => {
+  const f = setup("5".repeat(64));
+  vi.spyOn(f.lifetime, "remainingMs").mockReturnValue(0.875);
+  await expect(createHostedMimoCodingProxyMaterial(f.input)).rejects.toThrow("hosted_mimo_coding_proxy_binding_invalid");
+  expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+});
 it("denies stale independent authority before credential read", async () => {
   const f = setup("b".repeat(64)); mocks.current.mockImplementation(() => { throw new Error("stale"); });
   await expect(createHostedMimoCodingProxyMaterial(f.input)).rejects.toThrow("stale"); expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+});
+it("opens no credential or proxy when origin preparation exhausts the original lifetime", async () => {
+  const f = setup("preparation-expired");
+  mocks.current.mockImplementationOnce(() => f.lifetime.close(new Error("TEST-original-expired")));
+  await expect(createHostedMimoCodingProxyMaterial(f.input)).rejects.toThrow("TEST-original-expired");
+  expect(mocks.credential).not.toHaveBeenCalled();
+  expect(mocks.start).not.toHaveBeenCalled();
 });
 it("does not select Coding credentials for ordinary worker origins", async () => {
   const f = setup("c".repeat(64)); mocks.read.mockReturnValue(null);
@@ -75,7 +120,7 @@ it("joins concurrent listener closure instead of returning an early cleanup rece
 it("uses the already authenticated classified origin without a second full observation", async () => {
   const f = setup("f".repeat(64)); mocks.read.mockImplementation(() => { throw new Error("unexpected-second-full-read"); });
   const material = await createHostedMimoCodingProxyMaterial({ ...f.input, origin: f.origin as NonNullable<Parameters<typeof createHostedMimoCodingProxyMaterial>[0]["origin"]> });
-  try { expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.current).toHaveBeenCalledWith(f.origin); expect(mocks.credential).toHaveBeenCalledWith(f.origin, f.input.redactor); }
+  try { expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.current).toHaveBeenCalledWith(f.origin); expect(mocks.credential).toHaveBeenCalledWith(f.origin, f.input.redactor, expect.any(Function)); }
   finally { await material?.close(); }
 });
 

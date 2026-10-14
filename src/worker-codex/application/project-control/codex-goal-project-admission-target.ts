@@ -204,7 +204,8 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
     if (!start || !request || request.operation !== ProjectOperation.StartWorker ||
       request.jobId !== start.manifest.jobId || !request.workspacePath || !input.controllerJobId) return undefined;
     const diagnostic = start.dependencyPreflightDiagnostic;
-    const reservationPath = !start.continuation && !start.workspaceMode
+    const freshWorkspace = !start.continuation && (!start.workspaceMode || start.workspaceMode === "admitted_input_patch");
+    const reservationPath = freshWorkspace
       ? codexProjectReservedAccountReceiptArtifactPath({ manifest: start.manifest, reservedLaunch: start.launch }) : undefined;
     const reservationRoot = reservationPath !== undefined ? researchDirectoryIdentity(start.manifest.jobRootDir) : undefined;
     if (diagnostic !== undefined && !dependencyPreflightDiagnosticCurrent(diagnostic, start.manifest.jobRootDir, start.launch.config.workspacePath)) return undefined;
@@ -239,6 +240,13 @@ export async function admissionStartSelfIdentity(input: TargetInput & {
         !sameOwnedPaths(request.ownedPaths, start.continuation.ownedPaths)) return undefined;
       await assertProjectControlledRuntimeInPlaceContinuation({ manifest: stored,
         scope: input.scope, workspacePath: workspace, expected: start.continuation });
+    } else if (start.workspaceMode === "admitted_input_patch") {
+      // A prepared input patch has no progress PID before its first launch.
+      // Require the same artifact-free freshness proof as a clean first start;
+      // the bound receipt below independently verifies the exact staged patch.
+      if (item.workspaceDirty !== true || item.resultExists !== false ||
+        !["none", "dirty_workspace_without_worker"].includes(String(item.activeWriterRisk)) ||
+        !await neverLaunchedSelf(stored, start.launch, item, input.registryRootDir, diagnostic, reservationPath)) return undefined;
     } else if (start.workspaceMode) {
       // Exact continuation/input-patch modes keep their original receipt/HEAD
       // verifier, and still require a current observation of no live process.

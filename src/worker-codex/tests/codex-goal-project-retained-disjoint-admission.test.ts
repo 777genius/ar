@@ -433,7 +433,7 @@ async function creationFixture() {
   return { ...f, target, request, input, gate: codexProjectAdmissionGate(input) };
 }
 
-async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
+async function startFixture(options: { colocatedJobRoot?: boolean; admittedInputPatch?: boolean } = {}) {
   const f = await physicalFixture();
   const prepared = await createBuiltinFixture({ temporaryRoot: "/dev/shm" });
   if (!(await prospectiveAdmissionResourceBacking(prepared.workspacePath))?.length) {
@@ -445,30 +445,43 @@ async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
   const promptPath = join(jobRootDir, "prompt.md");
   await writeFile(promptPath, "bounded prompt\n");
   const manifestInput = { ...prepared.manifest, jobRootDir, promptPath,
+    ...(options.admittedInputPatch ? { tags: ["worker-role-producer"] } : {}),
     workspacePath: await realpath(prepared.workspacePath), authRootDir: join(f.root, "synthetic-auth"),
     projectAccessScope: { projectId: scope.projectId, isolatedWorkspaceRoot: await realpath(prepared.workspacePath),
       allowedAccountIds: ["account-a"], authRoot: join(f.root, "synthetic-auth") } };
+  let patchSha256: string | undefined;
+  if (options.admittedInputPatch) {
+    await mkdir(join(prepared.workspacePath, "src"), { recursive: true });
+    await writeFile(join(prepared.workspacePath, "src/example.ts"), "export const repaired = true;\n");
+    await exec("git", ["-C", prepared.workspacePath, "add", "src/example.ts"]);
+    const patch = await exec("git", ["-C", prepared.workspacePath, "diff", "--cached", "--binary", "HEAD", "--"]);
+    patchSha256 = createHash("sha256").update(patch.stdout).digest("hex");
+  }
   const plan = planProjectPreStartAdmission({
-    value: { mode: "serial-builtin", contract: declarativeContract(prepared.contract) },
+    value: { mode: "serial-builtin", contract: { ...declarativeContract(prepared.contract),
+      ...(patchSha256 ? { inputPatchHash: patchSha256, reviewKind: "remediation" } : {}) } },
     confirmed: true, scope, manifest: manifestInput,
   })!;
   const createManifest = { ...manifestInput, projectPreStartAdmission: plan.descriptor };
   // Native refill order: prepare outside registry, broker publishes only its
   // registration, then the stored-manifest validator refreshes the receipt.
-  await prepareProjectPreStartAdmission({ plan, manifest: createManifest, scope });
+  await prepareProjectPreStartAdmission({ plan, manifest: createManifest, scope,
+    ...(patchSha256 ? { verifiedInputPatchArtifactSha256: patchSha256, verifiedInputPatchStagedSha256: patchSha256 } : {}) });
   const broker = createCodexProjectControlBroker({ controller: { ...f.manifest, jobId: "project-controller" },
     registryRootDir: f.input.registryRootDir, scope, admissionDeps: f.input.deps, createManifest });
   await broker.createJob({ jobId: createManifest.jobId, workspacePath: createManifest.workspacePath,
     ownedPaths: ["src/example.ts"] });
   const manifest = await readCodexGoalJob({ registryRootDir: f.input.registryRootDir, jobId: createManifest.jobId });
-  await validateProjectRefillPreStartAdmission({ registryRootDir: f.input.registryRootDir,
+  const workspaceMode = await validateProjectRefillPreStartAdmission({ registryRootDir: f.input.registryRootDir,
     controllerJobId: "project-controller", manifest, scope,
-    expectedCanonicalWorkspacePath: manifest.workspacePath, admittedInputPatch: false });
+    expectedCanonicalWorkspacePath: manifest.workspacePath, admittedInputPatch: options.admittedInputPatch ?? false });
+  if (options.admittedInputPatch && workspaceMode !== "admitted_input_patch") throw new Error("expected fresh admitted input patch");
   const summary = (await listCodexGoalJobs({ registryRootDir: f.input.registryRootDir })).find((row) => row.jobId === manifest.jobId)!;
   f.summaries.push(summary);
-  const item = { ...f.item, jobId: manifest.jobId, workspacePath: manifest.workspacePath,
-    workspaceDirty: false, resultExists: false, resultStatus: undefined,
-    activeWriterRisk: "none", changedFiles: [] };
+  const item: Record<string, unknown> = { ...f.item, jobId: manifest.jobId, workspacePath: manifest.workspacePath,
+    workspaceDirty: options.admittedInputPatch ?? false, resultExists: false, resultStatus: undefined,
+    activeWriterRisk: options.admittedInputPatch ? "dirty_workspace_without_worker" : "none",
+    activeWriterRiskReasons: options.admittedInputPatch ? ["dirty_workspace_without_worker"] : [], changedFiles: [] };
   f.items.push(item);
   // The prepared self remains Unknown to the synthetic owner port. Only its
   // actual manifest/receipt/artifact shape and held lease establish the target.
@@ -482,8 +495,11 @@ async function startFixture(options: { colocatedJobRoot?: boolean } = {}) {
       return withValidatedProjectWorkspaceLock({ locks, scope, requestedWorkspacePath: manifest.workspacePath,
         owner: `project-refill-start:project-controller:${manifest.jobId}`,
         effect: async (workspaceLease) => {
-          const binding = { start: { manifest, launch, workspaceLease } };
-          return effect(codexProjectAdmissionGate({ ...input, targetBinding: binding }), binding);
+          const binding = { start: { manifest, launch, workspaceLease,
+            ...(options.admittedInputPatch ? { workspaceMode: "admitted_input_patch" as const } : {}) } };
+          return effect(codexProjectAdmissionGate({ ...input, targetBinding: binding,
+            ...(options.admittedInputPatch ? { admittedInputPatchTarget: { jobId: manifest.jobId,
+              workspacePath: workspaceLease.canonicalWorkspacePath } } : {}) }), binding);
         },
       });
     },
@@ -631,6 +647,40 @@ describe("operation-bound retained output admission", () => {
     await f.withLease(async (gate) => {
       await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
       await writeFile(f.launch.config.progressPath!, JSON.stringify({ status: "running", pid: 999999 }));
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    });
+  });
+
+  it.skipIf(process.platform !== "linux")("admits the first launch of a verified patch without a progress PID", async () => {
+    const f = await startFixture({ admittedInputPatch: true });
+    Object.assign(f.item, { progressProcessAlive: undefined, progressExists: false, workerSupervisorKind: "none" });
+    await f.withLease(async gate => {
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+      for (const observation of [{ progressProcessAlive: true }, { workerProcessAlive: true },
+        { progressStatus: "running" }, { workerSupervisorKind: "unknown" }]) {
+        const before = { ...f.item };
+        Object.assign(f.item, observation);
+        await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+        for (const key of Object.keys(observation)) delete f.item[key];
+        Object.assign(f.item, before);
+      }
+      await writeFile(join(f.manifest.workspacePath, "src/example.ts"), "changed after admission\n");
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    });
+  });
+
+  it.skipIf(process.platform !== "linux").each(["progress", "log", "state"] as const)("fences an admitted patch with prior %s artifacts despite missing progress PID", async artifact => {
+    const f = await startFixture({ admittedInputPatch: true });
+    Object.assign(f.item, { progressProcessAlive: undefined, progressExists: false, workerSupervisorKind: "none" });
+    await f.withLease(async gate => {
+      await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+      if (artifact === "progress") await writeFile(f.launch.config.progressPath!, "{}\n");
+      if (artifact === "log") await writeFile(f.launch.logPath!, "prior attempt\n");
+      if (artifact === "state") {
+        const root = f.launch.config.stateRootDir ?? join(f.manifest.jobRootDir, "state");
+        await mkdir(root, { recursive: true });
+        await writeFile(join(root, "attempt.json"), "{}\n");
+      }
       await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
     });
   });
