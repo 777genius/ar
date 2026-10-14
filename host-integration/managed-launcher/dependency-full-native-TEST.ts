@@ -38,7 +38,7 @@ const fullPositiveTestCohort = Object.freeze([
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
 import { spawn,spawnSync,type ChildProcess } from "node:child_process";
-import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readSync, writeSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
+import { constants, closeSync, fsyncSync, mkdirSync, writeFileSync, fstatSync, statSync, lstatSync, openSync, readSync, writeSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats, type BigIntStats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
 import {performance} from "node:perf_hooks";
@@ -148,13 +148,35 @@ export function fullReviewData(value:unknown) {
   return review;
 }
 enum RootContext {Launcher="Launcher",Parent="Parent",Installer="Installer"}
-const positiveInstallationStage="/srv/workers/public-intake/"+fullNativeJob+"/full-positive-installation";
+const positiveInstallationStage="/srv/workers/public-intake/"+fullNativeJob+"/full-positive-installation-ptrace-v1";
 const positiveInstallationReview=positiveInstallationStage+"/review.json";
+/** Finite observed installer metadata, never capability or file authority. */
+export function fullPositiveInstallerCapabilitiesData(raw:unknown):void {
+  check(typeof raw==="string" && Buffer.byteLength(raw)<=65536);
+  for(const key of ["CapEff","CapPrm","CapBnd","CapInh","CapAmb","NoNewPrivs"]){
+    const rows=[...raw.matchAll(new RegExp("^"+key+":\\s+([a-f0-9]+)$","gm"))];
+    check(rows.length===1);
+    const value=rows[0]![1]!;
+    check(key==="NoNewPrivs"?value==="1":/^[a-f0-9]{16}$/.test(value) && BigInt("0x"+value)===(key==="CapInh" || key==="CapAmb"?0n:0x80000n));
+  }
+}
+const positiveLargeDependency="node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude";
+const positiveLargeDependencySha="73975167f0108693cf6fd6614994781657ebb8456ebef5d247458734abfb3916";
+/** DATA size/mode selection only. The installer supplies its private source
+ * prefix and independently hashes the retained original leaf before effects. */
+export function fullPositiveSnapshotLeafData(relative:string,size:number,mode:number):string|null {
+  check(Number.isSafeInteger(size) && size>=0 && Number.isSafeInteger(mode));
+  if(relative===positiveLargeDependency){
+    check(size===334715184 && size<=512*1024*1024 && mode===0o100755);return positiveLargeDependencySha;
+  }
+  check(size<=128*1024*1024);return null;
+}
 function initialRoot(context:RootContext){
   const limits=readFileSync("/proc/self/limits","utf8");check(Buffer.byteLength(limits)<=16384);
   const rows=[...limits.matchAll(/^Max open files\s+([0-9]+)\s+([0-9]+)\s+files$/gm)];
   check(rows.length===1 && BigInt(rows[0]![1]!)>=65536n && BigInt(rows[0]![2]!)>=65536n);
   check(process.platform==="linux" && process.arch==="x64" && process.getuid?.()===0 && process.geteuid?.()===0);
+  if(context===RootContext.Installer)fullPositiveInstallerCapabilitiesData(readFileSync("/proc/self/status","utf8"));
   check(readFileSync("/proc/self/uid_map","utf8").trim().split(/\s+/).join(" ")==="0 0 4294967295");
   for(const ns of ["user","pid","mnt","cgroup","net","uts","ipc"]){if(ns==="mnt" && context===RootContext.Parent)continue;check(readlinkSync(`/proc/self/ns/${ns}`)===readlinkSync(`/proc/1/ns/${ns}`));}
   check(readlinkSync("/proc/self/ns/user")==="user:[4026531837]" && readlinkSync("/proc/self/ns/pid")==="pid:[4026531836]");
@@ -528,15 +550,38 @@ export async function installFullPositiveTestAndComposeRequest(){
     const targetParents=[fullNativeInputBase,dirname(reviewRoot),"/run","/opt"].map(path=>c.pins.hold(path,true));
     const deadline=performance.now()+120000;let count=0,total=0;
     type Copy=FullPositiveCopyRow;
+    const largeLeaves:{fd:number;parent:number;path:string;identity:string;mount:string}[]=[];
+    const largeIdentity=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
+    function validateLargeLeaves():void {
+      for(const leaf of largeLeaves){
+        check(performance.now()<deadline && largeIdentity(fstatSync(leaf.fd,{bigint:true}))===leaf.identity
+          && largeIdentity(lstatSync(leaf.path,{bigint:true}))===leaf.identity && ancestorMountId(leaf.fd)===leaf.mount
+          && ancestorMountId(leaf.parent)===leaf.mount);
+        const fresh=openSync(leaf.path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+        try{check(largeIdentity(fstatSync(fresh,{bigint:true}))===leaf.identity && ancestorMountId(fresh)===leaf.mount);}finally{closeSync(fresh);}
+      }
+    }
     function snapshot(path:string,name:string):Copy {
       check(performance.now()<deadline && ++count<=100000);const stat=lstatSync(path);check(!stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && !(stat.mode&0o022));
-      const directory=stat.isDirectory();check(directory || (stat.isFile() && stat.nlink===1 && stat.size<=128*1024*1024));
+      const directory=stat.isDirectory();check(directory || (stat.isFile() && stat.nlink===1));
+      const largeSha=directory?null:fullPositiveSnapshotLeafData(path.startsWith(c.tuple.source+"/")?path.slice(c.tuple.source.length+1):"",stat.size,stat.mode);
       const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(directory?constants.O_DIRECTORY:0));retained.push(fd);check(identity(fstatSync(fd))===identity(stat));
       if(!directory){total+=stat.size;check(total<=1024*1024*1024);}
+      if(largeSha!==null){
+        // The original acquire already retains this entire source ancestry.
+        // Neither a caller path nor the DATA selector can create this custody.
+        const parent=c.pins.hold(dirname(path),true),named=`/proc/self/fd/${parent}/${basename(path)}`,original=fstatSync(fd,{bigint:true});
+        check(original.isFile() && original.uid===0n && original.gid===0n && original.nlink===1n && original.mode===0o100755n && original.size===334715184n);
+        largeLeaves.push({fd,parent,path:named,identity:largeIdentity(original),mount:ancestorMountId(fd)});validateLargeLeaves();
+        const buffer=Buffer.alloc(1024*1024),sha256=createHash("sha256");let offset=0;
+        while(offset<stat.size){check(performance.now()<deadline);const n=readSync(fd,buffer,0,Math.min(buffer.length,stat.size-offset),offset);check(n>0);sha256.update(buffer.subarray(0,n));offset+=n;}
+        check(readSync(fd,buffer,0,1,offset)===0 && sha256.digest("hex")===largeSha);validateLargeLeaves();
+      }
       const children=directory?readdirSync(`/proc/self/fd/${fd}`).sort().map(child=>{check(/^[A-Za-z0-9_@+.-]+$/.test(child) && child!=="." && child!==".." && !/^(?:auth\.json(?:[.-].*)?|credentials?\.json(?:[.-].*)?|.*\.pem|\.env.*)$/i.test(child));return snapshot(path+"/"+child,child);}):null;
       return {sourceFd:fd,sourceIdentity:identity(stat),name,mode:stat.mode&0o777,children};
     }
     const tree=snapshot(c.tuple.root,c.tuple.sourceSha);
+    check(largeLeaves.length===1);validateLargeLeaves();
     function cohortDirectory(path:string,name:string,children:readonly Copy[]):Copy {
       check(performance.now()<deadline && ++count<=100000);const stat=lstatSync(path);
       check(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && !(stat.mode&0o022));
@@ -548,12 +593,12 @@ export async function installFullPositiveTestAndComposeRequest(){
     const cohort=cohortDirectory(c.tuple.source+"/host-integration",basename(integration),directories);
     const catalog=snapshot(positiveInstallationStage+"/public-installation.json","public-installation.json");
     const outer=snapshot(positiveInstallationStage+"/outer-review","TEST-full-outer-review"),publicReview=snapshot(positiveInstallationStage+"/public-review","TEST-real-codex-public-review");
-    c.validate();recordAbsent();for(const row of [tree,cohort,catalog,outer,publicReview])check(identity(fstatSync(row.sourceFd))===row.sourceIdentity);
+    c.validate();validateLargeLeaves();recordAbsent();for(const row of [tree,cohort,catalog,outer,publicReview])check(identity(fstatSync(row.sourceFd))===row.sourceIdentity);
     // Only this explicit installer operation loads the copier, from the exact
     // staged source already retained and catalog-joined by acquire(). Schema1
     // launcher/parent admission keeps its original runtime import closure.
     const copyModule=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-positive-copy-TEST.js").href);
-    check(typeof copyModule.copyFullPositiveInstallationRow==="function");c.validate();
+    check(typeof copyModule.copyFullPositiveInstallationRow==="function");c.validate();validateLargeLeaves();
     const copy=(row:Copy,parent:number)=>copyModule.copyFullPositiveInstallationRow(row,parent,deadline);
     c.pins.prepareOutputRoot();
     copy(tree,targetParents[0]!);copy(cohort,targetParents[3]!);copy(outer,targetParents[2]!);copy(publicReview,targetParents[2]!);
@@ -561,13 +606,13 @@ export async function installFullPositiveTestAndComposeRequest(){
     const reviewDir=openSync(reviewRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);retained.push(reviewDir);copy(catalog,reviewDir);
     // Publish the same strict protected FULL review only after complete
     // original source/tool/native proof; historical ancestry guards stay exact.
-    c.validate();const bytes=Buffer.from(JSON.stringify(c.tuple.review)+"\n");
+    c.validate();validateLargeLeaves();const bytes=Buffer.from(JSON.stringify(c.tuple.review)+"\n");
     const fd=openSync(`/proc/self/fd/${reviewDir}/review.json`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(reviewDir);
     // Import the delivered original module; request DATA is produced only by
     // its complete normal acquire path, never assembled here by the installer.
     const installed=await import(pathToFileURL(integration+"/managed-launcher/dependency-full-native-TEST.mjs").href);
     check(typeof installed.fullManagedStartRequest==="function");const request:unknown=installed.fullManagedStartRequest();
-    c.validate();return request;
+    c.validate();validateLargeLeaves();return request;
   }finally{for(const fd of retained.reverse())closeSync(fd);c.h1Catalog?.close();c.h1LibcPins.close();c.pins.close();}
 }
 function fullSourceSnapshot(c:ReturnType<typeof acquire>):string{const ordinary=c.pins.sourceSnapshot(),libc=c.h1LibcPins.snapshot(),shared=c.h1LibcPins.sharedSnapshot();

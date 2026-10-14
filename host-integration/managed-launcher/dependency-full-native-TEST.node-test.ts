@@ -3,7 +3,30 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import {constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
+import {fullPositiveInstallerCapabilitiesData,fullPositiveSnapshotLeafData,constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
+// Red if unrelated capabilities or a different large leaf gain admission.
+// These parsers supply no namespace proof, descriptor custody or ROOT grant.
+test("installer capability DATA requires only ptrace, no inherited/ambient capabilities, and NNP",()=>{
+  const rows={CapEff:"0000000000080000",CapPrm:"0000000000080000",CapBnd:"0000000000080000",CapInh:"0000000000000000",CapAmb:"0000000000000000",NoNewPrivs:"1"};
+  const status=(values:Record<string,string>)=>Object.entries(values).map(([key,value])=>key+":\t"+value+"\n").join("");
+  assert.doesNotThrow(()=>fullPositiveInstallerCapabilitiesData(status(rows)));
+  for(const key of ["CapEff","CapPrm","CapBnd"]){
+    for(const value of ["0000000000000000","0000000000280000","000001ffffffffff"])assert.throws(()=>fullPositiveInstallerCapabilitiesData(status({...rows,[key]:value})));
+  }
+  for(const changed of [{CapInh:"0000000000080000"},{CapAmb:"0000000000080000"},{NoNewPrivs:"0"}])assert.throws(()=>fullPositiveInstallerCapabilitiesData(status({...rows,...changed})));
+  assert.throws(()=>fullPositiveInstallerCapabilitiesData(status(rows)+"CapBnd:\t0000000000080000\n"));
+  assert.throws(()=>fullPositiveInstallerCapabilitiesData(status(rows).replace("CapEff:\t0000000000080000\n","")));
+});
+test("installer snapshot large-leaf DATA is exact measured Claude bytes only",()=>{
+  const leaf="node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude";
+  assert.equal(fullPositiveSnapshotLeafData(leaf,334715184,0o100755),"73975167f0108693cf6fd6614994781657ebb8456ebef5d247458734abfb3916");
+  assert.equal(fullPositiveSnapshotLeafData("node_modules/other/file",128*1024**2,0o100644),null);
+  for(const path of ["toolchain/bin/claude","dist/claude","node_modules/other/claude",leaf+".changed","../"+leaf,"source/"+leaf])assert.throws(()=>fullPositiveSnapshotLeafData(path,334715184,0o100755));
+  for(const size of [128*1024**2,334715183,334715185,512*1024**2,512*1024**2+1])assert.throws(()=>fullPositiveSnapshotLeafData(leaf,size,0o100755));
+  for(const mode of [0o100644,0o100775,0o104755,0o120755])assert.throws(()=>fullPositiveSnapshotLeafData(leaf,334715184,mode));
+  assert.throws(()=>fullPositiveSnapshotLeafData("node_modules/other/file",128*1024**2+1,0o100644));
+  assert.throws(()=>fullPositiveSnapshotLeafData(leaf,NaN,0o100755));
+});
 test("counterfeit accessors and proxies cannot execute during request capture",()=>{
   let calls=0;const getter={get jobId(){calls++;return "TEST-dependency-full-native-20261007-r1";}};
   const proxy=new Proxy({}, {get(){calls++;throw Error("TEST-private");},getPrototypeOf(){calls++;throw Error("TEST-private");},ownKeys(){calls++;throw Error("TEST-private");},getOwnPropertyDescriptor(){calls++;throw Error("TEST-private");}});
