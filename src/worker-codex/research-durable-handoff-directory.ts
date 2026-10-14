@@ -94,7 +94,7 @@ export function researchDurableDirectories(inputs: readonly Readonly<{ path: str
       assertDirectoryCustody(input.path, input.privateLeaf ?? true);
       descriptors.set(input.path, openSync("/proc/1/root" + input.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
     }
-    const table = coldMountTable(), rows = researchMountWitnessRows();
+    const table = coldMountTable(), rows = researchMountWitnessRows(inputs.length === 2 ? inputs.map(input => input.path) : undefined);
     const result = inputs.map(input => durableDirectory(input.path, input.privateLeaf ?? true, { table, rows, descriptors }));
     const final = coldMountTable().trimEnd().split("\n");
     for (const witness of result) {
