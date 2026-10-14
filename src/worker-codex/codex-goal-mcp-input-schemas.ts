@@ -1,6 +1,6 @@
 import { workerLaunchNarrowOwnedPathsSchema } from "./application/project-control/worker-launch-spec";
 import { z } from "zod";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexReasoningEfforts } from "@vioxen/subscription-runtime/provider-codex";
 import { codexGoalObjectiveMaxChars } from "./codex-goal-jobs";
 import { CODEX_GOAL_EXECUTION_ENGINE_SCHEMA } from "./codex-goal-mcp-decision-contracts";
 import {
@@ -53,7 +53,7 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     progressHeartbeatMs: z.number().int().positive().optional(),
     codexBinaryPath: z.string().optional(),
     model: z.string().optional(),
-    reasoningEffort: z.string().optional(),
+    reasoningEffort: z.enum(codexReasoningEfforts).optional(),
     serviceTier: z.string().optional(),
     executionEngine: CODEX_GOAL_EXECUTION_ENGINE_SCHEMA.optional(),
     checkpointRequired: z.boolean().optional(),

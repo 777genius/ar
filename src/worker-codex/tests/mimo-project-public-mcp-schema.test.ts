@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { goalInputSchema } from "../codex-goal-mcp-input-schemas";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { MimoProjectBridgeRequest } from "../hosted-mimo-project-bridge-contract";
@@ -18,6 +20,14 @@ vi.mock("../mimo-project-bridge-client", async importOriginal => {
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 beforeEach(() => { peer.requests = []; });
 describe("public MCP schema for remote MiMo project workers", () => {
+  it("preserves all existing Codex reasoning efforts for both model backends", () => {
+    const schema = z.object(goalInputSchema());
+    for (const modelBackend of ["openai-chatgpt", "xiaomi-mimo-token-plan"]) {
+      for (const reasoningEffort of ["none", "minimal", "low", "medium", "high", "xhigh"])
+        expect(schema.parse({ modelBackend, reasoningEffort })).toMatchObject({ modelBackend, reasoningEffort });
+      expect(schema.safeParse({ modelBackend, reasoningEffort: "unsupported" }).success).toBe(false);
+    }
+  });
   it("accepts real create/refill/start/status/stop calls without local paths or controller IDs", async () => {
     const server = createCodexGoalMcpServer();
     const client = new Client({ name: "test-remote-mimo-schema", version: "1" });
@@ -60,6 +70,13 @@ describe("public MCP schema for remote MiMo project workers", () => {
         expect(localNarrowing.content).toEqual([expect.objectContaining({ text: expect.stringContaining("mimo_project_remote_backend_conflict") })]);
         expect(peer.requests).toHaveLength(5);
       }
+      for (const name of ["codex_goal_project_create_job", "codex_goal_project_refill_worker"]) {
+        expect(inventory.tools.find(tool => tool.name === name)?.inputSchema.properties?.reasoningEffort)
+          .toMatchObject({ enum: ["none", "minimal", "low", "medium", "high", "xhigh"] });
+        const invalid = await client.callTool({ name, arguments: { ...identity, reasoningEffort: "unsupported", promptBody: "TEST",
+          sourceCommit: "b".repeat(40), expectedSourceCommit: "b".repeat(40), confirmCreate: true, confirmRefill: true } });
+        expect(invalid.isError).toBe(true); expect(peer.requests).toHaveLength(5);
+      }
       const rejected = await client.callTool({ name: "codex_goal_project_create_job", arguments: {
         ...identity, thinking: true, reasoningEffort: "none", promptBody: "TEST", sourceCommit: "b".repeat(40), confirmCreate: true,
       } });
@@ -67,15 +84,21 @@ describe("public MCP schema for remote MiMo project workers", () => {
       expect(peer.requests).toHaveLength(5);
       for (const name of ["codex_goal_project_start", "codex_goal_status_by_id", "codex_goal_project_stop"]) {
         const metadata = inventory.tools.find(tool => tool.name === name);
-        expect(metadata?.inputSchema.properties?.thinking).toMatchObject({ type: "boolean" });
+        expect(metadata?.inputSchema.properties).not.toHaveProperty("thinking");
+        expect(metadata?.inputSchema.properties).not.toHaveProperty("ownedPaths");
+        expect(metadata?.inputSchema.additionalProperties).toBe(false);
+        const confirmation = name === "codex_goal_project_start" ? { confirmStart: true }
+          : name === "codex_goal_project_stop" ? { confirmStop: true } : {};
         const narrowedControl = await client.callTool({ name, arguments: {
-          ...identity, ownedPaths: ["src/feature/one.ts"], confirmStart: true, confirmStop: true,
+          ...identity, ...confirmation, ownedPaths: ["src/feature/one.ts"],
         } });
         expect(narrowedControl.isError).toBe(true);
         expect(peer.requests).toHaveLength(5);
+        const reasoningControl = await client.callTool({ name, arguments: { ...identity, ...confirmation, reasoningEffort: "high" } });
+        expect(reasoningControl.isError).toBe(true); expect(peer.requests).toHaveLength(5);
         for (const thinking of [false, true]) {
           const control = await client.callTool({ name, arguments: {
-            ...identity, thinking, confirmStart: true, confirmStop: true,
+            ...identity, ...confirmation, thinking,
           } });
           expect(control.isError).toBe(true);
           expect(peer.requests).toHaveLength(5);

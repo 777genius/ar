@@ -61,7 +61,9 @@ admission contract for a fresh job. Use exact relative files or trailing-slash
 directories, at most 256 unique entries and 48 KiB of JSON; each path is at most
 4096 bytes; the complete wire request must fit the existing 64 KiB ingress budget. Every entry must be contained in an enrolled ownership boundary.
 Omitting the field inherits the enrolled ownership unchanged. Control operations
-reject it, and a same-job replay does not revise an existing admission.
+reject it, and a same-job replay does not revise an existing admission. Start,
+Status and Stop expose no `thinking`, `reasoningEffort` or `ownedPaths` inputs;
+supplying them is rejected before transport rather than silently discarded.
 
 The host replaces only the contract's `ownedPaths`: exact enrolled source SHA,
 packets, mandatory documents/scripts/fixtures/checks, review kind and execution
