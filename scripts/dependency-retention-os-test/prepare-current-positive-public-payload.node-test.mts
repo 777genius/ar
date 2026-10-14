@@ -1,5 +1,5 @@
 import test from "node:test";import assert from "node:assert/strict";import * as fs from "node:fs";import {tmpdir} from "node:os";import {join} from "node:path";import {createHash} from "node:crypto";import {spawnSync} from "node:child_process";
-import {producePositivePublicPayload,parseSelection,PublicProducerOutputMode,type Selection,type SelectionV2} from "./prepare-current-positive-public-payload.mts";
+import {producePositivePublicPayload,parseSelection,PublicProducerOutputMode,type Selection,type SelectionV2,type SelectionV3} from "./prepare-current-positive-public-payload.mts";
 import {parseManifest,readRegularFrames,Role,type FrameRow} from "./stage-current-positive-public.mts";
 const sha=(b:Uint8Array)=>createHash("sha256").update(b).digest("hex");const json=(v:unknown)=>Buffer.from(JSON.stringify(v)+"\n");
 function fixture(){const temp=fs.realpathSync(fs.mkdtempSync(join(tmpdir(),"positive-public-producer-test-"))),source=join(temp,"source"),deps=join(temp,"deps"),node=join(temp,"node"),output=join(temp,"output");for(const d of [source,deps,node])fs.mkdirSync(d);
@@ -69,3 +69,39 @@ test("local V1 and V2 cannot open arbitrary srv output; managed needs runtime wo
  const s=emittedSelection(f);await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),"/srv/TEST-unowned-public-output"),/local_output/);
  s.outputMode=PublicProducerOutputMode.ManagedTestWorkspace;await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),/managed_output_(?:context|workspace)/);assert.equal(fs.existsSync(f.output),false);
  }finally{f.close();}});
+
+function installedSelection(f:ReturnType<typeof fixture>):SelectionV3 {
+ const emitted=emittedSelection(f),deps=join(f.source,"node_modules");fs.renameSync(f.deps,deps);
+ f.put(f.source,".gitignore","node_modules/\n");f.git(["add",".gitignore"]);f.git(["commit","-qm","ignore installed PUBLIC dependency fixture"]);
+ f.put(deps,"typescript/bin/tsc","PUBLIC compiler fixture bytes; never executed\n",0o755);fs.mkdirSync(join(deps,".bin"));fs.symlinkSync("../typescript/bin/tsc",join(deps,".bin/tsc"));
+ fs.mkdirSync(join(deps,"@vioxen"));fs.symlinkSync("../../packages/agent-account-observability",join(deps,"@vioxen/agent-account-observability"));
+ const rows=[...emitted.rows,f.row(deps,"typescript/bin/tsc",Role.Dependency,"node_modules/typescript/bin/tsc")];rows.sort((a,b)=>`${a.role===Role.Toolchain?"toolchain":"source"}/${a.path}`<`${b.role===Role.Toolchain?"toolchain":"source"}/${b.path}`?-1:1);
+ return {...emitted,schemaVersion:3,kind:"FULL_POSITIVE_PUBLIC_INPUT_SELECTION_V3",dependencyRoot:deps,sourceSha:f.git(["rev-parse","HEAD"]),sourceTree:f.git(["rev-parse","HEAD^{tree}"]),rows,links:[...emitted.links,{path:"source/node_modules/.bin/tsc",target:"../typescript/bin/tsc",projection:"omit"},{path:"source/node_modules/@vioxen/agent-account-observability",target:"../../packages/agent-account-observability",projection:"workspace_package"}]};
+}
+test("V3 installed known links are metadata only and every regular byte remains framed",async()=>{const f=fixture();try{
+ const s=installedSelection(f);await producePositivePublicPayload(f.path,saveSelection(f,s),f.output);
+ const bytes=fs.readFileSync(join(f.output,"preparation-input.json")),m=parseManifest(bytes,sha(bytes)),frames=new Map<string,Buffer[]>();
+ const fd=fs.openSync(join(f.output,"public-files.payload"),"r");try{for await(const part of readRegularFrames(fd,m.rows,()=>{})){const chunks=frames.get(part.row.path)??[];chunks.push(part.bytes);frames.set(part.row.path,chunks);}}finally{fs.closeSync(fd);}
+ assert.equal(frames.size,s.rows.length);assert.equal(frames.has("node_modules/.bin/tsc"),false);
+ assert.equal(Buffer.concat(frames.get("node_modules/typescript/bin/tsc")!).toString(),"PUBLIC compiler fixture bytes; never executed\n");
+ assert(Buffer.concat(frames.get("node_modules/@vioxen/agent-account-observability/dist/index.js")!).equals(fs.readFileSync(join(f.source,"packages/agent-account-observability/dist/index.js"))));
+ assert.equal(fs.readlinkSync(join(s.dependencyRoot,"@vioxen/agent-account-observability")),"../../packages/agent-account-observability");assert.equal(f.git(["status","--porcelain","--untracked-files=all"]),"");
+ const receipt=JSON.parse(fs.readFileSync(join(f.output,"producer-receipt.json"),"utf8"));assert.equal(receipt.selectionVersion,3);assert.equal(receipt.nativeQualified,"UNPROVEN");for(const name of fs.readdirSync(f.output))assert(fs.lstatSync(join(f.output,name)).isFile());
+ }finally{f.close();}});
+test("V3 selection is closed and installed root cannot select an external dependency tree",()=>{const f=fixture();try{
+ const s=installedSelection(f),parse=(v:unknown)=>{const b=json(v);return parseSelection(b,sha(b));};assert.equal(parse(s).schemaVersion,3);
+ for(const value of [{...s,dependencyRoot:f.deps},{...s,dependencyRoot:s.dependencyRoot+"/.."},{...s,unknown:true},{...s,schemaVersion:4},{...s,kind:"FULL_POSITIVE_PUBLIC_INPUT_SELECTION_V2"}])assert.throws(()=>parse(value));
+ }finally{f.close();}});
+test("V3 unknown source link or invented manifest link refuses without following it",async()=>{
+ for(const declared of [false,true]){const f=fixture();try{const s=installedSelection(f);fs.symlinkSync("/PUBLIC-NONEXISTENT-TARGET",join(s.dependencyRoot,"unknown-alias"));if(declared)s.links.push({path:"source/node_modules/unknown-alias",target:"/PUBLIC-NONEXISTENT-TARGET",projection:"omit"});
+  await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),declared?/exact_known_links/:/decoded_census/);assert.equal(fs.existsSync(f.output),false);
+ }finally{f.close();}}
+});
+test("V3 changed or missing declared installed links refuse before output",async()=>{
+ for(const mutation of ["target","missing","regular"] as const){const f=fixture();try{const s=installedSelection(f),path=join(s.dependencyRoot,".bin/tsc");fs.unlinkSync(path);if(mutation==="target")fs.symlinkSync("../typescript/bin/missing",path);else if(mutation==="regular")fs.writeFileSync(path,"PUBLIC competitor\n");
+  await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),/source_link_(?:changed|missing|shape)/);assert.equal(fs.existsSync(f.output),false);
+ }finally{f.close();}}
+});
+test("V3 same-target link inode replacement after initial census denies receipt",async()=>{const f=fixture();let changed=false;const s=installedSelection(f),path=join(s.dependencyRoot,".bin/tsc"),timer=setInterval(()=>{if(!changed&&fs.existsSync(join(f.output,"public-files.payload"))){changed=true;fs.renameSync(path,join(f.temp,"retained-original-link"));fs.symlinkSync("../typescript/bin/tsc",path);}},1);try{
+ await assert.rejects(producePositivePublicPayload(f.path,saveSelection(f,s),f.output),/source_link_changed/);assert.equal(changed,true);assert.equal(fs.existsSync(join(f.output,"producer-receipt.json")),false);
+ }finally{clearInterval(timer);f.close();}});
