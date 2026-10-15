@@ -11,11 +11,18 @@ import { assertHostedTestEgressDirectory } from "../hosted-test-egress-files";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 import { buildCodexGoalOverviewItem } from "../application/codex-goal-overview-item";
+import { createCodexGoalObservationContext } from "../application/codex-goal-observation-context";
+import { mapCodexGoalObservations } from "../application/codex-goal-bounded-map";
+import { codexProjectAdmissionDeps } from "../codex-goal-mcp-project-control-deps";
+import { gitWorkspaceStatus } from "../codex-goal-status-files";
+import { sdkSourceWorkspaceStatusReader } from "./sdk-source-workspace-status";
 import { sdkControllerStatusDiagnostic } from "./sdk-controller-status-diagnostic";
 import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
+// SOURCE-only physical SDK composition with an injected factual status reader.
+// Actual ROOT/Git/physical checks do not qualify Native admission or execution.
 // Select genuine root before the shared synthetic OS fixture installs mocks.
-(process.getuid?.() === 0 ? describe : describe.skip)("original public SDK physical N3 workspace", () => {
+(process.getuid?.() === 0 ? describe : describe.skip)("Source public SDK physical workspace with injected status observation", () => {
   it("creates a standalone repository through public controller/refill and passes the unchanged physical gate", async () => {
     // The owned root container provides the original canonical TEST parent.
     // This configuration selects standalone metadata; admission stays unchanged.
@@ -27,6 +34,7 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
     const job = host.root, jobId = basename(job), workspace = join(job, "workspace"), registry = join(job, "state/registry"), auth = join(job, "auth"),
       source = join(job, "source"), controllerId = "TEST-standalone-controller", controllerRoot = join(job, "controller");
     const server = createCodexGoalMcpServer(), client = new Client({ name: "Source-physical-SDK", version: "1" }), [ct, st] = InMemoryTransport.createLinkedPair();
+    let restoreSourceObservation: (() => void) | undefined;
     try {
       await mkdir(source, { mode: 0o700 }); await git(source, ["init", "--template=", "--initial-branch=main"]);
       for (const kind of ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"]) expect((await gitStdout(source, ["var", kind])).trim()).toMatch(/^iliya <iliyazelenkog@gmail.com> /);
@@ -56,6 +64,17 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
         const stat = await lstat(projected); expect(stat.isDirectory()).toBe(true); expect(stat.uid).toBe(0); expect(stat.mode & 0o777).toBe(0o700);
         expect(await readdir(projected)).toEqual([]);
       }
+      // Physical Source setup is not the Native allocation issuer. Its existing
+      // observation port supplies actual bounded Git facts, never a clean DTO
+      // or a forged hosted purpose. All public admission/SDK checks remain real.
+      await expect(gitWorkspaceStatus(source)).rejects.toThrow("hosted_dependency_current_origin_unresolved");
+      const readWorkspaceStatus = await sdkSourceWorkspaceStatusReader(job);
+      const observeSource = () => createCodexGoalObservationContext({ readWorkspaceStatus });
+      const sourceObservation = vi.spyOn(codexProjectAdmissionDeps, "buildOverviewItems").mockImplementation(inputs => {
+        const observation = observeSource();
+        return mapCodexGoalObservations(inputs, input => buildCodexGoalOverviewItem({ ...input, observation }));
+      });
+      restoreSourceObservation = () => sourceObservation.mockRestore();
       await writeFakeAuth(auth, "account-a", { lastRefresh: new Date().toISOString() });
       await Promise.all([server.connect(st), client.connect(ct)]);
       const scope = { projectId: "Source-standalone-sdk", workspaceRoots: [source], worktreeRoots: [workspace], registryRoot: registry, authRoot: auth,
@@ -71,14 +90,14 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
         executionEngine: "app-server-goal", durableHandoffRootDir: join(job, "durable-handoffs"), prewarmOnStart: false, startWorker: false, confirmRefill: true };
       const result = await callToolJson(client, "codex_goal_project_refill_worker", request);
       if (result.ok !== true) {
-        const overview = await buildCodexGoalOverviewItem({ registryRootDir: registry, jobId: controllerId, staleAfterMs: 60000, tailLines: 0 });
+        const overview = await buildCodexGoalOverviewItem({ registryRootDir: registry, jobId: controllerId, staleAfterMs: 60000, tailLines: 0, observation: observeSource() });
         // Keep raw overview failures private: they may contain paths or provider
         // payloads. Only these exact finite codes can enter the TEST report.
         const codes = ["protected_job_birth_authority_invalid", "protected_job_birth_publication_busy",
           "hosted_ordinary_writer_extent_invalid", "safe_execution_workspace_locked"];
         const message = typeof overview.safeMessage === "string" ? overview.safeMessage : "";
         const observation = { phase: "first_refill", controllerOverviewReadable: overview.ok === true,
-          controllerStatusDiagnostic: overview.ok === true ? undefined : await sdkControllerStatusDiagnostic(registry, controllerId),
+          controllerStatusDiagnostic: overview.ok === true ? undefined : await sdkControllerStatusDiagnostic(registry, controllerId, observeSource()),
           controllerErrorCode: codes.find(code => message === code || message.startsWith(code + ":")) ?? "unclassified" };
         throw new Error(JSON.stringify(observation));
       }
@@ -119,6 +138,8 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
       }
       expect(second.ok, secondDiagnostic).toBe(true);
       const retained = await lstat(workspace, { bigint: true }); expect([retained.dev, retained.ino]).toEqual([identity.dev, identity.ino]);
-    } finally { await client.close(); await server.close(); vi.unstubAllEnvs(); }
+      // The Source reader has not enrolled either canonical path for production IO.
+      await expect(gitWorkspaceStatus(workspace)).rejects.toThrow("hosted_dependency_current_origin_unresolved");
+    } finally { restoreSourceObservation?.(); await client.close(); await server.close(); vi.unstubAllEnvs(); }
   }, 30000);
 });

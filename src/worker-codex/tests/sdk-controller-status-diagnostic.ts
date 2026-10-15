@@ -1,6 +1,7 @@
 import { readCodexGoalJob, codexGoalJobToArgs } from "../codex-goal-jobs";
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { collectRegisteredCodexGoalJobStatus } from "../application/codex-goal-registered-job-observation";
+import type { CodexGoalObservationContext } from "../application/codex-goal-observation-context";
 
 enum Stage { Manifest = "manifest", Launch = "launch", Status = "registered_status", Complete = "status_complete" }
 enum Failure { Error = "error", Type = "type_error", Range = "range_error", Other = "other" }
@@ -14,14 +15,14 @@ enum StatusFailure {
 }
 /** TEST-only bounded re-observation. Report finite facts, never raw failure
  * text, stack, paths, provider payloads or auth contents. No launch is made. */
-export async function sdkControllerStatusDiagnostic(registryRootDir: string, jobId: string) {
+export async function sdkControllerStatusDiagnostic(registryRootDir: string, jobId: string, observation?: CodexGoalObservationContext) {
   let stage = Stage.Manifest;
   try {
     const manifest = await readCodexGoalJob({ registryRootDir, jobId });
     stage = Stage.Launch;
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
     stage = Stage.Status;
-    await collectRegisteredCodexGoalJobStatus({ registryRootDir, launch });
+    await collectRegisteredCodexGoalJobStatus({ registryRootDir, launch, ...(observation ? { observation } : {}) });
     return { stage: Stage.Complete };
   } catch (error) {
     const failure = error instanceof TypeError ? Failure.Type : error instanceof RangeError ? Failure.Range : error instanceof Error ? Failure.Error : Failure.Other;
