@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { publicTestCa, publicTestLeaf, host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
@@ -5,7 +6,7 @@ import { createServer, type Server } from "node:net";
 import { dirname, join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchCurrentStart } from "../research-launch-admission";
-import { researchHash, researchPublish, researchRead } from "../research-launch-files";
+import { researchHash, researchPublish, researchRead, researchDirectoryIdentity } from "../research-launch-files";
 import { prepareResearchProviderRoot, assertResearchProviderRoot, observeResearchProviderWritableRoots, researchProviderRootFailureCheck, ResearchProviderRootCheck, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
@@ -18,8 +19,10 @@ import { HostedMimoProfile } from "../../provider-codex/hosted-mimo-profile";
 import { researchMimoCodingPublicMaterials } from "../research-mimo-coding-public-materials";
 import { researchMimoCodingBootstrapPaths, researchMimoCodingCodexHome, researchMimoCodingHome } from "../research-mimo-coding-root";
 
-beforeEach(setupResearchFixture);
-afterEach(cleanupResearchFixture);
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const allocationParent = (await vi.importActual<typeof import("node:fs")>("node:fs")).realpathSync(tmpdir());
+beforeEach(() => { Object.defineProperty(process, "platform", { ...platform, value: "linux" }); setupResearchFixture({ allocationParent }); });
+afterEach(() => { try { cleanupResearchFixture(); } finally { Object.defineProperty(process, "platform", platform); } });
 const unit = "subscription-runtime-research-provider-11111111-1111-1111-1111-111111111111.service";
 function captured(job = request().jobRootDir, runtime = "/TEST-artifact", externalCodex = false) {
   const req = { ...request(), jobRootDir: job, workspacePath: "/TEST-project/disjoint-workspace", promptPath: join(job, "prompt.md"),
@@ -149,6 +152,31 @@ function codingCaptured() {
 }
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
+  it.each([undefined, HostedMimoProfile.Worker, HostedMimoProfile.CodingV1])("keeps finite provider memory and ownership for profile %s", profile => {
+    const f = profile === HostedMimoProfile.CodingV1 ? codingCaptured() : captured();
+    if (profile === HostedMimoProfile.Worker) {
+      const selected = parseResearchOperatorRequest({ ...f.spec.request, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+        model: codexMimoDefaultModel, accounts: ["account-q"], maxAccountCycles: 1, prewarmOnStart: false });
+      f.spec = { ...f.spec, request: selected };
+      researchPublish(join(f.directory, "spec.json"), f.spec);
+      researchPublish(join(f.directory, "providers", unit + ".json"), { schemaVersion: 1, unit, runtimeUnit: f.spec.unit,
+        specSha256: researchHash(researchRead(join(f.directory, "spec.json"))), description: `subscription-runtime-research-provider:${f.spec.startId}:${unit}` });
+      researchPublish(join(f.directory, "mimo-home.json"), { schemaVersion: 1,
+        specSha256: researchHash(researchRead(join(f.directory, "spec.json"))), identity: researchDirectoryIdentity(f.home) });
+    }
+    const root = prepareResearchProviderRoot(f.spec, unit, f.home);
+    const launch = trustedResearchProviderLaunch(f.spec, unit, f.home, root);
+    expect(launch.args.filter(arg => arg.startsWith("--property=MemoryHigh="))).toEqual([
+      profile === HostedMimoProfile.CodingV1 ? "--property=MemoryHigh=4G" : "--property=MemoryHigh=2G"]);
+    for (const property of ["MemoryMax=4G", "MemorySwapMax=0", "CPUQuota=200%", "TasksMax=512", "KillMode=control-group",
+      "Delegate=no", "Restart=no", "NoNewPrivileges=yes", "AmbientCapabilities=", "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE",
+      `BindsTo=${f.spec.unit}`, `PartOf=${f.spec.unit}`, `After=${f.spec.unit}`]) expect(launch.args).toContain("--property=" + property);
+    expect(launch.command).toBe("/usr/bin/systemd-run");
+    expect(launch.args.slice(launch.args.indexOf("--") + 1, launch.args.indexOf("--") + 5)).toEqual(["/usr/bin/unshare", "--mount", "--propagation", "private"]);
+    expect(() => trustedResearchProviderLaunch({ ...f.spec, memoryHigh: "8G" } as ResearchStartSpec, unit, f.home, root)).toThrow("hosted_research_launch_denied");
+    expect(() => parseResearchOperatorRequest({ ...f.spec.request, memoryHigh: "8G" })).toThrow("hosted_research_launch_denied");
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   it("prepares CodingV1 with only its pinned workspace writable and a finite launcher closure", () => {
     const f = codingCaptured(), observed = observingHost();
     const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);

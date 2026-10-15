@@ -622,6 +622,8 @@ describe("codex goal runner", () => {
     });
 
     expect(options).toMatchObject({ runtimeHomeRootDir: join(root, "home"), stateRootDir: join(root, "state") });
+    expect(options.snapshotter).toBeUndefined();
+    expect(options.workspaceAccess).toBeUndefined();
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
     });

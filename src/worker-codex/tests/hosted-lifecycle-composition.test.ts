@@ -33,7 +33,7 @@ vi.mock('../hosted-readonly-controller-admission',()=>{
 vi.mock('../application/codex-goal-job-launch-loader',()=>({loadJobLaunch:async(args:any)=>{h.events.push('reload:'+args.registryRootDir);return {launch,registryRootDir:args.registryRootDir,manifest:{jobId:'TEST'}}}}));
 vi.mock('../codex-goal-launch-manifest',()=>({upsertCodexGoalLaunchManifest:async()=>{h.events.push('manifest');return {jobId:'TEST'}}}));
 vi.mock('../project-control-scope-guard',async original=>({...await original<any>(),projectControlGenericScopeDenial:async()=>undefined,projectControlGenericToolDenial:()=>undefined}));
-vi.mock('../codex-goal-runner',async original=>({...await original<any>(),runCodexGoal:async()=>{h.events.push('goal-effect');return {status:h.runStatus}}}));
+import * as runner from '../codex-goal-runner';
 vi.mock('../codex-goal-doctor',async original=>({...await original<any>(),doctorCodexGoal:async(input:any)=>{expect(input.tmuxSession).toBeUndefined();expect(input.config).toMatchObject({promptPath:'/TEST/job/prompt',authRootDir:'/TEST/auth',workspacePath:'/TEST/W',accounts:[{name:'synthetic'}]});h.events.push('doctor');return {ok:h.doctorOk,errors:['TEST missing prerequisite']}}}));
 vi.mock('../application/codex-goal-process-liveness',async original=>({...await original<any>(),resolveCodexGoalWorkerLiveness:()=>({alive:h.status.tmuxAlive === true})}));
 import * as ops from '../codex-goal-ops';
@@ -48,7 +48,11 @@ const start=()=>startCodexGoalLaunch({launch,registryRootDir:'/TEST/registry',jo
 const resume=(skipDoctor=false)=>continueStoredJobLifecycle({confirmContinue:true,forceStart:true,skipDoctor},{mode:'continue',confirmKey:'confirmContinue'},{loadJobLaunch:async()=>({launch,registryRootDir:'/TEST/registry',manifest:{jobId:'TEST'} as any})});
 // Replace the existing installation read after the transport import graph loads.
 // The real installation/dispatch contract has its own activation fixture.
-beforeEach(()=>{vi.spyOn(installation,'readHostedInstallationActivation').mockReturnValue({
+// Install the execution substitute after the cyclic runner/ops graph has loaded.
+// Keep the real runner helpers shared by the use cases and CLI.
+beforeEach(()=>{
+ vi.spyOn(runner,'runCodexGoal').mockImplementation(async()=>{h.events.push('goal-effect');return {status:h.runStatus} as Awaited<ReturnType<typeof runner.runCodexGoal>>});
+ vi.spyOn(installation,'readHostedInstallationActivation').mockReturnValue({
  activation:{phase:HostedActivationPhase.Exclusive},
 } as ReturnType<typeof installation.readHostedInstallationActivation>);h.activationEnabled=true;vi.spyOn(process,'platform','get').mockReturnValue('linux');vi.spyOn(process,'getuid').mockReturnValue(0);h.role='supervisor';h.events=[];h.argv=[];h.doctorOk=false;h.runStatus='completed';h.fail='';h.status={tmuxAlive:false,recommendedAction:'start_worker',resultExists:true,workspaceDirty:true};h.inner=undefined;h.clientOk=true;vi.spyOn(ops,'collectCodexGoalStatus').mockImplementation(async()=>h.status);vi.spyOn(ops,'reconcileCodexGoalRuntimeResult').mockImplementation(async(input)=>{expect(input.preservePatch).toBe(true);h.events.push('reconcile-preserve-patch');if(h.fail==='reconcile')throw Error('TEST patch preservation failed');return {} as any});});
 afterEach(()=>vi.unstubAllEnvs());

@@ -528,6 +528,12 @@ function classifyWorkerFailureCode(
         ...optionalFailureDetails(details),
       };
     case "budget_exceeded":
+      return {
+        reason: code,
+        safeMessage,
+        retryable: false,
+        ...optionalFailureDetails(details),
+      };
     case "checkpoint_unprotected":
       return {
         reason: code,
