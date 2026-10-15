@@ -1143,6 +1143,63 @@ jobs:
           assert.equal(expected.size, 0);
           console.log(JSON.stringify({ scope: 'native-root-dependency-inspection-TEST', completedTests: report.numTotalTests }));
           DEPENDENCY_INSPECTION_ROOT_RESULT
+          # Six real-filesystem component cases under the already verified ROOT principal.
+          # Native permission/fence/path authority remains projected by these tests.
+          sr_native_phase=root_tests
+          SR_ARCHIVE_TEST_PRIVILEGE=root \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
+            node node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/hosted-dependency-legacy-comparison-physical.test.ts \
+            src/worker-codex/tests/hosted-dependency-installer-start-state-physical.test.ts \
+            src/worker-codex/tests/hosted-dependency-committed-mapping-physical.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
+            --outputFile=delivery/a0-native-probe/dependency-retention-physical-root-result.json
+          sr_native_phase=root_validator
+          node --input-type=module-typescript - <<'DEPENDENCY_RETENTION_PHYSICAL_ROOT_RESULT'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { resolve } from 'node:path';
+          assert.equal(process.platform, 'linux');
+          for (const id of [process.getuid?.(), process.geteuid?.(), process.getgid?.(), process.getegid?.()]) assert.equal(id, 0);
+          const report = JSON.parse(readFileSync('delivery/a0-native-probe/dependency-retention-physical-root-result.json', 'utf8'));
+          const expected = new Map<string, Set<string>>([
+            [
+              "src/worker-codex/tests/hosted-dependency-legacy-comparison-physical.test.ts",
+              [
+                "legacy comparison real temporary trees, projected host authority retains content-only difference and commits only Unverified",
+                "legacy comparison real temporary trees, projected host authority retains mode-only difference and commits only Unverified",
+                "legacy comparison real temporary trees, projected host authority holds external-link candidate without launch, reset, or Ready"
+              ]
+            ],
+            [
+              "src/worker-codex/tests/hosted-dependency-installer-start-state-physical.test.ts",
+              [
+                "installer durable start-state retention, projected original authority Busy before prepare creates no start, consumption, partial output or child",
+                "installer durable start-state retention, projected original authority unsuccessful owned child permanently consumes attempt and retains immutable start/creator/partial bytes"
+              ]
+            ],
+            [
+              "src/worker-codex/tests/hosted-dependency-committed-mapping-physical.test.ts",
+              [
+                "original committed mapping physical refusal, projected native authority fences original owner across tampered committed mapping after opaque inode rename"
+              ]
+            ]
+          ].map(([path, names]) => [resolve(path as string), new Set(names as string[])]));
+          assert.equal(report.success, true);
+          assert.equal(report.numTotalTests, 6);
+          assert.equal(report.numPassedTests, 6);
+          for (const counter of ['numFailedTests', 'numPendingTests', 'numTodoTests']) assert.equal(report[counter], 0);
+          assert(Array.isArray(report.testResults) && report.testResults.length === 3);
+          for (const file of report.testResults) {
+            const names = expected.get(file.name); assert(names);
+            assert.equal(file.status, 'passed');
+            assert(Array.isArray(file.assertionResults) && file.assertionResults.length === names.size);
+            for (const test of file.assertionResults) { assert.equal(test.status, 'passed'); assert(names.delete(test.fullName)); }
+            assert.equal(names.size, 0); assert(expected.delete(file.name));
+          }
+          assert.equal(expected.size, 0);
+          console.log(JSON.stringify({scope:'root-retention-physical-SOURCE-TEST',SourceOnly:true,Native:false,completedTests:6}));
+          DEPENDENCY_RETENTION_PHYSICAL_ROOT_RESULT
           sr_native_phase=root_tests
           if SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \

@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { types } from "node:util";
 import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, PythonEnvelopeKind, type SignedPackage, type CapturedEnvelope, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
-import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
+import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, ToolInputArchitecture, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
 import { qualifiedH1PackagePins, qualifiedH1PackageRequestArguments, qualifiedH1PackageVectorSha256 } from "./current-h1-qualified-package-image.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import {h1SourceLimits,joinH1BinarySource,joinH1SourceSelection,retainH1SourceArchives,type H1SourceIdentity,type H1SourceIndexOrigin,type H1SourceSelection} from "./current-h1-source-record-TEST.ts";
@@ -211,9 +211,30 @@ export async function mainCiSignedToolInputs():Promise<void> {
   // These41 association rows are not41 complete source acquisitions. Only the
   // two selected source families below are Sources/.dsc/physical-archive joined.
   file(join(evidence,"binary-source-associations-UNADMITTED.json"),JSON.stringify({sourceSha,associations,nativeQualified:false,compiledInputEquality:false})+"\n");
+  // Source-only HOST-version candidate. It never enters the qualified41
+  // staged package/image vector, archive survey, role graph or toolroot.
+  const sourceOnlyPin:AcquiredSignedPackage=Object.freeze({package:"systemd-container",version:"255.4-1ubuntu8.18",arch:ToolInputArchitecture.Amd64,sha256:"4692e521e9330c8d87427ffbeeed3b21d487857804dbdf630df650ba0f2b6573",size:417242,filename:"pool/main/s/systemd/systemd-container_255.4-1ubuntu8.18_amd64.deb"});
+  const sourceOnlyFields="Package: systemd-container\nVersion: 255.4-1ubuntu8.18\nArchitecture: amd64\n";
+  const sourceOnlyIndex=indices.find(index=>index.origin==="https://security.ubuntu.com/ubuntu/dists/noble-security"&&index.path==="main/binary-amd64/Packages");assert(sourceOnlyIndex);
+  assert.deepEqual(joinCompleteUbuntuIndex(sourceOnlyFields,sourceOnlyIndex.bytes,sourceOnlyPin),sourceOnlyPin,"source-only transfer must first join current authenticated complete security index");
+  const sourceOnlyRoot=join(scratch,"source-only-systemd-container");dir(sourceOnlyRoot);
+  const sourceOnlyDirectory=lstatSync(sourceOnlyRoot,{bigint:true}),sourceOnlyFd=openSync(sourceOnlyRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  try{assert.equal(tuple(fstatSync(sourceOnlyFd,{bigint:true})),tuple(sourceOnlyDirectory));command(CiTool.AptGet,["download","systemd-container:amd64=255.4-1ubuntu8.18"],4*1024*1024,30000,env,`/proc/${process.pid}/fd/${sourceOnlyFd}`);
+   const held=fstatSync(sourceOnlyFd,{bigint:true});assert(held.dev===sourceOnlyDirectory.dev&&held.ino===sourceOnlyDirectory.ino&&held.uid===0n&&held.gid===0n&&(held.mode&0o7777n)===0o700n);assert.equal(tuple(lstatSync(sourceOnlyRoot,{bigint:true})),tuple(held));
+  }finally{closeSync(sourceOnlyFd);}
+  const sourceOnlyName="systemd-container_255.4-1ubuntu8.18_amd64.deb";assert.deepEqual(readdirSync(sourceOnlyRoot),[sourceOnlyName]);
+  const sourceOnlyArchive=retainOriginalAcquiredArchive(join(sourceOnlyRoot,sourceOnlyName),tick);
+  let sourceOnlyAssociation:{binary:AcquiredSignedPackage;source:H1SourceIdentity;indices:H1SourceIndexOrigin[]};
+  try{assert.equal(sourceOnlyArchive.size,sourceOnlyPin.size);assert.equal(sourceOnlyArchive.sha256,sourceOnlyPin.sha256);
+   const fields=command(CiTool.DpkgDeb,["--field",`/proc/${process.pid}/fd/${sourceOnlyArchive.fd}`,"Package","Version","Architecture"],16384,30000,env).toString("utf8");sourceOnlyArchive.rejoin();assert.deepEqual(joinCompleteUbuntuIndex(fields,sourceOnlyIndex.bytes,sourceOnlyArchive),sourceOnlyPin);
+   const source=joinH1BinarySource(sourceOnlyPin,sourceOnlyIndex.bytes,tick);assert.deepEqual(source,{name:"systemd",version:"255.4-1ubuntu8.18"});assert(source);const {bytes,...origin}=sourceOnlyIndex;
+   sourceOnlyAssociation={binary:sourceOnlyPin,source,indices:[origin]};
+   const data=fullBytes(join(sourceOnlyRoot,sourceOnlyName),sourceOnlyPin.size,tick);assert.equal(hash(data),sourceOnlyPin.sha256);sourceOnlyArchive.rejoin();file(join(evidence,sourceOnlyName),data);sourceOnlyArchive.rejoin();
+   file(join(evidence,"source-only-binary-association-UNADMITTED.json"),JSON.stringify({sourceSha,purpose:"HOST_VERSION_SOURCE_CANDIDATE_ONLY",association:sourceOnlyAssociation,stagedImageUnchanged:true,hostNspawnProvenance:false,compiledInputEquality:false,nativeQualified:false})+"\n");
+  }finally{sourceOnlyArchive.close();}
   const selectedSources=new Map<string,{selection:H1SourceSelection;origins:H1SourceSelection[]}>();
-  for(const [binaryName,sourceName] of [["python3.12-minimal","python3.12"],["libpython3.12-minimal","python3.12"],["libpython3.12-stdlib","python3.12"],["libsystemd0","systemd"]] as const){
-   const association=associations.find(row=>row.binary.package===binaryName);assert(association&&association.source.name===sourceName);
+  for(const [binaryName,sourceName] of [["python3.12-minimal","python3.12"],["libpython3.12-minimal","python3.12"],["libpython3.12-stdlib","python3.12"],["systemd-container","systemd"]] as const){
+   const association=binaryName==="systemd-container"?sourceOnlyAssociation:associations.find(row=>row.binary.package===binaryName);assert(association&&association.source.name===sourceName);
    for(const binaryIndex of association.indices){const component=binaryIndex.path.split("/")[0],index=sourceIndices.find(row=>row.origin===binaryIndex.origin&&row.releaseSha256===binaryIndex.releaseSha256&&row.path===component+"/source/Sources");assert(index);
     const {bytes,...origin}=index,selection=joinH1SourceSelection(association.binary,association.source,binaryIndex,bytes,origin,tick),prior=selectedSources.get(sourceName);
     if(prior){assert.deepEqual(selection.source,prior.selection.source);assert.equal(selection.directory,prior.selection.directory);assert.deepEqual(selection.artifacts,prior.selection.artifacts,"conflicting pockets cannot merge source artifacts");prior.origins.push(selection);}else selectedSources.set(sourceName,{selection,origins:[selection]});

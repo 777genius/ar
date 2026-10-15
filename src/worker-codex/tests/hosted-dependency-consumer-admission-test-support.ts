@@ -409,10 +409,25 @@ export function registerDependencyConsumerAdmissionTests(input: {
       // after the successful wait; unrelated units are not used as a fault.
       input.fixture.jobs = `9 ${latest.unit} start waiting\n`;
       const warning = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      // Pin the actual completion record immediately after publication, before
+      // the failing cleanup coordinator runs. This proves completion/status
+      // retention only; FDA/summary/log authenticity belongs to the native case.
+      const complete = HostedInstallationActivationStore.prototype.recordOrdinaryRuntimeWaitCompletion;
+      let completed: { path: string; bytes: Buffer; stat: fs.BigIntStats } | undefined;
+      vi.spyOn(HostedInstallationActivationStore.prototype, "recordOrdinaryRuntimeWaitCompletion").mockImplementation(function (this: HostedInstallationActivationStore) {
+        complete.call(this);
+        const path = join(input.fixture.root, `ordinary-completed/${latest.startId}.json`);
+        completed = { path, bytes: readFileSync(path), stat: lstatSync(path, { bigint: true }) };
+      });
       const child = input.fixture.spawn.mock.results.at(-1)!.value as EventEmitter;
       child.emit("exit", 0, null);
       await expect(result).resolves.toBe(0);
       expect(warning).toHaveBeenCalledWith("dependency_cleanup_unresolved\n");
+      expect(completed).toBeDefined();
+      const saved = completed!;
+      const now = lstatSync(saved.path, { bigint: true });
+      expect(readFileSync(saved.path)).toEqual(saved.bytes);
+      expect([now.dev, now.ino, now.mode]).toEqual([saved.stat.dev, saved.stat.ino, saved.stat.mode]);
       const retained = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
       try { expect(retained.read(p.binding.workspace)?.owner?.phase).toBe("fenced"); } finally { retained.close(); }
       expect(input.read(`ordinary-completed/${latest.startId}.json`).waitStatus).toBe(0);

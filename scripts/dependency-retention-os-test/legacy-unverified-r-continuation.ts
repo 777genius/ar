@@ -1,3 +1,4 @@
+import { positiveAcceptanceAdmissionRemaining } from "./current-positive-acceptance-roster.js";
 /** Native TEST scenario only; called with fresh genuinely registered legacy C/reference
  * births and independently reviewed R custody. Never fabricates a baseline/receipt. */
 import assert from "node:assert/strict";
@@ -31,10 +32,18 @@ import { command, json, node, runtime } from "./common.ts";
 const root="/var/lib/subscription-runtime-host-policy";
 /** Original FULL invokes this only for its separately reviewed finite legacy
  * fixture case. Compilation or configuration never qualifies Native. */
-export async function assertLegacyUnverifiedReadonlyContinuation(roots:CurrentColdHotRoots,referenceJobId:string,maximumMs:number) {
-  assertRootScope(roots);assertCurrentConfiguredAuth(roots);
+export function assertLegacyUnverifiedReadonlyContinuation(roots:CurrentColdHotRoots,referenceJobId:string,maximumMs:number) {
   assert(Number.isSafeInteger(maximumMs) && maximumMs>0 && maximumMs<=27*60*1000);
-  const deadline=performance.now()+maximumMs,remaining=()=>{const ms=Math.floor(deadline-performance.now());assert(ms>0);return ms;};
+  return runLegacyUnverifiedReadonlyContinuation(roots,referenceJobId,performance.now()+maximumMs);
+}
+/** Same original producers with the composite's pre-existing absolute end. */
+export function assertLegacyUnverifiedReadonlyContinuationUntil(roots:CurrentColdHotRoots,referenceJobId:string,deadline:number) {
+  assert(Number.isFinite(deadline) && deadline>performance.now() && deadline<=performance.now()+27*60*1000);
+  return runLegacyUnverifiedReadonlyContinuation(roots,referenceJobId,deadline);
+}
+async function runLegacyUnverifiedReadonlyContinuation(roots:CurrentColdHotRoots,referenceJobId:string,deadline:number) {
+  assertRootScope(roots);assertCurrentConfiguredAuth(roots);
+  const remaining=()=>{const ms=Math.floor(deadline-performance.now());assert(ms>0);return ms;};
   prepareEvictRestoreSentinels(roots);
   const store=new HostedInstallationActivationStore();store.resumeOrdinary();
   assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Ordinary);
@@ -62,6 +71,7 @@ export async function assertLegacyUnverifiedReadonlyContinuation(roots:CurrentCo
     for(const phase of [FullRequestPhase.ReadonlyFirst,FullRequestPhase.ReadonlyHot]) {
       remaining();const before=host.readEpoch();const request=await requestCurrentNextWork(roots,phase),launch=readHostedReadonlyHostInventory().runtimeLaunch;
       assert.equal(host.readEpoch().phase,HostedCustodyPhase.Ready);
+      positiveAcceptanceAdmissionRemaining(deadline);
       const result=await runHostedRuntimeForeground(launch.command,launch.args,launch.cwd,currentFullEnvironment());
       remaining();assert(typeof result!=="number");finalResult=result;assertHostedForegroundResult(result);assert.equal(result.exitCode,0);
       const native=readHostedForegroundLaunchObservation(result);assert.equal(native.closeStatus,0);

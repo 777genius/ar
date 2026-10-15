@@ -1,3 +1,5 @@
+import { positiveAcceptanceAdmissionRemaining } from "./current-positive-acceptance-roster.js";
+import { readCodexGoalResultSummary } from "../../dist/worker-codex/codex-goal-status-files.js";
 /** Genuine original FULL caller. Snapshots are DATA, never execution authority. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -16,7 +18,7 @@ import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependenc
 import { readHostedDependencyPreservationSelections } from "../../dist/worker-codex/hosted-dependency-preservation-selection.js";
 import { readHostedDependencyCompletedPreservation, readHostedDependencyPreservationRelease } from "../../dist/worker-codex/hosted-dependency-preservation-handoff.js";
 import { HostedDependencyExplicitPreservationOutcome } from "../../dist/worker-codex/hosted-dependency-transactions.js";
-import { assertRootScope, assertPreparedCurrentConfiguredAuth, assertCurrentConfiguredAuth, retainPreparedCurrentAuthCompletion, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { assertRootScope, assertPreparedCurrentConfiguredAuth, assertCurrentConfiguredAuth, retainPreparedCurrentAuthCompletion, isPreparedCurrentPositiveAuxiliary, type CurrentOrdinaryRoots, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { FullEntryKind, FullRequestPhase, requestCurrentNextWork, assertCurrentNextWorkDelivered, runCurrentOrdinaryEntry, assertDistinctCurrentEntries } from "./current-full-entry.js";
 import { runCurrentFullReadonlyContinuation } from "./current-full-r-continuation.js";
 import { assertCurrentClosedEntry } from "./current-closed-entry.js";
@@ -82,13 +84,21 @@ function publicPin(path: string, limit: number) {
     return Object.freeze({ path, dev: String(s.dev), ino: String(s.ino), sha256: hash(bytes.subarray(0, size)) });
   } finally { closeSync(fd); }
 }
-function completedOutput(roots: CurrentColdHotRoots, result: HostedForegroundResult) {
+export async function captureCurrentCompletedOutputData(roots: CurrentOrdinaryRoots, result: HostedForegroundResult) {
   const native = readHostedForegroundLaunchObservation(result); assert(/^subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(native.unit));
-  const resultPath = roots.jobRoot + "/state/TEST-result.json", record = readHostedForegroundResultRecord(resultPath);
+  const resultPath = roots.jobRoot + "/state/TEST-result.json", first=publicPin(resultPath,1024*1024),record = readHostedForegroundResultRecord(resultPath);
   assert.equal(record.value.status, "done"); assert.equal(record.output.unit, native.unit); assert.equal(record.output.exitCode, 0);
-  return Object.freeze({ result: publicPin(resultPath, 1024 * 1024), outputs: ["stdout", "stderr"].map(kind => publicPin(policy + "/foreground-output/" + native.unit + "." + kind, 16 * 1024 * 1024)) });
+  const summary=await readCodexGoalResultSummary(resultPath);assert.equal(summary.status,"done");assert.deepEqual(summary.foregroundOutput,record.output);
+  const outputs=["stdout","stderr"].map(kind=>publicPin(policy+"/foreground-output/"+native.unit+"."+kind,16*1024*1024));
+  assert.equal(outputs[0]!.sha256,hash(Buffer.from(record.output.stdout)));assert.equal(outputs[1]!.sha256,hash(Buffer.from(record.output.stderr)));
+  assert.deepEqual(publicPin(resultPath,1024*1024),first);
+  return Object.freeze({result:first,outputs,summarySha256:hash(encode(summary)),unit:native.unit});
 }
 function assertPins(pins: readonly ReturnType<typeof publicPin>[]) { for (const pin of pins) assert.deepEqual(publicPin(pin.path, 16 * 1024 * 1024), pin); }
+/** Exact old result is checked only before the next genuine entry overwrites
+ * its documented latest alias. Per-unit outputs remain checked thereafter. */
+export function assertCurrentCompletedOutputData(value:Awaited<ReturnType<typeof captureCurrentCompletedOutputData>>) {assertPins([value.result,...value.outputs]);}
+export function assertCurrentCompletedOutputLogsData(value:Awaited<ReturnType<typeof captureCurrentCompletedOutputData>>) {assertPins(value.outputs);}
 function preparePolicy(roots: CurrentColdHotRoots) {
   withHostedActivationFence(() => {
     assertReadonlyHostOperator(); assertRootScope(roots); const actual = readHostedInstallationActivation();
@@ -114,8 +124,49 @@ export async function runCurrentExplicitPreservation(roots: CurrentColdHotRoots,
   try {
     const birth = store.enrollOrdinary(roots.candidateJobId); assert.equal(birth.jobRootDir, roots.jobRoot); assert.equal(birth.workspacePath, roots.workspace);
     progress(ExplicitPreservationPhase.Cold); store.resumeOrdinary(); const cold = await runCurrentOrdinaryEntry(roots, FullEntryKind.Cold); store.finishClosed();
-    withHostedActivationFence(fence => assertCurrentClosedEntry(fence, roots.jobRoot, cold.result)); const old = readEvictRestoreReady(roots), completed = completedOutput(roots, cold.result);
+    withHostedActivationFence(fence => assertCurrentClosedEntry(fence, roots.jobRoot, cold.result)); const old = readEvictRestoreReady(roots), completed = await captureCurrentCompletedOutputData(roots, cold.result);
     const coldTrace = trace; trace = undefined; const coldInstaller = measured(coldTrace, 1, 0); assertEvictRestoreSentinels(roots, sentinels);
+    const core=await preserveCurrentC(roots,cold,deadline,sentinels,progress);
+    const {restored,hot,restoreDelivery,hotDelivery,preservationInstaller,restoreInstaller,hotInstaller,preserved,selected,consumed,before,retained}=core;
+    progress(ExplicitPreservationPhase.Readonly); const readonly = await runCurrentFullReadonlyContinuation(roots, hot.observation, remaining(), () => remaining());
+    assertDistinctCurrentEntries([cold, restored, hot, ...readonly.entries.map(observation => ({ observation }))]);
+    assert.deepEqual(captureExplicitOpaqueTreeData(preserved.destination), before); assertPins(completed.outputs); assertEvictRestoreSentinels(roots, sentinels);
+    assert.equal(new Set([...coldInstaller.invocationIds, ...restoreInstaller.invocationIds]).size, 2); assert.equal(readHostedDependencyEvictionEnabled(), false);
+    assert.equal(readHostedInstallationActivation().activation.phase, HostedActivationPhase.Closed);
+    assert(readHostedInstallationActivation().activation.ordinaryStarts.every(row => row.state === HostedCustodyReservationState.Terminal));
+    return Object.freeze({ qualification: "native_actual_explicit_preservation_c_restore_hot_r_first_hot_only", status: "partial_pass", fullPlanQualification: "pending",
+      entries: [cold.observation, restored.observation, hot.observation, ...readonly.entries], cumulativeInstalls: 2,
+      control: [restoreDelivery, hotDelivery], installer: { cold: coldInstaller, preserve: preservationInstaller, restore: restoreInstaller, hot: hotInstaller }, readonly,
+      preservation: { operationId: preserved.operationId, mappingDigest: preserved.mappingDigest, committed: selected.release.mapping.committed.reference, consumedInstalling: consumed.installing.reference,
+        consumedReady: consumed.ready.reference, oldReady: old.reference, opaqueEntries: before.entries.length, opaqueBytes: before.bytes, opaqueSha256: before.digest, originalInode: old.receipt.tree, retained },
+      unsupported: ["same_workspace_R_to_C_owner_v3_claim", "no_active_R_explicit_preservation", "native_preservation_crash_recovery"], noGarbageCollection: true });
+  } finally { if (trace) { try { trace.finish(); } catch { process.stderr.write("TEST_explicit_preservation_installer_observation_unresolved\n"); } } }
+}
+
+const positiveOpaque = new WeakMap<CurrentOrdinaryRoots,Readonly<{destination:string;before:ReturnType<typeof captureExplicitOpaqueTreeData>}>>();
+/** Fixed auxiliary C continuation. The caller supplies only an ORIGINAL FDA
+ * result from its real first restore, never an installer/proof callback. */
+export async function runCurrentPositivePreservationC(roots:CurrentOrdinaryRoots,initial:Awaited<ReturnType<typeof runCurrentOrdinaryEntry>>,deadline:number) {
+  assert(isPreparedCurrentPositiveAuxiliary(roots));assertRootScope(roots);assertPreparedCurrentConfiguredAuth(roots);
+  assert.equal(readHostedDependencyEvictionEnabled(),true);
+  const sentinels=captureEvictRestoreSentinels(roots);
+  const core=await preserveCurrentC(roots,initial,deadline,sentinels,()=>{});
+  assert.equal(readHostedDependencyEvictionEnabled(),true);
+  positiveOpaque.set(roots,{destination:core.preserved.destination,before:core.before});
+  return Object.freeze({entries:[core.restored.observation,core.hot.observation],control:[core.restoreDelivery,core.hotDelivery],
+    installer:{preserve:core.preservationInstaller,restore:core.restoreInstaller,hot:core.hotInstaller},cumulativeInstalls:2,
+    preservation:{operationId:core.preserved.operationId,mappingDigest:core.preserved.mappingDigest,committed:core.selected.release.mapping.committed.reference,
+      consumedInstalling:core.consumed.installing.reference,consumedReady:core.consumed.ready.reference,opaqueEntries:core.before.entries.length,
+      opaqueBytes:core.before.bytes,opaqueSha256:core.before.digest,retained:core.retained},noGarbageCollection:true});
+}
+async function preserveCurrentC(roots:CurrentOrdinaryRoots,initial:Awaited<ReturnType<typeof runCurrentOrdinaryEntry>>,deadline:number,
+    sentinels:ReturnType<typeof captureEvictRestoreSentinels>,progress:(phase:ExplicitPreservationPhase)=>void) {
+  assertRootScope(roots);assertPreparedCurrentConfiguredAuth(roots);
+  withHostedActivationFence(fence=>assertCurrentClosedEntry(fence,roots.jobRoot,initial.result));
+  const remaining=()=>{const ms=Math.floor(deadline-performance.now());assert(ms>0 && ms<=27*60*1000);return ms;};remaining();
+  const store=new HostedInstallationActivationStore(),old=readEvictRestoreReady(roots),completed=await captureCurrentCompletedOutputData(roots,initial.result);
+  let trace:ReturnType<typeof startNativeInstallerTrace>|undefined;
+  try {
     progress(ExplicitPreservationPhase.Mutation); const original = roots.workspace + "/node_modules", nested = original + "/TEST-authored-unknown";
     mkdirSync(nested, { mode: 0o750 }); writeFileSync(nested + "/bytes", Buffer.from([0, 255, 128, 1]), { flag: "wx", mode: 0o640 });
     writeFileSync(Buffer.concat([Buffer.from(nested + "/"), Buffer.from([255, 1])]), Buffer.from([255, 0, 128]), { flag: "wx", mode: 0o600 });
@@ -145,26 +196,28 @@ export async function runCurrentExplicitPreservation(roots: CurrentColdHotRoots,
     });
     assert.deepEqual(captureExplicitOpaqueTreeData(preserved.destination), before); assertPins([completed.result, ...completed.outputs]); assertEvictRestoreSentinels(roots, sentinels);
     const restoreRequest = await requestCurrentNextWork(roots, FullRequestPhase.ColdRestore); trace = startNativeInstallerTrace(roots.candidateJobId, remaining()); progress(ExplicitPreservationPhase.Restore);
+    if(isPreparedCurrentPositiveAuxiliary(roots))positiveAcceptanceAdmissionRemaining(deadline);
     const restored = await runCurrentOrdinaryEntry(roots, FullEntryKind.Restored), restoreDelivery = await assertCurrentNextWorkDelivered(roots, restoreRequest);
     const restoreTrace = trace; trace = undefined; const restoreInstaller = measured(restoreTrace, 1, 1);
     const consumed = withHostedActivationFence(fence => { const value = readHostedDependencyCompletedPreservation(fence, selected.binding, preserved.operationId); assert(value);
       assert.deepEqual(value.release.reference, selected.release.reference); assert.equal(value.installing.receipt.generation, restored.observation.attemptId); assert.equal(value.ready.receipt.generation, restored.observation.attemptId); return value; });
     const restoredReady = readEvictRestoreReady(roots); assert.notEqual(restoredReady.receipt.tree.ino, old.receipt.tree.ino); assert.deepEqual(restoredReady, consumed.ready);
     const hotRequest = await requestCurrentNextWork(roots, FullRequestPhase.CurrentHot); trace = startNativeInstallerTrace(roots.candidateJobId, remaining()); progress(ExplicitPreservationPhase.Hot);
+    if(isPreparedCurrentPositiveAuxiliary(roots))positiveAcceptanceAdmissionRemaining(deadline);
     const hot = await runCurrentOrdinaryEntry(roots, FullEntryKind.Hot), hotDelivery = await assertCurrentNextWorkDelivered(roots, hotRequest);
     const hotTrace = trace; trace = undefined; const hotInstaller = measured(hotTrace, 0, 2); assert.deepEqual(readEvictRestoreReady(roots), restoredReady);
     store.finishClosed(); withHostedActivationFence(fence => assertCurrentClosedEntry(fence, roots.jobRoot, hot.result)); retainPreparedCurrentAuthCompletion(roots, hot.result);
-    progress(ExplicitPreservationPhase.Readonly); const readonly = await runCurrentFullReadonlyContinuation(roots, hot.observation, remaining(), () => remaining());
-    assertDistinctCurrentEntries([cold, restored, hot, ...readonly.entries.map(observation => ({ observation }))]);
-    assert.deepEqual(captureExplicitOpaqueTreeData(preserved.destination), before); assertPins(completed.outputs); const retained = assertEvictRestoreSentinels(roots, sentinels);
-    assert.equal(new Set([...coldInstaller.invocationIds, ...restoreInstaller.invocationIds]).size, 2); assert.equal(readHostedDependencyEvictionEnabled(), false);
-    assert.equal(readHostedInstallationActivation().activation.phase, HostedActivationPhase.Closed);
-    assert(readHostedInstallationActivation().activation.ordinaryStarts.every(row => row.state === HostedCustodyReservationState.Terminal));
-    return Object.freeze({ qualification: "native_actual_explicit_preservation_c_restore_hot_r_first_hot_only", status: "partial_pass", fullPlanQualification: "pending",
-      entries: [cold.observation, restored.observation, hot.observation, ...readonly.entries], cumulativeInstalls: 2,
-      control: [restoreDelivery, hotDelivery], installer: { cold: coldInstaller, preserve: preservationInstaller, restore: restoreInstaller, hot: hotInstaller }, readonly,
-      preservation: { operationId: preserved.operationId, mappingDigest: preserved.mappingDigest, committed: selected.release.mapping.committed.reference, consumedInstalling: consumed.installing.reference,
-        consumedReady: consumed.ready.reference, oldReady: old.reference, opaqueEntries: before.entries.length, opaqueBytes: before.bytes, opaqueSha256: before.digest, originalInode: old.receipt.tree, retained },
-      unsupported: ["same_workspace_R_to_C_owner_v3_claim", "no_active_R_explicit_preservation", "native_preservation_crash_recovery"], noGarbageCollection: true });
-  } finally { if (trace) { try { trace.finish(); } catch { process.stderr.write("TEST_explicit_preservation_installer_observation_unresolved\n"); } } }
+    assertDistinctCurrentEntries([initial,restored,hot]);
+    assert.deepEqual(captureExplicitOpaqueTreeData(preserved.destination),before);assertPins(completed.outputs);
+    const retained=assertEvictRestoreSentinels(roots,sentinels);
+    return {restored,hot,restoreDelivery,hotDelivery,preservationInstaller,restoreInstaller,hotInstaller,preserved,selected,consumed,before,retained};
+  }finally{if(trace){try{trace.finish();}catch{process.stderr.write("TEST_explicit_preservation_installer_observation_unresolved\n");}}}
+}
+
+/** Reobserve retained opaque bytes after the different primary R sequence.
+ * This cannot authorize cleanup or construct a preservation handoff. */
+export function assertCurrentPositiveOpaquePreservationRetained(roots:CurrentOrdinaryRoots) {
+  assert(isPreparedCurrentPositiveAuxiliary(roots));assertRootScope(roots);const held=positiveOpaque.get(roots);assert(held);
+  assert.deepEqual(captureExplicitOpaqueTreeData(held.destination),held.before);
+  return Object.freeze({opaqueSha256:held.before.digest,opaqueBytes:held.before.bytes,opaqueEntries:held.before.entries.length,retained:true});
 }

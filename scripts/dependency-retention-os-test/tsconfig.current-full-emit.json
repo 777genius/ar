@@ -17,6 +17,7 @@
     "./legacy-unverified-r-continuation.ts",
     "./legacy-unverified-r-continuation.node-test.ts",
     "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts",
-    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts"
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts",
+    "./current-positive-acceptance-roster.node-test.ts"
   ]
 }
