@@ -111,6 +111,7 @@ export class HostJobs {
           memoryMiB: request.memoryMiB,
           tasksMax: request.tasksMax,
           cpuPercent: request.cpuPercent,
+          ...(Object.hasOwn(request, 'startupSeconds') ? { startupSeconds: request.startupSeconds } : {}),
         },
       }, this.launcherProfile);
       if (record.storageLifetime) {

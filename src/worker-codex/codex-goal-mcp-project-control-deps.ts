@@ -1,4 +1,4 @@
-import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "./research-writer-observation";
+import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation, createResearchJobWriterObservationPreparer } from "./research-writer-observation";
 import { LocalConsumedOutputLedgerMutationLock } from "../worker-local/consumed-output-ledger-local-adapter";
 import {
   AccessBoundary,
@@ -71,6 +71,7 @@ export const codexProjectAdmissionDeps: CodexProjectAdmissionDeps = {
   readJob: readCodexGoalJob,
   readWriterWritableRoots: observeResearchJobWriterAuthority,
   prepareWriterObservation: prepareResearchJobWriterObservation,
+  createWriterObservationPreparer: createResearchJobWriterObservationPreparer,
   buildOverviewItems: (inputs) => buildCodexGoalOverviewItems(inputs),
   observeManifestRuntime: async (manifest) => {
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));

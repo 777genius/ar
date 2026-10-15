@@ -12,7 +12,7 @@ vi.mock("../codex-goal-jobs", async original => ({
 vi.mock("../hosted-mimo-project-bridge-onboard", () => ({ onboardHostedMimoProject: state.onboard }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ hostedMimoBridgeMetadataBytes: (p: string) => { const bytes = state.files.get(p); if (bytes === undefined) throw new Error("TEST mandatory file missing"); return Buffer.from(bytes); },
   assertHostedMimoProjectRouteOpen: state.route, parseHostedMimoProjectBinding: (value: unknown) => value }));
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 import { prepareHostedMimoProject, parseHostedMimoPreparationPlan } from "../hosted-mimo-project-bridge-prepare";
 const sha = "a".repeat(40), source = "/srv/reviewed-snapshots/test-source", stateRoot = "/srv/worker-state/mimo-projects/test-project/test-work", scratch = "/srv/workers/mimo-projects/test-project/test-work";
 const binding = { schemaVersion: 1, projectId: "test-project", workstreamId: "test-work", machineId: "b".repeat(32), sourceCommit: sha, sourceRef: "origin/main", stateRoot, scratchRoot: scratch, sourceWorkspacePath: scratch + "/source", registryRootDir: stateRoot + "/registry", controllerJobId: "test-controller",

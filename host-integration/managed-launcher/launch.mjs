@@ -107,6 +107,7 @@ const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
 const MANAGED_STARTUP_SECONDS = 600;
+const jobStartupSeconds = limits => Object.hasOwn(limits, 'startupSeconds') ? limits.startupSeconds : MANAGED_STARTUP_SECONDS;
 // Admission snapshot, not a reservation of memory against concurrent launches.
 const OS_SSH_RESERVE_BYTES = 2n * 1024n ** 3n;
 function readMemoryInfo() {
@@ -150,9 +151,15 @@ export function parseInvocation(request) {
     if (!/^subscription-job-[a-f0-9]{64}\.service$/.test(unit) || !/^[a-f0-9]{64}$/.test(request.fingerprint) ||
         !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(request.jobId)) denied();
     const bounds = { runtimeSeconds: 86400, stopSeconds: 300, memoryMiB: 1048576, tasksMax: 65536, cpuPercent: 100000 };
-    if (!request.limits || typeof request.limits !== 'object' || Array.isArray(request.limits) ||
-        Object.keys(request.limits).length !== Object.keys(bounds).length || Object.entries(bounds).some(([key, max]) =>
+    if (!request.limits || typeof request.limits !== 'object' || Array.isArray(request.limits)) denied();
+    const hasStartup = Object.hasOwn(request.limits, 'startupSeconds');
+    if (Object.keys(request.limits).some(key => !Object.hasOwn(bounds, key) && key !== 'startupSeconds') ||
+        Object.keys(bounds).some(key => !Object.hasOwn(request.limits, key)) ||
+        Object.keys(request.limits).length !== Object.keys(bounds).length + (hasStartup ? 1 : 0) ||
+        Object.entries(bounds).some(([key, max]) =>
           !Number.isSafeInteger(request.limits[key]) || request.limits[key] < 1 || request.limits[key] > max)) denied();
+    if (hasStartup && (!Number.isSafeInteger(request.limits.startupSeconds) || request.limits.startupSeconds < 1 ||
+        request.limits.startupSeconds > 900)) denied();
   } else {
     if (!/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit) ||
         !payload[0].endsWith('/node') || !safePath(payload[1])) denied();
@@ -184,7 +191,7 @@ async function captureProviderStorage(request, policy, trust) {
   if (governedFdProfile(request)) denied();
   // The helper is fixed beside the already trusted ORIGINAL bootstrap. An old
   // context-absent SDK keeps its existing installed-launcher path unchanged.
-  const helper = `${dirname(request.payload[1])}/original-provider-storage-context.js`;
+  const helper = dirname(request.payload[1]) + '/original-provider-storage-context.js';
   if (helper === policy.storageRoot || helper.startsWith(policy.storageRoot + '/')) denied();
   await trust(helper);
   const { captureOriginalProviderStorage } = await import(pathToFileURL(helper).href);
@@ -249,14 +256,13 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   for (const path of [nodePath, guardPath, launcherPath, ...trusted]) {
     if (path === policy.storageRoot || path.startsWith(policy.storageRoot + '/')) denied();
   }
-  assertMemoryAdmission(request, memoryInfo);
   const providerStorage = await captureProviderStorage(request, policy, trust);
   try {
     const providerPayload = providerStorage ? [...payload, '--provider-storage-v1',
       Buffer.from(JSON.stringify(providerStorage.witness)).toString('base64url')] : payload;
     const properties = [
       'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
-      `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
+      `TimeoutStartSec=${operation === 'job' ? jobStartupSeconds(request.limits) : MANAGED_STARTUP_SECONDS}`,
       ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
         `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
         ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
@@ -280,6 +286,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
         `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
         `InaccessiblePaths=${storagePin.binding.directory}`] : []),
     ];
+    assertMemoryAdmission(request, memoryInfo);
     const operands = [...(storagePin ? [nodePath, guardPath,
         '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
           generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
@@ -334,7 +341,7 @@ export function parseLauncherArguments(args, timeNamespace) {
 export function originalJobReservation(request) {
   const parsed = parseInvocation(request);
   if (parsed.operation !== 'job') denied();
-  const workNs = BigInt(MANAGED_STARTUP_SECONDS + parsed.limits.runtimeSeconds) * 1_000_000_000n;
+  const workNs = BigInt(jobStartupSeconds(parsed.limits) + parsed.limits.runtimeSeconds) * 1_000_000_000n;
   return Object.freeze({ workNs, cleanupNs: workNs + BigInt(parsed.limits.stopSeconds) * 1_000_000_000n });
 }
 

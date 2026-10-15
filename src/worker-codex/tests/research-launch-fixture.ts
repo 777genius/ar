@@ -158,6 +158,7 @@ vi.mock("node:fs", async original => {
     symlinkSync: (target: string, path: string) => real.symlinkSync(target, local(path)),
     writeFileSync: (path: string | number, bytes: Parameters<typeof real.writeFileSync>[1], options: Parameters<typeof real.writeFileSync>[2]) => real.writeFileSync(typeof path === "string" ? local(path) : path, bytes, options),
     renameSync: (from: string, to: string) => real.renameSync(local(from), local(to)),
+    linkSync: (from: string, to: string) => real.linkSync(local(from), local(to)),
     unlinkSync: (path: string) => real.unlinkSync(local(path)),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
   };

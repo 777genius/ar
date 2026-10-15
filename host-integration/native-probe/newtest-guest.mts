@@ -93,7 +93,7 @@ async function runGuest():Promise<void>{
     const installedContract:unknown=await import(pathToFileURL("/opt/subscription-runtime/host-jobs/contract.mjs").href);
     if(!installedContract||typeof installedContract!=="object"||!("fingerprint" in installedContract)||typeof installedContract.fingerprint!=="function"||!("unitFor" in installedContract)||typeof installedContract.unitFor!=="function")throw new Error("missing installed managed contract");
     const fingerprint=installedContract.fingerprint as (request:unknown)=>string,unitFor=installedContract.unitFor as (jobId:string)=>string;
-    const jobId=c.name+"-ordinary-refusal",payload=Object.freeze([node,join(artifact,"admin/host-integration/native-probe/newtest-guest.mjs"),"--ordinary-refusal"]),limits=Object.freeze({runtimeSeconds:60,stopSeconds:10,memoryMiB:512,tasksMax:64,cpuPercent:100});
+    const jobId=c.name+"-ordinary-refusal",payload=Object.freeze([node,join(artifact,"admin/host-integration/native-probe/newtest-guest.mjs"),"--ordinary-refusal"]),limits=Object.freeze({runtimeSeconds:60,stopSeconds:10,memoryMiB:512,tasksMax:64,cpuPercent:100,startupSeconds:300});
     const startRequest=Object.freeze({operation:"start",jobId,machineId:c.machineId,argv:payload,...limits});
     const unit=unitFor(jobId),requestFingerprint=fingerprint(startRequest);
     if(unit!=="subscription-job-"+digest(Buffer.from(jobId))+".service"||!/^[a-f0-9]{64}$/.test(requestFingerprint))throw new Error("wrong installed managed contract");

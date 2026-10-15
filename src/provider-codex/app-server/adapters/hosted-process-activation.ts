@@ -13,8 +13,8 @@ import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, typ
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
 import { parseImmutableChildSlot, readSystemBusInfrastructureField, readFdCollectorProfileField } from "@vioxen/subscription-runtime/core";
 import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readlinkSync, readSync, opendirSync, readdirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync,
+  readSync, opendirSync, readdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -28,106 +28,21 @@ import type { CodexAppServerChildProcess } from "../application/app-server-proce
 import { hasHostedActivationOrigin, HostedActivationMode, isHostedContainment, readHostedActivationMode } from "./hosted-host-policy";
 
 
-const root = "/var/lib/subscription-runtime-host-policy";
-const activeFences = new WeakSet<object>();
-const acquisitionBusy = new WeakSet<object>();
-export function isHostedActivationFenceBusy(error: unknown): boolean {
-  return !!error && typeof error === "object" && acquisitionBusy.has(error);
-}
-// Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:readonly-dependency-bindings\/[0-9]{1,20}-[0-9]{1,20}\.json|readonly-dependency-starts\/[a-f0-9-]{36}\.json|dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
-export type HostedActivationFence = Readonly<{ readonly held: true; readonly parentRecipeReader?: DependencyParentRecipeReader }>;
-
-/** Initial host root is trusted; namespace-local root is not that principal. */
-export function assertHostedActivationOperator(): void {
-  try {
-    if (process.platform !== "linux" || process.getuid?.() !== 0 ||
-        !/^0\s+0\s+4294967295$/.test(readFileSync("/proc/self/uid_map", "utf8").trim())) invalid();
-    for (const ns of ["user", "mnt", "pid"]) {
-      if (readlinkSync(`/proc/self/ns/${ns}`) !== readlinkSync(`/proc/1/ns/${ns}`)) invalid();
-    }
-  } catch { throw new Error("hosted_readonly_host_operator_required"); }
-}
-
-/** Missing final record is distinguishable from unsafe/missing ancestry. Reads
- * do not create authority, initialize directories or recover partial state. */
-export function readHostedActivationBytes(name: string): Buffer | null {
-  assertHostedActivationOperator();
-  if (!recordName.test(name)) invalid();
-  const bytes = readActivationPath(join(root, name));
-  if (bytes && name === "readonly-inventory.json") decodeHostedInventoryBytes(bytes);
-  return bytes;
-}
-function readActivationPath(path: string, privateFile = true): Buffer | null {
-  const parent = dirname(path);
-  const parents: string[] = [];
-  for (let current = parent;; current = dirname(current)) {
-    parents.unshift(current);
-    if (current === "/") break;
-  }
-  for (const current of parents) {
-    const stat = lstatSync(current);
-    if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) ||
-        (privateFile && current === parent && (stat.mode & 0o077))) invalid();
-  }
-  let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
-  try {
-    const before = fstatSync(fd), max = 4 * 1024 * 1024;
-    if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & (privateFile ? 0o077 : 0o022)) || before.size > max) invalid();
-    const bytes = Buffer.alloc(before.size + 1);
-    let length = 0;
-    while (length < bytes.length) {
-      const count = readSync(fd, bytes, length, bytes.length - length, length);
-      if (!count) break;
-      length += count;
-    }
-    const after = fstatSync(fd);
-    if (length !== before.size || after.size !== before.size || after.ctimeMs !== before.ctimeMs ||
-        after.mtimeMs !== before.mtimeMs || after.uid !== 0 || after.nlink !== 1 || (after.mode & (privateFile ? 0o077 : 0o022))) invalid();
-    return bytes.subarray(0, length);
-  } finally { closeSync(fd); }
-}
-export function decodeHostedActivationBytes(bytes: Buffer): unknown {
-  try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch { invalid(); }
-}
-
-/** Same boot-specific mkdir mutex as the managed epoch. No stale lock removal,
- * second lock or missing-epoch fallback. Acquisition can precede enrollment. */
-export function withHostedActivationFence<T>(action: (fence: HostedActivationFence) => T, parentRecipeReader?: DependencyParentRecipeReader): T {
-  if (readHostedActivationBytes("readonly-epoch.lock")) throw new Error("hosted_custody_legacy_lock_recovery_required");
-  const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(boot)) {
-    throw new Error("hosted_custody_boot_identity_invalid");
-  }
-  const lock = join(root, `readonly-epoch.${boot}.lock`);
-  try { mkdirSync(lock, { mode: 0o700 }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const busy = new Error("hosted_activation_fence_busy"); acquisitionBusy.add(busy); throw busy;
-  }
-  const fence = Object.freeze({ held: true as const, ...(parentRecipeReader ? { parentRecipeReader } : {}) });
-  activeFences.add(fence);
-  try {
-    const result = action(fence);
-    if (result && (typeof result === "object" || typeof result === "function") && "then" in result) {
-      throw new Error("hosted_custody_synchronous_fence_required");
-    }
-    return result;
-  } finally {
-    activeFences.delete(fence);
-    rmdirSync(lock);
-  }
-}
-export function assertHostedActivationFence(fence: HostedActivationFence): void {
-  if (!activeFences.has(fence)) throw new Error("hosted_custody_common_fence_required");
-}
+import { assertHostedActivationFence as assertCommonHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes,
+  readHostedActivationBytes, withHostedActivationFence, type HostedActivationFence,
+  hostedActivationPolicyRoot as root, isHostedActivationRecordName,
+  readHostedActivationPath as readActivationPath } from "./hosted-activation-fence";
+export { assertHostedActivationOperator, decodeHostedActivationBytes,
+  isHostedActivationFenceBusy, readHostedActivationBytes, withHostedActivationFence } from "./hosted-activation-fence";
+export type { HostedActivationFence } from "./hosted-activation-fence";
 
 // Private fixed completed-removal composition; deliberately not provider-index API.
 // This REPLACES ordinary finally/rmdir, never nests inside that lifecycle.
 const retirementHandles = new WeakMap<object, HostedRemovalRetirementMutex>();
+const activeRetirementFences = new WeakSet<object>();
+export function assertHostedActivationFence(fence: HostedActivationFence): void {
+  if (!activeRetirementFences.has(fence)) assertCommonHostedActivationFence(fence);
+}
 export function assertHostedActivationProcessDescriptors(fence: HostedActivationFence): void {
   assertHostedActivationFence(fence); const handle = retirementHandles.get(fence);
   if (!handle) { assertHostedProcessDescriptors(); return; }
@@ -173,9 +88,9 @@ function removalFence<T>(existing: boolean, action: (fence: HostedActivationFenc
   if (readHostedActivationBytes("readonly-epoch.lock")) throw new Error("hosted_custody_legacy_lock_recovery_required");
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), handle = HostedRemovalRetirementMutex.open(boot, existing),
     fence = Object.freeze({ held: true as const });
-  activeFences.add(fence); retirementHandles.set(fence, handle);
+  activeRetirementFences.add(fence); retirementHandles.set(fence, handle);
   try { return action(fence, handle); }
-  finally { activeFences.delete(fence); retirementHandles.delete(fence); handle.close(); }
+  finally { activeRetirementFences.delete(fence); retirementHandles.delete(fence); handle.close(); }
 }
 
 function invalid(): never { throw new Error("hosted_activation_evidence_invalid"); }
@@ -833,7 +748,7 @@ export function retainHostedScopedSubmitter(fence: HostedActivationFence, correl
 }
 function createActivationRecord(name: string, bytes: Buffer, verifyEvidence: () => void = () => {}, finalName?: string): void {
   assertHostedActivationOperator();
-  if (!recordName.test(name) || bytes.length > 4 * 1024 * 1024) invalid();
+  if (!isHostedActivationRecordName(name) || bytes.length > 4 * 1024 * 1024) invalid();
   const path = join(root, name), parents: { path: string; fd: number; dev: number; ino: number }[] = [];
   try {
     for (let directory = dirname(path);; directory = dirname(directory)) {
@@ -862,7 +777,7 @@ function createActivationRecord(name: string, bytes: Buffer, verifyEvidence: () 
       };
       check(); verifyEvidence(); fsyncSync(fd); for (const parent of parents) fsyncSync(parent.fd); check(); verifyEvidence();
       if (finalName !== undefined) {
-        if (!recordName.test(finalName) || dirname(join(root, finalName)) !== dirname(path)) invalid();
+        if (!isHostedActivationRecordName(finalName) || dirname(join(root, finalName)) !== dirname(path)) invalid();
         const final = `/proc/self/fd/${parents[0]!.fd}/${basename(finalName)}`;
         try { lstatSync(final); throw new Error("scoped_actor_chain_conflict"); }
         catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
