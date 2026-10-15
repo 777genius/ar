@@ -1,7 +1,7 @@
 /** Actual original FULL flow only. No synthetic administrative/setup role. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { fullData, fullNativeTmpDir, readOriginalFullMonitorTask, assertRetainedCurrentFullParent, type FullParentSession } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { fullData, readOriginalFullParentPaths, readOriginalFullMonitorTask, assertRetainedCurrentFullParent, type FullParentSession } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { FullBackingOwner, FullBackingExposure, retainFullProcProcess, type retainFullBackingBirth } from "./current-full-backing-collector.js";
 
 /** This fails on the old collector: its HOST nspawn MainPID is Unknown because
@@ -9,14 +9,15 @@ import { FullBackingOwner, FullBackingExposure, retainFullProcProcess, type reta
  * HOST refusals remain in the facts and are not converted into a FULL grant. */
 export function assertOriginalFullMonitorNativeObservation(parent:FullParentSession,id:string,facts:ReturnType<ReturnType<typeof retainFullBackingBirth>["observe"]>):Readonly<{purpose:string;monitorPid:number;monitorBirth:string;invocationId:string;retainedDescriptorReferences:number}> {
   assertRetainedCurrentFullParent(parent);assert.match(id,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
-  const unit="TEST-retention-os-"+id+".service";
+  const {fullNativeTmpDir}=readOriginalFullParentPaths(parent),unit="TEST-retention-os-"+id+".service";
   const show=()=>{
+    assertRetainedCurrentFullParent(parent);
     const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=MainPID,InvocationID,ActiveState,SubState"],
       {cwd:"/",env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:2000,maxBuffer:4096});
     assert(!result.error && result.status===0 && result.signal===null);const values:Record<string,string>={};
     for(const line of result.stdout.trimEnd().split("\n")){const at=line.indexOf("=");assert(at>0 && !Object.hasOwn(values,line.slice(0,at)));values[line.slice(0,at)]=line.slice(at+1);}
     assert(Object.keys(values).sort().join(",")==="ActiveState,InvocationID,MainPID,SubState" && values.ActiveState==="active" && values.SubState==="running");
-    assert.match(values.MainPID??"",/^[1-9][0-9]*$/);assert.match(values.InvocationID??"",/^[a-f0-9]{32}$/);return values;
+    assert.match(values.MainPID??"",/^[1-9][0-9]*$/);assert.match(values.InvocationID??"",/^[a-f0-9]{32}$/);assertRetainedCurrentFullParent(parent);return values;
   };
   const before=show(),processAnchor=retainFullProcProcess(Number(before.MainPID),()=>{}),task=processAnchor.retainTask(Number(before.MainPID));
   const own=retainFullProcProcess(process.pid,()=>{}),ownTask=own.retainTask(process.pid);

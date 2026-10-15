@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "node"
+    ]
+  },
+  "files": [
+    "./stage-current-h1-public.mts",
+    "./bootstrap-current-h1-public.mts",
+    "./run-current-h1-public.mts",
+    "./inspect-current-h1-public.mts",
+    "./send-current-h1-public.mts",
+    "./current-h1-public-transport.test.mts",
+    "./stage-current-h1-public.test.ts"
+  ]
+}

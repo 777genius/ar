@@ -22,6 +22,14 @@
     "./launch-full-positive-TEST.mts",
     "../host-jobs/full-positive-manager-TEST.mts",
     "./full-positive-test-cohort.node-test.mts",
-    "./launch.mjs"
+    "./launch.mjs",
+    "./full-h1-test-cohort.node-test.mts",
+    "./launch-full-h1-TEST.mts",
+    "../host-jobs/full-h1-manager-TEST.mts",
+    "./dependency-full-h1-native-parent-TEST.ts",
+    "./dependency-full-h1-install-TEST.ts",
+    "./dependency-full-h1-publication-copy-TEST.ts",
+    "./dependency-full-h1-staged-tools-TEST.node-test.ts",
+    "./dependency-full-h1-publication-copy-TEST.node-test.ts"
   ]
 }

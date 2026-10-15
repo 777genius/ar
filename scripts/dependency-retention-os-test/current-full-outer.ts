@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { FullNativeCase, FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, readOriginalH1PrearmSnapshot, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullNativeCase, FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, readOriginalH1PrearmSnapshot, fullNativeRestoreConsumer, readOriginalFullParentPaths, originalFullParentGuestRoot, readRetainedOriginalFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { H1ReadinessRecord, h1Qualification, readH1ReadinessRecord, readOriginalH1SupervisorAcceptance, startOriginalH1StagedObserver, H1ObserverState } from "./current-removal-h1-fixture.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
@@ -38,10 +38,11 @@ function boundedCommand(file: string, args: readonly string[], deadline: bigint,
 
 // This NEW route consumes fixed ROOT-staged TEST inputs. Historical GitHub
 // assertions/dispatch in registration-outer remain byte-for-byte unchanged.
-const managedParent=retainCurrentFullParent();
+const managedParent=readRetainedOriginalFullParent();
+const {fullNativeOsBase,fullNativeTmpDir,fullNativeOutputBase}=readOriginalFullParentPaths(managedParent);
 assert.equal(process.argv.length,managedParent.removalCase===FullRemovalCase.ParentCrashH1?3:2);
 if(managedParent.removalCase===FullRemovalCase.ParentCrashH1)assert.equal(process.argv[2],"--parent-crash-h1");
-const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
+const fullInput=readCurrentFullOuterInput(managedParent),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
 const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
@@ -53,7 +54,7 @@ const inheritedHostJobId=process.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
 if(inheritedHostJobId!==undefined)assert(/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(inheritedHostJobId));
 const inheritedHostMarker=inheritedHostJobId===undefined?"":`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${inheritedHostJobId} `;
 const authBinding=configuredAuthNspawnBinding(fullInput.accountName);
-await prepareCurrentRealCodexCapsule(fullInput.sourceSha);
+await prepareCurrentRealCodexCapsule(managedParent,fullInput.sourceSha);
 const base=fullNativeOsBase; // Must already be independently provisioned and pinned.
 const namespace=lstatSync(base);assert(namespace.isDirectory() && !namespace.isSymbolicLink() && namespace.uid===0 && namespace.gid===0 && (namespace.mode&0o7777)===0o700);
 assert.equal(realpathSync(base),base);
@@ -65,7 +66,7 @@ defaultEvidence.outerBudget = { clock: "process.hrtime.bigint", workMs: 27 * 60 
   startsAfter: "independently reviewed ROOT TEST source/toolchain input", enclosingManagedServiceTimeoutRequired: true };
 assert(Buffer.byteLength(JSON.stringify(defaultEvidence)) <= 512 * 1024);
 // The reviewed source remains readonly. Publish only into own protected output.
-const outputBase="/var/lib/subscription-runtime-full-TEST-output";
+const outputBase=fullNativeOutputBase;
 if(!existsSync(outputBase))directory(outputBase);
 const outputStat=lstatSync(outputBase);assert(outputStat.isDirectory() && !outputStat.isSymbolicLink() && outputStat.uid===0 && outputStat.gid===0 && (outputStat.mode&0o7777)===0o700);
 assert.equal(realpathSync(outputBase),outputBase);
@@ -97,7 +98,7 @@ const command = (file: string, args: readonly string[], timeout = 30000): string
 try {
   remaining(deadline);
   directory(outbox);directory(outbox+"/current-full-pulses");directory(outbox+"/current-full-provider-setups");directory(reviewed);
-  assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry,managedParent.removalCase);
+  assemble(managedParent,root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry,managedParent.removalCase);
   remaining(deadline);
   // Boot replaces guest /run with tmpfs. Keep protected inputs outside it and
   // bind the same validated directories readonly into the exact guest paths.

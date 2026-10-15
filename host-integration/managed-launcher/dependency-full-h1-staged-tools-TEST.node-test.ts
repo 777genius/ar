@@ -52,3 +52,44 @@ test("v2 publisher facts bind a separate protected digest, with no compiled or p
  const s=subject(),v2={...s,schemaVersion:2,definitions:{...s.definitions,pythonGetpath:digest},assurance:H1DistroAssurance.SignedPublisher,distroFactsSha256:digest};const parsed=h1StagedSubjectData(v2);assert.equal(parsed.schemaVersion,2);assert.equal(parsed.distroFactsSha256,digest);assert.throws(requireQualifiedH1StagedConstructor,/selected_constructor_rows_not_qualified/);
  for(const changed of [{schemaVersion:1},{distroFactsSha256:"bad"},{assurance:"reproduced_build"},{definitions:s.definitions},{compiledInputEquality:true}])assert.throws(()=>h1StagedSubjectData({...v2,...changed}));
 });
+
+const actualRoot=process.platform==="linux" && process.getuid?.()===0;
+function retainedTree(base:string){
+ const root=base+"/tree",file=root+"/tool";mkdirSync(root,{mode:0o755});writeFileSync(file,"unchanged final bytes",{mode:0o644});
+ const data=h1StagedSubjectData({...subject(),rootIdentity:measured(root),catalog:[{path:"tool",kind:H1CatalogKind.File,identity:measured(file),sha256:createHash("sha256").update("unchanged final bytes").digest("hex"),target:""}]});
+ return {root,file,data,retained:retainH1StagedCatalogData(root,data,performance.now()+30000)};
+}
+test("actual original sibling birth/live creation retains full final tree identity",{skip:!actualRoot},()=>{
+ const base=mkdtempSync("/root/TEST-h1-ancestor-siblings-");try{const {root,file,data,retained}=retainedTree(base);try{
+  mkdirSync(base+"/full-launch-birth",{mode:0o700});mkdirSync(base+"/full-parent-live",{mode:0o700});writeFileSync(base+"/full-parent-live/live.json","DATA",{mode:0o600});
+  retained.revalidate();assert.deepEqual(measured(root),data.rootIdentity);assert.deepEqual(measured(file),data.catalog[0]!.identity);assert.equal(fs.readFileSync(retained.fileDescriptor("tool"),"utf8"),"unchanged final bytes");
+ }finally{retained.close();}}finally{rmSync(base,{recursive:true,force:true});}
+});
+for(const mutation of ["inode","symlink","mode"] as const)test("actual ancestor "+mutation+" substitution refuses",{skip:!actualRoot},()=>{
+ const base=mkdtempSync("/root/TEST-h1-ancestor-change-"),ancestor=base+"/ancestor";mkdirSync(ancestor,{mode:0o755});
+ try{const {retained}=retainedTree(ancestor);try{if(mutation==="mode")fs.chmodSync(ancestor,0o700);else{renameSync(ancestor,base+"/original");if(mutation==="inode")mkdirSync(ancestor,{mode:0o755});else symlinkSync("original",ancestor);}
+  assert.throws(retained.revalidate);assert.throws(retained.descriptors);
+ }finally{retained.close();}}finally{rmSync(base,{recursive:true,force:true});}
+});
+test("injected held ancestor mount change refuses despite unchanged actual inode",{skip:!actualRoot},context=>{
+ const base=mkdtempSync("/root/TEST-h1-ancestor-mount-");const original=fs.readFileSync;try{const {retained}=retainedTree(base);let calls=0;
+  try{context.mock.method(fs,"readFileSync",((path:fs.PathOrFileDescriptor,...args:unknown[])=>{const raw=Reflect.apply(original,fs,[path,...args]);if(typeof path==="string" && /^\/proc\/self\/fdinfo\/[0-9]+$/.test(path)){calls++;assert.equal(typeof raw,"string");return String(raw).replace(/^mnt_id:\s+[0-9]+$/m,"mnt_id:\t999999999");}return raw;}) as typeof fs.readFileSync);syncBuiltinESMExports();assert.throws(retained.revalidate);assert.equal(calls,1);
+  }finally{context.mock.restoreAll();syncBuiltinESMExports();retained.close();}
+ }finally{rmSync(base,{recursive:true,force:true});}
+});
+test("actual close failure still attempts every retained descriptor",{skip:!actualRoot},context=>{
+ const base=mkdtempSync("/root/TEST-h1-close-all-"),original=fs.closeSync;let blocked:number|undefined;
+ try{const {retained}=retainedTree(base),fds=retained.descriptors(),attempts:number[]=[];blocked=fds[0];
+  context.mock.method(fs,"closeSync",(fd:number)=>{attempts.push(fd);if(fd===blocked)throw Error("TEST close fault");return original(fd);});syncBuiltinESMExports();assert.throws(retained.close,/TEST close fault/);assert.deepEqual([...attempts].sort((a,b)=>a-b),[...fds].sort((a,b)=>a-b));for(const fd of fds.filter(fd=>fd!==blocked))assert.throws(()=>fs.fstatSync(fd));
+ }finally{context.mock.restoreAll();syncBuiltinESMExports();if(blocked!==undefined)original(blocked);rmSync(base,{recursive:true,force:true});}
+});
+
+test("actual fresh ancestor bind mount refuses retained same-inode catalog",{skip:!actualRoot || !(/^CapEff:\s+([0-9a-f]+)$/m.exec(actualRoot?fs.readFileSync("/proc/self/status","utf8"):"")?.[1] && (BigInt("0x"+(/^CapEff:\s+([0-9a-f]+)$/m.exec(fs.readFileSync("/proc/self/status","utf8"))![1])) & (1n<<21n))!==0n)},async()=>{
+ const {spawnSync}=await import("node:child_process"),base=mkdtempSync("/root/TEST-h1-ancestor-bind-");let mounted=false;
+ try{const {retained}=retainedTree(base);try{const result=spawnSync("/usr/bin/mount",["--bind",base,base],{timeout:5000,env:{PATH:"/usr/bin:/bin",LANG:"C"},encoding:"utf8"});assert.equal(result.error,undefined);assert.equal(result.signal,null);assert.equal(result.status,0);mounted=true;assert.throws(retained.revalidate);}finally{retained.close();}}
+ finally{if(mounted){const result=spawnSync("/usr/bin/umount",["--",base],{timeout:5000,env:{PATH:"/usr/bin:/bin",LANG:"C"},encoding:"utf8"});assert.equal(result.error,undefined);assert.equal(result.signal,null);assert.equal(result.status,0);}rmSync(base,{recursive:true,force:true});}
+});
+
+for(const mutation of ["root-mode","file-bytes","file-mode"] as const)test("ancestor lenience retains complete final "+mutation+" refusal",{skip:!actualRoot},()=>{
+ const base=mkdtempSync("/root/TEST-h1-final-immutable-");try{const {root,file,retained}=retainedTree(base);try{if(mutation==="root-mode")fs.chmodSync(root,0o700);else if(mutation==="file-bytes")fs.writeFileSync(file,"changed final bytes");else fs.chmodSync(file,0o600);assert.throws(retained.revalidate);}finally{retained.close();}}finally{rmSync(base,{recursive:true,force:true});}
+});

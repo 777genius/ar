@@ -199,23 +199,28 @@ async function captureProviderStorage(request, policy, trust) {
 }
 
 /** Closed composition option; never selected from request JSON. */
-export const ManagedLauncherProfile = Object.freeze({ Standard: 'standard', FixedFullPositiveTest: 'fixed_full_positive_test' });
+export const ManagedLauncherProfile = Object.freeze({ Standard: 'standard', FixedFullPositiveTest: 'fixed_full_positive_test', FixedFullH1Test: 'fixed_full_h1_test' });
 export const fullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261014-r1';
 // Retired FULL identity remains a refusal; it cannot enter Standard or be replayed.
 const retiredFullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261010-r1';
 export const legacyFullTestJob = 'TEST-dependency-full-native-20261007-r1';
 export const fullPositiveTestRoot = '/opt/subscription-runtime-full-positive-TEST';
 export const fullPositiveTestEntry = fullPositiveTestRoot + '/managed-launcher/launch-full-positive-TEST.mjs';
+export const fullH1TestJob = 'TEST-dependency-full-h1-signed-distro-20261016-r1';
+export const fullH1TestRoot = '/opt/subscription-runtime-full-h1-TEST';
+export const fullH1TestEntry = fullH1TestRoot + '/managed-launcher/launch-full-h1-TEST.mjs';
 export function assertManagedLauncherProfile(profile, jobId) {
   if (profile === ManagedLauncherProfile.Standard) {
-    if (jobId === fullPositiveTestJob || jobId === legacyFullTestJob || jobId === retiredFullPositiveTestJob) denied();
-  } else if (profile !== ManagedLauncherProfile.FixedFullPositiveTest || jobId !== fullPositiveTestJob) denied();
+    if (jobId === fullPositiveTestJob || jobId === fullH1TestJob || jobId === legacyFullTestJob || jobId === retiredFullPositiveTestJob) denied();
+  } else if (profile === ManagedLauncherProfile.FixedFullPositiveTest) {
+    if (jobId !== fullPositiveTestJob) denied();
+  } else if (profile !== ManagedLauncherProfile.FixedFullH1Test || jobId !== fullH1TestJob) denied();
 }
 export function managedLauncherInvocation(request, profile = ManagedLauncherProfile.Standard) {
   parseInvocation(request);
   assertManagedLauncherProfile(profile, request.jobId);
-  if (profile === ManagedLauncherProfile.FixedFullPositiveTest && request.operation !== "job") denied();
-  return { command: process.execPath, args: [profile === ManagedLauncherProfile.FixedFullPositiveTest ? fullPositiveTestEntry : MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
+  if (profile !== ManagedLauncherProfile.Standard && request.operation !== "job") denied();
+  return { command: process.execPath, args: [profile === ManagedLauncherProfile.FixedFullPositiveTest ? fullPositiveTestEntry : profile === ManagedLauncherProfile.FixedFullH1Test ? fullH1TestEntry : MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
 }
 
 export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath,
@@ -223,12 +228,13 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   executable = path => access(path, constants.X_OK), storagePin, memoryInfo = readMemoryInfo } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
   if (request.jobId === legacyFullTestJob || request.jobId === retiredFullPositiveTestJob) denied();
-  if (request.jobId === fullPositiveTestJob) {
-    if (process.argv[1] !== fullPositiveTestEntry) denied();
+  if (request.jobId === fullPositiveTestJob || request.jobId === fullH1TestJob) {
+    const h1 = request.jobId === fullH1TestJob;
+    if (process.argv[1] !== (h1 ? fullH1TestEntry : fullPositiveTestEntry)) denied();
     // Fixed protected FULL branch. The original manager's exclusive ledger is
     // already present; the helper retains the reviewed complete source closure.
-    const { fullNativeArguments } = await import('./dependency-full-native-TEST.js');
-    const native = fullNativeArguments(request);
+    const original = await import('./dependency-full-native-TEST.mjs');
+    const native = h1 ? original.fullH1NativeArguments(request) : original.fullNativeArguments(request);
     const invocation = Object.freeze({ command: managedSystemdRunExecutable, args: native.args });
     nativeInvocations.set(invocation, native.custody); return invocation;
   }

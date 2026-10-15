@@ -27,7 +27,7 @@ export async function systemCommand(cmd, args, executeCommand = execute) {
   }
 }
 export class HostJobs {
-  /** @param {{stateDir:string, run?:typeof systemCommand, machineId?:()=>Promise<string>, clock?:()=>number, launcherProfile?:'standard'|'fixed_full_positive_test'}} options */
+  /** @param {{stateDir:string, run?:typeof systemCommand, machineId?:()=>Promise<string>, clock?:()=>number, launcherProfile?:'standard'|'fixed_full_positive_test'|'fixed_full_h1_test'}} options */
   constructor({ stateDir, run = systemCommand,
     machineId = async () => (await readFile('/etc/machine-id', 'utf8')).trim(),
     clock = () => Date.now(), launcherProfile = ManagedLauncherProfile.Standard }) {
