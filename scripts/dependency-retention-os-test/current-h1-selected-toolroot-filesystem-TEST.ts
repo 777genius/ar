@@ -49,7 +49,8 @@ export function readSelectedPhysicalHoldFacts(error:unknown):Readonly<{reason:Se
  if(value("disposition")!==SelectedPhysicalDisposition.PartialHeld||typeof reason!=="string"||!Object.values(SelectedPhysicalHold).includes(reason as SelectedPhysicalHold)||typeof rootCreated!=="boolean"||typeof phase!=="string"||!Object.values(SelectedPhysicalPhase).includes(phase as SelectedPhysicalPhase)||typeof processedObjects!=="number"||!Number.isSafeInteger(processedObjects)||processedObjects<0||processedObjects>1055||typeof identitySite!=="string"||!Object.values(SelectedPhysicalIdentitySite).includes(identitySite as SelectedPhysicalIdentitySite))return undefined;
  return Object.freeze({reason:reason as SelectedPhysicalHold,rootCreated,phase:phase as SelectedPhysicalPhase,processedObjects,identitySite:identitySite as SelectedPhysicalIdentitySite});
 }
-interface Directory { fd:number;parent:number;name:string;initial:fs.BigIntStats }
+enum DirectoryRole { Ancestry="ancestry",Output="output" }
+interface Directory { fd:number;parent:number;name:string;initial:fs.BigIntStats;readonly role:DirectoryRole }
 interface PhysicalRow { path:string;kind:Kind;identity:Readonly<Record<string,string>>;sha256:string;literalBytesBase64:string;literalSha256:string }
 const rootName="h1-selected-toolroot-TEST",sitePath="usr/lib/python3.12/sitecustomize.py";
 const recordNames=["selected-toolroot-source-output-UNADMITTED.json","selected-toolroot-physical-UNADMITTED.json","selected-toolroot-materialization-UNADMITTED.json"] as const;
@@ -237,11 +238,12 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
  const tick=()=>{need(!cancelled,SelectedPhysicalHold.Cancelled);need(performance.now()<deadline,SelectedPhysicalHold.Deadline);};
  const checkDirectory=(d:Directory)=>{
   tick();const s=fs.fstatSync(d.fd,{bigint:true}),named=fs.lstatSync(anchored(d.parent,d.name),{bigint:true});
-  // Same original vetoes and original sample order; only finite failure location.
+  // Shared ancestry can gain unrelated siblings between these two real samples.
+  // Pin its original identity, owner and mode; owned output keeps full stamps.
   const identityNeed=(value:boolean,site:SelectedPhysicalIdentitySite)=>{if(!value)throw new SelectedPhysicalHeld(SelectedPhysicalHold.Identity,false,SelectedPhysicalPhase.Unknown,0,site);};
   identityNeed(s.isDirectory(),SelectedPhysicalIdentitySite.DirectoryType);
   identityNeed(sameObject(s,d.initial),SelectedPhysicalIdentitySite.DirectoryOriginal);
-  identityNeed(stamp(s)===stamp(named),SelectedPhysicalIdentitySite.DirectoryNamed);
+  identityNeed(named.isDirectory()&&(d.role===DirectoryRole.Ancestry?sameObject(s,named):stamp(s)===stamp(named)),SelectedPhysicalIdentitySite.DirectoryNamed);
   identityNeed(!finalized.has(d.fd)||stamp(s)===stamp(d.initial),SelectedPhysicalIdentitySite.DirectoryFinalized);
  };
  const checkPlan=()=>{intrinsicPrototypes();if(!detached.rejoin()){jsonData(originalPlan);need(hash(canonicalData(originalPlan))===planHash,SelectedPhysicalHold.Plan);}tick();};
@@ -260,7 +262,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   for(const name of parts){
    tick();const fd=keep(fs.openSync(anchored(parent,name),fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW));
    const initial=fs.fstatSync(fd,{bigint:true});need(initial.isDirectory(),SelectedPhysicalHold.Identity);
-   ancestry.push({fd,parent,name,initial});parent=fd;
+   ancestry.push({fd,parent,name,initial,role:DirectoryRole.Ancestry});parent=fd;
   }
   const d=ancestry[ancestry.length-1];need(d&&d.initial.uid===0n&&d.initial.gid===0n&&(d.initial.mode&0o7777n)===0o700n,SelectedPhysicalHold.Ownership);return d;
  };
@@ -297,7 +299,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   const name=path===""?rootName:posix.basename(path),location=anchored(parent.fd,name);fs.mkdirSync(location,{mode:0o700});if(path==="")rootCreated=true;
   const fd=keep(fs.openSync(location,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW));
   const before=fs.fstatSync(fd,{bigint:true});need(before.isDirectory()&&before.uid===0n&&before.nlink>=2n,SelectedPhysicalHold.Ownership);
-  fs.fchownSync(fd,0,0);fs.fchmodSync(fd,0o700);const d={fd,parent:parent.fd,name,initial:fs.fstatSync(fd,{bigint:true})};directories.set(path,d);checkDirectory(d);refreshOwnedAncestor(parent);if(path!=="")processedObjects++;
+  fs.fchownSync(fd,0,0);fs.fchmodSync(fd,0o700);const d={fd,parent:parent.fd,name,initial:fs.fstatSync(fd,{bigint:true}),role:DirectoryRole.Output};directories.set(path,d);checkDirectory(d);refreshOwnedAncestor(parent);if(path!=="")processedObjects++;
  };
  const parentFor=(p:string)=>{const d=directories.get(posix.dirname(p)==="."?"":posix.dirname(p));need(d,SelectedPhysicalHold.Parent);checkDirectory(d);return d;};
  const finalize=(fd:number,mode:number,time:number)=>{
