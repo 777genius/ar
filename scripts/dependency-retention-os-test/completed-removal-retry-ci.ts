@@ -6,7 +6,13 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { JsonTestResults } from "vitest/reporters";
+// Exact historical source bytes are committed as TEST data. Public source-only
+// history need not contain, fetch or claim ancestry to the original private commit.
 const base="798edef247cfd43fbc7a07745b3cf8384374624d",ownership="src/worker-codex/hosted-dependency-removal-ownership.ts";
+const baselineFixture="scripts/dependency-retention-os-test/fixtures/completed-removal-retry/hosted-dependency-removal-ownership.ts.txt",baselineProvenance="scripts/dependency-retention-os-test/fixtures/completed-removal-retry/provenance.json";
+const baselineBlob="4ac41a8cd1c33a91d51f34c1a9bda5e1dbf11d08",baselineSha256="436f411ffb51cd47ad105545d62d83c7627dee26134f2b8929780e7bdf2f08b2",provenanceSha256="ae6b1512591745146cc9c9fe6220e420e096e79e0c34282a96a68d305028e7db";
+const baselineBytes=17201;
+const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 assert.equal(process.platform,"linux");assert.equal(process.getuid?.(),0);assert.equal(process.argv.length,5);
 const [workspaceArg,tempArg,sourceSha]=process.argv.slice(2);assert(workspaceArg && tempArg && sourceSha && /^[a-f0-9]{40}$/.test(sourceSha));
 assert(isAbsolute(workspaceArg) && isAbsolute(tempArg));
@@ -14,13 +20,24 @@ const workspace=realpathSync(workspaceArg),temp=realpathSync(tempArg);
 assert(lstatSync(workspace).isDirectory() && lstatSync(temp).isDirectory());
 const env={PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:"/nonexistent",CI:"true"};
 const git=(args:string[])=>execFileSync("/usr/bin/git",["-c",`safe.directory=${workspace}`,...args],{cwd:workspace,env,timeout:30000,maxBuffer:64*1024*1024});
-assert.equal(git(["rev-parse","HEAD"]).toString("utf8").trim(),sourceSha);git(["merge-base","--is-ancestor",base,"HEAD"]);
-const old=git(["show",base+":"+ownership]),original=git(["show","HEAD:"+ownership]);
+assert.equal(git(["rev-parse","HEAD"]).toString("utf8").trim(),sourceSha);
+// Bind both fixture and provenance to this exact tested public commit. SHA pins
+// refuse modified baseline bytes; provenance records origin without ancestry.
+const old=git(["show","HEAD:"+baselineFixture]),provenanceBytes=git(["show","HEAD:"+baselineProvenance]);
+assert.equal(old.length,baselineBytes);assert.equal(hash(old),baselineSha256);
+assert.equal(createHash("sha1").update(Buffer.from(`blob ${old.length}\0`)).update(old).digest("hex"),baselineBlob);
+assert.equal(hash(provenanceBytes),provenanceSha256);
+const provenance:unknown=JSON.parse(provenanceBytes.toString("utf8"));
+assert.deepEqual(provenance,{schemaVersion:1,purpose:"TEST_completed_immutable_idle_retry_baseline_only",
+  sourceCommit:base,sourcePath:ownership,sourceBlob:baselineBlob,fixturePath:baselineFixture,
+  fixtureSha256:baselineSha256,fixtureBytes:baselineBytes,historyImported:false,nativeAuthority:"NONE"});
+const original=git(["show","HEAD:"+ownership]);
 assert(!old.equals(original),"fixed ownership must differ from exact baseline");
 const archive=git(["archive","HEAD","src","package.json"]),owned=mkdtempSync(join(temp,"TEST-completed-removal-retry-"));
 const evidencePath=join(workspace,"dependency-completed-removal-retry-evidence.json");
-const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 const evidence:Record<string,unknown>={schemaVersion:1,purpose:"TEST_completed_immutable_idle_retry_only",sourceSha,baseSha:base,
+  baselineMode:"pinned_public_TEST_source_fixture",baselineFixture,baselineSourceBlob:baselineBlob,baselineProvenanceSha256:provenanceSha256,
+  baselineAncestry:"NOT_ASSERTED",
   fixedOwnershipSha256:hash(original),baselineOwnershipSha256:hash(old),
   testSourceSha256:hash(git(["show","HEAD:src/worker-codex/tests/hosted-dependency-completed-removal-retry.test.ts"])),qualification:"pending",nativeCrashQualification:"NOT_RUN"};
 function run(label:"fixed"|"baseline",bytes:Buffer) {
