@@ -71,8 +71,9 @@ const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes
 /** Fixed ROOT protocol inventory, including the five selected-plan regressions.
  * Count changes require source review; every required ROOT case must really run. */
 export function assertCiRootProtocolTap(tap:string):void {
- assert(/^# tests 43$/m.test(tap)&&/^# pass 42$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
+ assert(/^# tests 44$/m.test(tap)&&/^# pass 43$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
  for(const name of [
+  "shared decoder adapters retain the CI scope and cannot turn expired/caller DATA into a native tool launch",
   "qualified package lock reproduces the previously measured complete signed image",
   "qualified acquisition pins every dependency and retains all five original seeds",
   "real acquired file hashes retained bytes and refuses post-read deadline/identity mutation",
@@ -165,7 +166,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   const physicalTests=spawnSync(process.execPath,physicalTestArgv,{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"root-tests.tap"),physicalTests.stdout??"");file(join(evidence,"root-tests.stderr"),physicalTests.stderr??"");assert(!physicalTests.error&&physicalTests.status===0&&physicalTests.signal===null,"fixed root CI protocol/custody tests");
   assertCiRootProtocolTap(physicalTests.stdout);
-  // Separate finite source protocol inventory; the original43 is unchanged.
+  // Separate finite source protocol inventory; the reviewed ROOT44 roster above is separate.
   const sourceTests=spawnSync(process.execPath,["--test","--test-reporter=tap",join(sibling,"current-h1-source-record.node-test.js")],{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"source-tests.tap"),sourceTests.stdout??"");file(join(evidence,"source-tests.stderr"),sourceTests.stderr??"");assert(!sourceTests.error&&sourceTests.status===0&&sourceTests.signal===null,"fixed ROOT source archive protocol");
   assert(/^# tests 9$/m.test(sourceTests.stdout)&&/^# pass 8$/m.test(sourceTests.stdout)&&/^# fail 0$/m.test(sourceTests.stdout)&&/^# skipped 1$/m.test(sourceTests.stdout));
