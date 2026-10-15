@@ -8,7 +8,7 @@ assert.equal(process.argv.length, 2, "fixed packaging operation has no path sele
 const root = fileURLToPath(new URL("../", import.meta.url));
 const target = resolve(root, "dist/host-storage-tests/managed-launcher");
 assert.equal(realpathSync(target), target);
-assert.ok(existsSync(target + "/dependency-full-native-TEST.js"), "original lifetime compiler output required");
+assert.ok(existsSync(target + "/lifetime-pin.node-test.mjs"), "original lifetime compiler output required");
 for (const [canonical, name] of [
   ["hosted-fd-unit-lifecycle.js", "hosted-fd-unit-lifecycle.js"],
   ["hosted-fd-unit-policy.js", "hosted-fd-unit-policy.js"],
