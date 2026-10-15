@@ -1,3 +1,4 @@
+import { readOriginalHostedDependencyPreservationDischargedUnits } from "./hosted-dependency-preservation-operator";
 import { assertOriginalHostedDependencyFullBackingInterval } from "./hosted-full-backing-interval";
 import { readOriginalHostedDependencyPriorRSourceClosure, readOriginalHostedDependencyConsumerPriorRSourceClosure } from "./hosted-dependency-generation-r-source-closure";
 import { readHostedDependencyActiveReferenceUnits } from "./hosted-dependency-active-actor-facts";
@@ -54,7 +55,7 @@ function census(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActi
     if(line.trim().split(/\s+/)[0]!=="dbus.socket")invalid();
   }
   const observed=lines(systemctl(["list-units","--all","--type=service,scope","--state=active,activating,reloading,deactivating,failed","--no-legend","--plain","--no-pager"]));
-  let eligible=true;const discharged=new Set<string>([...readHostedDependencyActiveReferenceUnits(fence,access),...readOriginalHostedDependencyDischargedRemovalUnits(fence,access)]);
+  let eligible=true;const discharged=new Set<string>([...readHostedDependencyActiveReferenceUnits(fence,access),...readOriginalHostedDependencyDischargedRemovalUnits(fence,access),...readOriginalHostedDependencyPreservationDischargedUnits(fence,access,context)]);
   for(const line of observed) {
     const name=line.trim().split(/\s+/)[0];if(name==="init.scope")continue;
     if(!unit(name))invalid();

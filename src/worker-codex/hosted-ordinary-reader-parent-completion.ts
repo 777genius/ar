@@ -1,3 +1,6 @@
+import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
+import type { CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyPhysicalRecordAccess, assertOriginalHostedDependencyOperatorDescriptors, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 import { ensureHostedDependencyDirectory } from "./hosted-dependency-receipts";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { readHostedOrdinaryParentRecord, HostedOrdinaryParentRecordKind } from "./hosted-ordinary-parent-record-facts";
@@ -15,10 +18,10 @@ import { hostedDependencyOwnerRoot, readHostedDependencyBinding } from "../provi
 import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { HostedOrdinaryDependencyReaderKind } from "./hosted-ordinary-dependency-reader";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
+import { readHostedOrdinaryBirth, readRetainedOrdinaryBirth } from "./hosted-installation-origin-facts";
 import { assertInspectedInstallation, assertActivationSession } from "./hosted-installation-physical-facts";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
-import { collectUnitNotFound } from "./hosted-readonly-linux-collector";
+import { collectProcessBirth, collectProcessCgroup, collectUnitNotFound } from "./hosted-readonly-linux-collector";
 import { parseHostedOrdinaryReaderTerminalFacts, matchesManagedProviderProxyWait, type HostedManagedProviderTerminalFacts } from "./hosted-managed-provider-terminal-facts";
 const root="/var/lib/subscription-runtime-host-policy", encode=(v:unknown)=>Buffer.from(JSON.stringify(v)+"\n");
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
@@ -29,23 +32,30 @@ export interface HostedOrdinaryReaderParentCompletion {
   readonly binding:DependencyProtectedReference;readonly attempt:DependencyAttempt;readonly unit:string;
   readonly invocationId:string;readonly proxyBirth:string;readonly waitStatus:number;readonly terminal:HostedManagedProviderTerminalFacts|null;
 }
-function boundary(fence:HostedActivationFence):void {assertHostedActivationFence(fence);assertHostedActivationOperator();assertHostedProcessDescriptors();}
+function boundary(fence:HostedActivationFence,access?:symbol,context?:CurrentHostedDependencyOrigin):void {assertHostedActivationFence(fence);assertHostedActivationOperator();
+  if(access===undefined)assertHostedProcessDescriptors();else {assertOriginalHostedDependencyPhysicalRecordAccess(access);if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else assertOriginalHostedDependencyOperatorDescriptors(fence,access);}}
 function pin(fence:HostedActivationFence,name:string) {
   const prefixes:readonly [string,HostedOrdinaryParentRecordKind][]=[["ordinary-starts/",HostedOrdinaryParentRecordKind.Start],["dependency-reader-starts/",HostedOrdinaryParentRecordKind.Producer],
     ["dependency-ordinary-reader-completions/",HostedOrdinaryParentRecordKind.Completion],["dependency-attempt-fences/",HostedOrdinaryParentRecordKind.AttemptFence]];
   const selected=prefixes.find(([prefix])=>name.startsWith(prefix));if (!selected || !name.endsWith(".json")) held();
   return readHostedOrdinaryParentRecord(fence,selected[1],name.slice(selected[0].length,-5));
 }
-function selection(fence:HostedActivationFence,startId:string) {
-  boundary(fence);if (!uuid(startId)) held();const startPin=pin(fence,`ordinary-starts/${startId}.json`),start=parseHostedOrdinaryStart(decodeHostedActivationBytes(startPin.bytes));
+function selection(fence:HostedActivationFence,startId:string,access?:symbol,context?:CurrentHostedDependencyOrigin) {
+  boundary(fence,access,context);if (!uuid(startId)) held();const startPin=pin(fence,`ordinary-starts/${startId}.json`),start=parseHostedOrdinaryStart(decodeHostedActivationBytes(startPin.bytes));
   if (start.unit!==`subscription-runtime-ordinary-${startId}.service`) held();
-  const actual=readHostedOrdinaryBirth(start.jobId),{installation,activation}=actual,kernel=new HostedReadonlyHostKernel();
-  assertInspectedInstallation(installation);assertActivationSession(activation,kernel.operatorSession());
+  const actual=access===undefined?readHostedOrdinaryBirth(start.jobId):readRetainedOrdinaryBirth(start.jobId),{installation,activation}=actual,kernel=new HostedReadonlyHostKernel();
+  const scope=context&&access!==undefined?readOriginalHostedDependencyGenerationNativeScope(context,fence,access):undefined,
+    session=scope?(scope.facts.kind===CurrentHostedDependencyOriginKind.Ordinary?kernel.ordinaryRuntimeSession(parseHostedOrdinaryStart(scope.facts.ordinary.start)):kernel.session()):kernel.operatorSession();
+  assertInspectedInstallation(installation);assertActivationSession(activation,session);
+  if(context) {
+    const inventory=readHostedReadonlyHostInventory(),supervisor=inventory.units.find(v=>v.name===inventory.supervisorUnit),pid=start.creatorPidBirth.split(":")[0]!;
+    if(!supervisor || collectProcessBirth(pid)!==start.creatorPidBirth || collectProcessCgroup(pid)!==`0::${supervisor.controlGroup}`)held();
+  }
   const row=activation.ordinaryStarts.find(value=>value.startId===startId),binding=readHostedDependencyBinding(start.jobId);
-  if (!row || (row.state!==HostedCustodyReservationState.Reserved && row.state!==HostedCustodyReservationState.Terminal) ||
+  if (!row || access!==undefined && row.state!==HostedCustodyReservationState.Terminal || (row.state!==HostedCustodyReservationState.Reserved && row.state!==HostedCustodyReservationState.Terminal) ||
       row.unit!==start.unit || row.creatorId!==start.creatorId || row.originSha256!==start.originSha256 || row.generation!==start.activationGeneration ||
       start.installationId!==installation.installationId || start.bootId!==activation.bootId || start.supervisorId!==activation.supervisorId ||
-      start.creatorPidBirth!==kernel.ordinaryCreatorBirth() || actual.originSha256!==start.originSha256 || actual.birth.workspacePath!==start.workspacePath ||
+      (!context && start.creatorPidBirth!==kernel.ordinaryCreatorBirth()) || actual.originSha256!==start.originSha256 || actual.birth.workspacePath!==start.workspacePath ||
       actual.birth.jobRootDir!==start.jobRootDir || !binding || binding.version!==2 || binding.installationId!==installation.installationId ||
       binding.runtimeSha!==installation.runtimeSha || binding.grantDigest!==start.grantSha256 || binding.workspace.canonicalPath!==start.workspacePath || binding.jobRootDir!==start.jobRootDir) held();
   const bindingPin=readHostedOrdinaryParentRecord(fence,HostedOrdinaryParentRecordKind.Binding,binding.jobId),producer=pin(fence,`dependency-reader-starts/${startId}.json`),claim=decodeHostedActivationBytes(producer.bytes);
@@ -80,10 +90,10 @@ function native(fence:HostedActivationFence,facts:ReturnType<typeof selection>,r
   if (receipt.waitStatus===0 && !readHostedOrdinaryParentRecord(fence,HostedOrdinaryParentRecordKind.ZeroCompletion,facts.row.startId).bytes.equals(encode({schemaVersion:1,startId:facts.row.startId,startSha256:facts.startPin.reference.sha256,waitStatus:0}))) held();
   facts.kernel.drainOrdinaryQueue(facts.row);facts.kernel.confirmOrdinaryDescendants(facts.row);
 }
-function stable(fence:HostedActivationFence,before:ReturnType<typeof selection>):void {
-  const after=selection(fence,before.row.startId);
+function stable(fence:HostedActivationFence,before:ReturnType<typeof selection>,access?:symbol,context?:CurrentHostedDependencyOrigin):void {
+  const after=selection(fence,before.row.startId,access,context);
   if (!encode(after.actual).equals(encode(before.actual)) || !sameDependencyProtectedReference(after.startPin.reference,before.startPin.reference) ||
-      !sameDependencyProtectedReference(after.bindingPin.reference,before.bindingPin.reference) || !sameDependencyProtectedReference(after.producer.reference,before.producer.reference)) held();boundary(fence);
+      !sameDependencyProtectedReference(after.bindingPin.reference,before.bindingPin.reference) || !sameDependencyProtectedReference(after.producer.reference,before.producer.reference)) held();boundary(fence,access,context);
 }
 /** Factual bytes only, selected by original FDA association before IO. The
  * private store independently requires the SAME retained physical child before
@@ -107,8 +117,17 @@ export function collectHostedOrdinaryReaderParentCompletion(fence:HostedActivati
 /** Independent historical parent proof. Never examines/authorizes a provider,
  * marks a row, releases credentials/home or recursively depends on child proof. */
 export function readHostedOrdinaryReaderParentCompletion(fence:HostedActivationFence,startId:string,startSha256:string) {
-  boundary(fence);if (typeof startSha256!=="string" || /^[a-f0-9]{64}$/.exec(startSha256)?.[0]!==startSha256) held();
-  const facts=selection(fence,startId),completion=pin(fence,`dependency-ordinary-reader-completions/${startId}.json`),v=decodeHostedActivationBytes(completion.bytes);
+  return parentCompletion(fence,startId,startSha256);
+}
+export function readOriginalHostedOrdinaryReaderParentCompletion(fence:HostedActivationFence,startId:string,startSha256:string,access:symbol) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);return parentCompletion(fence,startId,startSha256,access);
+}
+export function readOriginalHostedConsumerReaderParentCompletion(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,startId:string,startSha256:string,access:symbol) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);return parentCompletion(fence,startId,startSha256,access,context);
+}
+function parentCompletion(fence:HostedActivationFence,startId:string,startSha256:string,access?:symbol,context?:CurrentHostedDependencyOrigin) {
+  boundary(fence,access,context);if (typeof startSha256!=="string" || /^[a-f0-9]{64}$/.exec(startSha256)?.[0]!==startSha256) held();
+  const facts=selection(fence,startId,access,context),completion=pin(fence,`dependency-ordinary-reader-completions/${startId}.json`),v=decodeHostedActivationBytes(completion.bytes);
   if (facts.startPin.reference.sha256!==startSha256 || !isDependencyCustodyObject(v,"attempt,binding,invocationId,preclaim,proxyBirth,schemaVersion,start,terminal,unit,waitStatus") ||
       v.schemaVersion!==1 || v.unit!==facts.row.unit || !isDependencyProtectedReference(v.start) || !sameDependencyProtectedReference(v.start,facts.startPin.reference) ||
       !isDependencyProtectedReference(v.preclaim) || !sameDependencyProtectedReference(v.preclaim,facts.producer.reference) ||
@@ -121,8 +140,8 @@ export function readHostedOrdinaryReaderParentCompletion(fence:HostedActivationF
     `Id=${t.unit}\nInvocationID=${t.invocationId}\nActiveState=failed\nSubState=failed\nMainPID=0\nControlPID=0\nJob=\nExecMainCode=${t.kind}\nExecMainStatus=${t.status}\nResult=${t.result}\n`);
   const receipt:HostedOrdinaryReaderParentCompletion={schemaVersion:1,start:v.start,preclaim:v.preclaim,binding:v.binding,attempt:facts.attempt,unit:facts.row.unit,
     invocationId:v.invocationId,proxyBirth:v.proxyBirth,waitStatus:v.waitStatus,terminal};
-  if (!encode(terminal).equals(encode(t))) held();native(fence,facts,receipt,true);stable(fence,facts);
-  if (!pin(fence,`dependency-ordinary-reader-completions/${startId}.json`).bytes.equals(completion.bytes)) held();boundary(fence);
+  if (!encode(terminal).equals(encode(t))) held();native(fence,facts,receipt,true);stable(fence,facts,access,context);
+  if (!pin(fence,`dependency-ordinary-reader-completions/${startId}.json`).bytes.equals(completion.bytes)) held();boundary(fence,access,context);
   return Object.freeze({...facts,completion:completion.reference,receipt});
 }
 

@@ -1,7 +1,8 @@
+import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { DependencyGenerationContinuityKind as Continuity, DependencyOwnerKind, DependencyOwnerPhase,
   isDependencyCustodyObject, isDependencyProtectedReference, parseDependencyOwner, sameDependencyMaintenanceAttempt,
   sameDependencyProtectedReference, type DependencyOwnerRecord, type DependencyMaintenanceAttempt } from "@vioxen/subscription-runtime/core";
-import { HostedActivationPhase, HostedCustodyPhase, DependencyReceiptState as State, claimDependencyMaintenance,
+import { HostedActivationPhase, HostedCustodyPhase, DependencyReceiptState as State, parseDependencyConsumerAttempt, claimDependencyMaintenance,
   releaseDependencyMaintenance } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyOwnerRoot, readHostedDependencyBinding, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace,
@@ -29,6 +30,9 @@ import { pinReferenceFile, writeReferenceOnce, encodeReference as encode } from 
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { readOriginalHostedDependencyRemoverScope, readOriginalHostedDependencyRemoverAuthority, readOriginalHostedDependencyRemoverEffectState } from "./hosted-dependency-removal-context";
 import { readOriginalHostedDependencyRemovalIdle } from "./hosted-dependency-removal-history";
+import { readHostedDependencyPendingPreservations } from "./hosted-dependency-preservation-handoff";
+import { HostedDependencyPreservationLineageKind } from "./hosted-dependency-preservation-selection";
+import { readOriginalHostedDependencyRetiredInterval } from "./hosted-dependency-retired-interval-facts";
 const root="/var/lib/subscription-runtime-host-policy",records=root+"/dependency-generation-maintenance";
 function held():never{throw new Error("hosted_dependency_active_maintenance_held");}
 function equal(a:unknown,b:unknown):boolean{return encode(a).equals(encode(b));}
@@ -72,7 +76,8 @@ function selected(fence:HostedActivationFence,jobId:string,operationId:string,ac
   if(!isDependencyCustodyObject(v,"binding,claimed,idle,previous,sourceClosed,version") || v.version!==1 || !pin.bytes.equals(encode(v)) ||
       !equal(v.binding,authority.binding) || !isDependencyProtectedReference(v.idle) || !isDependencyProtectedReference(v.sourceClosed))held();
   const previous=parseDependencyOwner(v.previous),claimed=parseDependencyOwner(v.claimed);
-  if(previous.version===1 || claimed.version!==previous.version || previous.owner || previous.generationContinuity?.kind!==Continuity.BaselineAuthenticatedV1 ||
+  if(previous.version===1 || claimed.version!==previous.version || previous.owner ||
+      (previous.generationContinuity?.kind!==Continuity.BaselineAuthenticatedV1 && previous.generationContinuity?.kind!==Continuity.RetiredReadyV1) ||
       claimed.owner?.kind!==DependencyOwnerKind.Maintenance || claimed.owner.phase!==DependencyOwnerPhase.ExclusiveMutation ||
       claimed.owner.attempt.operationId!==operationId || !equal(claimed,parseDependencyOwner({...previous,revision:previous.revision+1,epoch:previous.epoch+1,owner:claimed.owner})) ||
       !sameDependencyMaintenanceAttempt(claimed.owner.attempt,{...claimed.owner.attempt,host:host(authority)}))held();
@@ -96,12 +101,26 @@ function native(fence:HostedActivationFence,proof:ReturnType<typeof selected>,ac
     readOriginalHostedDependencyPriorRSourceClosure(fence,`subscription-runtime-outer-${id}.service`,access);
   if(!prior || !sameDependencyProtectedReference(pinReferenceFile(proof.sourceClosed.path,65536).reference,proof.sourceClosed) ||
       !sameDependencyProtectedReference(pinReferenceFile(proof.idle.path,16384).reference,proof.idle) || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
-  const slot=proof.previous.generationContinuity;
+  let slot=proof.previous.generationContinuity;
+  if(slot?.kind===Continuity.RetiredReadyV1) {
+    const original=pinReferenceFile(proof.sourceClosed.path,65536),row:unknown=JSON.parse(original.bytes.toString("utf8"));
+    if(!row || typeof row!=="object" || !("attempt" in row))held();
+    const attempt=parseDependencyConsumerAttempt(row.attempt);
+    if(attempt.launch.startId!==id || attempt.epoch!==proof.previous.epoch)held();
+    slot=readOriginalHostedDependencyRetiredInterval(fence,attempt,proof.authority.binding,proof.previous,access).slot;
+  }
   if(slot?.kind!==Continuity.BaselineAuthenticatedV1)held();
   const baseline=pinReferenceFile(slot.baseline.path,65536),v:unknown=JSON.parse(baseline.bytes.toString("utf8")),actors=readHostedDependencyActiveActorFacts(fence,access);
   if(!sameDependencyProtectedReference(baseline.reference,slot.baseline) || !isDependencyCustodyObject(v,"actors,attempt,barrier,binding,inputClosureDigest,installerMappingSha256,ready,readyReference,version") ||
       !actors || !equal(v.actors,actors) || !sameDependencyProtectedReference(pinReferenceFile(slot.writerBarrier.path,16384).reference,slot.writerBarrier))held();
   boundary(fence,access);
+}
+/** Fixed historical Active lineage for the separate explicit preservation
+ * operator. It authenticates the original immutable maintenance selection;
+ * current preservation ownership is independently checked by that issuer. */
+export function readOriginalHostedDependencyPreservationActiveHistory(fence:HostedActivationFence,jobId:string,operationId:string,access:symbol) {
+  const proof=selected(fence,jobId,operationId,access);native(fence,proof,access);
+  return {binding:proof.authority.binding,previous:proof.previous,claimed:proof.claimed,idle:proof.idle,sourceClosed:proof.sourceClosed};
 }
 function publish(fence:HostedActivationFence,previous:DependencyOwnerRecord,next:DependencyOwnerRecord,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
@@ -117,15 +136,29 @@ function publish(fence:HostedActivationFence,previous:DependencyOwnerRecord,next
 /** Fixed operator claim. A caller operation ID chooses neither source lineage
  * nor an owner: the current authentic idle predecessor supplies both. */
 export function claimOriginalHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,operationId:string,access:symbol):DependencyMaintenanceAttempt {
+  return claimMaintenance(fence,jobId,operationId,access,false);
+}
+/** Same existing maintenance claim/SourceClosed machinery, but the activated
+ * request must be the exact original preservation purpose before any CAS. */
+export function claimOriginalHostedDependencyPreservationMaintenance(fence:HostedActivationFence,jobId:string,operationId:string,access:symbol):DependencyMaintenanceAttempt {
+  return claimMaintenance(fence,jobId,operationId,access,true);
+}
+function claimMaintenance(fence:HostedActivationFence,jobId:string,operationId:string,access:symbol,preservation:boolean):DependencyMaintenanceAttempt {
   boundary(fence,access);const a=readOriginalHostedDependencyMaintenanceAuthority(fence,jobId,access),previous=owner(a.binding.workspace);
-  if(previous?.version!==1 && previous?.generationContinuity?.kind===Continuity.BaselineAuthenticatedV1) {
+  const pending=readHostedDependencyPendingPreservations(fence,a.binding);
+  if(preservation ? pending.length!==1 || pending[0]!.header.operationId!==operationId || !equal(pending[0]!.header.prior.owner,previous) : pending.length!==0)held();
+  const preservedRetired=preservation && pending[0]?.header.lineage.kind===HostedDependencyPreservationLineageKind.Active && previous?.version!==1 && previous?.generationContinuity?.kind===Continuity.RetiredReadyV1;
+  if(previous?.version!==1 && (previous?.generationContinuity?.kind===Continuity.BaselineAuthenticatedV1 || preservedRetired)) {
     const idle=readOriginalHostedDependencyMaintenanceIdle(fence,a.binding.workspace,access) ??
       (previous.version===2 ? readOriginalHostedDependencyCIdleGeneration(fence,jobId,access) : readOriginalHostedDependencyRIdleGeneration(fence,access));
     if(!equal(idle.binding,a.binding) || !equal(idle.previous,previous))held();
     const attempt:DependencyMaintenanceAttempt={operationId,epoch:previous.epoch+1,host:host(a)},claimed=parseDependencyOwner({...previous,revision:previous.revision+1,epoch:attempt.epoch,
       owner:{kind:DependencyOwnerKind.Maintenance,phase:DependencyOwnerPhase.ExclusiveMutation,attempt}});
     ensureHostedDependencyDirectory(records);
-    writeReferenceOnce(path(operationId),{version:1,binding:a.binding,previous,claimed,idle:idle.idle,sourceClosed:idle.sourceClosed});
+    const record={version:1,binding:a.binding,previous,claimed,idle:idle.idle,sourceClosed:idle.sourceClosed};
+    if(preservation){const bytes=encode(record);if(bytes.length>65536)held();createReadonlyPrivateRecord(path(operationId),bytes);
+      if(!pinReferenceFile(path(operationId),65536).bytes.equals(bytes))held();}
+    else writeReferenceOnce(path(operationId),record);
     const proof=selected(fence,jobId,operationId,access);native(fence,proof,access);publish(fence,previous,claimed,access);native(fence,proof,access);return attempt;
   }
   const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
@@ -139,6 +172,7 @@ export function assertOriginalHostedDependencyMaintenance(fence:HostedActivation
   if(remover){const state=readOriginalHostedDependencyRemoverEffectState(access);if(state.selected.claim.claimed.owner?.kind!==DependencyOwnerKind.Maintenance ||
       !sameDependencyMaintenanceAttempt(state.selected.claim.claimed.owner.attempt,attempt))held();return remover;}
   const a=readOriginalHostedDependencyMaintenanceAuthority(fence,jobId,access),current=owner(a.binding.workspace);
+  if(readHostedDependencyPendingPreservations(fence,a.binding).some(v=>v.header.operationId===attempt.operationId))held();
   if(!current || current.owner?.kind!==DependencyOwnerKind.Maintenance || (current.owner.phase!==DependencyOwnerPhase.ExclusiveMutation && current.owner.phase!==DependencyOwnerPhase.Fenced) ||
       !sameDependencyMaintenanceAttempt(current.owner.attempt,attempt) || !sameDependencyMaintenanceAttempt(attempt,{...attempt,host:host(a)}))held();
   if(current.version!==1 && (current.generationContinuity?.kind===Continuity.BaselineAuthenticatedV1 || current.generationContinuity?.kind===Continuity.RetiredEvictingV1)) {
@@ -197,6 +231,7 @@ export function retireOriginalHostedDependencyEviction(fence:HostedActivationFen
  * native/source proof; successful eviction requires the real Absent commit. */
 export function releaseOriginalHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:DependencyMaintenanceAttempt,access:symbol):void {
   boundary(fence,access);const a=readOriginalHostedDependencyMaintenanceAuthority(fence,jobId,access),previous=owner(a.binding.workspace);
+  if(readHostedDependencyPendingPreservations(fence,a.binding).some(v=>v.header.operationId===attempt.operationId))held();
   if(previous?.version!==1 && (previous?.generationContinuity?.kind===Continuity.BaselineAuthenticatedV1 || previous?.generationContinuity?.kind===Continuity.RetiredEvictingV1)) {
     if(!previous.owner) {
       const idle=readOriginalHostedDependencyMaintenanceIdle(fence,a.binding.workspace,access);

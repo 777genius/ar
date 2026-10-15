@@ -67,6 +67,20 @@ export function hostedDependencyPreservationCommit(prepared: ReturnType<typeof r
  * fails closed. The new attempt's generation is bound by the real installer. */
 export function readHostedDependencyCommittedPreservation(binding: HostedDependencyBinding, previous: Unverified,
   generation: string): DependencyPreservationProof | undefined {
+  const mapping = readHostedDependencyPreservationMapping(binding, previous);
+  if (!mapping) return undefined;
+  const { prepared, committed } = mapping, trash = prepared.header.trash;
+  try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); held(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  return { kind: DependencyPreservationKind.CommittedPreservation, generation, workspace: binding.workspace,
+    coverageRevision: dependencyCoverageRevision(binding), operationId: generation, originalTree: trash.originalTree,
+    preservedTree: trash.originalTree, destinationParent: trash.destinationParent, destinationName: trash.destinationName,
+    mappingDigest: hash(encode(prepared.header)), commitEvidenceId: committed.reference.sha256 };
+}
+/** Historical mapping facts only. A later Installing/Ready history reader
+ * authenticates its exact adjacent records independently; this cannot grant
+ * a new install or infer absence of the original workspace tree. */
+export function readHostedDependencyPreservationMapping(binding: HostedDependencyBinding, previous: Unverified) {
   const prefix = hostedDependencyPreservationPath(binding, previous.revision);
   if (!readHostedPrivateBytes(prefix + ".prepared.json", 32768)) {
     if (readHostedPrivateBytes(prefix + ".committed.json", 4096)) held();
@@ -79,10 +93,5 @@ export function readHostedDependencyCommittedPreservation(binding: HostedDepende
   if (!parent.isDirectory() || parent.uid !== 0n || (parent.mode & 0o7777n) !== 0o700n ||
       !sameDependencyTree({ dev: String(parent.dev), ino: String(parent.ino) }, trash.destinationParent) ||
       !tree.isDirectory() || !sameDependencyTree({ dev: String(tree.dev), ino: String(tree.ino) }, trash.originalTree)) held();
-  try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); held(); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  return { kind: DependencyPreservationKind.CommittedPreservation, generation, workspace: binding.workspace,
-    coverageRevision: dependencyCoverageRevision(binding), operationId: generation, originalTree: trash.originalTree,
-    preservedTree: trash.originalTree, destinationParent: trash.destinationParent, destinationName: trash.destinationName,
-    mappingDigest: hash(encode(prepared.header)), commitEvidenceId: committed.reference.sha256 };
+  return { prepared, committed };
 }

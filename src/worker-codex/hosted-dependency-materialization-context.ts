@@ -1,3 +1,4 @@
+import { assertHostedDependencyPreservationAdmission } from "./hosted-dependency-preservation-handoff";
 import { readHostedDependencyCommittedPreservation } from "./hosted-dependency-preservation";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
@@ -133,6 +134,7 @@ export async function beginHostedDependencyInstallation(binding: HostedDependenc
     if(capturedOrigin)assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess ?? fail());
     else if(requiresCurrentHostedDependencyRootPurpose(fence))fail();
     assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt,capturedOrigin);
+    assertHostedDependencyPreservationAdmission(fence,binding);
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
     if (previous?.state === DependencyReceiptState.Unverified &&

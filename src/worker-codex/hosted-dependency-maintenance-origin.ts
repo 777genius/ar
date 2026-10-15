@@ -1,3 +1,5 @@
+import { assertOriginalHostedDependencyPreservationDescriptors } from "./hosted-dependency-preservation-effect";
+import { readOriginalHostedDependencyRemoverScope } from "./hosted-dependency-removal-context";
 import { assertHostedActivationFence, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import type { DependencyMaintenanceAttempt } from "@vioxen/subscription-runtime/core";
@@ -29,5 +31,12 @@ export function readOriginalHostedDependencyMaintenanceRenameState(context: Orig
 }
 export function assertOriginalHostedDependencyMaintenanceDescriptors(fence: HostedActivationFence, access: symbol): void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access); assertHostedActivationFence(fence);
+  if(assertOriginalHostedDependencyPreservationDescriptors(fence,access)){if(current)held();return;}
   if (current) assertOriginalHostedDependencyMaintenanceRenameDescriptors(current, fence, access); else assertHostedProcessDescriptors();
+}
+
+export function assertOriginalHostedDependencyOperatorDescriptors(fence:HostedActivationFence,access:symbol):void {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  if(readOriginalHostedDependencyRemoverScope(fence,access))return;
+  assertOriginalHostedDependencyMaintenanceDescriptors(fence,access);
 }

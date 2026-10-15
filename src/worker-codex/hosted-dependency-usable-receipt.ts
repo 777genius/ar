@@ -1,3 +1,4 @@
+import { readHostedDependencyPendingPreservations } from "./hosted-dependency-preservation-handoff";
 import { lstatSync } from "node:fs";
 import { DependencyOwnerPhase, isDependencyConsumerOwner, sameDependencyAttempt, sameDependencyWorkspace,
   sameDependencyProtectedReference, parseDependencyGenerationContinuityInvalidation } from "@vioxen/subscription-runtime/core";
@@ -19,9 +20,9 @@ function invalid():never {throw new Error("hosted_dependency_usable_receipt_unre
 export function readHostedDependencyUsableReceipt(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,
   phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running) {
   const actual=assertCurrentHostedDependencyAttempt(context,fence,phase),{binding,attempt}=actual;
-  if(binding.version!==2)invalid();
+  if(binding.version!==2 || readHostedDependencyPendingPreservations(fence,binding).length)invalid();
   const current=readHostedDependencyEstablishedReceipt(binding);
-  if(!current || current.state!==DependencyReceiptState.Unverified || !current.tree)invalid();
+  if(!current || current.state!==DependencyReceiptState.Unverified || !current.tree || current.reason===DependencyUnverifiedReason.ExplicitOperatorReinstallation)invalid();
   const owners=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let owner:ReturnType<LocalDependencyOwnerStore["read"]>;
   try {owner=owners.read(binding.workspace);} finally {owners.close();}

@@ -1,3 +1,5 @@
+import { readHostedDependencyCompletedPreservation } from "./hosted-dependency-preservation-handoff";
+import { HostedDependencyPreservationLineageKind, readHostedDependencyPreservationSelection } from "./hosted-dependency-preservation-selection";
 import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
 import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { readOriginalHostedDependencyRetiredInterval } from "./hosted-dependency-retired-interval-facts";
@@ -8,8 +10,8 @@ import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-depe
 import { createHash } from "node:crypto";
 import { DependencyGenerationContinuityKind, DependencyOwnerKind, DependencyOwnerPhase, isDependencyConsumerOwner,
   isDependencyCustodyObject, isDependencyProtectedReference, parseDependencyOwner, sameDependencyAttempt,
-  sameDependencyProtectedReference, isDependencyCustodyLaunch, DependencyConsumerLaunchKind, DependencyCustodyEvidenceKind } from "@vioxen/subscription-runtime/core";
-import { fenceDependencyConsumer, HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch, type HostedCustodyEpoch, type HostedCustodyOuterRuntime } from "@vioxen/subscription-runtime/worker-core";
+  sameDependencyProtectedReference, isDependencyCustodyLaunch, DependencyConsumerLaunchKind, DependencyCustodyEvidenceKind, type DependencyOwnerRecord } from "@vioxen/subscription-runtime/core";
+import { fenceDependencyConsumer, HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch, parseHostedOrdinaryStart, type HostedCustodyEpoch, type HostedCustodyOuterRuntime } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedForegroundResult, readHostedForegroundLaunchObservation, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
@@ -17,7 +19,7 @@ import { hostedDependencyOwnerRoot, readHostedDependencyBinding, hostedDependenc
 import { readHostedReadonlyDependencyStart } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
-import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { CurrentHostedDependencyOriginKind, assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { HostedDependencySourceRuntimeClosureKind as ClosureKind } from "./hosted-dependency-generation-state";
 import { readOriginalHostedDependencyGenerationBaselinePins } from "./hosted-dependency-generation-source-closure";
 import { readOriginalHostedManagedProviderCreator, readOriginalHostedManagedProviderDischargedReceipt, readOriginalHostedManagedConsumerProviderDischargedReceipt } from "./hosted-managed-provider-failure-recovery";
@@ -29,7 +31,7 @@ import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { ensureHostedDependencyDirectory, readHostedDependencyExistingCommittedReady, readHostedDependencyExistingCommittedUnverified, readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
 import { parseRootPreparationFacts } from "./hosted-dependency-root-provenance-facts";
 import { readHostedDependencyRecoveryAdmissionFacts } from "./hosted-dependency-recovery-admission-facts";
-import { DependencyUnverifiedReason } from "../worker-core/dependency-environment/domain/dependency-receipt";
+import { DependencyReceiptState, DependencyUnverifiedReason } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 const root="/var/lib/subscription-runtime-host-policy",encode=(v:unknown)=>Buffer.from(JSON.stringify(v)+"\n"),
@@ -123,7 +125,14 @@ export function fenceOriginalHostedDependencyRSourceOwner(fence:HostedActivation
  * paths below. A null owner cannot synthesize a missing discharge on replay. */
 const unverifiedReleases=root+"/dependency-unverified-r-releases",unverifiedFences=root+"/dependency-unverified-r-fences";
 function unverifiedFacts(fence:HostedActivationFence,access:symbol,phase=UnverifiedObservationPhase.Live) {
-  const facts=selected(fence,access,undefined,true,phase),{previous,attempt,binding,material,outer}=facts;
+  const facts=unverifiedSourceFacts(fence,selected(fence,access,undefined,true,phase));
+  if(!encode(readHostedDependencyEstablishedReceipt(facts.binding)).equals(encode(facts.committed.receipt)))held();
+  return facts;
+}
+/** Immutable original source facts only; no current owner/receipt substitution. */
+function unverifiedSourceFacts(fence:HostedActivationFence,facts:ReturnType<typeof selected>) {
+  const {previous,attempt,binding,material,outer}=facts;
+  if(material.evidence.kind!==DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1)held();
   if(!isDependencyCustodyLaunch(attempt.launch) || attempt.launch.kind!==DependencyConsumerLaunchKind.ManagedReadonlyLocalV1 ||
       !sameDependencyProtectedReference(attempt.launch.association,material.reference) ||
       !sameDependencyProtectedReference(attempt.launch.origin,facts.parent.reference) ||
@@ -142,8 +151,7 @@ function unverifiedFacts(fence:HostedActivationFence,access:symbol,phase=Unverif
   const admitted=readHostedDependencyRecoveryAdmissionFacts(fence,binding,attempt,prepared,qualification.bytes);
   if(admitted.version!==2)held();
   const current=readHostedDependencyExistingCommittedUnverified(fence,binding,admitted.unverifiedRevision);
-  if(!sameDependencyProtectedReference(current.reference,admitted.unverified) ||
-      !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(current.receipt)))held();
+  if(!sameDependencyProtectedReference(current.reference,admitted.unverified))held();
   // A retired historical Ready without a native interval is legitimate only
   // through the exact factual BaselineMissing retirement, never lost Active.
   const slot=previous.generationContinuity;
@@ -160,7 +168,7 @@ function unverifiedFacts(fence:HostedActivationFence,access:symbol,phase=Unverif
   }
   const completion=pinReferenceFile(completionPath(outer),4096);
   if(!completion.bytes.equals(completionBytes(outer,0)))held();
-  return {...facts,preparation:preparation.reference,qualification:qualification.reference,completion:completion.reference};
+  return {...facts,committed:current,preparation:preparation.reference,qualification:qualification.reference,completion:completion.reference};
 }
 function unverifiedIdentity(facts:ReturnType<typeof unverifiedFacts>) {
   return {version:1,attempt:facts.attempt,binding:facts.binding,identity:facts.epoch.identity,outer:facts.outer,
@@ -194,9 +202,15 @@ function fenceUnverifiedR(fence:HostedActivationFence,result:HostedForegroundRes
   if(!encode(after.previous).equals(encode(expected)) || !encode(after.epoch).equals(encode(facts.epoch)) ||
       !pinReferenceFile(path,65536).bytes.equals(bytes))held();boundary(fence,access);
 }
-function verifyUnverifiedRelease(fence:HostedActivationFence,access:symbol,facts:ReturnType<typeof unverifiedFacts>,phase=UnverifiedObservationPhase.Live) {
-  if((facts.epoch.phase!==HostedCustodyPhase.Closed && facts.epoch.phase!==HostedCustodyPhase.Ready) ||
-      facts.epoch.generation<=facts.outer.generation || facts.epoch.reservations.some(row=>row.state!==HostedCustodyReservationState.Terminal))held();
+function readUnverifiedFDA(facts:ReturnType<typeof unverifiedSourceFacts>) {
+  const pin=pinReferenceFile(`${unverifiedFences}/${facts.outer.startId}.json`,65536),v:unknown=JSON.parse(pin.bytes.toString("utf8"));
+  if(!isDependencyCustodyObject(v,"attempt,binding,completion,entry,identity,invocationId,material,outer,parent,preclaim,preparation,proxyBirth,qualification,version") ||
+      !pin.bytes.equals(encode(v)) || typeof v.invocationId!=="string" || !/^[a-f0-9]{32}$/.test(v.invocationId) ||
+      typeof v.proxyBirth!=="string" || !/^[1-9][0-9]*:[1-9][0-9]*$/.test(v.proxyBirth) ||
+      !encode({...unverifiedIdentity(facts),invocationId:v.invocationId,proxyBirth:v.proxyBirth}).equals(pin.bytes))held();
+  return pin;
+}
+function unverifiedReleaseFacts(fence:HostedActivationFence,access:symbol,facts:ReturnType<typeof unverifiedSourceFacts>,context?:CurrentHostedDependencyOrigin) {
   const path=`${unverifiedReleases}/${facts.outer.startId}.json`,pin=pinReferenceFile(path,65536),v:unknown=JSON.parse(pin.bytes.toString("utf8"));
   if(!isDependencyCustodyObject(v,"fda,identity,previousOwner,previousOwnerSha256,providers,releasedOwner,version") || v.version!==1 || !pin.bytes.equals(encode(v)) ||
       !encode(v.identity).equals(encode(unverifiedIdentity(facts))) || !encode(v.releasedOwner).equals(encode(facts.previous)) || facts.previous.owner)held();
@@ -206,11 +220,17 @@ function verifyUnverifiedRelease(fence:HostedActivationFence,access:symbol,facts
   const activity=prior.activity?.lastEntry?.epoch===facts.attempt.epoch ? {lastEntry:prior.activity.lastEntry,
     lastRelease:{epoch:facts.attempt.epoch,atMs:facts.previous.activity?.lastRelease?.atMs}} : prior.activity;
   if(!encode({...prior,revision:prior.revision+1,owner:null,...(activity?{activity}:{})}).equals(encode(facts.previous)))held();
-  const fda=pinReferenceFile(`${unverifiedFences}/${facts.outer.startId}.json`,65536);
+  const fda=readUnverifiedFDA(facts);
   if(!isDependencyProtectedReference(v.fda) || !sameDependencyProtectedReference(v.fda,fda.reference))held();
-  facts.kernel.fenceCreator(facts.outer,facts.epoch.bootId,fence);facts.kernel.drainQueuedStart(facts.outer);facts.kernel.confirmTerminalDescendants(facts.outer);
-  oldProviders(fence,access,v.providers,facts);assertHostedDependencyInstallerAttemptDrained(facts.attempt);
-  const after=unverifiedFacts(fence,access,phase);if(!encode(after).equals(encode(facts)) || !pinReferenceFile(path,65536).bytes.equals(pin.bytes))held();
+  drainHistoricalOuter(context,fence,access,facts.kernel,facts.outer,facts.epoch.bootId);
+  oldProviders(fence,access,v.providers,facts,context);assertHostedDependencyInstallerAttemptDrained(facts.attempt);
+  return {pin,fda,units:Object.freeze([facts.outer.unit,...providerRows(fence,access,facts.epoch,facts.outer).map(row=>row.unit)])};
+}
+function verifyUnverifiedRelease(fence:HostedActivationFence,access:symbol,facts:ReturnType<typeof unverifiedFacts>,phase=UnverifiedObservationPhase.Live) {
+  if((facts.epoch.phase!==HostedCustodyPhase.Closed && facts.epoch.phase!==HostedCustodyPhase.Ready) ||
+      facts.epoch.generation<=facts.outer.generation || facts.epoch.reservations.some(row=>row.state!==HostedCustodyReservationState.Terminal))held();
+  const {pin}=unverifiedReleaseFacts(fence,access,facts);
+  const after=unverifiedFacts(fence,access,phase);if(!encode(after).equals(encode(facts)) || !pinReferenceFile(pin.reference.path,65536).bytes.equals(pin.bytes))held();
   boundary(fence,access);return pin.reference;
 }
 /** Read-only final observation through the ORIGINAL lexical access path. It
@@ -232,6 +252,112 @@ export function observeOriginalHostedUnverifiedRTerminal(fence:HostedActivationF
   if(!pinReferenceFile(fda.reference.path,65536).bytes.equals(fda.bytes))held();
   return Object.freeze({startId:facts.outer.startId,unit:facts.outer.unit,workspace:facts.binding.workspace,
     epochGeneration:facts.epoch.generation,release,fda:fda.reference});
+}
+/** Capture only the actual current idle no-Active R, before Maintenance.
+ * This returns original discharge facts, never a permit or a new owner. */
+export function captureOriginalHostedUnverifiedRPreservationIdle(fence:HostedActivationFence,access:symbol) {
+  const facts=unverifiedFacts(fence,access);
+  const release=verifyUnverifiedRelease(fence,access,facts),fda=readUnverifiedFDA(facts);
+  if(!encode(unverifiedFacts(fence,access)).equals(encode(facts)))held();
+  return Object.freeze({binding:facts.binding,previous:facts.previous,release,fda:fda.reference});
+}
+/** Fixed historical selection only. Later Maintenance/Consumer ownership is
+ * authenticated by its original defining caller; it is never borrowed here. */
+export function readOriginalHostedUnverifiedRPreservationHistory(fence:HostedActivationFence,operationId:string,access:symbol) {
+  return preservationHistory(undefined,fence,operationId,access);
+}
+export function readOriginalHostedConsumerUnverifiedRPreservationHistory(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,operationId:string,access:symbol) {
+  return preservationHistory(context,fence,operationId,access);
+}
+enum PreservationHistoryPhase { Live="live", Completed="completed" }
+export function readOriginalHostedUnverifiedRPreservationCensusHistory(fence:HostedActivationFence,operationId:string,access:symbol,context?:CurrentHostedDependencyOrigin) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  return new HostedReadonlyEpochStore().readEpoch().revoked ? readOriginalHostedCompletedUnverifiedRPreservationHistory(fence,operationId,access,context) : preservationHistory(context,fence,operationId,access);
+}
+/** Completed history is selected only by actual revoked custody and original
+ * immutable handoff/source closure records, never a caller completion DTO. */
+export function readOriginalHostedCompletedUnverifiedRPreservationHistory(fence:HostedActivationFence,operationId:string,access:symbol,context?:CurrentHostedDependencyOrigin) {
+  return preservationHistory(context,fence,operationId,access,PreservationHistoryPhase.Completed);
+}
+function completedPreservationSourceFacts(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol,completed:NonNullable<ReturnType<typeof readHostedDependencyCompletedPreservation>>,epoch:HostedCustodyEpoch,binding:ReturnType<typeof readHostedDependencyBinding>) {
+  if(!epoch.outerRuntime || epoch.outerRuntime.state!==HostedCustodyReservationState.Terminal || epoch.generation<=epoch.outerRuntime.generation)held();
+  const owner=completed.consumer.claimed.owner;if(!isDependencyConsumerOwner(owner))held();
+  const attempt=owner.attempt,units=priorR(context,fence,attempt.launch.unit,access);
+  if(!units?.includes(attempt.launch.unit) || !priorR(context,fence,epoch.outerRuntime.unit,access)?.includes(epoch.outerRuntime.unit))held();
+  const final=pinReferenceFile(`${root}/dependency-generation-source-closures/${epoch.outerRuntime.startId}.json`,65536),last:unknown=JSON.parse(final.bytes.toString("utf8"));
+  if(!isDependencyCustodyObject(last,"attempt,barrier,baseline,binding,identity,outer,parent,pending,providers,retirement,version") ||
+      !encode(last.outer).equals(encode(epoch.outerRuntime)) || !encode(last.binding).equals(encode(binding)) || !encode(last.identity).equals(encode(epoch.identity)))held();
+  const closure=pinReferenceFile(`${root}/dependency-generation-source-closures/${attempt.launch.startId}.json`,65536),v:unknown=JSON.parse(closure.bytes.toString("utf8"));
+  if(!isDependencyCustodyObject(v,"attempt,barrier,baseline,binding,identity,outer,parent,pending,providers,retirement,version") || v.version!==2 || !encode(v.attempt).equals(encode(attempt)) || !isDependencyProtectedReference(v.baseline))held();
+  const baseline=pinReferenceFile(v.baseline.path,65536),b:unknown=JSON.parse(baseline.bytes.toString("utf8"));
+  if(!sameDependencyProtectedReference(baseline.reference,v.baseline) || !baseline.bytes.equals(encode(b)) ||
+      !isDependencyCustodyObject(b,"actors,attempt,barrier,binding,inputClosureDigest,installerMappingSha256,ready,readyReference,version") ||
+      b.version!==1 || !encode(b.attempt).equals(encode(attempt)) || !encode(b.binding).equals(encode(binding)) ||
+      !encode(b.ready).equals(encode(completed.ready.receipt)) || !encode(b.readyReference).equals(encode(completed.ready.reference)))held();
+  return {closure:closure.reference,final:final.reference,baseline:baseline.reference,units};
+}
+function preservationHistory(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,operationId:string,access:symbol,phase=PreservationHistoryPhase.Live) {
+  historicalBoundary(context,fence,access);
+  const kernel=new HostedReadonlyHostKernel(),session=historicalSession(context,fence,access,kernel),epoch=new HostedReadonlyEpochStore().readEpoch(),
+    material=readHostedReadonlyDependencyMaterial(fence,epoch.identity),binding=readHostedDependencyBinding(material.evidence.candidate.jobId);
+  if(!binding || binding.version!==2 || (phase===PreservationHistoryPhase.Live?epoch.revoked:!epoch.revoked || epoch.phase!==HostedCustodyPhase.Closed ||
+      epoch.reservations.some(row=>row.state!==HostedCustodyReservationState.Terminal)) || (epoch.phase!==HostedCustodyPhase.Closed && epoch.phase!==HostedCustodyPhase.Ready) ||
+      epoch.hostId!==session.hostId || epoch.bootId!==session.bootId || epoch.supervisorId!==session.supervisorId)held();
+  const selection=readHostedDependencyPreservationSelection(binding,operationId),{header}=selection;
+  const completed=phase===PreservationHistoryPhase.Completed?readHostedDependencyCompletedPreservation(fence,binding,operationId):undefined;
+  if(phase===PreservationHistoryPhase.Completed && (!completed || !encode(completed.selection).equals(encode(header))))held();
+  const completedSource=completed?completedPreservationSourceFacts(context,fence,access,completed,epoch,binding):undefined;
+  if(header.lineage.kind!==HostedDependencyPreservationLineageKind.ReadonlyUnverified || header.prior.receipt.receipt.state!==DependencyReceiptState.Unverified)held();
+  const match=new RegExp("^"+unverifiedReleases+"/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\\.json$").exec(header.lineage.release.path);
+  if(!match || header.lineage.fda.path!==`${unverifiedFences}/${match[1]}.json`)held();
+  const release=pinReferenceFile(header.lineage.release.path,65536),v:unknown=JSON.parse(release.bytes.toString("utf8"));
+  if(!sameDependencyProtectedReference(release.reference,header.lineage.release) ||
+      !isDependencyCustodyObject(v,"fda,identity,previousOwner,previousOwnerSha256,providers,releasedOwner,version") ||
+      !isDependencyCustodyObject(v.identity,"attempt,binding,completion,entry,identity,material,outer,parent,preclaim,preparation,qualification,version") ||
+      !release.bytes.equals(encode(v)) || !encode(v.releasedOwner).equals(encode(header.prior.owner)) ||
+      !encode(v.identity.identity).equals(encode(epoch.identity)))held();
+  const outer=parseHostedCustodyEpoch({...epoch,outerRuntime:v.identity.outer}).outerRuntime;
+  if(!outer || outer.startId!==match[1] || outer.state!==HostedCustodyReservationState.Terminal || epoch.generation<=outer.generation ||
+      epoch.outerRuntime?.startId===outer.startId && !encode(epoch.outerRuntime).equals(encode(outer)))held();
+  const previous=parseDependencyOwner(header.prior.owner);
+  if(previous.version!==3 || previous.owner || !sameDependencyProtectedReference(previous.custodyBinding,material.reference) ||
+      previous.generationContinuity && previous.generationContinuity.kind!==DependencyGenerationContinuityKind.RetiredReadyV1)held();
+  const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  let current:DependencyOwnerRecord|null;
+  try{current=store.read(binding.workspace);if(!current || current.version!==3 || !sameDependencyProtectedReference(current.custodyBinding,material.reference))held();}finally{store.close();}
+  const parent=readHostedReadonlyDependencyStart(fence,outer.startId);
+  if(parent.value.candidateJobId!==binding.jobId || parent.value.startId!==outer.startId || parent.value.unit!==outer.unit || parent.value.creatorId!==outer.creatorId ||
+      parent.value.generation!==outer.generation || parent.value.hostId!==epoch.hostId || parent.value.bootId!==epoch.bootId ||
+      parent.value.supervisorId!==epoch.supervisorId || parent.value.readonlyJobId!==epoch.identity.jobId ||
+      !sameDependencyProtectedReference(parent.value.association,material.reference) || !encode(parent.value.workspace).equals(encode(binding.workspace)))held();
+  const preclaim=pinReferenceFile(`${root}/dependency-reader-starts/${outer.startId}.json`,16384),claim:unknown=JSON.parse(preclaim.bytes.toString("utf8"));
+  if(!isDependencyCustodyObject(claim,"attempt,binding,custody,kind,origin,ownerRevision,ownerSha256,receipt,version,workspace") || claim.version!==1 ||
+      !preclaim.bytes.equals(encode(claim)) || !encode(claim.workspace).equals(encode(binding.workspace)) ||
+      !isDependencyProtectedReference(claim.origin) || !sameDependencyProtectedReference(claim.origin,parent.reference) ||
+      !isDependencyProtectedReference(claim.custody) || !sameDependencyProtectedReference(claim.custody,material.reference))held();
+  const decoded=parseDependencyOwner({...previous,owner:{kind:DependencyOwnerKind.Consumer,phase:DependencyOwnerPhase.Fenced,attempt:claim.attempt}});
+  if(!isDependencyConsumerOwner(decoded.owner))held();const attempt=decoded.owner.attempt;
+  if(attempt.epoch!==previous.epoch || attempt.launch.startId!==outer.startId || attempt.launch.unit!==outer.unit || attempt.launch.bootId!==epoch.bootId ||
+      attempt.launch.installationId!==binding.installationId || attempt.launch.runtimeSha!==binding.runtimeSha || attempt.launch.grantDigest!==binding.grantDigest)held();
+  const entry=pinReferenceFile(`${root}/dependency-reader-entries/${outer.startId}.json`,4096);
+  if(!entry.bytes.equals(encode({version:1,producer:preclaim.reference,attempt})))held();
+  const facts=unverifiedSourceFacts(fence,{epoch,outer,parent,material,binding,previous,attempt,preclaim,entry,kernel}),proof=unverifiedReleaseFacts(fence,access,facts,context);
+  if(!encode(facts.committed).equals(encode(header.prior.receipt)) || !sameDependencyProtectedReference(proof.pin.reference,header.lineage.release) ||
+      !sameDependencyProtectedReference(proof.fda.reference,header.lineage.fda))held();
+  historicalBoundary(context,fence,access);
+  const afterStore=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  try{if(!encode(afterStore.read(binding.workspace)).equals(encode(current)))held();}finally{afterStore.close();}
+  for(const ref of [parent.reference,material.reference,preclaim.reference,entry.reference,facts.preparation,facts.qualification,facts.completion])
+    if(!sameDependencyProtectedReference(pinReferenceFile(ref.path,65536).reference,ref))held();
+  if(!encode(unverifiedSourceFacts(fence,facts)).equals(encode(facts)) || !encode(new HostedReadonlyEpochStore().readEpoch()).equals(encode(epoch)) ||
+      !encode(readHostedReadonlyDependencyMaterial(fence,epoch.identity)).equals(encode(material)) ||
+      !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) ||
+      !encode(readHostedDependencyPreservationSelection(binding,operationId)).equals(encode(selection)) ||
+      completed && (!encode(readHostedDependencyCompletedPreservation(fence,binding,operationId)).equals(encode(completed)) ||
+        !encode(completedPreservationSourceFacts(context,fence,access,completed,epoch,binding)).equals(encode(completedSource))) ||
+      !sameDependencyProtectedReference(pinReferenceFile(proof.pin.reference.path,65536).reference,proof.pin.reference) ||
+      !sameDependencyProtectedReference(pinReferenceFile(proof.fda.reference.path,65536).reference,proof.fda.reference))held();
+  return Object.freeze({binding,previous,attempt,release:proof.pin.reference,fda:proof.fda.reference,units:proof.units});
 }
 function releaseUnverifiedR(fence:HostedActivationFence,access:symbol):void {
   const {session}=boundary(fence,access),epoch=new HostedReadonlyEpochStore().readEpoch(),material=readHostedReadonlyDependencyMaterial(fence,epoch.identity);
@@ -297,13 +423,13 @@ function providerRows(fence:HostedActivationFence,access:symbol,epoch:HostedCust
     return sameParent;
   });
 }
-function oldProviders(fence:HostedActivationFence,access:symbol,value:unknown,facts:ReturnType<typeof selected>) {
+function oldProviders(fence:HostedActivationFence,access:symbol,value:unknown,facts:ReturnType<typeof selected>,context?:CurrentHostedDependencyOrigin) {
   if(!Array.isArray(value) || value.length>128)held();
   const current=providerRows(fence,access,facts.epoch,facts.outer);
   if(value.length!==current.length)held();
   for(let index=0;index<value.length;index++) {
     const v:unknown=value[index],row=current[index]!;
-    if(!isDependencyCustodyObject(v,"attempt,birth,completion,entry,material,parent,preclaim,preparation,profile,qualification,receipt,row") ||
+    if(row.state!==HostedCustodyReservationState.Terminal || !isDependencyCustodyObject(v,"attempt,birth,completion,entry,material,parent,preclaim,preparation,profile,qualification,receipt,row") ||
         !encode(v.row).equals(encode(row)) || !encode(v.attempt).equals(encode(facts.attempt)))held();
     const paths={birth:`dependency-managed-provider-starts/${row.startId}.json`,completion:`dependency-managed-provider-completions/${row.startId}.json`,
       entry:`dependency-reader-entries/${facts.outer.startId}.json`,material:facts.material.reference.path.slice(root.length+1),
@@ -314,8 +440,9 @@ function oldProviders(fence:HostedActivationFence,access:symbol,value:unknown,fa
       const ref=v[key];if(!isDependencyProtectedReference(ref) || ref.path!==`${root}/${path}` ||
           !sameDependencyProtectedReference(pinReferenceFile(ref.path,key==="preparation"?65536:16384).reference,ref))held();
     }
-    const native=readOriginalHostedManagedProviderDischargedReceipt(fence,row.startId,access);
-    if(!encode(native.receipt).equals(encode(v.receipt)) || !isDependencyProtectedReference(v.completion) || !sameDependencyProtectedReference(native.completion,v.completion))held();
+    const native=context?readOriginalHostedManagedConsumerProviderDischargedReceipt(context,fence,row.startId,access):readOriginalHostedManagedProviderDischargedReceipt(fence,row.startId,access);
+    if(!encode(native.receipt).equals(encode(v.receipt)) || !encode(native.receipt.parentAttempt).equals(encode(facts.attempt)) ||
+        !isDependencyProtectedReference(v.birth) || !sameDependencyProtectedReference(native.receipt.providerReference,v.birth) || !isDependencyProtectedReference(v.completion) || !sameDependencyProtectedReference(native.completion,v.completion))held();
   }
   return value;
 }
@@ -494,6 +621,20 @@ export function readOriginalHostedDependencyPriorRSourceClosure(fence:HostedActi
 export function readOriginalHostedDependencyConsumerPriorRSourceClosure(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string,access:symbol):readonly string[]|undefined {
   return priorR(context,fence,unit,access);
 }
+function historicalSession(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol,kernel:HostedReadonlyHostKernel) {
+  if(!context)return kernel.operatorSession();
+  const scope=readOriginalHostedDependencyGenerationNativeScope(context,fence,access);
+  return scope.facts.kind===CurrentHostedDependencyOriginKind.Ordinary?kernel.ordinaryRuntimeSession(parseHostedOrdinaryStart(scope.facts.ordinary.start)):kernel.session();
+}
+function drainHistoricalOuter(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol,kernel:HostedReadonlyHostKernel,outer:HostedCustodyOuterRuntime,bootId:string) {
+  const scope=context?readOriginalHostedDependencyGenerationNativeScope(context,fence,access):undefined;
+  if(scope?.facts.kind===CurrentHostedDependencyOriginKind.Ordinary) {
+    const session=kernel.ordinaryRuntimeSession(parseHostedOrdinaryStart(scope.facts.ordinary.start)),pin=pinReferenceFile(completionPath(outer),4096);
+    if(bootId!==session.bootId || outer.state!==HostedCustodyReservationState.Terminal || !pin.bytes.equals(completionBytes(outer,0)))held();
+    kernel.drainQueuedStart(outer);kernel.confirmTerminalDescendants(outer);
+    if(!sameDependencyProtectedReference(pinReferenceFile(pin.reference.path,4096).reference,pin.reference))held();
+  } else {kernel.fenceCreator(outer,bootId,fence);kernel.drainQueuedStart(outer);kernel.confirmTerminalDescendants(outer);}
+}
 function historicalBoundary(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
   if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else {assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);if(!readOriginalHostedDependencyRemoverScope(fence,access))new HostedReadonlyHostKernel().operatorSession();}
@@ -528,7 +669,7 @@ function priorR(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActi
       attempt.launch.runtimeSha!==binding.runtimeSha || attempt.launch.grantDigest!==binding.grantDigest || attempt.launch.bootId!==epoch.bootId)held();
   const entry=pinReferenceFile(`${root}/dependency-reader-entries/${parentId}.json`,4096);
   if(!entry.bytes.equals(encode({version:1,producer:preclaim.reference,attempt})))held();
-  const kernel=new HostedReadonlyHostKernel();kernel.fenceCreator(outer,epoch.bootId,fence);kernel.drainQueuedStart(outer);kernel.confirmTerminalDescendants(outer);
+  const kernel=new HostedReadonlyHostKernel();drainHistoricalOuter(context,fence,access,kernel,outer,epoch.bootId);
   // Reuse only the closed provider reference/native reader. It accepts no owner
   // scope or grant and cannot manufacture a missing positive completion.
   const current=providerRows(fence,access,epoch,outer);

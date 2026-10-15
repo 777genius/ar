@@ -6,7 +6,7 @@ import {
   type DependencyInspectionInput,
 } from "../domain/dependency-inspection";
 import {
-  DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState as State,
+  DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState as State, DependencyUnverifiedReason,
   type DependencyReceipt,
 } from "../domain/dependency-receipt";
 import { DependencyReceiptParseStatus as ParseStatus, parseDependencyReceipt } from "../domain/parse-dependency-receipt";
@@ -35,6 +35,13 @@ const input: DependencyInspectionInput = { workspace, coverageRevision: binding.
 const inspect = (changes: Partial<DependencyInspectionInput> = {}) => inspectDependencyEnvironment({ ...input, ...changes });
 
 describe("non-destructive dependency inspection", () => {
+  it("explicit operator retirement remains Busy before missing/unsafe/warm tree branches", () => {
+    const receipt = {...base,state:State.Unverified as const,tree,reason:DependencyUnverifiedReason.ExplicitOperatorReinstallation};
+    for(const observed of [input.tree,{state:TreeState.Absent as const,absence:DependencyAbsenceKind.ObservedMissing},
+      {state:TreeState.Present as const,tree,safety:DependencyTreeSafety.RequiresPreservation,availableCapabilities:[]}]) {
+      expect(inspect({receipt,tree:observed})).toEqual({outcome:Outcome.Busy,reason:Reason.UnresolvedOperation});
+    }
+  });
   it("hot reuse and separately verified legacy need identity/key/capabilities, not a content inventory", () => {
     expect(inspect()).toEqual({ outcome: Outcome.Reused, reason: Reason.ReadyIdentityMatched });
     const legacyReady = { ...ready, provenance: { ...binding, kind: DependencyInstallProofKind.LegacyCompared,
