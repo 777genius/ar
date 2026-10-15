@@ -6,8 +6,11 @@ import {H1CatalogKind,type H1StagedSubject,type H1CatalogEntry} from "./dependen
 import {retainH1EnvelopeRootData} from "./dependency-full-h1-rooted-reader-TEST.js";
 import {H1ElfRole,h1LibcCanonicalPath,validateH1ElfRole} from "./dependency-full-h1-elf-role-TEST.js";
 import {parsePythonEnvelopeElf} from "./dependency-full-python-envelope-TEST.js";
-export enum H1ConstructorHeld {LoadRoute="unqualified_load_route",Getpath="compiled_getpath_source_missing",Cache="readonly_empty_cache_missing",Python="foreign_python_routes",Source="source_object_changed",Actor="foreign_actor_status",Cgroup="foreign_cgroup_rows",Mount="unknown_api_object",Deadline="original_deadline_missing",Definition="constructor_source_definition_missing"}
-const fail=(reason:H1ConstructorHeld):never=>{throw new Error("TEST H1 constructor Held: "+reason);};
+export enum H1ConstructorHeld {Distro="protected_signed_distro_original_facts_missing",Verifier="distro_verifier_tcb_missing",LoadRoute="unqualified_load_route",Getpath="compiled_getpath_source_missing",Cache="readonly_empty_cache_missing",Python="foreign_python_routes",Source="source_object_changed",Actor="foreign_actor_status",Cgroup="foreign_cgroup_rows",Mount="unknown_api_object",Deadline="original_deadline_missing",Definition="constructor_source_definition_missing"}
+const heldReasons=new WeakMap<object,H1ConstructorHeld>();
+class H1Held extends Error {constructor(reason:H1ConstructorHeld){super("TEST H1 constructor Held: "+reason);heldReasons.set(this,reason);}}
+const fail=(reason:H1ConstructorHeld):never=>{throw new H1Held(reason);};
+export function readH1ConstructorHeld(error:unknown):H1ConstructorHeld|undefined{return !types.isProxy(error)&&types.isNativeError(error)&&Object.getPrototypeOf(error)===H1Held.prototype?heldReasons.get(error):undefined;}
 function requireThat(v:unknown,reason:H1ConstructorHeld):asserts v {if(!v)fail(reason);}
 export const h1HeldError=(reason:H1ConstructorHeld):never=>fail(reason);
 const sha=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");

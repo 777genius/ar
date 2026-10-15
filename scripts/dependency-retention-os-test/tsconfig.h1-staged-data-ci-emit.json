@@ -29,6 +29,8 @@
     "../../host-integration/managed-launcher/launch.mjs",
     "../../host-integration/managed-launcher/payload-guard.mjs",
     "../../host-integration/managed-launcher/profiles.mjs",
-    "../../host-integration/host-jobs/storage-policy.mjs"
+    "../../host-integration/host-jobs/storage-policy.mjs",
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts"
   ]
 }

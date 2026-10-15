@@ -5,7 +5,7 @@ import {constants,openSync,closeSync,fstatSync,readSync} from "node:fs";
 import {createHash} from "node:crypto";
 import {H1ElfRole,h1LibcCanonicalPath,validateH1ElfRole} from "./dependency-full-h1-elf-role-TEST.js";
 import {H1CatalogKind,type H1CatalogEntry} from "./dependency-full-h1-staged-tools-TEST.js";
-import {H1ConstructorHeld,H1ApiKind,H1PidView,h1CanonicalCatalogPath,checkH1ActorStatusData,checkH1OwnedCgroupData,checkH1PythonRouteData,checkH1HostReleaseData,checkH1ApiObjectData,h1OriginalDeadlineData,h1ReadonlyCache} from "./dependency-full-h1-constructor-closure-TEST.js";
+import {H1ConstructorHeld,h1HeldError,readH1ConstructorHeld,H1ApiKind,H1PidView,h1CanonicalCatalogPath,checkH1ActorStatusData,checkH1OwnedCgroupData,checkH1PythonRouteData,checkH1HostReleaseData,checkH1ApiObjectData,h1OriginalDeadlineData,h1ReadonlyCache} from "./dependency-full-h1-constructor-closure-TEST.js";
 const identity={dev:"1",ino:"2",uid:"0",gid:"0",mode:"16877",nlink:"1",size:"0",mtimeNs:"1",ctimeNs:"1"};
 function entry(path:string,kind=H1CatalogKind.Directory,target=""):H1CatalogEntry{return {path,kind,target,identity,sha256:kind===H1CatalogKind.File?"a".repeat(64):""};}
 const catalog=[entry("usr"),entry("usr/lib"),entry("usr/lib/python3.12"),entry("usr/lib/python3.12/os.py",H1CatalogKind.File),entry("lib",H1CatalogKind.Alias,"usr/lib")];
@@ -60,6 +60,7 @@ test("kernel API physical class and ownership cannot be borrowed from a regular 
  for(const [path,kind,uid,gid] of [["/proc",H1ApiKind.Regular,0n,0n],["/dev/ptmx",H1ApiKind.Socket,0n,0n],["/host",H1ApiKind.Directory,0n,0n],["/proc",H1ApiKind.Directory,1n,0n],["/proc",H1ApiKind.Directory,0n,1n]] as const)assert.throws(()=>checkH1ApiObjectData(path,kind,uid,gid,0o40555n),/unknown_api_object/);
 });
 test("deadline depends on actual original start and same invocation, never validation call time",()=>{
+ let calls=0;const unknown=new Proxy(new Error("private payload"),{getPrototypeOf(){calls++;throw Error("hook");}});assert.equal(readH1ConstructorHeld(unknown),undefined);assert.equal(calls,0);assert.equal(readH1ConstructorHeld(new Error("TEST H1 constructor Held: distro_verifier_tcb_missing")),undefined);try{h1HeldError(H1ConstructorHeld.Verifier);}catch(error){assert.equal(readH1ConstructorHeld(error),H1ConstructorHeld.Verifier);}
  const invocation="1".repeat(32),values={MainPID:"101",InvocationID:invocation,ExecMainStartTimestampMonotonic:"123456",RuntimeMaxUSec:"30min"};
  assert.equal(h1OriginalDeadlineData(values,101,invocation),1800123456000n);
  for(const changed of [{MainPID:"102"},{InvocationID:"2".repeat(32)},{ExecMainStartTimestampMonotonic:"0"},{ExecMainStartTimestampMonotonic:"-1"},{RuntimeMaxUSec:"60min"}])assert.throws(()=>h1OriginalDeadlineData({...values,...changed},101,invocation),/original_deadline_missing/);

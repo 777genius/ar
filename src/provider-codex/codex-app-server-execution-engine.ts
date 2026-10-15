@@ -1,3 +1,4 @@
+import { AppServerSessionCleanupError, AppServerSessionCleanupPhase } from "./app-server/application/app-server-session-cleanup-error";
 import { validateAppServerCompletedOutput } from "./app-server/application/app-server-output-validation-error";
 import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-server/application/app-server-child-lifetime";
 export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
@@ -203,7 +204,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       error = returned.retain(error);
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       this.executionLifetime?.close(error);
-      await this.disposeFailedSession(input.session, error, "codex_app_server_run_cleanup_failed");
+      await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Run);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
@@ -277,7 +278,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       if (!isManagedRunResumeValidationError(error)) {
-        await this.disposeFailedSession(input.session, error, "codex_app_server_resume_cleanup_failed");
+        await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Resume);
       }
       throw error;
     }
@@ -351,14 +352,14 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       };
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      await this.disposeFailedSession(input.session, error, "codex_app_server_prewarm_cleanup_failed");
+      await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Prewarm);
       throw error;
     }
   }
 
-  private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, message: string): Promise<void> {
+  private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, phase: AppServerSessionCleanupPhase): Promise<void> {
     try { await this.slotPool.disposeSessionSlot(session); }
-    catch (cleanupError) { throw new AggregateError([error, cleanupError], message); }
+    catch (cleanupError) { throw new AppServerSessionCleanupError(error, cleanupError, phase); }
   }
   private async runViaAppServer(input: CodexExecutionInput,
     schemaPlan: CodexStructuredOutputSchemaPlan | undefined, returned: AppServerReturnedEvidence): Promise<CodexExecutionResult> {

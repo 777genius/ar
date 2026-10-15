@@ -3,9 +3,9 @@ import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation';
+const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node',NODE_SHA='7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c';
-const HELPER_SHA='fd896b04aaaa2147ccfcb2fb28e788454979f13a6e1dfe0a9e9b6dd4ce992052';
+const HELPER_SHA='6e5b0c00c93fc4a7a6db82ea81654fd98a4aa2acce1a51184a08aea665fe234a';
 const names=['preparation-input.json','source.bundle','public-files.payload','stage-current-positive-public.mts','run-current-positive-public.mts','review.json','outer-input.json','public-input.json'] as const;
 const hash=(b:Uint8Array)=>createHash('sha256').update(b).digest('hex');
 function fact(v:unknown,why:string):asserts v{if(!v)throw new Error('PUBLIC_TRANSPORT_HOLD:'+why);}
