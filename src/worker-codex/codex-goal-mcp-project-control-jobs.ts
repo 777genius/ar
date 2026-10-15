@@ -1,3 +1,5 @@
+import { requiresStandaloneProjectWorkspace } from "./project-standalone-workspace";
+import { inspectStandaloneProjectDependencies } from "./application/project-control/codex-goal-project-dependency-inspection";
 import { tryReadOnlyProjectRefillContinuation } from "./application/project-control/codex-goal-project-refill-readonly";
 import { prepareProtectedCodexGoalJobBirth } from "./protected-job-birth";
 import { projectControlNewChildWorkerMode, projectControlWorkerToolRootRequest } from "./project-control-worker-mode";
@@ -785,22 +787,41 @@ export async function projectControlRefillWorkerView(
     start = started.start;
     accountReservation = started.accountReservation;
   } else {
-    dependencyPreflight = await withValidatedProjectWorkspaceLock({
+    const mode = projectControlDependencyBootstrapMode(args.dependencyBootstrap);
+    const preflight = async () => await withValidatedProjectWorkspaceLock({
       locks: projectControlWorkspaceLocks(controller.registryRootDir),
       scope: controller.scope,
       requestedWorkspacePath: manifest.workspacePath,
       expectedCanonicalWorkspacePath,
       owner: `project-refill-bootstrap:${controller.controller.jobId}:${manifest.jobId}`,
-      effect: async (workspace) =>
-        await runDependencyBootstrap({
-          workspacePath: workspace.canonicalWorkspacePath,
-          jobRootDir: manifest.jobRootDir,
-          cacheNamespace: controller.scope.projectId,
-          mode: projectControlDependencyBootstrapMode(args.dependencyBootstrap),
-          confirmInstall:
-            booleanValue(args.confirmDependencyBootstrap) === true,
-        }),
+      effect: async (workspace) => {
+        const observed = await inspectStandaloneProjectDependencies({ manifest, target: createWorktreeInput,
+          scope: controller.scope, registryRootDir: controller.registryRootDir, workspace, mode });
+        if (observed) {
+          const current = await deps.loadProjectControlController(args);
+          if (!isDeepStrictEqual(current.scope, controller.scope) ||
+              !isDeepStrictEqual(current.controller, controller.controller))
+            throw new Error("project_control_controller_scope_drift");
+          return observed;
+        }
+        return await runDependencyBootstrap({
+            workspacePath: workspace.canonicalWorkspacePath,
+            jobRootDir: manifest.jobRootDir,
+            cacheNamespace: controller.scope.projectId,
+            mode,
+            confirmInstall: booleanValue(args.confirmDependencyBootstrap) === true,
+          });
+      },
     });
+    dependencyPreflight = mode !== "install" && requiresStandaloneProjectWorkspace({
+      manifest, target: createWorktreeInput, scope: controller.scope, registryRootDir: controller.registryRootDir,
+    }) ? await withCurrentControllerScopeActivity({
+      controllerJobRootDir: controller.controller.jobRootDir,
+      owner: `project-refill-observe:${controller.controller.jobId}:${manifest.jobId}`,
+      expectedScope: controller.scope,
+      loadCurrentScope: async () => (await deps.loadProjectControlController(args)).scope,
+      effect: preflight,
+    }) : await preflight();
     assertProjectControlDependencyBootstrapReady(dependencyPreflight);
   }
 

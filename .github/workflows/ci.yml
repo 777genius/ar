@@ -418,8 +418,26 @@ jobs:
           npm ci
           npm run build:packages
           npm run typecheck:native-probe
+          sr_native_phase=root_typecheck_driver
+          sr_native_phase_on_exit() {
+            sr_native_phase_rc=$?
+            trap - EXIT
+            case "$sr_native_phase" in
+              root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator)
+                if [[ "$sr_native_phase_rc" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( sr_native_phase_rc <= 255 )); then
+                  printf '\nSR_NATIVE_SOURCE_PHASE_V1 phase=%s exit=%s\n' "$sr_native_phase" "$sr_native_phase_rc" || true
+                else
+                  printf '\n%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN' || true
+                fi ;;
+              *) printf '\n%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN' || true ;;
+            esac
+            exit "$sr_native_phase_rc"
+          }
+          trap sr_native_phase_on_exit EXIT
           npm run typecheck:native-probe:root-source
+          sr_native_phase=contracts_driver
           npm run test:native-probe
+          sr_native_phase=root_tmpfs
           # Docker owns this empty bounded tmpfs; never use the overlay backing.
           test -d /var/lib/subscription-runtime-host-policy
           test ! -L /var/lib/subscription-runtime-host-policy
@@ -428,6 +446,7 @@ jobs:
           [[ -z "$(find /var/lib/subscription-runtime-host-policy -mindepth 1 -maxdepth 1 -print -quit)" ]]
           install -d -m 0700 /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
             /var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs
+          sr_native_phase=root_principal
           # Observe the actual principal before Vitest can project fixture facts.
           node --input-type=module-typescript - <<'ROOT_TEST_AUTHORITY'
           import assert from 'node:assert/strict';
@@ -439,7 +458,50 @@ jobs:
             assert.equal(readlinkSync(`/proc/self/ns/${ns}`), readlinkSync(`/proc/1/ns/${ns}`));
           }
           ROOT_TEST_AUTHORITY
+          # Run the observation suite separately while the private TEST tmpfs is
+          # empty. Keep the original four-file archive report contract unchanged.
+          sr_native_phase=root_tests
           SR_ARCHIVE_TEST_PRIVILEGE=root \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 120s \
+            node node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/codex-goal-project-dependency-inspection.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
+            --outputFile=delivery/a0-native-probe/dependency-inspection-root-result.json
+          sr_native_phase=root_validator
+          node --input-type=module-typescript - <<'DEPENDENCY_INSPECTION_ROOT_RESULT'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { resolve } from 'node:path';
+          const report = JSON.parse(readFileSync('delivery/a0-native-probe/dependency-inspection-root-result.json', 'utf8'));
+          const expected = new Set([
+            'standalone project dependency observation observes supported Node metadata without a diagnostic, cache, claim or install',
+            'standalone project dependency observation observes locked Python metadata and off-mode safety without writing',
+            'standalone project dependency observation rejects a structural lease copy and a genuine closed lease',
+            'standalone project dependency observation rejects an escaping manifest link rather than reading its bytes',
+            'standalone project dependency observation delegates explicit V1 to the unchanged legacy route before reader-only lease checks',
+            'standalone project dependency observation does not interpret an existing malformed binding as absence',
+            'standalone project dependency observation rejects a symlinked protected binding namespace',
+            'standalone project dependency observation rejects retained enrolled physical identity even after the original job path is gone',
+            'standalone project dependency observation rejects a mounted workspace alias from the bounded mount observation',
+            'standalone project dependency observation does not select a noncanonical or different child layout',
+          ]);
+          assert.equal(report.success, true);
+          assert.equal(report.numTotalTests, expected.size);
+          assert.equal(report.numPassedTests, expected.size);
+          for (const counter of ['numFailedTests', 'numPendingTests', 'numTodoTests']) assert.equal(report[counter], 0);
+          assert(Array.isArray(report.testResults) && report.testResults.length === 1);
+          const file = report.testResults[0];
+          assert.equal(file.name, resolve('src/worker-codex/tests/codex-goal-project-dependency-inspection.test.ts'));
+          assert(Array.isArray(file.assertionResults) && file.assertionResults.length === expected.size);
+          for (const test of file.assertionResults) {
+            assert.equal(test.status, 'passed');
+            assert(expected.delete(test.fullName));
+          }
+          assert.equal(expected.size, 0);
+          console.log(JSON.stringify({ scope: 'native-root-dependency-inspection-TEST', completedTests: report.numTotalTests }));
+          DEPENDENCY_INSPECTION_ROOT_RESULT
+          sr_native_phase=root_tests
+          if SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
@@ -448,10 +510,73 @@ jobs:
             src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json
+          then :; else
+            sr_root_test_rc=$?
+            if /usr/bin/timeout --signal=TERM --kill-after=1s 3s node --input-type=module-typescript - <<'ROOT_TEST_RESULT_PUBLIC' 2>/dev/null
+          import { constants as C, openSync, closeSync, fstatSync, lstatSync, readSync } from 'node:fs';
+          const root = '/native-probe-source-workspace/source', prefix = 'SR_NATIVE_SOURCE_ROOT_TEST_V1';
+          const unknown = `\n${prefix} unknown cause=UNKNOWN\n`, fds = [];
+          const check = value => { if (!value) throw new Error(); };
+          const fields = ['dev','ino','mode','uid','gid','nlink','size','mtimeNs','ctimeNs'];
+          const same = (a, b) => fields.every(k => a[k] === b[k]);
+          const stat = path => lstatSync(path, { bigint: true }), fdstat = fd => fstatSync(fd, { bigint: true });
+          const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+          const modules = [["reviewed_archive","src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts"],["custody_record_once","src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts"],["sdk_standalone_workspace","src/worker-codex/tests/codex-goal-sdk-standalone-workspace.test.ts"],["usable_placement","src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts"]];
+          const six = ["original Usable Store schema5 placement installs CLOSED through actual Store/schema5 census, preserves raw SDK and opens the same placed blobs","original Usable Store schema5 placement refuses a different published installation nonce after actual fresh placement","original Usable Store schema5 placement refuses changed stage before installation publication","original Usable Store schema5 placement refuses changed inventory before installation publication","original Usable Store schema5 placement refuses changed ready before installation publication","original Usable Store schema5 placement refuses changed broker before installation publication"];
+          function project(report) {
+            check(plain(report) && Array.isArray(report.testResults) && report.testResults.length === 4);
+            const counters = ['numTotalTests','numPassedTests','numFailedTests','numPendingTests','numTodoTests'];
+            check(counters.every(k => Number.isSafeInteger(report[k]) && report[k] >= 0 && report[k] <= 1024));
+            check(report.numTotalTests > 0 && (report.success === undefined || typeof report.success === 'boolean'));
+            const records = [], seen = new Set(), sums = [0,0,0,0], cases = Array(6);
+            for (const file of report.testResults) {
+              check(plain(file)); const index = modules.findIndex(([,path]) => file.name === `${root}/${path}`);
+              check(index >= 0 && !seen.has(index)); seen.add(index);
+              check(Array.isArray(file.assertionResults) && file.assertionResults.length > 0 && file.assertionResults.length <= 256);
+              const counts = [0,0,0,0];
+              for (const assertion of file.assertionResults) {
+                check(plain(assertion)); const status = assertion.status;
+                check(['passed','failed','skipped','pending','todo'].includes(status));
+                counts[status === 'passed' ? 0 : status === 'failed' ? 1 : status === 'todo' ? 3 : 2]++;
+                if (index === 3) { const ordinal = six.indexOf(assertion.fullName); check(ordinal >= 0 && cases[ordinal] === undefined); cases[ordinal] = status; }
+              }
+              counts.forEach((n,i) => sums[i] += n);
+              records[index] = `${prefix} module=${modules[index][0]} total=${file.assertionResults.length} passed=${counts[0]} failed=${counts[1]} pending=${counts[2]+counts[3]} cause=UNKNOWN`;
+            }
+            check(sums.reduce((a,b) => a+b,0) === report.numTotalTests && sums[0] === report.numPassedTests && sums[1] === report.numFailedTests && sums[2] === report.numPendingTests && sums[3] === report.numTodoTests);
+            check(cases.filter(value => value !== undefined).length === 6);
+            return [...records, ...cases.map((status,i) => `${prefix} case=${i+1} status=${status} cause=UNKNOWN`)];
+          }
+          let output = unknown;
+          try {
+            check(process.cwd() === root);
+            const parents = [`${root}/delivery`, `${root}/delivery/a0-native-probe`].map(path => {
+              const fd = openSync(path, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW); fds.push(fd);
+              const before = fdstat(fd); check(before.isDirectory() && before.uid === 0n && (before.mode & 0o22n) === 0n && same(before, stat(path)));
+              return {path, fd, before};
+            });
+            const path = `${root}/delivery/a0-native-probe/archive-root-result.json`;
+            const fd = openSync(path, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK); fds.push(fd);
+            const before = fdstat(fd);
+            check(before.isFile() && before.uid === 0n && before.nlink === 1n && (before.mode & 0o22n) === 0n && before.size > 0n && before.size <= 16777216n && same(before, stat(path)));
+            const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
+            while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length-offset, null); check(n > 0); offset += n; }
+            check(readSync(fd, Buffer.alloc(1), 0, 1, null) === 0);
+            const stable = () => same(before, fdstat(fd)) && same(before, stat(path)) && parents.every(p => same(p.before, fdstat(p.fd)) && same(p.before, stat(p.path)));
+            check(stable()); const records = project(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); check(stable());
+            output = `\n${records.join('\n')}\n`;
+          } catch {} finally { for (const fd of fds) { try { closeSync(fd); } catch { output = unknown; } } }
+          process.stdout.write(output);
+          ROOT_TEST_RESULT_PUBLIC
+            then :; else printf '\n%s\n' 'SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN' || true; fi
+            exit "$sr_root_test_rc"
+          fi
+          sr_native_phase=root_validator_compile
           node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
             --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
             --target ES2022 --module NodeNext --moduleResolution NodeNext \
             scripts/require-archive-root-result.mts
+          sr_native_phase=root_validator
           node --experimental-strip-types scripts/require-archive-root-result.mts
           TEST_COMMAND
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
@@ -484,13 +609,68 @@ jobs:
           docker inspect "$id" > "$owned/container-inspect.json"
           identity=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}' "$id")
           [[ "$identity" == "$id|/$name|$owner" ]]
-          state=$(docker inspect --format '{{.State.Status}}' "$id")
-          if [[ "$state" != exited ]]; then
+          state=$(docker inspect --format '{{.State.Status}}|{{.State.Running}}' "$id")
+          if [[ "$state" != 'exited|false' ]]; then
             printf '::error::Owned container %s is %s; retained without cleanup. Evidence: %s\n' "$id" "$state" "$owned"
             exit 1
           fi
           container_rc=$(docker inspect --format '{{.State.ExitCode}}' "$id")
           printf '%s\n' "$container_rc" > "$owned/container-exit.txt"
+          # Only finite Source markers from this verified exited owner may escape.
+          unknown_marker='SR_NATIVE_SOURCE_PUBLIC_V1 unknown passed=UNKNOWN inputsStable=UNKNOWN checks=UNKNOWN index=UNKNOWN exit=UNKNOWN signal=UNKNOWN naturalClose=UNKNOWN cause=UNKNOWN'
+          native_stdout_size=$(stat -c '%s' "$owned/container.stdout" 2>/dev/null) || native_stdout_size=UNKNOWN
+          if [[ -f "$owned/container.stdout" && ! -L "$owned/container.stdout" ]] &&
+            [[ "$native_stdout_size" =~ ^(0|[1-9][0-9]{0,10})$ ]] && (( native_stdout_size <= 16777216 )) &&
+            LC_ALL=C timeout --signal=TERM --kill-after=5s 10s awk '
+              /^SR_NATIVE_SOURCE_PHASE_V1 / {
+                if ($0 !~ /^SR_NATIVE_SOURCE_PHASE_V1 phase=(root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator) exit=(0|[1-9][0-9]{0,2})$/) { bad=1; exit }
+                split($3,e,"=");
+                if (seen["phase"]++ || ++n>32 || (bytes+=length($0)+1)>16384 || e[2]+0>255) { bad=1; exit }
+                rootFailed=($2=="phase=root_tests" && e[2]+0!=0);
+                lines[n]=$0
+              }
+              /^SR_NATIVE_SOURCE_ROOT_TEST_V1 / {
+                if ($0 == "SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN") { if (seen["root-unknown"]++) { bad=1; exit } }
+                else if ($0 ~ /^SR_NATIVE_SOURCE_ROOT_TEST_V1 module=(reviewed_archive|custody_record_once|sdk_standalone_workspace|usable_placement) total=(0|[1-9][0-9]{0,2}) passed=(0|[1-9][0-9]{0,2}) failed=(0|[1-9][0-9]{0,2}) pending=(0|[1-9][0-9]{0,2}) cause=UNKNOWN$/) {
+                  split($2,m,"="); split($3,t,"="); split($4,p,"="); split($5,f,"="); split($6,q,"=");
+                  if (seen["root-module:"m[2]]++ || t[2]+0<1 || t[2]+0>256 || p[2]+0+f[2]+0+q[2]+0!=t[2]+0 || (rootTotal+=t[2]+0)>1024) { bad=1; exit }
+                  rootModules++; if (m[2]=="usable_placement") { usableTotal=t[2]+0; usablePassed=p[2]+0; usableFailed=f[2]+0; usablePending=q[2]+0 }
+                } else if ($0 ~ /^SR_NATIVE_SOURCE_ROOT_TEST_V1 case=[1-6] status=(passed|failed|skipped|pending|todo) cause=UNKNOWN$/) {
+                  split($2,c,"="); split($3,s,"="); if (seen["root-case:"c[2]]++) { bad=1; exit }
+                  rootCases++; if (s[2]=="passed") casePassed++; else if (s[2]=="failed") caseFailed++; else casePending++;
+                } else { bad=1; exit }
+                if (++n>32 || (bytes+=length($0)+1)>16384) { bad=1; exit } lines[n]=$0
+              }
+              /^SR_NATIVE_SOURCE_PUBLIC_V1 / {
+                if ($0 !~ /^SR_NATIVE_SOURCE_PUBLIC_V1 (contracts|root_typecheck) passed=[01] inputsStable=([01]|UNKNOWN) checks=(0|[1-9][0-9]{0,2}|UNKNOWN) index=(0|[1-9][0-9]{0,2}|UNKNOWN) exit=(0|[1-9][0-9]{0,2}|UNKNOWN) signal=(NONE|SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ|UNKNOWN) naturalClose=([01]|UNKNOWN) cause=UNKNOWN$/) { bad=1; exit }
+                split($5,c,"="); split($6,i,"="); split($7,e,"=");
+                if (seen[$2]++ || ++n>32 || (bytes+=length($0)+1)>16384 ||
+                  (c[2]!="UNKNOWN" && c[2]+0>256) || (e[2]!="UNKNOWN" && e[2]+0>255) ||
+                  (i[2]!="UNKNOWN" && (c[2]=="UNKNOWN" || i[2]+0!=c[2]-1)) ||
+                  ($2=="root_typecheck" && ($4!="inputsStable=UNKNOWN" || $9!="naturalClose=UNKNOWN"))) { bad=1; exit }
+                lines[n]=$0
+              }
+              END {
+                if (bad || !n || (seen["root-unknown"] && (rootModules || rootCases)) ||
+                  ((rootModules || rootCases) && (rootModules!=4 || rootCases!=6 || usableTotal!=6 || usablePassed!=casePassed+0 || usableFailed!=caseFailed+0 || usablePending!=casePending+0))) exit 1;
+                if (rootFailed && !seen["root-unknown"] && !rootModules && !rootCases) {
+                  fallback="SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN";
+                  if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1; lines[n]=fallback
+                }
+                if (!seen["phase"]) {
+                  fallback="SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN";
+                  if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1;
+                  lines[n]=fallback
+                }
+                for (j=1;j<=n;j++) print lines[j]
+              }
+            ' "$owned/container.stdout" > "$owned/native-public-markers.txt" 2>/dev/null; then
+            cat "$owned/native-public-markers.txt"
+          else
+            printf '%s\n' "$unknown_marker"
+            printf '%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN'
+            printf '\n%s\n' 'SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN' || true
+          fi
           # Stream tar archives without following container symlinks or exposing
           # root-owned fixtures to runner-side extraction/upload traversal.
           timeout 30s docker cp "$id:/native-probe-source-workspace/source/delivery/a0-native-probe" - \

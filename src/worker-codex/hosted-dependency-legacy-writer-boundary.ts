@@ -4,7 +4,7 @@ import { types } from "node:util";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyGenerationContinuityKind, isDependencyConsumerOwner, isDependencyCustodyObject, parseDependencyOwner } from "@vioxen/subscription-runtime/core";
 import { requiresCurrentHostedDependencyRootPurpose } from "./hosted-current-dependency-origin";
 import { readHostedActivationBytes, decodeHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { hostedDependencyJobsRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedDependencyJobsRoot, readHostedDependencyBinding, readHostedDependencyBindingInventory } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
 function denied():never { throw new DependencyAdmissionError(DependencyAdmissionFailure.Unsupported); }
 const mountInfoLimit = 8 * 1024 * 1024;
@@ -21,6 +21,26 @@ function assertNoNestedMount(path:string):void {
     const fields=line.split(" ");if(fields.length<10 || !fields.includes("-"))denied();
     const point=fields[4]!.replace(/\\([0-7]{3})/g,(_,code:string)=>String.fromCharCode(parseInt(code,8)));
     if(point===path || point.startsWith(path+sep))denied();
+  }
+}
+/** Negative physical classification only; never a writer exemption or permit.
+ * Retained bindings cover moved jobs whose original lexical path is absent. */
+export function assertUnboundProjectDependencyReadScope(path:string,jobId:string):void {
+  if(requiresCurrentHostedDependencyRootPurpose())denied();
+  if(!/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(jobId) || path!==`${hostedDependencyJobsRoot}/${jobId}/workspace` ||
+    realpathSync(path)!==path)denied();
+  assertNoNestedMount(path);
+  const ancestors=[];
+  for(let parent=path;;parent=dirname(parent)) {
+    if(ancestors.length>=128)denied();
+    const stat=lstatSync(parent,{bigint:true});
+    if(!stat.isDirectory() || stat.uid!==0n || (stat.mode&0o022n) || realpathSync(parent)!==parent)denied();
+    ancestors.push(stat);if(parent===dirname(parent))break;
+  }
+  for(const binding of readHostedDependencyBindingInventory()) {
+    if(binding.version===1)continue;
+    if(ancestors.some(stat=>stat.dev.toString()===binding.workspace.dev &&
+      stat.ino.toString()===binding.workspace.ino))denied();
   }
 }
 function intersects(a:string,b:string):boolean { return a===b || a.startsWith(b+sep) || b.startsWith(a+sep); }
