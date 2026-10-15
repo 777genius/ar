@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import {
   WorkerAccountTaskRecoveryBackend, WorkerAccountTaskRecoveryPhase,
   type WorkerAccountAcceptedResponse, type WorkerAccountCapacityStore,
-  type WorkerAccountRecoveryAuthority, type WorkerAccountRecoveryKey,
+  type WorkerAccountRecoveryAuthority, type WorkerAccountRecoveryReconciliationAuthority, type WorkerAccountRecoveryKey,
   type WorkerAccountRecoveryPreparation, type WorkerAccountRecoveryTask,
   type WorkerRuntimeDemand,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -15,12 +15,16 @@ const equal = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.st
 const digest = (value: string): boolean => /^[a-f0-9]{64}$/.test(value);
 
 type RecoveryRecord = Readonly<{
-  schemaVersion: 1; backend: WorkerAccountTaskRecoveryBackend.XiaomiMimoTokenPlan; phase: WorkerAccountTaskRecoveryPhase;
+  schemaVersion: 1 | 2; backend: WorkerAccountTaskRecoveryBackend.XiaomiMimoTokenPlan; phase: WorkerAccountTaskRecoveryPhase;
   preparation: WorkerAccountRecoveryPreparation; task: WorkerAccountRecoveryTask;
   credentialFingerprint?: string; model?: string;
   rejectedTask?: WorkerAccountRecoveryTask;
   requestSha256?: string; responseIdSha256?: string; completedResponses?: number;
 }>;
+
+const acceptedEvidence = (record: RecoveryRecord): boolean => !!record.credentialFingerprint && !!record.model &&
+  !!record.requestSha256 && digest(record.requestSha256) && !!record.responseIdSha256 && digest(record.responseIdSha256) &&
+  Number.isSafeInteger(record.completedResponses) && record.completedResponses! >= 1;
 
 /** A scoped capacity-store extension. A consumed task has no TTL or takeover. */
 export class LocalWorkerAccountTaskRecovery {
@@ -50,7 +54,7 @@ export class LocalWorkerAccountTaskRecovery {
   consume(preparation: WorkerAccountRecoveryPreparation, task: WorkerAccountRecoveryTask, assertOwner: () => void) {
     if (!task.jobId || !task.startId || !task.workerId ||
         ![task.specSha256, task.requestSha256, task.runtimeArtifactSha256].every(digest)) fail();
-    let previousExemption = false, key: WorkerAccountRecoveryKey | undefined;
+    let previousExemption = false, rejected = false, key: WorkerAccountRecoveryKey | undefined;
     this.input.withMutation(() => {
       assertOwner(); this.input.assertPreparation(preparation);
       const previous = this.read(preparation);
@@ -61,6 +65,7 @@ export class LocalWorkerAccountTaskRecovery {
       }
     });
     const current = (): RecoveryRecord => {
+      if (rejected) return fail();
       assertOwner(); this.input.assertPreparation(preparation);
       const record = this.read(preparation);
       if (!record || (previousExemption ? record.phase !== WorkerAccountTaskRecoveryPhase.Exempted :
@@ -69,10 +74,13 @@ export class LocalWorkerAccountTaskRecovery {
       key?.assertCurrent(); return record;
     };
     const failed = (): void => {
+      rejected = true;
+      // A successor failure closes this task's passage, not the original task's
+      // settled witness. New quota, key and legacy revisions retain their fences.
+      if (previousExemption) return;
       this.input.withMutation(() => {
         const record = this.read(preparation);
-        if (record && (previousExemption ? record.phase === WorkerAccountTaskRecoveryPhase.Exempted :
-          record.phase === WorkerAccountTaskRecoveryPhase.Consumed && equal(record.task, task)))
+        if (record?.phase === WorkerAccountTaskRecoveryPhase.Consumed && equal(record.task, task))
           this.write({ ...record, phase: WorkerAccountTaskRecoveryPhase.Failed, rejectedTask: task });
       });
     };
@@ -124,8 +132,36 @@ export class LocalWorkerAccountTaskRecovery {
       this.input.withMutation(() => {
         authority.assertCurrent(); authority.assertTerminal(); this.input.assertPreparation(preparation);
         if (!equal(this.read(preparation), record) || !record.credentialFingerprint || !record.model || !record.responseIdSha256) fail();
-        this.write({ ...record, phase: WorkerAccountTaskRecoveryPhase.Exempted });
+        this.write({ ...record, phase: WorkerAccountTaskRecoveryPhase.Exempted, schemaVersion: 2 });
         authority.assertTerminal();
+      });
+    });
+  }
+
+  /** Restore only an exact captured settlement revoked by a different task. */
+  async reconcileSettledExemption(authority: WorkerAccountRecoveryReconciliationAuthority, demand: WorkerRuntimeDemand): Promise<void> {
+    if (![authority.failedRecordSha256, authority.exemptedRecordSha256].every(digest)) fail();
+    const preparation = this.prepare(demand);
+    if (!preparation) return fail();
+    await authority.withPublication(async () => {
+      authority.assertCurrent(); authority.assertTerminal(); authority.credential.assertCurrent();
+      this.input.withMutation(() => {
+        authority.assertCurrent(); authority.assertTerminal(); authority.credential.assertCurrent();
+        this.input.assertPreparation(preparation);
+        const record = this.read(preparation, authority.failedRecordSha256), key = authority.credential;
+        if (!record || record.phase !== WorkerAccountTaskRecoveryPhase.Failed || !acceptedEvidence(record) ||
+            !equal(record.task, authority.task) || !equal(record.rejectedTask, authority.rejectedTask) || equal(record.task, record.rejectedTask) ||
+            key.backend !== WorkerAccountTaskRecoveryBackend.XiaomiMimoTokenPlan || !equal(key.demand, preparation.demand) ||
+            key.credentialFingerprint !== record.credentialFingerprint || key.model !== record.model || key.model !== preparation.demand.model) return fail();
+        const { rejectedTask: _rejectedTask, ...original } = record;
+        const settled: RecoveryRecord = { ...original, phase: WorkerAccountTaskRecoveryPhase.Exempted };
+        // The failed shape alone proves no prior settlement. Require the exact
+        // authentic historical bytes, changing only the old revocation fields.
+        if (sha(JSON.stringify(settled) + "\n") !== authority.exemptedRecordSha256) fail();
+        // Older producers reject v2 before consuming or mutating this witness.
+        // Authenticate the historical v1 bytes above, then publish the upgrade.
+        this.write({ ...settled, schemaVersion: 2 });
+        authority.assertTerminal(); authority.credential.assertCurrent();
       });
     });
   }
@@ -134,7 +170,7 @@ export class LocalWorkerAccountTaskRecovery {
     return join(this.input.rootDir, "original-task-recovery", sha(`${preparation.recordId}\0${preparation.revision}\0${preparation.recordSha256}`) + ".json");
   }
 
-  private read(preparation: WorkerAccountRecoveryPreparation): RecoveryRecord | undefined {
+  private read(preparation: WorkerAccountRecoveryPreparation, expectedSha256?: string): RecoveryRecord | undefined {
     const path = this.path(preparation);
     let parent: number;
     try { parent = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
@@ -154,14 +190,15 @@ export class LocalWorkerAccountTaskRecovery {
       const after = fstatSync(fd), named = lstatSync(path);
       if (count !== before.size || count > 16 * 1024 ||
           !(["dev", "ino", "mode", "uid", "gid", "nlink", "size", "ctimeMs", "mtimeMs"] as const).every(k => before[k] === after[k] && before[k] === named[k])) fail();
-      const value: RecoveryRecord = JSON.parse(bytes.subarray(0, count).toString("utf8"));
-      if (value.schemaVersion !== 1 || value.backend !== WorkerAccountTaskRecoveryBackend.XiaomiMimoTokenPlan || !Object.values(WorkerAccountTaskRecoveryPhase).includes(value.phase) ||
+      const text = bytes.subarray(0, count).toString("utf8");
+      if (expectedSha256 && sha(text) !== expectedSha256) fail();
+      const value: RecoveryRecord = JSON.parse(text);
+      if (![1, 2].includes(value.schemaVersion) || value.schemaVersion === 2 && value.phase !== WorkerAccountTaskRecoveryPhase.Exempted || value.backend !== WorkerAccountTaskRecoveryBackend.XiaomiMimoTokenPlan || !Object.values(WorkerAccountTaskRecoveryPhase).includes(value.phase) ||
           !equal(value.preparation, preparation) || !value.task?.jobId || !value.task.startId || !value.task.workerId ||
           ![value.task.specSha256, value.task.requestSha256, value.task.runtimeArtifactSha256].every(digest) ||
           (value.credentialFingerprint !== undefined && !digest(value.credentialFingerprint)) ||
           [WorkerAccountTaskRecoveryPhase.Accepted, WorkerAccountTaskRecoveryPhase.Exempted].includes(value.phase) &&
-            (!value.credentialFingerprint || !value.model || !value.requestSha256 || !digest(value.requestSha256) ||
-             !value.responseIdSha256 || !digest(value.responseIdSha256) || !Number.isSafeInteger(value.completedResponses) || value.completedResponses! < 1)) fail();
+            !acceptedEvidence(value)) fail();
       const afterParent = fstatSync(parent), namedParent = lstatSync(dirname(path));
       if (!(["dev", "ino", "mode", "uid", "gid", "nlink", "size", "ctimeMs", "mtimeMs"] as const)
         .every(k => identity[k] === afterParent[k] && identity[k] === namedParent[k])) fail();

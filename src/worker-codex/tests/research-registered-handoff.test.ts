@@ -18,7 +18,7 @@ import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAut
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
 import { admitResearchProcessFactory, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
-import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker,
+import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, recoverOwnedMimoWorkerPreservation,
   terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
 import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { bindResearchMimoWritableFootprint, observeResearchMimoAllocationWritableRoots, prepareResearchProviderRoot } from "../research-provider-root";
@@ -27,6 +27,8 @@ import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority }
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
+import { registeredTerminalRepairTests } from "./research-terminal-handoff-repair-test-support";
+import { parseCodexGoalProjectAccessScope } from "../codex-goal-access-plan";
 
 const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false, mimo: false, registry: "/TEST-project/registry" }));
 // This suite exercises the native registered boundary with real TEST manifests,
@@ -148,6 +150,28 @@ describe("explicit registered abort before the first bind (labelled Host fixture
     expect(vi.mocked(proof.assertTerminal).mock.calls.length).toBeGreaterThanOrEqual(4);
     expect(host.calls.filter(call => call.command === "/usr/bin/systemd-run" || call.command === "/usr/bin/mount" ||
       call.command === "/usr/bin/systemctl" && ["stop", "kill"].includes(call.args[0]!))).toEqual([]);
+    expect(host.authReads).toBe(0);
+  });
+  it.each([
+    ["model", "prepare"], ["model", "read"],
+    ["reasoningEffort", "prepare"], ["reasoningEffort", "read"],
+    ["accounts", "prepare"], ["accounts", "read"],
+    ["invalidAccounts", "prepare"], ["invalidAccounts", "read"],
+  ] as const)("refuses caller-only %s contradiction at %s without changing the registered manifest", async (field, phase) => {
+    const { expected, proof, manifest } = await incomplete();
+    await abortUnsubmittedRegisteredResearchLaunch(expected, proof);
+    const manifestPath = codexGoalJobManifestPath({ registryRootDir: registry, jobId: expected.jobId });
+    const registeredBytes = researchRead(manifestPath);
+    // A reordered caller object must normalize to the same registered identity.
+    const supplied = Object.fromEntries(Object.entries(manifest).reverse()) as typeof manifest;
+    const prepared = phase === "read" ? await prepareResearchJobWriterObservation(supplied) : undefined;
+    if (prepared) expect(await prepared()).toEqual({ status: "released" });
+    Object.assign(supplied, field === "model" ? { model: "TEST-contradictory-model" }
+      : field === "reasoningEffort" ? { reasoningEffort: "none" }
+      : { accounts: field === "invalidAccounts" ? [] : ["TEST-contradictory-account"] });
+    expect(await (prepared ?? await prepareResearchJobWriterObservation(supplied))()).toEqual({ status: "unknown" });
+    expect(researchRead(manifestPath)).toEqual(registeredBytes);
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "released" });
     expect(host.authReads).toBe(0);
   });
   it.each(["submitter", "closing", "late-closing", "queued", "live", "mount", "binding", "provider", "receipt"] as const)("retains active on %s uncertainty", async fault => {
@@ -681,11 +705,13 @@ describe("native project launch authorization", () => {
   });
 });
 
-async function registeredMimoCandidate(dirty = false) {
+async function registeredMimoCandidate(dirty = false, normalizedScope = false) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
-  await initializeRegisteredFixture(); const coding = await grantAndRequest();
+  await initializeRegisteredFixture();
+  if (normalizedScope) state.scope = parseCodexGoalProjectAccessScope(state.scope);
+  const coding = await grantAndRequest();
   // Explicit retained pre-CodingV1 fixture: the current-authority path must
   // still settle old Worker attempts; fresh authorization cannot mint one.
   const { hostedProfile: _profile, maxGoalTurns: _turns, ...base } = coding;
@@ -880,5 +906,38 @@ describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census
     if (fault === "spec") researchPublish(join(current.directory, "spec.json"), { ...current.spec, artifactSha256: "e".repeat(64) });
     expect(await read()).toEqual({ status: "unknown" }); expect(host.calls.filter(call => call.command === "/usr/bin/systemctl")).toHaveLength(calls);
     expect(host.authReads).toBe(0);
+  });
+});
+
+
+describe("qualified preservation recovery (explicit offline Linux Host fixture)", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
+      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(digest);
+    });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  registeredTerminalRepairTests({ candidate: dirty => registeredMimoCandidate(dirty, true), scope: () => state.scope!,
+    setScope: scope => { state.scope = scope; }, registry: () => registry });
+  it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {
+    const current = await registeredMimoCandidate(true);
+    const retained = ["spec.json", "binding.json", "mimo-candidate.json", "durable-pin.json"].map(name =>
+      [name, researchRead(join(current.directory, name))] as const);
+    expect(await recoverOwnedMimoWorkerPreservation({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: current.spec.requestSha256 })).toMatchObject({ status: "partial" });
+    for (const [name, bytes] of retained) expect(researchRead(join(current.directory, name))).toEqual(bytes);
+    const output = JSON.parse(readFileSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`), "utf8"));
+    expect(output.status).toBe("partial"); expect(output.details.handoffPacketPath.startsWith(sink + "/")).toBe(true);
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(false);
+    expect(runtimeArtifact.assertQualifiedResearchRuntimeArtifact).toHaveBeenCalled();
+  });
+  it("denies a changed original request before release or result publication", async () => {
+    const current = await registeredMimoCandidate(true);
+    await expect(recoverOwnedMimoWorkerPreservation({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: "0".repeat(64) })).rejects.toThrow("hosted_research_launch_denied");
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(true);
+    expect(existsSync(local(join(current.directory, "mimo-publication.json")))).toBe(false);
   });
 });

@@ -6,7 +6,7 @@ import { researchJobRuntimeNamespaceAbsent, researchJobRuntimeProvenance } from 
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
-import type { CodexGoalJobManifest } from "./codex-goal-jobs";
+import { parseStoredCodexGoalJobManifest, type CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
 import { assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
@@ -15,6 +15,7 @@ import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
 import { prepareUnsubmittedResearchStartRelease, researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
+import { prepareResearchTerminalRepairRelease } from "./research-terminal-handoff-repair";
 
 function optionalPrivateRecord(path: string): Buffer | undefined {
   try { return researchRead(path); }
@@ -147,6 +148,8 @@ async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<P
   return nativeAuthorityAbsent(manifest) && hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ? birth : { status: "unknown" };
 }
 export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  const repaired = await prepareTerminalRepairWriterObservation(manifest);
+  if (repaired) return await repaired();
   const aborted = await prepareUnsubmittedWriterObservation(manifest);
   if (aborted) return await aborted();
   const original = await prepareOriginalNativeWriterObservation(manifest);
@@ -172,6 +175,8 @@ export async function prepareResearchJobWriterObservation(manifest: CodexGoalJob
 }
 async function prepareWriterObservation(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
   modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader> {
+  const repaired = await prepareTerminalRepairWriterObservation(manifest);
+  if (repaired) return repaired;
   const aborted = await prepareUnsubmittedWriterObservation(manifest);
   if (aborted) return aborted;
   const original = await prepareOriginalWriter(manifest, importModule, modules);
@@ -182,17 +187,27 @@ async function prepareWriterObservation(manifest: CodexGoalJobManifest, importMo
     return observation.status !== "unknown" || !absent ? observation : await observeNonNativeWriter(manifest);
   };
 }
+async function prepareTerminalRepairWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader | undefined> {
+  try {
+    const guard = await prepareResearchTerminalRepairRelease(manifest);
+    if (!guard) return;
+    return async () => { try { guard(); return { status: "released" }; } catch { return { status: "unknown" }; } };
+  } catch { return async () => ({ status: "unknown" }); }
+}
 
 async function prepareUnsubmittedWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader | undefined> {
   try {
     const read = await prepareUnsubmittedResearchStartRelease(manifest.jobId);
     if (!read) return;
-    const terminal = terminalResearchStart(manifest.jobId), r = terminal.spec.request;
-    if (r.jobId !== manifest.jobId || r.taskId !== manifest.taskId || r.jobRootDir !== manifest.jobRootDir ||
-        r.workspacePath !== manifest.workspacePath || r.promptPath !== manifest.promptPath || r.modelBackend !== manifest.modelBackend) return;
+    const terminal = terminalResearchStart(manifest.jobId);
+    const matchesManifest = (): boolean => {
+      try { return researchHash(JSON.stringify(parseStoredCodexGoalJobManifest(manifest))) === terminal.spec.registeredHandoff?.manifestSha256; }
+      catch { return false; }
+    };
+    if (!matchesManifest()) return async () => ({ status: "unknown" });
     read();
     return async () => {
-      try { read(); return { status: "released" }; }
+      try { if (!matchesManifest()) return { status: "unknown" }; read(); return { status: "released" }; }
       catch { return { status: "unknown" }; }
     };
   } catch { return; } // Malformed/incomplete origins keep existing closed behavior.

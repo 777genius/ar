@@ -1,4 +1,5 @@
 import { settleResearchMimoCapacityRecovery } from "./research-mimo-capacity-recovery";
+import { handoffPreservationBudget, handoffPreservationRefusalReason, MimoPreservationRefused } from "./codex-goal-handoff-preservation-budget";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,7 +10,7 @@ import { assertResearchInitialRoot, assertResearchServiceOwner, researchCommand,
   researchControlGroup, researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
 import { researchHash, researchInvalid, researchJson, researchRead, researchRecord, researchPublish } from "./research-launch-files";
 import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
-import { materializeReconciledTerminalCodexGoalHandoff } from "./codex-goal-terminal-handoff-materialization";
+import { materializeReconciledTerminalCodexGoalHandoff, TerminalHandoffCaptureMode } from "./codex-goal-terminal-handoff-materialization";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { changedFilesFromWorkspace } from "./codex-goal-workspace-changes";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
@@ -21,6 +22,7 @@ import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import { assertResearchDirectory, researchArtifactDigest, researchCustody, researchDirectoryIdentity } from "./research-launch-files";
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { readResearchColdMountTable, researchMountWitnessRows } from "./research-mount-witness-frame";
+import { prepareResearchTerminalHandoffRepair } from "./research-terminal-handoff-repair";
 
 /** Native-only trusted composition port. A fixed reviewed owner adapter binds
  * its original service/terminal invocation to these exact immutable inputs.
@@ -191,7 +193,53 @@ export async function prepareUnsubmittedResearchStartRelease(jobId: string): Pro
 export async function finalizeOwnedMimoWorker(jobId: string, startId: string, specSha256: string): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
   return await withResearchJobMutationAsync(jobId, () => finalizeOwnedMimoWorkerUnlocked(jobId, startId, specSha256));
 }
-async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, specSha256: string): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
+type PreservationOriginAuthority = Readonly<{
+  assertCurrent(): Promise<() => void>;
+  withPublication<T>(effect: () => Promise<T>): Promise<T>;
+}>;
+/** Explicit initial-root recovery by this qualified producer. Original launch,
+ * registered authority and pins remain immutable; no request flag mints release. */
+export async function recoverOwnedMimoWorkerPreservation(expected: RegisteredResearchStartIdentity) {
+  assertResearchInitialRoot(true);
+  researchRecord(expected, "jobId,startId,specSha256,requestSha256");
+  return await withResearchJobMutationAsync(expected.jobId, async () => {
+    const current = researchCurrentStart(expected.jobId), { spec } = current;
+    if (!spec.registeredHandoff || spec.startId !== expected.startId || researchHash(current.bytes) !== expected.specSha256 ||
+        spec.requestSha256 !== expected.requestSha256 || spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) researchInvalid();
+    const producer = installedResearchRuntimeDirectory(), producerSha = researchArtifactDigest(producer);
+    assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+    const original = await originalAbortAuthority(current); // Qualifies original bytes before its imports.
+    const binding = spec.registeredHandoff;
+    const assertCurrent = async (): Promise<() => void> => {
+      assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+      assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256);
+      const assertOriginal = await original.assertRegisteredResearchHandoffCurrent(binding, spec.request);
+      return () => { assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+        assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256); assertOriginal(); };
+    };
+    return await finalizeOwnedMimoWorkerUnlocked(expected.jobId, expected.startId, expected.specSha256, {
+      assertCurrent, withPublication: async effect => await original.withRegisteredResearchHandoffPublication(binding, spec.request, effect),
+    });
+  });
+}
+/** Explicit terminal-only settlement. Authenticated old scope bytes never become
+ * a launch permit; current permissions and locks authorize the preservation. */
+export async function repairOwnedMimoWorkerTerminalHandoff(expected: RegisteredResearchStartIdentity, historicalScope: unknown) {
+  assertResearchInitialRoot(true);
+  researchRecord(expected, "jobId,startId,specSha256,requestSha256");
+  return await withResearchJobMutationAsync(expected.jobId, async () => {
+    let current: ReturnType<typeof researchCurrentStart>;
+    try { current = researchCurrentStart(expected.jobId); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; current = terminalResearchStart(expected.jobId); }
+    if (current.spec.startId !== expected.startId || researchHash(current.bytes) !== expected.specSha256 ||
+        current.spec.requestSha256 !== expected.requestSha256) researchInvalid();
+    const repair = await prepareResearchTerminalHandoffRepair(current, historicalScope);
+    return await finalizeOwnedMimoWorkerUnlocked(expected.jobId, expected.startId, expected.specSha256, undefined, repair);
+  });
+}
+async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, specSha256: string,
+  originAuthority?: PreservationOriginAuthority, terminalRepair?: Awaited<ReturnType<typeof prepareResearchTerminalHandoffRepair>>
+): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
   assertResearchInitialRoot(true);
   let current: ReturnType<typeof researchCurrentStart>, released = false;
   try { current = researchCurrentStart(jobId); }
@@ -201,11 +249,15 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   }
   if (current.spec.startId !== startId || researchHash(current.bytes) !== specSha256 ||
       current.spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) researchInvalid();
+  let assertOriginal = await originAuthority?.assertCurrent();
   const registered = current.spec.registeredHandoff;
   let assertRegisteredBytes: (() => void) | undefined;
   if (registered) {
-    if (!released) await prepareResearchRegisteredHandoffAuthority(jobId, startId, assertResearchInitialRoot, true);
-    assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    if (terminalRepair) assertRegisteredBytes = terminalRepair.assertCurrent;
+    else {
+      if (!released) await prepareResearchRegisteredHandoffAuthority(jobId, startId, assertResearchInitialRoot, true);
+      assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    }
     assertRegisteredResearchHandoffPin(current.spec, current.directory);
   }
   const candidateBytes = researchRead(join(current.directory, "mimo-candidate.json"));
@@ -217,9 +269,9 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
     readResearchMimoCandidate(current); assertResearchMimoResultDirectories(current);
     assertRegisteredResearchHandoffPin(current.spec, current.directory);
     for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
-    assertRegisteredBytes?.();
+    assertRegisteredBytes?.(); assertOriginal?.();
   };
-  if (!released) {
+  if (!released && !terminalRepair) {
     if (registered) await withCodexGoalRegistryMutation({ registryRootDir: registered.registryRootDir,
       requireExistingRegistryRoot: true, effect: async () => {
         await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
@@ -229,17 +281,39 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   }
   assertTerminal();
   const guard = async (): Promise<void> => {
-    if (registered) assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    if (originAuthority) assertOriginal = await originAuthority.assertCurrent();
+    if (registered && !terminalRepair) assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
     assertTerminal();
   };
-  const publicationLease = registered && !released ? researchHandoffPublicationLease(jobId, startId) : undefined;
+  const publicationLease = terminalRepair?.withPublication ?? (registered && !released ? (originAuthority
+    ? originAuthority.withPublication : researchHandoffPublicationLease(jobId, startId)) : undefined);
   const publishTerminal = async (): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> => {
   if (!existsSync(publicationPath)) {
     if (released) researchInvalid();
     const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
     if (workspace.warning !== undefined) researchInvalid();
-    const reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
-      publicationAuthority: { assertPublicationAuthorized: guard } });
+    let reconciled: Awaited<ReturnType<typeof materializeReconciledTerminalCodexGoalHandoff>>;
+    try {
+      reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
+        publicationAuthority: { assertPublicationAuthorized: guard, captureMode: TerminalHandoffCaptureMode.PreserveWorkspace } });
+    } catch (error) {
+      const reason = handoffPreservationRefusalReason(error);
+      if (reason === undefined) throw error;
+      await guard(); // Authenticated cold owner/candidate/registered witnesses, not the thrown message alone.
+      const producer = installedResearchRuntimeDirectory(), producerSha = researchArtifactDigest(producer);
+      assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+      const refusal = { schemaVersion: 1, jobId, startId, specSha256, requestSha256: current.spec.requestSha256,
+        candidateSha256: researchHash(candidateBytes), bindingSha256: researchHash(researchRead(join(current.directory, "binding.json"))),
+        originalRuntimeDirectory: current.spec.runtimeDirectory, originalArtifactSha256: current.spec.artifactSha256,
+        producerRuntimeDirectory: producer, producerArtifactSha256: producerSha, reason, budget: handoffPreservationBudget,
+        processTerminal: true, preservationComplete: false, writerReleased: false };
+      const path = join(current.directory, "preservation-refusal." + producerSha + ".json"), previous = optionalResearchBytes(path);
+      if (previous && !isDeepStrictEqual(researchJson(previous), refusal)) researchInvalid();
+      assertQualifiedResearchRuntimeArtifact(current.spec.runtimeDirectory, current.spec.artifactSha256);
+      await guard(); assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+      if (!previous) researchPublish(path, refusal, true);
+      throw new MimoPreservationRefused(reason); // No result/publication or reservation release on refusal.
+    }
     await guard();
     const result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reconciled.changedPaths,
       artifacts: reconciled.artifacts, evidence: candidate.evidence.filter(value => value !== "patch_preserve_unavailable"),
@@ -266,9 +340,10 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       assertTerminal();
       // An accepted response alone is not quota recovery. Only this existing cold
       // native/provider boundary can publish the exact-current-key exemption.
-      try { await settleResearchMimoCapacityRecovery(current, { assertTerminal, withPublication: async effect => await effect() }); }
+      try { if (!terminalRepair) await settleResearchMimoCapacityRecovery(current, { assertTerminal, withPublication: async effect => await effect() }); }
       catch { /* Changed limits/uncertain custody retain the consumed claim, not availability. */ }
-      assertTerminal(); releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
+      assertTerminal(); terminalRepair?.assertPublished();
+      releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
     };
     await publish();
   }
@@ -515,7 +590,7 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
   if (workspace.warning !== undefined) researchInvalid();
   const preserved = await materializeReconciledTerminalCodexGoalHandoff({
     config: current.spec.request, changedFiles: workspace.changedFiles,
-    publicationAuthority: { assertPublicationAuthorized: guard,
+    publicationAuthority: { assertPublicationAuthorized: guard, captureMode: TerminalHandoffCaptureMode.PreserveWorkspace,
       withPublicationAuthority: researchHandoffPublicationLease(jobId, current.spec.startId) },
   });
   await guard();

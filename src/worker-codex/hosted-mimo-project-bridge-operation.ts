@@ -12,7 +12,7 @@ import { InterruptedProjectCreateErrorCode, InterruptedProjectCreateDisposition,
   type InterruptedProjectCreateOutcome } from "@vioxen/subscription-runtime/worker-core";
 import { z } from "zod";
 import { capturePublicationBusyStartRearm, assertPublicationBusyStartRearmCurrent, publicationBusyRearmPath,
-  isPublicationBusyResult, type PublicationBusyStartRearmProof } from "./hosted-mimo-publication-busy-rearm";
+  isPrelaunchStartFailureResult, type PublicationBusyStartRearmProof } from "./hosted-mimo-publication-busy-rearm";
 
 // Canonical settlement representation belongs to the native operation store.
 const settlementSha = z.string().regex(/^[a-f0-9]{64}$/), settlementId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/), settlementHexId = z.string().regex(/^[a-f0-9]{32}$/);
@@ -107,7 +107,7 @@ function owner(request: MimoProjectBridgeRequest) {
         oldOwner.unit !== `subscription-runtime-mimo-project-${researchHash(digest + ":" + previousGeneration)}.service` ||
         !(admissionDenied(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString()))
           ? researchHash(hostedMimoBridgeMetadataBytes(join(dirname(files.root), "admission-repair-archives", request.jobId + ".finalization.json"))) === proof.receiptSha256
-          : isPublicationBusyResult(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString())) &&
+          : isPrelaunchStartFailureResult(JSON.parse(hostedMimoBridgeMetadataBytes(files.resultPath + ".generation-" + previousGeneration).toString())) &&
             researchHash(readPrivateHostedMimoOperationBytes(publicationBusyRearmPath(dirname(files.root), request.jobId, previousGeneration), 65536)) === proof.receiptSha256))
       throw new Error("mimo_project_bridge_operation_invalid");
   } else if (hasRearm) throw new Error("mimo_project_bridge_operation_invalid");
@@ -231,6 +231,10 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
   let generation = 0;
   let rearmProof: Readonly<{ ownerSha256: string; requestSha256: string; resultSha256: string; receiptSha256: string }> | undefined;
   const retainedFiles = operationFiles(request);
+  // A crash after archival must not resurrect generation zero as a fresh Start.
+  if (request.operation === MimoProjectBridgeOperation.Start && !existsSync(retainedFiles.ownerPath) && existsSync(retainedFiles.root) &&
+      readdirSync(retainedFiles.root).some(name => name.startsWith(`${request.jobId}.start.`)))
+    throw new Error("mimo_project_bridge_operation_invalid");
   // Real submissions must retain the exact request. Synthetic observations
   // intentionally lack Create payload fields and only verify job identity.
   if (request.operation !== MimoProjectBridgeOperation.Status && existsSync(retainedFiles.ownerPath) &&
@@ -307,9 +311,10 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
         // still acquired by the unchanged original broker in the owned unit.
         for (const path of evidence) renameSync(path, path + ".generation-" + old.value.generation);
         rearmProof = { ...previousStart, receiptSha256: proof.receiptSha256 };
-      } else if (prior.state === "settled" && isPublicationBusyResult(prior.result)) {
+      } else if (prior.state === "settled" && isPrelaunchStartFailureResult(prior.result)) {
         if (!recoverableStatus(request, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
         const old = owner(request), evidence = [old.requestPath, old.resultPath, old.ownerPath];
+        if (existsSync(old.resultPath + ".tmp")) throw new Error("mimo_project_bridge_operation_invalid");
         if (evidence.some(path => existsSync(path + ".generation-" + old.value.generation))) throw new Error("mimo_project_bridge_operation_invalid");
         const previousStart = { ownerSha256: researchHash(old.ownerBytes), requestSha256: researchHash(old.requestBytes),
           resultSha256: researchHash(hostedMimoBridgeMetadataBytes(old.resultPath)) };
@@ -375,7 +380,7 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   try {
     if (request.operation === MimoProjectBridgeOperation.Start && (current.value.generation as number) > 0) {
       const previousGeneration = (current.value.generation as number) - 1;
-      if (isPublicationBusyResult(JSON.parse(hostedMimoBridgeMetadataBytes(current.resultPath + ".generation-" + previousGeneration).toString()))) {
+      if (isPrelaunchStartFailureResult(JSON.parse(hostedMimoBridgeMetadataBytes(current.resultPath + ".generation-" + previousGeneration).toString()))) {
         const oldOwner = JSON.parse(hostedMimoBridgeMetadataBytes(current.ownerPath + ".generation-" + previousGeneration).toString()) as { unit: string; description: string };
         if (!coldOperationUnit(oldOwner.unit, oldOwner.description, "controller-recovery")) throw new Error("mimo_project_bridge_control_pending");
         const proof = JSON.parse(readPrivateHostedMimoOperationBytes(publicationBusyRearmPath(dirname(current.root), request.jobId, previousGeneration), 65536).toString()) as PublicationBusyStartRearmProof;

@@ -529,17 +529,18 @@ it.each(["complete", "incomplete", "missing", "wrong-owner"])("recognizes only t
   expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
 });
 
-async function publicationBusyStart() {
+const prelaunchFailures = ["protected_job_birth_publication_busy", "mimo_project_bridge_operation_failed"] as const;
+async function publicationBusyStart(error: string = prelaunchFailures[0]) {
   await submitHostedMimoProjectBridge(request);
   state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } }));
   await submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start));
   const stem = prefix.replace(".create", ".start");
-  state.files.set(stem + ".result.json", JSON.stringify({ ok: false, error: "protected_job_birth_publication_busy" }));
+  state.files.set(stem + ".result.json", JSON.stringify({ ok: false, error }));
   state.command.mockImplementation((executable: string, args: string[]) => executable === "/usr/bin/systemctl" && args[0] !== "list-jobs" ? terminalShow(args[1]!) : "");
   return stem;
 }
-it("rearms only the exact cold pre-effect publication-busy Start and retains its generation", async () => {
-  const stem = await publicationBusyStart(), oldOwner = state.files.get(stem + ".owner.json")!;
+it.each(prelaunchFailures)("rearms exact cold pre-effect Start and retains its generation: %s", async error => {
+  const stem = await publicationBusyStart(error), oldOwner = state.files.get(stem + ".owner.json")!;
   await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).resolves.toMatchObject({ pending: true });
   expect(state.files.get(stem + ".owner.json.generation-0")).toBe(oldOwner);
   expect(JSON.parse(state.files.get(stem + ".owner.json")!).generation).toBe(1);
@@ -547,15 +548,15 @@ it("rearms only the exact cold pre-effect publication-busy Start and retains its
   await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).resolves.toMatchObject({ state: "unresolved" });
   expect(state.busyCapture).toHaveBeenCalledOnce();
 });
-it("keeps the failed owner intact when fresh pre-effect proof refuses", async () => {
-  const stem = await publicationBusyStart(), oldOwner = state.files.get(stem + ".owner.json")!;
+it.each(prelaunchFailures)("keeps the failed owner intact when fresh pre-effect proof refuses: %s", async error => {
+  const stem = await publicationBusyStart(error), oldOwner = state.files.get(stem + ".owner.json")!;
   state.busyCapture.mockRejectedValueOnce(new Error("TEST first effect present"));
   await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow("TEST first effect present");
   expect(state.files.get(stem + ".owner.json")).toBe(oldOwner); expect(state.files.has(stem + ".owner.json.generation-0")).toBe(false);
 });
 
-it("rechecks fresh proof inside the owned unit before any handler effect", async () => {
-  const stem = await publicationBusyStart();
+it.each(prelaunchFailures)("rechecks fresh proof inside the owned unit before any handler effect: %s", async error => {
+  const stem = await publicationBusyStart(error);
   await submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start));
   const next = JSON.parse(state.files.get(stem + ".owner.json")!), old = JSON.parse(state.files.get(stem + ".owner.json.generation-0")!);
   state.command.mockImplementation((_exe: string, args: string[]) => args[0] === "list-jobs" ? "" : args[1] === next.unit
@@ -569,8 +570,8 @@ it("rechecks fresh proof inside the owned unit before any handler effect", async
   } finally { process.argv[1] = previous!; }
 });
 
-it.each(["queued", "pid", "cgroup", "foreign-unit", "changed-request", "existing-proof", "unknown-error"])("never rearms uncertain or non-busy Start: %s", async fault => {
-  const stem = await publicationBusyStart(), oldOwner = state.files.get(stem + ".owner.json")!, old = JSON.parse(oldOwner);
+it.each(prelaunchFailures.flatMap(error => ["queued", "pid", "cgroup", "foreign-unit", "changed-request", "existing-proof", "partial-result", "unknown-error"].map(fault => [error, fault] as const)))("never rearms uncertain or unsupported Start (%s): %s", async (error, fault) => {
+  const stem = await publicationBusyStart(error), oldOwner = state.files.get(stem + ".owner.json")!, old = JSON.parse(oldOwner);
   if (fault === "queued") state.command.mockImplementation((_exe: string, args: string[]) => args[0] === "list-jobs" ? `1 ${old.unit} start waiting` : terminalShow(args[1]!));
   if (fault === "pid" || fault === "cgroup" || fault === "foreign-unit") state.command.mockImplementation((_exe: string, args: string[]) => {
     if (args[0] === "list-jobs") return "";
@@ -578,9 +579,26 @@ it.each(["queued", "pid", "cgroup", "foreign-unit", "changed-request", "existing
     return fault === "pid" ? out.replace("MainPID=0", "MainPID=999") : fault === "cgroup" ? out.replace("ControlGroup=", "ControlGroup=/TEST") : out.replace(`Id=${old.unit}`, "Id=foreign.service");
   });
   if (fault === "existing-proof") state.files.set(stem + ".publication-busy-rearm-0.json", "TEST retained partial");
-  if (fault === "unknown-error") state.files.set(stem + ".result.json", JSON.stringify({ ok: false, error: "mimo_project_bridge_operation_failed" }));
+  if (fault === "partial-result") state.files.set(stem + ".result.json.tmp", "TEST uncertain partial");
+  if (fault === "unknown-error") state.files.set(stem + ".result.json", JSON.stringify({ ok: false, error: "mimo_project_bridge_type_error" }));
   const next = { ...control(MimoProjectBridgeOperation.Start), ...(fault === "changed-request" ? { confirmStart: false } : {}) };
   if (fault === "unknown-error") await expect(submitHostedMimoProjectBridge(next)).resolves.toMatchObject({ state: "settled" });
   else await expect(submitHostedMimoProjectBridge(next)).rejects.toThrow();
   expect(state.files.get(stem + ".owner.json")).toBe(oldOwner); expect(state.files.has(stem + ".owner.json.generation-0")).toBe(false);
+});
+
+it.each(["request", "result", "owner"])("retains an incomplete rearm after archival crash at %s", async lastArchived => {
+  const stem = await publicationBusyStart("mimo_project_bridge_operation_failed");
+  const previous = new Map(state.files);
+  for (const suffix of ["request", "result", "owner"]) {
+    const path = stem + "." + suffix + ".json";
+    state.files.set(path + ".generation-0", state.files.get(path)!); state.files.delete(path);
+    if (suffix === lastArchived) break;
+  }
+  const afterCrash = new Map(state.files);
+  state.command.mockClear();
+  await expect(submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start))).rejects.toThrow();
+  expect(state.files).toEqual(afterCrash);
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(0);
+  expect(state.files.get(stem + ".request.json.generation-0")).toBe(previous.get(stem + ".request.json"));
 });
