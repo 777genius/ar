@@ -43,7 +43,7 @@ export function h1SourceSandboxDiagnostics(stderr:Buffer,spawnError:unknown){
  else if(stderr.length){const lines=stderr.toString("ascii").split("\n");if(lines.at(-1)==="")lines.pop();lineCount=lines.length;
   if(lines.length>16||lines.some(line=>line.length>1024))state=H1SourceSandboxDiagnosticState.Oversized;
   else{for(const line of lines){
-   if(line==="TEST H1 isolated source extraction Held")operations.add(H1SourceSandboxOperation.IsolatedChild);
+   if(line==="TEST H1 isolated source extraction Held"||line.startsWith("TEST H1 isolated source extraction Held {"))operations.add(H1SourceSandboxOperation.IsolatedChild);
    if(line.startsWith("bwrap:")){if(/(?:uid|gid).*map|map.*(?:uid|gid)/i.test(line))operations.add(H1SourceSandboxOperation.UserMap);if(/namespace/i.test(line))operations.add(H1SourceSandboxOperation.Namespace);if(/mount|pivot.root|newroot/i.test(line))operations.add(H1SourceSandboxOperation.Mount);if(/execvp|execve|execut/i.test(line))operations.add(H1SourceSandboxOperation.Execute);if(/option|argument|usage/i.test(line))operations.add(H1SourceSandboxOperation.Option);if(/capabilit|capset|capget/i.test(line))operations.add(H1SourceSandboxOperation.Capability);if(/seccomp/i.test(line))operations.add(H1SourceSandboxOperation.Seccomp);}
    if(line.startsWith("/runtime/node:")&&line.includes("error while loading shared libraries:"))operations.add(H1SourceSandboxOperation.Loader);
    if(/^(?:Error \[ERR_(?:MODULE_NOT_FOUND|UNKNOWN_FILE_EXTENSION|UNSUPPORTED_DIR_IMPORT)\]|Error: Cannot find module)/.test(line))operations.add(H1SourceSandboxOperation.NodeModule);

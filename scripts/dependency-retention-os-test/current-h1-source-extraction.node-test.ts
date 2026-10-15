@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {createServer} from "node:net";
 import {createHash} from "node:crypto";
+import {spawnSync} from "node:child_process";
+import {fileURLToPath} from "node:url";
 import fs from "node:fs";
 import {syncBuiltinESMExports} from "node:module";
 import {tmpdir} from "node:os";
@@ -19,6 +21,12 @@ test("quilt path escapes duplicate entries and unsupported options hold",()=>{
  for(const body of ["../outside\n","/outside\n","same\nsame\n","patch -p0\n","patch --shell=outside\n"]){const files=new Map([["debian/patches/series",Buffer.from(body)]]);assert.throws(()=>readH1UbuntuPatchSeries(p=>files.get(p)));}
 });
 test("selected source retains full bytes and reports absent generated inputs without a compile claim",()=>{
+ const privateArgument="TEST_PRIVATE_ARGUMENT_MUST_NOT_APPEAR";
+ const child=spawnSync(process.execPath,[fileURLToPath(new URL("./current-h1-source-extraction-child-TEST.js",import.meta.url)),privateArgument],{env:{PATH:"/usr/bin:/bin"},timeout:5000,maxBuffer:16384});
+ assert.equal(child.status,70);assert.equal(child.signal,null);assert.equal(child.stdout.length,0);
+ const childStderr=child.stderr.toString("utf8"),childPrefix="TEST H1 isolated source extraction Held ";assert(childStderr.startsWith(childPrefix)&&!childStderr.includes(privateArgument));
+ const childFailure:unknown=JSON.parse(childStderr.slice(childPrefix.length));assert.deepEqual(childFailure,{schemaVersion:1,phase:"input",kind:"assertion",census:null,command:null,nativeQualified:false});
+ assert.deepEqual(h1SourceSandboxDiagnostics(child.stderr,undefined).operations,[H1SourceSandboxOperation.IsolatedChild]);
  const nodeLimit=h1SourceFileByteLimit(H1SourceCensusProfile.ToolImage,"runtime/node");assert.equal(nodeLimit,167772160);assert(150047368>128*1024*1024&&150047368<=nodeLimit);
  for(const member of ["runtime/other","runtime/node.other","usr/bin/node","other/runtime/node"])assert.equal(h1SourceFileByteLimit(H1SourceCensusProfile.ToolImage,member),128*1024*1024);assert.equal(h1SourceFileByteLimit(H1SourceCensusProfile.Source,"runtime/node"),32*1024*1024);
  let errorReads=0;const hidden=new Proxy(new Error("TEST private error detail"),{get(){errorReads++;throw Error("must not read");},getPrototypeOf(){errorReads++;throw Error("must not inspect");}});

@@ -60,20 +60,43 @@ export function censusH1PatchedSource(root:string,tick:()=>void,profile=H1Source
  }catch(error){if(readH1SourceCensusFailure(error))throw error;return fail(H1SourceCensusReason.Filesystem);}finally{closeSync(rootFd);}
 }
 function read(fd:number,size:number,tick:()=>void):Buffer {const b=Buffer.alloc(size+1);let at=0;for(;;){tick();const n=readSync(fd,b,at,b.length-at,at);tick();if(!n)break;at+=n;assert(at<=size);}assert.equal(at,size);return b.subarray(0,at);}
+enum H1SourceChildPhase {Input="input",Namespace="namespace",Root="root",Privileges="privileges",Mounts="mounts",Configuration="configuration",Extract="dpkg_source",Census="source_census",Semantics="source_semantics",Revalidate="source_revalidation",Publish="publication"}
+enum H1SourceChildFailureKind {Census="source_census",Assertion="assertion",Unknown="unknown"}
+let childPhase=H1SourceChildPhase.Input;
+let childCommandFacts:Readonly<{status:number|null;signal:NodeJS.Signals|null;spawnFailed:boolean;stdoutBytes:number;stdoutSha256:string;stderrBytes:number;stderrSha256:string;stderrPrefixBase64:string;stderrCapturedBytes:number;stderrTruncated:boolean}>|null=null;
+/** Original fixed isolated child only: its explicit environment and mounted
+ * image/inputs contain public authenticated source, never provider credentials.
+ * Unknown Error messages, stacks, properties and environment are not emitted. */
+function sourceChildFailure(error:unknown):string {
+ const census=readH1SourceCensusFailure(error)??null;
+ const kind=census?H1SourceChildFailureKind.Census:!types.isProxy(error)&&types.isNativeError(error)&&Object.getPrototypeOf(error)===assert.AssertionError.prototype?H1SourceChildFailureKind.Assertion:H1SourceChildFailureKind.Unknown;
+ return "TEST H1 isolated source extraction Held "+JSON.stringify({schemaVersion:1,phase:childPhase,kind,census,command:childCommandFacts,nativeQualified:false})+"\n";
+}
 function main(){
  assert(process.platform==="linux"&&process.getuid?.()===0&&process.getgid?.()===0);assert.equal(process.argv.length,4);const [family,dsc]=process.argv.slice(2);assert(Object.values(H1SemanticFamily).includes(family as H1SemanticFamily)&&dsc&&/^[A-Za-z0-9_.+%:~-]+\.dsc$/.test(dsc));
  const deadline=performance.now()+120000,tick=()=>assert(performance.now()<deadline,"one extraction deadline");
+ childPhase=H1SourceChildPhase.Namespace;
  for(const name of ["mnt","net","pid","user"]){assert(process.env["TEST_OUTER_"+name]);assert.notEqual(readlinkSync("/proc/self/ns/"+name),process.env["TEST_OUTER_"+name]);}
+ childPhase=H1SourceChildPhase.Root;
  const status=readlinkSync("/proc/self/root");assert.equal(status,"/");
+ childPhase=H1SourceChildPhase.Privileges;
  const actor=readFileSync("/proc/self/status","utf8");assert(/^NoNewPrivs:\s+1$/m.test(actor));for(const cap of ["Inh","Prm","Eff","Bnd","Amb"])assert(new RegExp("^Cap"+cap+":\\s+0000000000000000$","m").test(actor));
+ childPhase=H1SourceChildPhase.Mounts;
  const targets=new Set(["/","/inputs","/output","/tmp","/proc","/dev","/dev/shm","/dev/pts","/dev/ptmx","/dev/null","/dev/zero","/dev/full","/dev/random","/dev/urandom","/dev/tty"]),mounts=readFileSync("/proc/self/mountinfo","utf8").trimEnd().split("\n");assert(mounts.length<=32);const seen=new Set<string>();for(const line of mounts){const cells=line.split(" "),target=cells[4];assert(target&&targets.has(target)&&!seen.has(target));seen.add(target);if(target==="/"||target==="/inputs")assert(cells[5]!.split(",").includes("ro"));}for(const target of ["/","/inputs","/output","/tmp","/proc","/dev"])assert(seen.has(target));
  // Root image and input are read-only binds; output and tmp are bounded tmpfs.
+ childPhase=H1SourceChildPhase.Configuration;
  for(const file of ["/etc/dpkg/dpkg-source.conf","/root/.dpkg-source","/nonexistent/.dpkg-source"])assert(!existsSync(file),"uncontrolled extraction configuration");
- const r=spawnSync("/usr/bin/dpkg-source",["--no-copy","--no-check","--extract","/inputs/"+dsc,"/output/tree"],{shell:false,cwd:"/output",env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:"/nonexistent",TMPDIR:"/tmp",DEB_VENDOR:"Ubuntu"},timeout:90000,killSignal:"SIGKILL",maxBuffer:2*1024*1024});tick();assert(!r.error&&r.status===0&&r.signal===null,"dpkg-source complete extraction required");
+ childPhase=H1SourceChildPhase.Extract;
+ const r=spawnSync("/usr/bin/dpkg-source",["--no-copy","--no-check","--extract","/inputs/"+dsc,"/output/tree"],{shell:false,cwd:"/output",env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:"/nonexistent",TMPDIR:"/tmp",DEB_VENDOR:"Ubuntu"},timeout:90000,killSignal:"SIGKILL",maxBuffer:2*1024*1024});
+ const stdout=r.stdout??Buffer.alloc(0),stderr=r.stderr??Buffer.alloc(0);childCommandFacts=Object.freeze({status:r.status,signal:r.signal,spawnFailed:r.error!==undefined,stdoutBytes:stdout.length,stdoutSha256:hash(stdout),stderrBytes:stderr.length,stderrSha256:hash(stderr),stderrPrefixBase64:stderr.subarray(0,4096).toString("base64"),stderrCapturedBytes:Math.min(stderr.length,4096),stderrTruncated:stderr.length>4096});tick();assert(!r.error&&r.status===0&&r.signal===null,"dpkg-source complete extraction required");
+ childPhase=H1SourceChildPhase.Census;
  const census=censusH1PatchedSource("/output/tree",tick),byPath=new Map(census.rows.map(row=>[row.path,row]));
  const original=(p:string):Buffer=>{const row=byPath.get(p);assert(row?.kind===H1SourceObjectKind.File);const named="/output/tree/"+p,stat=lstatSync(named,{bigint:true});assert(stat.isFile()&&!stat.isSymbolicLink()&&stat.size===BigInt(row.bytes));const fd=openSync(named,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);try{assert.equal(stamp(fstatSync(fd,{bigint:true})),stamp(stat));const b=read(fd,row.bytes,tick);assert.equal(hash(b),row.sha256);assert.equal(stamp(fstatSync(fd,{bigint:true})),stamp(stat));assert.equal(stamp(lstatSync(named,{bigint:true})),stamp(stat));return b;}finally{closeSync(fd);}};
+ childPhase=H1SourceChildPhase.Semantics;
  const optional=(p:string)=>byPath.has(p)?original(p):undefined,patches=readH1UbuntuPatchSeries(optional),semantic=selectH1SemanticInputs(family as H1SemanticFamily,census.rows,original,tick);
+ childPhase=H1SourceChildPhase.Revalidate;
  const after=censusH1PatchedSource("/output/tree",tick);assert.deepEqual(after,census);
+ childPhase=H1SourceChildPhase.Publish;
  const body=Buffer.from(JSON.stringify({purpose:"PATCHED_SOURCE_UNADMITTED_DATA",family,extractor:"dpkg-source-3.0-quilt",vendor:"Ubuntu",command:{status:r.status,signal:r.signal,stdoutSha256:hash(r.stdout),stderrSha256:hash(r.stderr)},inventory:census,patches,semantic,compiledInputEquality:false,nativeQualified:false}));assert(body.length<=h1PatchedSourceLimits.recordBytes);tick();process.stdout.write(body);
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){try{main();}catch{process.stderr.write("TEST H1 isolated source extraction Held\n");process.exitCode=70;}}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){try{main();}catch(error){process.stderr.write(sourceChildFailure(error));process.exitCode=70;}}
