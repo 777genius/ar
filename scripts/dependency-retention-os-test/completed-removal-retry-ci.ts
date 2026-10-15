@@ -33,13 +33,28 @@ assert.deepEqual(provenance,{schemaVersion:1,purpose:"TEST_completed_immutable_i
   fixtureSha256:baselineSha256,fixtureBytes:baselineBytes,historyImported:false,nativeAuthority:"NONE"});
 const original=git(["show","HEAD:"+ownership]);
 assert(!old.equals(original),"fixed ownership must differ from exact baseline");
-const archive=git(["archive","HEAD","src","package.json"]),owned=mkdtempSync(join(temp,"TEST-completed-removal-retry-"));
+const archive=git(["archive","HEAD","src","package.json","vitest.config.ts"]),owned=mkdtempSync(join(temp,"TEST-completed-removal-retry-"));
 const evidencePath=join(workspace,"dependency-completed-removal-retry-evidence.json");
 const evidence:Record<string,unknown>={schemaVersion:1,purpose:"TEST_completed_immutable_idle_retry_only",sourceSha,baseSha:base,
   baselineMode:"pinned_public_TEST_source_fixture",baselineFixture,baselineSourceBlob:baselineBlob,baselineProvenanceSha256:provenanceSha256,
   baselineAncestry:"NOT_ASSERTED",
   fixedOwnershipSha256:hash(original),baselineOwnershipSha256:hash(old),
+  sourceAliasConfigSha256:hash(git(["show","HEAD:vitest.config.ts"])),
   testSourceSha256:hash(git(["show","HEAD:src/worker-codex/tests/hosted-dependency-completed-removal-retry.test.ts"])),qualification:"pending",nativeCrashQualification:"NOT_RUN"};
+// Finite TEST diagnostics survive failed collection/validation without publishing
+// provider data, arbitrary paths, raw process output or exception text.
+const RetryDiagnosticCause = { SourceImportResolution:"source_import_resolution", CollectionFailed:"collection_failed", ReportUnavailable:"report_unavailable", ReportCollected:"report_collected" } as const;
+function retryDiagnostics(reportBytes:Buffer|undefined,diagnostic:string) {
+  let report:JsonTestResults|undefined;
+  try { if(reportBytes)report=JSON.parse(reportBytes.toString("utf8")) as JsonTestResults; } catch { /* Finite unavailable result below. */ }
+  const count=(value:unknown)=>typeof value==="number" && Number.isSafeInteger(value) && value>=0 && value<=100 ? value : null;
+  const messages=Array.isArray(report?.testResults) ? report.testResults.map(file=>typeof file?.message==="string" ? file.message : "").join("\n") : "";
+  const cause=/Cannot find (?:package|module)|Failed to resolve import|ERR_MODULE_NOT_FOUND/.test(diagnostic+messages) ? RetryDiagnosticCause.SourceImportResolution :
+    !report ? RetryDiagnosticCause.ReportUnavailable : report.numTotalTests===0 ? RetryDiagnosticCause.CollectionFailed : RetryDiagnosticCause.ReportCollected;
+  return {cause,diagnosticSha256:hash(Buffer.from(diagnostic)),reportSha256:reportBytes ? hash(reportBytes) : null,
+    total:count(report?.numTotalTests),passed:count(report?.numPassedTests),failed:count(report?.numFailedTests),
+    pending:count(report?.numPendingTests),todo:count(report?.numTodoTests)};
+}
 function run(label:"fixed"|"baseline",bytes:Buffer) {
   const project=join(owned,label);mkdirSync(project,{mode:0o700});
   execFileSync("/usr/bin/tar",["-xf","-","-C",project],{input:archive,env,timeout:30000});
@@ -47,11 +62,17 @@ function run(label:"fixed"|"baseline",bytes:Buffer) {
   symlinkSync(join(workspace,"node_modules"),join(project,"node_modules"),"dir");
   writeFileSync(join(project,"vitest.completed-removal.config.mts"),`import { defineConfig } from "vitest/config";
 import { resolve } from "node:path";
-export default defineConfig({cacheDir:resolve("test-cache"),resolve:{alias:{"@vioxen/subscription-runtime/core":resolve("src/core/index.ts"),"@vioxen/subscription-runtime/worker-core":resolve("src/worker-core/index.ts"),"@vioxen/subscription-runtime/provider-codex":resolve("src/provider-codex/index.ts")}},test:{include:["src/worker-codex/tests/hosted-dependency-completed-removal-retry.test.ts"],maxWorkers:1}});
+import { alias } from "./vitest.config.ts";
+export default defineConfig({cacheDir:resolve("test-cache"),resolve:{alias:Object.fromEntries(Object.entries(alias).map(([name,path])=>[name,resolve("."+path)]))},test:{include:["src/worker-codex/tests/hosted-dependency-completed-removal-retry.test.ts"],maxWorkers:1}});
 `);
   const reportPath=join(project,"report.json"),result=spawnSync(process.execPath,[join(workspace,"node_modules/vitest/vitest.mjs"),"run","--config","vitest.completed-removal.config.mts","--reporter=default","--reporter=json","--outputFile="+reportPath],
     {cwd:project,env:{...env,TMPDIR:owned},timeout:240000,maxBuffer:8*1024*1024,encoding:"utf8"});
   const diagnostic=result.stdout+result.stderr;
+  let reportBytes:Buffer|undefined;
+  try { reportBytes=readFileSync(reportPath); } catch { /* Record absence before enforcing the unchanged result contract. */ }
+  const finite=retryDiagnostics(reportBytes,diagnostic);
+  evidence[label]={phase:"result_validation",exitCode:result.status,signalled:result.signal!==null,runnerError:!!result.error,...finite};
+  console.log(JSON.stringify({scope:"TEST_completed_removal_retry",label,...evidence[label] as object}));
   assert(!result.error && result.signal===null,label+" runner failed or timed out");
   assert(!/Unhandled Errors?|Unhandled Rejection|Uncaught Exception/.test(diagnostic),label+" unhandled runner error");
   const report=JSON.parse(readFileSync(reportPath,"utf8")) as JsonTestResults;
@@ -71,6 +92,7 @@ export default defineConfig({cacheDir:resolve("test-cache"),resolve:{alias:{"@vi
 }
 try {run("fixed",original);run("baseline",old);evidence.qualification="root_linux_exact_baseline_red2_fixed_green15";}
 finally {
+  // Persist finite failure facts before removing this harness's owned source copies.
   writeFileSync(evidencePath,JSON.stringify(evidence,null,2)+"\n",{mode:0o644,flag:"wx"});
   rmSync(owned,{recursive:true,force:true});
 }
