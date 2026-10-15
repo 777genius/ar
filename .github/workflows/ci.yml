@@ -459,7 +459,7 @@ jobs:
           }
           ROOT_TEST_AUTHORITY
           sr_native_phase=root_tests
-          SR_ARCHIVE_TEST_PRIVILEGE=root \
+          if SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
@@ -468,6 +468,67 @@ jobs:
             src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json
+          then :; else
+            sr_root_test_rc=$?
+            if /usr/bin/timeout --signal=TERM --kill-after=1s 3s node --input-type=module-typescript - <<'ROOT_TEST_RESULT_PUBLIC' 2>/dev/null
+          import { constants as C, openSync, closeSync, fstatSync, lstatSync, readSync } from 'node:fs';
+          const root = '/native-probe-source-workspace/source', prefix = 'SR_NATIVE_SOURCE_ROOT_TEST_V1';
+          const unknown = `\n${prefix} unknown cause=UNKNOWN\n`, fds = [];
+          const check = value => { if (!value) throw new Error(); };
+          const fields = ['dev','ino','mode','uid','gid','nlink','size','mtimeNs','ctimeNs'];
+          const same = (a, b) => fields.every(k => a[k] === b[k]);
+          const stat = path => lstatSync(path, { bigint: true }), fdstat = fd => fstatSync(fd, { bigint: true });
+          const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+          const modules = [["reviewed_archive","src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts"],["custody_record_once","src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts"],["sdk_standalone_workspace","src/worker-codex/tests/codex-goal-sdk-standalone-workspace.test.ts"],["usable_placement","src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts"]];
+          const six = ["original Usable Store schema5 placement installs CLOSED through actual Store/schema5 census, preserves raw SDK and opens the same placed blobs","original Usable Store schema5 placement refuses a different published installation nonce after actual fresh placement","original Usable Store schema5 placement refuses changed stage before installation publication","original Usable Store schema5 placement refuses changed inventory before installation publication","original Usable Store schema5 placement refuses changed ready before installation publication","original Usable Store schema5 placement refuses changed broker before installation publication"];
+          function project(report) {
+            check(plain(report) && Array.isArray(report.testResults) && report.testResults.length === 4);
+            const counters = ['numTotalTests','numPassedTests','numFailedTests','numPendingTests','numTodoTests'];
+            check(counters.every(k => Number.isSafeInteger(report[k]) && report[k] >= 0 && report[k] <= 1024));
+            check(report.numTotalTests > 0 && (report.success === undefined || typeof report.success === 'boolean'));
+            const records = [], seen = new Set(), sums = [0,0,0,0], cases = Array(6);
+            for (const file of report.testResults) {
+              check(plain(file)); const index = modules.findIndex(([,path]) => file.name === `${root}/${path}`);
+              check(index >= 0 && !seen.has(index)); seen.add(index);
+              check(Array.isArray(file.assertionResults) && file.assertionResults.length > 0 && file.assertionResults.length <= 256);
+              const counts = [0,0,0,0];
+              for (const assertion of file.assertionResults) {
+                check(plain(assertion)); const status = assertion.status;
+                check(['passed','failed','skipped','pending','todo'].includes(status));
+                counts[status === 'passed' ? 0 : status === 'failed' ? 1 : status === 'todo' ? 3 : 2]++;
+                if (index === 3) { const ordinal = six.indexOf(assertion.fullName); check(ordinal >= 0 && cases[ordinal] === undefined); cases[ordinal] = status; }
+              }
+              counts.forEach((n,i) => sums[i] += n);
+              records[index] = `${prefix} module=${modules[index][0]} total=${file.assertionResults.length} passed=${counts[0]} failed=${counts[1]} pending=${counts[2]+counts[3]} cause=UNKNOWN`;
+            }
+            check(sums.reduce((a,b) => a+b,0) === report.numTotalTests && sums[0] === report.numPassedTests && sums[1] === report.numFailedTests && sums[2] === report.numPendingTests && sums[3] === report.numTodoTests);
+            check(cases.filter(value => value !== undefined).length === 6);
+            return [...records, ...cases.map((status,i) => `${prefix} case=${i+1} status=${status} cause=UNKNOWN`)];
+          }
+          let output = unknown;
+          try {
+            check(process.cwd() === root);
+            const parents = [`${root}/delivery`, `${root}/delivery/a0-native-probe`].map(path => {
+              const fd = openSync(path, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW); fds.push(fd);
+              const before = fdstat(fd); check(before.isDirectory() && before.uid === 0n && (before.mode & 0o22n) === 0n && same(before, stat(path)));
+              return {path, fd, before};
+            });
+            const path = `${root}/delivery/a0-native-probe/archive-root-result.json`;
+            const fd = openSync(path, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK); fds.push(fd);
+            const before = fdstat(fd);
+            check(before.isFile() && before.uid === 0n && before.nlink === 1n && (before.mode & 0o22n) === 0n && before.size > 0n && before.size <= 16777216n && same(before, stat(path)));
+            const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
+            while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length-offset, null); check(n > 0); offset += n; }
+            check(readSync(fd, Buffer.alloc(1), 0, 1, null) === 0);
+            const stable = () => same(before, fdstat(fd)) && same(before, stat(path)) && parents.every(p => same(p.before, fdstat(p.fd)) && same(p.before, stat(p.path)));
+            check(stable()); const records = project(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); check(stable());
+            output = `\n${records.join('\n')}\n`;
+          } catch {} finally { for (const fd of fds) { try { closeSync(fd); } catch { output = unknown; } } }
+          process.stdout.write(output);
+          ROOT_TEST_RESULT_PUBLIC
+            then :; else printf '\n%s\n' 'SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN' || true; fi
+            exit "$sr_root_test_rc"
+          fi
           sr_native_phase=root_validator_compile
           node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
             --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
@@ -523,7 +584,20 @@ jobs:
                 if ($0 !~ /^SR_NATIVE_SOURCE_PHASE_V1 phase=(root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator) exit=(0|[1-9][0-9]{0,2})$/) { bad=1; exit }
                 split($3,e,"=");
                 if (seen["phase"]++ || ++n>32 || (bytes+=length($0)+1)>16384 || e[2]+0>255) { bad=1; exit }
+                rootFailed=($2=="phase=root_tests" && e[2]+0!=0);
                 lines[n]=$0
+              }
+              /^SR_NATIVE_SOURCE_ROOT_TEST_V1 / {
+                if ($0 == "SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN") { if (seen["root-unknown"]++) { bad=1; exit } }
+                else if ($0 ~ /^SR_NATIVE_SOURCE_ROOT_TEST_V1 module=(reviewed_archive|custody_record_once|sdk_standalone_workspace|usable_placement) total=(0|[1-9][0-9]{0,2}) passed=(0|[1-9][0-9]{0,2}) failed=(0|[1-9][0-9]{0,2}) pending=(0|[1-9][0-9]{0,2}) cause=UNKNOWN$/) {
+                  split($2,m,"="); split($3,t,"="); split($4,p,"="); split($5,f,"="); split($6,q,"=");
+                  if (seen["root-module:"m[2]]++ || t[2]+0<1 || t[2]+0>256 || p[2]+0+f[2]+0+q[2]+0!=t[2]+0 || (rootTotal+=t[2]+0)>1024) { bad=1; exit }
+                  rootModules++; if (m[2]=="usable_placement") { usableTotal=t[2]+0; usablePassed=p[2]+0; usableFailed=f[2]+0; usablePending=q[2]+0 }
+                } else if ($0 ~ /^SR_NATIVE_SOURCE_ROOT_TEST_V1 case=[1-6] status=(passed|failed|skipped|pending|todo) cause=UNKNOWN$/) {
+                  split($2,c,"="); split($3,s,"="); if (seen["root-case:"c[2]]++) { bad=1; exit }
+                  rootCases++; if (s[2]=="passed") casePassed++; else if (s[2]=="failed") caseFailed++; else casePending++;
+                } else { bad=1; exit }
+                if (++n>32 || (bytes+=length($0)+1)>16384) { bad=1; exit } lines[n]=$0
               }
               /^SR_NATIVE_SOURCE_PUBLIC_V1 / {
                 if ($0 !~ /^SR_NATIVE_SOURCE_PUBLIC_V1 (contracts|root_typecheck) passed=[01] inputsStable=([01]|UNKNOWN) checks=(0|[1-9][0-9]{0,2}|UNKNOWN) index=(0|[1-9][0-9]{0,2}|UNKNOWN) exit=(0|[1-9][0-9]{0,2}|UNKNOWN) signal=(NONE|SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ|UNKNOWN) naturalClose=([01]|UNKNOWN) cause=UNKNOWN$/) { bad=1; exit }
@@ -535,7 +609,12 @@ jobs:
                 lines[n]=$0
               }
               END {
-                if (bad || !n) exit 1;
+                if (bad || !n || (seen["root-unknown"] && (rootModules || rootCases)) ||
+                  ((rootModules || rootCases) && (rootModules!=4 || rootCases!=6 || usableTotal!=6 || usablePassed!=casePassed+0 || usableFailed!=caseFailed+0 || usablePending!=casePending+0))) exit 1;
+                if (rootFailed && !seen["root-unknown"] && !rootModules && !rootCases) {
+                  fallback="SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN";
+                  if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1; lines[n]=fallback
+                }
                 if (!seen["phase"]) {
                   fallback="SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN";
                   if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1;
@@ -548,6 +627,7 @@ jobs:
           else
             printf '%s\n' "$unknown_marker"
             printf '%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN'
+            printf '\n%s\n' 'SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN' || true
           fi
           # Stream tar archives without following container symlinks or exposing
           # root-owned fixtures to runner-side extraction/upload traversal.
