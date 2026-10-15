@@ -758,7 +758,7 @@ describe("native project launch authorization", () => {
   });
 });
 
-async function registeredMimoCandidate(dirty = false, normalizedScope = false) {
+async function registeredMimoCandidate(dirty = false, normalizedScope = false, status: "partial" | "failed" = "partial") {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
@@ -794,7 +794,7 @@ async function registeredMimoCandidate(dirty = false, normalizedScope = false) {
     taskId: current.spec.request.taskId, startId: started.startId, specSha256: started.specSha256,
     bindingSha256: researchHash(researchRead(join(current.directory, "binding.json"))),
     result: buildRuntimeResultEnvelope({ provider: "codex", runId: started.jobId, taskId: current.spec.request.taskId,
-      status: "partial", evidence: ["TEST report retained"], nextAction: "continue" }) });
+      status, evidence: ["TEST report retained"], nextAction: "continue" }) });
   enterResearchOperatorScope(started.unit);
   return { ...started, ...current };
 }
@@ -975,7 +975,7 @@ describe("qualified preservation recovery (explicit offline Linux Host fixture)"
     });
   });
   afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
-  registeredTerminalRepairTests({ candidate: dirty => registeredMimoCandidate(dirty, true), scope: () => state.scope!,
+  registeredTerminalRepairTests({ candidate: (dirty, status) => registeredMimoCandidate(dirty, true, status), scope: () => state.scope!,
     setScope: scope => { state.scope = scope; }, registry: () => registry });
   registeredStoppedBeforeProviderTests({ start: () => registeredCodingAllocation(true), scope: () => state.scope!, setScope: scope => { state.scope = scope; } });
   it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {

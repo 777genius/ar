@@ -115,8 +115,20 @@ function publishedInputs(current: ReturnType<typeof researchCurrentStart>) {
   if (!isDeepStrictEqual(researchJson(resultBytes), result)) researchInvalid();
   rows.push({ path: join(job, current.spec.request.taskId + ".latest-result.json"), sha256: researchHash(resultBytes) });
   const progress = join(job, current.spec.request.taskId + ".progress.json"), progressBytes = researchRead(progress, false);
-  if (!isDeepStrictEqual(researchJson(progressBytes), { schemaVersion: 1, taskId: result.taskId,
-    status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 })) researchInvalid();
+  const progressValue = researchJson(progressBytes);
+  if (!isDeepStrictEqual(progressValue, { schemaVersion: 1, taskId: result.taskId,
+    status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 })) {
+    // Supported Stop may follow an already released partial/failed publication.
+    // Preserve that independent control observation verbatim in this receipt;
+    // neither its timestamp nor its status replaces the authenticated result.
+    const stopped = researchRecord(progressValue, "schemaVersion,taskId,updatedAt,status");
+    const time = typeof stopped.updatedAt === "string" ? Date.parse(stopped.updatedAt) : NaN;
+    if ((result.status !== "partial" && result.status !== "failed") || stopped.schemaVersion !== 1 ||
+        stopped.taskId !== result.taskId || stopped.status !== "stopped" || !Number.isFinite(time) ||
+        new Date(time).toISOString() !== stopped.updatedAt ||
+        optionalTerminalRepairBytes(join(researchJobAuthority(current.spec.request.jobId), "active.json")) ||
+        !terminalResearchStart(current.spec.request.jobId).bytes.equals(current.bytes)) researchInvalid();
+  }
   rows.push({ path: progress, sha256: researchHash(progressBytes) });
   const artifacts = result.artifacts ?? [];
   if (artifacts.length > 128) researchInvalid();
