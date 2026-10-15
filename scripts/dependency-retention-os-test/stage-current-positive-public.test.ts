@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
-import {MAGIC,Role,assertRegularName,parseManifest,readRegularFrames,safeRelative,writeRegularBytes,sealRegularFile,type Manifest,type FrameRow} from "./stage-current-positive-public.mts";
+import {INTAKE,MAGIC,Role,assertRegularName,parseManifest,readRegularFrames,safeRelative,writeRegularBytes,sealRegularFile,type Manifest,type FrameRow} from "./stage-current-positive-public.mts";
 const fault=vi.hoisted(()=>({error:undefined as Error|undefined}));
 vi.mock("node:fs",async original=>{const actual=await original<typeof import("node:fs")>();return {...actual,fsyncSync(fd:number){if(fault.error)throw fault.error;actual.fsyncSync(fd);}};});
 const hash=(b:Buffer)=>createHash("sha256").update(b).digest("hex");
@@ -69,3 +69,5 @@ it("keeps the whole projection1GiB bound even when individual Dependency leaves 
  // independent whole tracked+frame aggregate, which now exceeds 1GiB.
  m.payload.bytes=1024**3;expect(()=>parse(m)).toThrow("whole_bounds");
 });
+
+it("selects the current fixed native installer intake without legacy fallback",()=>{expect(INTAKE).toBe("/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1");});
