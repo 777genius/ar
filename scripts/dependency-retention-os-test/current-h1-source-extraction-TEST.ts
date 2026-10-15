@@ -3,14 +3,15 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {constants,openSync,closeSync,fstatSync,lstatSync,readSync,readdirSync,mkdirSync,writeFileSync,symlinkSync,existsSync,fchmodSync,realpathSync,type BigIntStats} from "node:fs";
+import {constants,openSync,closeSync,fstatSync,lstatSync,readSync,readdirSync,mkdirSync,writeFileSync,symlinkSync,existsSync,fchmodSync,realpathSync,readlinkSync,type BigIntStats} from "node:fs";
 import {join} from "node:path";
 import {types} from "node:util";
+import {parseHostedSignedToolElf,type HostedSignedToolElfFacts} from "../../src/provider-codex/app-server/adapters/hosted-signed-tool-elf.ts";
 import {joinCompleteUbuntuIndex} from "./current-h1-tool-inputs-ci-index.ts";
 import {retainOriginalAcquiredArchive,joinAcquiredSignedPackage,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
 import {type H1SourceSelection,type retainH1SourceArchives} from "./current-h1-source-record-TEST.ts";
-import {censusH1PatchedSource,H1SourceCensusProfile,readH1SourceCensusFailure,type H1SourceCensusFacts} from "./current-h1-source-extraction-child-TEST.ts";
-import {H1SemanticFamily,h1PatchedSourceLimits} from "./current-h1-source-semantics-TEST.ts";
+import {censusH1PatchedSource,H1SourceCensusProfile,h1SourceFileByteLimit,readH1SourceCensusFailure,type H1SourceCensusFacts} from "./current-h1-source-extraction-child-TEST.ts";
+import {H1SemanticFamily,H1SourceObjectKind,h1PatchedSourceLimits} from "./current-h1-source-semantics-TEST.ts";
 import {h1SourceSandboxArgv} from "./current-h1-source-sandbox-TEST.ts";
 interface Tool {readonly fd:number;readonly actual:string;readonly stamp:string;readonly sha256:string}
 interface Input {readonly scratch:string;readonly evidence:string;readonly sibling:string;readonly sourceSha:string;readonly deadline:number;readonly env:NodeJS.ProcessEnv;readonly indices:readonly {bytes:Buffer}[];readonly sourceSelections:readonly H1SourceSelection[];readonly sourceArchives:readonly ReturnType<typeof retainH1SourceArchives>[];readonly aptGet:Tool;readonly dpkgDeb:Tool;tick():void}
@@ -18,27 +19,45 @@ const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const stamp=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const packages=Object.freeze(["bubblewrap","dpkg-dev","perl","tar","xz-utils","gzip","bzip2","libstdc++6"]);
 export enum H1ExtractorStage {Plan="transfer_plan",Download="tool_download",Packages="tool_packages",Transfer="transfer_join",Image="tool_image",Source="source_extraction",Complete="complete"}
-export enum H1ExtractorSite {Input="input",Command="command",Parse="parse",Index="index_join",Record="record",Census="census",Archive="archive",Fields="fields",Package="package_join",Decoded="decoded_tar",Extract="extract",Membership="membership",Vector="vector",Seeds="seeds",Aliases="aliases",Directories="directories",NodeRead="node_read",NodeWrite="node_write",NodeMode="node_mode",RuntimeRead="runtime_read",RuntimeWrite="runtime_write",Bwrap="bwrap_retention",Custody="custody",Args="args",Sandbox="sandbox",Body="body",Complete="complete"}
+export enum H1ExtractorSite {Input="input",Command="command",Parse="parse",Index="index_join",Record="record",Census="census",Archive="archive",Fields="fields",Package="package_join",Decoded="decoded_tar",Extract="extract",Membership="membership",Vector="vector",Seeds="seeds",Aliases="aliases",Directories="directories",NodeRead="node_read",NodeElf="node_elf",NodeClosure="node_closure",NodeWrite="node_write",NodeMode="node_mode",RuntimeRead="runtime_read",RuntimeWrite="runtime_write",Bwrap="bwrap_retention",Custody="custody",Args="args",Sandbox="sandbox",Body="body",Complete="complete"}
 export enum H1ExtractorFailureKind {Assertion="assertion",Error="native_error",Unknown="unknown"}
 /** Finite classification only: never reads caller error properties or messages. */
 export function h1ExtractorFailureKind(error:unknown):H1ExtractorFailureKind {
  if(types.isProxy(error)||!types.isNativeError(error))return H1ExtractorFailureKind.Unknown;
  return Object.getPrototypeOf(error)===assert.AssertionError.prototype?H1ExtractorFailureKind.Assertion:H1ExtractorFailureKind.Error;
 }
+interface H1BootstrapElfObject {readonly name:string;readonly path:string;readonly sha256:string;readonly bytes:number;readonly needed:readonly string[];readonly alias:Readonly<{path:string;target:string}>|null}
+/** Joins previously observed bootstrap bytes to the actual complete image
+ * census. This DATA comparison neither chooses paths nor grants authority. */
+export function assertH1BootstrapInventoryData(inventory:ReturnType<typeof censusH1PatchedSource>,nodeBytes:Buffer,closure:readonly H1BootstrapElfObject[]):void {
+ const byPath=new Map(inventory.rows.map(row=>[row.path,row]));
+  const originalFile=(path:string,sha256:string,bytes:number)=>{const row=byPath.get(path);assert(row?.kind===H1SourceObjectKind.File&&row.sha256===sha256&&row.bytes===bytes);},originalAlias=(path:string,target:string)=>{const row=byPath.get(path);assert(row?.kind===H1SourceObjectKind.Alias&&row.target===target&&row.sha256===hash(target)&&row.bytes===Buffer.byteLength(target));};
+  originalFile("runtime/node",hash(nodeBytes),nodeBytes.length);for(const row of closure){originalFile(row.path,row.sha256,row.bytes);if(row.alias)originalAlias(row.alias.path,row.alias.target);}originalAlias("lib","usr/lib");originalAlias("lib64","usr/lib64");originalAlias("usr/lib64/ld-linux-x86-64.so.2","../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2");
+  for(const path of ["usr","usr/lib","usr/lib64","usr/lib/x86_64-linux-gnu"]){const row=byPath.get(path);assert(row?.kind===H1SourceObjectKind.Directory&&!(row.mode&0o022));}
+  const etc=byPath.get("etc");assert(etc===undefined||etc.kind===H1SourceObjectKind.Directory&&!(etc.mode&0o022));
+  for(const path of ["etc/ld.so.cache","etc/ld.so.preload","usr/lib/x86_64-linux-gnu/glibc-hwcaps","usr/lib/glibc-hwcaps"])assert(!inventory.rows.some(row=>row.path===path||row.path.startsWith(path+"/")));for(const row of closure)assert(!byPath.has("usr/lib/"+row.name));
+}
 export async function collectH1PatchedSourceData(input:Input):Promise<void>{
  const {scratch,evidence,tick}=input;tick();assert(process.platform==="linux"&&process.getuid?.()===0&&process.getgid?.()===0);const own=lstatSync(scratch,{bigint:true});assert(own.isDirectory()&&own.uid===0n&&own.gid===0n&&(own.mode&0o7777n)===0o700n);
  let stage=H1ExtractorStage.Plan,site=H1ExtractorSite.Input,primaryFailed=false;
- const progress={plannedPackages:0,plannedBytes:0,downloadedPackages:0,downloadedBytes:0,decodedToolBytes:0,nodeBytes:null as number|null};
+ const progress={plannedPackages:0,plannedBytes:0,downloadedPackages:0,downloadedBytes:0,decodedToolBytes:0,nodeBytes:null as number|null,nodeClosureName:null as string|null,nodeClosureObjects:0,nodeClosureBytes:0};
  let failure:Readonly<{stage:H1ExtractorStage;site:H1ExtractorSite;kind:H1ExtractorFailureKind;recordedCommands:number;census:H1SourceCensusFacts|null;progress:Readonly<typeof progress>}>|null=null;
  const commands:unknown[]=[],held:ReturnType<typeof retainOriginalAcquiredArchive>[]=[],root=join(scratch,"source-extractor-image"),archives=join(scratch,"source-extractor-packages");
  const mkdir=(path:string)=>{mkdirSync(path,{mode:0o700});assert.equal(lstatSync(path,{bigint:true}).uid,0n);};mkdir(root);mkdir(archives);mkdir(join(archives,"partial"));
  const read=(path:string,maximum:number)=>{tick();const s=lstatSync(path,{bigint:true});if(site===H1ExtractorSite.NodeRead)progress.nodeBytes=s.size<=BigInt(Number.MAX_SAFE_INTEGER)?Number(s.size):null;assert(s.isFile()&&s.size<=BigInt(maximum)&&!(s.mode&0o022n));const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);try{assert.equal(stamp(fstatSync(fd,{bigint:true})),stamp(s));const b=Buffer.alloc(Number(s.size)+1);let at=0;for(;;){tick();const n=readSync(fd,b,at,b.length-at,at);tick();if(!n)break;at+=n;assert(at<=Number(s.size));}assert.equal(at,Number(s.size));assert.equal(stamp(fstatSync(fd,{bigint:true})),stamp(s));assert.equal(stamp(lstatSync(path,{bigint:true})),stamp(s));return b.subarray(0,at);}finally{closeSync(fd);}};
- const file=(path:string,body:Buffer|string)=>{tick();writeFileSync(path,body,{flag:"wx",mode:0o600});const s=lstatSync(path,{bigint:true});assert(s.uid===0n&&s.gid===0n&&s.nlink===1n);assert(read(path,128*1024*1024).equals(Buffer.isBuffer(body)?body:Buffer.from(body)));};
+ const file=(path:string,body:Buffer|string)=>{tick();writeFileSync(path,body,{flag:"wx",mode:0o600});const s=lstatSync(path,{bigint:true});assert(s.uid===0n&&s.gid===0n&&s.nlink===1n);assert(read(path,path===join(root,"runtime/node")?h1SourceFileByteLimit(H1SourceCensusProfile.ToolImage,"runtime/node"):128*1024*1024).equals(Buffer.isBuffer(body)?body:Buffer.from(body)));};
  const command=(tool:Tool,args:readonly string[],maxBuffer=4*1024*1024)=>{tick();assert.equal(stamp(fstatSync(tool.fd,{bigint:true})),tool.stamp);assert.equal(stamp(lstatSync(tool.actual,{bigint:true})),tool.stamp);const result=spawnSync("/proc/self/fd/3",args,{argv0:tool.actual,shell:false,cwd:scratch,env:input.env,stdio:["ignore","pipe","pipe",tool.fd],timeout:Math.max(1,Math.floor(Math.min(180000,input.deadline-performance.now()))),killSignal:"SIGKILL",maxBuffer});tick();assert.equal(stamp(fstatSync(tool.fd,{bigint:true})),tool.stamp);assert(commands.length<512);commands.push({tool:tool.actual,toolSha256:tool.sha256,args,status:result.status,signal:result.signal,spawnFailed:result.error!==undefined,stdoutSha256:hash(result.stdout??Buffer.alloc(0)),stderrSha256:hash(result.stderr??Buffer.alloc(0))});assert(!result.error&&result.status===0&&result.signal===null,"source extraction acquisition command failed");return result.stdout;};
  try{
+  // The CI Node is an explicit bootstrap trust input, independent of signed
+  // Ubuntu package metadata. Decode these exact retained/readback bytes first;
+  // only actual DT_NEEDED can request the extra authenticated libatomic seed.
+  stage=H1ExtractorStage.Image;site=H1ExtractorSite.NodeRead;const nodeBytes=read(realpathSync(process.execPath),h1SourceFileByteLimit(H1SourceCensusProfile.ToolImage,"runtime/node"));site=H1ExtractorSite.NodeElf;const nodeElf=parseHostedSignedToolElf(nodeBytes);
+  const elfShape=(elf:HostedSignedToolElfFacts)=>{assert(elf.needed.length<=32&&new Set(elf.needed).size===elf.needed.length&&elf.needed.every(name=>name.length<=128));assert(elf.rpath.length===0&&elf.runpath.length===0,"unsupported bootstrap ELF search route");};
+  file(join(evidence,"source-extractor-node-UNADMITTED.json"),JSON.stringify({sourceSha:input.sourceSha,sha256:hash(nodeBytes),bytes:nodeBytes.length,needed:nodeElf.needed.length<=32&&nodeElf.needed.every(name=>name.length<=128)?nodeElf.needed:null,neededCount:nodeElf.needed.length,interpreter:nodeElf.interpreter,rpathCount:nodeElf.rpath.length,runpathCount:nodeElf.runpath.length,nativeQualified:false})+"\n");elfShape(nodeElf);assert.equal(nodeElf.interpreter,"/lib64/ld-linux-x86-64.so.2");const imagePackages=[...packages,...(nodeElf.needed.includes("libatomic.so.1")?["libatomic1"]:[])];
+  stage=H1ExtractorStage.Plan;site=H1ExtractorSite.Input;
   // Only our private archives directory changes. Existing41-package image and
   // system package database are untouched; signed indices independently join.
-  const installArgs=["-o","Dir::Cache::archives="+archives,"--yes","--download-only","--no-install-recommends","install",...packages];
+  const installArgs=["-o","Dir::Cache::archives="+archives,"--yes","--download-only","--no-install-recommends","install",...imagePackages];
   // Bound and independently authenticate the solver's COMPLETE transfer set
   // before downloading, rather than trusting a signed size as an unlimited cap.
   site=H1ExtractorSite.Command;const uris=command(input.aptGet,["-o","Acquire::ForceHash=SHA256","--print-uris",...installArgs]).toString("utf8"),requested=new Map<string,{size:number;sha256:string;local:string;matched:AcquiredSignedPackage|undefined}>();let plannedBytes=0;
@@ -57,12 +76,29 @@ export async function collectH1PatchedSourceData(input:Input):Promise<void>{
    site=H1ExtractorSite.Extract;command(input.dpkgDeb,["--extract",`/proc/${process.pid}/fd/${archive.fd}`,root]);archive.rejoin();
   }
   stage=H1ExtractorStage.Transfer;site=H1ExtractorSite.Record;file(join(evidence,"source-extractor-downloaded-UNADMITTED.json"),JSON.stringify({sourceSha:input.sourceSha,names,packages:vector,bytes:total,decodedToolBytes,nativeQualified:false})+"\n");
-  site=H1ExtractorSite.Membership;assert.deepEqual(names,[...requested.values()].map(row=>row.local).sort(),"exact prebounded downloaded transfer membership");const canonical=(rows:readonly AcquiredSignedPackage[])=>[...rows].sort((a,b)=>a.package.localeCompare(b.package));site=H1ExtractorSite.Vector;assert.deepEqual(canonical(vector),canonical([...requested.values()].map(row=>row.matched!)));site=H1ExtractorSite.Seeds;for(const name of packages)assert(vector.some(row=>row.package===name));
+  site=H1ExtractorSite.Membership;assert.deepEqual(names,[...requested.values()].map(row=>row.local).sort(),"exact prebounded downloaded transfer membership");const canonical=(rows:readonly AcquiredSignedPackage[])=>[...rows].sort((a,b)=>a.package.localeCompare(b.package));site=H1ExtractorSite.Vector;assert.deepEqual(canonical(vector),canonical([...requested.values()].map(row=>row.matched!)));site=H1ExtractorSite.Seeds;for(const name of imagePackages)assert(vector.some(row=>row.package===name));
   stage=H1ExtractorStage.Image;site=H1ExtractorSite.Aliases;for(const [alias,target] of [["bin","usr/bin"],["sbin","usr/sbin"],["lib","usr/lib"],["lib64","usr/lib64"]] as const)if(!existsSync(join(root,alias)))symlinkSync(target,join(root,alias));
   site=H1ExtractorSite.Directories;for(const name of ["runtime","inputs","output","tmp","proc","dev"]){const path=join(root,name);if(existsSync(path)){const s=lstatSync(path,{bigint:true});assert(s.isDirectory()&&s.uid===0n&&s.gid===0n);}else mkdir(path);}
-  site=H1ExtractorSite.NodeRead;const nodeBytes=read(realpathSync(process.execPath),128*1024*1024);site=H1ExtractorSite.NodeWrite;file(join(root,"runtime/node"),nodeBytes);site=H1ExtractorSite.NodeMode;const node=openSync(join(root,"runtime/node"),constants.O_RDONLY|constants.O_NOFOLLOW);try{fchmodSync(node,0o555);}finally{closeSync(node);}
+  site=H1ExtractorSite.NodeWrite;file(join(root,"runtime/node"),nodeBytes);site=H1ExtractorSite.NodeMode;const node=openSync(join(root,"runtime/node"),constants.O_RDONLY|constants.O_NOFOLLOW);try{fchmodSync(node,0o555);}finally{closeSync(node);}
   for(const name of ["current-h1-source-extraction-child-TEST.js","current-h1-source-semantics-TEST.js"]){site=H1ExtractorSite.RuntimeRead;const body=read(join(input.sibling,name),2*1024*1024);site=H1ExtractorSite.RuntimeWrite;file(join(root,"runtime",name),body);}
-  site=H1ExtractorSite.Census;const inventory=censusH1PatchedSource(root,tick,H1SourceCensusProfile.ToolImage),imageHash=hash(JSON.stringify(inventory));site=H1ExtractorSite.Record;file(join(evidence,"source-extractor-image-UNADMITTED.json"),JSON.stringify({sourceSha:input.sourceSha,packages:vector,inventory,nativeQualified:false})+"\n");
+  site=H1ExtractorSite.NodeClosure;
+  // This is a deliberately fixed Ubuntu x86-64 route check, not a loader.
+  // Unsupported aliases/search routes/hwcaps/cache refuse. Never resolve an
+  // absolute image symlink against HOST. The complete census rejoins all bytes.
+  for(const part of ["usr","usr/lib","usr/lib64","usr/lib/x86_64-linux-gnu"]){const s=lstatSync(join(root,part),{bigint:true});assert(s.isDirectory()&&!s.isSymbolicLink()&&s.uid===0n&&s.gid===0n&&!(s.mode&0o022n));}
+  for(const alias of ["lib","lib64"]){const s=lstatSync(join(root,alias),{bigint:true});assert(s.isSymbolicLink()&&readlinkSync(join(root,alias))==="usr/"+alias);}
+  try{const s=lstatSync(join(root,"etc"),{bigint:true});assert(s.isDirectory()&&!s.isSymbolicLink());}catch(error){if(!(types.isNativeError(error)&&"code" in error&&error.code==="ENOENT"))throw error;}
+  for(const path of ["etc/ld.so.cache","etc/ld.so.preload","usr/lib/x86_64-linux-gnu/glibc-hwcaps","usr/lib/glibc-hwcaps"]){try{lstatSync(join(root,path));assert.fail("unsupported bootstrap loader override");}catch(error){if(!(types.isNativeError(error)&&"code" in error&&error.code==="ENOENT"))throw error;}}
+  const interpreterAlias=join(root,"usr/lib64/ld-linux-x86-64.so.2"),interpreterStamp=lstatSync(interpreterAlias,{bigint:true});assert(interpreterStamp.isSymbolicLink()&&readlinkSync(interpreterAlias)==="../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2");
+  const pending=["ld-linux-x86-64.so.2",...nodeElf.needed],seen=new Set<string>(),closure:H1BootstrapElfObject[]=[];let closureBytes=0;
+  for(let at=0;at<pending.length;at++){tick();const name=pending[at]!;if(seen.has(name))continue;assert(seen.size<32&&/^[A-Za-z0-9_+.-]+$/.test(name)&&name!=="."&&name!=="..");seen.add(name);progress.nodeClosureName=name;try{lstatSync(join(root,"usr/lib",name));assert.fail("unsupported alternate bootstrap library");}catch(error){if(!(types.isNativeError(error)&&"code" in error&&error.code==="ENOENT"))throw error;}const base="usr/lib/x86_64-linux-gnu/",named=join(root,base+name);let member=base+name,alias:Readonly<{path:string;target:string}>|null=null;const before=lstatSync(named,{bigint:true});if(before.isSymbolicLink()){const target=readlinkSync(named);assert(/^[A-Za-z0-9_+.-]+$/.test(target)&&target!=="."&&target!=="..");member=base+target;alias={path:base+name,target};assert.equal(stamp(lstatSync(named,{bigint:true})),stamp(before));}
+   const body=read(join(root,member),128*1024*1024),elf=parseHostedSignedToolElf(body);elfShape(elf);assert(elf.interpreter===null||elf.interpreter==="/lib64/ld-linux-x86-64.so.2");closureBytes+=body.length;assert(closureBytes<=128*1024*1024);closure.push({name,path:member,sha256:hash(body),bytes:body.length,needed:elf.needed,alias});progress.nodeClosureObjects=closure.length;progress.nodeClosureBytes=closureBytes;assert.equal(stamp(lstatSync(named,{bigint:true})),stamp(before));pending.push(...elf.needed);assert(pending.length<=1024);
+  }
+  assert.equal(stamp(lstatSync(interpreterAlias,{bigint:true})),stamp(interpreterStamp));
+  file(join(evidence,"source-extractor-node-closure-UNADMITTED.json"),JSON.stringify({sourceSha:input.sourceSha,nodeSha256:hash(nodeBytes),bytes:closureBytes,objects:closure,nativeQualified:false})+"\n");
+  site=H1ExtractorSite.Census;const inventory=censusH1PatchedSource(root,tick,H1SourceCensusProfile.ToolImage);
+  assertH1BootstrapInventoryData(inventory,nodeBytes,closure);
+  const imageHash=hash(JSON.stringify(inventory));site=H1ExtractorSite.Record;file(join(evidence,"source-extractor-image-UNADMITTED.json"),JSON.stringify({sourceSha:input.sourceSha,packages:vector,inventory,nativeQualified:false})+"\n");
   site=H1ExtractorSite.Bwrap;const bwrap=retainOriginalAcquiredArchive(join(root,"usr/bin/bwrap"),tick);held.push(bwrap);const rejoin=()=>{tick();assert.equal(lstatSync(scratch,{bigint:true}).ino,own.ino);for(const h of held)h.rejoin();for(const h of input.sourceArchives)h.rejoin();assert.deepEqual(censusH1PatchedSource(root,tick,H1SourceCensusProfile.ToolImage),inventory);tick();};
   stage=H1ExtractorStage.Source;for(const selection of input.sourceSelections){site=H1ExtractorSite.Custody;rejoin();site=H1ExtractorSite.Args;const family=selection.source.name;assert(Object.values(H1SemanticFamily).includes(family as H1SemanticFamily));const dsc=selection.artifacts.find(row=>row.name.endsWith(".dsc"));assert(dsc);const args=h1SourceSandboxArgv(root,join(scratch,"source-"+family),family as H1SemanticFamily,dsc.name);
    site=H1ExtractorSite.Sandbox;const r=spawnSync("/proc/self/fd/3",args,{argv0:"/usr/bin/bwrap",shell:false,cwd:scratch,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},stdio:["ignore","pipe","pipe",bwrap.fd],timeout:Math.max(1,Math.floor(Math.min(150000,input.deadline-performance.now()))),killSignal:"SIGKILL",maxBuffer:h1PatchedSourceLimits.recordBytes});rejoin();

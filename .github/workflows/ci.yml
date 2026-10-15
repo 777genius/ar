@@ -495,6 +495,7 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-source-semantics-TEST.ts \
             scripts/dependency-retention-os-test/current-h1-source-sandbox-TEST.ts \
             scripts/dependency-retention-os-test/current-h1-source-extraction.node-test.ts \
+            src/provider-codex/app-server/adapters/hosted-signed-tool-elf.ts \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.ts \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts \
@@ -529,6 +530,7 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-source-semantics-TEST.js \
             scripts/dependency-retention-os-test/current-h1-source-sandbox-TEST.js \
             scripts/dependency-retention-os-test/current-h1-source-extraction.node-test.js \
+            src/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.js \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.js \
