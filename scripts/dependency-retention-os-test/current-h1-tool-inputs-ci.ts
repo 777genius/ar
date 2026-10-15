@@ -15,7 +15,7 @@ import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntu
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
 import { materializeFixedH1SelectedToolrootData } from "./current-h1-selected-toolroot-TEST.ts";
-import { SelectedPhysicalDisposition, SelectedPhysicalHeld, SelectedPhysicalHold, SelectedPhysicalPhase, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
+import { SelectedPhysicalDisposition, SelectedPhysicalHeld, SelectedPhysicalIdentitySite, SelectedPhysicalHold, SelectedPhysicalPhase, type SelectedRetainedStreamData } from "./current-h1-selected-toolroot-filesystem-TEST.ts";
 import { FixedGnuMemberKind, readFixedGnuBasicMembers, serializeFixedGnuMembers, type FixedGnuArchiveMembers } from "./current-h1-archive-members-TEST.ts";
 enum CiTool { AptGet="/usr/bin/apt-get", Gpgv="/usr/bin/gpgv", DpkgDeb="/usr/bin/dpkg-deb", AptHelper="/usr/lib/apt/apt-helper", Git="/usr/bin/git" }
 export enum CiFailureErrorType { Physical="SelectedPhysicalHeld", Assertion="AssertionError", Error="Error", Unknown="unknown" }
@@ -30,6 +30,7 @@ export interface CiSelectedPhysicalFailure {
  readonly phase:SelectedPhysicalPhase;
  readonly processedObjects:number;
  readonly rootCreated:boolean;
+ readonly identitySite:SelectedPhysicalIdentitySite;
 }
 /** Only finite facts from the original physical writer; no message or path. */
 export function readCiSelectedPhysicalFailure(error:unknown):CiSelectedPhysicalFailure|null {
@@ -40,11 +41,11 @@ export function readCiSelectedPhysicalFailure(error:unknown):CiSelectedPhysicalF
  };
  const reason=Object.values(SelectedPhysicalHold).find(candidate=>candidate===value("reason"));
  const phase=Object.values(SelectedPhysicalPhase).find(candidate=>candidate===value("phase"));
- const processedObjects=value("processedObjects"),rootCreated=value("rootCreated");
+ const processedObjects=value("processedObjects"),rootCreated=value("rootCreated"),identitySite=value("identitySite");
  if(value("disposition")!==SelectedPhysicalDisposition.PartialHeld||reason===undefined||phase===undefined||
   typeof processedObjects!=="number"||!Number.isSafeInteger(processedObjects)||processedObjects<0||processedObjects>1055||
-  typeof rootCreated!=="boolean")return null;
- return Object.freeze({status:SelectedPhysicalDisposition.PartialHeld,reason,phase,processedObjects,rootCreated});
+  typeof rootCreated!=="boolean"||!Object.values(SelectedPhysicalIdentitySite).includes(identitySite as SelectedPhysicalIdentitySite))return null;
+ return Object.freeze({status:SelectedPhysicalDisposition.PartialHeld,reason,phase,processedObjects,rootCreated,identitySite:identitySite as SelectedPhysicalIdentitySite});
 }
 /** Exact immediate native prototypes only; never traverses unknown ancestry. */
 export function readCiFailureErrorType(error:unknown):CiFailureErrorType {
