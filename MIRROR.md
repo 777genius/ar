@@ -36,7 +36,7 @@ and existing reproducibility anchors are retained.
 CI composes the retention SOURCE/root, observer, unit, crash and package gates
 with public Ubuntu 24.04 fallback runners, pinned actions, authless checkouts and
 the scrubbed public legacy-ledger fixture
-`7d6d19a096f2cd0e3772f8369e6e09034c8b4280`. The two additional retention TEST
+`7d6d19a096f2cd0e3772f8369e6e09034c8b4280`. The retention TEST
 workflows use disposable GitHub-hosted Ubuntu VMs without provider credentials;
 private-only RPC diagnostic upload is excluded. Package publishing workflows
 remain excluded, and the public lockfile is retained because dependency inputs
@@ -59,3 +59,8 @@ record their original source IDs and do not claim identical commit IDs. Do not
 rewrite either repository history or replace public-only fixes when bringing
 over an older private pull request. Package publication remains separate from
 this source-development transition.
+
+The standalone npm local-input and Vite/Vitest cache TEST workflows are retained
+from source `88fb4a926a5a28649334323fc5f57822e624837e`, with pinned actions and
+exact public-head checkout. They use fresh Ubuntu TEST filesystems, retain their
+original assertions, and grant no runtime admission or eviction authority.

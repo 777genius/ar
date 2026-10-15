@@ -48,7 +48,11 @@ let forgedRpcReason:ReturnType<typeof observeAdministrativeRpcReason>|undefined;
 export function observeAdministrativeForgedRpcReason():typeof forgedRpcReason { return forgedRpcReason; }
 /** The first fixed forged call's finite TEST facts, never admission or retry. */
 export function observeAdministrativeForgedCommandResult():TestAdministrativeCommandObservation|undefined { return forgedCommandObservation; }
-const deadline=process.hrtime.bigint()+120n*1000000000n;
+// CI observed 92.985s before image-FD checks and 28.223s while validating
+// all retained tasks (3a267, run 38769747646). Keep one non-renewing TEST
+// deadline with headroom for host variance; actor lifetime remains 20 minutes.
+const startedAt=process.hrtime.bigint();
+const deadline=startedAt+240n*1000000000n;
 function budget():void{
   assert(process.hrtime.bigint()<deadline,
     currentPhase===AdministrativeInstallationTestPhase.ImageFd ? "TEST_image_fd_deadline" : undefined);
@@ -221,7 +225,7 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
     // Actual fixed administrative inspection deliberately retains readonly
     // image FD. Every observed task must veto; readonly cannot waive exposure.
     currentPhase=AdministrativeInstallationTestPhase.ImageFd;
-    imageFdProgress=createImageFdTestProgress(process.hrtime.bigint(),deadline);
+    imageFdProgress=createImageFdTestProgress(process.hrtime.bigint(),startedAt,deadline);
     imageFdProgress.stage(ImageFdTestStage.Marker);
     imageFdCheck(ImageFdCheck.Marker,()=>writeFileSync(control+"/TEST-inspection-open","INSPECT_FIXED_IMAGE_READONLY\n",{
       flag:"wx",mode:0o400

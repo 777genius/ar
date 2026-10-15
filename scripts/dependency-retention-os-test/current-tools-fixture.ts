@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { DependencyCustodyEvidenceKind } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { spawnSync } from "node:child_process";
-import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, writeFileSync } from "node:fs";
+import { constants, openSync, closeSync, fstatSync, readSync, readFileSync, existsSync, lstatSync, writeFileSync } from "node:fs";
 import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
 import { dependencyToolPins, DependencyToolTransformCache, parseDependencyToolRegistration }
   from "../../dist/core/dependency-environment/dependency-tool-profile.js";
@@ -14,7 +14,10 @@ import { assertHostedDependencyPhysicalWorkspace, hostedDependencyJobRoot, readH
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
 import { HostedDependencyReferenceKind } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
-import { HostedInstallationActivationStore } from "../../dist/worker-codex/hosted-installation-activation.js";
+import { HostedActivationPhase } from "../../dist/worker-core/index.js";
+import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
+import { hostedDependencyOwnerRoot } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { HostedInstallationActivationStore, readHostedInstallationActivation } from "../../dist/worker-codex/hosted-installation-activation.js";
 import { readHostedDependencyEstablishedReceipt } from "../../dist/worker-codex/hosted-dependency-receipts.js";
 import { assertHostedDependencyLegacyComparedReady } from "../../dist/worker-codex/hosted-dependency-legacy-comparison-record.js";
 import { DependencyInstallProofKind, DependencyReceiptState } from "../../dist/worker-core/index.js";
@@ -24,7 +27,7 @@ import { parseHostedReadonlyPolicy, readHostedPrivateBytes } from "../../dist/wo
 import { HostedReadonlySupervisorHost } from "../../dist/worker-codex/hosted-readonly-supervisor-host.js";
 import { readHostedReadonlyDependencyMaterial } from "../../dist/worker-codex/hosted-readonly-dependency-records.js";
 import { readDefaultTestRequestedModel } from "./default-codex-config.ts";
-import { cleanEnv, command, digest, directory, fileDigest, json, node, runtime } from "./common.ts";
+import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, runtime } from "./common.ts";
 import { observeTestNpmLockResult, type TestNpmLockObservation } from "./registration-failure-observation.js";
 import { observePinnedTestNpmFrame, observePublicTestNpmFrame, verifyPinnedTestNpmFrameSources, type TestNpmFrameObservation, type TestNpmPublicFrameObservation } from "./registration-npm-frame-observation.js";
 const testFile = "TEST-current-local.test.ts";
@@ -226,4 +229,60 @@ export function completeCurrentReadonlyFromProtectedInputs(candidateJobId: strin
     return {candidateJobId,readonlyJobId:material.readonlyCustody.jobId,workspace:before.binding.workspace,
       comparisonSha256:material.candidate.comparison.sha256,sourceMappingSha256:material.candidate.sourceMapping.sha256} as const;
   });
+}
+
+import { readHostedDependencyKeyInputs, assertHostedDependencyKeyInputsCurrent, hostedDependencyObservationLimits } from "../../dist/worker-codex/hosted-dependency-materialization.js";
+import { HostedDependencyInstallerRecipe } from "../../dist/worker-codex/hosted-dependency-installer-inputs.js";
+import { dependencyLocalNpmArgv } from "../../dist/worker-core/dependency-environment/domain/dependency-local-closure.js";
+import { observeDependencyTree } from "../../dist/worker-local/dependency-environment/observe-dependency-tree.js";
+import { DependencyTreeObservationStatus } from "../../dist/worker-core/dependency-environment/domain/dependency-tree-manifest.js";
+/** Genuine ROOT TEST precursor only. No receipt/history/owner is authored. The
+ * original comparison later performs its own independent capture and install.
+ * This executes only on a fresh inspected pair before any managed activity. */
+export async function createCurrentLegacyCandidateTree(jobId:string,maximumMs:number) {
+  const workspace=ownWorkspace(jobId),binding=readHostedDependencyBinding(jobId);assert(binding && binding.version===2);
+  assert(Number.isSafeInteger(maximumMs) && maximumMs>0 && maximumMs<=120000);
+  const deadline=performance.now()+maximumMs,remaining=()=>{const ms=Math.floor(deadline-performance.now());assert(ms>0);return ms;};
+  const absent=()=>{
+    assert.equal(readHostedDependencyEstablishedReceipt(binding),null);
+    assert(!existsSync(workspace+"/node_modules"));
+    const actual=readHostedInstallationActivation();assert.equal(actual.activation.phase,HostedActivationPhase.Closed);
+    assert.equal(actual.activation.ordinaryStarts.length,0);
+    const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+    try {assert.equal(store.read(binding.workspace),null);}finally{store.close();}
+  };
+  withHostedActivationFence(absent);
+  const inputs=await readHostedDependencyKeyInputs(binding);assert.equal(inputs.recipe,HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1);
+  if(inputs.recipe!==HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1)throw new Error("TEST legacy local inputs required");
+  const source=installedArtifactDigest(),physical=directoryIdentity(workspace),npm=runtime+"/toolchain/lib/node_modules/npm/bin/npm-cli.js";
+  const userConfig=hostedDependencyJobRoot(jobId)+"/TEST-npm-user.rc",globalConfig=hostedDependencyJobRoot(jobId)+"/TEST-npm-global.rc";
+  const held=[node,npm,userConfig,globalConfig].map(path=>{const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),stat=fstatSync(fd,{bigint:true});
+    assert(stat.isFile() && stat.uid===0n && stat.nlink===1n && !(stat.mode&0o022n));return {path,fd,stat,bytes:readFileSync(fd)};});
+  let cachePin:{path:string;fd:number;dev:bigint;ino:bigint}|undefined;
+  const rejoin=()=>{assert.equal(ownWorkspace(jobId),workspace);assert.deepEqual(directoryIdentity(workspace),physical);assert.equal(installedArtifactDigest(),source);
+    assertHostedDependencyKeyInputsCurrent(binding,inputs);
+    for(const pin of held){const now=lstatSync(pin.path,{bigint:true}),fd=fstatSync(pin.fd,{bigint:true});
+      for(const current of [now,fd])for(const key of ["dev","ino","mode","size","ctimeNs","mtimeNs"] as const)assert.equal(current[key],pin.stat[key]);
+      assert(readFileSync(pin.fd).equals(pin.bytes));assert(readFileSync(pin.path).equals(pin.bytes));}
+    for(const pin of held.slice(2))assert.equal(pin.bytes.length,0);
+    if(cachePin){for(const stat of [fstatSync(cachePin.fd,{bigint:true}),lstatSync(cachePin.path,{bigint:true})]){assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0n && stat.gid===0n && (stat.mode&0o7777n)===0o700n);assert.equal(stat.dev,cachePin.dev);assert.equal(stat.ino,cachePin.ino);}}
+    remaining();};
+  try {
+    rejoin();withHostedActivationFence(absent);
+    const cache=hostedDependencyJobRoot(jobId)+"/TEST-legacy-birth-cache";directory(cache);
+    const cacheFd=openSync(cache,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW),cacheStat=fstatSync(cacheFd,{bigint:true});
+    cachePin={path:cache,fd:cacheFd,dev:cacheStat.dev,ino:cacheStat.ino};rejoin();
+    const args=[npm,...dependencyLocalNpmArgv(inputs.capture.closure.layout),"--userconfig="+userConfig,
+      "--globalconfig="+globalConfig,"--cache="+cache];
+    const result=spawnSync(node,args,{cwd:workspace,env:cleanEnv,encoding:"utf8",timeout:remaining(),maxBuffer:4*1024*1024,stdio:["ignore","pipe","pipe"]});
+    assert(!result.error && result.status===0 && result.signal===null);rejoin();
+    const tree=lstatSync(workspace+"/node_modules",{bigint:true});assert(tree.isDirectory() && !tree.isSymbolicLink() && tree.uid===0n);
+    const manifest=await observeDependencyTree({workspacePath:workspace,treeName:"node_modules",expectedWorkspace:binding.workspace,
+      expectedTree:{dev:String(tree.dev),ino:String(tree.ino)},limits:{...hostedDependencyObservationLimits,maxDurationMs:Math.min(remaining(),30000)}});
+    assert.equal(manifest.status,DependencyTreeObservationStatus.Complete);rejoin();
+    assert.equal(readHostedDependencyEstablishedReceipt(binding),null);
+    return Object.freeze({purpose:"ROOT_TEST_actual_legacy_candidate_birth_only",sourceSha256:source,nodeSha256:digest(held[0]!.bytes),npmSha256:digest(held[1]!.bytes),
+      workspace:physical,inputClosureSha256:inputs.capture.closureDigest,packageSha256:digest(inputs.packageBytes),lockSha256:digest(inputs.lockBytes),
+      argv:args,tree:{dev:String(tree.dev),ino:String(tree.ino)},manifest:manifest.status===DependencyTreeObservationStatus.Complete?{digest:manifest.digest,entries:manifest.entries.length}:null,receiptPublished:false});
+  } finally {if(cachePin)closeSync(cachePin.fd);for(const pin of held)closeSync(pin.fd);}
 }

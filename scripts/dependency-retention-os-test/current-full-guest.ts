@@ -1,3 +1,5 @@
+import { FullNativeCase, fullNativeCase } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { assertLegacyUnverifiedReadonlyContinuation } from "./legacy-unverified-r-continuation.js";
 import { consumeOriginalFullProjectControlGuestOnce, completeOriginalFullProjectControlGuestSetup } from "../../dist/worker-codex/hosted-project-control-native-origin.js";
 import { closePreparedCurrentConfiguredAuth } from "./current-cold-hot-root.js";
 import { assertOriginalFullBackingPreparation } from "../../dist/worker-codex/hosted-full-backing-interval.js";
@@ -80,14 +82,19 @@ try {
   const bytes=readHostedPrivateBytes("/run/TEST-full-flow-input/input.json",4096);assert(bytes);
   const inputPin=pinReferenceFile("/run/TEST-full-flow-input/input.json",4096);assert(inputPin.bytes.equals(bytes));
   const input:unknown=JSON.parse(bytes.toString("utf8"));
-  assert(isDependencyCustodyObject(input,"accountName,reviewReference,schemaVersion,sourceSha") && input.schemaVersion===1);
+  assert(isDependencyCustodyObject(input,"accountName,reviewReference,schemaVersion,sourceSha") && input.schemaVersion===1 ||
+    isDependencyCustodyObject(input,"accountName,fullCase,reviewReference,schemaVersion,sourceSha") && input.schemaVersion===2);
+  const fullCase=fullNativeCase(input.schemaVersion===2?input.fullCase:undefined);
+  if(input.schemaVersion===2)assert.equal(fullCase,FullNativeCase.LegacyUnverifiedR);
+  if(fullCase===FullNativeCase.LegacyUnverifiedR){assert.equal(removalCase,FullH1Case.Positive);assert.equal(consumer,FullGuestRestoreConsumer.Ordinary);evidence.qualification="native_legacy_compared_adoption_unverified_r_first_hot_only";}
+  evidence.fullCase=fullCase;
   assert(Buffer.from(JSON.stringify(input)+"\n").equals(bytes));assert.equal(input.sourceSha,process.env.TEST_SOURCE_SHA);
   assert(typeof input.accountName==="string");assertConfiguredAccountName(input.accountName);
   assert(typeof input.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(input.reviewReference));
   assert(!readFileSync("/etc/passwd","utf8").split("\n").some(line=>line.split(":")[2]==="65532"));
   assert(!readFileSync("/etc/group","utf8").split("\n").some(line=>line.split(":")[2]==="65532"));
   evidence.machineId=readFileSync("/etc/machine-id","utf8").trim();evidence.phase=FullGuestSetup.Root;
-  const roots=await prepareCurrentFullColdHotRoots(evidence,input.accountName);
+  const roots=await prepareCurrentFullColdHotRoots(evidence,input.accountName,fullCase);
   evidence.freshCohort={candidateJobId:roots.candidateJobId,readonlyJobId:roots.readonlyJobId,workspace:roots.workspaceIdentity,
     sourceSha:roots.sourceSha,runtimeManifestSha256:roots.runtimeManifestSha256,independentInputReview:input.reviewReference};
   // Factual setup request. Only the ORIGINAL parent can publish its once-only
@@ -100,6 +107,24 @@ try {
     if(existsSync(qualifiedPath)){const stat=lstatSync(qualifiedPath);assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && (stat.mode&0o7777)===0o600 && [1,2].includes(stat.nlink));if(stat.nlink===1){assert(readHostedPrivateBytes(qualifiedPath,16384));break;}}
     assertOriginalFullBackingPreparation();assert(performance.now()<fullDeadline);await new Promise(resolve=>setTimeout(resolve,100));
   }
+  if(fullCase===FullNativeCase.LegacyUnverifiedR){
+    assert(roots.referenceJobId);evidence.phase="legacy_unverified_r";
+    const continuation=await assertLegacyUnverifiedReadonlyContinuation(roots,roots.referenceJobId,Math.floor(fullDeadline-performance.now()));
+    evidence.legacyUnverified=continuation;
+    withHostedActivationFence(()=>{
+      assertOriginalFullBackingPreparation();assertRootScope(roots);
+      const actual=readHostedInstallationActivation(),epoch=new HostedReadonlyEpochStore().readEpoch();
+      assert.equal(actual.activation.phase,HostedActivationPhase.Closed);assert.equal(epoch.phase,HostedCustodyPhase.Closed);assert.equal(epoch.revoked,true);
+      assert(actual.activation.ordinaryStarts.every(row=>row.state===HostedCustodyReservationState.Terminal));
+      assert(epoch.reservations.every(row=>row.state===HostedCustodyReservationState.Terminal));
+      assert(epoch.outerRuntime?.state===HostedCustodyReservationState.Terminal);assert.equal(epoch.outerRuntime.startId,continuation.terminal.startId);
+      const kernel=new HostedReadonlyHostKernel();kernel.verifyExclusiveInventory();kernel.verifyDescriptorBoundary();
+      const pair=pinReferenceFile("/var/lib/subscription-runtime-full-parent-live/seals/current-full-pair.json",16384),invocation=pinReferenceFile("/var/lib/subscription-runtime-full-parent-live/seals/current-full-pair-invocation.json",4096);
+      createReadonlyPrivateRecord("/var/lib/subscription-runtime-host-policy/current-full-terminal.json",Buffer.from(JSON.stringify({schemaVersion:2,fullCase,purpose:"original_no_active_r_discharge_only",sourceSha:roots.sourceSha,
+        pairSha256:pair.reference.sha256,invocationSealSha256:invocation.reference.sha256,activationGeneration:actual.activation.generation,epochGeneration:epoch.generation,
+        workspace:continuation.terminal.workspace,startId:continuation.terminal.startId,unit:continuation.terminal.unit,release:continuation.terminal.release,fda:continuation.terminal.fda})+"\n"));
+    });
+  } else {
   evidence.phase=FullGuestSetup.Policy;evidence.testEvictionPolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);
   assert(removalCase!==FullH1Case.ParentCrash || consumer===FullGuestRestoreConsumer.Ordinary);
   const progress=(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};};
@@ -136,6 +161,7 @@ try {
     // recursive whole-guest drain and queued-job absence before dropping holds.
     createReadonlyPrivateRecord(base+"/current-full-terminal.json",Buffer.from(JSON.stringify({schemaVersion:1,sourceSha:roots.sourceSha,pairSha256:pair.reference.sha256,invocationSealSha256:invocation.reference.sha256,activationGeneration:actual.activation.generation,epochGeneration:epoch.generation,workspace:binding.workspace,sourceClosed:source.reference,idleClosed:idle.reference})+"\n"));
   });
+  }
   closePreparedCurrentConfiguredAuth(roots); // No further job admission after static role release.
   evidence.status=FullGuestStatus.PartialPass;
 } catch(error:unknown) {

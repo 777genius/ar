@@ -12,6 +12,8 @@ import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelop
 import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
 import { qualifiedH1PackagePins, qualifiedH1PackageRequestArguments, qualifiedH1PackageVectorSha256 } from "./current-h1-qualified-package-image.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
+import {h1SourceLimits,joinH1BinarySource,joinH1SourceSelection,retainH1SourceArchives,type H1SourceIdentity,type H1SourceIndexOrigin,type H1SourceSelection} from "./current-h1-source-record-TEST.ts";
+import {collectH1PatchedSourceData} from "./current-h1-source-extraction-TEST.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
 import { materializeFixedH1SelectedToolrootData } from "./current-h1-selected-toolroot-TEST.ts";
@@ -20,7 +22,7 @@ import { FixedGnuMemberKind, readFixedGnuBasicMembers, serializeFixedGnuMembers,
 enum CiTool { AptGet="/usr/bin/apt-get", Gpgv="/usr/bin/gpgv", DpkgDeb="/usr/bin/dpkg-deb", AptHelper="/usr/lib/apt/apt-helper", Git="/usr/bin/git" }
 export enum CiFailureErrorType { Physical="SelectedPhysicalHeld", Assertion="AssertionError", Error="Error", Unknown="unknown" }
 enum CiDataStatus { Complete="signed-data-extraction-measurement-complete", Failed="signed-data-stage-failed" }
-enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", RawFormat="authenticated-raw-archive-format-survey", SelectedToolroot="selected-toolroot-physical-DATA", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
+enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", Sources="authenticated-source-archives-DATA", RawFormat="authenticated-raw-archive-format-survey", SelectedToolroot="selected-toolroot-physical-DATA", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
 enum CiMeasuredKind { Directory="directory", Alias="alias-literal-not-followed", File="file" }
 enum CiEnvelopeCandidate { Held="HOLD-not-native-qualified", Captured="captured-candidate-not-native-qualified" }
 enum CiByteRole { OwnRecord="own-record", InstalledTool="installed-CI-tool-data", SignedPayload="signed-extracted-payload-data" }
@@ -133,7 +135,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
  assert([workspace,tmp].every(path=>path.length<=4096&&/^\/[A-Za-z0-9_@+./-]+$/.test(path)),"fixed CI path representation, no apt config interpolation");
  const evidence=join(workspace,"dependency-h1-tool-inputs-ci-evidence");mkdirSync(evidence,{mode:0o700});normalizeCreatedDirectory(evidence,0o700);
  const scratch=mkdtempSync(join(tmp,"TEST-H1-signed-data-"));normalizeCreatedDirectory(scratch,0o700);const scratchStat=lstatSync(scratch,{bigint:true});assert(scratchStat.uid===0n&&scratchStat.gid===0n&&(scratchStat.mode&0o7777n)===0o700n);
- const started=performance.now(),deadline=started+1800000,tools=new Map<CiTool,{fd:number;actual:string;stamp:string;sha256:string}>(),archives=new Map<string,ReturnType<typeof retainOriginalAcquiredArchive>>();
+ const started=performance.now(),deadline=started+1800000,tools=new Map<CiTool,{fd:number;actual:string;stamp:string;sha256:string}>(),archives=new Map<string,ReturnType<typeof retainOriginalAcquiredArchive>>(),sourceArchives:ReturnType<typeof retainH1SourceArchives>[]=[];
  const tick=()=>{assert(performance.now()<deadline,"one original CI deadline");const s=lstatSync(scratch,{bigint:true});assert(s.isDirectory()&&s.dev===scratchStat.dev&&s.ino===scratchStat.ino&&s.uid===0n&&s.gid===0n&&(s.mode&0o7777n)===0o700n);};
  const directories:string[]=[evidence,scratch];
  const file=(path:string,bytes:Buffer|string)=>{tick();const b=Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes);const fd=openSync(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{fchownSync(fd,0,0);fchmodSync(fd,0o600);let at=0;while(at<b.length){const n=writeSync(fd,b,at,b.length-at);assert(n>0);at+=n;tick();}fsyncSync(fd);const s=fstatSync(fd,{bigint:true});assert(s.uid===0n&&s.gid===0n&&s.nlink===1n&&s.size===BigInt(b.length)&&tuple(lstatSync(path,{bigint:true}))===tuple(s));}finally{closeSync(fd);}const parent=openSync(dirname(path),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(parent);}finally{closeSync(parent);}assert(fullBytes(path,b.length,tick).equals(b),"durable own output readback");tick();};
@@ -142,9 +144,9 @@ export async function mainCiSignedToolInputs():Promise<void> {
  let commands=0,phase=CiDataPhase.Tools,primaryFailed=false;
  try {
   for(const tool of Object.values(CiTool)){const actual=realpathSync(tool),s=lstatSync(actual,{bigint:true});assert(s.isFile()&&s.uid===0n&&s.nlink>0n&&!(s.mode&0o022n)&&(s.mode&0o111n));const fd=openSync(actual,constants.O_RDONLY|constants.O_NOFOLLOW);assert.equal(tuple(fstatSync(fd,{bigint:true})),tuple(s));const bytes=fullBytes(actual,64*1024*1024,tick,CiByteRole.InstalledTool);tools.set(tool,{fd,actual,stamp:tuple(s),sha256:hash(bytes)});}
-  const command=(tool:CiTool,args:readonly string[],maximum=4*1024*1024,timeout=30000,env:NodeJS.ProcessEnv={PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch})=>{
+  const command=(tool:CiTool,args:readonly string[],maximum=4*1024*1024,timeout=30000,env:NodeJS.ProcessEnv={PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},cwd=workspace)=>{
    tick();const original=tools.get(tool);assert(original);assert.equal(tuple(fstatSync(original.fd,{bigint:true})),original.stamp);assert.equal(tuple(lstatSync(original.actual,{bigint:true})),original.stamp);
-   const result=spawnSync("/proc/self/fd/3",[...args],{argv0:tool,shell:false,cwd:workspace,env,timeout:Math.max(1,Math.floor(Math.min(timeout,deadline-performance.now()))),maxBuffer:maximum,stdio:["ignore","pipe","pipe",original.fd]});tick();assert.equal(tuple(fstatSync(original.fd,{bigint:true})),original.stamp);assert.equal(tuple(lstatSync(original.actual,{bigint:true})),original.stamp);
+   const result=spawnSync("/proc/self/fd/3",[...args],{argv0:tool,shell:false,cwd,env,timeout:Math.max(1,Math.floor(Math.min(timeout,deadline-performance.now()))),maxBuffer:maximum,stdio:["ignore","pipe","pipe",original.fd]});tick();assert.equal(tuple(fstatSync(original.fd,{bigint:true})),original.stamp);assert.equal(tuple(lstatSync(original.actual,{bigint:true})),original.stamp);
    file(join(evidence,`command-${++commands}.json`),JSON.stringify({tool,args,status:result.status,signal:result.signal,stdoutSha256:hash(result.stdout??Buffer.alloc(0)),stderr:(result.stderr??Buffer.alloc(0)).toString("utf8").slice(0,16384)})+"\n");assert(!result.error&&result.status===0&&result.signal===null,"fixed CI command refused");return result.stdout;
   };
   // One closed TEST invocation after this own process established GID0. This
@@ -154,6 +156,14 @@ export async function mainCiSignedToolInputs():Promise<void> {
   const physicalTests=spawnSync(process.execPath,physicalTestArgv,{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
   file(join(evidence,"root-tests.tap"),physicalTests.stdout??"");file(join(evidence,"root-tests.stderr"),physicalTests.stderr??"");assert(!physicalTests.error&&physicalTests.status===0&&physicalTests.signal===null,"fixed root CI protocol/custody tests");
   assertCiRootProtocolTap(physicalTests.stdout);
+  // Separate finite source protocol inventory; the original43 is unchanged.
+  const sourceTests=spawnSync(process.execPath,["--test","--test-reporter=tap",join(sibling,"current-h1-source-record.node-test.js")],{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
+  file(join(evidence,"source-tests.tap"),sourceTests.stdout??"");file(join(evidence,"source-tests.stderr"),sourceTests.stderr??"");assert(!sourceTests.error&&sourceTests.status===0&&sourceTests.signal===null,"fixed ROOT source archive protocol");
+  assert(/^# tests 9$/m.test(sourceTests.stdout)&&/^# pass 8$/m.test(sourceTests.stdout)&&/^# fail 0$/m.test(sourceTests.stdout)&&/^# skipped 1$/m.test(sourceTests.stdout));
+  for(const name of ["ROOT source originals reject same-byte replacement extra membership hardlinks and symlinks","ROOT source post-I/O deadline permanently closes the retained originals"])assert(sourceTests.stdout.split("\n").some(line=>/^ok [0-9]+ - /.test(line)&&line.replace(/^ok [0-9]+ - /,"")===name),"ROOT source physical case cannot skip");
+  const patchedSourceTests=spawnSync(process.execPath,["--test","--test-reporter=tap",join(sibling,"current-h1-source-extraction.node-test.js")],{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
+  file(join(evidence,"patched-source-tests.tap"),patchedSourceTests.stdout??"");file(join(evidence,"patched-source-tests.stderr"),patchedSourceTests.stderr??"");assert(!patchedSourceTests.error&&patchedSourceTests.status===0&&patchedSourceTests.signal===null);
+  assert(/^# tests 6$/m.test(patchedSourceTests.stdout)&&/^# pass 6$/m.test(patchedSourceTests.stdout)&&/^# fail 0$/m.test(patchedSourceTests.stdout)&&/^# skipped 0$/m.test(patchedSourceTests.stdout),"complete ROOT patched-source protocol roster");
   assert.equal(command(CiTool.Git,["-c","safe.directory="+workspace,"rev-parse","HEAD"]).toString().trim(),sourceSha);
   file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),rootTestArgv:physicalTestArgv,tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
   dir(state);for(const name of ["etc","etc/parts","etc/auth-parts","etc/preferences-parts","etc/trusted-parts","lists","lists/partial","archives","archives/partial","log"])dir(join(state,name));
@@ -161,7 +171,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   assert.equal(hash(JSON.stringify(qualifiedH1PackagePins)),qualifiedH1PackageVectorSha256,"qualified package lock bytes");
   file(join(evidence,"qualified-package-lock.json"),JSON.stringify({sourceSha,sha256:qualifiedH1PackageVectorSha256,packages:qualifiedH1PackagePins,arguments:qualifiedH1PackageRequestArguments,nativeQualified:false})+"\n");
   phase=CiDataPhase.Key;const keyBytes=await downloadArchiveKey(Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))));tick();file(keyring,keyBytes);file(join(evidence,"ubuntu-archive-keyring.gpg"),keyBytes);
-  const sources=ciUbuntuSources.map(s=>`deb [signed-by=${keyring}] ${s.base} ${s.pocket} main universe`).join("\n")+"\n";file(join(etc,"sources.list"),sources);
+  const sources=ciUbuntuSources.flatMap(s=>["deb","deb-src"].map(type=>`${type} [signed-by=${keyring}] ${s.base} ${s.pocket} main universe`)).join("\n")+"\n";file(join(etc,"sources.list"),sources);
   const conf=[`Dir::State "${state}";`,`Dir::State::lists "${state}/lists";`,`Dir::State::status "${state}/status";`,`Dir::Cache "${state}";`,`Dir::Cache::archives "${state}/archives";`,`Dir::Cache::pkgcache "";`,`Dir::Cache::srcpkgcache "";`,`Dir::Log "${state}/log";`,
    `Dir::Etc "${etc}";`,`Dir::Etc::parts "${etc}/parts";`,`Dir::Etc::main "${etc}/main.conf";`,`Dir::Etc::sourcelist "${etc}/sources.list";`,`Dir::Etc::sourceparts "${etc}/parts";`,`Dir::Etc::netrc "${etc}/auth.conf";`,`Dir::Etc::netrcparts "${etc}/auth-parts";`,`Dir::Etc::preferences "${etc}/preferences";`,`Dir::Etc::preferencesparts "${etc}/preferences-parts";`,`Dir::Etc::trusted "${etc}/trusted.gpg";`,`Dir::Etc::trustedparts "${etc}/trusted-parts";`,
    '#clear Binary;','#clear APT::Update::Pre-Invoke;','#clear APT::Update::Post-Invoke;','#clear APT::Update::Post-Invoke-Success;','#clear DPkg::Pre-Invoke;','#clear DPkg::Post-Invoke;','#clear DPkg::Pre-Install-Pkgs;',
@@ -169,23 +179,52 @@ export async function mainCiSignedToolInputs():Promise<void> {
   file(join(etc,"apt.conf"),conf);file(join(evidence,"apt.conf"),conf);file(join(evidence,"sources.list"),sources);
   const env={PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch,APT_CONFIG:join(etc,"apt.conf")};phase=CiDataPhase.Indices;
   command(CiTool.AptGet,["update"],4*1024*1024,180000,env);
-  const indices:{origin:string;path:string;sha256:string;size:number;bytes:Buffer}[]=[];let totalIndexBytes=0;
+  const indices:(H1SourceIndexOrigin&{bytes:Buffer})[]=[],sourceIndices:(H1SourceIndexOrigin&{bytes:Buffer})[]=[];let totalIndexBytes=0;
   const listNames=readdirSync(join(state,"lists"));
   for(const source of ciUbuntuSources){const prefix=source.base.slice("https://".length).replaceAll("/","_")+"_dists_"+source.pocket,releasePath=join(state,"lists",prefix+"_InRelease"),inRelease=fullBytes(releasePath,1024*1024,tick),plain=join(evidence,source.pocket+".Release");
    const status=command(CiTool.Gpgv,["--status-fd","1","--output",plain,"--keyring",keyring,releasePath]).toString("utf8");assertUbuntuArchiveSignature(status);assert(fullBytes(releasePath,1024*1024,tick).equals(inRelease));assert(fullBytes(keyring,1024*1024,tick).equals(keyBytes));file(join(evidence,source.pocket+".InRelease"),inRelease);file(join(evidence,source.pocket+".gpg-status"),status);
    const rows=parseUbuntuRelease(fullBytes(plain,1024*1024,tick).toString("utf8"),source.pocket,Date.now());
-   for(const component of [CiUbuntuComponent.Main,CiUbuntuComponent.Universe]){const relative=component+"/binary-amd64/Packages",row=rows.get(relative);assert(row);const filename=prefix+"_"+component+"_binary-amd64_Packages",names=listNames.filter(n=>n===filename||[".lz4",".gz",".xz",".bz2",".zst"].some(ext=>n===filename+ext));assert.equal(names.length,1,"exact original complete apt index");const compressed=join(state,"lists",names[0]!);
+   for(const component of [CiUbuntuComponent.Main,CiUbuntuComponent.Universe])for(const kind of ["binary-amd64/Packages","source/Sources"]){const relative=component+"/"+kind,row=rows.get(relative);assert(row);const filename=prefix+"_"+relative.replaceAll("/","_"),names=listNames.filter(n=>n===filename||[".lz4",".gz",".xz",".bz2",".zst"].some(ext=>n===filename+ext));assert.equal(names.length,1,"exact original complete apt index");const compressed=join(state,"lists",names[0]!);
     const before=lstatSync(compressed,{bigint:true});assert(before.isFile()&&before.uid===0n&&before.gid===0n&&before.nlink===1n&&!(before.mode&0o022n)&&before.size<=BigInt(ciIndexOperationalBytes));
-    const decoded=command(CiTool.AptHelper,["cat-file",compressed],ciIndexOperationalBytes,30000,env);assert.equal(tuple(lstatSync(compressed,{bigint:true})),tuple(before));assertCompleteUbuntuIndex(decoded,row);assert((totalIndexBytes+=decoded.length)<=512*1024*1024);const name=source.pocket+"-"+component+".Packages";file(join(evidence,name),decoded);indices.push({origin:source.base+"/dists/"+source.pocket,path:relative,sha256:row.sha256,size:row.size,bytes:decoded});
+    const decoded=command(CiTool.AptHelper,["cat-file",compressed],ciIndexOperationalBytes,30000,env);assert.equal(tuple(lstatSync(compressed,{bigint:true})),tuple(before));assertCompleteUbuntuIndex(decoded,row);assert((totalIndexBytes+=decoded.length)<=512*1024*1024);const name=source.pocket+"-"+component+(kind==="source/Sources"?".Sources":".Packages");file(join(evidence,name),decoded);(kind==="source/Sources"?sourceIndices:indices).push({origin:source.base+"/dists/"+source.pocket,releaseSha256:hash(inRelease),path:relative,sha256:row.sha256,size:row.size,bytes:decoded});
    }
   }
-  file(join(evidence,"complete-indices.json"),JSON.stringify(indices.map(({bytes,...row})=>row))+"\n");
+  file(join(evidence,"complete-indices.json"),JSON.stringify([...indices,...sourceIndices].map(({bytes,...row})=>row))+"\n");
   phase=CiDataPhase.Seeds;command(CiTool.AptGet,["--yes","--download-only","--no-install-recommends","install",...qualifiedH1PackageRequestArguments],4*1024*1024,300000,env);
   const debs=readdirSync(join(state,"archives")).filter(n=>n.endsWith(".deb")).sort();assert(debs.length>0&&debs.length<200);const packages:AcquiredSignedPackage[]=[],packageOrigins:{archive:string;indices:string[]}[]=[];
-  for(const name of debs){assertCiPublicEvidenceBasename(name);assert(name.endsWith(".deb"));const original=retainOriginalAcquiredArchive(join(state,"archives",name),tick);archives.set(name,original);original.rejoin();const fields=command(CiTool.DpkgDeb,["--field",`/proc/${process.pid}/fd/${original.fd}`,"Package","Version","Architecture"],4*1024*1024,30000,env).toString("utf8");original.rejoin();let row:AcquiredSignedPackage|undefined;const origins:string[]=[];
-   for(const index of indices){tick();const current=joinCompleteUbuntuIndex(fields,index.bytes,original);tick();if(current){if(row)assert.equal(JSON.stringify(current),JSON.stringify(row));row=current;origins.push(index.origin+"/"+index.path);}}assert(row,"original same-stanza signed archive origin absent");packages.push(row);packageOrigins.push({archive:name,indices:origins});const data=fullBytes(join(state,"archives",name),32*1024*1024,tick);assert.equal(hash(data),original.sha256);file(join(evidence,name),data);original.rejoin();
+  const associations:{binary:AcquiredSignedPackage;source:H1SourceIdentity;indices:H1SourceIndexOrigin[]}[]=[];
+  for(const name of debs){assertCiPublicEvidenceBasename(name);assert(name.endsWith(".deb"));const original=retainOriginalAcquiredArchive(join(state,"archives",name),tick);archives.set(name,original);original.rejoin();const fields=command(CiTool.DpkgDeb,["--field",`/proc/${process.pid}/fd/${original.fd}`,"Package","Version","Architecture"],4*1024*1024,30000,env).toString("utf8");original.rejoin();let row:AcquiredSignedPackage|undefined,sourceIdentity:H1SourceIdentity|undefined;const origins:string[]=[],associationIndices:H1SourceIndexOrigin[]=[];
+   for(const index of indices){tick();const current=joinCompleteUbuntuIndex(fields,index.bytes,original);tick();if(current){if(row)assert.equal(JSON.stringify(current),JSON.stringify(row));const associated=joinH1BinarySource(current,index.bytes,tick);assert(associated);if(sourceIdentity)assert.deepEqual(associated,sourceIdentity,"same binary cannot have conflicting authenticated source associations");sourceIdentity=associated;row=current;const {bytes,...origin}=index;associationIndices.push(origin);origins.push(index.origin+"/"+index.path);}}assert(row&&sourceIdentity,"original same-stanza signed archive origin absent");packages.push(row);associations.push({binary:row,source:sourceIdentity,indices:associationIndices});packageOrigins.push({archive:name,indices:origins});const data=fullBytes(join(state,"archives",name),32*1024*1024,tick);assert.equal(hash(data),original.sha256);file(join(evidence,name),data);original.rejoin();
   }
   assertExactH1PackageSeeds(packages);packages.sort((a,b)=>a.package.localeCompare(b.package));file(join(evidence,"signed-packages.json"),JSON.stringify({sourceSha,packages,packageOrigins,qualifiedNative:false})+"\n");
+  phase=CiDataPhase.Sources;
+  // These41 association rows are not41 complete source acquisitions. Only the
+  // two selected source families below are Sources/.dsc/physical-archive joined.
+  file(join(evidence,"binary-source-associations-UNADMITTED.json"),JSON.stringify({sourceSha,associations,nativeQualified:false,compiledInputEquality:false})+"\n");
+  const selectedSources=new Map<string,{selection:H1SourceSelection;origins:H1SourceSelection[]}>();
+  for(const [binaryName,sourceName] of [["python3.12-minimal","python3.12"],["libpython3.12-minimal","python3.12"],["libpython3.12-stdlib","python3.12"],["libsystemd0","systemd"]] as const){
+   const association=associations.find(row=>row.binary.package===binaryName);assert(association&&association.source.name===sourceName);
+   for(const binaryIndex of association.indices){const component=binaryIndex.path.split("/")[0],index=sourceIndices.find(row=>row.origin===binaryIndex.origin&&row.releaseSha256===binaryIndex.releaseSha256&&row.path===component+"/source/Sources");assert(index);
+    const {bytes,...origin}=index,selection=joinH1SourceSelection(association.binary,association.source,binaryIndex,bytes,origin,tick),prior=selectedSources.get(sourceName);
+    if(prior){assert.deepEqual(selection.source,prior.selection.source);assert.equal(selection.directory,prior.selection.directory);assert.deepEqual(selection.artifacts,prior.selection.artifacts,"conflicting pockets cannot merge source artifacts");prior.origins.push(selection);}else selectedSources.set(sourceName,{selection,origins:[selection]});
+   }
+  }
+  assert.equal(selectedSources.size,2);const sourceRecords:unknown[]=[];
+  for(const [name,{selection,origins}] of selectedSources){
+   const output=join(scratch,"source-"+name);dir(output);const before=lstatSync(output,{bigint:true});
+   const outputFd=openSync(output,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+   try{assert.equal(tuple(fstatSync(outputFd,{bigint:true})),tuple(before));command(CiTool.AptGet,["--yes","--download-only","--only-source","source",name+"="+selection.source.version],4*1024*1024,180000,env,`/proc/${process.pid}/fd/${outputFd}`);
+    const held=fstatSync(outputFd,{bigint:true});assert(held.dev===before.dev&&held.ino===before.ino&&held.uid===0n&&held.gid===0n&&(held.mode&0o7777n)===0o700n);}
+   finally{closeSync(outputFd);}
+   const after=lstatSync(output,{bigint:true});assert(after.isDirectory()&&after.dev===before.dev&&after.ino===before.ino&&after.uid===0n&&after.gid===0n&&(after.mode&0o7777n)===0o700n);
+   const retained=retainH1SourceArchives(output,selection,tick);sourceArchives.push(retained);
+   for(const artifact of selection.artifacts){retained.rejoin();file(join(evidence,artifact.name),retained.read(artifact.name));retained.rejoin();}
+   sourceRecords.push({selection,origins,completeArchiveRoster:true,patchedSourceExtracted:false,hostNspawnProvenance:false,compiledInputEquality:false,nativeQualified:false});
+  }
+  const rejoinSourceArchives=()=>{tick();for(const source of sourceArchives)source.rejoin();tick();};rejoinSourceArchives();
+  file(join(evidence,"selected-source-archives-UNADMITTED.json"),JSON.stringify({sourceSha,trustAnchor:ubuntuArchive2018Fingerprint,sources:sourceRecords,limits:h1SourceLimits,nativeQualified:false})+"\n");
+  await collectH1PatchedSourceData({scratch,evidence,sibling,sourceSha,deadline,env,indices,sourceSelections:[...selectedSources.values()].map(row=>row.selection),sourceArchives,
+   aptGet:tools.get(CiTool.AptGet)!,dpkgDeb:tools.get(CiTool.DpkgDeb)!,tick});
   phase=CiDataPhase.RawFormat;
   const rawPackageVector=packages.map(({package:name,version,arch,sha256,size})=>({package:name,version,arch,sha256,size})),rawPackageVectorSha256=hash(JSON.stringify(rawPackageVector)),previousVectorSha256=qualifiedH1PackageVectorSha256;
   file(join(evidence,"archive-format-image.json"),JSON.stringify({purpose:"ACTUAL_SIGNED_SURVEY_IMAGE_NOT_NATIVE_AUTHORITY",sourceSha,packages:rawPackageVector,sha256:rawPackageVectorSha256,previous01dfVectorSha256:previousVectorSha256,matchesPreviouslyVerified01dfImage:rawPackageVectorSha256===previousVectorSha256})+"\n");
@@ -227,12 +266,12 @@ export async function mainCiSignedToolInputs():Promise<void> {
    assert(performance.now() < selectedDeadline, "original selected DATA phase deadline");
   };
   rejoinSelectedOriginals();
-  const selectedToolroot = await materializeFixedH1SelectedToolrootData({
+  rejoinSourceArchives();const selectedToolroot = await materializeFixedH1SelectedToolrootData({
    sourceSha, scratch, evidence, deadline: selectedDeadline,
    originals: Object.freeze(selectedOriginals), graph: graphData,
    graphBytes: graphRecords.graph, selectionBytes: graphRecords.selection
   });
-  rejoinSelectedOriginals();
+  rejoinSelectedOriginals();rejoinSourceArchives();
   assert.equal(selectedToolroot.disposition, SelectedPhysicalDisposition.Complete);
   assert.equal(selectedToolroot.measurement.objects, 1056, "fixed selected DATA object count");
   const selectedPaths = new Set(graphData.selected);
@@ -267,7 +306,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   try{const candidate=captureFixedSignedPythonEnvelopeData(extraction,signed,measureCeilings),serialized=serializeFixedSignedPythonEnvelopeData(candidate.catalog,measureCeilings);file(join(evidence,"envelope-catalog-measurement.json"),JSON.stringify({schemaVersion:1,purpose:"fixed-signed-extraction-DATA-only",status:serialized.status,...serialized.measurement,census:candidate.measurement,elfEntries:candidate.elf.size,completeCensus:true,nativeQualified:false,originalNamespaceQualified:false,inlineReviewQualified:false})+"\n");
    const provenance=serialized.status===PythonDataCatalogStatus.CapacityHeld?{signedPackagesSha256:hash(fullBytes(join(evidence,"signed-packages.json"),ciIndexOperationalBytes,tick)),completeIndicesSha256:hash(fullBytes(join(evidence,"complete-indices.json"),ciIndexOperationalBytes,tick)),sourceAndToolsSha256:hash(fullBytes(join(evidence,"source-and-tools.json"),ciIndexOperationalBytes,tick))}:undefined;
    envelopeCandidate=publishCiEnvelopeCatalogData(sourceSha,candidate,serialized,provenance,(name,bytes)=>file(join(evidence,name),bytes));}catch(error){const reason=error instanceof Error&&/^TEST H1 Python envelope Held: [A-Za-z0-9 /+-]{1,128}$/.test(error.message)?error.message:"existing-conservative-envelope-policy-refused";file(join(evidence,"envelope-candidate-HOLD.json"),JSON.stringify({reason,nativeQualified:false})+"\n");}
-  file(join(evidence,"result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Complete,purpose:"independently-signed-CI-data-not-live-host-admission",sourceSha,uid:0,packages,packageOrigins,indices:indices.map(({bytes,...row})=>row),trustAnchor:ubuntuArchive2018Fingerprint,keyringSha256:hash(keyBytes),measurement:{entries,bytes,largestFile,depth,elapsedMs:rawMeasurementElapsedMs},operationalCeilings:measureCeilings,selectedToolroot,envelopeCandidate,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",elapsedMs:performance.now()-started})+"\n");
+  rejoinSourceArchives();file(join(evidence,"result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Complete,purpose:"independently-signed-CI-data-not-live-host-admission",sourceSha,uid:0,packages,packageOrigins,indices:[...indices,...sourceIndices].map(({bytes,...row})=>row),selectedSourceArchives:sourceRecords,trustAnchor:ubuntuArchive2018Fingerprint,keyringSha256:hash(keyBytes),measurement:{entries,bytes,largestFile,depth,elapsedMs:rawMeasurementElapsedMs},operationalCeilings:measureCeilings,selectedToolroot,envelopeCandidate,liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",elapsedMs:performance.now()-started})+"\n");
  }catch(error){
   primaryFailed=true;
   const selectedPhysicalFailure=phase===CiDataPhase.SelectedToolroot?readCiSelectedPhysicalFailure(error):null;
@@ -290,6 +329,6 @@ export async function mainCiSignedToolInputs():Promise<void> {
     const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{assert.equal(tuple(fstatSync(fd,{bigint:true})),tuple(initial));fchmodSync(fd,0o444);fsyncSync(fd);const sealed=fstatSync(fd,{bigint:true});assert(sealed.dev===initial.dev&&sealed.ino===initial.ino&&sealed.uid===0n&&sealed.gid===0n&&sealed.nlink===1n&&sealed.size===initial.size&&(sealed.mode&0o7777n)===0o444n);assert.equal(tuple(lstatSync(path,{bigint:true})),tuple(sealed));}finally{closeSync(fd);}assert(fullBytes(path,ciIndexOperationalBytes,check).equals(bytes));
    }fsyncSync(parent);fchmodSync(parent,0o555);fsyncSync(parent);const sealed=fstatSync(parent,{bigint:true});assert(sealed.dev===original.dev&&sealed.ino===original.ino&&sealed.uid===0n&&sealed.gid===0n&&(sealed.mode&0o7777n)===0o555n);assert.equal(tuple(lstatSync(evidence,{bigint:true})),tuple(sealed));
   }finally{closeSync(parent);}}catch{process.stderr.write("TEST CI public evidence seal failed; artifact not qualified\n");if(!primaryFailed)throw new Error("TEST CI public evidence seal failed");}
-  finally{let cleanupFailed=false;for(const archive of archives.values())try{archive.close();}catch{cleanupFailed=true;}for(const tool of tools.values())try{closeSync(tool.fd);}catch{cleanupFailed=true;}for(const path of directories.slice().reverse())try{const fd=openSync(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(fd);}finally{closeSync(fd);}}catch{cleanupFailed=true;}if(cleanupFailed){process.stderr.write("TEST CI retained DATA cleanup unproven\n");process.exitCode=70;}}}
+  finally{let cleanupFailed=false;for(const source of sourceArchives)try{source.close();}catch{cleanupFailed=true;}for(const archive of archives.values())try{archive.close();}catch{cleanupFailed=true;}for(const tool of tools.values())try{closeSync(tool.fd);}catch{cleanupFailed=true;}for(const path of directories.slice().reverse())try{const fd=openSync(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(fd);}finally{closeSync(fd);}}catch{cleanupFailed=true;}if(cleanupFailed){process.stderr.write("TEST CI retained DATA cleanup unproven\n");process.exitCode=70;}}}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){mainCiSignedToolInputs().catch(error=>{process.stderr.write((error instanceof Error?error.message:"TEST CI signed data failed")+"\n");process.exitCode=70;});}

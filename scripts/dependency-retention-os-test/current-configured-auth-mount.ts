@@ -1,12 +1,12 @@
 import { configuredAuthUnderlyingIdentity, observeConfiguredAuthAttachmentData, assertConfiguredAuthAttachmentPhysical } from "../../dist/provider-codex/app-server/adapters/hosted-configured-auth-attachment.js";
 import { readHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
-import { assertHostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
+import { assertHostedForegroundResult, readHostedForegroundLaunchObservation } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 /** TEST-only opaque seed attachment. Never reads, hashes, copies or prints credentials. */
 import assert from "node:assert/strict";
-import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { constants, existsSync, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
-import { assertCurrentClosedEntry } from "./current-closed-entry.js";
+import { assertCurrentClosedEntry, assertCurrentUnverifiedClosedEntry } from "./current-closed-entry.js";
 import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
 import type { HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 import { command, directory } from "./common.ts";
@@ -120,7 +120,10 @@ export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string,
      * required. A bool or caller-authored release receipt is never accepted. */
     close(result: HostedForegroundResult) {
       return withHostedActivationFence(fence => {
-      assertHostedForegroundResult(result); assertCurrentClosedEntry(fence, jobRoot, result); assertReadonlyHostOperator(); assert(!closed);
+      assertHostedForegroundResult(result);
+      const observed=readHostedForegroundLaunchObservation(result);
+      if(existsSync("/var/lib/subscription-runtime-host-policy/dependency-unverified-r-releases/"+observed.startId+".json"))assertCurrentUnverifiedClosedEntry(fence,jobRoot,result);
+      else assertCurrentClosedEntry(fence, jobRoot, result); assertReadonlyHostOperator(); assert(!closed);
       const binding=readHostedDependencyBinding(jobRoot.slice(jobRoot.lastIndexOf("/")+1)); assert(binding && binding.version===2);
       assertHostedDependencyPhysicalWorkspace(binding); assertConfiguredAuthAttachmentPhysical(profile);
       const current = mounts().filter(row => row.target === target); assert.equal(current.length, 1);

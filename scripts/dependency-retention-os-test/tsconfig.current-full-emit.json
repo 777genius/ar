@@ -12,6 +12,8 @@
     "./current-full-peer-query.ts",
     "./current-full-control-git.ts",
     "./current-full-backing-collector.node-test.ts",
-    "./current-full-backing-interval.node-test.ts"
+    "./current-full-backing-interval.node-test.ts",
+    "./legacy-unverified-r-continuation.ts",
+    "./legacy-unverified-r-continuation.node-test.ts"
   ]
 }

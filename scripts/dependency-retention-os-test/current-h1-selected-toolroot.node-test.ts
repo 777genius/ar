@@ -102,14 +102,23 @@ test("selected ROOT requires exact recursively frozen original member row bindin
  }finally{f.close();}}
 });
 test("selected ROOT preserves every object yield and live joins with one detached plan canonicalization",rootOnly,async()=>{
- const f=fixture(24),originalHash=mutableCrypto.createHash,originalStat=mutableFs.fstatSync;let planPasses=0,planBytes=0,statCalls=0,yields=0,running=true;
+ const f=fixture(24),originalHash=mutableCrypto.createHash,originalStat=mutableFs.fstatSync;let planPasses=0,planBytes=0,statCalls=0,yields=0,running=true,siblingMutated=false;
+ const sharedAncestor=fs.lstatSync(f.own,{bigint:true}),sibling=join(f.own,"TEST-unrelated-sibling");
  const before=f.originalRejoins(),countYield=()=>{if(running){yields++;setImmediate(countYield);}};
  try{
   mutableCrypto.createHash=((...args:Parameters<typeof originalHash>)=>{const h=originalHash(...args),update=h.update.bind(h);
    h.update=((data:Parameters<typeof h.update>[0],encoding?:Parameters<typeof h.update>[1])=>{const b=typeof data==="string"?Buffer.from(data):Buffer.isBuffer(data)?data:undefined;
     if(b?.subarray(0,8).equals(Buffer.from('{"rows":'))){planPasses++;planBytes+=b.length;}return encoding===undefined?update(data):update(data,encoding);}) as typeof h.update;return h;
   }) as typeof originalHash;
-  mutableFs.fstatSync=((...args:Parameters<typeof originalStat>)=>{statCalls++;return originalStat(...args);}) as typeof originalStat;syncBuiltinESMExports();setImmediate(countYield);
+  mutableFs.fstatSync=((...args:Parameters<typeof originalStat>)=>{statCalls++;const sampled=originalStat(...args);
+   if(!siblingMutated&&sampled.dev===sharedAncestor.dev&&sampled.ino===sharedAncestor.ino&&fs.existsSync(f.root)){
+    // The original fstat has already sampled the real retained fixture ancestor.
+    // Change only an unrelated sibling before checkDirectory's original lstat.
+    siblingMutated=true;fs.mkdirSync(sibling,{mode:0o700});const changed=originalStat(...args);
+    assert.equal(changed.ino,sampled.ino);assert.equal(changed.dev,sampled.dev);assert.equal(changed.mode,sampled.mode);
+    assert.equal(changed.uid,sampled.uid);assert.equal(changed.gid,sampled.gid);assert.equal(typeof sampled.nlink,"bigint");assert.equal(changed.nlink,BigInt(sampled.nlink)+1n);
+   }return sampled;
+  }) as typeof originalStat;syncBuiltinESMExports();setImmediate(countYield);
   let result:Awaited<ReturnType<typeof writeOwnedSelectedToolrootData>>;
   try { result=await writeOwnedSelectedToolrootData(f.input); }
   catch(error) {
@@ -120,6 +129,7 @@ test("selected ROOT preserves every object yield and live joins with one detache
   assert.equal(planPasses,1,"old joinAll recanonicalizes the entire plan at each real checkpoint");
   assert.equal(planBytes,Buffer.byteLength(JSON.stringify({rows:[...f.input.rows].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),provenance:f.input.provenance})),"byte work is exactly one canonical plan body");
   const minimum=2+7+2+24+3+8;assert(yields>=minimum);assert(f.originalRejoins()-before>=minimum*2);assert(statCalls>=minimum*2);
+  assert(siblingMutated,"real ancestry mutation must occur inside the retained fstat/lstat window");assert(fs.lstatSync(sibling).isDirectory());
   assert.equal(result.measurement.objects,37);assert.equal(result.fixedImageQualified,false);
   const body=JSON.parse(fs.readFileSync(join(f.input.evidence,"selected-toolroot-source-output-UNADMITTED.json"),"utf8")) as {rows:SelectedOutputRow[];provenance:SelectedFilesystemInput["provenance"]};
   assert.deepEqual(body.rows.map(row=>row.path),f.input.rows.map(row=>row.path).sort());assert.deepEqual(body.provenance,f.input.provenance);
@@ -195,6 +205,18 @@ test("selected ROOT mechanics detects output substitution extra entries and unsa
   const inject=()=>{if(fs.existsSync(target)){injected=true;if(replace){const b=fs.readFileSync(target);fs.renameSync(target,target+".held");fs.writeFileSync(target,b,{mode:0o600,flag:"wx"});}else fs.appendFileSync(target,"TEST corrupt");}else setImmediate(inject);};setImmediate(inject);
   await assert.rejects(pending,e=>e instanceof SelectedPhysicalHeld&&(e.reason===SelectedPhysicalHold.Identity||e.reason===SelectedPhysicalHold.Content));assert(injected);assert(!fs.existsSync(join(h.input.evidence,"selected-toolroot-materialization-UNADMITTED.json")));assert.doesNotThrow(()=>h.archive.rejoin());
  }finally{h.close();}}
+ // The ancestry waiver must never cover a producer-owned finalized directory.
+ const output=fixture(),originalStat=mutableFs.fstatSync;let finalizedSamples=0,outputMutated=false;
+ try{const target=join(output.root,"usr");mutableFs.fstatSync=((...args:Parameters<typeof originalStat>)=>{
+   const sampled=originalStat(...args);
+   if(sampled.isDirectory()&&typeof sampled.mode==="bigint"&&(sampled.mode&0o7777n)===0o755n&&"mtimeNs" in sampled&&sampled.mtimeNs===0n&&fs.readlinkSync(`/proc/self/fd/${args[0]}`).toString()===target&&++finalizedSamples===2){
+    // First sample is finalize(); second is its immediate checkDirectory fstat.
+    outputMutated=true;fs.utimesSync(target,1,1);
+   }return sampled;
+  }) as typeof originalStat;syncBuiltinESMExports();
+  await assert.rejects(writeOwnedSelectedToolrootData(output.input),e=>readSelectedPhysicalHoldFacts(e)?.reason===SelectedPhysicalHold.Identity&&readSelectedPhysicalHoldFacts(e)?.identitySite===SelectedPhysicalIdentitySite.DirectoryNamed);
+  assert(outputMutated);assert(!fs.existsSync(join(output.input.evidence,"selected-toolroot-materialization-UNADMITTED.json")));
+ }finally{mutableFs.fstatSync=originalStat;syncBuiltinESMExports();output.close();}
 });
 test("selected ROOT mechanics refuses substituted retained parent and preserves outside TEST sentinel",rootOnly,async()=>{
  const f=fixture(),outside=join(f.own,"outside-TEST");fs.mkdirSync(outside,{mode:0o700});fs.writeFileSync(join(outside,"sentinel"),"TEST unchanged",{mode:0o600});
