@@ -567,6 +567,59 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-selected-toolroot.node-test.js \
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
             > dependency-h1-tool-inputs-ci-source-evidence/emitted.sha256
+      - name: Strict emit fixed staged H1 DATA tests and bind exact source closure
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          mkdir -p dependency-h1-staged-data-ci-evidence
+          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"root-filesystem-staged-H1-DATA-not-constructor-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-h1-staged-data-ci-evidence/source.json
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node --version > dependency-h1-staged-data-ci-evidence/node-version.txt
+          node node_modules/typescript/bin/tsc --version > dependency-h1-staged-data-ci-evidence/typescript-version.txt
+          grep -Fxq 'Version 6.0.3' dependency-h1-staged-data-ci-evidence/typescript-version.txt
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts \
+            host-integration/managed-launcher/dependency-full-h1-elf-role-TEST.ts \
+            host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts \
+            host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts \
+            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts \
+            host-integration/managed-launcher/dependency-full-native-TEST.ts \
+            host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts \
+            host-integration/managed-launcher/launch.mjs \
+            host-integration/managed-launcher/payload-guard.mjs \
+            host-integration/managed-launcher/profiles.mjs \
+            host-integration/host-jobs/storage-policy.mjs \
+            scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json \
+            dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
+            dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
+            dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
+            dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
+            dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
+            .github/workflows/ci.yml package.json package-lock.json \
+            node_modules/typescript/package.json node_modules/typescript/bin/tsc node_modules/typescript/lib/_tsc.js \
+            > dependency-h1-staged-data-ci-evidence/source-and-compiler.sha256
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json 2>&1 | tee dependency-h1-staged-data-ci-evidence/strict-emit.log
+          cp package.json outputs/TEST-h1-staged-data-ci-emit/package.json
+          sha256sum \
+            outputs/TEST-h1-staged-data-ci-emit/package.json \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-elf-role-TEST.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/launch.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/payload-guard.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/profiles.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/host-integration/host-jobs/storage-policy.mjs \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
+            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
+            > dependency-h1-staged-data-ci-evidence/emitted.sha256
       - name: Collect independently signed exact tool DATA on disposable root ARC job
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -630,10 +683,28 @@ jobs:
           rm -rf --one-file-system -- "$H1_STAGE/foreign" "$H1_STAGE/permission.stderr" "$H1_STAGE/exec-probe"
           h1_rejoin_stage
           echo 'TEST GHA root staging permission and executable probes passed'
+          RUNNER_TEMP="$H1_STAGE" "$TEST_NODE" --test --test-reporter=tap "$GITHUB_WORKSPACE/outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.js" > "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap" 9<&-
+          grep -Eq '^ok [0-9]+ - genuine ROOT Linux source census directory/file/alias rows retain their original discriminated grammar$' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
+          grep -Fxq '# tests 8' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
+          grep -Fxq '# pass 8' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
+          grep -Fxq '# fail 0' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
+          grep -Fxq '# skipped 0' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
+          h1_rejoin_stage
           RUNNER_TEMP="$H1_STAGE" "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js" 9<&-
           h1_rejoin_stage
           H1_COLLECT_ROOT
           else
+            H1_ROOT=()
+            if [ "$(id -u)" -ne 0 ]; then H1_ROOT=(sudo -n); fi
+            test "${CI:-}" = true && test "${GITHUB_ACTIONS:-}" = true
+            "${H1_ROOT[@]}" env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI="$CI" GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_TEMP="$RUNNER_TEMP" \
+              /bin/bash --noprofile --norc -euo pipefail -c '
+                test "$(id -u):$(id -g)" = 0:0
+                test "$RUNNER_TEMP" = "$(readlink -f -- "$RUNNER_TEMP")"
+                test "$(stat -c "%u:%g:%a:%F" -- "$RUNNER_TEMP")" = 0:0:700:directory
+                exec "$@"
+              ' TEST-H1-managed-facts "$TEST_NODE" --test --test-reporter=tap "$GITHUB_WORKSPACE/outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.js" \
+              > dependency-h1-staged-data-ci-evidence/facts-root-tests.tap
             # Existing managed/self-hosted callers retain their configured
             # job directory (for example /srv/workers), never a /tmp fallback.
             if [ "$(id -u)" -eq 0 ]; then
@@ -646,6 +717,27 @@ jobs:
                 "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js"
             fi
           fi 2>&1 | tee dependency-h1-tool-inputs-ci-source-evidence/entry.log
+          TAP=dependency-h1-staged-data-ci-evidence/facts-root-tests.tap "$TEST_NODE" --input-type=module-typescript - <<'H1_DISTRO_FACTS_RESULT'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const expected = new Set(["signed-publisher DATA remains distinct from reproduced compilation and never issues native authority", "missing HOST/staged package references, source definitions and substituted archive assets refuse", "fixed verifier roles cannot introduce a caller executable or escaping alias", "DATA parsers reject accessor/proxy/array hooks without invoking them", "asset names are derived only from exact hashes; filenames cannot escape original review root", "an unqualified DATA subject cannot even start a native verifier", "separate original HOST nspawn/loader/every DSO coverage cannot be supplied by staged binaries", "genuine ROOT Linux source census directory/file/alias rows retain their original discriminated grammar"]);
+          const total = expected.size;
+          const lines = readFileSync(process.env.TAP!, 'utf8').trimEnd().split(/\r?\n/);
+          assert.deepEqual(lines.filter(line => line === 'TAP version 13'), ['TAP version 13']);
+          assert.deepEqual(lines.filter(line => /^1\.\./.test(line)), [`1..${total}`]);
+          const cases = lines.filter(line => /^(?:not )?ok\b/.test(line));
+          assert.equal(cases.length, total);
+          for (const [index, line] of cases.entries()) {
+            const match = /^ok ([1-9][0-9]*) - (.+)$/.exec(line);
+            assert(match); assert.equal(Number(match[1]), index + 1); assert(expected.delete(match[2]!));
+          }
+          assert.equal(expected.size, 0);
+          for (const [label, value] of [['tests', total], ['suites', 0], ['pass', total], ['fail', 0], ['cancelled', 0], ['skipped', 0], ['todo', 0]] as const) {
+            assert.deepEqual(lines.filter(line => line.startsWith(`# ${label} `)), [`# ${label} ${value}`]);
+          }
+          assert(!lines.some(line => /^Bail out!| # (?:SKIP|TODO)\b/i.test(line)));
+          console.log(`Validated ${total} exact signed-distro DATA cases without skips.`);
+          H1_DISTRO_FACTS_RESULT
           TAP=dependency-h1-tool-inputs-ci-evidence/root-tests.tap
           grep -Eq '^ok [0-9]+ - real acquired file hashes retained bytes and refuses post-read deadline/identity mutation$' "$TAP"
           grep -Eq '^ok [0-9]+ - retained original archive rejects equal-byte replacement between verification and extraction$' "$TAP"
@@ -655,8 +747,9 @@ jobs:
           grep -Eq '^ok [0-9]+ - raw tar survey preserves literal bytes, privileged mode and repeated hardlink observations without path authority$' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU and PAX raw extensions preserve original bytes while effective member census stays unresolved$' "$TAP"
           grep -Eq '^ok [0-9]+ - unsupported size or checksum and incomplete raw EOF hold without guessing another header$' "$TAP"
-          grep -Fxq '# tests 43' "$TAP"
-          grep -Fxq '# pass 42' "$TAP"
+          grep -Eq '^ok [0-9]+ - shared decoder adapters retain the CI scope and cannot turn expired/caller DATA into a native tool launch$' "$TAP"
+          grep -Fxq '# tests 44' "$TAP"
+          grep -Fxq '# pass 43' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU basic rows retain original privileged mode and absolute dotdot literals without namespace authority$' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU basic profile drift and interpayload padding refuse before any row publication$' "$TAP"
           grep -Eq '^ok [0-9]+ - GNU original stream package commitments and one absolute deadline veto stale results$' "$TAP"
@@ -695,53 +788,6 @@ jobs:
             dependency-h1-tool-inputs-ci-evidence/
           if-no-files-found: error
 
-      - name: Strict emit fixed staged H1 DATA tests and bind exact source closure
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -o pipefail
-          mkdir -p dependency-h1-staged-data-ci-evidence
-          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"root-filesystem-staged-H1-DATA-not-constructor-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-h1-staged-data-ci-evidence/source.json
-          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
-          node --version > dependency-h1-staged-data-ci-evidence/node-version.txt
-          node node_modules/typescript/bin/tsc --version > dependency-h1-staged-data-ci-evidence/typescript-version.txt
-          grep -Fxq 'Version 6.0.3' dependency-h1-staged-data-ci-evidence/typescript-version.txt
-          sha256sum \
-            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts \
-            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts \
-            host-integration/managed-launcher/dependency-full-native-TEST.ts \
-            host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts \
-            host-integration/managed-launcher/launch.mjs \
-            host-integration/managed-launcher/payload-guard.mjs \
-            host-integration/managed-launcher/profiles.mjs \
-            host-integration/host-jobs/storage-policy.mjs \
-            scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json \
-            dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
-            dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
-            dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
-            dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
-            dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
-            .github/workflows/ci.yml package.json package-lock.json \
-            node_modules/typescript/package.json node_modules/typescript/bin/tsc node_modules/typescript/lib/_tsc.js \
-            > dependency-h1-staged-data-ci-evidence/source-and-compiler.sha256
-          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json 2>&1 | tee dependency-h1-staged-data-ci-evidence/strict-emit.log
-          cp package.json outputs/TEST-h1-staged-data-ci-emit/package.json
-          sha256sum \
-            outputs/TEST-h1-staged-data-ci-emit/package.json \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/launch.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/payload-guard.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/profiles.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/host-jobs/storage-policy.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
-            > dependency-h1-staged-data-ci-evidence/emitted.sha256
       - name: Require three actual Linux ROOT staged DATA physical tests with unchanged H1 refusal
         run: |
           set -o pipefail
@@ -763,6 +809,7 @@ jobs:
           import { readFileSync } from 'node:fs';
           const expected = new Set([
             "complete DATA subject and captured manifest never qualify a constructor",
+            "v2 publisher facts bind a separate protected digest, with no compiled or public admission claim",
             "unknown fields, kinds and missing selected-build definitions refuse",
             "proxy and accessor DATA refuse without executing getters",
             "alias escape, missing target, cycle and duplicate physical roster refuse",

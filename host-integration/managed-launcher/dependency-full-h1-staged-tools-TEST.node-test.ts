@@ -5,7 +5,7 @@ import fs from "node:fs";
 import {syncBuiltinESMExports} from "node:module";
 import {performance} from "node:perf_hooks";
 import {mkdtempSync,mkdirSync,writeFileSync,lstatSync,renameSync,rmSync,linkSync,symlinkSync} from "node:fs";
-import {h1StagedSubjectData,h1StagedManifestData,retainH1StagedCatalogData,requireQualifiedH1StagedConstructor,H1CatalogKind,H1MountOrigin} from "./dependency-full-h1-staged-tools-TEST.ts";
+import {h1StagedSubjectData,h1StagedManifestData,retainH1StagedCatalogData,requireQualifiedH1StagedConstructor,H1CatalogKind,H1MountOrigin,H1DistroAssurance} from "./dependency-full-h1-staged-tools-TEST.ts";
 const digest="a".repeat(64),boot="11111111-1111-1111-1111-111111111111",synthetic="22222222-2222-2222-2222-222222222222";
 const id={dev:"1",ino:"1",mode:"16877",uid:"0",gid:"0",nlink:"2",size:"0",mtimeNs:"1",ctimeNs:"1"};
 function mount(path:string,origin:H1MountOrigin,readonly:boolean){return {path,origin,reference:digest,readonly,mountId:path==="/"?"10":"11",parentId:path==="/"?"1":"10",device:"1:2",mountRoot:"/",filesystem:path==="/"?"ext4":"proc",source:path==="/"?"/dev/test":"proc",flags:readonly?"ro,nodev":"rw,nosuid",propagation:"private"};}
@@ -22,7 +22,7 @@ test("catalog bounds, writable file and nlink2 refuse",()=>{const s=subject(),fi
 function measured(path:string){const s=lstatSync(path,{bigint:true});return {dev:String(s.dev),ino:String(s.ino),mode:String(s.mode),uid:String(s.uid),gid:String(s.gid),nlink:String(s.nlink),size:String(s.size),mtimeNs:String(s.mtimeNs),ctimeNs:String(s.ctimeNs)};}
 test("actual retained physical inode replacement, extra entry, nlink and deadline refuse",{skip:process.platform!=="linux" || process.getuid?.()!==0},()=>{
  const root=mkdtempSync("/root/TEST-h1-staged-data-"),file=root+"/tool";try{writeFileSync(file,"same bytes",{mode:0o644});function physical(){return h1StagedSubjectData({...subject(),rootIdentity:measured(root),catalog:[{path:"tool",kind:H1CatalogKind.File,identity:measured(file),sha256:createHash("sha256").update("same bytes").digest("hex"),target:""}]});}
- const retained=retainH1StagedCatalogData(root,physical(),performance.now()+30000);renameSync(file,root+"/old");writeFileSync(file,"same bytes",{mode:0o644});assert.throws(retained.revalidate);assert.throws(retained.revalidate);retained.close();rmSync(root+"/old");
+ const retained=retainH1StagedCatalogData(root,physical(),performance.now()+30000);const originalFd=retained.fileDescriptor("tool");assert.equal(fs.fstatSync(originalFd,{bigint:true}).ino,lstatSync(file,{bigint:true}).ino);renameSync(file,root+"/old");writeFileSync(file,"same bytes",{mode:0o644});assert.throws(()=>retained.fileDescriptor("tool"));assert.throws(()=>fs.fstatSync(originalFd));assert.throws(retained.revalidate);assert.throws(retained.revalidate);retained.close();rmSync(root+"/old");
  const next=retainH1StagedCatalogData(root,physical(),performance.now()+30000);mkdirSync(root+"/extra");assert.throws(next.revalidate);next.close();rmSync(root+"/extra",{recursive:true});linkSync(file,root+"/hardlink");assert.throws(()=>physical());rmSync(root+"/hardlink");
  assert.throws(()=>retainH1StagedCatalogData(root,physical(),performance.now()-1));
 
@@ -46,4 +46,9 @@ test("ordinary Unicode is retained while lone surrogates refuse before byte conv
 test("actual invalid literal alias bytes refuse including equal encoded-size case",{skip:process.platform!=="linux" || process.getuid?.()!==0},()=>{
  const root=mkdtempSync("/root/TEST-h1-staged-alias-"),file=root+"/�",alias=root+"/link";try{writeFileSync(file,"target",{mode:0o644});for(const bytes of [Buffer.from([0x80]),Buffer.from([0xf0,0x9f,0x92])]){symlinkSync(bytes,alias);const input={...subject(),rootIdentity:measured(root),catalog:[{path:"�",kind:H1CatalogKind.File,identity:measured(file),sha256:createHash("sha256").update("target").digest("hex"),target:""},{path:"link",kind:H1CatalogKind.Alias,identity:measured(alias),sha256:"",target:"�"}]};assert.throws(()=>retainH1StagedCatalogData(root,h1StagedSubjectData(input),performance.now()+30000));rmSync(alias);}
  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test("v2 publisher facts bind a separate protected digest, with no compiled or public admission claim",()=>{
+ const s=subject(),v2={...s,schemaVersion:2,definitions:{...s.definitions,pythonGetpath:digest},assurance:H1DistroAssurance.SignedPublisher,distroFactsSha256:digest};const parsed=h1StagedSubjectData(v2);assert.equal(parsed.schemaVersion,2);assert.equal(parsed.distroFactsSha256,digest);assert.throws(requireQualifiedH1StagedConstructor,/selected_constructor_rows_not_qualified/);
+ for(const changed of [{schemaVersion:1},{distroFactsSha256:"bad"},{assurance:"reproduced_build"},{definitions:s.definitions},{compiledInputEquality:true}])assert.throws(()=>h1StagedSubjectData({...v2,...changed}));
 });

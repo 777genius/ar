@@ -21,3 +21,11 @@ test("unsupported size or checksum and incomplete raw EOF hold without guessing 
  const checksum=Buffer.from(valid);checksum[0]=120;assert.match(surveyRawArchiveHeaders(Buffer.concat([checksum,end])).reason,/checksum/);
  for(const bytes of [valid,Buffer.concat([valid,Buffer.alloc(512)]),Buffer.concat([valid,end,Buffer.from([1])]),valid.subarray(0,511)])assert.equal(surveyRawArchiveHeaders(bytes).status,ArchiveSurveyStatus.Held);
 });
+
+test("shared decoder adapters retain the CI scope and cannot turn expired/caller DATA into a native tool launch",async()=>{
+ const {inspectRetainedOriginalDebFsys,inspectRetainedNativeDebFsys}=await import("./current-h1-archive-format-census.ts");
+ let joins=0;const original={fd:-1,sha256:"a".repeat(64),size:1,rejoin(){joins++;},close(){}};
+ const tool={fd:-1,actual:"/usr/bin/dpkg-deb",stamp:"invalid",sha256:"a".repeat(64)};
+ await assert.rejects(inspectRetainedOriginalDebFsys(original,tool,0,"/nonexistent"));assert.equal(joins,0);
+ await assert.rejects(inspectRetainedNativeDebFsys(original,{...tool,loader:{fd:-1,stamp:"invalid",sha256:"a".repeat(64)}},0));assert.equal(joins,0);
+});

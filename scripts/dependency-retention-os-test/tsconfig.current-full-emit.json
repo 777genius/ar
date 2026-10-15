@@ -14,6 +14,8 @@
     "./current-full-backing-collector.node-test.ts",
     "./current-full-backing-interval.node-test.ts",
     "./legacy-unverified-r-continuation.ts",
-    "./legacy-unverified-r-continuation.node-test.ts"
+    "./legacy-unverified-r-continuation.node-test.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts"
   ]
 }

@@ -61,11 +61,29 @@ const stamp=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mt
 export async function inspectRetainedOriginalDebFsys(original:ReturnType<typeof retainOriginalAcquiredArchive>,tool:Readonly<{fd:number;actual:string;stamp:string;sha256:string}>,parentDeadline:number,ownScratch:string):Promise<Readonly<{bytes:Buffer;survey:RawArchiveSurvey;tool:Readonly<{path:string;sha256:string;identity:string}>;archive:Readonly<{sha256:string;size:number}>;stderr:Readonly<{bytes:number;sha256:string}>;status:0;signal:null}>> {
  assert(process.platform==="linux"&&process.getuid?.()===0&&process.geteuid?.()===0&&process.env.CI==="true"&&process.env.GITHUB_ACTIONS==="true","existing ROOT CI DATA scope");
  const deadline=Math.min(parentDeadline,performance.now()+30000);assert(Number.isFinite(deadline));const scratch=lstatSync(ownScratch,{bigint:true});assert(scratch.isDirectory()&&scratch.uid===0n&&scratch.gid===0n&&(scratch.mode&0o7777n)===0o700n);const scratchIdentity=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode].map(String).join(":");const tick=()=>{assert(performance.now()<deadline,"one remaining CI survey deadline");assert.equal(scratchIdentity(lstatSync(ownScratch,{bigint:true})),scratchIdentity(scratch));};tick();original.rejoin();
+ return decodeRetainedDebFsys(original,tool,deadline,tick,ownScratch);
+}
+/** Native DATA adapter. The genuine parent must retain/validate the fixed
+ * verifier TCB separately. An FD/record supplied here never grants authority.
+ * The exact CI decoder below is shared; no archive-format interpreter is added. */
+export interface H1NativeDebDecoder {
+ readonly fd:number;readonly actual:string;readonly stamp:string;readonly sha256:string;
+ readonly loader:Readonly<{fd:number;stamp:string;sha256:string}>;
+}
+export async function inspectRetainedNativeDebFsys(original:ReturnType<typeof retainOriginalAcquiredArchive>,tool:H1NativeDebDecoder,parentDeadline:number){
+ assert(process.platform==="linux"&&process.getuid?.()===0&&process.geteuid?.()===0,"original native ROOT DATA scope");
+ const deadline=Math.min(parentDeadline,performance.now()+30000);
+ const tick=()=>{assert(Number.isFinite(deadline)&&performance.now()<deadline,"original native decoder deadline");original.rejoin();};
+ tick();return decodeRetainedDebFsys(original,tool,deadline,tick,"/nonexistent",tool.loader);
+}
+async function decodeRetainedDebFsys(original:ReturnType<typeof retainOriginalAcquiredArchive>,tool:Readonly<{fd:number;actual:string;stamp:string;sha256:string}>,deadline:number,tick:()=>void,ownScratch:string,loader?:H1NativeDebDecoder["loader"]){
  const path=realpathSync("/usr/bin/dpkg-deb");assert.equal(path,tool.actual);const before=fstatSync(tool.fd,{bigint:true});assert(before.isFile()&&before.uid===0n&&before.nlink>0n&&!(before.mode&0o022n)&&(before.mode&0o111n)&&before.size<=64n*1024n*1024n);
  const rejoinTool=()=>{tick();assert.equal(stamp(fstatSync(tool.fd,{bigint:true})),tool.stamp);assert.equal(stamp(lstatSync(path,{bigint:true})),tool.stamp);};rejoinTool();
  const toolHash=createHash("sha256"),chunk=Buffer.alloc(65536);let toolSize=0;for(;;){tick();const n=readSync(tool.fd,chunk,0,chunk.length,toolSize);tick();if(n===0)break;toolSize+=n;assert(toolSize<=Number(before.size));toolHash.update(chunk.subarray(0,n));}assert.equal(toolSize,Number(before.size));const toolSha=toolHash.digest("hex");assert.equal(toolSha,tool.sha256,"original CI tool hash BEFORE execution");rejoinTool();original.rejoin();
+ const rejoinLoader=()=>{if(!loader)return;tick();const s=fstatSync(loader.fd,{bigint:true});assert(s.isFile()&&s.uid===0n&&s.gid===0n&&s.nlink>0n&&!(s.mode&0o022n)&&(s.mode&0o111n)&&s.size<=32n*1024n*1024n);assert.equal(stamp(s),loader.stamp);const digest=createHash("sha256"),buffer=Buffer.alloc(65536);let at=0;for(;;){tick();const n=readSync(loader.fd,buffer,0,buffer.length,at);tick();if(!n)break;at+=n;assert(BigInt(at)<=s.size);digest.update(buffer.subarray(0,n));}assert(BigInt(at)===s.size);assert.equal(digest.digest("hex"),loader.sha256);assert.equal(stamp(fstatSync(loader.fd,{bigint:true})),loader.stamp);};rejoinLoader();
  const result=await new Promise<{bytes:Buffer;stderr:Buffer}>((resolve,reject)=>{
-  const child=spawn("/proc/self/fd/3",["--fsys-tarfile","/proc/self/fd/4"],{argv0:"/usr/bin/dpkg-deb",shell:false,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",TZ:"UTC",HOME:ownScratch,TMPDIR:ownScratch},stdio:["ignore","pipe","pipe",tool.fd,original.fd]});
+  const args=loader?["--inhibit-cache","--library-path","/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/systemd","--argv0","/usr/bin/dpkg-deb","/proc/self/fd/4","--fsys-tarfile","/proc/self/fd/5"]:["--fsys-tarfile","/proc/self/fd/4"];
+  const child=spawn("/proc/self/fd/3",args,{argv0:loader?"/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2":"/usr/bin/dpkg-deb",shell:false,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",TZ:"UTC",HOME:ownScratch,TMPDIR:ownScratch},stdio:loader?["ignore","pipe","pipe",loader.fd,tool.fd,original.fd]:["ignore","pipe","pipe",tool.fd,original.fd]});
   assert(child.stdout&&child.stderr);const stdout=child.stdout,stderr=child.stderr,out:Buffer[]=[],err:Buffer[]=[];let outBytes=0,errBytes=0,outEnd=false,errEnd=false,failure:Error|undefined;
   const stop=(error:Error)=>{if(!failure){failure=error;try{child.kill("SIGKILL");}catch{failure=new Error("own CI child signal/drain unproven",{cause:error});}finally{stdout.destroy();stderr.destroy();}}};
   const receive=(part:Buffer,diagnostic:boolean)=>{if(failure)return;try{tick();assert(Buffer.isBuffer(part));if(diagnostic){errBytes+=part.length;assert(errBytes<=16384,"fixed CI stderr diagnostic ceiling");}else{outBytes+=part.length;assert(outBytes<=streamCap,"fixed CI stdout stream ceiling");}assert(outBytes+errBytes<=streamCap,"combined CI survey output ceiling");(diagnostic?err:out).push(part);}catch(error){stop(error instanceof Error?error:new Error("fixed CI stream refused"));}};
@@ -73,5 +91,5 @@ export async function inspectRetainedOriginalDebFsys(original:ReturnType<typeof 
   const timer=setTimeout(()=>stop(new Error("one remaining CI survey deadline")),Math.max(1,Math.floor(deadline-performance.now())));
   child.once("close",(code,signal)=>{clearTimeout(timer);try{if(failure)throw failure;tick();assert(code===0&&signal===null&&outEnd&&errEnd,"fixed CI fsys stream exit and both EOFs");resolve({bytes:Buffer.concat(out,outBytes),stderr:Buffer.concat(err,errBytes)});}catch(error){reject(error);}});
  });
- rejoinTool();original.rejoin();const survey=surveyRawArchiveHeaders(result.bytes);tick();original.rejoin();return Object.freeze({bytes:result.bytes,survey,tool:Object.freeze({path,sha256:toolSha,identity:tool.stamp}),archive:Object.freeze({sha256:original.sha256,size:original.size}),stderr:Object.freeze({bytes:result.stderr.length,sha256:hash(result.stderr)}),status:0,signal:null});
+ rejoinLoader();rejoinTool();original.rejoin();const survey=surveyRawArchiveHeaders(result.bytes);tick();original.rejoin();return Object.freeze({bytes:result.bytes,survey,tool:Object.freeze({path,sha256:toolSha,identity:tool.stamp}),archive:Object.freeze({sha256:original.sha256,size:original.size}),stderr:Object.freeze({bytes:result.stderr.length,sha256:hash(result.stderr)}),status:0,signal:null});
 }

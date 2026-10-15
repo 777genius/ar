@@ -1,11 +1,12 @@
 import { OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreloadData, originalFullProjectControlSourcePaths, originalFullProjectControlPeerMetadataPaths } from "./hosted-project-control-source-catalog.js";
 import { originalFullGuestNativeSourcePaths } from "./hosted-full-guest-source-inventory.js";
 import { H1ElfRole, validateH1ElfRole } from "./dependency-full-h1-elf-role-TEST.js";
-import {H1ConstructorHeld,h1HeldError,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
+import {H1ConstructorHeld,h1HeldError,readH1ConstructorHeld,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
+import type {H1DistroFactHandles,H1OriginalDistroObject} from "./dependency-full-h1-constructor-build-facts-TEST.js";
 import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
 import { originalProviderSetupSlot, providerSetupQueryClosureData, type OriginalSetupTask, type OriginalSetupFact, type OriginalSetupContext } from "./dependency-full-provider-setup-TEST.js";
 import { managedSystemdRunExecutable, fullPositiveTestRoot, fullPositiveTestJob, fullPositiveTestEntry, parseNativeUnitProperties } from "./launch.mjs";
-import {H1CatalogKind,H1MountOrigin,H1StagedSlotState,H1StagedActorRole,h1StagedObserverBootstrap,h1StagedSubjectData,retainH1StagedCatalogData,requireQualifiedH1StagedConstructor,type H1StagedSubject,type H1StagedObserverPrepared} from "./dependency-full-h1-staged-tools-TEST.js";
+import {H1CatalogKind,H1MountOrigin,H1StagedSlotState,H1StagedActorRole,h1StagedObserverBootstrap,h1StagedSubjectData,retainH1StagedCatalogData,type H1StagedSubject,type H1StagedObserverPrepared} from "./dependency-full-h1-staged-tools-TEST.js";
 const fullPositiveTestCohort = Object.freeze([
   ["host-integration/host-jobs/manager.mjs", "host-jobs/manager.mjs"],
   ["host-integration/host-jobs/contract.mjs", "host-jobs/contract.mjs"],
@@ -144,9 +145,10 @@ export function fullReviewData(value:unknown) {
     return review;
   }
   check(version.value===1);
-  const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedInline=Object.hasOwn(value,"h1StagedSubject"),stagedReference=Object.hasOwn(value,"h1StagedSubjectSha256"),stagedSelected=stagedInline || stagedReference;
+  const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedInline=Object.hasOwn(value,"h1StagedSubject"),stagedReference=Object.hasOwn(value,"h1StagedSubjectSha256"),stagedSelected=stagedInline || stagedReference,bootstrapSelected=Object.hasOwn(value,"h1VerifierBootstrapSha256");
   check(!(stagedInline && stagedReference));
-  const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedInline?["h1StagedSubject"]:[]),...(stagedReference?["h1StagedSubjectSha256"]:[])]);
+  const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedInline?["h1StagedSubject"]:[]),...(stagedReference?["h1StagedSubjectSha256"]:[]),...(bootstrapSelected?["h1VerifierBootstrapSha256"]:[])]);
+  if(bootstrapSelected)check(stagedSelected && digest(review.h1VerifierBootstrapSha256));
   if(stagedReference)check(digest(review.h1StagedSubjectSha256));
   if(removalSelected)fullNativeRemovalCase(review.removalCase);
   if(stagedSelected)check(review.removalCase===FullRemovalCase.ParentCrashH1 && (review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary));
@@ -409,7 +411,7 @@ function acquire(context:RootContext=RootContext.Launcher){
   initialRoot(context);const installing=context===RootContext.Installer;
   const selectedReview=installing?positiveInstallationReview:reviewPath,selectedReviewRoot=dirname(selectedReview);
   const pins=new Pins(),h1LibcPins=new H1LibcPins();
-  let h1Catalog:ReturnType<typeof retainH1StagedCatalogData>|undefined,h1Subject:H1StagedSubject|undefined;
+  let h1Catalog:ReturnType<typeof retainH1StagedCatalogData>|undefined,h1Subject:H1StagedSubject|undefined,h1DistroInput:Readonly<{manifestFd:number;reviewRootFd:number;bootstrapReviewFd:number;bootstrapReviewSha256:string}>|undefined;
   try{
     pins.hold(sharedAncestor,true);pins.hold(selectedReviewRoot,true,0o700);
     const r=fullReviewData(pins.json(selectedReview,32768));
@@ -441,6 +443,7 @@ function acquire(context:RootContext=RootContext.Launcher){
         // no unverified alias or second private-authority module instance.
         pins.publicFile(integration+"/managed-launcher/dependency-full-h1-staged-tools-TEST.js",staged.validatorSha256);
         pins.publicFile(fullNativeInputBase+"/"+staged.sourceSha+"/source/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js",staged.validatorSha256);
+        if(staged.schemaVersion===2){check(staged.distroFactsSha256);const manifestPath=selectedReviewRoot+"/h1-distro-facts.json",manifestFd=pins.publicFile(manifestPath,staged.distroFactsSha256);pins.json(manifestPath,4*1024*1024);if(!digest(r.h1VerifierBootstrapSha256))h1HeldError(H1ConstructorHeld.Verifier);const bootstrapReviewSha256=requireDigest(r.h1VerifierBootstrapSha256),bootstrapPath=selectedReviewRoot+"/h1-verifier-bootstrap-review.json",bootstrapReviewFd=pins.publicFile(bootstrapPath,bootstrapReviewSha256);pins.json(bootstrapPath,1024*1024);h1DistroInput=Object.freeze({manifestFd,reviewRootFd:pins.hold(selectedReviewRoot,true,0o700),bootstrapReviewFd,bootstrapReviewSha256});}
         h1Subject=staged;
         h1Catalog=retainH1StagedCatalogData(fullNativeInputBase+"/"+staged.sourceSha+"/h1-tool-root-r1",staged,performance.now()+fullNativeLimits.runtimeSeconds*1000);
         pins.validate();h1Catalog.revalidate();
@@ -537,8 +540,8 @@ function acquire(context:RootContext=RootContext.Launcher){
     const namespace=readlinkSync("/proc/self/ns/mnt"),namespaceFd=pins.mountNamespace();
     if(context===RootContext.Parent)check(namespace!==readlinkSync("/proc/1/ns/mnt"));
     const validate=()=>{initialRoot(context);check(readlinkSync("/proc/self/ns/mnt")===namespace && readlinkSync(`/proc/self/fd/${namespaceFd}`)===namespace);pins.validate();h1LibcPins.validate();h1Catalog?.revalidate();check(readFileSync("/etc/machine-id","utf8").trim()===tuple.machineId && readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()===tuple.bootId);};
-    validate();return {pins,tuple,validate,monitorSources,h1Tools,h1LibcPins,h1Catalog,h1Subject};
-  }catch{h1Catalog?.close();h1LibcPins.close();pins.close();refuse();}
+    validate();return {pins,tuple,validate,monitorSources,h1Tools,h1LibcPins,h1Catalog,h1Subject,h1DistroInput};
+  }catch(error){h1Catalog?.close();h1LibcPins.close();pins.close();if(readH1ConstructorHeld(error)!==undefined)throw error;refuse();}
 }
 /** One no-argument ROOT TEST composition operation. Never submits a job.
  * Inputs are fixed root-owned public staging; current unknown prefixes refuse.
@@ -844,13 +847,14 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
   let querySourceSeen=false,systemctlSourceSeen=false,queryComplete=false,effectAccepted=false,queryFailure:unknown;
   let requestPid:number|undefined,guestSupervisorPid:string|undefined;
   let guestSources:readonly Readonly<{dev:bigint;ino:bigint}>[]=[];
+  const distroPins=new Pins();let consumed=false,revoked=false,originalGuest:string|undefined,distroFacts:H1DistroFactHandles|undefined;
   let parentDead=false;const queryPipes:Readonly<{dev:bigint;ino:bigint;mode:bigint}>[]=[];
   let closePromise:Promise<void>|undefined,closing=false;
   let lifetimeDeadline:number|undefined,absoluteDeadline:bigint|undefined,loadFacts:ReturnType<typeof retainH1ConstructorLoadFacts>|undefined;
   let expectedWorkerCommand:Buffer|undefined;let bootstrapRoutes=false,fixtureRoutes=false;let notifyObject:Readonly<{dev:bigint;ino:bigint}>|undefined;const setupBirths=new Map<number,H1ActualActor>();const actualMountTables=new Map<string,string>();
   const parentStatus=readFileSync("/proc/self/status","utf8");const parentCaps=["Inh","Prm","Eff","Bnd","Amb"].map(key=>{const value=new RegExp("^Cap"+key+":\\s+([0-9a-f]{16})$","m").exec(parentStatus)?.[1];check(value);return value;});
   function remaining(){check(absoluteDeadline!==undefined);if(process.hrtime.bigint()>=absoluteDeadline-180000000000n)h1HeldError(H1ConstructorHeld.Deadline);}
-  function rejoinDeadline(){remaining();check(originalDeadline()===absoluteDeadline);remaining();}
+  function rejoinDeadline(){try{remaining();check(originalDeadline()===absoluteDeadline);remaining();}catch(error){revoked=true;throw error;}}
   const validatePrepared=()=>{if(parentDead)prepared?.revalidateSources();else prepared?.revalidate();};
   const actors:H1ActualActor[]=[],owned:number[]=[],stdout=new PassThrough(),stderr=new PassThrough();
   const phases:FullH1PrearmPhase[]=[],actorFacts:FullH1PrearmActorFact[]=[];
@@ -989,7 +993,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
   }
   function close():Promise<void>{
     if(closePromise)return closePromise;if(state===H1StagedSlotState.Closed)return Promise.resolve();
-    closing=true;phase(FullH1PrearmPhase.CloseStarted);closeState=FullH1ObservationState.Incomplete;
+    closing=true;revoked=true;phase(FullH1PrearmPhase.CloseStarted);closeState=FullH1ObservationState.Incomplete;
     closePromise=(async()=>{
     const descendants=new Map<number,string>();
     function census(pid:number,depth=0){
@@ -1010,7 +1014,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));absence.push({role:actor.role,pid:actor.pid,birth:actor.birth,absent:true});}}
     for(const [pid,birth] of descendants){try{check(actualBirth("/proc/"+pid,pid).birth!==birth);descendantAbsence.push({pid,birth,absent:true});}
       catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));descendantAbsence.push({pid,birth,absent:true});}}
-    loadFacts?.close();prepared?.close();for(const fd of owned.reverse())closeSync(fd);owned.length=0;descriptorsClosed=true;state=H1StagedSlotState.Closed;c.validate();if(absoluteDeadline!==undefined)check(originalDeadline()===absoluteDeadline && process.hrtime.bigint()<absoluteDeadline);closeState=FullH1ObservationState.Complete;phase(FullH1PrearmPhase.Closed);
+    distroFacts?.close();distroPins.close();loadFacts?.close();prepared?.close();for(const fd of owned.reverse())closeSync(fd);owned.length=0;descriptorsClosed=true;state=H1StagedSlotState.Closed;c.validate();if(absoluteDeadline!==undefined)check(originalDeadline()===absoluteDeadline && process.hrtime.bigint()<absoluteDeadline);closeState=FullH1ObservationState.Complete;phase(FullH1PrearmPhase.Closed);
     })().catch(error=>{phase(FullH1PrearmPhase.CloseHeld);throw error;});return closePromise;
   }
   async function construct():Promise<FullH1StagedObserver>{
@@ -1018,18 +1022,26 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     state=H1StagedSlotState.Constructing;phase(FullH1PrearmPhase.Constructing);
     try{absoluteDeadline=originalDeadline();remaining();lifetimeDeadline=performance.now()+Math.min(32000,Number(absoluteDeadline-process.hrtime.bigint()-180000000000n)/1e6);
       const guest=selectedGuest();check(guest);c.validate();rejoinDeadline();
-      const getpath=c.h1Subject.definitions.pythonGetpath;if(typeof getpath!=="string" || !digest(getpath))return h1HeldError(H1ConstructorHeld.Getpath);
-      // Same independently issued Source/build commitment; no live Python probes can issue it.
-      try{c.pins.publicFile(c.tuple.source+"/scripts/dependency-retention-os-test/current-h1-python-getpath-source.py",getpath);}catch{h1HeldError(H1ConstructorHeld.Getpath);}
+      originalGuest=guest;
+      if(c.h1Subject.schemaVersion!==2 || !c.h1DistroInput)h1HeldError(H1ConstructorHeld.Distro);const originalDistroInput=c.h1DistroInput;check(originalDistroInput);
       const rootFd=c.h1Catalog.descriptors()[0];check(rootFd!==undefined);const rootStat=fstatSync(rootFd,{bigint:true});check(String(rootStat.dev)===c.h1Subject.rootIdentity.dev && String(rootStat.ino)===c.h1Subject.rootIdentity.ino);
       loadFacts=retainH1ConstructorLoadFacts(c.h1Subject,rootFd,lifetimeDeadline);
-      c.pins.publicFile(c.h1Subject.hostRelease.source,c.h1Subject.hostRelease.sha256);
-      for(const [definition,pin] of Object.entries(c.h1Subject.definitions)){
-        if(definition==="pythonGetpath")continue;
-        // Fixed reviewed constructor routines are delivered as exact source inputs.
-        try{c.pins.publicFile(c.tuple.source+"/scripts/dependency-retention-os-test/h1-constructor-source-"+definition+".c",pin);}catch{h1HeldError(H1ConstructorHeld.Definition);}
-      }
-
+      distroPins.publicFile(c.h1Subject.hostRelease.source,c.h1Subject.hostRelease.sha256);
+      // One exact original-source module, already retained in the complete
+      // source catalog. It owns DATA I/O only; no installed-relative source
+      // shortcut, caller-selected import, callback or authority registration.
+      const factsModule:typeof import("./dependency-full-h1-constructor-build-facts-TEST.js")=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.js").href);
+      c.validate();rejoinDeadline();check(!revoked && selectedGuest()===originalGuest);
+      const manifestBytes=readFd(originalDistroInput.manifestFd);check(hash(manifestBytes)===c.h1Subject.distroFactsSha256);
+      const manifest=factsModule.h1DistroFactsData(JSON.parse(manifestBytes.toString("utf8")));
+      const verifierFiles:H1OriginalDistroObject[]=manifest.verifiers.map(row=>{
+        const original=c.monitorSources.find(source=>source.path===row.path);if(original){check(original.sha256===row.sha256);return original;}
+        return Object.freeze({path:row.path,sha256:row.sha256,fd:distroPins.publicFile(row.path,row.sha256)});
+      });
+      const catalogFiles:H1OriginalDistroObject[]=c.h1Subject.catalog.filter(row=>row.kind===H1CatalogKind.File && /^usr\/(?:bin|lib|lib64)\//.test(row.path)).map(row=>Object.freeze({path:"/"+row.path,sha256:row.sha256,fd:c.h1Catalog!.fileDescriptor(row.path)}));
+      c.validate();distroPins.validate();rejoinDeadline();
+      distroFacts=await factsModule.retainH1SignedDistroFacts({subject:c.h1Subject,...originalDistroInput,catalogFiles,hostFiles:c.monitorSources,verifierFiles,deadline:lifetimeDeadline});
+      c.validate();distroPins.validate();rejoinDeadline();check(!revoked && selectedGuest()===originalGuest);distroFacts.revalidate();distroPins.validate();
 
       const module:FullH1StagedObserverSource=await import(pathToFileURL(c.tuple.source+"/scripts/dependency-retention-os-test/current-removal-h1-fixture.js").href);
       prepared=module.prepareOriginalH1StagedObserver(parent);prepared.revalidate();
@@ -1074,9 +1086,9 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
           checkH1OwnedCgroupData(readFileSync(`/proc/self/fd/${setup.anchor}/cgroup`,"utf8"),fullNativeControlGroup);setupBirths.set(pid,setup);observeActor(setup);
         }}
         setImmediate(pollSetup);
-      }catch(error){queryFailure=error;child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(pollSetup);
-      done=new Promise<void>((resolve,reject)=>{child!.once("close",()=>resolve());child!.once("error",reject);});void done.catch(()=>{});
-      child.stdin.on("error",()=>{stderr.write("TEST_H1_staged_gate_HOLD\n");child?.kill("SIGTERM");});
+      }catch(error){revoked=true;queryFailure=error;child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(pollSetup);
+      done=new Promise<void>((resolve,reject)=>{child!.once("close",()=>resolve());child!.once("error",reject);});void done.catch(()=>{revoked=true;});
+      child.stdin.on("error",()=>{revoked=true;stderr.write("TEST_H1_staged_gate_HOLD\n");child?.kill("SIGTERM");});
       child.stderr.on("data",(chunk:Buffer)=>stderr.write(chunk));child.stderr.on("end",()=>stderr.end());
       await new Promise<void>((resolve,reject)=>{let pending="";const timer=setTimeout(()=>reject(new Error("TEST H1 staged constructor timeout Held")),2000);
         const receive=(chunk:Buffer)=>{try{pending+=chunk.toString("utf8");check(Buffer.byteLength(pending)<=32768);const newline=pending.indexOf("\n");if(newline<0)return;
@@ -1088,10 +1100,11 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       return Object.freeze({child,stdout,stderr,closed:done});
     }catch(error){phase(FullH1PrearmPhase.Held);await close();throw error;}
   }
-  // Prepared private gate. The unconditional external guard below remains active.
+  // Prepared original private gate. The exported DATA qualification guard stays
+  // unconditional; only this original lexical slot can consume actual custody.
   // No public DTO, review boolean or callback can reach this original slot.
   function requireOriginalH1EffectGate(){
-    check(!closing && state===H1StagedSlotState.Constructed && worker && query && queryComplete && queryFailure===undefined);
+    check(!closing && !revoked && !consumed && state===H1StagedSlotState.Constructed && worker && query && queryComplete && queryFailure===undefined);
     rejoinDeadline();assertRetainedCurrentFullParent(parent);check(bootstrapRoutes && fixtureRoutes && querySourceSeen && systemctlSourceSeen);
     if(setupBirths.size===0)h1HeldError(H1ConstructorHeld.Actor);
     for(const actor of setupBirths.values()){
@@ -1101,6 +1114,19 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));}
     }
     loadFacts?.revalidate();check(loadFacts);physicalWorker(worker);checkActualActorTables(worker);prepared?.revalidate();c.validate();rejoinDeadline();
+  }
+  // Sole positive issuer: genuine original closure, fixed selected guest,
+  // original machine/boot/unit/deadline and all retained native/kernel joins.
+  // No exported token/Boolean/DTO can invoke or recreate this function.
+  function consumeOriginalH1Effect(){
+    try{
+      check(!consumed && !revoked && !closing && originalGuest!==undefined && selectedGuest()===originalGuest && child?.stdin && distroFacts);
+      requireOriginalH1EffectGate();distroPins.validate();distroFacts.revalidate();distroPins.validate();c.validate();rejoinDeadline();
+      check(lifetimeDeadline!==undefined && performance.now()<lifetimeDeadline && !revoked && !consumed);
+      // Consume before the one original write. Nothing asynchronous or supplied
+      // by a caller occurs between final validation, consumption and byte3.
+      consumed=true;state=H1StagedSlotState.Qualified;effectAccepted=true;child.stdin.end("3");
+    }catch(error){revoked=true;throw error;}
   }
   let protocolBuffer="";
   function protocol(chunk:Buffer){
@@ -1125,15 +1151,13 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
           check(querySourceSeen && systemctlSourceSeen);queryComplete=true;phase(FullH1PrearmPhase.QueryComplete);c.validate();prepared.revalidate();check(worker);physicalWorker(worker);
           // Complete original-source and actual fork/setns/exec joins, then
           // one private byte+EOF. No reported PID or DTO opens this gate.
-          const effectGate=child.stdin;
           checkActualActorTables(worker);const monitor=actors.find(actor=>actor.role===H1StagedActorRole.Monitor);check(monitor);checkActualActorTables(monitor);
-          requireOriginalH1EffectGate();phase(FullH1PrearmPhase.QualificationGuard);requireQualifiedH1StagedConstructor();
-          state=H1StagedSlotState.Qualified;effectAccepted=true;effectGate.end("3");
+          phase(FullH1PrearmPhase.QualificationGuard);consumeOriginalH1Effect();
         }else{check(effectAccepted && (line==="armed" || line==="original_parent_dead"));
           if(line==="original_parent_dead"){check(prepared && !parentDead);let dead=false;try{readFileSync(`/proc/self/fd/${prepared.anchors[5]}/stat`);}catch(error){check(error instanceof Error && "code" in error && (error.code==="ENOENT" || error.code==="ESRCH"));dead=true;}check(dead);parentDead=true;validatePrepared();}
           stdout.write(line+"\n");}
       }
-    }catch(error){queryFailure=error;phase(FullH1PrearmPhase.Held);stderr.write("TEST_H1_staged_protocol_HOLD\n");void close().catch(()=>stderr.write("TEST_H1_staged_drain_HOLD\n"));}
+    }catch(error){revoked=true;queryFailure=error;phase(FullH1PrearmPhase.Held);stderr.write("TEST_H1_staged_protocol_HOLD\n");void close().catch(()=>stderr.write("TEST_H1_staged_drain_HOLD\n"));}
   }
   function observeQueryTransitions(){
     check(query && prepared && worker);const original=query,started=performance.now();
@@ -1159,7 +1183,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
         rejoin(actor);const status=readFileSync(path+"/status","utf8");checkH1ActorStatusData(status,pid,parentCaps,H1PidView.Guest);checkActualActorTables(actor);systemctlSourceSeen=true;observeActor(actor);
       }
       if(!systemctlSourceSeen)setImmediate(poll);
-    }catch(error){queryFailure=error;phase(FullH1PrearmPhase.Held);child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(poll);
+    }catch(error){revoked=true;queryFailure=error;phase(FullH1PrearmPhase.Held);child?.stdin?.destroy();child?.kill("SIGTERM");}};setImmediate(poll);
   }
   const read=(task:FullMonitorTaskAnchor):FullH1StagedTaskFact|undefined=>{
     const actor=[...actors].reverse().find(row=>row.pid===task.processPid && row.birth===task.processBirth);if(!actor || state===H1StagedSlotState.Closed)return;
@@ -1197,7 +1221,7 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
     check(readFileSync(base+"/maps","utf8")===maps && JSON.stringify(readdirSync(base+"/fd").sort((a,b)=>Number(a)-Number(b)))===JSON.stringify(names));
     rejoin(actor);task.revalidate();return Object.freeze({role:actor.role,pid:actor.pid,birth:actor.birth,mountNamespace:readlinkSync(base+"/ns/mnt"),descriptors:Object.freeze(descriptors),sources:Object.freeze(sources.map(source=>Object.freeze({dev:String(source.dev),ino:String(source.ino)})))});
   };
-  return Object.freeze({construct,close,read,snapshot,descriptors:()=>Object.freeze(state===H1StagedSlotState.Closed?[]:owned.concat(prepared?.descriptors()??[],loadFacts?.descriptors()??[]))});
+  return Object.freeze({construct,close,read,snapshot,descriptors:()=>Object.freeze(state===H1StagedSlotState.Closed?[]:owned.concat(prepared?.descriptors()??[],loadFacts?.descriptors()??[],distroFacts?.descriptors()??[],distroPins.descriptors()))});
 }
 const fullParentDescriptors=new WeakMap<object,()=>readonly number[]>();
 export type FullMonitorTaskAnchor=Readonly<{path:string;processPid:number;processBirth:string;birth:string;revalidate():void}>;

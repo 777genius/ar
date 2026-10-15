@@ -1,6 +1,9 @@
 /** Pure bounded ELF DATA validation. This supplies no custody, source proof or execution authority.
  * Existing envelope/closure validation remains mandatory at the original admission boundary. */
-export enum H1ElfRole { Loader="loader", Program="program", SharedObject="shared-object", Extension="extension", Libc="libc" }
+import {createHash} from "node:crypto";
+export const h1OriginalHostNspawnSha256="f0f4894f7ae19c8ecbb6c4a8765d125d9f98a317ad3042780bc161f4cf7058e6";
+export const h1OriginalHostNspawnRunpath="/usr/lib/x86_64-linux-gnu/systemd";
+export enum H1ElfRole { OriginalHostNspawn="original-host-nspawn", Loader="loader", Program="program", SharedObject="shared-object", Extension="extension", Libc="libc" }
 export interface H1ElfRoleData {
  readonly role:H1ElfRole; readonly elfType:2|3; readonly entry:bigint;
  readonly soname:string|null; readonly needed:readonly string[]; readonly interpreter:string|null;
@@ -16,10 +19,12 @@ const safeName=(name:string)=>name.length<=nameBytes&&/^[A-Za-z0-9_+.-]+$/.test(
  * Unique binding of this name to retained closure identity remains the caller's responsibility. */
 export const h1LibcCanonicalPath="/usr/lib/x86_64-linux-gnu/libc.so.6";
 export function validateH1ElfRole(bytes:Buffer,role:H1ElfRole,expectedSoname?:string,canonicalPath?:string):H1ElfRoleData {
- requireThat(role===H1ElfRole.Loader||role===H1ElfRole.Program||role===H1ElfRole.SharedObject||role===H1ElfRole.Extension||role===H1ElfRole.Libc,"unknown role");
+ requireThat(role===H1ElfRole.OriginalHostNspawn||role===H1ElfRole.Loader||role===H1ElfRole.Program||role===H1ElfRole.SharedObject||role===H1ElfRole.Extension||role===H1ElfRole.Libc,"unknown role");
+ const originalNspawn=role===H1ElfRole.OriginalHostNspawn;
  requireThat(role===H1ElfRole.Libc?expectedSoname==="libc.so.6"&&canonicalPath===h1LibcCanonicalPath:canonicalPath===undefined&&(role===H1ElfRole.SharedObject?typeof expectedSoname==="string"&&safeName(expectedSoname):expectedSoname===undefined),"SONAME/canonical role expectation");
  // Explicit fixed caps bound iteration independently of any caller metadata.
  requireThat(Buffer.isBuffer(bytes)&&bytes.length>=64&&bytes.length<=128*1024*1024,"byte bound");
+ requireThat(!originalNspawn||createHash("sha256").update(bytes).digest("hex")===h1OriginalHostNspawnSha256,"original HOST nspawn exact bytes");
  requireThat(bytes.subarray(0,4).equals(Buffer.from([127,69,76,70]))&&bytes[4]===2&&bytes[5]===1&&bytes[6]===1&&bytes.readUInt16LE(18)===62&&bytes.readUInt32LE(20)===1&&bytes.readUInt16LE(52)===64,"ELF64 LE x86_64 header");
  const elfType=bytes.readUInt16LE(16);requireThat((elfType===2||elfType===3)&&((role!==H1ElfRole.SharedObject&&role!==H1ElfRole.Extension&&role!==H1ElfRole.Libc)||elfType===3),"ELF type for role");
  const number=(n:bigint)=>{requireThat(n<=BigInt(Number.MAX_SAFE_INTEGER),"unsafe integer");return Number(n);};
@@ -34,25 +39,26 @@ export function validateH1ElfRole(bytes:Buffer,role:H1ElfRole,expectedSoname?:st
   requireThat(va<=max64-memorySize&&BigInt(fileSize)<=memorySize,"segment virtual range");
   requireThat(align<=1n||((align&(align-1n))===0n&&va%align===BigInt(offset)%align),"segment alignment");
   const s=Object.freeze({type,flags,offset,va,fileSize,memorySize});segments.push(s);
-  if(type===3){requireThat(interpreter===null&&(role===H1ElfRole.Program||role===H1ElfRole.Libc),"interpreter role/count");interpreter=rawText(offset,fileSize).toString("ascii");requireThat(interpreter==="/lib64/ld-linux-x86-64.so.2"&&Buffer.byteLength(interpreter)+1===fileSize,"interpreter escape/trailing data");}
+  if(type===3){requireThat(interpreter===null&&(role===H1ElfRole.Program||originalNspawn||role===H1ElfRole.Libc),"interpreter role/count");interpreter=rawText(offset,fileSize).toString("ascii");requireThat(interpreter==="/lib64/ld-linux-x86-64.so.2"&&Buffer.byteLength(interpreter)+1===fileSize,"interpreter escape/trailing data");}
  }
  const loads=segments.filter(s=>s.type===1);requireThat(loads.length>0,"missing load segment");
  for(let i=0;i<loads.length;i++)for(let j=0;j<i;j++){const a=loads[i]!,b=loads[j]!;requireThat(a.memorySize===0n||b.memorySize===0n||a.va+a.memorySize<=b.va||b.va+b.memorySize<=a.va,"ambiguous load overlap");}
- if(role===H1ElfRole.Loader||role===H1ElfRole.Program||role===H1ElfRole.Libc)requireThat(entry!==0n&&loads.filter(s=>(s.flags&1)!==0&&entry>=s.va&&entry-s.va<BigInt(s.fileSize)).length===1,"entry outside file-backed executable load");
+ if(role===H1ElfRole.Loader||role===H1ElfRole.Program||originalNspawn||role===H1ElfRole.Libc)requireThat(entry!==0n&&loads.filter(s=>(s.flags&1)!==0&&entry>=s.va&&entry-s.va<BigInt(s.fileSize)).length===1,"entry outside file-backed executable load");
  const dynamics=segments.filter(s=>s.type===2);requireThat(dynamics.length<=1,"multiple dynamic tables");
- let soname:string|null=null;const needed:string[]=[];
+ let soname:string|null=null,runpath:string|null=null;const needed:string[]=[];
  if(dynamics.length){
   const d=dynamics[0]!;requireThat(d.fileSize>0&&d.fileSize%16===0&&d.fileSize<=1024*1024,"dynamic size");
   requireThat(loads.filter(s=>d.va>=s.va&&d.va+BigInt(d.fileSize)<=s.va+BigInt(s.fileSize)&&BigInt(d.offset-s.offset)===d.va-s.va).length===1,"dynamic mapping");
-  let strVa:bigint|undefined,strSize:number|undefined,ended=false,neededCount=0,sonameCount=0;const names:{tag:bigint;value:bigint}[]=[];
+  let strVa:bigint|undefined,strSize:number|undefined,ended=false,neededCount=0,sonameCount=0,runpathCount=0;const names:{tag:bigint;value:bigint}[]=[];
   for(let at=d.offset;at<d.offset+d.fileSize;at+=16){
    const tag=bytes.readBigInt64LE(at),value=bytes.readBigUInt64LE(at+8);
    if(tag===0n){ended=true;break;}
-   requireThat(![15n,29n,0x6ffffefan,0x6ffffefbn,0x6ffffefcn,0x7ffffffdn,0x7fffffffn].includes(tag),"search/audit/filter/auxiliary/config route");
+   requireThat(![15n,0x6ffffefan,0x6ffffefbn,0x6ffffefcn,0x7ffffffdn,0x7fffffffn].includes(tag)&&(tag!==29n||originalNspawn),"search/audit/filter/auxiliary/config route");
    if(tag===5n){requireThat(strVa===undefined,"duplicate string table");strVa=value;}
    if(tag===10n){requireThat(strSize===undefined,"duplicate string size");strSize=number(value);}
    if(tag===1n){requireThat(++neededCount<=dependencyCount,"dependency count bound");names.push({tag,value});}
    if(tag===14n){requireThat(++sonameCount===1,"multiple SONAME");names.push({tag,value});}
+   if(tag===29n){requireThat(originalNspawn&&++runpathCount===1,"original nspawn RUNPATH count");names.push({tag,value});}
   }
   requireThat(ended&&strVa!==undefined&&strSize!==undefined&&strSize>0&&strSize<=1024*1024,"dynamic completeness");
   requireThat(strVa<=max64-BigInt(strSize),"string virtual overflow");
@@ -61,8 +67,9 @@ export function validateH1ElfRole(bytes:Buffer,role:H1ElfRole,expectedSoname?:st
   let total=0;const decodedNames=names.map(row=>{requireThat(row.value<BigInt(strSize),"string offset");const raw=rawText(base+number(row.value),strSize-number(row.value));total+=raw.length;requireThat(total<=aggregateNameBytes,"aggregate name byte bound");return {tag:row.tag,raw};});
   // No string allocation until every count, individual and aggregate byte bound passed.
   const seen=new Set<string>();
-  for(const row of decodedNames){const value=row.raw.toString("ascii");requireThat(safeName(value),"dependency/SONAME escape");if(row.tag===14n)soname=value;else {requireThat(!seen.has(value),"duplicate dependency");seen.add(value);needed.push(value);}}
+  for(const row of decodedNames){const value=row.raw.toString("ascii");if(row.tag===29n){requireThat(originalNspawn&&value===h1OriginalHostNspawnRunpath,"original nspawn fixed RUNPATH");runpath=value;continue;}requireThat(safeName(value),"dependency/SONAME escape");if(row.tag===14n)soname=value;else {requireThat(!seen.has(value),"duplicate dependency");seen.add(value);needed.push(value);}}
  }
+ requireThat(!originalNspawn||(interpreter==="/lib64/ld-linux-x86-64.so.2"&&runpath===h1OriginalHostNspawnRunpath),"original nspawn interpreter/RUNPATH profile");
  requireThat(role!==H1ElfRole.Loader||needed.length===0,"loader dependency");
  requireThat((role!==H1ElfRole.SharedObject&&role!==H1ElfRole.Libc)||soname===expectedSoname,"SONAME alias mismatch/absence");
  requireThat(role!==H1ElfRole.Libc||interpreter==="/lib64/ld-linux-x86-64.so.2","libc fixed interpreter");
