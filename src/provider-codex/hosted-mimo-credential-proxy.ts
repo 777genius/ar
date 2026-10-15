@@ -19,6 +19,8 @@ export type MimoCredentialProxy = Readonly<{
   baseUrl: string;
   /** Disposable start-local authority, deliberately readable by its shell. */
   capability: string;
+  /** Start-lifetime facts, not attribution to a particular turn or failure. */
+  upstreamFailureObservation(): Readonly<{ count: number; lastStatus: number }> | undefined;
   revoke(): void;
   close(): Promise<void>;
 }>;
@@ -74,7 +76,7 @@ export async function startMimoCredentialProxy(input: {
     void dispatcherClosing.catch(() => undefined);
     return dispatcherClosing;
   };
-  let revoked = false, requests = 0;
+  let revoked = false, requests = 0, upstreamFailureCount = 0, lastUpstreamStatus: number | undefined;
   const revoke = () => {
     revoked = true;
     for (const controller of active) controller.abort();
@@ -136,6 +138,10 @@ export async function startMimoCredentialProxy(input: {
         body: JSON.stringify(body),
       });
       if (!upstreamResponse.ok) {
+        try { if (bounded(upstreamResponse.status, 100, 599)) {
+          upstreamFailureCount = Math.min(upstreamFailureCount + 1, limits.maxRequests);
+          lastUpstreamStatus = upstreamResponse.status;
+        } } catch { /* Observation cannot replace the original HTTP response. */ }
         await upstreamResponse.body?.cancel(); reply(response, 502, "proxy_upstream_failed", upstreamResponse.status); return;
       }
       if (!upstreamResponse.body) {
@@ -176,6 +182,8 @@ export async function startMimoCredentialProxy(input: {
   if (!address || typeof address === "string") { clearTimeout(expiry); revoke(); server.close(); await destroyDispatcher(); invalid(); }
   let closing: Promise<void> | undefined;
   return Object.freeze({ baseUrl: `http://127.0.0.1:${address.port}/v1`, capability, revoke,
+    upstreamFailureObservation: () => lastUpstreamStatus === undefined ? undefined :
+      Object.freeze({ count: upstreamFailureCount, lastStatus: lastUpstreamStatus }),
     close() {
       if (closing) return closing;
       clearTimeout(expiry); revoke();

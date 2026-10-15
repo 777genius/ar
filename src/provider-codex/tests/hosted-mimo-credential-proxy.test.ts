@@ -19,6 +19,7 @@ it("pins upstream/model, bounds output tokens, and forwards no client headers or
   try {
     const response = await f.post(undefined, "/responses", { "x-injected": key });
     expect(response.status).toBe(200); expect(await response.text()).toBe('{"output":[]}');
+    expect(f.proxy.upstreamFailureObservation()).toBeUndefined();
     expect(response.headers.get("x-secret")).toBeNull();
     const [url, init] = transport.mock.calls[0]!;
     expect(url).toBe("https://token-plan-sgp.xiaomimimo.com/v1/responses");
@@ -84,14 +85,18 @@ it.each([302, 401, 429, 500, 502, 503])("never retries or forwards upstream erro
   let capability = "";
   const transport = vi.fn<typeof fetch>(async () => new Response(key + capability, { status,
     headers: { location: "https://evil.test/" + key, "x-secret": key, "retry-after": "60" } }));
-  const f = await fixture(transport);
+  const f = await fixture(transport, { maxRequests: 1 });
   capability = f.proxy.capability;
   try {
     const response = await f.post(); expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed", upstream_status: status } });
     expect(transport).toHaveBeenCalledOnce(); expect(response.headers.get("location")).toBeNull();
     expect(response.headers.get("x-secret")).toBeNull(); expect(response.headers.get("retry-after")).toBeNull();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ count: 1, lastStatus: status });
+    expect((await f.post()).status).toBe(429);
+    expect(transport).toHaveBeenCalledOnce();
   } finally { await f.proxy.close(); }
+  expect(f.proxy.upstreamFailureObservation()).toEqual({ count: 1, lastStatus: status });
 });
 
 it("does not invent an upstream failure status for transport, empty body, or unsupported content", async () => {
@@ -101,6 +106,7 @@ it("does not invent an upstream failure status for transport, empty body, or uns
     try {
       const response = await f.post(); expect(response.status).toBe(502);
       expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed" } });
+      expect(f.proxy.upstreamFailureObservation()).toBeUndefined();
       expect(fetchUpstream).toHaveBeenCalledOnce();
     } finally { await f.proxy.close(); }
   }

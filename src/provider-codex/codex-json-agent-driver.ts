@@ -399,6 +399,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
       const nativeWeb = safeNativeWebFromError(error, input.redactor);
       return {
         ...failure,
+        failure: this.codingProxyOwner.annotateFailure(failure.failure),
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
