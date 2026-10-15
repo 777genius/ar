@@ -83,9 +83,10 @@ describe("owned standalone MiMo worker", () => {
     expect(firstFailure).toBeInstanceOf(MimoSnapshotGitFailure);
     await expect(options.snapshotter!.capture({ workspacePath: selected.workspacePath, abortSignal: cancelled.signal })).rejects.toBe(firstFailure);
     expect(timings.map(t => [t.scope, t.outcome])).toEqual([["initial_access", "failed"], ["initial_snapshot", "failed"]]);
-    for (const timing of timings) for (const key of ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs"] as const) {
+    for (const timing of timings) for (const key of ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs", "admissionAuthorityServiceElapsedMs"] as const) {
       expect(timing[key]).toBeTypeOf("number"); expect(timing[key]).toBeGreaterThanOrEqual(0);
     }
+    for (const timing of timings) expect(timing.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing.admissionAuthorityElapsedMs!);
     expect(options.accounts).toHaveLength(1);
     expect(options.accounts[0]).not.toHaveProperty("codexAuthJsonPath");
     expect(options.maxAccountCycles).toBe(1);

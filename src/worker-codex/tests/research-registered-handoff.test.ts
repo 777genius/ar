@@ -551,7 +551,14 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     await grantAndRequest(); const started = await start();
     host.group = `/system.slice/${started.unit}`;
     await bindRegisteredResearchRuntime(started.jobId, started.startId);
-    const captured = captureResearchRuntime(selected()); mutateReceipt();
+    const captured = captureResearchRuntime(selected());
+    const shows = () => host.calls.filter(call => call.command === "/usr/bin/systemctl" && call.args[0] === "show").length;
+    const before = shows(), timing = captured.assertCurrent();
+    expect(shows() - before).toBe(2);
+    expect(timing?.admissionAuthorityServiceElapsedMs).toBeTypeOf("number");
+    expect(timing?.admissionAuthorityServiceElapsedMs).toBeGreaterThanOrEqual(0);
+    expect(timing?.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing!.admissionAuthorityElapsedMs);
+    mutateReceipt();
     expect(() => captured.assertAuthorityCurrent()).toThrow();
     expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
     expect(host.authReads).toBe(0);

@@ -249,18 +249,22 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
   };
-  const assertAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
+  const checkAuthorityCurrent = (observeService?: (elapsedMs: number) => void): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
     assertInertAuthorityCurrent();
-    const service = researchServiceIdentity(spec.unit);
+    const service = observeService ? researchAdmissionMeasure(() => researchServiceIdentity(spec.unit), observeService) : researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(binding.process, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(service) !== JSON.stringify(binding.service)) researchInvalid();
     assertInertAuthorityCurrent();
   });
+  const assertAuthorityCurrent = (): void => checkAuthorityCurrent();
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
   const assertCurrent = (): ResearchAdmissionTiming | void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
     let admissionAuthorityElapsedMs = 0, admissionArtifactElapsedMs = 0, admissionExecutableElapsedMs = 0, samples = 0;
-    const authority = (): void => { researchAdmissionMeasure(assertAuthorityCurrent, elapsed => { admissionAuthorityElapsedMs += elapsed; samples++; }); };
+    let admissionAuthorityServiceElapsedMs = 0, serviceSamples = 0;
+    const authority = (): void => { researchAdmissionMeasure(() => checkAuthorityCurrent(elapsed => {
+      admissionAuthorityServiceElapsedMs += elapsed; serviceSamples++;
+    }), elapsed => { admissionAuthorityElapsedMs += elapsed; samples++; }); };
     authority();
     assertResearchMaterialBytes(spec, (role, elapsed) => {
       if (role === ResearchMaterialRole.RuntimeArtifact) admissionArtifactElapsedMs += elapsed;
@@ -268,7 +272,9 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
       samples++;
     });
     authority();
-    if (samples === 5) return Object.freeze({ admissionAuthorityElapsedMs, admissionArtifactElapsedMs, admissionExecutableElapsedMs });
+    if (samples === 5) return Object.freeze({ admissionAuthorityElapsedMs, admissionArtifactElapsedMs,
+      admissionExecutableElapsedMs, ...(serviceSamples === 2 && Number.isFinite(admissionAuthorityServiceElapsedMs) &&
+        admissionAuthorityServiceElapsedMs <= admissionAuthorityElapsedMs ? { admissionAuthorityServiceElapsedMs } : {}) });
   });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();

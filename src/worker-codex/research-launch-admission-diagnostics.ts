@@ -6,6 +6,8 @@ export enum ResearchAdmissionFailureStage {
 }
 export type ResearchAdmissionTiming = Readonly<{
   admissionAuthorityElapsedMs: number; admissionArtifactElapsedMs: number; admissionExecutableElapsedMs: number;
+  /** Inclusive children of authority; never add these to the outer phase sum. */
+  admissionAuthorityServiceElapsedMs?: number;
 }>;
 /** Measures one existing synchronous operation; observation cannot change it. */
 export function researchAdmissionMeasure<T>(effect: () => T, observe: (elapsedMs: number) => void): T {

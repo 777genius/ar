@@ -18,7 +18,7 @@ export type MimoSnapshotTiming = Readonly<{
   admissionCount: number; admissionElapsedMs: number; successfulGitCount: number; successfulGitElapsedMs: number;
 }> & Partial<ResearchAdmissionTiming>;
 type TimingCounters = { admissionCount: number; admissionElapsedMs: number; successfulGitCount: number;
-  successfulGitElapsedMs: number; invalid: boolean; partCount: number; parts: ResearchAdmissionTiming };
+  successfulGitElapsedMs: number; invalid: boolean; partCount: number; serviceCount: number; parts: ResearchAdmissionTiming };
 const admissionPartKeys = ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs"] as const;
 enum TimingCounterKind { Admission = "admission", SuccessfulGit = "successful_git" }
 const timingNow = (): number | undefined => {
@@ -95,8 +95,9 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
     if (this.#observed.has(scope)) return operation();
     this.#observed.add(scope);
     const counters: TimingCounters = { admissionCount: 0, admissionElapsedMs: 0,
-      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false, partCount: 0,
-      parts: { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0 } };
+      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false, partCount: 0, serviceCount: 0,
+      parts: { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0,
+        admissionAuthorityServiceElapsedMs: 0 } };
     this.#timing = counters;
     const started = timingNow(); let outcome = MimoSnapshotTimingOutcome.Failed;
     try { const result = await operation(); outcome = MimoSnapshotTimingOutcome.Completed; return result; }
@@ -104,11 +105,13 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       this.#timing = undefined;
       const elapsedMs = elapsedTiming(started);
       if (!counters.invalid && elapsedMs !== undefined) {
+        const { admissionAuthorityServiceElapsedMs, ...outerParts } = counters.parts;
         try { this.#observe(Object.freeze({ scope, outcome, elapsedMs,
           admissionCount: counters.admissionCount, admissionElapsedMs: counters.admissionElapsedMs,
           successfulGitCount: counters.successfulGitCount, successfulGitElapsedMs: counters.successfulGitElapsedMs,
           ...(counters.partCount === counters.admissionCount && counters.partCount > 0 &&
-            Object.values(counters.parts).reduce((sum, value) => sum + value, 0) <= counters.admissionElapsedMs ? counters.parts : {}) })); }
+            Object.values(outerParts).reduce((sum, value) => sum + value, 0) <= counters.admissionElapsedMs
+            ? { ...outerParts, ...(counters.serviceCount === counters.partCount ? { admissionAuthorityServiceElapsedMs } : {}) } : {}) })); }
         catch { /* Optional observations never replace the original result or error. */ }
       }
     }
@@ -130,8 +133,13 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       const values = admissionPartKeys.map(key => Object.getOwnPropertyDescriptor(value, key)?.value as unknown);
       if (!values.every((v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 86_400_000)) return;
       if (admissionPartKeys.some((key, i) => counters.parts[key] + values[i]! > 86_400_000)) return;
-      counters.parts = Object.fromEntries(admissionPartKeys.map((key, i) => [key, counters.parts[key] + values[i]!])) as ResearchAdmissionTiming;
+      counters.parts = { ...counters.parts, ...Object.fromEntries(admissionPartKeys.map((key, i) => [key, counters.parts[key] + values[i]!])) } as ResearchAdmissionTiming;
       counters.partCount++;
+      const service = Object.getOwnPropertyDescriptor(value, "admissionAuthorityServiceElapsedMs")?.value as unknown;
+      const sum = (counters.parts.admissionAuthorityServiceElapsedMs ?? 0) + (typeof service === "number" ? service : NaN);
+      if (typeof service === "number" && Number.isFinite(service) && service >= 0 && service <= values[0]! && sum <= 86_400_000) {
+        counters.parts = { ...counters.parts, admissionAuthorityServiceElapsedMs: sum }; counters.serviceCount++;
+      }
     } catch { /* Optional data never invokes getters or replaces a guard outcome. */ }
   }
   assertHealthy(): void {
