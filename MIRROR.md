@@ -64,3 +64,14 @@ The standalone npm local-input and Vite/Vitest cache TEST workflows are retained
 from source `88fb4a926a5a28649334323fc5f57822e624837e`, with pinned actions and
 exact public-head checkout. They use fresh Ubuntu TEST filesystems, retain their
 original assertions, and grant no runtime admission or eviction authority.
+
+The bounded private-main follow-up composes private source base
+`dedc128c173d5384460fa524da989eb6a1e4dc53` through
+`36c63eb0a8bcecfed0986602c06c8e99cbf98e49` onto public parent
+`ff59f9048929e0534f7cc29cc57cedb0579e84d4`. Its original source commits are
+`8ae47acb1f93989db55865af33ba4b9de0283179`,
+`ab291d5f803f907f019e59059385cf900893f7ba`, and
+`36c63eb0a8bcecfed0986602c06c8e99cbf98e49`. The 14 source/test paths use
+three-way source composition; public SDK diagnostics, fixture isolation and
+privacy corrections remain intact. Private ancestry is not imported, and this
+record does not claim identical public/private history or runtime activation.

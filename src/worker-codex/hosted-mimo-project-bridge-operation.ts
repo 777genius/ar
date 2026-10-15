@@ -49,7 +49,7 @@ const approvedErrorCodes = new Set([
   "controller_maintenance_fence_active",
   "controller_maintenance_activity_active",
 ]);
-function operationErrorCode(error: unknown): string {
+export function operationErrorCode(error: unknown): string {
   if (!(error instanceof Error)) return "mimo_project_bridge_operation_failed";
   // Errors can originate in another immutable release, with a different class identity.
   const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;

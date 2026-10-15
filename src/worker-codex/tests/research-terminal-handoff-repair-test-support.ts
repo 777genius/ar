@@ -14,11 +14,13 @@ import * as admission from "../research-launch-admission";
 import * as runtimeArtifact from "../research-runtime-artifact";
 import * as capacityRecovery from "../research-mimo-capacity-recovery";
 import { researchArtifactDigest } from "../research-launch-files";
+import { writeCodexGoalStoppedProgress } from "../application/codex-goal-lifecycle-markers";
+export { registeredStoppedBeforeProviderTests } from "./research-stopped-before-provider-test-support";
 
 /** Runs inside the existing registered suite's genuinely constructed native
  * fixture. Only kernel PID disappearance is an explicit offline Host port. */
 export function registeredTerminalRepairTests(input: {
-  candidate(dirty?: boolean): Promise<ReturnType<typeof researchCurrentStart> & { jobId: string; startId: string; specSha256: string; unit: string }>;
+  candidate(dirty?: boolean, status?: "partial" | "failed"): Promise<ReturnType<typeof researchCurrentStart> & { jobId: string; startId: string; specSha256: string; unit: string }>;
   scope(): ProjectAccessScope; setScope(scope: ProjectAccessScope): void; registry(): string;
 }): void {
   const identity = (current: Awaited<ReturnType<typeof input.candidate>>) => ({ jobId: current.jobId, startId: current.startId,
@@ -34,6 +36,58 @@ export function registeredTerminalRepairTests(input: {
     }) as typeof fs.lstatSync);
     return { current, historical };
   }
+  async function stoppedPublication(status: "partial" | "failed" = "partial") {
+    const current = await input.candidate(true, status), historical = structuredClone(input.scope());
+    await finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256);
+    const progress = join(current.spec.request.jobRootDir, current.spec.request.taskId + ".progress.json");
+    // The real supported control writer publishes a stopped observation after
+    // the native owner has already published its independently truthful result.
+    await writeCodexGoalStoppedProgress({ progressPath: progress, taskId: current.spec.request.taskId, status: "stopped" });
+    input.setScope({ ...historical, allowedAccountIds: [...historical.allowedAccountIds!, "TEST-appended-account"] });
+    const stat = fs.lstatSync;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((path: fs.PathLike, options?: fs.StatOptions) => {
+      if (String(path) === `/proc/${process.pid}`) throw Object.assign(new Error("TEST original PID gone"), { code: "ENOENT" });
+      return stat(path, options as fs.StatOptions & { bigint?: false });
+    }) as typeof fs.lstatSync);
+    return { current, historical, progress };
+  }
+  describe("authenticated stopped progress after terminal publication", () => {
+    it.each(["partial", "failed"] as const)("seals supported Stop bytes without rewriting its %s result", async status => {
+      const { current, historical, progress } = await stoppedPublication(status);
+      const paths = ["spec.json", "binding.json", "mimo-candidate.json", "mimo-publication.json"]
+        .map(name => join(current.directory, name));
+      paths.push(join(current.spec.request.jobRootDir, current.spec.request.taskId + ".latest-result.json"), progress);
+      const before = paths.map(path => researchRead(path, !path.endsWith(".progress.json") && !path.endsWith(".latest-result.json")));
+      const calls = host.calls.length, manifest = await readCodexGoalJob({ registryRootDir: input.registry(), jobId: current.jobId });
+      expect(await repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).toMatchObject({ status });
+      expect(paths.map(path => researchRead(path, !path.endsWith(".progress.json") && !path.endsWith(".latest-result.json")))).toEqual(before);
+      expect(host.calls.slice(calls).some(call => ["stop", "kill"].includes(call.args[0] ?? ""))).toBe(false);
+      const receipt = join(current.directory, "terminal-handoff-repair.json"), receiptBytes = researchRead(receipt);
+      const reader = await prepareResearchJobWriterObservation(manifest); expect(await reader()).toEqual({ status: "released" });
+      expect(await repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).toMatchObject({ status });
+      expect(researchRead(receipt)).toEqual(receiptBytes);
+      fs.appendFileSync(local(progress), " "); expect(await reader()).toEqual({ status: "unknown" });
+      fs.writeFileSync(local(progress), before.at(-1)!, { mode: 0o600 });
+      expect(await reader()).toEqual({ status: "released" });
+      expect(host.authReads).toBe(0);
+    });
+    it.each(["extra-key", "pid", "invalid-time", "noncanonical-time", "wrong-task", "live", "queued", "publication", "result"] as const)("refuses stopped %s uncertainty", async fault => {
+      const { current, historical, progress } = await stoppedPublication();
+      const value = JSON.parse(researchRead(progress, false).toString());
+      if (fault === "extra-key") value.reason = "TEST unexpected extension";
+      if (fault === "pid") value.pid = 0;
+      if (fault === "invalid-time") value.updatedAt = "TEST invalid time";
+      if (fault === "noncanonical-time") value.updatedAt = "2026-10-15T00:00:00Z";
+      if (fault === "wrong-task") value.taskId = "TEST-other-task";
+      if (["extra-key", "pid", "invalid-time", "noncanonical-time", "wrong-task"].includes(fault)) researchPublish(progress, value);
+      if (fault === "live") host.units.get(current.unit)!.active = true;
+      if (fault === "queued") host.jobs.add(current.unit);
+      if (fault === "publication") researchPublish(join(current.directory, "mimo-publication.json"), { invalid: true });
+      if (fault === "result") researchPublish(join(current.spec.request.jobRootDir, current.spec.request.taskId + ".latest-result.json"), { status: "failed" });
+      await expect(repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).rejects.toThrow();
+      expect(fs.existsSync(local(join(current.directory, "terminal-handoff-repair.json")))).toBe(false);
+    });
+  });
   describe("authenticated account-tail terminal repair", () => {
     it("preserves partial packet without Stop, keeps old binding, and exposes only its authenticated release", async () => {
       const { current, historical } = await cold(), original = researchRead(join(current.directory, "spec.json"));

@@ -1,6 +1,8 @@
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { afterAll, expect, it, vi } from "vitest";
+const resumeFault = vi.hoisted(() => ({ job: "", beforeBirth: false, afterBirth: false, createCalls: 0, birthTicks: "1" }));
 const boundary = vi.hoisted(() => ({ root: "", map: (value: unknown): unknown => value, unmap: (value: string) => value }));
 vi.mock("node:url", async original => {
   const url = await original<typeof import("node:url")>();
@@ -35,7 +37,7 @@ vi.mock("node:child_process", async original => {
   const cp = await original<typeof import("node:child_process")>();
   return { ...cp, execFile: Object.assign((file: string, args: string[], ...rest: unknown[]) => (cp.execFile as Function)(file, args.map(arg => boundary.map(arg) as string), ...rest), { [Symbol.for("nodejs.util.promisify.custom")]: (file: string, args: string[], options: object) => new Promise((resolve, reject) => cp.execFile(file, args.map(arg => boundary.map(arg) as string), options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }), execFileSync: (file: string, args: string[], options: object) => cp.execFileSync(file, args.map(arg => boundary.map(arg) as string), options) };
 });
-vi.mock("../research-launch-host", async original => ({ ...await original<object>(), assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
+vi.mock("../research-launch-host", async original => ({ ...await original<object>(), assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchProcessIdentity: () => ({ pid: process.pid, birthTicks: resumeFault.birthTicks, bootId: "b".repeat(36), machineId: "b".repeat(32), controlGroup: "/TEST", namespaces: { user: "TEST", mnt: "TEST", pid: "TEST", net: "TEST" } }), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command === "/usr/bin/ps" && process.platform === "darwin" ? "/bin/ps" : command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: (path: string, privateLeaf = false) => {
   // Host UID and fixed namespace are mapped; real directory/file/mode checks remain.
   const fs = require("node:fs") as typeof import("node:fs");
@@ -72,12 +74,34 @@ vi.mock("../../worker-local/project-control-evidence-custody-local-adapter", asy
     }
   } };
 });
-import { prepareHostedMimoProject, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
+vi.mock("../codex-goal-jobs", async original => {
+  const real = await original<typeof import("../codex-goal-jobs")>();
+  return { ...real, createCodexGoalJob: async (input: Parameters<typeof real.createCodexGoalJob>[0]) => {
+    if (input.manifest.jobId === resumeFault.job) {
+      resumeFault.createCalls++;
+      if (resumeFault.beforeBirth) throw new Error("TEST original controller creation failed before birth");
+    }
+    const value = await real.createCodexGoalJob(input);
+    if (input.manifest.jobId === resumeFault.job && resumeFault.afterBirth) throw new Error("TEST controller response failed after birth");
+    return value;
+  } };
+});
+vi.mock("../hosted-ordinary-writer-authority", async original => ({ ...await original<object>(), hostedOrdinaryWriterAuthorityAbsent: () => true }));
+vi.mock("../host-scratch-temp", async original => ({ ...await original<object>(), resolveHostScratchTempRoot: () => ({ root: "/srv/workers" }) }));
+vi.mock("../research-runtime-artifact", async original => {
+  const real = await original<object>();
+  const files = await import("../research-launch-files");
+  return { ...real, assertQualifiedResearchRuntimeArtifact: (path: string, digest: string) => {
+    if (files.researchArtifactDigest(path) !== digest) throw new Error("TEST immutable artifact changed");
+  } };
+});
+import { prepareHostedMimoProject, resumeHostedMimoProjectPreparation, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
 import { resolveProjectSourceRevision } from "../application/project-control/codex-goal-project-source-revision";
-import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
+import { assertHostedMimoProjectRouteOpen, captureHeldMimoPreparationFence, handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 import { loadProjectControlController } from "../codex-goal-mcp-project-control-deps";
 import { projectControlAdoptPublishedIntegrationCommit } from "../codex-goal-mcp-project-control-published-adoption";
+import { acquireLocalControllerMaintenanceFence, releaseLocalControllerMaintenanceFence } from "@vioxen/subscription-runtime/store-local-file";
 import { observeProtectedCodexGoalJobBirth } from "../protected-job-birth";
 import { observeResearchJobWriterAuthority } from "../research-writer-observation";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -113,7 +137,7 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
   file("/etc/subscription-runtime/projects/test-project.d/test-work.yml", `project_id: test-project\nworkstream_id: test-work\nstate_root: /srv/worker-state/jobs/test-project/test-work\nscratch_root: /srv/workers/jobs/test-project/test-work\nrouting_enabled: true\nrepositories:\n  runtime:\n    url: "${url}"\n    branch: main\n    exact_head: "${sha}"\n`);
   const entry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js"; file(entry, "TEST executable");
   const contract = { kind: "worker-launch", format: 1, canonicalSha: sha, baseSha: sha, phaseStartSha: sha, packetRevision: "test-r1", controllerPacket: "controller.md", lanePacket: "lane.md", phaseId: "phase-01", laneId: "test-lane", inputPatchHash: null, reviewKind: "implementation", ownedPaths: ["sandbox"], mandatoryDocs: ["controller.md", "lane.md", "doc.md"], mandatoryScripts: [], mandatoryFixtures: [], requiredChecks: [{ id: "test-check", cwd: "sandbox", command: "true" }], executionPolicy: { mode: "sandbox-only", sandboxRoot: scratch + "/source/sandbox", forbiddenRealProjects: ["/srv/workers/jobs"] } };
-  const binding = { schemaVersion: 1, projectId: "test-project", workstreamId: "test-work", machineId: machine, routingEnabled: true, stateRoot: state, scratchRoot: scratch, registryRootDir: state + "/registry", controllerJobId: "test-controller", sourceWorkspacePath: scratch + "/source", sourceCommit: sha, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/true", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract } };
+  const binding = { schemaVersion: 1 as const, projectId: "test-project", workstreamId: "test-work", machineId: machine, routingEnabled: true, stateRoot: state, scratchRoot: scratch, registryRootDir: state + "/registry", controllerJobId: "test-controller", sourceWorkspacePath: scratch + "/source", sourceCommit: sha, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/true", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract } };
   const plan = { schemaVersion: 1, binding, sourceSnapshotPath: snapshot, repositoryKey: "runtime", repositoryUrl: url, workerJobPrefix: "test-worker-", authRootDir: "/srv/worker-state/account-pools/auth", commitIdentity: { name: "iliya", email: "iliyazelenkog@gmail.com" } };
   file("/etc/subscription-runtime/test-plan.json", JSON.stringify(plan));
   // Real safe Git invokes status against an executable fsmonitor configuration.
@@ -171,4 +195,141 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
   }
 
 
+});
+
+
+async function partialFixture(name: string, afterBirth = false) {
+  const project = "resume-" + name, stream = "test-work", snapshot = "/srv/reviewed/" + project;
+  const state = `/srv/worker-state/mimo-projects/${project}/${stream}`, scratch = `/srv/workers/mimo-projects/${project}/${stream}`;
+  directory(snapshot); directory("/srv/worker-state/account-pools/auth"); directory("/run/user");
+  for (const path of ["dist", "host-integration", "node_modules"]) directory("/TEST-artifact/" + path);
+  file("/TEST-artifact/package.json", '{"type":"module"}\n');
+  file("/TEST-artifact/dist/worker-codex/hosted-mimo-project-bridge-cli.js", "TEST immutable CLI\n");
+  const pointer = physical("/opt/subscription-runtime/mimo-project-bridge-current");
+  fs.rmSync(pointer, { recursive: true, force: true }); directory("/opt/subscription-runtime");
+  fs.symlinkSync(physical("/TEST-artifact"), pointer);
+  const git = (...args: string[]) => cp.execFileSync("/usr/bin/git", ["-C", physical(snapshot), ...args], { encoding: "utf8",
+    env: { PATH: "/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } }).trim();
+  git("init"); git("config", "user.name", "iliya"); git("config", "user.email", "iliyazelenkog@gmail.com");
+  const url = "https://github.com/example/project.git"; git("remote", "add", "origin", url);
+  file(snapshot + "/README.md", "TEST source\n"); file(snapshot + "/app/.keep", "TEST owned sandbox\n");
+  git("add", "."); git("commit", "-m", "TEST resume fixture"); const sha = git("rev-parse", "HEAD"); git("update-ref", "refs/remotes/origin/main", sha);
+  const machine = "b".repeat(32); file("/etc/machine-id", machine);
+  file(`/etc/subscription-runtime/projects/${project}.d/${stream}.yml`, `project_id: ${project}\nworkstream_id: ${stream}\nstate_root: /srv/worker-state/jobs/${project}/${stream}\nscratch_root: /srv/workers/jobs/${project}/${stream}\nrouting_enabled: true\nrepositories:\n  app:\n    url: "${url}"\n    branch: main\n    exact_head: "${sha}"\n`);
+  const contract = { kind: "worker-launch", format: 1, canonicalSha: sha, baseSha: sha, phaseStartSha: sha, packetRevision: "test-r1", controllerPacket: "README.md", lanePacket: "README.md", phaseId: "phase-01", laneId: "test-lane", inputPatchHash: null, reviewKind: "implementation", ownedPaths: ["app/"], mandatoryDocs: ["README.md"], mandatoryScripts: [], mandatoryFixtures: [], requiredChecks: [{ id: "test", cwd: "app", command: "true" }], executionPolicy: { mode: "sandbox-only", sandboxRoot: scratch + "/source/app", forbiddenRealProjects: ["/srv/workers/jobs"] } };
+  const binding = { schemaVersion: 1 as const, projectId: project, workstreamId: stream, machineId: machine, routingEnabled: true, stateRoot: state, scratchRoot: scratch, registryRootDir: state + "/registry", controllerJobId: project + "-controller", sourceWorkspacePath: scratch + "/source", sourceCommit: sha, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/true", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract } };
+  const plan = { schemaVersion: 1, binding, sourceSnapshotPath: snapshot, repositoryKey: "app", repositoryUrl: url, workerJobPrefix: project + "-worker-", authRootDir: "/srv/worker-state/account-pools/auth", commitIdentity: { name: "iliya", email: "iliyazelenkog@gmail.com" } };
+  const planPath = `/etc/subscription-runtime/${project}-plan.json`; file(planPath, JSON.stringify(plan));
+  resumeFault.job = binding.controllerJobId; resumeFault.beforeBirth = !afterBirth; resumeFault.afterBirth = afterBirth; resumeFault.createCalls = 0;
+  await expect(prepareHostedMimoProject(planPath)).rejects.toThrow(afterBirth ? "TEST controller response failed after birth" : "TEST original controller creation failed before birth");
+  resumeFault.beforeBirth = resumeFault.afterBirth = false;
+  const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+  const { researchArtifactDigest } = await import("../research-launch-files");
+  const artifact = researchArtifactDigest("/TEST-artifact");
+  file("/etc/subscription-runtime/mimo-project-runtime-routing.json", JSON.stringify({ schemaVersion: 2, currentRuntimeDirectory: "/TEST-artifact", currentArtifactSha256: artifact }));
+  const failedResult = `/etc/subscription-runtime/${project}-failed-result.json`, originalFailure = JSON.stringify({ ok: false, error: "mimo_project_bridge_operation_failed" }) + "\n"; file(failedResult, originalFailure);
+  const identity = (path: string) => { const s = fs.lstatSync(physical(path)); return { path, device: s.dev, inode: s.ino }; };
+  const resume = { schemaVersion: 1, preparationPlanPath: planPath, expectedPlanSha256: digest(fs.readFileSync(physical(planPath))), expectedPreparationSha256: digest(fs.readFileSync(physical(state + "/preparation.json"))), failedResultPath: failedResult, expectedFailedResultSha256: digest(originalFailure), runtimeDirectory: "/TEST-artifact", artifactSha256: artifact, directories: [state, scratch, binding.registryRootDir, binding.sourceWorkspacePath].map(identity) };
+  const resumePath = `/etc/subscription-runtime/${project}-resume.json`; file(resumePath, JSON.stringify(resume));
+  return { state, scratch, binding, resumePath, failedResult, originalFailure, digest };
+}
+
+it("resumes a real pre-controller failure through canonical birth and onboarding without re-cloning or replacing the failed record", async () => {
+  const f = await partialFixture("success"), before = fs.lstatSync(physical(f.binding.sourceWorkspacePath));
+  expect(fs.existsSync(physical(f.state + "/controller"))).toBe(false);
+  const originalPreparation = fs.readFileSync(physical(f.state + "/preparation.json"));
+  const original = JSON.parse(fs.readFileSync(physical(f.resumePath), "utf8"));
+  let closureChecks = 0;
+  const answer = await resumeHostedMimoProjectPreparation(f.resumePath, evidence => {
+    closureChecks++;
+    expect(evidence).toEqual({ planSha256: original.expectedPlanSha256, retainedPreparationSha256: original.expectedPreparationSha256,
+      failedResultSha256: original.expectedFailedResultSha256 });
+    if (fs.existsSync(physical(f.state + "/controller"))) expect(fs.existsSync(physical(f.state + "/.controller-maintenance-fence.json"))).toBe(true);
+    return "c".repeat(64);
+  });
+  expect(closureChecks).toBeGreaterThan(7);
+  expect(fs.existsSync(physical(f.state + "/.controller-maintenance-fence.json"))).toBe(false);
+  expect(answer).toMatchObject({ ok: true, projectId: f.binding.projectId });
+  const controller = await readCodexGoalJob({ registryRootDir: f.binding.registryRootDir, jobId: f.binding.controllerJobId });
+  expect(await observeProtectedCodexGoalJobBirth(controller)).toEqual({ status: "released" });
+  expect(fs.lstatSync(physical(f.binding.sourceWorkspacePath)).ino).toBe(before.ino);
+  expect(fs.readFileSync(physical(f.state + "/preparation.json"))).toEqual(originalPreparation);
+  expect(fs.readFileSync(physical(f.failedResult), "utf8")).toBe(f.originalFailure);
+  expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(true);
+  expect(resumeFault.createCalls).toBe(2);
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow();
+  expect(resumeFault.createCalls).toBe(2);
+});
+
+it.each(["first-effect", "controller-collision", "source-changed", "failed-after-birth"])("refuses %s before consuming resume intent", async fault => {
+  const f = await partialFixture(fault, fault === "failed-after-birth");
+  if (fault === "first-effect") file("/run/user/subscription-runtime-research-v1/job-births/" + f.digest(f.state + "/controller") + ".first-effect.json", '{"firstEffectObserved":true}');
+  if (fault === "controller-collision") directory(f.state + "/controller");
+  if (fault === "source-changed") file(f.binding.sourceWorkspacePath + "/app/.keep", "TEST source changed\n");
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow();
+  expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(false);
+  expect(resumeFault.createCalls).toBe(1);
+  expect(fs.readFileSync(physical(f.failedResult), "utf8")).toBe(f.originalFailure);
+});
+
+it("retains a consumed resume intent after another pre-controller failure and refuses a second resume", async () => {
+  const f = await partialFixture("resume-fails"); resumeFault.beforeBirth = true;
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow("TEST original controller creation failed before birth");
+  expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(true);
+  resumeFault.beforeBirth = false;
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow();
+  expect(resumeFault.createCalls).toBe(2);
+});
+
+
+it.each(["missing", "unproven", "changed-proof", "external-fence"])("refuses %s original-producer/fence authority before intent", async fault => {
+  const f = await partialFixture("closure-" + fault);
+  const external = fault === "external-fence" ? await acquireLocalControllerMaintenanceFence({ controllerJobRootDir: f.state, owner: "TEST external" }) : undefined;
+  const closure = fault === "missing" ? undefined : () => {
+    if (fault === "unproven") throw new Error("TEST original producer not proven closed");
+    return fault === "changed-proof" && fs.existsSync(physical(f.state + "/.controller-maintenance-fence.json")) ? "d".repeat(64) : "c".repeat(64);
+  };
+  try {
+    await expect(resumeHostedMimoProjectPreparation(f.resumePath, closure!)).rejects.toThrow();
+    expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(false);
+    expect(fs.existsSync(physical(f.state + "/controller"))).toBe(false);
+    expect(resumeFault.createCalls).toBe(1);
+  } finally { if (external) await releaseLocalControllerMaintenanceFence(external); }
+});
+
+it("rechecks original producer closure after canonical creation before reviewed binding", async () => {
+  const f = await partialFixture("closure-tail");
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => {
+    if (fs.existsSync(physical(f.binding.registryRootDir + "/" + f.binding.controllerJobId + "/job.json")))
+      throw new Error("TEST original producer closure changed");
+    return "c".repeat(64);
+  })).rejects.toThrow("TEST original producer closure changed");
+  expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(true);
+  expect(fs.existsSync(physical(f.state + "/reviewed-binding.json"))).toBe(false);
+  expect(fs.existsSync(physical(`/etc/subscription-runtime/mimo-projects/${f.binding.projectId}/${f.binding.workstreamId}.json`))).toBe(false);
+  expect(fs.existsSync(physical(f.state + "/.controller-maintenance-fence.json"))).toBe(false);
+});
+
+it("authenticates held fence identity, process birth and every route guard", async () => {
+  const f = await partialFixture("fence-auth"), fence = await acquireLocalControllerMaintenanceFence({ controllerJobRootDir: f.state, owner: "TEST own" });
+  const bytes = fs.readFileSync(physical(fence.path));
+  try {
+    expect(() => assertHostedMimoProjectRouteOpen(f.binding)).toThrow("mimo_project_bridge_route_closed");
+    expect(() => captureHeldMimoPreparationFence(f.binding, { ...fence, ownerToken: "TEST forged" })).toThrow("mimo_project_bridge_route_closed");
+    const capability = captureHeldMimoPreparationFence(f.binding, fence);
+    expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).not.toThrow();
+    expect(() => assertHostedMimoProjectRouteOpen({ ...f.binding, stateRoot: f.state + "-other" }, capability)).toThrow("mimo_project_bridge_route_closed");
+    expect(() => assertHostedMimoProjectRouteOpen(f.binding, {} as typeof capability)).toThrow("mimo_project_bridge_route_closed");
+    const disabled = `/etc/subscription-runtime/projects/${f.binding.projectId}.d/${f.binding.workstreamId}.route-disabled`;
+    file(disabled, "TEST disabled"); expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).toThrow("mimo_project_bridge_route_closed"); fs.unlinkSync(physical(disabled));
+    expect(() => assertHostedMimoProjectRouteOpen({ ...f.binding, routingEnabled: false }, capability)).toThrow("mimo_project_bridge_route_closed");
+    file(f.state + "/.controller-recovery.json", "TEST recovery"); expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).toThrow("mimo_project_bridge_route_closed"); fs.unlinkSync(physical(f.state + "/.controller-recovery.json"));
+    const yaml = `/etc/subscription-runtime/projects/${f.binding.projectId}.d/${f.binding.workstreamId}.yml`, yamlBytes = fs.readFileSync(physical(yaml));
+    fs.writeFileSync(physical(yaml), yamlBytes.toString().replace("routing_enabled: true", "routing_enabled: false"));
+    expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).toThrow("mimo_project_bridge_route_closed"); fs.writeFileSync(physical(yaml), yamlBytes);
+    resumeFault.birthTicks = "2"; expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).toThrow("mimo_project_bridge_route_closed"); resumeFault.birthTicks = "1";
+    fs.renameSync(physical(fence.path), physical(fence.path + ".old"));
+    fs.writeFileSync(physical(fence.path), bytes, { mode: 0o600 });
+    expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).toThrow("mimo_project_bridge_route_closed");
+  } finally { resumeFault.birthTicks = "1"; await releaseLocalControllerMaintenanceFence(fence); }
 });
