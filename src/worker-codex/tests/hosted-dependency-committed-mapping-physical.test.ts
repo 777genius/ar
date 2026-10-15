@@ -3,7 +3,7 @@
  * projected. Linux ROOT is required by the actual preservation adapter. */
 import { randomUUID, createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -63,7 +63,7 @@ describe.skipIf(process.platform!=="linux" || process.getuid?.()!==0)("original 
     const workspacePath=join(root,"workspace"),treePath=join(workspacePath,"node_modules"),receiptRoot=join(root,"receipts");
     for(const path of [f.quarantine,f.owners,workspacePath,receiptRoot])await mkdir(path,{mode:0o700});await mkdir(treePath);
     const opaque=Buffer.from([0,255,254,13,10]),rawName=Buffer.concat([Buffer.from(treePath+"/"),Buffer.from([0xff,0xfe])]);
-    await writeFile(rawName,opaque,{mode:0o751});await symlink("../missing-TEST-target",join(treePath,"unknown-link"));await writeFile(join(workspacePath,"source"),"TEST authored source\n");
+    await writeFile(rawName,opaque,{mode:0o751});await chmod(rawName,0o751);await symlink("../missing-TEST-target",join(treePath,"unknown-link"));await writeFile(join(workspacePath,"source"),"TEST authored source\n");
     const workspace=await identity(workspacePath),tree=await identity(treePath),operationId=randomUUID(),installationId=randomUUID();
     const binding:HostedDependencyPreservationSelection["binding"]={version:1,jobId:"TEST-mapping",jobRootDir:root,workspace,installationId,runtimeSha:"a".repeat(40),grantDigest:"b".repeat(64)};
     const store=owners(),receipts=LocalDependencyReceiptStore.open({rootPath:receiptRoot,maxRecordBytes:16384,maxHistorySteps:16});

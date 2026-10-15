@@ -859,6 +859,16 @@ jobs:
             "actual owned read expires at post-I/O monotonic check and closes permanently",
             "ordinary Unicode is retained while lone surrogates refuse before byte conversion",
             "actual invalid literal alias bytes refuse including equal encoded-size case",
+            "actual original sibling birth/live creation retains full final tree identity",
+            "actual ancestor inode substitution refuses",
+            "actual ancestor symlink substitution refuses",
+            "actual ancestor mode substitution refuses",
+            "injected held ancestor mount change refuses despite unchanged actual inode",
+            "actual close failure still attempts every retained descriptor",
+            "actual fresh ancestor bind mount refuses retained same-inode catalog",
+            "ancestor lenience retains complete final root-mode refusal",
+            "ancestor lenience retains complete final file-bytes refusal",
+            "ancestor lenience retains complete final file-mode refusal",
             "installer capability DATA requires only ptrace, no inherited/ambient capabilities, and NNP",
             "installer snapshot large-leaf DATA is exact measured Claude bytes only",
             "counterfeit accessors and proxies cannot execute during request capture",
@@ -1143,7 +1153,7 @@ jobs:
           assert.equal(expected.size, 0);
           console.log(JSON.stringify({ scope: 'native-root-dependency-inspection-TEST', completedTests: report.numTotalTests }));
           DEPENDENCY_INSPECTION_ROOT_RESULT
-          # Six real-filesystem component cases under the already verified ROOT principal.
+          # Seventeen real-filesystem component cases under the already verified ROOT principal.
           # Native permission/fence/path authority remains projected by these tests.
           sr_native_phase=root_tests
           SR_ARCHIVE_TEST_PRIVILEGE=root \
@@ -1152,6 +1162,7 @@ jobs:
             src/worker-codex/tests/hosted-dependency-legacy-comparison-physical.test.ts \
             src/worker-codex/tests/hosted-dependency-installer-start-state-physical.test.ts \
             src/worker-codex/tests/hosted-dependency-committed-mapping-physical.test.ts \
+            src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/dependency-retention-physical-root-result.json
           sr_native_phase=root_validator
@@ -1183,13 +1194,29 @@ jobs:
               [
                 "original committed mapping physical refusal, projected native authority fences original owner across tampered committed mapping after opaque inode rename"
               ]
+            ],
+            [
+              "src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts",
+              [
+                "rejects a foreign caller before original selection or filesystem effect",
+                "original begin failure occurs before receipt/effect",
+                "released replay still refuses absent committed mapping before opening or releasing an effect",
+                "original runner real disposable Linux effect (projected authority) durably prepares then moves full inode before mapping, closes handles before release, and replays released result",
+                "original runner real disposable Linux effect (projected authority) recovers original prepared crash without replacing preserved bytes or releasing early",
+                "original runner real disposable Linux effect (projected authority) recovers original rename-before crash without replacing preserved bytes or releasing early",
+                "original runner real disposable Linux effect (projected authority) recovers original rename-after crash without replacing preserved bytes or releasing early",
+                "original runner real disposable Linux effect (projected authority) recovers original committed crash without replacing preserved bytes or releasing early",
+                "original runner real disposable Linux effect (projected authority) recovers original release-before crash without replacing preserved bytes or releasing early",
+                "original runner real disposable Linux effect (projected authority) recovers original release-after crash without replacing preserved bytes or releasing early",
+                "original runner real disposable Linux effect (projected authority) source-tree replacement fails before committed mapping and owner release"
+              ]
             ]
           ].map(([path, names]) => [resolve(path as string), new Set(names as string[])]));
           assert.equal(report.success, true);
-          assert.equal(report.numTotalTests, 6);
-          assert.equal(report.numPassedTests, 6);
+          assert.equal(report.numTotalTests, 17);
+          assert.equal(report.numPassedTests, 17);
           for (const counter of ['numFailedTests', 'numPendingTests', 'numTodoTests']) assert.equal(report[counter], 0);
-          assert(Array.isArray(report.testResults) && report.testResults.length === 3);
+          assert(Array.isArray(report.testResults) && report.testResults.length === 4);
           for (const file of report.testResults) {
             const names = expected.get(file.name); assert(names);
             assert.equal(file.status, 'passed');
@@ -1198,7 +1225,7 @@ jobs:
             assert.equal(names.size, 0); assert(expected.delete(file.name));
           }
           assert.equal(expected.size, 0);
-          console.log(JSON.stringify({scope:'root-retention-physical-SOURCE-TEST',SourceOnly:true,Native:false,completedTests:6}));
+          console.log(JSON.stringify({scope:'root-retention-physical-SOURCE-TEST',SourceOnly:true,Native:false,completedTests:17}));
           DEPENDENCY_RETENTION_PHYSICAL_ROOT_RESULT
           sr_native_phase=root_tests
           if SR_ARCHIVE_TEST_PRIVILEGE=root \
