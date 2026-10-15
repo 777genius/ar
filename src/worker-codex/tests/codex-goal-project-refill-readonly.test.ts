@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, readdir, lstat, realpath, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccessBoundary, NetworkAccessMode, ProjectAdmissionWorkerRole } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import { tryReadOnlyProjectRefillContinuation } from "../application/project-control/codex-goal-project-refill-readonly";
@@ -13,7 +13,16 @@ import { projectControlChildScope } from "../codex-goal-mcp-project-scope";
 import * as accounts from "../codex-goal-mcp-project-accounts";
 
 const exec = promisify(execFile), roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+beforeEach(() => {
+  // Keep observation under the same fixture config as repository setup. Runner
+  // filters (for example Git LFS) must not preempt the repository-local guards.
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+});
+afterEach(async () => {
+  try { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); }
+  finally { vi.unstubAllEnvs(); }
+});
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "TEST-read-only-refill-"))); roots.push(root);
   const job = join(root, "state/TEST-read-only-child"), workspace = join(job, "workspace"), registry = join(root, "state/registry"), controllerRoot = join(root, "state/TEST-controller");

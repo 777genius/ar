@@ -301,7 +301,18 @@ test("Positive HOST stable ancestry compares objects across namespace-local moun
 test("source package contract keeps legacy and binds selected Positive package bytes",()=>{
   assert.equal(fullNativeSourcePackageHash(1),"68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29");
   const bytes=readFileSync(new URL("../../package.json",import.meta.url));
-  assert.equal(fullNativeSourcePackageHash(2),createHash("sha256").update(bytes).digest("hex"));
+  const hash=(value:Buffer|string)=>createHash("sha256").update(value).digest("hex");
+  assert.equal(fullNativeSourcePackageHash(2),"7fdbde9be28aa03e3c935d1eac9bca776796be9fa1142602e21ad25989bef334");
+  assert.equal(fullNativeSourcePackageHash(2),hash(bytes));
+  // The public pin changes only the reviewed metadata from the private package;
+  // historical bytes and altered metadata/scripts cannot select this contract.
+  const contract=JSON.parse(bytes.toString("utf8")) as {license:string;repository:{type:string;url:string};scripts:Record<string,string>};
+  assert.equal(contract.license,"Apache-2.0");
+  assert.deepEqual(contract.repository,{type:"git",url:"git+https://github.com/777genius/ar.git"});
+  const historical={...contract,license:"UNLICENSED",repository:{...contract.repository,url:"git+https://github.com/vioxen/subscription-runtime.git"}};
+  assert.equal(hash(JSON.stringify(historical,null,2)+"\n"),"b30781b69ddf73bf53eb3bb02b073aeba00f4404bd796d485365dbc7dbe872ab");
+  for(const changed of [historical,{...contract,license:"MIT"},{...contract,repository:{...contract.repository,url:"git+https://example.invalid/ar.git"}},
+    {...contract,scripts:{...contract.scripts,"build:host-source-contracts":"true"}}])assert.notEqual(fullNativeSourcePackageHash(2),hash(JSON.stringify(changed,null,2)+"\n"));
   for(const value of [undefined,null,0,3,"2",{},true])assert.throws(()=>fullNativeSourcePackageHash(value));
 });
 

@@ -337,6 +337,8 @@ jobs:
       - name: Fetch locked TEST dependencies
         run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
+      # Source facades need this exact tree's emitted HOST contracts before strict typechecking.
+      - run: npm run build:host-source-contracts
       - name: Typecheck scratch preparation and the native TEST helper
         run: |
           node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json

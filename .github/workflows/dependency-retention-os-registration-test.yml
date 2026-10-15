@@ -76,7 +76,7 @@ jobs:
             host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js \
             scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js \
             > dependency-python-envelope-root-evidence/emitted.sha256
-      - name: Execute four real root Linux Python envelope census scenarios
+      - name: Require all 21 Python envelope cases with exact root census outcomes
         run: |
           set -o pipefail
           TEST_NODE="$(readlink -f "$(command -v node)")"
@@ -85,16 +85,37 @@ jobs:
             "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js" \
             2>&1 | tee dependency-python-envelope-root-evidence/root-tests.tap
           TAP=dependency-python-envelope-root-evidence/root-tests.tap
-          grep -Eq '^ok [0-9]+ - complete native census reconciles all candidates and refuses late unknown source/bytecode$' "$TAP"
-          grep -Eq '^ok [0-9]+ - native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape$' "$TAP"
-          grep -Eq '^ok [0-9]+ - native candidate metadata refuses hardlinks and writable source even with matching content$' "$TAP"
-          grep -Eq '^ok [0-9]+ - alias literal size participates in file bound and largest-file measurement$' "$TAP"
-          grep -Eq '^ok [0-9]+ - native census refuses caller-owned fixture before reading candidate content # SKIP root-owned positive census requires separate Linux integration$' "$TAP"
-          grep -Fxq '# tests 17' "$TAP"
-          grep -Fxq '# pass 16' "$TAP"
-          grep -Fxq '# fail 0' "$TAP"
-          grep -Fxq '# skipped 1' "$TAP"
+          # Require every current case exactly once, including both ROOT fixed DATA cases.
+          while IFS= read -r expected; do
+            test "$(grep -Fxc -- "$expected" "$TAP")" -eq 1
+          done <<'PYTHON_ENVELOPE_EXPECTED_TAP'
+          ok 1 - catalog requires the independent exact commitment and rejects duplicate/unknown writable candidates
+          ok 2 - ELF64 decodes dependencies and denies audit/config/filter routes before resolution
+          ok 3 - trusted $ORIGIN RUNPATH and RPATH resolve; relative, token, outside and nonexistent paths refuse
+          ok 4 - every hwcaps alternative is authenticated and non-ELF shadow refuses
+          ok 5 - signed aliases must resolve completely without cycles or unknown targets
+          ok 6 - OpenSSL backend requires complete signed provider domain and unknown backend holds
+          ok 7 - original authority loaderconfig/cache/build-route refusals occur before catalog read or any result
+          ok 8 - native census refuses caller-owned fixture before reading candidate content # SKIP root-owned positive census requires separate Linux integration
+          ok 9 - complete native census reconciles all candidates and refuses late unknown source/bytecode
+          ok 10 - native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape
+          ok 11 - native candidate metadata refuses hardlinks and writable source even with matching content
+          ok 12 - ELF interpreter route is fixed and full signed loader alias is mandatory
+          ok 13 - complete catalog count is governed by trusted measured limits, not selected module cap256
+          ok 14 - a guard returning after the measured deadline cannot proceed to catalog read
+          ok 15 - signed extraction public census cannot select the private original live namespace
+          ok 16 - bytecode/archive aliases cannot hide signed bytes behind another suffix
+          ok 17 - alias literal size participates in file bound and largest-file measurement
+          ok 18 - fixed signed DATA catalog admits only exact sitecustomize source and preserves original namespace refusal
+          ok 19 - complete fixed DATA serialization measures exact bytes and holds one-byte excess without publishing partial catalog
+          ok 20 - ROOT fixed DATA census pins exact signed site target and excludes arbitrary etc content
+          ok 21 - ROOT fixed DATA census refuses ancestor aliases unknown raw literals and wrong signed provider
+          PYTHON_ENVELOPE_EXPECTED_TAP
+          test "$(grep -Ec '^(ok|not ok) [0-9]+ - ' "$TAP")" -eq 21
           test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
+          for expected in '# tests 21' '# pass 20' '# fail 0' '# cancelled 0' '# skipped 1' '# todo 0'; do
+            test "$(grep -Fxc -- "$expected" "$TAP")" -eq 1
+          done
       - name: Retain exact-source Python envelope root TEST evidence even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
