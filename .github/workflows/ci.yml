@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'test-h1-controlled-build') && format('-controlled-h1-{0}', github.event.pull_request.head.sha) || '' }}
   cancel-in-progress: true
 
 # Source/test gates use the configured RUNNER pool. Metadata-only proof checks
@@ -496,6 +496,15 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-source-sandbox-TEST.ts \
             scripts/dependency-retention-os-test/current-h1-source-extraction.node-test.ts \
             src/provider-codex/app-server/adapters/hosted-signed-tool-elf.ts \
+            scripts/dependency-retention-os-test/current-h1-build-child-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-build-plan-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-build-process-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-compiler-subprocess-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-compiler-witness-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-controlled-build-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-controlled-build-docker-TEST.ts \
+            scripts/dependency-retention-os-test/current-h1-controlled-build.node-test.ts \
+            scripts/dependency-retention-os-test/current-h1-retained-member-TEST.ts \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.ts \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts \
@@ -531,6 +540,15 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-source-sandbox-TEST.js \
             scripts/dependency-retention-os-test/current-h1-source-extraction.node-test.js \
             src/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
+            scripts/dependency-retention-os-test/current-h1-build-child-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-build-plan-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-build-process-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-compiler-subprocess-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-compiler-witness-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-controlled-build-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-controlled-build-docker-TEST.js \
+            scripts/dependency-retention-os-test/current-h1-controlled-build.node-test.js \
+            scripts/dependency-retention-os-test/current-h1-retained-member-TEST.js \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.js \
             scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.js \
@@ -746,6 +764,77 @@ jobs:
           name: dependency-h1-staged-data-ci-${{ github.event.pull_request.head.sha || github.sha }}
           path: dependency-h1-staged-data-ci-evidence/
           if-no-files-found: error
+
+  h1-controlled-build:
+    # Explicit TEST opt-in: remove the label after this exact run starts so
+    # ordinary pushes never repeat the compiler build. Its source-specific
+    # concurrency group also preserves this owned run during later PR pushes.
+    if: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'test-h1-controlled-build') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      TEST_H1_CONTROLLED_BUILD: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Install Node.js Linux runtime prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: *node_linux_prerequisite_script
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 26.11.1
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Prepare complete exact-source compiler TEST runtime
+        id: compiler-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          owned=$(mktemp -d "$RUNNER_TEMP/TEST-H1-compiler-runtime-XXXXXX")
+          evidence=dependency-h1-controlled-build-source-evidence
+          mkdir -m 0700 "$evidence"
+          printf 'root=%s\n' "$owned" >> "$GITHUB_OUTPUT"
+          git rev-parse HEAD > "$evidence/source-commit.txt"
+          git rev-parse HEAD^{tree} > "$evidence/source-tree.txt"
+          git archive --format=tar HEAD | tar -xf - -C "$owned"
+          # A new repository from public objects avoids copying operator Git
+          # configuration or credentials into the disposable compiler.
+          git bundle create "$owned/source.bundle" HEAD
+          git -C "$owned" init --quiet
+          git -C "$owned" fetch --quiet "$owned/source.bundle" HEAD
+          git -C "$owned" reset --mixed "$TEST_SOURCE_SHA" >/dev/null
+          test "$(git -C "$owned" rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json --outDir "$owned"
+          source_leaf=src/provider-codex/app-server/adapters/hosted-signed-tool-elf.js
+          leaf=dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js
+          mkdir -p "$owned/$(dirname "$leaf")"
+          cp "$owned/$source_leaf" "$owned/$leaf"
+          cmp "$owned/$source_leaf" "$owned/$leaf"
+          find "$owned" -type f -name '*.js' -print0 | sort -z | xargs -0 sha256sum > "$evidence/emitted.sha256"
+          node --test "$owned/scripts/dependency-retention-os-test/current-h1-controlled-build.node-test.js" > "$evidence/portable-tests.tap"
+      - name: Build authenticated H1 inputs in the owned disposable container
+        shell: bash
+        env:
+          H1_EMITTED_ROOT: ${{ steps.compiler-runtime.outputs.root }}
+        run: |
+          set -euo pipefail
+          node "$H1_EMITTED_ROOT/scripts/dependency-retention-os-test/current-h1-controlled-build-docker-TEST.js" "$H1_EMITTED_ROOT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: dependency-h1-controlled-build-${{ github.event.pull_request.head.sha }}
+          path: |
+            dependency-h1-controlled-build-source-evidence/
+            dependency-h1-controlled-build-docker-evidence/
+          if-no-files-found: error
+          compression-level: 1
 
   native-probe-source:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}

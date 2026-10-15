@@ -95,7 +95,7 @@ test('every Node 26 job installs the Linux libatomic prerequisite before setup-n
   for (const file of ['publish.yml', 'publish-registry-contract.yml']) {
     assert.equal(existsSync(resolve('.github/workflows', file)), false, `${file} is excluded from the public mirror`);
   }
-  for (const [file, jobsWithNode] of [['ci.yml', 7]] as const) {
+  for (const [file, jobsWithNode] of [['ci.yml', 8]] as const) {
     const text = readFileSync(resolve('.github/workflows', file), 'utf8');
     let checked = 0;
     for (const block of text.split(/^(?=  [a-z][a-z0-9-]*:\n)/m)) {
