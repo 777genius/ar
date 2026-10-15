@@ -1,11 +1,13 @@
-import { closeSync, constants, existsSync, fsyncSync, openSync, readdirSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { researchCurrentStart, readResearchStartBinding, researchJobAuthority, researchCancellationHandoffGuard, researchHandoffPublicationLease, prepareResearchRegisteredHandoffAuthority } from "./research-launch-admission";
 import { parseResearchGrant, parseResearchStartSpec } from "./research-launch-contract";
 import { assertResearchInitialRoot, assertResearchServiceOwner, researchCommand, researchDescription,
   researchControlGroup, researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
 import { researchHash, researchInvalid, researchJson, researchRead, researchRecord, researchPublish } from "./research-launch-files";
-import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin } from "./research-registered-handoff";
+import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoffPin, withRegisteredResearchHandoffPublication } from "./research-registered-handoff";
 import { materializeReconciledTerminalCodexGoalHandoff } from "./codex-goal-terminal-handoff-materialization";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { changedFilesFromWorkspace } from "./codex-goal-workspace-changes";
@@ -14,6 +16,174 @@ import { buildRuntimeResultEnvelope, type RuntimeResultEnvelope } from "@vioxen/
 import { readResearchMimoCandidate, assertResearchMimoResultDirectories, publishResearchMimoJobArtifact } from "./research-mimo-worker-result";
 import { terminalCodexGoalHandoffResultDetails } from "./codex-goal-terminal-handoff-materialization";
 import { withResearchJobMutation, withResearchJobMutationAsync } from "./research-job-mutation-lock";
+import { installedResearchRuntimeDirectory } from "./research-launch-admission";
+import { assertResearchDirectory, researchArtifactDigest, researchCustody, researchDirectoryIdentity } from "./research-launch-files";
+import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
+import { readResearchColdMountTable, researchMountWitnessRows } from "./research-mount-witness-frame";
+
+/** Native-only trusted composition port. A fixed reviewed owner adapter binds
+ * its original service/terminal invocation to these exact immutable inputs.
+ * A serialized request, PID or terminal boolean cannot implement this port. */
+export type UnsubmittedResearchStartSubmitterProof = Readonly<RegisteredResearchStartIdentity & {
+  ownerSha256: string; auditSha256: string; assertTerminal(): void;
+}>;
+enum ResearchEarlyAbortKind { Unsubmitted = "unsubmitted" }
+function optionalResearchBytes(path: string): Buffer | undefined {
+  try { return researchRead(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
+}
+function assertUnsubmittedResearchStart(current: ReturnType<typeof researchCurrentStart>): unknown[] {
+  const { spec, directory } = current;
+  if (!spec.registeredHandoff || spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+      !inactiveResearchUnit(spec.unit, researchDescription(spec.request.jobId, researchHash(current.bytes)))) researchInvalid();
+  const cgroup = "/sys/fs/cgroup" + researchControlGroup(spec.unit);
+  let groupPresent = true;
+  try { const stat = lstatSync(cgroup); if (!stat.isDirectory() || stat.isSymbolicLink()) researchInvalid(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; groupPresent = false; }
+  if (groupPresent) {
+    const populated = readFileSync(join(cgroup, "cgroup.events"), "utf8").split("\n").filter(row => /^populated\s/.test(row));
+    if (populated.length !== 1 || populated[0] !== "populated 0") researchInvalid();
+  }
+  researchCustody(directory, true);
+  if (readdirSync(directory).some(name => !["spec.json", "pins", "providers", "closing.json", "unsubmitted-abort.json"].includes(name)) ||
+      researchProviderUnits(directory).length !== 0) researchInvalid();
+  assertResearchDirectory(spec.jobDirectory); assertResearchDirectory(spec.workspaceDirectory);
+  const pins = join(directory, "pins"), identities: unknown[] = [researchDirectoryIdentity(pins)];
+  researchCustody(pins, true);
+  if (readdirSync(pins).some(name => !["job", "workspace", "durable-handoff"].includes(name))) researchInvalid();
+  for (const name of ["job", "workspace", "durable-handoff"]) {
+    const path = join(pins, name);
+    try { researchCustody(path, true); identities.push(researchDirectoryIdentity(path)); if (readdirSync(path).length) researchInvalid(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; identities.push({ path, absent: true }); }
+  }
+  // One complete cold frame, corroborated by findmnt and stable end readback.
+  // Missing individual pin records never substitute for this no-mount proof.
+  const table = readResearchColdMountTable(), rows = researchMountWitnessRows(), ids = new Set<number>();
+  for (const line of table.trimEnd().split("\n")) {
+    const parts = line.split(" "), separator = parts.indexOf("-"), id = Number(parts[0]);
+    if (separator < 6 || parts.length !== separator + 4 || !Number.isSafeInteger(id) || id < 1 || ids.has(id)) researchInvalid();
+    ids.add(id);
+    const target = parts[4]!.replace(/\\(040|011|012|134)/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+    if (rows.get(id)?.target !== target || target === pins || target.startsWith(pins + "/")) researchInvalid();
+  }
+  if (ids.size !== rows.size || readResearchColdMountTable() !== table) researchInvalid();
+  return identities;
+}
+async function originalAbortAuthority(current: ReturnType<typeof researchCurrentStart>) {
+  const { spec } = current;
+  assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256);
+  const module = spec.runtimeDirectory === installedResearchRuntimeDirectory()
+    ? { assertRegisteredResearchHandoffCurrent, withRegisteredResearchHandoffPublication }
+    : await import(pathToFileURL(join(spec.runtimeDirectory, "dist/worker-codex/research-registered-handoff.js")).href) as {
+      assertRegisteredResearchHandoffCurrent: typeof assertRegisteredResearchHandoffCurrent;
+      withRegisteredResearchHandoffPublication: typeof withRegisteredResearchHandoffPublication;
+    };
+  if (typeof module.assertRegisteredResearchHandoffCurrent !== "function" || typeof module.withRegisteredResearchHandoffPublication !== "function") researchInvalid();
+  assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256);
+  return module;
+}
+/** Explicit reservation abort, never a worker result or preservation receipt.
+ * No unit is submitted/signaled, mount removed, grant revoked or input edited. */
+export async function abortUnsubmittedRegisteredResearchLaunch(expected: RegisteredResearchStartIdentity,
+  submitter: UnsubmittedResearchStartSubmitterProof): Promise<RegisteredResearchStartIdentity & { terminal: true; abortedBeforeSubmission: true }> {
+  assertResearchInitialRoot(true);
+  researchRecord(expected, "jobId,startId,specSha256,requestSha256");
+  researchRecord(submitter, "jobId,startId,specSha256,requestSha256,ownerSha256,auditSha256,assertTerminal");
+  if (typeof submitter.assertTerminal !== "function" || ![submitter.ownerSha256, submitter.auditSha256].every(value => /^[a-f0-9]{64}$/.test(value)) ||
+      !isDeepStrictEqual(expected, { jobId: submitter.jobId, startId: submitter.startId,
+        specSha256: submitter.specSha256, requestSha256: submitter.requestSha256 })) researchInvalid();
+  return await withResearchJobMutationAsync(expected.jobId, async () => {
+    const authority = researchJobAuthority(expected.jobId), activePath = join(authority, "active.json");
+    const active = optionalResearchBytes(activePath);
+    const current = active ? researchCurrentStart(expected.jobId) : terminalResearchStart(expected.jobId);
+    if (current.spec.startId !== expected.startId || researchHash(current.bytes) !== expected.specSha256 ||
+        current.spec.requestSha256 !== expected.requestSha256 || !current.spec.registeredHandoff) researchInvalid();
+    const grantPath = join(authority, "grant.json"), grant = researchRead(grantPath), requestPath = join(authority, "project-worker-request.json");
+    const request = researchRead(requestPath);
+    if (researchHash(grant) !== current.spec.grantSha256 || researchHash(request) !== expected.requestSha256) researchInvalid();
+    const original = await originalAbortAuthority(current);
+    return await original.withRegisteredResearchHandoffPublication(current.spec.registeredHandoff, current.spec.request, async () => {
+      const assertRegistered = await original.assertRegisteredResearchHandoffCurrent(current.spec.registeredHandoff!, current.spec.request);
+      const guard = () => {
+        assertQualifiedResearchRuntimeArtifact(current.spec.runtimeDirectory, current.spec.artifactSha256);
+        submitter.assertTerminal(); assertRegistered();
+        const fresh = optionalResearchBytes(activePath);
+        if (active ? !fresh?.equals(active) : fresh !== undefined || terminalResearchStart(expected.jobId).spec.startId !== expected.startId) researchInvalid();
+        if (!researchRead(grantPath).equals(grant) || !researchRead(requestPath).equals(request) ||
+            !researchRead(join(current.directory, "spec.json")).equals(current.bytes)) researchInvalid();
+        const closingBytes = optionalResearchBytes(join(current.directory, "closing.json"));
+        if (closingBytes && !isDeepStrictEqual(researchJson(closingBytes), { schemaVersion: 1, specSha256: expected.specSha256 })) researchInvalid();
+        return assertUnsubmittedResearchStart(current);
+      };
+      const pins = guard(), closing = join(current.directory, "closing.json"), abort = join(current.directory, "unsubmitted-abort.json");
+      if (!optionalResearchBytes(closing)) researchPublish(closing, { schemaVersion: 1, specSha256: expected.specSha256 }, true);
+      if (!isDeepStrictEqual(researchJson(researchRead(closing)), { schemaVersion: 1, specSha256: expected.specSha256 })) researchInvalid();
+      const producer = installedResearchRuntimeDirectory(), producerSha = researchArtifactDigest(producer);
+      assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+      const record = { schemaVersion: 1, kind: ResearchEarlyAbortKind.Unsubmitted, ...expected,
+        grantSha256: current.spec.grantSha256, submitterOwnerSha256: submitter.ownerSha256, submitterAuditSha256: submitter.auditSha256,
+        producerRuntimeDirectory: producer, producerArtifactSha256: producerSha, unmountedPins: pins };
+      const previous = optionalResearchBytes(abort);
+      if (previous && !isDeepStrictEqual(researchJson(previous), record)) researchInvalid();
+      if (!isDeepStrictEqual(guard(), pins)) researchInvalid();
+      assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+      if (!previous) researchPublish(abort, record, true);
+      if (active) {
+        if (!isDeepStrictEqual(guard(), pins)) researchInvalid();
+        researchPublish(join(authority, "last-terminal.json"), { schemaVersion: 1, startId: expected.startId, specSha256: expected.specSha256 });
+        if (!isDeepStrictEqual(guard(), pins)) researchInvalid(); // Reservation release is last.
+        assertQualifiedResearchRuntimeArtifact(producer, producerSha);
+        if (!isDeepStrictEqual(researchJson(researchRead(closing)), { schemaVersion: 1, specSha256: expected.specSha256 }) ||
+            !isDeepStrictEqual(researchJson(researchRead(abort)), record)) researchInvalid();
+        unlinkSync(activePath);
+        const fd = openSync(authority, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { fsyncSync(fd); } finally { closeSync(fd); }
+      }
+      return { ...expected, terminal: true as const, abortedBeforeSubmission: true as const };
+    });
+  });
+}
+/** Prepared outside publication. Only an explicit qualified private abort can
+ * release this registered origin; absent pins/active never prove release. */
+export async function prepareUnsubmittedResearchStartRelease(jobId: string): Promise<(() => void) | undefined> {
+  assertResearchInitialRoot(true);
+  const authority = researchJobAuthority(jobId);
+  if (optionalResearchBytes(join(authority, "active.json"))) return;
+  const terminal = researchRead(join(authority, "last-terminal.json"));
+  const slot = researchRecord(researchJson(terminal), "schemaVersion,startId,specSha256");
+  if (slot.schemaVersion !== 1 || typeof slot.startId !== "string" || !/^[a-f0-9-]{36}$/.test(slot.startId)) researchInvalid();
+  const directory = join(authority, "starts", slot.startId), bytes = researchRead(join(directory, "spec.json"));
+  const current = { directory, bytes, spec: parseResearchStartSpec(researchJson(bytes)) };
+  if (current.spec.request.jobId !== jobId || researchHash(bytes) !== slot.specSha256 || !current.spec.registeredHandoff) researchInvalid();
+  const abort = optionalResearchBytes(join(directory, "unsubmitted-abort.json"));
+  if (!abort) return;
+  const r = researchRecord(researchJson(abort), "schemaVersion,kind,jobId,startId,specSha256,requestSha256,grantSha256,submitterOwnerSha256,submitterAuditSha256,producerRuntimeDirectory,producerArtifactSha256,unmountedPins");
+  if (r.schemaVersion !== 1 || r.kind !== ResearchEarlyAbortKind.Unsubmitted || r.jobId !== jobId || r.startId !== slot.startId ||
+      r.specSha256 !== slot.specSha256 || r.requestSha256 !== current.spec.requestSha256 || r.grantSha256 !== current.spec.grantSha256 ||
+      typeof r.submitterOwnerSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.submitterOwnerSha256) ||
+      typeof r.submitterAuditSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.submitterAuditSha256) ||
+      typeof r.producerRuntimeDirectory !== "string" || typeof r.producerArtifactSha256 !== "string") researchInvalid();
+  assertQualifiedResearchRuntimeArtifact(r.producerRuntimeDirectory, r.producerArtifactSha256);
+  const original = await originalAbortAuthority(current);
+  const assertRegistered = await original.assertRegisteredResearchHandoffCurrent(current.spec.registeredHandoff!, current.spec.request);
+  assertQualifiedResearchRuntimeArtifact(current.spec.runtimeDirectory, current.spec.artifactSha256);
+  assertQualifiedResearchRuntimeArtifact(r.producerRuntimeDirectory, r.producerArtifactSha256);
+  if (!isDeepStrictEqual(assertUnsubmittedResearchStart(current), r.unmountedPins)) researchInvalid();
+  const grant = researchRead(join(authority, "grant.json")), request = researchRead(join(authority, "project-worker-request.json"));
+  if (researchHash(grant) !== current.spec.grantSha256 || researchHash(request) !== current.spec.requestSha256) researchInvalid();
+  const closing = researchRead(join(directory, "closing.json"));
+  if (!isDeepStrictEqual(researchJson(closing), { schemaVersion: 1, specSha256: slot.specSha256 })) researchInvalid();
+  return () => {
+    assertResearchInitialRoot(true); assertRegistered();
+    assertQualifiedResearchRuntimeArtifact(current.spec.runtimeDirectory, current.spec.artifactSha256);
+    assertQualifiedResearchRuntimeArtifact(r.producerRuntimeDirectory as string, r.producerArtifactSha256 as string);
+    if (!isDeepStrictEqual(assertUnsubmittedResearchStart(current), r.unmountedPins)) researchInvalid();
+    if (optionalResearchBytes(join(authority, "active.json")) || !researchRead(join(authority, "last-terminal.json")).equals(terminal) ||
+        !researchRead(join(directory, "spec.json")).equals(bytes) || !researchRead(join(directory, "unsubmitted-abort.json")).equals(abort) ||
+        !researchRead(join(directory, "closing.json")).equals(closing) || !researchRead(join(authority, "grant.json")).equals(grant) ||
+        !researchRead(join(authority, "project-worker-request.json")).equals(request)) researchInvalid();
+  };
+}
 
 /** Outside initial-root owner only. The original normalized status is retained;
  * stopping a failed Worker never turns its result into successful work. */
@@ -216,7 +386,20 @@ export function terminalResearchStart(jobId: string) {
   const spec = parseResearchStartSpec(researchJson(bytes));
   if (spec.request.jobId !== jobId || spec.startId !== terminal.startId || researchHash(bytes) !== terminal.specSha256 || !inactiveResearchUnit(spec.unit)) researchInvalid();
   for (const unit of researchProviderUnits(directory)) if (researchProviderLifecycle(directory, unit)) researchInvalid();
-  assertRegisteredResearchHandoffPin(spec, directory);
+  const abort = optionalResearchBytes(join(directory, "unsubmitted-abort.json"));
+  if (abort) {
+    const r = researchRecord(researchJson(abort), "schemaVersion,kind,jobId,startId,specSha256,requestSha256,grantSha256,submitterOwnerSha256,submitterAuditSha256,producerRuntimeDirectory,producerArtifactSha256,unmountedPins");
+    if (r.schemaVersion !== 1 || r.kind !== ResearchEarlyAbortKind.Unsubmitted || r.jobId !== jobId || r.startId !== spec.startId ||
+        r.specSha256 !== researchHash(bytes) || r.requestSha256 !== spec.requestSha256 || r.grantSha256 !== spec.grantSha256 ||
+        ![r.submitterOwnerSha256, r.submitterAuditSha256].every(value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)) ||
+        typeof r.producerRuntimeDirectory !== "string" || typeof r.producerArtifactSha256 !== "string") researchInvalid();
+    assertQualifiedResearchRuntimeArtifact(r.producerRuntimeDirectory, r.producerArtifactSha256);
+    assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256);
+    if (researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== spec.grantSha256 ||
+        researchHash(researchRead(join(researchJobAuthority(jobId), "project-worker-request.json"))) !== spec.requestSha256 ||
+        !isDeepStrictEqual(researchJson(researchRead(join(directory, "closing.json"))), { schemaVersion: 1, specSha256: researchHash(bytes) }) ||
+        !isDeepStrictEqual(assertUnsubmittedResearchStart({ directory, bytes, spec }), r.unmountedPins)) researchInvalid();
+  } else assertRegisteredResearchHandoffPin(spec, directory);
   return { directory, bytes, spec, active: false as const };
 }
 export function signalResearchProvider(directory: string, unit: string, signal: NodeJS.Signals = "SIGTERM"): void {

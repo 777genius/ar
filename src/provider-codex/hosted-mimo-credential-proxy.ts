@@ -163,13 +163,46 @@ export async function startMimoCredentialProxy(input: {
   });
 }
 
+/** Message text parts and streamed fragments have the same plaintext projection.
+ * Keep their boundaries while replacing a match that spans those boundaries. */
+function redactTextFragments(texts: readonly string[], secrets: readonly string[]): string[] {
+  const parts = [...texts];
+  for (const secret of secrets) {
+    for (;;) {
+      const start = parts.join("").indexOf(secret);
+      if (start < 0) break;
+      const end = start + secret.length;
+      let offset = 0, inserted = false;
+      for (let index = 0; index < parts.length; index += 1) {
+        const text = parts[index]!, next = offset + text.length;
+        if (offset < end && next > start) {
+          const begin = Math.max(0, start - offset), finish = Math.min(text.length, end - offset);
+          parts[index] = text.slice(0, begin) + (inserted ? "" : "***") + text.slice(finish);
+          inserted = true;
+        }
+        offset = next;
+      }
+    }
+  }
+  return parts;
+}
+
 function redactJson(value: unknown, secrets: readonly string[], depth = 0): unknown {
   if (depth > 64) throw new Error("response_depth");
   const redact = (text: string) => secrets.reduce((result, secret) => result.split(secret).join("***"), text);
   if (typeof value === "string") return redact(value);
   if (Array.isArray(value)) return value.map(item => redactJson(item, secrets, depth + 1));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-    [redact(key), redactJson(item, secrets, depth + 1)]));
+  if (value && typeof value === "object") {
+    const result = Object.fromEntries(Object.entries(value).map(([key, item]) =>
+      [redact(key), redactJson(item, secrets, depth + 1)]));
+    if (result.type === "message" && Array.isArray(result.content)) {
+      const parts = result.content.filter((part): part is Record<string, unknown> =>
+        part !== null && typeof part === "object" && part.type === "output_text" && typeof part.text === "string");
+      const text = redactTextFragments(parts.map(part => String(part.text)), secrets);
+      parts.forEach((part, index) => { part.text = text[index]!; });
+    }
+    return result;
+  }
   return value;
 }
 
@@ -183,17 +216,21 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
   const frameLimit = Math.min(maxBytes, 1024 * 1024);
   let pending = "", total = 0;
   const serialize = (text: string) => JSON.stringify(redactJson(JSON.parse(text), secrets));
-  type Frame = { event?: string; data: unknown; chain?: string };
+  type Frame = { event?: string; data: unknown; chain?: string; textField?: "delta" | "text"; messageText?: boolean };
   const queue: Frame[] = [];
+  const sealedChains = new Set<string>();
   let queueBytes = 0;
   const tailLength = Math.max(...secrets.map(secret => secret.length)) - 1;
   const encodeFrame = (item: Frame) => Buffer.from(`${item.event ? `event: ${item.event}\n` : ""}data: ${item.data === "[DONE]" ? "[DONE]" : JSON.stringify(item.data)}\n\n`);
-  const delta = (item: Frame): string => item.chain ? String((item.data as Record<string, unknown>).delta) : "";
+  const delta = (item: Frame): string => item.chain ? String((item.data as Record<string, unknown>)[item.textField ?? "delta"]) : "";
   const release = (flush = false): Buffer[] => {
     const output: Buffer[] = [];
     while (queue.length) {
       const first = queue[0]!;
-      if (!flush && first.chain) {
+      if (!flush && first.chain && !sealedChains.has(first.chain)) {
+        // Another content part, including an earlier index, can still arrive.
+        // Retain the bounded message projection until its exact item closes.
+        if (first.messageText) break;
         const following = queue.slice(1).filter(item => item.chain === first.chain).reduce((size, item) => size + delta(item).length, 0);
         if (following < tailLength) break;
       }
@@ -206,24 +243,22 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
     if (queueBytes > frameLimit) throw new Error("response_lookahead_limit");
     if (item.chain) {
       const parts = queue.filter(candidate => candidate.chain === item.chain);
-      for (const secret of secrets) {
+      const redactParts = (projection: Frame[]): boolean => {
+        const before = projection.map(delta), after = redactTextFragments(before, secrets);
+        projection.forEach((part, index) => { (part.data as Record<string, unknown>)[part.textField ?? "delta"] = after[index]!; });
+        return after.some((text, index) => text !== before[index]);
+      };
+      if (item.messageText) {
+        // Consumers can append arriving deltas or assemble content-index order.
+        // Check both without changing FIFO. Each replacement shortens text, so
+        // convergence is bounded by the existing credential and queue limits.
+        const ordered = [...parts].sort((left, right) => Number((left.data as Record<string, unknown>).content_index) -
+          Number((right.data as Record<string, unknown>).content_index));
         for (;;) {
-          const joined = parts.map(delta).join("");
-          const start = joined.indexOf(secret); if (start < 0) break;
-          const end = start + secret.length;
-          let offset = 0, inserted = false;
-          for (const part of parts) {
-            const text = delta(part), next = offset + text.length;
-            if (offset < end && next > start) {
-              const begin = Math.max(0, start - offset), finish = Math.min(text.length, end - offset);
-              const record = part.data as Record<string, unknown>;
-              record.delta = text.slice(0, begin) + (inserted ? "" : "***") + text.slice(finish);
-              inserted = true;
-            }
-            offset = next;
-          }
+          const arrivalChanged = redactParts(parts), orderedChanged = redactParts(ordered);
+          if (!arrivalChanged && !orderedChanged) break;
         }
-      }
+      } else redactParts(parts);
       queueBytes = queue.reduce((size, candidate) => size + encodeFrame(candidate).length, 0);
     }
     const terminal = item.data === "[DONE]" || (item.data && typeof item.data === "object" &&
@@ -232,9 +267,10 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
   };
   const frame = (text: string): Buffer[] => {
     if (Buffer.byteLength(text) > frameLimit) throw new Error("response_frame_limit");
-    const data: string[] = []; let event: string | undefined;
+    const data: string[] = []; let event: string | undefined; let comment = false;
     for (const line of text.split(/\r\n|\n|\r/)) {
-      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith(":")) { comment = true; continue; }
+      if (!line) continue;
       const separator = line.indexOf(":");
       const name = separator < 0 ? line : line.slice(0, separator);
       const raw = separator < 0 ? "" : line.slice(separator + 1);
@@ -246,14 +282,48 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
       } else if (name !== "id" && name !== "retry") throw new Error("response_event_invalid");
       // Responses does not need event IDs/retry metadata; never echo arbitrary fields.
     }
-    if (!data.length) return [];
+    // Comments have no Responses semantics and may contain secrets. Forward only
+    // a fixed heartbeat, without releasing any pending credential lookahead.
+    if (!data.length) return comment ? [Buffer.from(": ***\n\n")] : [];
     const textData = data.join("\n");
     const safeData: unknown = textData === "[DONE]" ? textData : redactJson(JSON.parse(textData), secrets);
     const safeEvent = event ? String(redactJson(event, secrets)) : undefined;
     const record = safeData && typeof safeData === "object" && !Array.isArray(safeData) ? safeData as Record<string, unknown> : undefined;
-    const chain = record && typeof record.type === "string" && record.type.endsWith(".delta") && typeof record.delta === "string"
-      ? JSON.stringify([record.type, record.item_id ?? null, record.output_index ?? null, record.content_index ?? null]) : undefined;
-    return enqueue({ ...(safeEvent ? { event: safeEvent } : {}), data: safeData, ...(chain ? { chain } : {}) });
+    const chainKey = (type: string) => JSON.stringify([type, record?.item_id ?? null,
+      record?.output_index ?? null, record?.content_index ?? null, record?.summary_index ?? null]);
+    const messageChain = (type: string, itemId: string, outputIndex: number) => JSON.stringify([type, itemId, outputIndex]);
+    const outputTextType = [record?.type, safeEvent].find(type =>
+      type === "response.output_text.delta" || type === "response.output_text.done");
+    const outputTextPart = outputTextType !== undefined;
+    const textField = outputTextType === "response.output_text.done" ? "text" : "delta";
+    const validIndex = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+    // Native Responses text events carry exact identities. Missing or mixed
+    // identities cannot safely bind fragments to an item; fail closed.
+    if (outputTextPart && (!record || record.type !== outputTextType ||
+        typeof record.item_id !== "string" || !record.item_id.length ||
+        !validIndex(record.output_index) || !validIndex(record.content_index) || typeof record[textField] !== "string")) {
+      throw new Error("response_text_identity_invalid");
+    }
+    const chain = outputTextPart
+      ? messageChain(String(record!.type), record!.item_id as string, record!.output_index as number)
+      : record && typeof record.type === "string" && record.type.endsWith(".delta") && typeof record.delta === "string"
+        ? chainKey(record.type) : undefined;
+    if (chain && sealedChains.has(chain)) throw new Error("response_delta_after_done");
+    // A text-part done cannot close the message: later content parts may
+    // continue its plaintext. Only its exact item completion seals both text
+    // projections. Other done events retain their per-chain fast release.
+    if (record?.type === "response.output_item.done") {
+      const item = record.item && typeof record.item === "object" ? record.item as Record<string, unknown> : undefined;
+      if (item?.type === "message" && typeof item.id === "string" && item.id.length > 0 && validIndex(record.output_index)) {
+        for (const type of ["response.output_text.delta", "response.output_text.done"]) {
+          sealedChains.add(messageChain(type, item.id, record.output_index as number));
+        }
+      }
+    } else if (record && typeof record.type === "string" && record.type.endsWith(".done") && record.type !== "response.output_text.done") {
+      sealedChains.add(chainKey(record.type.slice(0, -5) + ".delta"));
+    }
+    return enqueue({ ...(safeEvent ? { event: safeEvent } : {}), data: safeData,
+      ...(chain ? { chain, textField, ...(outputTextPart ? { messageText: true } : {}) } : {}) });
   };
   try {
     for (;;) {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { checkInputs, type CheckedInput } from "./check-inputs.mts";
 import { createHash, randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 
 const workspace = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const compiler = join(workspace, "node_modules/typescript/bin/tsc");
@@ -85,7 +86,7 @@ try {
     "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
     (await readFile(join(build, "src/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8"))
       .replace(/^\/\/# sourceMappingURL=.*$/m, ""));
-  for (const name of ["hosted-native-probe/research-operator-ingress.js", "core/research-operator-request.js", "hosted-native-probe/ingress.js", "hosted-native-probe/mimo-project-ingress.js", "worker-codex/hosted-mimo-project-bridge-contract.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js", "core/dependency-environment/dependency-custody-evidence.js", "core/scoped-ordinary-reader-final-contract.js", "core/dependency-environment/dependency-protected-reference.js", "core/dependency-environment/dependency-generation-baseline.js", "core/dependency-environment/dependency-generation-continuity.js"]) {
+  for (const name of ["hosted-native-probe/research-operator-ingress.js", "core/research-operator-request.js", "hosted-native-probe/ingress.js", "hosted-native-probe/mimo-project-ingress.js", "worker-codex/hosted-mimo-project-bridge-contract.js", "worker-codex/application/project-control/worker-launch-ownership.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js", "core/dependency-environment/dependency-custody-evidence.js", "core/scoped-ordinary-reader-final-contract.js", "core/dependency-environment/dependency-protected-reference.js", "core/dependency-environment/dependency-generation-baseline.js", "core/dependency-environment/dependency-generation-continuity.js"]) {
     const destination = join(rawDirectory, "native-probe", name); await mkdir(resolve(destination, ".."), { recursive: true }); await copyFile(join(build, "src", name), destination);
   }
   // This separate emitted TEST closure binds the actual C client to our
@@ -223,6 +224,12 @@ try {
   // Persist the original bytes/identities before any successful disposal. A
   // failure/unresolved result always retains its owned tree; no retry/prune.
   await writeFile(join(evidence, `source-check-${attempt}.json`), JSON.stringify({ qualification: "source-contracts-only", attempt, passed, inputsStable, inputs, checks: log, fixture: { path: temporary, originalDevice: originalTemporary.dev.toString(), originalInode: originalTemporary.ino.toString(), originalUid: originalTemporary.uid.toString(), ownerFixture, originalOwnerJoined, originalOwnerSettled, artifacts, artifactError, cleanupEligible, disposition: "retained" } }, null, 2) + "\n", { flag: "wx" });
+  // Existing result flags only; no argv, output, error text or qualification.
+  const bounded = log.length <= 256, last = bounded ? log.at(-1) : undefined;
+  const exit = last?.exit !== null && Number.isInteger(last?.exit) && last!.exit! >= 0 && last!.exit! <= 255 ? last!.exit : "UNKNOWN";
+  const signal = last?.signal === null ? "NONE" : /^(SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ)$/.test(last?.signal ?? "") ? last!.signal : "UNKNOWN";
+  const marker = `SR_NATIVE_SOURCE_PUBLIC_V1 contracts passed=${Number(passed)} inputsStable=${Number(inputsStable)} checks=${bounded ? log.length : "UNKNOWN"} index=${last ? log.length - 1 : "UNKNOWN"} exit=${exit} signal=${signal} naturalClose=${last ? Number(last.naturalClose) : "UNKNOWN"} cause=UNKNOWN`;
+  try { writeSync(1, "\n" + marker + "\n"); } catch { /* Preserve the original result/exit. */ }
   if (cleanupEligible) {
     let removed = false, cleanupError: string | null = null;
     try {

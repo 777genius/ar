@@ -107,6 +107,11 @@ describe("Codex provider adapter", () => {
     expect(
       classifyCodexRuntimeFailure("node_process_runner_timeout:50000"),
     ).toBe("task_timeout");
+    expect(classifyCodexFailure(new Error("codex_app_server_deadline_expired"))).toMatchObject({
+      code: "task_timeout",
+      safeMessage: "Codex task timed out.",
+      reconnectRequired: false,
+    });
     expect(classifyCodexRuntimeFailure("codex_json_event_invalid")).toBe(
       "provider_output_invalid",
     );
