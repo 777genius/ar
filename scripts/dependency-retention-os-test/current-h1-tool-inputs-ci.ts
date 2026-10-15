@@ -13,6 +13,7 @@ import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredA
 import { qualifiedH1PackagePins, qualifiedH1PackageRequestArguments, qualifiedH1PackageVectorSha256 } from "./current-h1-qualified-package-image.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import {h1SourceLimits,joinH1BinarySource,joinH1SourceSelection,retainH1SourceArchives,type H1SourceIdentity,type H1SourceIndexOrigin,type H1SourceSelection} from "./current-h1-source-record-TEST.ts";
+import {collectH1PatchedSourceData} from "./current-h1-source-extraction-TEST.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
 import { materializeFixedH1SelectedToolrootData } from "./current-h1-selected-toolroot-TEST.ts";
@@ -160,6 +161,9 @@ export async function mainCiSignedToolInputs():Promise<void> {
   file(join(evidence,"source-tests.tap"),sourceTests.stdout??"");file(join(evidence,"source-tests.stderr"),sourceTests.stderr??"");assert(!sourceTests.error&&sourceTests.status===0&&sourceTests.signal===null,"fixed ROOT source archive protocol");
   assert(/^# tests 9$/m.test(sourceTests.stdout)&&/^# pass 8$/m.test(sourceTests.stdout)&&/^# fail 0$/m.test(sourceTests.stdout)&&/^# skipped 1$/m.test(sourceTests.stdout));
   for(const name of ["ROOT source originals reject same-byte replacement extra membership hardlinks and symlinks","ROOT source post-I/O deadline permanently closes the retained originals"])assert(sourceTests.stdout.split("\n").some(line=>/^ok [0-9]+ - /.test(line)&&line.replace(/^ok [0-9]+ - /,"")===name),"ROOT source physical case cannot skip");
+  const patchedSourceTests=spawnSync(process.execPath,["--test","--test-reporter=tap",join(sibling,"current-h1-source-extraction.node-test.js")],{shell:false,cwd:workspace,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},timeout:Math.max(1,Math.floor(Math.min(30000,deadline-performance.now()))),maxBuffer:1024*1024,encoding:"utf8"});tick();
+  file(join(evidence,"patched-source-tests.tap"),patchedSourceTests.stdout??"");file(join(evidence,"patched-source-tests.stderr"),patchedSourceTests.stderr??"");assert(!patchedSourceTests.error&&patchedSourceTests.status===0&&patchedSourceTests.signal===null);
+  assert(/^# tests 6$/m.test(patchedSourceTests.stdout)&&/^# pass 6$/m.test(patchedSourceTests.stdout)&&/^# fail 0$/m.test(patchedSourceTests.stdout)&&/^# skipped 0$/m.test(patchedSourceTests.stdout),"complete ROOT patched-source protocol roster");
   assert.equal(command(CiTool.Git,["-c","safe.directory="+workspace,"rev-parse","HEAD"]).toString().trim(),sourceSha);
   file(join(evidence,"source-and-tools.json"),JSON.stringify({purpose:"disposable-CI-installed-tools-DATA-provenance-not-host-TCB",sourceSha,node:process.version,nodeExecutable:realpathSync(process.execPath),uid:process.getuid?.(),gid:process.getgid?.(),egid:process.getegid?.(),platform:process.platform,arch:process.arch,ownKernel:ownCiKernelFacts(),rootTestArgv:physicalTestArgv,tools:[...tools].map(([tool,p])=>({tool,actual:p.actual,sha256:p.sha256,identity:p.stamp})),seeds:exactH1PackageSeeds,trustAnchor:ubuntuArchive2018Fingerprint})+"\n");
   dir(state);for(const name of ["etc","etc/parts","etc/auth-parts","etc/preferences-parts","etc/trusted-parts","lists","lists/partial","archives","archives/partial","log"])dir(join(state,name));
@@ -219,6 +223,8 @@ export async function mainCiSignedToolInputs():Promise<void> {
   }
   const rejoinSourceArchives=()=>{tick();for(const source of sourceArchives)source.rejoin();tick();};rejoinSourceArchives();
   file(join(evidence,"selected-source-archives-UNADMITTED.json"),JSON.stringify({sourceSha,trustAnchor:ubuntuArchive2018Fingerprint,sources:sourceRecords,limits:h1SourceLimits,nativeQualified:false})+"\n");
+  await collectH1PatchedSourceData({scratch,evidence,sibling,sourceSha,deadline,env,indices,sourceSelections:[...selectedSources.values()].map(row=>row.selection),sourceArchives,
+   aptGet:tools.get(CiTool.AptGet)!,dpkgDeb:tools.get(CiTool.DpkgDeb)!,tick});
   phase=CiDataPhase.RawFormat;
   const rawPackageVector=packages.map(({package:name,version,arch,sha256,size})=>({package:name,version,arch,sha256,size})),rawPackageVectorSha256=hash(JSON.stringify(rawPackageVector)),previousVectorSha256=qualifiedH1PackageVectorSha256;
   file(join(evidence,"archive-format-image.json"),JSON.stringify({purpose:"ACTUAL_SIGNED_SURVEY_IMAGE_NOT_NATIVE_AUTHORITY",sourceSha,packages:rawPackageVector,sha256:rawPackageVectorSha256,previous01dfVectorSha256:previousVectorSha256,matchesPreviouslyVerified01dfImage:rawPackageVectorSha256===previousVectorSha256})+"\n");

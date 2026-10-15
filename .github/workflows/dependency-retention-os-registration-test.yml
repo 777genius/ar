@@ -179,7 +179,7 @@ jobs:
             cp "$relative" "$PROFILE_EMIT/$relative"
             cmp "$relative" "$PROFILE_EMIT/$relative"
           done
-          node --test "$PROFILE_EMIT/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js"
+          node --test "$PROFILE_EMIT/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js" scripts/dependency-retention-os-test/legacy-unverified-r-continuation.node-test.js
           # Downstream assembly uses source-local generated leaves. Publish only
           # this closed TS/MTS output list; tracked HOST inputs can never be targets.
           node --experimental-strip-types --input-type=module-typescript - <<'PUBLISH_PROFILE_TEST_OUTPUTS'
