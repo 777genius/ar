@@ -1,3 +1,7 @@
+import { AppServerOutputValidationError, AppServerOutputValidationStage, AppServerOutputValidationCode } from "../../app-server/application/app-server-output-validation-error";
+import { AppServerUsageError } from "../../app-server/domain/app-server-usage-error";
+import { classifyCodexFailure } from "../../failure-classifier";
+import { AppServerSessionCleanupError, AppServerSessionCleanupPhase } from "../../app-server/application/app-server-session-cleanup-error";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -234,6 +238,12 @@ it.each(["abort", "budget", "quota", "model"] as const)("keeps %s errors and blo
     if (kind === "model") expect(original.name).toBe("CodexModelUnavailableError");
     expect(cleanup).toBeInstanceOf(AppServerProcessCleanupError);
     expect(cleanup.cause).toEqual(new Error("codex_app_server_stop_timeout"));
+    const failure = classifyCodexFailure(error);
+    expect(failure).toMatchObject({ code: "unknown_runtime_failure", retryable: true, reconnectRequired: false,
+      details: { rawCause: "codex_app_server_run_cleanup_failed", appServerCleanupPhase: "run",
+        appServerPrimaryFailureCode: kind === "model" ? "model_unavailable" : "unknown_runtime_failure",
+        appServerCleanupFailureCode: "process_cleanup_failed" } });
+
     const requests = f.factory.requests.length;
     const again = engine.run(f.input).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(10_000);
@@ -283,6 +293,10 @@ it.each(["run", "prewarm", "resume"] as const)("preserves initialization, initia
     expect(startup.errors[1].cause).toBe(observation);
     expect(retry).toBeInstanceOf(AppServerProcessCleanupError);
     expect(retry.cause).toEqual(new Error("codex_app_server_stop_timeout"));
+    expect(classifyCodexFailure(error)).toMatchObject({ code: "unknown_runtime_failure", retryable: true,
+      details: { appServerCleanupPhase: path, appServerPrimaryFailureCode: "unknown_runtime_failure",
+        appServerCleanupFailureCode: "process_cleanup_failed" } });
+
     expect(termCount).toBe(2);
     // Neither the caller nor a subsequent run can renew provider effects.
     const requests = f.factory.requests.length;
@@ -300,4 +314,33 @@ it.each(["run", "prewarm", "resume"] as const)("preserves initialization, initia
     expect(await disposal).toBeInstanceOf(AggregateError);
     expect(vi.getTimerCount()).toBe(0);
   } finally { await f.remove(); }
+});
+
+
+it("does not inspect generic aggregates or leak hostile nested values", () => {
+  const secret = "TEST-private-nested-output";
+  const neverRead = vi.fn(() => { throw new Error(secret); });
+  class HostileValidation extends AppServerOutputValidationError {}
+  const hostileSubclass = new HostileValidation(AppServerOutputValidationStage.Product, AppServerOutputValidationCode.ProductRejected);
+  Object.defineProperty(hostileSubclass, "stage", { get: neverRead });
+  const hostileTyped = Object.create(AppServerOutputValidationError.prototype, { stage: { get: neverRead }, validationCode: { get: neverRead } });
+  const wrapped = new AppServerUsageError(new Error(secret));
+  Object.defineProperty(wrapped, "cause", { get: neverRead });
+  for (const primary of [new Error(secret), { stdout: secret }, hostileSubclass, hostileTyped, wrapped,
+    new Proxy(new Error(secret), { getPrototypeOf() { throw new Error(secret); } }),
+    Object.create(Error.prototype, { cause: { get() { throw new Error(secret); } } }),
+    Object.create(Error.prototype, { cause: { get() { return new Error(secret); } } })]) {
+    const error = new AppServerSessionCleanupError(primary, new Error(secret), AppServerSessionCleanupPhase.Prewarm);
+    error.errors = [new Error("quota exceeded")];
+    const result = classifyCodexFailure(error);
+    expect(result).toMatchObject({ code: "unknown_runtime_failure", retryable: true, reconnectRequired: false,
+      details: { appServerCleanupPhase: "prewarm", appServerPrimaryFailureCode: "unknown_runtime_failure",
+        appServerCleanupFailureCode: "unknown" } });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  }
+  expect(neverRead).not.toHaveBeenCalled();
+  expect(classifyCodexFailure(new AggregateError([new Error(secret)], "codex_app_server_run_cleanup_failed")).details)
+    .toEqual({ rawCause: "codex_app_server_run_cleanup_failed" });
+  expect(() => new AppServerSessionCleanupError(null, null, "TEST-private" as AppServerSessionCleanupPhase))
+    .toThrow("codex_app_server_cleanup_phase_invalid");
 });

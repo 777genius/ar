@@ -1,14 +1,17 @@
+import { AgentRuntimeFailureCode } from "@vioxen/subscription-runtime/core";
+import { appServerSessionCleanupFacts, AppServerCleanupDiagnosticCode } from "./app-server/application/app-server-session-cleanup-error";
+import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError } from "./app-server/application/app-server-process-stopper";
 import { AppServerOutputValidationError, AppServerOutputValidationStage, AppServerOutputValidationCode } from "./app-server/application/app-server-output-validation-error";
 import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
-import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure, ProviderFailureCode } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
 import { CodexAppServerThreadForkError } from "./app-server/application/app-server-thread-fork-error";
-import { codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
-import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
-import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
+import { CodexAppServerProviderError, CodexAppServerErrorKind, codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
+import { CodexModelUnavailableError, isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
+import { CodexAppServerRateLimitsRejectedError, isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
   const seen = new Set<Error>();
@@ -208,6 +211,44 @@ function codexFailureDetails(
   error: unknown,
   message: string,
 ): Readonly<Record<string, string>> | undefined {
+  const cleanup = appServerSessionCleanupFacts(error);
+  if (cleanup) {
+    let primaryCode: ProviderFailureCode = AgentRuntimeFailureCode.UnknownRuntimeFailure;
+    let cleanupCode = AppServerCleanupDiagnosticCode.Unknown;
+    const primaryDetails: Record<string, string> = {};
+    // Optional projection must not replace the original fatal failure, even for hostile values.
+    try {
+      const primary = cleanup.primary;
+      const prototype = typeof primary === "object" && primary !== null ? Object.getPrototypeOf(primary) : null;
+      const own = (key: string): unknown => Object.getOwnPropertyDescriptor(primary, key)?.value;
+      // Only direct typed identities: no new message parsing, cause unwrapping or generic aggregate recursion.
+      if (prototype === AppServerOutputValidationError.prototype) {
+        const stage = own("stage"); const code = own("validationCode");
+        primaryDetails.outputValidationStage = Object.values(AppServerOutputValidationStage).includes(stage as AppServerOutputValidationStage)
+          ? stage as AppServerOutputValidationStage : AppServerOutputValidationStage.Unknown;
+        primaryDetails.outputValidationCode = Object.values(AppServerOutputValidationCode).includes(code as AppServerOutputValidationCode)
+          ? code as AppServerOutputValidationCode : AppServerOutputValidationCode.Unknown;
+      } else if (prototype === ChildLifetimeError.prototype ||
+          (prototype === CodexAppServerProviderError.prototype && own("kind") === CodexAppServerErrorKind.SessionBudgetExceeded)) {
+        primaryCode = AgentRuntimeFailureCode.BudgetExceeded;
+      } else if (prototype === CodexModelUnavailableError.prototype) {
+        primaryCode = AgentRuntimeFailureCode.ModelUnavailable;
+      } else if (prototype === CodexAppServerRateLimitsRejectedError.prototype && own("reason") === "quota_limited") {
+        primaryCode = AgentRuntimeFailureCode.QuotaLimited;
+      }
+    } catch { /* Unknown primary diagnostics leave the fatal failure unchanged. */ }
+    try {
+      const prototype = typeof cleanup.cleanup === "object" && cleanup.cleanup !== null
+        ? Object.getPrototypeOf(cleanup.cleanup) : null;
+      if (prototype === AppServerProcessCleanupUnresolvedError.prototype) {
+        cleanupCode = AppServerCleanupDiagnosticCode.OwnershipUnverified;
+      } else if (prototype === AppServerProcessCleanupError.prototype) {
+        cleanupCode = AppServerCleanupDiagnosticCode.ProcessCleanupFailed;
+      }
+    } catch { /* Diagnostics cannot change classification or cleanup blocking. */ }
+    return { rawCause: `codex_app_server_${cleanup.phase}_cleanup_failed`, appServerCleanupPhase: cleanup.phase,
+      appServerPrimaryFailureCode: primaryCode, appServerCleanupFailureCode: cleanupCode, ...primaryDetails };
+  }
   if (error instanceof CodexAppServerThreadForkError) {
     return {
       sourceThreadUnavailable: String(error.sourceThreadUnavailable),
