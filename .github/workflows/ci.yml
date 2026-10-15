@@ -848,6 +848,7 @@ jobs:
             "Positive HOST stable ancestry compares objects across namespace-local mounts",
             "source package contract keeps legacy and binds selected Positive package bytes",
             "staged constructor, census and close reject copied original-parent DATA before any physical work",
+            "explicit preservation FULL configuration stays schema2 positive ordinary only",
           ]);
           const total = expected.size;
           const lines = readFileSync(process.env.TAP!, 'utf8').trimEnd().split(/\r?\n/);
