@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { FullNativeCase, FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalFullProviderSetupTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullNativeCase, FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalFullProviderSetupTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, readOriginalFullParentPaths, originalFullParentGuestRoot, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../dist/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { H1DescriptorKind, H1ReadinessRecord, parseH1Request, readH1ReadinessRecord, readOriginalH1Observer, readOriginalH1SupervisorAcceptance } from "./current-removal-h1-fixture.js";
@@ -68,7 +68,6 @@ type Target = Readonly<{image:Identity;
   ancestors:readonly Identity[];
   loopRdev:string|null;
   storageDevice:string|null}>;
-const jobRoot="/srv/workers/jobs/"+fullNativeJob;
 // Exact public host tool observation 85; replacement or absence refuses.
 // Absence is a typed refusal, never a PATH/search/package-install fallback.
 const ioctlTool = {path:"/usr/sbin/losetup",sha256:"44ccbcc5573aee3bd40fd3171ec368d62ba373f45263ac1d026c612ed86f0f02",bytes:"76304"} as const;
@@ -437,6 +436,8 @@ export function assertFullBackingTerminal(parent:object,result:unknown):void {as
 * Only closeAfterTerminal releases observations after original recursive terminal
 * proofs; close() refuses premature release. */
 export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number, parent:ReturnType<typeof retainCurrentFullParent>,administrativeBeforeBirth?:object) {
+  const {fullNativeLiveRoot,fullNativeJob,fullNativeOsBase,fullNativeTmpDir,fullNativeUnit}=readOriginalFullParentPaths(parent),jobRoot="/srv/workers/jobs/"+fullNativeJob;
+  const fullNativeGuestRoot=(id:unknown,root:unknown)=>originalFullParentGuestRoot(parent,id,root);
   const administrativeOrigin=administrativeBeforeBirth?administrativeBirths.get(administrativeBeforeBirth):undefined;
   if(administrativeBeforeBirth){assert(administrativeOrigin?.parent===parent);administrativeBirths.delete(administrativeBeforeBirth);}
   const root=fullNativeOsBase+"/"+id+"/root";

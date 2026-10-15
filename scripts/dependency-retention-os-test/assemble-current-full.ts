@@ -15,14 +15,16 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
-import { FullRemovalCase, FullRestoreConsumer, fullNativeRemovalCase, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeGuestRoot, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRemovalCase, FullRestoreConsumer, fullNativeRemovalCase, fullNativeRestoreConsumer, readOriginalFullParentPaths, originalFullParentGuestRoot, assertRetainedCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
 import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, currentBackingRuntimeModules, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
 
-export function assembleCurrentFull(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
+export function assembleCurrentFull(parent:object,root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
   scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing, removalCase:FullRemovalCase=FullRemovalCase.Positive, pythonEnvelopeLimits?: EnvelopeLimits): void {
+  const {fullNativeTmpDir,fullNativeOsBase}=readOriginalFullParentPaths(parent);
+  const fullNativeGuestRoot=(id:unknown,root:unknown)=>originalFullParentGuestRoot(parent,id,root);
   fullNativeRemovalCase(removalCase);
   const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
   assert(removalCase!==FullRemovalCase.ParentCrashH1 || restoreConsumer===FullRestoreConsumer.Ordinary);
@@ -37,7 +39,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
     const output = runCommand(file, args, Math.min(timeout, checkBudget()), "/", fullNativeTmpDir); checkBudget(); return output;
   };
   checkBudget();
-  assert(fullNativeGuestRoot(basename(dirname(root)),root));
+  assert(originalFullParentGuestRoot(parent,basename(dirname(root)),root));
   assert(!existsSync(root)); directory(root, 0o755); directory(state);
   for (const name of ["lists/partial", "archives/partial", "etc"]) directory(join(state, name));
   const sources = join(state, "etc/sources.list");
@@ -97,7 +99,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   }
   // Ordinary tar extraction may replace the original aliases with directories.
   // Only signed package bytes exist here; no runtime/config/job has been copied.
-  const usrLayout = normalizeSignedUsrLayout(root, checkBudget);
+  const usrLayout = normalizeSignedUsrLayout(parent,root, checkBudget);
   if (scenario === OwnedOsMode.BusDiagnostic) chmodSync(root, 0o700);
   // Independent bytes from authenticated package extraction only, before any
   // runtime/config copy. No library directory from the runner is included.
@@ -243,9 +245,9 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   writeFileSync(root + "/etc/services", "", { mode: 0o644 });
   // These finite transport files are data. Resolve aliases and read bounded
   // regular FDs; cpSync dereference can classify a source symlink as a directory.
-  snapshotPublicFile("/etc/resolv.conf", root + "/etc/resolv.conf", 65536);
+  snapshotPublicFile("/etc/resolv.conf", root + "/etc/resolv.conf", 65536,fullNativeOsBase);
   directory(root + "/etc/ssl/certs", 0o755);
-  snapshotPublicFile("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
+  snapshotPublicFile("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024,fullNativeOsBase);
   const units = root + "/etc/systemd/test-units";
   // Unchanged transient services require sysinit.target through DefaultDependencies.
   // This TEST target is inert; vendor initialization services stay outside the unit path.
@@ -279,7 +281,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);
   if (scenario !== OwnedOsMode.BusDiagnostic) {
     checkBudget(); readDefaultTestRequestedModel(root); // Missing TEST expectation refuses before composition/boot.
-    composeCurrentRealCodex(root, sourceSha); // Once in the existing owned assembler, before digest/profile/install.
+    composeCurrentRealCodex(parent,root, sourceSha); // Once in the existing owned assembler, before digest/profile/install.
     checkBudget(); compileIoUringFixture(root, state, command);
   }
   json(root + runtime + "/os-packages.json", { schemaVersion: 1, release: "ubuntu-noble",
@@ -400,8 +402,8 @@ function captureSignedGitInventory(root: string, pins: readonly { path: string; 
   return originalFullProjectControlGitEntryData(rows);
 }
 
-function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {
-  assert(fullNativeGuestRoot(basename(dirname(root)),root));
+function normalizeSignedUsrLayout(parent:object,root: string, checkBudget: () => number) {
+  assert(originalFullParentGuestRoot(parent,basename(dirname(root)),root));
   const device = lstatSync(root, { bigint: true }).dev, deadline = process.hrtime.bigint() + 30000000000n;
   const manifest = createHash("sha256"); let visited = 0, moved = 0, bytes = 0n;
   const bound = () => { checkBudget(); assert(++visited <= 20000 && process.hrtime.bigint() < deadline); };
@@ -468,7 +470,7 @@ function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {
   bound(); return { aliases, movedEntries: moved, movedBytes: String(bytes), movedManifestSha256: manifest.digest("hex"), tools };
 }
 
-function snapshotPublicFile(alias: string, target: string, maxBytes: number): void {
+function snapshotPublicFile(alias: string, target: string, maxBytes: number,fullNativeOsBase:string): void {
   const path = realpathSync(alias), before = lstatSync(path, { bigint: true });
   assert(before.isFile() && before.nlink === 1n && before.size > 0n && before.size <= BigInt(maxBytes));
   const input = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);

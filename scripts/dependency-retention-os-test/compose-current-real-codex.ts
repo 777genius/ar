@@ -4,13 +4,11 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
   readdirSync, readSync, realpathSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { fullNativeGuestRoot, fullNativePublicCapsule } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { readOriginalFullParentPaths, originalFullParentGuestRoot, assertRetainedCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { currentCodexPublicFiles } from "./current-codex-public-catalog.js";
 import { isDependencyCustodyObject } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
 import { runtime } from "./common.ts";
-const capsule = fullNativePublicCapsule;
-const reviewPath = "/run/TEST-real-codex-public-review/input.json";
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 function directory(path: string): void {
   const s = lstatSync(path); assert(s.isDirectory() && !s.isSymbolicLink() && s.uid === 0 && s.gid === 0 && !(s.mode & 0o022));
@@ -28,7 +26,8 @@ export function currentCodexPublicRelativeDestination(relative: string): string 
   return relative.startsWith("codex-linux-x64/") ? "codex/node_modules/@openai/" + relative : relative;
 }
 /** Independently installed ROOT public input review, not a policy/grant issuer. */
-export function readCurrentReviewedPublicCodex(sourceSha: string) {
+export function readCurrentReviewedPublicCodex(parent:object,sourceSha: string) {
+  const reviewPath=readOriginalFullParentPaths(parent).publicReviewRoot+"/input.json";
   assert(/^[a-f0-9]{40}$/.test(sourceSha));
   const review = readHostedPrivateBytes(reviewPath, 1024 * 1024); assert(review);
   const v: unknown = JSON.parse(review.toString("utf8"));
@@ -38,17 +37,19 @@ export function readCurrentReviewedPublicCodex(sourceSha: string) {
   assert(Array.isArray(v.files) && v.files.length === 49);
   assert.equal(review.toString("utf8"), JSON.stringify(v) + "\n");
   assert.deepEqual(v.files,currentCodexPublicFiles); // Exact SOURCE-pinned PUBLIC tree before capsule IO.
+  assertRetainedCurrentFullParent(parent);
   return Object.freeze({reviewReference:v.reviewReference,files:currentCodexPublicFiles});
 }
 /** Consume only a separately attested exact PUBLIC package-file catalog. The
  * capsule producer must pin the actual configured command's official package
  * and Linux native platform dependency. This function cannot issue that review. */
-export function composeCurrentRealCodex(root: string, sourceSha: string): void {
+export function composeCurrentRealCodex(parent:object,root: string, sourceSha: string): void {
+  const {fullNativePublicCapsule:capsule}=readOriginalFullParentPaths(parent);
   assert.equal(process.getuid?.(), 0); assert.equal(process.geteuid?.(), 0);
-  assert(fullNativeGuestRoot(basename(dirname(root)),root));
+  assert(originalFullParentGuestRoot(parent,basename(dirname(root)),root));
   directory(root); ancestry(root); assert(/^[a-f0-9]{40}$/.test(sourceSha));
   absent(root + "/var/lib/subscription-runtime-host-policy/host-installation.json");
-  const v = readCurrentReviewedPublicCodex(sourceSha);
+  const v = readCurrentReviewedPublicCodex(parent,sourceSha);
   const files: {path:string;sha256:string;size:number;mode:number}[] = []; let total = 0;
   for (const row of v.files) {
     assert(isDependencyCustodyObject(row, "mode,path,sha256,size"));
@@ -78,6 +79,7 @@ export function composeCurrentRealCodex(root: string, sourceSha: string): void {
   const destination = root + runtime + "/toolchain/lib/node_modules/@openai";
   ancestry(destination); absent(destination); mkdirSync(destination, {mode:0o755});
   for (const row of files) {
+    assertRetainedCurrentFullParent(parent);
     const relative = currentCodexPublicRelativeDestination(row.path);
     const from = capsule + "/" + row.path, to = destination + "/" + relative;
     ancestry(from); const input = openSync(from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -112,6 +114,7 @@ export function composeCurrentRealCodex(root: string, sourceSha: string): void {
   const frontend = root + "/usr/local/bin/codex"; ancestry(frontend); absent(frontend);
   symlinkSync("../../../opt/subscription-runtime-dependency-os-TEST/toolchain/lib/node_modules/@openai/codex/bin/codex.js", frontend);
   assert.equal(realpathSync(frontend), destination + "/codex/bin/codex.js");
+  assertRetainedCurrentFullParent(parent);
   const entry = files.find(row => row.path === "codex/bin/codex.js")!, metadata = files.find(row => row.path === "codex/package.json")!;
   const record = { executableSha256:entry.sha256, packageSha256:metadata.sha256, reviewReference:v.reviewReference, schemaVersion:1, sourceSha };
   const privateReviewRoot = root + "/run/TEST-real-codex-review"; ancestry(privateReviewRoot); absent(privateReviewRoot); mkdirSync(privateReviewRoot, {mode:0o700});

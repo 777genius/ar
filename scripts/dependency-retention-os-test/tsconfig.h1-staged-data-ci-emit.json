@@ -31,6 +31,13 @@
     "../../host-integration/managed-launcher/profiles.mjs",
     "../../host-integration/host-jobs/storage-policy.mjs",
     "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts",
-    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts"
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-install-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-native-parent-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-publication-copy-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-publication-copy-TEST.node-test.ts",
+    "../../host-integration/managed-launcher/full-h1-test-cohort.node-test.mts",
+    "../../host-integration/managed-launcher/launch-full-h1-TEST.mts",
+    "../../host-integration/host-jobs/full-h1-manager-TEST.mts"
   ]
 }
