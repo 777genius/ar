@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { afterAll, expect, it, vi } from "vitest";
-const resumeFault = vi.hoisted(() => ({ job: "", beforeBirth: false, afterBirth: false, createCalls: 0, birthTicks: "1" }));
+const resumeFault = vi.hoisted(() => ({ job: "", beforeBirth: false, afterBirth: false, createCalls: 0, birthTicks: "1", beforeBirthError: "TEST original controller creation failed before birth" }));
 const boundary = vi.hoisted(() => ({ root: "", map: (value: unknown): unknown => value, unmap: (value: string) => value }));
 vi.mock("node:url", async original => {
   const url = await original<typeof import("node:url")>();
@@ -79,7 +79,7 @@ vi.mock("../codex-goal-jobs", async original => {
   return { ...real, createCodexGoalJob: async (input: Parameters<typeof real.createCodexGoalJob>[0]) => {
     if (input.manifest.jobId === resumeFault.job) {
       resumeFault.createCalls++;
-      if (resumeFault.beforeBirth) throw new Error("TEST original controller creation failed before birth");
+      if (resumeFault.beforeBirth) throw new Error(resumeFault.beforeBirthError);
     }
     const value = await real.createCodexGoalJob(input);
     if (input.manifest.jobId === resumeFault.job && resumeFault.afterBirth) throw new Error("TEST controller response failed after birth");
@@ -198,10 +198,11 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
 });
 
 
-async function partialFixture(name: string, afterBirth = false) {
+const preparationFailures = ["mimo_project_bridge_operation_failed", "protected_job_birth_publication_busy"] as const;
+async function partialFixture(name: string, afterBirth = false, failure: typeof preparationFailures[number] = preparationFailures[0]) {
   const project = "resume-" + name, stream = "test-work", snapshot = "/srv/reviewed/" + project;
   const state = `/srv/worker-state/mimo-projects/${project}/${stream}`, scratch = `/srv/workers/mimo-projects/${project}/${stream}`;
-  directory(snapshot); directory("/srv/worker-state/account-pools/auth"); directory("/run/user");
+  directory(snapshot); directory("/srv/worker-state/account-pools/auth"); directory("/srv/workers"); directory("/run/user");
   for (const path of ["dist", "host-integration", "node_modules"]) directory("/TEST-artifact/" + path);
   file("/TEST-artifact/package.json", '{"type":"module"}\n');
   file("/TEST-artifact/dist/worker-codex/hosted-mimo-project-bridge-cli.js", "TEST immutable CLI\n");
@@ -220,22 +221,23 @@ async function partialFixture(name: string, afterBirth = false) {
   const binding = { schemaVersion: 1 as const, projectId: project, workstreamId: stream, machineId: machine, routingEnabled: true, stateRoot: state, scratchRoot: scratch, registryRootDir: state + "/registry", controllerJobId: project + "-controller", sourceWorkspacePath: scratch + "/source", sourceCommit: sha, sourceRef: "origin/main", codexBinaryPath: "/usr/bin/true", taskTimeoutMs: 600000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, admission: { mode: "serial-builtin", contract } };
   const plan = { schemaVersion: 1, binding, sourceSnapshotPath: snapshot, repositoryKey: "app", repositoryUrl: url, workerJobPrefix: project + "-worker-", authRootDir: "/srv/worker-state/account-pools/auth", commitIdentity: { name: "iliya", email: "iliyazelenkog@gmail.com" } };
   const planPath = `/etc/subscription-runtime/${project}-plan.json`; file(planPath, JSON.stringify(plan));
+  resumeFault.beforeBirthError = failure === preparationFailures[1] ? failure : "TEST original controller creation failed before birth";
   resumeFault.job = binding.controllerJobId; resumeFault.beforeBirth = !afterBirth; resumeFault.afterBirth = afterBirth; resumeFault.createCalls = 0;
-  await expect(prepareHostedMimoProject(planPath)).rejects.toThrow(afterBirth ? "TEST controller response failed after birth" : "TEST original controller creation failed before birth");
+  await expect(prepareHostedMimoProject(planPath)).rejects.toThrow(afterBirth ? "TEST controller response failed after birth" : resumeFault.beforeBirthError);
   resumeFault.beforeBirth = resumeFault.afterBirth = false;
   const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
   const { researchArtifactDigest } = await import("../research-launch-files");
   const artifact = researchArtifactDigest("/TEST-artifact");
   file("/etc/subscription-runtime/mimo-project-runtime-routing.json", JSON.stringify({ schemaVersion: 2, currentRuntimeDirectory: "/TEST-artifact", currentArtifactSha256: artifact }));
-  const failedResult = `/etc/subscription-runtime/${project}-failed-result.json`, originalFailure = JSON.stringify({ ok: false, error: "mimo_project_bridge_operation_failed" }) + "\n"; file(failedResult, originalFailure);
+  const failedResult = `/etc/subscription-runtime/${project}-failed-result.json`, originalFailure = JSON.stringify({ ok: false, error: failure }) + "\n"; file(failedResult, originalFailure);
   const identity = (path: string) => { const s = fs.lstatSync(physical(path)); return { path, device: s.dev, inode: s.ino }; };
   const resume = { schemaVersion: 1, preparationPlanPath: planPath, expectedPlanSha256: digest(fs.readFileSync(physical(planPath))), expectedPreparationSha256: digest(fs.readFileSync(physical(state + "/preparation.json"))), failedResultPath: failedResult, expectedFailedResultSha256: digest(originalFailure), runtimeDirectory: "/TEST-artifact", artifactSha256: artifact, directories: [state, scratch, binding.registryRootDir, binding.sourceWorkspacePath].map(identity) };
   const resumePath = `/etc/subscription-runtime/${project}-resume.json`; file(resumePath, JSON.stringify(resume));
   return { state, scratch, binding, resumePath, failedResult, originalFailure, digest };
 }
 
-it("resumes a real pre-controller failure through canonical birth and onboarding without re-cloning or replacing the failed record", async () => {
-  const f = await partialFixture("success"), before = fs.lstatSync(physical(f.binding.sourceWorkspacePath));
+it.each(preparationFailures)("resumes a real pre-controller %s through canonical birth without replacing the failed record", async failure => {
+  const f = await partialFixture("success-" + preparationFailures.indexOf(failure), false, failure), before = fs.lstatSync(physical(f.binding.sourceWorkspacePath));
   expect(fs.existsSync(physical(f.state + "/controller"))).toBe(false);
   const originalPreparation = fs.readFileSync(physical(f.state + "/preparation.json"));
   const original = JSON.parse(fs.readFileSync(physical(f.resumePath), "utf8"));
@@ -261,8 +263,8 @@ it("resumes a real pre-controller failure through canonical birth and onboarding
   expect(resumeFault.createCalls).toBe(2);
 });
 
-it.each(["first-effect", "controller-collision", "source-changed", "failed-after-birth"])("refuses %s before consuming resume intent", async fault => {
-  const f = await partialFixture(fault, fault === "failed-after-birth");
+it.each(preparationFailures.flatMap(failure => ["first-effect", "controller-collision", "source-changed", "failed-after-birth"].map(fault => ({ failure, fault }))))("refuses $fault after $failure before consuming resume intent", async ({ failure, fault }) => {
+  const f = await partialFixture(fault + "-" + preparationFailures.indexOf(failure), fault === "failed-after-birth", failure);
   if (fault === "first-effect") file("/run/user/subscription-runtime-research-v1/job-births/" + f.digest(f.state + "/controller") + ".first-effect.json", '{"firstEffectObserved":true}');
   if (fault === "controller-collision") directory(f.state + "/controller");
   if (fault === "source-changed") file(f.binding.sourceWorkspacePath + "/app/.keep", "TEST source changed\n");
@@ -272,9 +274,9 @@ it.each(["first-effect", "controller-collision", "source-changed", "failed-after
   expect(fs.readFileSync(physical(f.failedResult), "utf8")).toBe(f.originalFailure);
 });
 
-it("retains a consumed resume intent after another pre-controller failure and refuses a second resume", async () => {
-  const f = await partialFixture("resume-fails"); resumeFault.beforeBirth = true;
-  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow("TEST original controller creation failed before birth");
+it.each(preparationFailures)("retains a consumed resume intent after %s and refuses a second resume", async failure => {
+  const f = await partialFixture("resume-fails-" + preparationFailures.indexOf(failure), false, failure); resumeFault.beforeBirth = true;
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow(resumeFault.beforeBirthError);
   expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(true);
   resumeFault.beforeBirth = false;
   await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow();
@@ -332,4 +334,23 @@ it("authenticates held fence identity, process birth and every route guard", asy
     fs.writeFileSync(physical(fence.path), bytes, { mode: 0o600 });
     expect(() => assertHostedMimoProjectRouteOpen(f.binding, capability)).toThrow("mimo_project_bridge_route_closed");
   } finally { resumeFault.birthTicks = "1"; await releaseLocalControllerMaintenanceFence(fence); }
+});
+
+it.each([
+  { ok: true, error: "protected_job_birth_publication_busy" },
+  { ok: false, error: "protected_job_birth_publication_busy", result: {} },
+  { ok: false, error: "protected_job_birth_publication_busy: private detail" },
+  { ok: false, error: "other_failure" },
+].map((failure, index) => ({ failure, index })))("refuses an unallowlisted failure envelope $index before intent", async ({ failure, index }) => {
+  const f = await partialFixture("envelope-" + index);
+  const bytes = JSON.stringify(failure) + "\n";
+  fs.writeFileSync(physical(f.failedResult), bytes);
+  const input = JSON.parse(fs.readFileSync(physical(f.resumePath), "utf8"));
+  input.expectedFailedResultSha256 = f.digest(bytes);
+  fs.writeFileSync(physical(f.resumePath), JSON.stringify(input));
+  await expect(resumeHostedMimoProjectPreparation(f.resumePath, () => "c".repeat(64))).rejects.toThrow("mimo_project_bridge_prepare_resume_refused");
+  expect(fs.existsSync(physical(f.state + "/preparation-resume.intent.json"))).toBe(false);
+  expect(fs.existsSync(physical(f.state + "/controller"))).toBe(false);
+  expect(resumeFault.createCalls).toBe(1);
+  expect(fs.readFileSync(physical(f.failedResult), "utf8")).toBe(bytes);
 });

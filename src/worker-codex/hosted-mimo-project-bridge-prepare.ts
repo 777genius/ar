@@ -204,8 +204,10 @@ export async function resumeHostedMimoProjectPreparation(inputPath: string, asse
     for (const directory of directories) assertResearchDirectory(directory);
     if (!hostedMimoBridgeMetadataBytes(inputPath).equals(inputBytes) || !hostedMimoBridgeMetadataBytes(planPath).equals(planBytes)) refused();
     const retained = hostedMimoBridgeMetadataBytes(preparationPath), failure = hostedMimoBridgeMetadataBytes(failurePath);
+    const failureResult: unknown = JSON.parse(failure.toString());
     if (researchHash(retained) !== input.expectedPreparationSha256 || !isDeepStrictEqual(JSON.parse(retained.toString()), plan) ||
-        researchHash(failure) !== input.expectedFailedResultSha256 || !isDeepStrictEqual(JSON.parse(failure.toString()), { ok: false, error: "mimo_project_bridge_operation_failed" }) ||
+        researchHash(failure) !== input.expectedFailedResultSha256 || (!isDeepStrictEqual(failureResult, { ok: false, error: "mimo_project_bridge_operation_failed" }) &&
+          !isDeepStrictEqual(failureResult, { ok: false, error: "protected_job_birth_publication_busy" })) ||
         hostedMimoBridgeMetadataBytes(promptPath).toString() !== controllerPrompt) refused();
     if (!hostedMimoBridgeMetadataBytes(yamlPath).equals(yamlBytes)) refused();
     const repo = configuredRepository(yamlBytes.toString(), plan.repositoryKey);
