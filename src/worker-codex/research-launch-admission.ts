@@ -153,6 +153,9 @@ export function assertResearchProviderStartMaterial(root: ResearchProviderAssemb
  * Recheck only mutable documents and pinned identities at the effect boundary. */
 function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   assertResearchProjectLaunchAuthorityBytes(initial.spec);
+  assertResearchCurrentStartBytes(jobId, initial, bindingBytes, allowClosing);
+}
+function assertResearchCurrentStartBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   const fresh = researchCurrentStart(jobId);
   if ((!allowClosing && existsSync(join(initial.directory, "closing.json"))) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
       (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
@@ -243,27 +246,46 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   // The confined startup holds bootstrap/auth while systemd may be busy
   // constructing its namespace. Poll fresh authority and kernel identity here;
   // this check grants no effect permission and deliberately avoids the manager.
-  const assertInertAuthorityCurrent = (): void => {
-    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
+  const assertProcessCurrent = (): void => {
     const current = researchProcessIdentity(ownerPid);
     if (JSON.stringify(current) !== JSON.stringify(binding.process) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
+  };
+  const assertInertAuthorityCurrent = (): void => {
+    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
+    assertProcessCurrent();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
   };
-  const checkAuthorityCurrent = (observeService?: (elapsedMs: number) => void): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
-    assertInertAuthorityCurrent();
+  const assertServiceCurrent = (observeService?: (elapsedMs: number) => void): void => {
     const service = observeService ? researchAdmissionMeasure(() => researchServiceIdentity(spec.unit), observeService) : researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(binding.process, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(service) !== JSON.stringify(binding.service)) researchInvalid();
+  };
+  const checkAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
+    assertInertAuthorityCurrent();
+    assertServiceCurrent();
     assertInertAuthorityCurrent();
   });
   const assertAuthorityCurrent = (): void => checkAuthorityCurrent();
+  // Read-only service observation needs current native bytes/process identity,
+  // not four nested complete mount assertions. Retain one complete assertion
+  // after it, then reread native bytes/process after its blocking mount queries.
+  // This private composition grants nothing until the whole fence succeeds.
+  const checkAdmissionAuthorityCurrent = (observeService: (elapsedMs: number) => void): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
+    assertResearchCurrentStartBytes(identity.jobId, initial, bindingBytes);
+    assertProcessCurrent();
+    assertServiceCurrent(observeService);
+    assertProcessCurrent();
+    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
+    assertProcessCurrent();
+    assertResearchCurrentStartBytes(identity.jobId, initial, bindingBytes);
+  });
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
   const assertCurrent = (): ResearchAdmissionTiming | void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
     let admissionAuthorityElapsedMs = 0, admissionArtifactElapsedMs = 0, admissionExecutableElapsedMs = 0, samples = 0;
     let admissionAuthorityServiceElapsedMs = 0, serviceSamples = 0;
-    const authority = (): void => { researchAdmissionMeasure(() => checkAuthorityCurrent(elapsed => {
+    const authority = (): void => { researchAdmissionMeasure(() => checkAdmissionAuthorityCurrent(elapsed => {
       admissionAuthorityServiceElapsedMs += elapsed; serviceSamples++;
     }), elapsed => { admissionAuthorityElapsedMs += elapsed; samples++; }); };
     authority();

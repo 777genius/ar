@@ -553,15 +553,61 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     await bindRegisteredResearchRuntime(started.jobId, started.startId);
     const captured = captureResearchRuntime(selected());
     const shows = () => host.calls.filter(call => call.command === "/usr/bin/systemctl" && call.args[0] === "show").length;
-    const before = shows(), timing = captured.assertCurrent();
+    const mounts = () => host.calls.filter(call => call.command === "/usr/bin/findmnt").length;
+    const before = shows(), beforeMounts = mounts(), timing = captured.assertCurrent();
     expect(shows() - before).toBe(2);
+    expect(mounts() - beforeMounts).toBe(10);
+    const nextMounts = mounts(); captured.assertCurrent();
+    expect(mounts() - nextMounts).toBe(10);
     expect(timing?.admissionAuthorityServiceElapsedMs).toBeTypeOf("number");
     expect(timing?.admissionAuthorityServiceElapsedMs).toBeGreaterThanOrEqual(0);
     expect(timing?.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing!.admissionAuthorityElapsedMs);
+    const inertShows = shows(), inertMounts = mounts(); captured.assertInertAuthorityCurrent();
+    expect(shows()).toBe(inertShows); expect(mounts() - inertMounts).toBe(10);
+    const authorityShows = shows(), authorityMounts = mounts(); captured.assertAuthorityCurrent();
+    expect(shows() - authorityShows).toBe(1); expect(mounts() - authorityMounts).toBe(20);
     mutateReceipt();
     expect(() => captured.assertAuthorityCurrent()).toThrow();
     expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
     expect(host.authReads).toBe(0);
+  });
+  // RED: dropping the final complete fence admits receipt/pin drift; dropping
+  // its native/process readback admits changes during the last cold witness.
+  it.each([
+    ["service", "receipt"], ["service", "service"], ["service", "process"],
+    ["material", "receipt"], ["material", "pin"],
+    ["final-mount", "grant"], ["final-mount", "receipt"], ["final-mount", "process"], ["pin-mount", "pin"],
+  ] as const)("refuses %s observation drift in %s before a runtime effect", async (phase, fault) => {
+    await grantAndRequest(); const started = await start();
+    host.group = `/system.slice/${started.unit}`;
+    await bindRegisteredResearchRuntime(started.jobId, started.startId);
+    const captured = captureResearchRuntime(selected()), current = researchCurrentStart(started.jobId);
+    let changed = false;
+    const mutate = (): void => {
+      changed = true;
+      if (fault === "receipt") mutateReceipt();
+      if (fault === "process") host.birth = "98765";
+      if (fault === "service") host.units.get(started.unit)!.invocation = "e".repeat(32);
+      if (fault === "pin") host.pins.delete(join(current.directory, "pins/durable-handoff"));
+      if (fault === "grant") researchPublish(join(researchJobAuthority(started.jobId), "grant.json"), {});
+    };
+    if (phase === "service") {
+      const sync = childProcess.spawnSync;
+      vi.spyOn(childProcess, "spawnSync").mockImplementation(((command: string, args: string[], options: unknown) => {
+        if (!changed && command === "/usr/bin/systemctl" && args[0] === "show" && args[1] === started.unit) mutate();
+        return Reflect.apply(sync, childProcess, [command, args, options]);
+      }) as typeof sync);
+    } else if (phase === "material") {
+      const files = await import("../research-launch-files"), read = files.researchArtifactDigest;
+      vi.spyOn(files, "researchArtifactDigest").mockImplementation(path => { const result = read(path); mutate(); return result; });
+    } else {
+      let observations = 0;
+      host.findmntHook = () => { if (++observations === (phase === "pin-mount" ? 8 : 10)) mutate(); };
+    }
+    const effect = vi.fn();
+    expect(() => { captured.assertCurrent(); effect(); }).toThrow();
+    expect(changed).toBe(true); expect(effect).not.toHaveBeenCalled();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   it("denies publication if the native grant changes during cold mount observation", async () => {
     await grantAndRequest(); const started = await start();
