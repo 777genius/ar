@@ -1,3 +1,4 @@
+import { runCurrentExplicitPreservation } from "./current-explicit-preservation.js";
 import { FullNativeCase, fullNativeCase } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { assertLegacyUnverifiedReadonlyContinuation } from "./legacy-unverified-r-continuation.js";
 import { consumeOriginalFullProjectControlGuestOnce, completeOriginalFullProjectControlGuestSetup } from "../../dist/worker-codex/hosted-project-control-native-origin.js";
@@ -85,8 +86,9 @@ try {
   assert(isDependencyCustodyObject(input,"accountName,reviewReference,schemaVersion,sourceSha") && input.schemaVersion===1 ||
     isDependencyCustodyObject(input,"accountName,fullCase,reviewReference,schemaVersion,sourceSha") && input.schemaVersion===2);
   const fullCase=fullNativeCase(input.schemaVersion===2?input.fullCase:undefined);
-  if(input.schemaVersion===2)assert.equal(fullCase,FullNativeCase.LegacyUnverifiedR);
+  if(input.schemaVersion===2)assert(fullCase===FullNativeCase.LegacyUnverifiedR || fullCase===FullNativeCase.ExplicitPreservationC);
   if(fullCase===FullNativeCase.LegacyUnverifiedR){assert.equal(removalCase,FullH1Case.Positive);assert.equal(consumer,FullGuestRestoreConsumer.Ordinary);evidence.qualification="native_legacy_compared_adoption_unverified_r_first_hot_only";}
+  if(fullCase===FullNativeCase.ExplicitPreservationC){assert.equal(removalCase,FullH1Case.Positive);assert.equal(consumer,FullGuestRestoreConsumer.Ordinary);evidence.qualification="native_actual_explicit_preservation_c_restore_hot_r_first_hot_only";}
   evidence.fullCase=fullCase;
   assert(Buffer.from(JSON.stringify(input)+"\n").equals(bytes));assert.equal(input.sourceSha,process.env.TEST_SOURCE_SHA);
   assert(typeof input.accountName==="string");assertConfiguredAccountName(input.accountName);
@@ -125,6 +127,9 @@ try {
         workspace:continuation.terminal.workspace,startId:continuation.terminal.startId,unit:continuation.terminal.unit,release:continuation.terminal.release,fda:continuation.terminal.fda})+"\n"));
     });
   } else {
+  if(fullCase===FullNativeCase.ExplicitPreservationC){
+    evidence.flow=await runCurrentExplicitPreservation(roots,Math.floor(fullDeadline-performance.now()),phase=>{evidence.phase={flow:"explicit_preservation",phase};});
+  }else{
   evidence.phase=FullGuestSetup.Policy;evidence.testEvictionPolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);
   assert(removalCase!==FullH1Case.ParentCrash || consumer===FullGuestRestoreConsumer.Ordinary);
   const progress=(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};};
@@ -137,6 +142,7 @@ try {
   const entries=[...evictRestore.entries,...(readonlyContinuation?.entries??[])];
   assertDistinctCurrentEntries(entries.map(observation=>({observation})));
   evidence.flow=Object.freeze({evictRestore,readonlyContinuation,entries,cumulativeInstalls:2});
+  }
   // Original store/flow already performed drain and recovery. Reobserve the
   // actual protected terminal sources under its original serialized fence.
   withHostedActivationFence(()=>{
