@@ -24,11 +24,12 @@ import { currentIdleClosureMatches } from "./current-closed-entry.js";
 import type { runCurrentFullEvictRestoreFlow } from "./current-full-evict-restore-flow.js";
 import { command, json, node, runtime } from "./common.ts";
 type RestoredObservation=Awaited<ReturnType<typeof runCurrentFullEvictRestoreFlow>>["entries"][number];
-/** Selectors are diagnostics only. Original operator/final reader, protected
+/** The latest original C may be the restoration itself or its genuine HOT.
+ * Selectors are diagnostics only. Original operator/final reader, protected
  * owner+idle/source facts and current kernel census authorize this ROOT remount. */
 function currentClosedRestore(roots:CurrentColdHotRoots,restored:RestoredObservation) {
   return withHostedActivationFence(fence=>{
-    assertReadonlyHostOperator();assertRootScope(roots);assert.equal(restored.kind,FullEntryKind.Restored);
+    assertReadonlyHostOperator();assertRootScope(roots);assert(restored.kind===FullEntryKind.Restored || restored.kind===FullEntryKind.Hot);
     const actual=readHostedInstallationActivation();assert.equal(actual.activation.phase,HostedActivationPhase.Closed);
     assert(actual.activation.ordinaryStarts.every(row=>row.state===HostedCustodyReservationState.Terminal));
     const final=readHostedOrdinaryReaderFinalFacts(fence,restored.startId);

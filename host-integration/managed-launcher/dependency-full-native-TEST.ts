@@ -110,17 +110,24 @@ export enum FullNativeUnsupportedReason { H1PythonSourceClosure="h1_python_stdli
 function requireSupportedH1SourceClosure():void {
   throw new Error("TEST full managed ingress Held: "+FullNativeUnsupportedReason.H1PythonSourceClosure);
 }
-export enum FullNativeCase { ColdRestore = "cold_restore", LegacyUnverifiedR = "legacy_unverified_r" }
+export enum FullNativeCase { ColdRestore = "cold_restore", LegacyUnverifiedR = "legacy_unverified_r", ExplicitPreservationC = "explicit_preservation_c" }
 /** Finite inspected configuration. It never supplies an enrollment/release. */
 export function fullNativeCase(value:unknown):FullNativeCase {
   if(value===undefined)return FullNativeCase.ColdRestore;
-  check(value===FullNativeCase.ColdRestore || value===FullNativeCase.LegacyUnverifiedR);return value;
+  check(value===FullNativeCase.ColdRestore || value===FullNativeCase.LegacyUnverifiedR || value===FullNativeCase.ExplicitPreservationC);return value;
 }
 export enum FullRestoreConsumer { Ordinary="ordinary", Readonly="readonly" }
 /** Finite TEST case selection only. It carries no identity or launch authority. */
 export function fullNativeRestoreConsumer(value:unknown):FullRestoreConsumer {
   if(value===undefined)return FullRestoreConsumer.Ordinary;
   check(value===FullRestoreConsumer.Ordinary || value===FullRestoreConsumer.Readonly);return value;
+}
+/** Consumed finite configuration DATA; independent original source/custody
+ * checks remain mandatory. New positive cases never select the H1 route. */
+export function fullNativeCaseConfigurationData(value:unknown,schemaVersion:unknown,removalCase:FullRemovalCase,restoreConsumer:FullRestoreConsumer):FullNativeCase {
+  const selected=fullNativeCase(value);
+  if(selected!==FullNativeCase.ColdRestore)check(schemaVersion===2 && removalCase===FullRemovalCase.Positive && restoreConsumer===FullRestoreConsumer.Ordinary);
+  return selected;
 }
 export enum FullPositiveAccount {R="account-r",W="account-w"}
 function fullPositiveAccountData(value:unknown):FullPositiveAccount {
@@ -419,8 +426,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     check(r.accountName===(r.schemaVersion===2?fullPositiveAccountData(r.accountName):"account-u") && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
     for(const key of ["nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256"])check(digest(r[key]));
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
-    const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase),fullCase=fullNativeCase(r.fullCase);
-    if(fullCase===FullNativeCase.LegacyUnverifiedR)check(r.schemaVersion===2 && removalCase===FullRemovalCase.Positive && restoreConsumer===FullRestoreConsumer.Ordinary);
+    const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase),fullCase=fullNativeCaseConfigurationData(r.fullCase,r.schemaVersion,removalCase,restoreConsumer);
     check(removalCase!==FullRemovalCase.ParentCrashH1 || restoreConsumer===FullRestoreConsumer.Ordinary);
     if(removalCase===FullRemovalCase.ParentCrashH1){
       // The independent subject selects one retained physical catalog, never

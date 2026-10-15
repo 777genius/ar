@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import {fullPositiveInstallerCapabilitiesData,fullPositiveSnapshotLeafData,constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
+import {FullNativeCase,FullRestoreConsumer,fullNativeCase,fullNativeCaseConfigurationData,fullPositiveInstallerCapabilitiesData,fullPositiveSnapshotLeafData,constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
 // Red if unrelated capabilities or a different large leaf gain admission.
 // These parsers supply no namespace proof, descriptor custody or ROOT grant.
 test("installer capability DATA requires only ptrace, no inherited/ambient capabilities, and NNP",()=>{
@@ -321,4 +321,19 @@ test("staged constructor, census and close reject copied original-parent DATA be
   assert.throws(()=>constructOriginalH1StagedObserver(fake),/Held/);
   await assert.rejects(closeOriginalH1StagedObserver(fake),/Held/);
   assert.throws(()=>readOriginalH1StagedTask(fake,{path:"/proc/1",processPid:1,processBirth:"1",birth:"1",revalidate(){throw new Error("caller callback must not execute");}}),/Held/);
+});
+
+// The actual original acquire consumes this same finite DATA join. No source,
+// custody, installer, H1 observer or native permission is projected here.
+test("explicit preservation FULL configuration stays schema2 positive ordinary only",()=>{
+  assert.equal(fullNativeCase(undefined),FullNativeCase.ColdRestore);
+  for(const value of [FullNativeCase.LegacyUnverifiedR,FullNativeCase.ExplicitPreservationC]){
+    assert.equal(fullNativeCase(value),value);
+    assert.equal(fullNativeCaseConfigurationData(value,2,FullRemovalCase.Positive,FullRestoreConsumer.Ordinary),value);
+    for(const schema of [undefined,1,3,"2"])assert.throws(()=>fullNativeCaseConfigurationData(value,schema,FullRemovalCase.Positive,FullRestoreConsumer.Ordinary));
+    assert.throws(()=>fullNativeCaseConfigurationData(value,2,FullRemovalCase.ParentCrashH1,FullRestoreConsumer.Ordinary));
+    assert.throws(()=>fullNativeCaseConfigurationData(value,2,FullRemovalCase.Positive,FullRestoreConsumer.Readonly));
+  }
+  for(const value of [true,"explicit_preservation_c ","unknown",{},null])assert.throws(()=>fullNativeCase(value));
+  assert.equal(fullNativeCaseConfigurationData(undefined,1,FullRemovalCase.Positive,FullRestoreConsumer.Readonly),FullNativeCase.ColdRestore);
 });

@@ -45,7 +45,7 @@ const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
 const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
-const qualification=managedParent.fullCase===FullNativeCase.LegacyUnverifiedR ? "native_legacy_compared_adoption_unverified_r_first_hot_only" : managedParent.removalCase===FullRemovalCase.ParentCrashH1?h1Qualification:restoreConsumer===FullRestoreConsumer.Readonly
+const qualification=managedParent.fullCase===FullNativeCase.ExplicitPreservationC ? "native_actual_explicit_preservation_c_restore_hot_r_first_hot_only" : managedParent.fullCase===FullNativeCase.LegacyUnverifiedR ? "native_legacy_compared_adoption_unverified_r_first_hot_only" : managedParent.removalCase===FullRemovalCase.ParentCrashH1?h1Qualification:restoreConsumer===FullRestoreConsumer.Readonly
   ? "native_actual_c_cold_hot_committed_absent_first_r_restore_only"
   : "native_actual_c_cold_hot_committed_absent_restore_coldv2_r_entries_only";
 const restoreConsumerMarker=restoreConsumer===FullRestoreConsumer.Readonly ? `--setenv=TEST_FULL_RESTORE_CONSUMER=${restoreConsumer} ` : "";
@@ -102,8 +102,8 @@ try {
   // Boot replaces guest /run with tmpfs. Keep protected inputs outside it and
   // bind the same validated directories readonly into the exact guest paths.
   directory(fullReviewed);
-  json(fullReviewed+"/input.json",{accountName:fullInput.accountName,reviewReference:fullInput.reviewReference,schemaVersion:managedParent.fullCase===FullNativeCase.LegacyUnverifiedR?2:1,sourceSha:fullInput.sourceSha,
-    ...(managedParent.fullCase===FullNativeCase.LegacyUnverifiedR?{fullCase:managedParent.fullCase}:{} )});
+  json(fullReviewed+"/input.json",{accountName:fullInput.accountName,reviewReference:fullInput.reviewReference,schemaVersion:managedParent.fullCase!==FullNativeCase.ColdRestore?2:1,sourceSha:fullInput.sourceSha,
+    ...(managedParent.fullCase!==FullNativeCase.ColdRestore?{fullCase:managedParent.fullCase}:{} )});
   const publicFrom=root+"/run/TEST-real-codex-review";
   assert.equal(realpathSync(publicFrom),publicFrom);assert(!existsSync(publicReviewed));
   const publicFd=openSync(publicFrom,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
