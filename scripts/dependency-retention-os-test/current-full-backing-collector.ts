@@ -615,8 +615,8 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     const group=text(prefix+"/cgroup",4096,budget).trim().split("\n");assert(group.includes("0::/init.scope") && group.every(row=>row==="0::/init.scope" || row==="1:name=systemd:/"));
     assert.equal(text("/sys/fs/cgroup/init.scope/cgroup.procs",4096,budget),"1\n");
     const path="/usr/lib/systemd/systemd",fd=hold(path,false,0o755n),named=fstatSync(fd,{bigint:true});
-    assert(named.dev===2306n && named.ino===20477772n && named.size===100816n);
-    assert.equal(hash(fdBytes(fd,1024*1024,budget)),"b472aadf808bef87c0eb203056a77cb64bd268b71b756306013a53de68a94173");
+    assert(named.dev===2306n && named.ino===20482164n && named.size===100816n);
+    assert.equal(hash(fdBytes(fd,1024*1024,budget)),"9a813714ffd4dadb692afe44384c9c5b334fa323a4ec1dd5157aebdcbbb0667a");
     // Intentional real proc exe_file lookup; limited to trusted boot PID1.
     const exe=openSync(prefix+"/exe",constants.O_RDONLY);
     try{assert(same(identity(fstatSync(exe,{bigint:true})),identity(named)) && readlinkSync(prefix+"/exe")===path);}finally{closeSync(exe);}
