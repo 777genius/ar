@@ -26,6 +26,9 @@ const trustedAdministrativeLaunchSources = new Map([
   // Reviewed fixed first-Positive ROOT installer transport; edits fail closed.
   ['scripts/dependency-retention-os-test/bootstrap-current-positive-public.mts',
     { bytes: 14433, sha256: 'a7504b87beea3663e55cb03eebc0e599719fc1c4b74ddee7f67411017704d023' }],
+  // Reviewed fixed original H1 Prepare/Finalize ROOT transport; exact bytes only.
+  ['scripts/dependency-retention-os-test/bootstrap-current-h1-public.mts',
+    { bytes: 23279, sha256: 'b9c0e3315edd36b70bd4f7d0166ad257e091d867f6a7f74fa71d298c4caf0e4f' }],
   ['scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts',
     { bytes: 22046, sha256: '803cc575ff7c535505ea4b831d80947930e8ceb68e889cbeaa0f52f7f0caaa11' }],
   ['scripts/dependency-retention-os-test/current-administrative-installation.ts',
