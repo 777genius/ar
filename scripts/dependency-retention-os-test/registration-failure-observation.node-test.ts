@@ -1,3 +1,4 @@
+import { createImageFdTestProgress, ImageFdTestStage, ImageFdTestExposure } from "./registration-failure-observation.js";
 /** Independent privacy contract: unsafe observations stay opaque, trap-free
  * and finite; the positive literals describe source failure text, never authority. */
 import assert from "node:assert/strict";
@@ -353,4 +354,41 @@ test("private-method and symbol labels never block or escape a known exact frame
     assert(!JSON.stringify(observed).includes("TEST_private"));
     assert(!JSON.stringify(observed).includes("TEST_secret"));
   }
+});
+
+// A timeout on entry must remain distinct from an actual completed census
+// with no matching image and from no census at all. None is qualification.
+test("readonly image TEST progress distinguishes expired entry, observed no match and unobserved",()=>{
+  const deadline=120_000_000_000n;
+  const expired=createImageFdTestProgress(deadline,deadline).snapshot(deadline+1_000_000n);
+  assert.equal(expired.expiredOnEntry,true);assert.equal(expired.remainingOnEntryMs,0);
+  assert.equal(expired.lastSample,null);assert.equal(expired.markerPublished,null);
+  const live=createImageFdTestProgress(20_000_000_000n,deadline);
+  const unknown=live.snapshot(21_000_000_000n);
+  assert.equal(unknown.expiredOnEntry,false);assert.equal(unknown.elapsedOnEntryMs,20000);
+  assert.equal(unknown.remainingOnEntryMs,100000);assert.equal(unknown.lastSample,null);
+  live.stage(ImageFdTestStage.Budget);live.markerPublished();live.iteration();live.actorValidated();
+  live.stage(ImageFdTestStage.Revalidate);live.sample([ImageFdTestExposure.Proc],false);
+  const sampled=live.snapshot(deadline+2_000_000n);
+  assert.equal(sampled.iterations,1);assert.equal(sampled.completedSamples,1);assert.equal(sampled.actorValidations,1);
+  assert.deepEqual(sampled.lastSample,{exposures:[ImageFdTestExposure.Proc],imageIdentityMatch:false});
+  assert.equal(sampled.deadlineExpired,true);assert.equal(sampled.remainingMs,-2);
+  assert.equal(sampled.actorOpenReceipt,"not_observed");assert.equal(sampled.markerPublished,true);
+  assert(Object.isFrozen(sampled));assert(Object.isFrozen(sampled.lastSample));
+  assert.equal(unknown.lastSample,null); // Earlier unknown snapshot never turns into zero.
+});
+test("readonly image TEST facts retain only fixed exposures and image identity match with bounded counts",()=>{
+  const progress=createImageFdTestProgress(0n,120_000_000_000n),exposures=[ImageFdTestExposure.Image,ImageFdTestExposure.Image];
+  progress.sample(exposures,true);exposures.push(ImageFdTestExposure.Other);
+  const observed=progress.snapshot(1_000_000n);
+  assert.deepEqual(observed.lastSample,{exposures:[ImageFdTestExposure.Image],imageIdentityMatch:true});
+  for(let index=0;index<65536;index++)progress.iteration();
+  const bounded=progress.snapshot(2_000_000n);assert.equal(bounded.iterations,65535);assert.equal(bounded.countLimitReached,true);
+  assert(!JSON.stringify(bounded).includes("/proc"));assert(!JSON.stringify(bounded).includes("authorized"));
+  progress.stage("/TEST-private" as ImageFdTestStage);
+  progress.sample(["/TEST-private" as ImageFdTestExposure],"Bearer TEST-private" as unknown as boolean);
+  const sanitized=progress.snapshot(3_000_000n);
+  assert.equal(sanitized.stage,ImageFdTestStage.Unknown);
+  assert.deepEqual(sanitized.lastSample,{exposures:[ImageFdTestExposure.Other],imageIdentityMatch:null});
+  assert(!JSON.stringify(sanitized).includes("TEST-private"));
 });
