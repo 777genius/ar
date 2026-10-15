@@ -1,3 +1,5 @@
+import { runOriginalHostedDependencyPreservation } from "./hosted-dependency-preservation-effect";
+import { assertOriginalHostedDependencyOperatorDescriptors } from "./hosted-dependency-maintenance-origin";
 import { runOriginalHostedDependencyTrashRemovalParent, recoverOriginalHostedDependencyTrashRemovalParent } from "./hosted-dependency-removal-parent";
 import { readOriginalHostedManagedProviderTools, assertOriginalHostedManagedCapsuleCopy } from "./hosted-managed-provider-descriptor-validation";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
@@ -976,6 +978,7 @@ export function prepareCurrentHostedDependencyColdCustody(policy:unknown) {
 export function completeCurrentHostedDependencyColdCustody(jobId:string):void {
   completeOriginalHostedDependencyColdCustody(jobId,rootInternalAccess);
 }
+export function preserveCurrentHostedDependencyForExplicitReinstallation(jobId:string,recover=false) {return runOriginalHostedDependencyPreservation(jobId,recover,rootInternalAccess);}
 export function readCurrentHostedDependencyMaintenanceAuthority(fence:HostedActivationFence,jobId:string) {return readOriginalHostedDependencyMaintenanceAuthority(fence,jobId,rootInternalAccess);}
 export function claimCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,operationId:string) {return claimOriginalHostedDependencyMaintenance(fence,jobId,operationId,rootInternalAccess);}
 export function assertCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {return assertOriginalHostedDependencyMaintenance(fence,jobId,attempt,rootInternalAccess);}
@@ -985,11 +988,8 @@ export function releaseCurrentHostedDependencyMaintenance(fence:HostedActivation
 export async function renameCurrentHostedDependencyMaintenanceTree(jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {
   return renameOriginalHostedDependencyMaintenanceTree(jobId,attempt,rootInternalAccess);
 }
-export function assertOriginalHostedDependencyOperatorDescriptors(fence:HostedActivationFence,access:symbol):void {
-  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
-  if(readOriginalHostedDependencyRemoverScope(fence,access))return;
-  assertOriginalHostedDependencyMaintenanceDescriptors(fence,access);
-}
+export { assertOriginalHostedDependencyOperatorDescriptors } from "./hosted-dependency-maintenance-origin";
+
 export function runCurrentHostedDependencyRemoverActor(operationId:string):Promise<void> {
   return runOriginalHostedDependencyRemoverActor(operationId,rootInternalAccess);
 }

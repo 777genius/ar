@@ -14,6 +14,7 @@ import type { DependencyLocalInstallProofVerifier } from "../../worker-core/depe
 import type { DependencyLegacyComparisonVerifier } from "../../worker-core/dependency-environment/ports/dependency-legacy-comparison";
 
 import type { DependencyGenerationReceiptVerifier } from "../../worker-core/dependency-environment/ports/dependency-generation-continuity";
+import type { DependencyExplicitReinstallationVerifier } from "../../worker-core/dependency-environment/ports/dependency-explicit-reinstallation";
 
 export enum DependencyReceiptStorageFailure {
   Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root", UnsafeStore = "unsafe_store",
@@ -24,8 +25,8 @@ export class DependencyReceiptStorageError extends Error {
   constructor(readonly reason: DependencyReceiptStorageFailure) { super(`dependency_receipt_storage:${reason}`); }
 }
 const Failure = DependencyReceiptStorageFailure;
-enum PublicationPurpose { Retirement = "retirement", FactualUnverified = "factual_unverified" }
-type PublicationGuard = { readonly purpose: PublicationPurpose.Retirement; readonly previousReference: DependencyCommittedReceiptReference } |
+enum PublicationPurpose { Retirement = "retirement", FactualUnverified = "factual_unverified", ExplicitReinstallation = "explicit_reinstallation" }
+type PublicationGuard = { readonly purpose: PublicationPurpose.Retirement | PublicationPurpose.ExplicitReinstallation; readonly previousReference: DependencyCommittedReceiptReference } |
   { readonly purpose: PublicationPurpose.FactualUnverified };
 function fail(reason: DependencyReceiptStorageFailure): never { throw new DependencyReceiptStorageError(reason); }
 type Reference = { name: string; identity: DependencyTreeIdentity; sha256: string };
@@ -51,12 +52,14 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     private readonly rootMount: string, private readonly maxRecordBytes: number, private readonly maxHistorySteps: number,
     private readonly localInstallVerifier?: DependencyLocalInstallProofVerifier,
     private readonly legacyComparisonVerifier?: DependencyLegacyComparisonVerifier,
-    private readonly generationReceiptVerifier?: DependencyGenerationReceiptVerifier) {}
+    private readonly generationReceiptVerifier?: DependencyGenerationReceiptVerifier,
+    private readonly explicitReinstallationVerifier?: DependencyExplicitReinstallationVerifier) {}
 
   static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly maxHistorySteps: number;
     readonly localInstallVerifier?: DependencyLocalInstallProofVerifier;
     readonly legacyComparisonVerifier?: DependencyLegacyComparisonVerifier;
-    readonly generationReceiptVerifier?: DependencyGenerationReceiptVerifier }): LocalDependencyReceiptStore {
+    readonly generationReceiptVerifier?: DependencyGenerationReceiptVerifier;
+    readonly explicitReinstallationVerifier?: DependencyExplicitReinstallationVerifier }): LocalDependencyReceiptStore {
     if (process.platform !== "linux" || statfsSync("/proc/self/fd", { bigint: true }).type !== 0x9fa0n) fail(Failure.Unsupported);
     if (!isAbsolute(input.rootPath) || resolve(input.rootPath) !== input.rootPath || input.rootPath.includes("\0") ||
       ![input.maxRecordBytes, input.maxHistorySteps].every(n => Number.isSafeInteger(n) && n > 0)) fail(Failure.InvalidConfig);
@@ -67,7 +70,7 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
       // Governed publishers change directory size/times, not its custody identity.
       if (!stat.isDirectory() || !observed.isDirectory() || !privateMode(stat, 0o700n) || !privateMode(observed, 0o700n) ||
         !sameDependencyTree(identity(stat), identity(observed))) fail(Failure.UnsafeRoot);
-      const store = new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier, input.legacyComparisonVerifier, input.generationReceiptVerifier);
+      const store = new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier, input.legacyComparisonVerifier, input.generationReceiptVerifier, input.explicitReinstallationVerifier);
       store.assertRoot(); return store;
     } catch (error) { closeSync(root); throw error; }
   }
@@ -160,10 +163,37 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     });
   }
 
+  getCommittedInstalling(workspace: DependencyWorkspaceIdentity, revision: number): { receipt: Extract<DependencyReceipt, { state: State.Installing }>; reference: DependencyCommittedReadyReceipt["reference"] } {
+    if (!Number.isSafeInteger(revision) || revision < 1) fail(Failure.InvalidReceipt);
+    return this.publicRead(workspace, key => {
+      const current = this.capture(workspace, key);
+      if (!current || revision > current.receipt.revision) fail(Failure.StaleRevision);
+      let ref = current.head.commit, expected = current.receipt.revision;
+      for (let step = 0; step < this.maxHistorySteps; step++) {
+        const commit = this.readCommit(workspace, key, expected, ref);
+        const receipt = this.readReceipt(workspace, key, expected, commit.receipt);
+        if (expected === revision) {
+          if (receipt.state !== State.Installing) fail(Failure.InvalidReceipt);
+          return { receipt, reference: { path: join(this.rootPath, commit.receipt.name),
+            identity: { ...commit.receipt.identity }, sha256: commit.receipt.sha256 } };
+        }
+        if (!commit.previous) fail(Failure.Corrupt);
+        ref = commit.previous; expected--;
+      }
+      return fail(Failure.Bounds);
+    });
+  }
+
   retireReady(workspace: DependencyWorkspaceIdentity, expectedRevision: number,
     expectedReference: DependencyCommittedReceiptReference,
     next: Extract<DependencyReceipt, { state: State.Unverified }>): DependencyCommittedUnverifiedReceipt {
     this.publish(workspace, expectedRevision, next, { purpose: PublicationPurpose.Retirement, previousReference: expectedReference });
+    return this.getCommittedUnverified(workspace, next.revision);
+  }
+  retireForExplicitReinstallation(workspace: DependencyWorkspaceIdentity, expectedRevision: number,
+    expectedReference: DependencyCommittedReceiptReference,
+    next: Extract<DependencyReceipt, { state: State.Unverified }>): DependencyCommittedUnverifiedReceipt {
+    this.publish(workspace, expectedRevision, next, { purpose: PublicationPurpose.ExplicitReinstallation, previousReference: expectedReference });
     return this.getCommittedUnverified(workspace, next.revision);
   }
   publishFactualUnverified(workspace: DependencyWorkspaceIdentity,
@@ -183,6 +213,8 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
       receipt = parsed(JSON.parse(encode(next).toString("utf8")));
     } catch { return fail(Failure.InvalidReceipt); }
     if (!sameDependencyWorkspace(receipt.workspace, workspace)) fail(Failure.WorkspaceChanged);
+    if (receipt.state === State.Unverified && receipt.reason === DependencyUnverifiedReason.ExplicitOperatorReinstallation &&
+        guard?.purpose !== PublicationPurpose.ExplicitReinstallation) fail(Failure.InvalidTransition);
     if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) fail(Failure.InvalidReceipt);
     const bytes = encode(receipt);
     if (detectSecretLikeContent(bytes.toString("utf8"))) fail(Failure.InvalidReceipt);
@@ -203,8 +235,19 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
           path: join(this.rootPath, captured.commit.receipt.name), identity: captured.commit.receipt.identity,
           sha256: captured.commit.receipt.sha256,
         } : null;
-        transition(captured?.receipt ?? null, receipt, previousReference, this.localInstallVerifier, this.legacyComparisonVerifier);
-        if (guard) {
+        if (guard?.purpose === PublicationPurpose.ExplicitReinstallation) {
+          if (!captured || !previousReference || !this.explicitReinstallationVerifier || receipt.state !== State.Unverified ||
+              receipt.reason !== DependencyUnverifiedReason.ExplicitOperatorReinstallation ||
+              (captured.receipt.state !== State.Ready && captured.receipt.state !== State.Unverified) ||
+              receipt.revision !== captured.receipt.revision + 1 || receipt.generation !== captured.receipt.generation ||
+              !sameDependencyWorkspace(receipt.workspace,captured.receipt.workspace) || receipt.coverageRevision !== captured.receipt.coverageRevision ||
+              guard.previousReference.path !== previousReference.path || !sameDependencyTree(guard.previousReference.identity,previousReference.identity) ||
+              guard.previousReference.sha256 !== previousReference.sha256) fail(Failure.InvalidTransition);
+          try { if (this.explicitReinstallationVerifier.assertExplicitReinstallation({ previousReceipt: captured.receipt,
+            previousReference, proposedUnverified: receipt }) !== undefined) fail(Failure.InvalidTransition); }
+          catch { fail(Failure.InvalidTransition); }
+        } else transition(captured?.receipt ?? null, receipt, previousReference, this.localInstallVerifier, this.legacyComparisonVerifier);
+        if (guard && guard.purpose !== PublicationPurpose.ExplicitReinstallation) {
           if (!this.generationReceiptVerifier || receipt.state !== State.Unverified) fail(Failure.InvalidTransition);
           try {
             let result: void;

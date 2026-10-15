@@ -1,8 +1,10 @@
+import { assertHostedDependencyPreservationAdmission } from "./hosted-dependency-preservation-handoff";
+import { readHostedDependencyCommittedPreservation } from "./hosted-dependency-preservation";
 import { prepareHostedDependencyRootHelpers } from "./hosted-dependency-root-preparation";
 import { randomUUID } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError,
-  DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
+  DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyUnverifiedReason, DependencyTreeObservationStatus, type DependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { withHostedActivationFence } from "./hosted-dependency-activation";
@@ -63,6 +65,7 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     if (!binding || (!readonly && (binding.grantDigest !== current.ordinary.start.grantSha256 ||
         binding.installationId !== current.ordinary.start.installationId))) fail(Failure.Unsupported);
     if (binding.version === 3) fail(Failure.Unsupported);
+    assertHostedDependencyPreservationAdmission(fence,binding);
     assertHostedDependencyQualifiedInventory();
     assertHostedDependencyPhysicalWorkspace(binding);
     assertHostedDependencyStartAllowed(readonly ? current.start.startId : String(current.ordinary.reservation.startId));
@@ -76,9 +79,12 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     try { tree = lstatSync(`${binding.workspace.canonicalPath}/node_modules`); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      if (receipt ? receipt.state !== DependencyReceiptState.Absent : !hasHostedDependencyFreshAbsence(binding)) fail(Failure.NeedsInstall);
+      const preserved = receipt?.state === DependencyReceiptState.Unverified && preclaimed &&
+        readHostedDependencyCommittedPreservation(binding, receipt, preclaimed.attemptId);
+      if (receipt ? receipt.state !== DependencyReceiptState.Absent && !preserved : !hasHostedDependencyFreshAbsence(binding)) fail(Failure.NeedsInstall);
       absent = true;
     }
+    if (tree && receipt?.state === DependencyReceiptState.Unverified && receipt.reason === DependencyUnverifiedReason.ExplicitOperatorReinstallation) fail(Failure.Busy);
     if (tree && (!tree.isDirectory() || tree.isSymbolicLink())) fail(Failure.UnsafeTree);
     if (tree && receipt?.state === DependencyReceiptState.Absent) fail(Failure.UnsafeTree);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
@@ -154,12 +160,14 @@ export function assertHostedDependencyExecutionWorkspace(workspacePath: string |
     }
     const context = readCurrentHostedDependencyOrigin(fence), current = assertCurrentHostedDependencyOrigin(context,fence);
     if (current.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) {
+      assertHostedDependencyPreservationAdmission(fence,current.binding);
       if (workspacePath !== undefined && workspacePath !== current.binding.workspace.canonicalPath) fail(Failure.Unsupported);
       if (!isDependencyConsumerOwner(current.owner.owner) || current.owner.owner.phase === DependencyOwnerPhase.Fenced) fail(Failure.Unsupported);
       readHostedReadonlyDependencyPreclaim(context,fence,current.owner.owner.phase);
       return;
     }
     const origin = current.ordinary, binding = readHostedDependencyBinding(String(origin.start.jobId));
+    if(binding)assertHostedDependencyPreservationAdmission(fence,binding);
     if (binding?.version === 3) fail(Failure.Unsupported);
     if (workspacePath === undefined || !isHostedDependencyWorkspace(workspacePath)) return;
     if (origin.profileId !== CodexProviderEgressProfileId.TestNpmQualification || origin.start.workspacePath !== workspacePath ||

@@ -1,5 +1,5 @@
 import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { removeCurrentHostedDependencyCommittedTrash, recoverCurrentHostedDependencyCommittedTrash } from "./hosted-current-dependency-origin";
+import { removeCurrentHostedDependencyCommittedTrash, recoverCurrentHostedDependencyCommittedTrash, preserveCurrentHostedDependencyForExplicitReinstallation } from "./hosted-current-dependency-origin";
 import { readHostedDependencyEvictionEnabled as enabled } from "./hosted-dependency-eviction-enabled-policy";
 import { readCurrentHostedDependencyMaintenanceAuthority, claimCurrentHostedDependencyMaintenance,
   assertCurrentHostedDependencyMaintenance, retireCurrentHostedDependencyEviction, releaseCurrentHostedDependencyMaintenance,
@@ -9,7 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as State, DependencyTreeObservationStatus as Observed,
   assertDependencyMaintenance, claimDependencyMaintenance, releaseDependencyMaintenance, parseDependencyOwner, isDependencyConsumerOwner,
-  parseDependencyReceipt, parseHostedOrdinaryStart, DependencyReceiptParseStatus, sameDependencyMaintenanceAttempt, sameDependencyTree, sameDependencyAttempt,
+  parseDependencyReceipt, parseHostedOrdinaryStart, DependencyReceiptParseStatus, sameDependencyMaintenanceAttempt, sameDependencyProtectedReference, sameDependencyTree, sameDependencyAttempt,
   type DependencyMaintenanceAttempt, type DependencyReceipt, type DependencyTrashIntent, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -460,3 +460,14 @@ async function removeLegacyHostedDependencyCommittedTrash(jobId: string, revisio
   }
 }
 function fail(): never { throw new Error("dependency_transaction_unresolved"); }
+
+
+/** Explicit operator request dispatches through the defining lexical origin. */
+export function preserveHostedDependencyForExplicitReinstallation(jobId:string) {
+  return preserveCurrentHostedDependencyForExplicitReinstallation(jobId);
+}
+export function recoverHostedDependencyExplicitPreservation(jobId:string) {
+  return preserveCurrentHostedDependencyForExplicitReinstallation(jobId,true);
+}
+
+export { HostedDependencyExplicitPreservationOutcome } from "./hosted-dependency-preservation-effect";

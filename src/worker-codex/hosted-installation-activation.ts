@@ -28,6 +28,7 @@ import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./
 import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferenceStart,
   retainHostedLegacyReferenceRelease } from "./hosted-dependency-legacy-reference";
 import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash, recoverHostedDependencyCommittedTrash,
+  preserveHostedDependencyForExplicitReinstallation, recoverHostedDependencyExplicitPreservation,
   type HostedDependencyEvictionCandidate } from "./hosted-dependency-transactions";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "./hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -97,6 +98,8 @@ export class HostedInstallationActivationStore {
   }
   evictDependencyCandidate(candidate: HostedDependencyEvictionCandidate) { return evictHostedDependencyCandidate(candidate); }
   recoverDependencyEviction(jobId: string) { return recoverHostedDependencyEviction(jobId); }
+  preserveDependencyForExplicitReinstallation(jobId: string) { return preserveHostedDependencyForExplicitReinstallation(jobId); }
+  recoverDependencyExplicitPreservation(jobId: string) { return recoverHostedDependencyExplicitPreservation(jobId); }
   removeDependencyCommittedTrash(jobId: string, revision: number) { return removeHostedDependencyCommittedTrash(jobId, revision); }
   recoverDependencyCommittedTrash(jobId:string,revision:number) {return recoverHostedDependencyCommittedTrash(jobId,revision);}
   /** Closed TEST reference operation; selection remains operator policy. */
