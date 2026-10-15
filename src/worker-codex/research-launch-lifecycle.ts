@@ -22,7 +22,7 @@ import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import { assertResearchDirectory, researchArtifactDigest, researchCustody, researchDirectoryIdentity } from "./research-launch-files";
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { readResearchColdMountTable, researchMountWitnessRows } from "./research-mount-witness-frame";
-import { prepareResearchTerminalHandoffRepair } from "./research-terminal-handoff-repair";
+import { prepareResearchTerminalHandoffRepair, releaseResearchStoppedBeforeProvider } from "./research-terminal-handoff-repair";
 
 /** Native-only trusted composition port. A fixed reviewed owner adapter binds
  * its original service/terminal invocation to these exact immutable inputs.
@@ -235,6 +235,18 @@ export async function repairOwnedMimoWorkerTerminalHandoff(expected: RegisteredR
         current.spec.requestSha256 !== expected.requestSha256) researchInvalid();
     const repair = await prepareResearchTerminalHandoffRepair(current, historicalScope);
     return await finalizeOwnedMimoWorkerUnlocked(expected.jobId, expected.startId, expected.specSha256, undefined, repair);
+  });
+}
+/** Reservation release only for an authenticated historical native stop before
+ * its first provider reservation. This does not create a Worker result. */
+export async function releaseStoppedOwnedMimoWorkerBeforeProvider(expected: RegisteredResearchStartIdentity, historicalScope: unknown) {
+  assertResearchInitialRoot(true); researchRecord(expected, "jobId,startId,specSha256,requestSha256");
+  return await withResearchJobMutationAsync(expected.jobId, async () => {
+    if (optionalResearchBytes(join(researchJobAuthority(expected.jobId), "active.json"))) researchInvalid();
+    const current = terminalResearchStart(expected.jobId);
+    if (current.spec.startId !== expected.startId || researchHash(current.bytes) !== expected.specSha256 ||
+        current.spec.requestSha256 !== expected.requestSha256) researchInvalid();
+    return await releaseResearchStoppedBeforeProvider(current, historicalScope);
   });
 }
 async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, specSha256: string,

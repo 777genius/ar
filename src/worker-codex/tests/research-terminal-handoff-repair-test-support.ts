@@ -12,6 +12,7 @@ import * as materialization from "../codex-goal-terminal-handoff-materialization
 import * as admission from "../research-launch-admission";
 import * as runtimeArtifact from "../research-runtime-artifact";
 import { researchArtifactDigest } from "../research-launch-files";
+export { registeredStoppedBeforeProviderTests } from "./research-stopped-before-provider-test-support";
 
 /** Runs inside the existing registered suite's genuinely constructed native
  * fixture. Only kernel PID disappearance is an explicit offline Host port. */

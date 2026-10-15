@@ -9,7 +9,7 @@ import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contra
 import { parseResearchOperatorRequest } from "../research-launch-contract";
 import { researchJobRuntimeProvenance } from "../research-job-runtime-provenance";
 import { researchJobAuthority } from "../research-launch-admission";
-import { observeResearchJobWriterAuthority, prepareOriginalNativeWriterObservation } from "../research-writer-observation";
+import { observeResearchJobWriterAuthority, prepareOriginalNativeWriterObservation, createResearchJobWriterObservationPreparer } from "../research-writer-observation";
 import { hostedMimoProjectRuntime } from "../hosted-mimo-project-runtime-routing";
 import { recoverHostedMimoProjectPreEffectStartIntent, type HostedMimoRuntimeRouting } from "../hosted-mimo-project-runtime-selection";
 import * as ordinaryWriter from "../hosted-ordinary-writer-authority";
@@ -429,6 +429,21 @@ describe("origin arrival during imports", () => {
 });
 
 describe("original native writer preparation relay", () => {
+  it("does not reconcile an untouched legacy terminal before its positive foreign reader", async () => {
+    const paths = nativeOrigin(true), calls = host.calls.length;
+    const foreignRead = vi.fn(async () => ({ status: "released" }));
+    const imports = vi.fn(async () => ({ prepareResearchJobWriterObservation: async () => foreignRead }));
+    const prepare = createResearchJobWriterObservationPreparer(imports), read = await prepare(job);
+    expect(await read()).toEqual({ status: "released" });
+    expect(imports).toHaveBeenCalledOnce(); expect(host.calls.length).toBe(calls);
+    const intent = join(researchJobAuthority(job.jobId), "stopped-before-provider-release-intent.json");
+    writeFileSync(intent, '{"invalid":true}', { mode: 0o600 });
+    expect(await (await prepare(job))()).toEqual({ status: "unknown" });
+    unlinkSync(intent);
+    writeFileSync(join(paths.spec, "..", "stopped-before-provider-release.json"), '{"invalid":true}', { mode: 0o600 });
+    expect(await (await prepare(job))()).toEqual({ status: "unknown" });
+    expect(foreignRead).toHaveBeenCalledOnce(); expect(host.calls.length).toBe(calls);
+  });
   it("prepares foreign terminal observation before publication, then checks cold bytes under the current mutex", async () => {
     retainedBirth(); const paths = nativeOrigin(true), calls = host.calls.length;
     const readOriginal = vi.fn(async () => {

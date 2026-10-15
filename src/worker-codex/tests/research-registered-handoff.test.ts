@@ -27,7 +27,7 @@ import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority }
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
-import { registeredTerminalRepairTests } from "./research-terminal-handoff-repair-test-support";
+import { registeredTerminalRepairTests, registeredStoppedBeforeProviderTests } from "./research-terminal-handoff-repair-test-support";
 import { parseCodexGoalProjectAccessScope } from "../codex-goal-access-plan";
 
 const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false, mimo: false, registry: "/TEST-project/registry" }));
@@ -862,11 +862,12 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
 
 /** Real registered authorization, native allocation, root plan and lifetime
  * witness. Only the shared TEST fixture substitutes Host process/kernel IO. */
-async function registeredCodingAllocation() {
+async function registeredCodingAllocation(beforeProvider = false) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
   await initializeRegisteredFixture();
+  if (beforeProvider) state.scope = parseCodexGoalProjectAccessScope(state.scope);
   for (const path of researchMimoCodingBootstrapPaths("/TEST-artifact")) {
     mkdirSync(local(dirname(path)), { recursive: true, mode: 0o700 });
     writeFileSync(local(path), path.endsWith("package.json") ? '{"type":"module"}' : "export {};", { mode: 0o644 });
@@ -874,6 +875,8 @@ async function registeredCodingAllocation() {
   await grantAndRequest(); const started = await start(), current = researchCurrentStart(started.jobId);
   host.group = `/system.slice/${started.unit}`;
   await bindRegisteredResearchRuntime(started.jobId, started.startId);
+  if (beforeProvider) { enterResearchOperatorScope(started.unit); return { ...started, ...current, provider: "",
+    manifest: await readCodexGoalJob({ registryRootDir: registry, jobId: started.jobId }) }; }
   const home = join(current.spec.request.jobRootDir, "home/mimo-TEST/codex-home");
   mkdirSync(local(home), { recursive: true, mode: 0o700 });
   researchPublish(join(current.directory, "mimo-home.json"), { schemaVersion: 1,
@@ -974,6 +977,7 @@ describe("qualified preservation recovery (explicit offline Linux Host fixture)"
   afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   registeredTerminalRepairTests({ candidate: dirty => registeredMimoCandidate(dirty, true), scope: () => state.scope!,
     setScope: scope => { state.scope = scope; }, registry: () => registry });
+  registeredStoppedBeforeProviderTests({ start: () => registeredCodingAllocation(true), scope: () => state.scope!, setScope: scope => { state.scope = scope; } });
   it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {
     const current = await registeredMimoCandidate(true);
     const retained = ["spec.json", "binding.json", "mimo-candidate.json", "durable-pin.json"].map(name =>
