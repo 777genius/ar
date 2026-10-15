@@ -40,8 +40,11 @@ export default defineConfig({
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-lane.test.ts",
-      // Mandatory ROOT Source fixture runs in native-probe-source's disposable container.
-      "src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts",
+      // Include the mandatory fixture in the explicit ROOT archive selection;
+      // ordinary unit lanes cannot authenticate its ROOT filesystem evidence.
+      ...(process.env.SR_ARCHIVE_TEST_PRIVILEGE === "root" ? [] : [
+        "src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts",
+      ]),
     ],
     sequence: { sequencer: DurationBalancedSequencer },
     // Keep each file isolated while bounding process and memory pressure.
