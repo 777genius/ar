@@ -7,7 +7,9 @@ import {mkdirSync,mkdtempSync,writeFileSync,openSync,writeSync,closeSync,realpat
 import {join} from "node:path";
 import {pathToFileURL} from "node:url";
 import {h1BuildLimits,h1BuildDaemonConfirmation,serializeH1DaemonOffline,h1FiniteSpawnTimeout} from "./current-h1-build-plan-TEST.ts";
-export const h1CompilerDockerImage="node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404";
+// Ubuntu extractor bwrap executes before its image pivot and needs GLIBC_2.38;
+// keep the outer compiler runtime on the digest-verified Trixie ABI.
+export const h1CompilerDockerImage="node:26.11.1-trixie@sha256:32fa97f3363975684b08bf4e8a68a47c7905175cc20275b50b974bbd02aba731";
 interface Observed {Id:string;Name:string;Config:{Image:string;Labels:Record<string,string>;User:string};HostConfig:{Memory:number;MemorySwap:number;PidsLimit:number;NetworkMode:string;Privileged:boolean;Binds:unknown;Mounts:unknown;CapAdd:string[];SecurityOpt:string[]};State:{Running:boolean;Status:string;ExitCode:number;Pid:number;StartedAt:string;FinishedAt:string};NetworkSettings:{Networks:Record<string,unknown>};SizeRw:number}
 export function assertH1CompilerContainer(row:unknown,id:string,name:string,owner:string):asserts row is Observed{
  assert(row&&typeof row==="object");const x=row as Observed;
