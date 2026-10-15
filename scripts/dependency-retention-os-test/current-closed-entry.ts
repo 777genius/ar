@@ -74,3 +74,18 @@ export function assertCurrentClosedEntry(fence: HostedActivationFence, jobRoot: 
   const after = pinReferenceFile(path, 65536); assert(after.bytes.equals(pin.bytes)); assert.deepEqual(after.reference, pin.reference);
   return Object.freeze({ startId: native.startId, sourceClosedSha256: pin.reference.sha256 });
 }
+
+import { observeCurrentHostedUnverifiedRTerminal } from "../../dist/worker-codex/hosted-current-dependency-origin.js";
+/** Genuine no-Active terminal readback. Uses the ORIGINAL private discharge
+ * validator and exact FDA; cannot create a closure/intent or release owner. */
+export function assertCurrentUnverifiedClosedEntry(fence:HostedActivationFence,jobRoot:string,result:HostedForegroundResult) {
+  assertHostedForegroundResult(result);assertHostedActivationFence(fence);assertReadonlyHostOperator();
+  const jobId=jobRoot.slice(jobRoot.lastIndexOf("/")+1),binding=readHostedDependencyBinding(jobId);
+  assert(binding && binding.version===2 && binding.jobRootDir===jobRoot && hostedDependencyJobRoot(jobId)===jobRoot);
+  const actual=readHostedInstallationActivation();assert.equal(actual.activation.phase,HostedActivationPhase.Closed);
+  assert(actual.activation.ordinaryStarts.every(row=>row.state===HostedCustodyReservationState.Terminal));
+  const terminal=observeCurrentHostedUnverifiedRTerminal(fence,result);assert.deepEqual(terminal.workspace,binding.workspace);
+  const kernel=new HostedReadonlyHostKernel();kernel.verifyExclusiveInventory();kernel.verifyDescriptorBoundary();
+  assert.deepEqual(observeCurrentHostedUnverifiedRTerminal(fence,result),terminal);
+  assert.deepEqual(readHostedInstallationActivation(),actual);return terminal;
+}

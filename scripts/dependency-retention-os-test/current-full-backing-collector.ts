@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
 import { basename, dirname } from "node:path";
-import { FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalFullProviderSetupTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullNativeCase, FullRemovalCase, MountRootKind, fullMountRoot, fullMountPath, fullMountLines, readFullMountTable, readFullMountTableBytes, type MountRoot, assertRetainedCurrentFullParent, readOriginalFullMonitorTask, readOriginalFullProviderSetupTask, readOriginalH1StagedTask, retainedCurrentFullParentDescriptors, fullData, fullNativeLiveRoot, fullNativeGuestRoot, fullNativeJob, fullNativeOsBase, fullNativeTmpDir, fullNativeUnit, type retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { fullRetainedFilesystemType } from "../../dist/worker-codex/hosted-full-backing-proc.js";
 import { readOriginalAdministrativeBirth, readOriginalPublicAdministrativeActor } from "./current-administrative-installation.js";
 import { H1DescriptorKind, H1ReadinessRecord, parseH1Request, readH1ReadinessRecord, readOriginalH1Observer, readOriginalH1SupervisorAcceptance } from "./current-removal-h1-fixture.js";
@@ -1025,12 +1025,60 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       let terminal:Buffer,terminalFd:number|undefined;
       if(parent.removalCase===FullRemovalCase.ParentCrashH1){assert(h1Terminal);h1Terminal.revalidate();terminal=h1Terminal.terminal;}
       else {
-      const policy=root+"/var/lib/subscription-runtime-host-policy";terminalFd=hold(policy+"/current-full-terminal.json",false,0o600n);terminal=fdBytes(terminalFd,16384,budget);const row=fullData(JSON.parse(terminal.toString("utf8")),["schemaVersion","sourceSha","pairSha256","invocationSealSha256","activationGeneration","epochGeneration","workspace","sourceClosed","idleClosed"]);
+      const policy=root+"/var/lib/subscription-runtime-host-policy";terminalFd=hold(policy+"/current-full-terminal.json",false,0o600n);terminal=fdBytes(terminalFd,16384,budget);
+      if(parent.fullCase===FullNativeCase.LegacyUnverifiedR){
+        const row=fullData(JSON.parse(terminal.toString("utf8")),["schemaVersion","fullCase","purpose","sourceSha","pairSha256","invocationSealSha256","activationGeneration","epochGeneration","workspace","startId","unit","release","fda"]);
+        assert(Buffer.from(JSON.stringify(row)+"\n").equals(terminal) && row.schemaVersion===2 && row.fullCase===parent.fullCase && row.purpose==="original_no_active_r_discharge_only" &&
+          row.sourceSha===process.env.TEST_SOURCE_SHA && row.pairSha256===hash(sealBytes[0]!) && row.invocationSealSha256===hash(sealBytes[1]!));
+        assert(typeof row.startId==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(row.startId) && row.unit==="subscription-runtime-outer-"+row.startId+".service");
+        const pinned=(value:unknown,expected:string,max=65536)=>{
+          const ref=fullData(value,["path","identity","sha256"]),id=fullData(ref.identity,["dev","ino"]);assert(ref.path===expected && typeof ref.sha256==="string" && /^[a-f0-9]{64}$/.test(ref.sha256));
+          const fd=hold(root+expected,false,0o600n),stat=fstatSync(fd,{bigint:true}),bytes=fdBytes(fd,max,budget);
+          assert.equal(String(stat.dev),id.dev);assert.equal(String(stat.ino),id.ino);assert.equal(hash(bytes),ref.sha256);
+          return {bytes,row:JSON.parse(bytes.toString("utf8")) as unknown};
+        };
+        const release=pinned(row.release,policy.slice(root.length)+"/dependency-unverified-r-releases/"+row.startId+".json"),
+          intent=fullData(release.row,["version","identity","previousOwner","previousOwnerSha256","releasedOwner","fda","providers"]);
+        assert(Buffer.from(JSON.stringify(intent)+"\n").equals(release.bytes) && intent.version===1);
+        const original=fullData(intent.identity,["version","attempt","binding","identity","outer","parent","material","preclaim","entry","preparation","qualification","completion"]),
+          outer=fullData(original.outer,["startId","unit","creatorId","generation","state"]);
+        assert(typeof outer.generation==="number");
+        assert(original.version===1 && outer.startId===row.startId && outer.unit===row.unit && outer.state===HostedCustodyReservationState.Terminal);
+        const binding=fullData(original.binding,["version","jobId","jobRootDir","workspace","installationId","runtimeSha","grantDigest","toolProfile"]);
+        assert(binding.version===2 && JSON.stringify(binding.workspace)===JSON.stringify(row.workspace));
+        const prior=parseDependencyOwner(intent.previousOwner),released=parseDependencyOwner(intent.releasedOwner);
+        assert(prior.version===3 && prior.owner?.phase===DependencyOwnerPhase.Fenced && released.version===3 && released.owner===null && released.revision===prior.revision+1 && released.epoch===prior.epoch);
+        assert.equal(hash(Buffer.from(JSON.stringify(prior)+"\n")),intent.previousOwnerSha256);
+        assert.equal(JSON.stringify(prior.owner.attempt),JSON.stringify(original.attempt));
+        const workspace=fullData(row.workspace,["canonicalPath","dev","ino"]),ownerPath=policy+"/dependency-owners/"+workspace.dev+"-"+workspace.ino+".json";
+        assert.equal(fdBytes(hold(ownerPath,false,0o600n),16384,budget).toString("utf8"),JSON.stringify(released)+"\n");
+        const fda=pinned(row.fda,policy.slice(root.length)+"/dependency-unverified-r-fences/"+row.startId+".json");
+        assert.equal(JSON.stringify(intent.fda),JSON.stringify(row.fda));
+        const waited=fullData(fda.row,["version","attempt","binding","identity","outer","parent","material","preclaim","entry","preparation","qualification","completion","invocationId","proxyBirth"]);
+        assert.equal(JSON.stringify({...original,invocationId:waited.invocationId,proxyBirth:waited.proxyBirth})+"\n",fda.bytes.toString("utf8"));
+        assert(typeof waited.invocationId==="string" && /^[a-f0-9]{32}$/.test(waited.invocationId) && typeof waited.proxyBirth==="string" && /^[1-9][0-9]*:[1-9][0-9]*$/.test(waited.proxyBirth));
+        // Every original private-source reference is retained at its protected
+        // original identity. None of these DATA leaves can issue a release.
+        for(const key of ["parent","material","preclaim","entry","preparation","qualification","completion"]){const ref=fullData(original[key],["path","identity","sha256"]);assert(typeof ref.path==="string" && ref.path.startsWith("/var/lib/subscription-runtime-host-policy/"));pinned(ref,ref.path);}
+        const epochBytes=fdBytes(hold(policy+"/readonly-epoch.json",false,0o600n),65536,budget),epoch=JSON.parse(epochBytes.toString("utf8"));
+        assert(epoch.phase===HostedCustodyPhase.Closed && epoch.revoked===true && epoch.generation===row.epochGeneration && epoch.generation>outer.generation &&
+          JSON.stringify(epoch.identity)===JSON.stringify(original.identity) && JSON.stringify(epoch.outerRuntime)===JSON.stringify(outer) &&
+          Array.isArray(epoch.reservations) && epoch.reservations.every((entry:unknown)=>entry && typeof entry==="object" && "state" in entry && entry.state===HostedCustodyReservationState.Terminal));
+        const activation=JSON.parse(fdBytes(hold(policy+"/host-activation.json",false,0o600n),65536,budget).toString("utf8"));
+        assert(activation.phase===HostedActivationPhase.Closed && activation.generation===row.activationGeneration && Array.isArray(activation.ordinaryStarts) && activation.ordinaryStarts.every((entry:unknown)=>entry && typeof entry==="object" && "state" in entry && entry.state===HostedCustodyReservationState.Terminal));
+        assert(Array.isArray(intent.providers));
+        for(const provider of intent.providers){const proof=fullData(provider,["attempt","birth","completion","entry","material","parent","preclaim","preparation","profile","qualification","receipt","row"]);assert.equal(JSON.stringify(proof.attempt),JSON.stringify(original.attempt));
+          assert(epoch.reservations.some((entry:unknown)=>JSON.stringify(entry)===JSON.stringify(proof.row)));
+          for(const key of ["birth","completion","entry","material","parent","preclaim","preparation","profile","qualification"]){const ref=fullData(proof[key],["path","identity","sha256"]);assert(typeof ref.path==="string" && ref.path.startsWith("/var/lib/subscription-runtime-host-policy/"));pinned(ref,ref.path);}
+        }
+      } else {
+      const row=fullData(JSON.parse(terminal.toString("utf8")),["schemaVersion","sourceSha","pairSha256","invocationSealSha256","activationGeneration","epochGeneration","workspace","sourceClosed","idleClosed"]);
       assert(Buffer.from(JSON.stringify(row)+"\n").equals(terminal) && row.schemaVersion===1 && row.sourceSha===process.env.TEST_SOURCE_SHA && row.pairSha256===hash(sealBytes[0]!) && row.invocationSealSha256===hash(sealBytes[1]!));
       for(const [name,expectedPhase] of [["host-activation.json",HostedActivationPhase.Closed],["readonly-epoch.json",HostedCustodyPhase.Closed]] as const){const fd=hold(policy+"/"+name,false,0o600n),bytes=fdBytes(fd,65536,budget),value:unknown=JSON.parse(bytes.toString("utf8"));
         assert(value && typeof value==="object" && "phase" in value && value.phase===expectedPhase && "generation" in value && value.generation===row[name==="host-activation.json"?"activationGeneration":"epochGeneration"]);
       }
       for(const reference of [row.sourceClosed,row.idleClosed]){assert(reference && typeof reference==="object" && "path" in reference && typeof reference.path==="string" && /^\/var\/lib\/subscription-runtime-host-policy\/dependency-generation-(?:source-closures\/[0-9a-f-]{36}|idle-closures\/[1-9][0-9]*-[1-9][0-9]*\/[0-9]+)\.json$/.test(reference.path) && "sha256" in reference && typeof reference.sha256==="string");assert.equal(hash(fdBytes(hold(root+reference.path,false,0o600n),65536,budget)),reference.sha256);}
+      }
       for(const directory of [policy+"/dependency-transactions",policy+"/dependency-owners"]){const fd=hold(directory,true,0o700n);assert(!readdirSync(`/proc/self/fd/${fd}`).some(name=>/\.remove\.lock$|\.close-unresolved\.json$|\.lock$|^\.pending-/.test(name)));}
       }
       const unit=`TEST-retention-os-${id}.service`,group="/system.slice/"+unit;

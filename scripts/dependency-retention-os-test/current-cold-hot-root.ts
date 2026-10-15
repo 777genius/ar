@@ -1,3 +1,7 @@
+import { FullNativeCase } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
+import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
+import { HostedDependencyReferenceKind } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
 import { assertHostedForegroundResult, type HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 import { assertOriginalFullBackingPreparation, FullBackingInstallationContract } from "../../dist/worker-codex/hosted-full-backing-interval.js";
 /** Owned TEST preparation. Inventory is configuration; ORIGINAL install grants custody. */
@@ -15,12 +19,12 @@ import { SYSTEM_BUS_CONTROL_GROUP } from "../../dist/core/host-infrastructure/sy
 import { isDependencyCustodyObject } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { issueActualSystemBusInfrastructure, issueNativeFdProfile, actualToolchainProfile } from "./native-registration-profile.js";
 import { CurrentBackingGeometry, readCurrentBackingGeometry, observeInitialCurrentBacking } from "./current-backing-geometry.js";
-import { prepareCurrentLocalInputs, registerCurrentTools, currentNativeRecipe } from "./current-tools-fixture.ts";
+import { prepareCurrentLocalInputs, registerCurrentTools, currentNativeRecipe, createCurrentLegacyCandidateTree } from "./current-tools-fixture.ts";
 import { assertCurrentRealCodexInputs } from "./current-real-codex-input.ts";
 import { command, directory, directoryIdentity, digest, fileDigest, installedArtifactDigest, json, node, policy, runtime } from "./common.ts";
 export enum ColdHotPrerequisite { ConfiguredAuth = "configured_auth", IndependentPolicy = "independent_policy" }
 export type CurrentColdHotRoots = Readonly<{ candidateJobId: string; readonlyJobId: string; jobRoot: string; workspace: string;
-  accountName: string; workspaceIdentity: ReturnType<typeof directoryIdentity>; sourceSha: string; runtimeManifestSha256: string }>;
+  referenceJobId?:string; accountName: string; workspaceIdentity: ReturnType<typeof directoryIdentity>; sourceSha: string; runtimeManifestSha256: string }>;
 const preparedAuth = new WeakMap<CurrentColdHotRoots,{attachment:ReturnType<typeof mountCurrentConfiguredAuth>;final?:HostedForegroundResult;closed:boolean}>();
 /** Original lexical handle only; serialized roots cannot register or recover it. */
 export function assertPreparedCurrentConfiguredAuth(roots:CurrentColdHotRoots):void {
@@ -40,11 +44,11 @@ export function prepareCurrentColdHotRoots(evidence: Record<string, unknown>, ac
 }
 /** Distinct actual FULL producer. Requiredness is fixed by this inspected
  * entrypoint and physical original parent, never by a JSON/env boolean. */
-export function prepareCurrentFullColdHotRoots(evidence: Record<string, unknown>, accountName: string): Promise<CurrentColdHotRoots> {
+export function prepareCurrentFullColdHotRoots(evidence: Record<string, unknown>, accountName: string, fullCase=FullNativeCase.ColdRestore): Promise<CurrentColdHotRoots> {
   assertOriginalFullBackingPreparation();
-  return prepareRoots(evidence, accountName, FullBackingInstallationContract.OriginalParentProcV1);
+  return prepareRoots(evidence, accountName, FullBackingInstallationContract.OriginalParentProcV1,fullCase);
 }
-async function prepareRoots(evidence: Record<string, unknown>, accountName: string, full?: FullBackingInstallationContract): Promise<CurrentColdHotRoots> {
+async function prepareRoots(evidence: Record<string, unknown>, accountName: string, full?: FullBackingInstallationContract,fullCase=FullNativeCase.ColdRestore): Promise<CurrentColdHotRoots> {
   assertReadonlyHostOperator(); assertConfiguredAccountName(accountName); assert.equal(readCurrentBackingGeometry(), CurrentBackingGeometry.Adoptable);
   const sourceSha = process.env.TEST_SOURCE_SHA; assert(sourceSha && /^[a-f0-9]{40}$/.test(sourceSha));
   const bus = await issueActualSystemBusInfrastructure(evidence);
@@ -53,6 +57,11 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
     directory(policy + "/" + name);
   const candidateJobId = "TEST-os-" + randomUUID(), readonlyJobId = "TEST-os-" + randomUUID();
   const jobRoot = hostedDependencyJobRoot(candidateJobId), workspace = jobRoot + "/workspace";
+  const referenceJobId=fullCase===FullNativeCase.LegacyUnverifiedR?"TEST-os-"+randomUUID():undefined;
+  if(referenceJobId){assert(full);const referenceRoot=hostedDependencyJobRoot(referenceJobId);
+    for(const path of [referenceRoot,referenceRoot+"/workspace",referenceRoot+"/state",referenceRoot+"/state/registry"])directory(path);
+    writeFileSync(referenceRoot+"/prompt","Dependency reference only.\n",{flag:"wx",mode:0o600});
+    command("/usr/bin/git",["init","--initial-branch=main",referenceRoot+"/workspace"]);}
   // The second empty directory is a geometry probe, NEVER an installed reference creator.
   const probeWorkspace = hostedDependencyJobRoot("TEST-geometry-" + randomUUID()) + "/workspace";
   for (const path of [jobRoot, workspace, probeWorkspace]) directory(path);
@@ -95,7 +104,9 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
     supervisorUnit, systemBusInfrastructure: bus, collectorProfile,
     units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest(fragment) },
       { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentSha256: bus.service.fragmentSha256 }],
-    ordinaryCreators: [{ creatorId: candidateJobId, jobId: candidateJobId, jobRootDir: jobRoot, workspacePath: workspace, launch, authAttachment:authAttachment.profile }],
+    ordinaryCreators: [{ creatorId: candidateJobId, jobId: candidateJobId, jobRootDir: jobRoot, workspacePath: workspace, launch, authAttachment:authAttachment.profile },
+      ...(referenceJobId?[{creatorId:referenceJobId,jobId:referenceJobId,jobRootDir:hostedDependencyJobRoot(referenceJobId),workspacePath:hostedDependencyJobRoot(referenceJobId)+"/workspace",
+        launch:{command:node,args:currentNativeRecipe(referenceJobId).map((arg,index,all)=>all[index-1]==="--accounts"?accountName:arg),cwd:hostedDependencyJobRoot(referenceJobId)+"/workspace"}}]:[])],
     disabledCreators: [], runtimeLaunch: launch });
   const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages"; directory(stages);
   if (full) assertOriginalFullBackingPreparation();
@@ -107,9 +118,13 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
   new HostedInstallationActivationStore().install();
   const installed = readHostedInstallationActivation(); assert.equal(installed.activation.phase, HostedActivationPhase.Closed);
   assert.equal(installed.activation.ordinaryStarts.length, 0); assert.equal(installed.installation.runtimeSha, sourceSha);
-  assert.equal(readHostedReadonlyHostInventory().ordinaryCreators.length, 1);
+  assert.equal(readHostedReadonlyHostInventory().ordinaryCreators.length, referenceJobId?2:1);
   await registerCurrentTools(candidateJobId);
-  const roots = Object.freeze({ candidateJobId, readonlyJobId, jobRoot, workspace, accountName, workspaceIdentity: directoryIdentity(workspace), sourceSha, runtimeManifestSha256 });
+  if(referenceJobId){const referenceRoot=hostedDependencyJobRoot(referenceJobId);
+    await writeHostedTestEgressGrant({schemaVersion:1,jobId:referenceJobId,jobRootDir:referenceRoot,workspacePath:referenceRoot+"/workspace",profileId:CodexProviderEgressProfileId.TestNpmQualification},undefined,
+      {candidateJobId,kind:HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1});
+    evidence.legacyCandidateBirth=await createCurrentLegacyCandidateTree(candidateJobId,120000);}
+  const roots = Object.freeze({ candidateJobId, readonlyJobId, jobRoot, workspace, accountName,...(referenceJobId?{referenceJobId}:{}), workspaceIdentity: directoryIdentity(workspace), sourceSha, runtimeManifestSha256 });
   preparedAuth.set(roots,{attachment:authAttachment,closed:false});
   kernel.verifyExclusiveInventory();
   // Factual review request only. No reviewReference, issuer digest, lease or Ready.
