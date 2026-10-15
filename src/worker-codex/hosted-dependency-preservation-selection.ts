@@ -54,7 +54,7 @@ export function readHostedDependencyPreservationSelection(binding: HostedDepende
       claimed.owner.attempt.host.grantDigest !== binding.grantDigest ||
       !isDependencyCustodyObject(v.sourceTree,"dev,ino") || v.sourceTree.dev !== binding.workspace.dev ||
       typeof v.sourceTree.ino !== "string" || !/^[1-9][0-9]{0,39}$/.test(v.sourceTree.ino) ||
-      !isDependencyCustodyObject(v.destinationParent,"canonicalPath,dev,ino") || v.destinationParent.canonicalPath !== hostedDependencyQuarantineRoot ||
+      !isDependencyCustodyObject(v.destinationParent,"canonicalPath,dev,ino") || v.destinationParent.canonicalPath !== hostedDependencyQuarantineRoot(binding.runtimeSha) ||
       v.destinationParent.dev !== binding.workspace.dev || typeof v.destinationParent.ino !== "string" || !/^[1-9][0-9]{0,39}$/.test(v.destinationParent.ino)) held();
   const l = v.lineage;
   if (!(isDependencyCustodyObject(l,"idle,kind,sourceClosed") && l.kind === HostedDependencyPreservationLineageKind.Active &&

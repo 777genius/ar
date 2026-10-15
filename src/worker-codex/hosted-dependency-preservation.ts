@@ -1,3 +1,4 @@
+import { readHostedDependencyScratchLayout } from "./hosted-dependency-scratch-layout";
 import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
@@ -11,7 +12,7 @@ import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 
 export const hostedDependencyPreservationRoot = "/var/lib/subscription-runtime-host-policy/dependency-preservation";
-export const hostedDependencyQuarantineRoot = "/var/lib/subscription-runtime-host-policy/dependency-quarantine";
+export function hostedDependencyQuarantineRoot(runtimeSha: string): string { return readHostedDependencyScratchLayout(runtimeSha).quarantine; }
 type Unverified = Extract<DependencyReceipt, { state: DependencyReceiptState.Unverified }>;
 type Pin = ReturnType<typeof pinReferenceFile>["reference"];
 export type HostedDependencyPreparedPreservation = Readonly<{
@@ -49,9 +50,9 @@ export function readHostedDependencyPreparedPreservation(binding: HostedDependen
       !sameDependencyMaintenanceAttempt(owner.owner.attempt, row.attempt) ||
       row.attempt.host.installationId !== binding.installationId || row.attempt.host.runtimeSha !== binding.runtimeSha || row.attempt.host.grantDigest !== binding.grantDigest ||
       !sameDependencyTree(row.trash.originalTree, previous.tree) || row.trash.operationId !== row.attempt.operationId ||
-      row.trash.destinationName !== `dependency-${row.attempt.operationId}` || row.trash.destinationParent.canonicalPath !== hostedDependencyQuarantineRoot ||
+      row.trash.destinationName !== `dependency-${row.attempt.operationId}` || row.trash.destinationParent.canonicalPath !== hostedDependencyQuarantineRoot(binding.runtimeSha) ||
       row.trash.destinationParent.dev !== binding.workspace.dev || !/^[1-9][0-9]{0,39}$/.test(row.trash.destinationParent.ino) ||
-      row.inventory.reference.path !== `${hostedDependencyQuarantineRoot}/${row.attempt.operationId}.inventory.json.gz` ||
+      row.inventory.reference.path !== `${hostedDependencyQuarantineRoot(binding.runtimeSha)}/${row.attempt.operationId}.inventory.json.gz` ||
       !/^[a-f0-9]{64}$/.test(row.inventory.digest) || !/^(0|[1-9][0-9]{0,39})$/.test(row.inventory.logicalBytes) ||
       !Number.isSafeInteger(row.inventory.entries) || row.inventory.entries < 1) held();
   const inventory = pinReferenceFile(row.inventory.reference.path, 4 * 1024 * 1024);
@@ -88,8 +89,8 @@ export function readHostedDependencyPreservationMapping(binding: HostedDependenc
   }
   const prepared = readHostedDependencyPreparedPreservation(binding, previous), committed = pinReferenceFile(prefix + ".committed.json", 4096);
   if (!committed.bytes.equals(encode(hostedDependencyPreservationCommit(prepared)))) held();
-  const trash = prepared.header.trash, parent = lstatSync(hostedDependencyQuarantineRoot, { bigint: true }),
-    tree = lstatSync(`${hostedDependencyQuarantineRoot}/${trash.destinationName}`, { bigint: true });
+  const trash = prepared.header.trash, parent = lstatSync(hostedDependencyQuarantineRoot(binding.runtimeSha), { bigint: true }),
+    tree = lstatSync(`${hostedDependencyQuarantineRoot(binding.runtimeSha)}/${trash.destinationName}`, { bigint: true });
   if (!parent.isDirectory() || parent.uid !== 0n || (parent.mode & 0o7777n) !== 0o700n ||
       !sameDependencyTree({ dev: String(parent.dev), ino: String(parent.ino) }, trash.destinationParent) ||
       !tree.isDirectory() || !sameDependencyTree({ dev: String(tree.dev), ino: String(tree.ino) }, trash.originalTree)) held();

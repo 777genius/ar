@@ -1,3 +1,4 @@
+import { readHostedDependencyScratchLayout } from "./hosted-dependency-scratch-layout";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { DependencyInstallProofKind, DependencyReceiptState, sameDependencyTree,
@@ -19,7 +20,6 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + "\n");
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const equal = (a: unknown, b: unknown) => encode(a).equals(encode(b));
 const operations = "/var/lib/subscription-runtime-host-policy/dependency-transactions";
-const trashRoot = "/var/lib/subscription-runtime-host-policy/dependency-trash";
 function fail(): never { throw new Error("dependency_ready_source_history_unresolved"); }
 function sourceStore() {
   assertReadonlyHostOperator();
@@ -34,7 +34,7 @@ function sourceStore() {
       assertDetachedTarget(ready, _mapping, target) {
         const reference = target.reference;
         const id = /^dependency-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.exec(target.name)?.[1];
-        if (!id || reference.path !== `${operations}/${id}.json` || target.workspace.canonicalPath !== trashRoot ||
+        if (!id || reference.path !== `${operations}/${id}.json` ||
             target.workspace.dev !== ready.tree.dev) fail();
         const bytes = readPinned(reference, 32768), header = JSON.parse(bytes.toString("utf8"));
         if (!header || Object.keys(header).sort().join(",") !== "attempt,ready,trash,version" || header.version !== 1 ||
@@ -42,6 +42,7 @@ function sourceStore() {
         const owner = parseDependencyOwner({ version: 2, workspace: ready.workspace, revision: 1, epoch: header.attempt?.epoch,
           owner: { kind: DependencyOwnerKind.Maintenance, phase: DependencyOwnerPhase.ExclusiveMutation, attempt: header.attempt } });
         if (owner.owner?.kind !== DependencyOwnerKind.Maintenance || owner.owner.attempt.operationId !== id ||
+            target.workspace.canonicalPath !== readHostedDependencyScratchLayout(owner.owner.attempt.host.runtimeSha).trash ||
             !header.trash || Object.keys(header.trash).sort().join(",") !== "destinationName,destinationParent,operationId,originalTree" ||
             header.trash.operationId !== id || !sameDependencyTree(header.trash.originalTree, ready.tree) ||
             !equal(header.trash.destinationParent, target.workspace) || header.trash.destinationName !== target.name) fail();

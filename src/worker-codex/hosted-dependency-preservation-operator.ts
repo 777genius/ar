@@ -1,10 +1,11 @@
+import { HostedDependencyScratchDirectory, HostedDependencyScratchLayoutKind, readHostedDependencyScratchDirectoryPin, readHostedDependencyScratchLayout } from "./hosted-dependency-scratch-layout";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { readHostedDependencyPendingPreservations, readHostedDependencyPreservationRelease } from "./hosted-dependency-preservation-handoff";
 import type { CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { parseDependencyGenerationContinuityInvalidation } from "@vioxen/subscription-runtime/core";
 import { randomUUID } from "node:crypto";
-import { lstatSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { DependencyGenerationContinuityKind as Continuity, DependencyOwnerKind, DependencyOwnerPhase,
   DependencyReceiptState as State, DependencyUnverifiedReason, parseDependencyOwner,
   sameDependencyProtectedReference, type DependencyOwnerRecord } from "@vioxen/subscription-runtime/worker-core";
@@ -122,15 +123,15 @@ export function beginOriginalHostedDependencyPreservation(fence:HostedActivation
   if(previous.owner || pending.length)held();
   const receipt=readHostedDependencyEstablishedReceipt(a.binding);
   if(!receipt || receipt.state!==State.Ready && receipt.state!==State.Unverified)held();
-  ensureHostedDependencyDirectory(hostedDependencyPreservationRoot);ensureHostedDependencyDirectory(hostedDependencyQuarantineRoot);ensureHostedDependencyDirectory("/var/lib/subscription-runtime-host-policy/dependency-transactions");
-  const parent=lstatSync(hostedDependencyQuarantineRoot,{bigint:true});if(!parent.isDirectory() || parent.uid!==0n || (parent.mode&0o7777n)!==0o700n || String(parent.dev)!==a.binding.workspace.dev)held();
+  ensureHostedDependencyDirectory(hostedDependencyPreservationRoot);prepareQuarantineRoot(a.binding.runtimeSha,a.binding.workspace.dev);ensureHostedDependencyDirectory("/var/lib/subscription-runtime-host-policy/dependency-transactions");
+  const parent=lstatSync(hostedDependencyQuarantineRoot(a.binding.runtimeSha),{bigint:true});if(!parent.isDirectory() || parent.uid!==0n || (parent.mode&0o7777n)!==0o700n || String(parent.dev)!==a.binding.workspace.dev)held();
   const operationId=randomUUID(),attempt={operationId,epoch:previous.epoch+1,host:{installationId:a.installation.installationId,
     bootId:a.session.bootId,supervisorId:a.session.supervisorId,runtimeSha:a.installation.runtimeSha,inventoryDigest:a.installation.inventorySha256,grantDigest:a.binding.grantDigest}},
     claimedOwner=parseDependencyOwner({...previous,revision:previous.revision+1,epoch:attempt.epoch,owner:{kind:DependencyOwnerKind.Maintenance,phase:DependencyOwnerPhase.ExclusiveMutation,attempt}}),
     prior=receipt.state===State.Ready?readHostedDependencyExistingCommittedReady(fence,a.binding,receipt.revision):readHostedDependencyExistingCommittedUnverified(fence,a.binding,receipt.revision),
     lineage=capture(fence,a,previous,access);
   const s:Selection={version:1,kind:HostedDependencyPreservationRequestKind.ExplicitReinstallation,operationId,binding:a.binding,
-    prior:{owner:previous,receipt:prior},claimedOwner,sourceTree:(()=>{const p=readHostedDependencyRootDirectoryPin(a.binding.workspace.canonicalPath+"/node_modules");return {dev:p.dev,ino:p.ino};})(),destinationParent:{canonicalPath:hostedDependencyQuarantineRoot,dev:String(parent.dev),ino:String(parent.ino)},lineage};
+    prior:{owner:previous,receipt:prior},claimedOwner,sourceTree:(()=>{const p=readHostedDependencyRootDirectoryPin(a.binding.workspace.canonicalPath+"/node_modules");return {dev:p.dev,ino:p.ino};})(),destinationParent:{canonicalPath:hostedDependencyQuarantineRoot(a.binding.runtimeSha),dev:String(parent.dev),ino:String(parent.ino)},lineage};
   writeRecord(hostedDependencyPreservationSelectionPath(operationId),s);
   const selected=readHostedDependencyPreservationSelection(a.binding,operationId);
   if(!equal(selected.header,s) || !equal(owner(s),previous))held();capture(fence,a,previous,access,s);
@@ -160,7 +161,7 @@ function assertSource(s:Selection):void {
   catch(e){if((e as NodeJS.ErrnoException).code!=="ENOENT")throw e;
     const r=s.prior.receipt.receipt.revision+1,prefix=hostedDependencyPreservationPath(s.binding,r);
     if(!readHostedPrivateBytes(prefix+".prepared.json",32768))held();
-    const target=readHostedDependencyRootDirectoryPin(`${hostedDependencyQuarantineRoot}/dependency-${s.operationId}`);
+    const target=readHostedDependencyRootDirectoryPin(`${hostedDependencyQuarantineRoot(s.binding.runtimeSha)}/dependency-${s.operationId}`);
     if(target.dev!==s.sourceTree.dev || target.ino!==s.sourceTree.ino)held();
   }
 }
@@ -212,4 +213,37 @@ export function isOriginalHostedDependencyPreservationReleased(fence:HostedActiv
   boundary(fence,access);if(!readHostedPrivateBytes(hostedDependencyPreservationSelectionPath(s.operationId)+".release.json",32768))return false;
   const release=readHostedDependencyPreservationRelease(fence,s);if(!equal(owner(s),release.released))return false;
   readOriginalHostedDependencyPreservationHistory(fence,s,access);if(!readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();return true;
+}
+
+/** Called only after this defining issuer's original authority has rejoined.
+ * No late bind, chmod, migration or cleanup can repair a conflicting layout. */
+function prepareQuarantineRoot(runtimeSha: string, workspaceDevice: string): void {
+  const layout = readHostedDependencyScratchLayout(runtimeSha), path = layout.quarantine;
+  if (layout.kind === HostedDependencyScratchLayoutKind.Existing) { ensureHostedDependencyDirectory(path); return; }
+  const expected = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Parent);
+  const parent = openSync(layout.parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(parent, { bigint: true });
+    if (String(before.dev) !== expected.dev || String(before.ino) !== expected.ino || expected.dev !== workspaceDevice) held();
+    const name = "dependency-quarantine"; let created = true;
+    try { mkdirSync(`/proc/self/fd/${parent}/${name}`, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; created = false; }
+    const child = openSync(`/proc/self/fd/${parent}/${name}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const p = fstatSync(parent, { bigint: true }), c = fstatSync(child, { bigint: true }), pin = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Quarantine);
+      if (p.dev !== before.dev || p.ino !== before.ino || p.mode !== before.mode || p.uid !== before.uid || p.gid !== before.gid ||
+          p.nlink !== before.nlink + (created ? 1n : 0n) || c.uid !== 0n || c.gid !== 0n || (c.mode & 0o7777n) !== 0o700n ||
+          pin.dev !== expected.dev || pin.mountId !== expected.mountId || String(c.dev) !== pin.dev || String(c.ino) !== pin.ino) held();
+      const mount = (fd: number) => { const raw = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"), rows = [...raw.matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gm)];
+        if (Buffer.byteLength(raw) > 65536 || rows.length !== 1 || !rows[0]?.[1]) held(); return rows[0]![1]!; };
+      if (mount(parent) !== expected.mountId || mount(child) !== pin.mountId) held();
+      fsyncSync(child); fsyncSync(parent);
+      const same = (a: typeof p, b: typeof p) => (["dev","ino","uid","gid","mode","nlink","ctimeNs","mtimeNs"] as const).every(key => a[key] === b[key]);
+      if (!same(p,fstatSync(parent,{bigint:true})) || !same(c,fstatSync(child,{bigint:true})) ||
+          mount(parent) !== expected.mountId || mount(child) !== pin.mountId) held();
+      const after = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Quarantine), parentAfter = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Parent);
+      if (after.canonicalPath !== path || after.dev !== pin.dev || after.ino !== pin.ino || after.mountId !== pin.mountId ||
+          parentAfter.dev !== expected.dev || parentAfter.ino !== expected.ino || parentAfter.mountId !== expected.mountId) held();
+    } finally { closeSync(child); }
+  } finally { closeSync(parent); }
 }

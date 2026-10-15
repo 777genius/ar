@@ -1,3 +1,4 @@
+import { readHostedDependencyScratchLayout } from "./hosted-dependency-scratch-layout";
 import { readHostedDependencyEvictionEnabled } from "./hosted-dependency-eviction-enabled-policy";
 import { fstatSync, readFileSync, readdirSync } from "node:fs";
 import { DependencyGenerationContinuityKind as Continuity, DependencyOwnerKind,
@@ -54,7 +55,7 @@ export function selectOriginalHostedDependencyMaintenanceRename(fence:HostedActi
   if(!sameDependencyProtectedReference(ready.reference,slot.previousReady) || !encode(ready.receipt).equals(encode(parsed.receipt)) ||
       !isDependencyCustodyObject(v.trash,"destinationName,destinationParent,operationId,originalTree") || v.trash.operationId!==attempt.operationId ||
       v.trash.destinationName!==`dependency-${attempt.operationId}` || !isDependencyCustodyObject(v.trash.destinationParent,"canonicalPath,dev,ino") ||
-      v.trash.destinationParent.canonicalPath!==root+"/dependency-trash" || v.trash.destinationParent.dev!==a.binding.workspace.dev ||
+      v.trash.destinationParent.canonicalPath!==readHostedDependencyScratchLayout(a.binding.runtimeSha).trash || v.trash.destinationParent.dev!==a.binding.workspace.dev ||
       typeof v.trash.destinationParent.ino!=="string" || !/^[1-9][0-9]*$/.test(v.trash.destinationParent.ino) ||
       !isDependencyCustodyObject(v.trash.originalTree,"dev,ino") || typeof v.trash.originalTree.dev!=="string" || typeof v.trash.originalTree.ino!=="string" ||
       !sameDependencyTree({dev:v.trash.originalTree.dev,ino:v.trash.originalTree.ino},ready.receipt.tree))held();
@@ -68,7 +69,7 @@ export function selectOriginalHostedDependencyMaintenanceRename(fence:HostedActi
  * readers reach this only through the defining original map's current entry. */
 export function assertOriginalHostedDependencyMaintenanceRenameDescriptors(context:OriginalHostedDependencyMaintenanceOrigin,fence:HostedActivationFence,access:symbol):void {
   const state=readOriginalHostedDependencyMaintenanceRenameState(context,access),a=current(fence,state,access),
-    expected={workspace:a.binding.workspace,trashPath:root+"/dependency-trash/"+state.header.trash.destinationName,operationId:state.attempt.operationId},
+    expected={workspace:a.binding.workspace,trashPath:readHostedDependencyScratchLayout(a.binding.runtimeSha).trash+"/"+state.header.trash.destinationName,operationId:state.attempt.operationId},
     anchors=state.session ? readDependencyTreeEffectReferenceAnchors(state.session,expected):[];
   for(const fd of [0,1,2]){const stat=fstatSync(fd);if(!stat.isFIFO() && !stat.isSocket())held();}
   const names=readdirSync("/proc/self/fd");if(names.length>512)held();
@@ -101,7 +102,7 @@ export async function runOriginalHostedDependencyMaintenanceRename(context:Origi
       const actual=current(fence,state,access);assertOriginalHostedDependencyMaintenanceRenameDescriptors(context,fence,access);
       assertHostedDependencyKeyInputsCurrent(actual.binding,keyInputs);
       const groups=readOriginalHostedDependencyMaintenanceDischargedGroups(fence,state.jobId,state.attempt,access);
-      assertHostedDependencyReferenceVeto(actual.binding.workspace,root+"/dependency-trash/"+state.header.trash.destinationName,groups,DependencyReferenceEffect.Eviction,
+      assertHostedDependencyReferenceVeto(actual.binding.workspace,readHostedDependencyScratchLayout(actual.binding.runtimeSha).trash+"/"+state.header.trash.destinationName,groups,DependencyReferenceEffect.Eviction,
         {session:prepared.referenceSession,operationId:state.attempt.operationId});
       if(!readHostedDependencyEvictionEnabled())held();
       return prepared.commit();

@@ -33,7 +33,7 @@ function absent(path:string):boolean {try{lstatSync(path);return false;}catch(e)
 export function assertOriginalHostedDependencyPreservationDescriptors(fence:HostedActivationFence,access:symbol):boolean {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);if(!current)return false;
   const {selection:s,operation}=current,expected={workspace:s.binding.workspace,
-    trashPath:`${hostedDependencyQuarantineRoot}/dependency-${s.operationId}`,operationId:s.operationId},
+    trashPath:`${hostedDependencyQuarantineRoot(s.binding.runtimeSha)}/dependency-${s.operationId}`,operationId:s.operationId},
     anchors=operation?readDependencyTreeEffectReferenceAnchors(operation.referenceSession,expected):[];
   if(readHostedPrivateBytes(marker(s.operationId),4096))held();
   for(const fd of [0,1,2]){const stat=fstatSync(fd);if(!stat.isFIFO() && !stat.isSocket())held();}
@@ -59,12 +59,12 @@ export async function runOriginalHostedDependencyPreservation(jobId:string,recov
       const retired=withHostedActivationFence(fence=>readOriginalHostedDependencyPreservationRetired(fence,s,access)),prepared=readHostedDependencyPreparedPreservation(s.binding,retired.receipt);
       if(!readHostedDependencyCommittedPreservation(s.binding,retired.receipt,s.operationId))held();
       return {outcome:HostedDependencyExplicitPreservationOutcome.Preserved,operationId:s.operationId,mappingDigest:hash(encode(prepared.header)),
-        destination:`${hostedDependencyQuarantineRoot}/${prepared.header.trash.destinationName}`,preservedBytes:prepared.header.inventory.logicalBytes,entries:prepared.header.inventory.entries};
+        destination:`${hostedDependencyQuarantineRoot(s.binding.runtimeSha)}/${prepared.header.trash.destinationName}`,preservedBytes:prepared.header.inventory.logicalBytes,entries:prepared.header.inventory.entries};
     }
     const retired=withHostedActivationFence(fence=>{assertOriginalHostedDependencyPreservation(fence,s,access);return readOriginalHostedDependencyPreservationRetired(fence,s,access);});
     const attempt=s.claimedOwner.owner;if(!attempt || attempt.kind!==DependencyOwnerKind.Maintenance)held();
     const trash={operationId:s.operationId,originalTree:retired.receipt.tree,destinationParent:s.destinationParent,destinationName:`dependency-${s.operationId}`},
-      destination=`${hostedDependencyQuarantineRoot}/${trash.destinationName}`,prefix=hostedDependencyPreservationPath(s.binding,retired.receipt.revision);
+      destination=`${hostedDependencyQuarantineRoot(s.binding.runtimeSha)}/${trash.destinationName}`,prefix=hostedDependencyPreservationPath(s.binding,retired.receipt.revision);
     let prepared=readHostedPrivateBytes(prefix+".prepared.json",32768)?readHostedDependencyPreparedPreservation(s.binding,retired.receipt):undefined;
     if(prepared && prepared.header.attempt.operationId!==s.operationId || !prepared && readHostedPrivateBytes(prefix+".committed.json",4096))held();
     const missing=absent(s.binding.workspace.canonicalPath+"/node_modules");if(missing===absent(destination) || missing && !prepared)held();
@@ -73,7 +73,7 @@ export async function runOriginalHostedDependencyPreservation(jobId:string,recov
     withHostedActivationFence(fence=> {
       assertOriginalHostedDependencyPreservation(fence,s,access);
       if(!prepared) {
-        const path=`${hostedDependencyQuarantineRoot}/${s.operationId}.inventory.json.gz`,bytes=gzipSync(operation.inventory.canonicalBytes);publishInventory(path,bytes);
+        const path=`${hostedDependencyQuarantineRoot(s.binding.runtimeSha)}/${s.operationId}.inventory.json.gz`,bytes=gzipSync(operation.inventory.canonicalBytes);publishInventory(path,bytes,s.binding.runtimeSha);
         const inventory=pinReferenceFile(path,4*1024*1024);if(!inventory.bytes.equals(bytes))held();
         const header:HostedDependencyPreparedPreservation={version:1,binding:s.binding,attempt:attempt.attempt,previous:retired,trash,
           inventory:{reference:inventory.reference,digest:operation.inventory.digest,logicalBytes:operation.inventory.logicalBytes,entries:operation.inventory.entries}};
@@ -106,11 +106,11 @@ export async function runOriginalHostedDependencyPreservation(jobId:string,recov
   }
 }
 /** Bounded inventory durability; replay re-syncs the SAME immutable inode. */
-function publishInventory(path:string,bytes:Buffer):void {
+function publishInventory(path:string,bytes:Buffer,runtimeSha:string):void {
   if(!bytes.length || bytes.length>4*1024*1024)held();let fd:number,created=true;
   try{fd=openSync(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);}
   catch(e){if((e as NodeJS.ErrnoException).code!=="EEXIST")throw e;if(!pinReferenceFile(path,4*1024*1024).bytes.equals(bytes))held();created=false;fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW);}
   try{const stat=fstatSync(fd,{bigint:true});if(!stat.isFile() || stat.uid!==0n || stat.nlink!==1n || (stat.mode&0o7777n)!==0o600n)held();if(created)writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}
-  const parent=openSync(hostedDependencyQuarantineRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(parent);}finally{closeSync(parent);}
+  const parent=openSync(hostedDependencyQuarantineRoot(runtimeSha),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(parent);}finally{closeSync(parent);}
   if(!pinReferenceFile(path,4*1024*1024).bytes.equals(bytes))held();
 }

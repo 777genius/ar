@@ -34,7 +34,7 @@ vi.mock("../hosted-readonly-custody",()=>({createReadonlyPrivateRecord:(path:str
 // Project protected record grammar here, not its authority. Real parsers and
 // original issuer/index/owner admission have their separate composition tests.
 vi.mock("../hosted-dependency-preservation",()=>({
-  get hostedDependencyQuarantineRoot(){return f.quarantine;},hostedDependencyPreservationPath:()=>f.prefix,
+  hostedDependencyQuarantineRoot:()=>f.quarantine,hostedDependencyPreservationPath:()=>f.prefix,
   readHostedDependencyPreparedPreservation:()=>({header:JSON.parse(readFileSync(f.prefix+".prepared.json","utf8")),reference:pin(f.prefix+".prepared.json").reference}),
   hostedDependencyPreservationCommit:(p:any)=>({version:1,prepared:p.reference,tree:p.header.trash.originalTree,inventoryDigest:p.header.inventory.digest}),
   readHostedDependencyCommittedPreservation:()=>{fail("mapping-check");return existsSync(f.prefix+".committed.json")?{kind:"TEST projected mapping"}:undefined;},

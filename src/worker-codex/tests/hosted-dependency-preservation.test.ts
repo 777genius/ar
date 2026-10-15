@@ -1,3 +1,7 @@
+// Original stage facts are projected with the other protected ports in this composition test.
+vi.mock("../../provider-codex/app-server/adapters/hosted-full-backing-stage",()=>({
+  FullBackingInstallationContract:{OriginalParentProcV1:"original_full_parent_proc_v1"},
+  readOriginalHostedDependencyBackingStage:()=>({schemaVersion:1,runtimeSha:"a".repeat(40)})}));
 import { createHash, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -32,12 +36,12 @@ const previous = { version: 1 as const, revision: 1, generation: "TEST-old", wor
 let header: HostedDependencyPreparedPreservation, prefix: string;
 function prepare() {
   const operationId = randomUUID(), oldReference = { path: "/protected/old.json", identity: { dev: "7", ino: "24" }, sha256: hash(encode(previous)) },
-    inventoryPath = `${hostedDependencyQuarantineRoot}/${operationId}.inventory.json.gz`, inventory = encode({ version: 1, entries: ["TEST complete opaque inventory"] }), compressed = gzipSync(inventory);
+    inventoryPath = `${hostedDependencyQuarantineRoot(binding.runtimeSha)}/${operationId}.inventory.json.gz`, inventory = encode({ version: 1, entries: ["TEST complete opaque inventory"] }), compressed = gzipSync(inventory);
   f.files.set(inventoryPath, compressed);
   header = { version: 1, binding, attempt: { operationId, epoch: 2, host: { installationId: binding.installationId,
     bootId: randomUUID(), supervisorId: "123:456", runtimeSha: binding.runtimeSha, inventoryDigest: "d".repeat(64), grantDigest: binding.grantDigest } },
     previous: { receipt: previous, reference: oldReference }, trash: { operationId, originalTree: previous.tree,
-      destinationParent: { canonicalPath: hostedDependencyQuarantineRoot, dev: "7", ino: "10" }, destinationName: `dependency-${operationId}` },
+      destinationParent: { canonicalPath: hostedDependencyQuarantineRoot(binding.runtimeSha), dev: "7", ino: "10" }, destinationName: `dependency-${operationId}` },
     inventory: { reference: { path: inventoryPath, identity: { dev: "7", ino: "25" }, sha256: hash(compressed) }, digest: hash(inventory), logicalBytes: "256", entries: 1 } };
   f.committed = header.previous; prefix = hostedDependencyPreservationPath(binding, 1); f.files.set(prefix + ".prepared.json", encode(header));
 }

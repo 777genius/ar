@@ -1,3 +1,7 @@
+// Original stage facts are projected with the other protected ports in this composition test.
+vi.mock("../../provider-codex/app-server/adapters/hosted-full-backing-stage",()=>({
+  FullBackingInstallationContract:{OriginalParentProcV1:"original_full_parent_proc_v1"},
+  readOriginalHostedDependencyBackingStage:()=>({schemaVersion:1,runtimeSha:"a".repeat(40)})}));
 import { DependencyToolProfileId, DependencyToolTransformCache, dependencyToolPins } from "../../core/dependency-environment/dependency-tool-profile";
 /** Portable orchestration/history projection only. Physical ownership/native
  * collectors are projected; actual Linux rename/fsync tests are separate. */
