@@ -4,6 +4,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Agent } from "undici";
 import { codexMimoConfirmedBaseUrl } from "./codex-model-backend";
+import { MimoProxyFailureReason as FailureReason, MimoProxyFailurePhase as FailurePhase,
+  mimoProxyTransportCode, mimoProxyValidationCode, type MimoProxyFailure } from "./mimo-proxy-failure";
 
 /** Trusted start owner supplies these limits; HTTP clients cannot change them. */
 export type MimoCredentialProxyLimits = Readonly<{
@@ -21,16 +23,19 @@ export type MimoCredentialProxy = Readonly<{
   capability: string;
   revoke(): void;
   close(): Promise<void>;
+  /** Retained even when a streaming response can no longer carry an error. */
+  latestFailure(): MimoProxyFailure | undefined;
 }>;
 
 const upstream = codexMimoConfirmedBaseUrl + "/responses";
 function invalid(): never { throw new Error("mimo_credential_proxy_configuration_invalid"); }
-function reply(response: ServerResponse, status: number, code: string, upstreamStatus?: number): void {
+function reply(response: ServerResponse, status: number, code: string, upstreamStatus?: number, details?: MimoProxyFailure): void {
   if (response.destroyed) return;
   if (response.headersSent) { response.destroy(); return; }
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
   response.end(JSON.stringify({ error: { code,
-    ...(typeof upstreamStatus === "number" && bounded(upstreamStatus, 100, 599) ? { upstream_status: upstreamStatus } : {}) } }));
+    ...(typeof upstreamStatus === "number" && bounded(upstreamStatus, 100, 599) ? { upstream_status: upstreamStatus } : {}),
+    ...(details ? { details } : {}) } }));
 }
 function bounded(value: number, min: number, max: number): boolean {
   return Number.isSafeInteger(value) && value >= min && value <= max;
@@ -75,6 +80,7 @@ export async function startMimoCredentialProxy(input: {
     return dispatcherClosing;
   };
   let revoked = false, requests = 0;
+  let latestFailure: MimoProxyFailure | undefined;
   const revoke = () => {
     revoked = true;
     for (const controller of active) controller.abort();
@@ -97,9 +103,22 @@ export async function startMimoCredentialProxy(input: {
     try { input.assertCurrent?.(); } catch { revoke(); reply(response, 503, "proxy_revoked"); return; }
     if (requests >= limits.maxRequests || active.size >= limits.maxConcurrency) { reply(response, 429, "proxy_limit"); return; }
     requests += 1;
+    const requestNumber = requests;
     const controller = new AbortController(); active.add(controller);
-    const timeout = setTimeout(() => controller.abort(), Math.min(limits.requestTimeoutMs, limits.deadlineMs - Date.now()));
-    const disconnected = () => { if (!response.writableFinished) controller.abort(); };
+    const started = performance.now();
+    let phase = FailurePhase.Input, timedOut = false, clientDisconnected = false, upstreamStreamFailed = false;
+    let upstreamStatus: number | undefined;
+    const failure = (reason: FailureReason, error?: unknown): MimoProxyFailure => {
+      const elapsed = performance.now() - started;
+      latestFailure = Object.freeze({ reason, phase, request_number: requestNumber,
+        elapsed_ms: Number.isFinite(elapsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(elapsed))) : 0,
+        ...(upstreamStatus !== undefined ? { upstream_status: upstreamStatus } : {}),
+        ...(error !== undefined ? { transport_code: mimoProxyTransportCode(error) } : {}),
+        ...(error !== undefined && phase === FailurePhase.Stream ? { validation_code: mimoProxyValidationCode(error) } : {}) });
+      return latestFailure;
+    };
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, Math.min(limits.requestTimeoutMs, limits.deadlineMs - Date.now()));
+    const disconnected = () => { if (!response.writableFinished) { clientDisconnected = true; controller.abort(); } };
     response.once("close", disconnected);
     const abortInput = () => { if (!request.complete) request.destroy(); };
     controller.signal.addEventListener("abort", abortInput, { once: true });
@@ -130,30 +149,47 @@ export async function startMimoCredentialProxy(input: {
       body.store = false;
       try { input.assertCurrent?.(); } catch { revoke(); throw new Error("authority_revoked"); }
       if (Date.now() >= limits.deadlineMs) { revoke(); throw new Error("aborted"); }
+      phase = FailurePhase.Transport;
       const upstreamResponse = await transport(upstream, {
         method: "POST", redirect: "manual", signal: controller.signal,
         headers: { "content-type": "application/json", authorization: `Bearer ${key.toString("utf8")}` },
         body: JSON.stringify(body),
       });
+      phase = FailurePhase.Response;
+      if (bounded(upstreamResponse.status, 100, 599)) upstreamStatus = upstreamResponse.status;
       if (!upstreamResponse.ok) {
-        await upstreamResponse.body?.cancel(); reply(response, 502, "proxy_upstream_failed", upstreamResponse.status); return;
+        const details = failure(upstreamStatus === undefined ? FailureReason.Response : FailureReason.Http);
+        try { await upstreamResponse.body?.cancel(); } catch { /* Keep the received HTTP failure. */ }
+        reply(response, 502, "proxy_upstream_failed", upstreamStatus, details); return;
       }
       if (!upstreamResponse.body) {
-        reply(response, 502, "proxy_upstream_failed"); return;
+        reply(response, 502, "proxy_upstream_failed", undefined, failure(FailureReason.EmptyBody)); return;
       }
       const contentType = upstreamResponse.headers.get("content-type")?.split(";")[0]?.trim();
       if (contentType !== "application/json" && contentType !== "text/event-stream") {
-        await upstreamResponse.body.cancel(); reply(response, 502, "proxy_upstream_failed"); return;
+        const details = failure(FailureReason.ContentType);
+        try { await upstreamResponse.body.cancel(); } catch { /* Preserve the response classification. */ }
+        reply(response, 502, "proxy_upstream_failed", undefined, details); return;
       }
       if (revoked || controller.signal.aborted) { await upstreamResponse.body.cancel(); throw new Error("aborted"); }
       response.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
+      phase = FailurePhase.Stream;
       // Keep only enough trailing bytes to detect a secret split across chunks.
       // Reconstruct matches, never forward any upstream headers or error bodies.
       const secrets = [Buffer.from(key), Buffer.from(capability)];
-      try { await pipeline(Readable.from(redactedBody(upstreamResponse.body, secrets, limits.maxResponseBytes, contentType), { objectMode: false }), response, { signal: controller.signal }); }
+      const stream = Readable.from(redactedBody(upstreamResponse.body, secrets, limits.maxResponseBytes, contentType), { objectMode: false });
+      // pipeline destroys the HTTP response on a source failure. That close is
+      // a consequence, not evidence that the client caused the failure.
+      stream.once("error", () => { if (!clientDisconnected && !controller.signal.aborted) upstreamStreamFailed = true; });
+      try { await pipeline(stream, response, { signal: controller.signal }); }
       finally { for (const secret of secrets) secret.fill(0); }
-    } catch {
-      reply(response, controller.signal.aborted || revoked ? 503 : 502, controller.signal.aborted || revoked ? "proxy_aborted" : "proxy_upstream_failed");
+    } catch (error) {
+      const reason = revoked ? FailureReason.Revoked : timedOut ? FailureReason.Timeout
+        : upstreamStreamFailed ? FailureReason.Stream : clientDisconnected ? FailureReason.Disconnected : phase === FailurePhase.Stream ? FailureReason.Stream
+          : phase === FailurePhase.Input ? FailureReason.Input : phase === FailurePhase.Response ? FailureReason.Response : FailureReason.Transport;
+      const details = failure(reason, error);
+      reply(response, controller.signal.aborted || revoked ? 503 : 502,
+        controller.signal.aborted || revoked ? "proxy_aborted" : "proxy_upstream_failed", undefined, details);
     } finally {
       clearTimeout(timeout); active.delete(controller);
       response.off("close", disconnected);
@@ -176,6 +212,7 @@ export async function startMimoCredentialProxy(input: {
   if (!address || typeof address === "string") { clearTimeout(expiry); revoke(); server.close(); await destroyDispatcher(); invalid(); }
   let closing: Promise<void> | undefined;
   return Object.freeze({ baseUrl: `http://127.0.0.1:${address.port}/v1`, capability, revoke,
+    latestFailure: () => latestFailure,
     close() {
       if (closing) return closing;
       clearTimeout(expiry); revoke();

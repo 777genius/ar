@@ -107,6 +107,31 @@ it("shares one proxy flight and revokes it when disposal races listener startup"
   expect(settled.every(result => result.status === "rejected")).toBe(true);
   expect(mocks.start).toHaveBeenCalledOnce(); expect(f.proxy.revoke).toHaveBeenCalled(); expect(f.proxy.close).toHaveBeenCalledOnce();
 });
+it("keeps a real proxy stream failure observable through its owner after closure", async () => {
+  const { HostedMimoCodingProxyOwner } = await import("../hosted-mimo-coding-proxy-material");
+  const actual = await vi.importActual<typeof import("../hosted-mimo-credential-proxy")>("../hosted-mimo-credential-proxy");
+  const f = setup("retained-stream-diagnostic");
+  let proxy: Awaited<ReturnType<typeof actual.startMimoCredentialProxy>> | undefined;
+  mocks.start.mockImplementation(async (input: Parameters<typeof actual.startMimoCredentialProxy>[0]) => {
+    proxy = await actual.startMimoCredentialProxy({ ...input,
+      fetchUpstream: async () => new Response("data: invalid-TEST-json\n\n", { headers: { "content-type": "text/event-stream" } }) });
+    return proxy;
+  });
+  const owner = new HostedMimoCodingProxyOwner();
+  try {
+    const material = await owner.acquire(f.input);
+    expect(owner.latestFailure).toBeUndefined();
+    await expect(fetch(proxy!.baseUrl + "/responses", { method: "POST", headers: {
+      authorization: `Bearer ${material!.capability}`, "content-type": "application/json",
+    }, body: JSON.stringify({ model: f.origin.model, stream: true }) }).then(response => response.text())).rejects.toThrow();
+    expect(owner.latestFailure).toMatchObject({ reason: "upstream_stream_error", phase: "response_stream", upstream_status: 200,
+      validation_code: "response_json_invalid" });
+    const retained = owner.latestFailure;
+    await owner.close();
+    expect(owner.latestFailure).toBe(retained);
+    expect(JSON.stringify(retained)).not.toContain("TEST-real-key");
+  } finally { await owner.close(); }
+});
 it("joins concurrent listener closure instead of returning an early cleanup receipt", async () => {
   const f = setup("e".repeat(64)); let finish!: () => void;
   f.proxy.close.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));

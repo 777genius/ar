@@ -239,6 +239,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
 
     let materialized: CodexMaterializedSession | null = null;
+    const priorMimoFailure = this.codingProxyOwner.latestFailure;
     let engineEntered = false;
     const returned = new AppServerReturnedEvidence();
     const outputAbortController = new AbortController();
@@ -396,9 +397,20 @@ export class CodexJsonAgentDriver implements AgentDriver {
           ? outputAbortController.signal.reason
           : error;
       const failure = codexExecutionFailure(outputFailure, input.redactor);
+      const proxyFailure = this.codingProxyOwner.latestFailure;
       const nativeWeb = safeNativeWebFromError(error, input.redactor);
       return {
         ...failure,
+        ...(proxyFailure && proxyFailure !== priorMimoFailure ? { failure: {
+          ...failure.failure, details: { ...failure.failure.details,
+            mimoProxyReason: proxyFailure.reason, mimoProxyPhase: proxyFailure.phase,
+            mimoProxyElapsedMs: String(proxyFailure.elapsed_ms),
+            mimoProxyRequestNumber: String(proxyFailure.request_number),
+            ...(proxyFailure.upstream_status === undefined ? {} : { mimoUpstreamStatus: String(proxyFailure.upstream_status) }),
+            ...(proxyFailure.transport_code === undefined ? {} : { mimoTransportCode: proxyFailure.transport_code }),
+            ...(proxyFailure.validation_code === undefined ? {} : { mimoValidationCode: proxyFailure.validation_code }),
+          },
+        } } : {}),
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
