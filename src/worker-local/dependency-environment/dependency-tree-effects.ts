@@ -31,7 +31,7 @@ type Anchor = { handle: FileHandle; before: BigIntStats; mountId: string; parent
 /** Opaque, local effect-session facts. JSON or a copied object is never genuine. */
 export type DependencyTreeEffectReferenceSession = Readonly<{ operationId: string }>;
 type ReferenceDescriptor = { readonly fd: number; readonly dev: string; readonly ino: string; readonly flags: string; readonly mountId: string };
-const referenceSessions = new WeakMap<object, { anchors: Anchors; input: DependencyTreeEffectInput;
+const referenceSessions = new WeakMap<object, { anchors: Anchors; input: DependencyTreePreservationInput;
   birth: string; descriptors: readonly ReferenceDescriptor[] }>();
 function ownBirth(): string {
   const text = readFileSync("/proc/self/stat", "utf8"), start = text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
@@ -44,7 +44,7 @@ function referenceDescriptor(item: Anchor): ReferenceDescriptor {
   if (info.length > 65536 || !flags || !mountId || mountId !== item.mountId || !stat.isDirectory() || !stable(item.before, stat)) fail(DependencyTreeEffectFailure.IdentityChanged);
   return { fd: item.handle.fd, ...identity(stat), flags, mountId };
 }
-function referenceSession(anchors: Anchors, input: DependencyTreeEffectInput): DependencyTreeEffectReferenceSession {
+function referenceSession(anchors: Anchors, input: DependencyTreePreservationInput): DependencyTreeEffectReferenceSession {
   const session = Object.freeze({ operationId: input.trash.operationId });
   referenceSessions.set(session, { anchors, input, birth: ownBirth(), descriptors: anchors.retained.map(referenceDescriptor) });
   return session;
@@ -131,7 +131,7 @@ function manifest(input: DependencyTreeEffectInput, detached = false): Map<strin
   }
   return result;
 }
-function validate(input: DependencyTreeEffectInput): void {
+function validate(input: DependencyTreePreservationInput): void {
   if (process.platform !== "linux" || !Object.values(input.limits).every(n => Number.isSafeInteger(n) && n > 0) ||
       Object.keys(input.limits).length !== 4 || input.workspace.canonicalPath === "/" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.trash.operationId) ||
       input.trash.destinationName !== `dependency-${input.trash.operationId}` || input.trash.destinationParent.dev !== input.workspace.dev ||
@@ -551,6 +551,129 @@ export async function openCommittedDependencyTrashRemoval(request: DependencyTre
         } finally { settle(); }
       },
       async close() { closed = true; await preparing?.then(() => undefined, () => undefined); await running; return anchors.close(); },
+    };
+  } catch (error) { await anchors.close(); throw error; }
+}
+
+
+/** Preservation is an opaque whole-tree move, never an eviction eligibility or
+ * installed-content proof. External/dangling symlinks are recorded as bytes.
+ * Caller must hold genuine source/destination writer exclusion and mount/ref
+ * veto through commit. This port neither grants that exclusion nor unlinks. */
+export type DependencyTreePreservationInput = Pick<DependencyTreeEffectInput, "workspace" | "trash" | "limits">;
+export enum DependencyPreservationLocation { Original = "original", Preserved = "preserved" }
+export type DependencyPreservationInventory = Readonly<{ canonicalBytes: Buffer; digest: string; logicalBytes: string; entries: number }>;
+/** Capture under retained directory descriptors. No unknown link is followed,
+ * and no special file is opened. Hardlinks/mounts remain unsupported. */
+function opaqueInventory(anchors: Anchors, tree: Anchor, limits: DependencyTreeObservationLimits, flush = false): DependencyPreservationInventory {
+  const rows: unknown[] = []; let total = 0n, manifestBytes = 32;
+  function walk(fd: number, path: readonly string[]): void {
+    anchors.check(); const before = fstatSync(fd, { bigint: true });
+    if (!before.isDirectory() || mountSync(fd) !== tree.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+    add({ path, kind: Kind.Directory, mode: Number(before.mode & 0o7777n), uid: String(before.uid), gid: String(before.gid), identity: identity(before) });
+    const names = readdirSync(`/proc/self/fd/${fd}`, { encoding: "buffer" }).sort(Buffer.compare);
+    for (const name of names) {
+      anchors.check(); const target = Buffer.concat([Buffer.from(`/proc/self/fd/${fd}/`), name]), stat = lstatSync(target, { bigint: true }), childPath = [...path, name.toString("base64")];
+      if (stat.dev !== tree.before.dev) fail(DependencyTreeEffectFailure.Unsupported);
+      const common = { path: childPath, mode: Number(stat.mode & 0o7777n), uid: String(stat.uid), gid: String(stat.gid), identity: identity(stat) };
+      if (stat.isDirectory()) {
+        const child = openSync(target, directoryFlags | constants.O_NONBLOCK); let failed = false;
+        try { if (!stable(stat, fstatSync(child, { bigint: true }))) fail(DependencyTreeEffectFailure.IdentityChanged); walk(child, childPath); }
+        catch (error) { failed = true; throw error; } finally { anchors.closeTemporary(child, failed); }
+      } else if (stat.isSymbolicLink()) {
+        if (stat.nlink !== 1n) fail(DependencyTreeEffectFailure.Unsupported);
+        add({ ...common, kind: Kind.Symlink, target: readlinkSync(target, { encoding: "buffer" }).toString("base64") });
+      } else if (stat.isFile()) {
+        if (stat.nlink !== 1n || stat.size > BigInt(limits.maxTotalBytes) || total + stat.size > BigInt(limits.maxTotalBytes)) fail(DependencyTreeEffectFailure.Bounds);
+        const file = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); let failed = false;
+        try {
+          const opened = fstatSync(file, { bigint: true });
+          if (!stable(stat, opened) || mountSync(file) !== tree.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+          const hash = createHash("sha256"), bytes = Buffer.alloc(65536); let length = 0n;
+          for (;;) {
+            anchors.check(); const count = readSync(file, bytes, 0, bytes.length, null); if (!count) break;
+            length += BigInt(count); if (length > stat.size) fail(DependencyTreeEffectFailure.IdentityChanged); hash.update(bytes.subarray(0, count));
+          }
+          // Arbitrary Unverified bytes may still be dirty page-cache data. The
+          // SAME nofollow file descriptor that supplied the complete bytes must
+          // finish its data/metadata durability barrier before it closes.
+          if (flush) { anchors.check(); fsyncSync(file); anchors.check(); }
+          const after = fstatSync(file, { bigint: true });
+          if (length !== stat.size || !unchanged(stat, after) || mountSync(file) !== tree.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+          total += length; add({ ...common, kind: Kind.File, size: String(length), sha256: hash.digest("hex") });
+        } catch (error) { failed = true; throw error; } finally { anchors.closeTemporary(file, failed); }
+      } else fail(DependencyTreeEffectFailure.Unsupported);
+      if (!unchanged(stat, lstatSync(target, { bigint: true }))) fail(DependencyTreeEffectFailure.IdentityChanged);
+    }
+    // Postorder: descendants' data and namespace entries become durable before
+    // their parent. Directory/symlink metadata is persisted by these real
+    // directory fsyncs; unsupported/failed barriers are an unresolved effect.
+    if (flush) { anchors.check(); fsyncSync(fd); anchors.check(); }
+    if (!unchanged(before, fstatSync(fd, { bigint: true })) || mountSync(fd) !== tree.mountId ||
+        !Buffer.concat(names.map(n => Buffer.concat([n, Buffer.from([0])]))).equals(Buffer.concat(readdirSync(`/proc/self/fd/${fd}`, { encoding: "buffer" }).sort(Buffer.compare).map(n => Buffer.concat([n, Buffer.from([0])]))))) fail(DependencyTreeEffectFailure.IdentityChanged);
+  }
+  function add(row: unknown): void {
+    manifestBytes += Buffer.byteLength(JSON.stringify(row)) + 1;
+    if (rows.length >= limits.maxEntries || manifestBytes > limits.maxManifestBytes) fail(DependencyTreeEffectFailure.Bounds); rows.push(row);
+  }
+  walk(tree.handle.fd, []);
+  const canonicalBytes = Buffer.from(JSON.stringify({ version: 1, entries: rows }) + "\n");
+  if (canonicalBytes.length > limits.maxManifestBytes) fail(DependencyTreeEffectFailure.Bounds);
+  return { canonicalBytes, digest: digest(canonicalBytes), logicalBytes: String(total), entries: rows.length };
+}
+function unchanged(a: BigIntStats, b: BigIntStats): boolean {
+  return stable(a, b) && a.nlink === b.nlink && a.size === b.size && a.uid === b.uid && a.gid === b.gid && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+/** Retains the original namespace and actual tree. A recovery reader selects
+ * only the exact preserved inode; it can sync/read it but cannot rename it back
+ * or execute it. Full inventory is diagnostic preservation evidence, not Ready. */
+export async function openDependencyTreePreservation(request: DependencyTreePreservationInput,
+  location = DependencyPreservationLocation.Original) {
+  const input: DependencyTreePreservationInput = { workspace: { ...request.workspace }, trash: { ...request.trash,
+    originalTree: { ...request.trash.originalTree }, destinationParent: { ...request.trash.destinationParent } }, limits: { ...request.limits } };
+  validate(input); const anchors = new Anchors(input.limits); let closed = false, used = false;
+  try {
+    if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
+    const source = await anchors.path(input.workspace.canonicalPath, input.workspace), destination = await anchors.path(input.trash.destinationParent.canonicalPath, input.trash.destinationParent);
+    await protectTrash(destination);
+    if (source.mountId !== destination.mountId) fail(DependencyTreeEffectFailure.Unsupported);
+    const from = Buffer.from("node_modules"), to = Buffer.from(input.trash.destinationName), original = location === DependencyPreservationLocation.Original;
+    if (!Object.values(DependencyPreservationLocation).includes(location)) fail(DependencyTreeEffectFailure.Unsupported);
+    const parent = original ? source : destination, name = original ? from : to;
+    const tree = await anchors.retain(anchored(parent, name), parent, name);
+    if (!sameDependencyTree(identity(tree.before), input.trash.originalTree) || tree.mountId !== source.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+    await absent(original ? destination : source, original ? to : from); await anchors.verify();
+    const inventory = opaqueInventory(anchors, tree, input.limits), session = referenceSession(anchors, input);
+    return { referenceSession: session, inventory,
+      commit(expectedDigest: string) {
+        if (closed || used) fail(DependencyTreeEffectFailure.Closed); used = true;
+        anchors.verifySync();
+        if (expectedDigest !== inventory.digest || opaqueInventory(anchors, tree, input.limits).digest !== expectedDigest) fail(DependencyTreeEffectFailure.ManifestMismatch);
+        function missing(parent: Anchor, name: Buffer) {
+          try { lstatSync(anchored(parent, name)); fail(DependencyTreeEffectFailure.Conflict); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        }
+        if (opaqueInventory(anchors, tree, input.limits, true).digest !== expectedDigest ||
+            opaqueInventory(anchors, tree, input.limits).digest !== expectedDigest) fail(DependencyTreeEffectFailure.ManifestMismatch);
+        // Reauthenticate the original named tree and all aliases AFTER the
+        // full data/postorder-directory I/O barrier, before the namespace move.
+        anchors.verifySync(); missing(original ? destination : source, original ? to : from);
+        if (original) renameSync(anchored(source, from), anchored(destination, to));
+        const assertMoved = () => {
+          const moved = openSync(anchored(destination, to), directoryFlags | constants.O_NONBLOCK); let failed = false;
+          try { if (!stable(tree.before, fstatSync(moved, { bigint: true })) || mountSync(moved) !== destination.mountId) fail(DependencyTreeEffectFailure.IdentityChanged); }
+          catch (error) { failed = true; throw error; } finally { anchors.closeTemporary(moved, failed); }
+          missing(source, from); anchors.verifySync(anchors.retained.filter(item => item !== tree));
+        };
+        assertMoved(); fsyncSync(source.handle.fd); fsyncSync(destination.handle.fd);
+        // Parent-sync success alone never represents preservation. Complete
+        // bytes/metadata and exact moved namespace are re-read after every I/O
+        // barrier and before the hosted transaction can publish its commit.
+        if (opaqueInventory(anchors, tree, input.limits).digest !== expectedDigest) fail(DependencyTreeEffectFailure.ManifestMismatch);
+        assertMoved();
+        return { tree: identity(tree.before), inventoryDigest: inventory.digest, logicalBytes: inventory.logicalBytes, entries: inventory.entries };
+      },
+      async close() { closed = true; used = true; return anchors.close(); },
     };
   } catch (error) { await anchors.close(); throw error; }
 }

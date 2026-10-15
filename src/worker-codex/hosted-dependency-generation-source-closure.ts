@@ -191,7 +191,8 @@ export function readOriginalHostedDependencyCIdleGeneration(fence:HostedActivati
   const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=store.read(binding.workspace);}finally{store.close();}
-  if(!previous || previous.version!==2 || previous.owner || previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)invalid();
+  if(!previous || previous.version!==2 || previous.owner ||
+      (previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 && previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.RetiredReadyV1))invalid();
   const pin=pinReferenceFile(idlePath(binding.workspace.dev,binding.workspace.ino,previous.revision),16384),v:unknown=JSON.parse(pin.bytes.toString("utf8"));
   if(!isDependencyCustodyObject(v,"attempt,binding,previousOwnerSha256,releasedOwner,releasedOwnerSha256,sourceClosed,version") || v.version!==1 ||
       v.releasedOwnerSha256!==hash(encode(previous)) || !encode(parseDependencyOwner(v.releasedOwner)).equals(encode(previous)) || typeof v.previousOwnerSha256!=="string" || /^[a-f0-9]{64}$/.exec(v.previousOwnerSha256)?.[0]!==v.previousOwnerSha256 ||

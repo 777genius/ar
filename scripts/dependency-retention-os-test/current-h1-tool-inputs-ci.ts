@@ -13,7 +13,7 @@ import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredA
 import { qualifiedH1PackagePins, qualifiedH1PackageRequestArguments, qualifiedH1PackageVectorSha256 } from "./current-h1-qualified-package-image.ts";
 import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import {h1SourceLimits,joinH1BinarySource,joinH1SourceSelection,retainH1SourceArchives,type H1SourceIdentity,type H1SourceIndexOrigin,type H1SourceSelection} from "./current-h1-source-record-TEST.ts";
-import {collectH1PatchedSourceData} from "./current-h1-source-extraction-TEST.ts";
+import {collectH1PatchedSourceData,readH1ExtractorVisibleFailure} from "./current-h1-source-extraction-TEST.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
 import { preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
 import { materializeFixedH1SelectedToolrootData } from "./current-h1-selected-toolroot-TEST.ts";
@@ -22,7 +22,7 @@ import { FixedGnuMemberKind, readFixedGnuBasicMembers, serializeFixedGnuMembers,
 enum CiTool { AptGet="/usr/bin/apt-get", Gpgv="/usr/bin/gpgv", DpkgDeb="/usr/bin/dpkg-deb", AptHelper="/usr/lib/apt/apt-helper", Git="/usr/bin/git" }
 export enum CiFailureErrorType { Physical="SelectedPhysicalHeld", Assertion="AssertionError", Error="Error", Unknown="unknown" }
 enum CiDataStatus { Complete="signed-data-extraction-measurement-complete", Failed="signed-data-stage-failed" }
-enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", Sources="authenticated-source-archives-DATA", RawFormat="authenticated-raw-archive-format-survey", SelectedToolroot="selected-toolroot-physical-DATA", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
+export enum CiDataPhase { Tools="tool-provenance", Key="public-key-data", Indices="authenticated-complete-indices", Seeds="exact-five-seed-solver-and-download", Sources="authenticated-source-archives-DATA", RawFormat="authenticated-raw-archive-format-survey", SelectedToolroot="selected-toolroot-physical-DATA", Extraction="signed-data-extraction", Measurement="complete-data-measurement" }
 enum CiMeasuredKind { Directory="directory", Alias="alias-literal-not-followed", File="file" }
 enum CiEnvelopeCandidate { Held="HOLD-not-native-qualified", Captured="captured-candidate-not-native-qualified" }
 enum CiByteRole { OwnRecord="own-record", InstalledTool="installed-CI-tool-data", SignedPayload="signed-extracted-payload-data" }
@@ -57,6 +57,13 @@ export function readCiFailureErrorType(error:unknown):CiFailureErrorType {
  if(prototype===assert.AssertionError.prototype)return CiFailureErrorType.Assertion;
  if(prototype===Error.prototype)return CiFailureErrorType.Error;
  return CiFailureErrorType.Unknown;
+}
+interface CiPublicCommand {readonly tool:CiTool;readonly status:number|null;readonly signal:NodeJS.Signals|null;readonly stdoutBytes:number;readonly stderrBytes:number}
+/** One bounded CI log line from known in-memory observations. Never stringify
+ * unknown error payloads, messages, stacks, inherited properties or artifacts. */
+export function formatCiVisibleFailure(phase:CiDataPhase,error:unknown,command:CiPublicCommand|null=null):string {
+ const source=readH1ExtractorVisibleFailure(error),facts={schemaVersion:1,phase,errorType:readCiFailureErrorType(error),selectedPhysicalFailure:readCiSelectedPhysicalFailure(error),sourceExtractor:source,command:command===null?null:{tool:command.tool,status:command.status,signal:command.signal,stdoutBytes:command.stdoutBytes,stderrBytes:command.stderrBytes},nativeQualified:false,FULL8:"NOT_PROVEN"};
+ const body=JSON.stringify(facts);return "TEST_H1_CI_FAILURE "+(Buffer.byteLength(body)<=8192?body:JSON.stringify({schemaVersion:1,phase,errorType:facts.errorType,detailsOmitted:true,nativeQualified:false,FULL8:"NOT_PROVEN"}))+"\n";
 }
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
@@ -141,12 +148,14 @@ export async function mainCiSignedToolInputs():Promise<void> {
  const file=(path:string,bytes:Buffer|string)=>{tick();const b=Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes);const fd=openSync(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{fchownSync(fd,0,0);fchmodSync(fd,0o600);let at=0;while(at<b.length){const n=writeSync(fd,b,at,b.length-at);assert(n>0);at+=n;tick();}fsyncSync(fd);const s=fstatSync(fd,{bigint:true});assert(s.uid===0n&&s.gid===0n&&s.nlink===1n&&s.size===BigInt(b.length)&&tuple(lstatSync(path,{bigint:true}))===tuple(s));}finally{closeSync(fd);}const parent=openSync(dirname(path),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(parent);}finally{closeSync(parent);}assert(fullBytes(path,b.length,tick).equals(b),"durable own output readback");tick();};
  const dir=(path:string,mode=0o700)=>{mkdirSync(path,{mode});normalizeCreatedDirectory(path,mode);directories.push(path);tick();};
  const state=join(scratch,"state"),extraction=join(scratch,"extraction"),etc=join(state,"etc"),keyring=join(state,"ubuntu-archive-keyring.gpg");
- let commands=0,phase=CiDataPhase.Tools,primaryFailed=false;
+ let commands=0,phase=CiDataPhase.Tools,primaryFailed=false,lastPublicCommand:CiPublicCommand|null=null;
  try {
   for(const tool of Object.values(CiTool)){const actual=realpathSync(tool),s=lstatSync(actual,{bigint:true});assert(s.isFile()&&s.uid===0n&&s.nlink>0n&&!(s.mode&0o022n)&&(s.mode&0o111n));const fd=openSync(actual,constants.O_RDONLY|constants.O_NOFOLLOW);assert.equal(tuple(fstatSync(fd,{bigint:true})),tuple(s));const bytes=fullBytes(actual,64*1024*1024,tick,CiByteRole.InstalledTool);tools.set(tool,{fd,actual,stamp:tuple(s),sha256:hash(bytes)});}
   const command=(tool:CiTool,args:readonly string[],maximum=4*1024*1024,timeout=30000,env:NodeJS.ProcessEnv={PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},cwd=workspace)=>{
    tick();const original=tools.get(tool);assert(original);assert.equal(tuple(fstatSync(original.fd,{bigint:true})),original.stamp);assert.equal(tuple(lstatSync(original.actual,{bigint:true})),original.stamp);
-   const result=spawnSync("/proc/self/fd/3",[...args],{argv0:tool,shell:false,cwd,env,timeout:Math.max(1,Math.floor(Math.min(timeout,deadline-performance.now()))),maxBuffer:maximum,stdio:["ignore","pipe","pipe",original.fd]});tick();assert.equal(tuple(fstatSync(original.fd,{bigint:true})),original.stamp);assert.equal(tuple(lstatSync(original.actual,{bigint:true})),original.stamp);
+   const result=spawnSync("/proc/self/fd/3",[...args],{argv0:tool,shell:false,cwd,env,timeout:Math.max(1,Math.floor(Math.min(timeout,deadline-performance.now()))),maxBuffer:maximum,stdio:["ignore","pipe","pipe",original.fd]});
+   try{lastPublicCommand=Object.freeze({tool,status:result.status,signal:result.signal,stdoutBytes:result.stdout?.length??0,stderrBytes:result.stderr?.length??0});}catch{lastPublicCommand=null;}
+   tick();assert.equal(tuple(fstatSync(original.fd,{bigint:true})),original.stamp);assert.equal(tuple(lstatSync(original.actual,{bigint:true})),original.stamp);
    file(join(evidence,`command-${++commands}.json`),JSON.stringify({tool,args,status:result.status,signal:result.signal,stdoutSha256:hash(result.stdout??Buffer.alloc(0)),stderr:(result.stderr??Buffer.alloc(0)).toString("utf8").slice(0,16384)})+"\n");assert(!result.error&&result.status===0&&result.signal===null,"fixed CI command refused");return result.stdout;
   };
   // One closed TEST invocation after this own process established GID0. This
@@ -310,12 +319,13 @@ export async function mainCiSignedToolInputs():Promise<void> {
  }catch(error){
   primaryFailed=true;
   const selectedPhysicalFailure=phase===CiDataPhase.SelectedToolroot?readCiSelectedPhysicalFailure(error):null;
-  const errorType=readCiFailureErrorType(error);
+  const errorType=readCiFailureErrorType(error);const sourceExtractorFailure=readH1ExtractorVisibleFailure(error);
+  try{process.stderr.write(formatCiVisibleFailure(phase,error,lastPublicCommand));}catch{process.stderr.write("TEST CI bounded failure summary unavailable\n");}
   try{
    file(join(evidence,"failed-result.json"),JSON.stringify({schemaVersion:1,status:CiDataStatus.Failed,sourceSha,phase,
-    liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",errorType,selectedPhysicalFailure})+"\n");
+    liveHostQualified:false,nativeH1:"NOT_RUN",FULL8:"NOT_PROVEN",errorType,selectedPhysicalFailure,sourceExtractorFailure})+"\n");
   }catch{process.stderr.write("TEST CI failure record not sealed; primary stage failure retained\n");}
-  throw new Error("TEST CI signed data stage failed at "+phase);
+  throw new Error("TEST CI signed data stage failed at "+phase,{cause:error});
  }
  finally{
   // Only this entry's curated PUBLIC records become job-readable. Extraction,
@@ -331,4 +341,4 @@ export async function mainCiSignedToolInputs():Promise<void> {
   }finally{closeSync(parent);}}catch{process.stderr.write("TEST CI public evidence seal failed; artifact not qualified\n");if(!primaryFailed)throw new Error("TEST CI public evidence seal failed");}
   finally{let cleanupFailed=false;for(const source of sourceArchives)try{source.close();}catch{cleanupFailed=true;}for(const archive of archives.values())try{archive.close();}catch{cleanupFailed=true;}for(const tool of tools.values())try{closeSync(tool.fd);}catch{cleanupFailed=true;}for(const path of directories.slice().reverse())try{const fd=openSync(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(fd);}finally{closeSync(fd);}}catch{cleanupFailed=true;}if(cleanupFailed){process.stderr.write("TEST CI retained DATA cleanup unproven\n");process.exitCode=70;}}}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){mainCiSignedToolInputs().catch(error=>{process.stderr.write((error instanceof Error?error.message:"TEST CI signed data failed")+"\n");process.exitCode=70;});}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){mainCiSignedToolInputs().catch(()=>{process.stderr.write("TEST CI signed data failed\n");process.exitCode=70;});}

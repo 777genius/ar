@@ -8,6 +8,8 @@ import { join } from "node:path";
 import test, { mock } from "node:test";
 import { FullBackingExposure, FullProcObservation, FullProcRejoinPhase, FullProcPhaseBudget, fullBackingDescriptor, fullBackingMounts, retainFullProcProcess } from "./current-full-backing-collector.js";
 
+import { matchFullBackingStorageMountData } from "../../src/worker-codex/hosted-full-backing-mount-data.js";
+
 import { MountRootKind, fullReadonlyMountData, readFullMountTable } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 
 // The owned child is the same compiled TS fixture and exits through its private
@@ -18,6 +20,22 @@ if(process.argv[2]==="--TEST-full-proc-anchor-child") {
   process.once("disconnect",()=>process.exit(0));
   process.send("TEST-proc-anchor-ready");
 } else {
+  test("actual serialized collector Path root joins the runtime mount row across namespace-local IDs",()=>{
+    const point="/var/lib/subscription-runtime-host-policy/dependency-test-jobs";
+    const source=`111 10 7:19 / ${point} rw,relatime - ext4 /dev/loop19 rw\n`;
+    const produced=fullBackingMounts(source)[0]!;
+    const stored:unknown=JSON.parse(JSON.stringify(produced));
+    // Independently expected values exercise the actual runtime DATA join,
+    // including the collector object shape that the old string join rejected.
+    assert.deepEqual(matchFullBackingStorageMountData(stored,source),{point,device:"7:19",rootPath:"/",mountId:"111"});
+    assert.deepEqual(matchFullBackingStorageMountData(stored,source.replace("111 10 ","222 20 ")),{point,device:"7:19",rootPath:"/",mountId:"222"});
+    for(const raw of [source.replace("7:19","7:20"),source.replace(" / "," /other "),source.replace(point,point+"-alias"),source+source,source.replace(" - ext4 "," - nsfs ")])
+      assert.throws(()=>matchFullBackingStorageMountData(stored,raw));
+    for(const root of ["/",{kind:MountRootKind.Namespace,name:"net",inode:"1"},{kind:MountRootKind.Path,path:"/other"},{kind:MountRootKind.Path,path:"//"},{kind:MountRootKind.Path,path:"/",extra:true}])
+      assert.throws(()=>matchFullBackingStorageMountData({...produced,root},source));
+    let reads=0;const root={kind:MountRootKind.Path,get path(){reads++;return "/";}};
+    assert.throws(()=>matchFullBackingStorageMountData({...produced,root},source));assert.equal(reads,0);
+  });
   test("retained checks use one fresh finite phase after completed capture, never per-task renewal",()=>{
     let now=0n;const clock=mock.method(process.hrtime,"bigint",()=>now);
     try{const phase=new FullProcPhaseBudget(FullProcObservation.Pulse,()=>120000),retainedCheck=()=>phase.check();

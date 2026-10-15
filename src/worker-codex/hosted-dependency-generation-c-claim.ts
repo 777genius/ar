@@ -1,3 +1,4 @@
+import { claimOriginalHostedDependencyPreservedConsumer } from "./hosted-dependency-preservation-consumer";
 import { readOriginalHostedDependencyRemovalIdle } from "./hosted-dependency-removal-history";
 import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { randomUUID } from "node:crypto";
@@ -19,6 +20,8 @@ function held():never{throw new Error("hosted_dependency_generation_claim_held")
 export function claimOriginalHostedDependencyCGeneration(fence:HostedActivationFence,startId:string,access:symbol) {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
   const selected=readHostedOrdinaryDependencyReaderProducerFacts(fence,startId);if(!selected)return undefined;
+  const preserved=claimOriginalHostedDependencyPreservedConsumer(fence,selected.binding,{installationId:selected.binding.installationId,bootId:selected.start.bootId,
+    runtimeSha:selected.binding.runtimeSha,grantDigest:selected.binding.grantDigest,startId,unit:selected.start.unit},access);if(preserved)return preserved;
   const reader=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=reader.read(selected.binding.workspace);}finally{reader.close();}

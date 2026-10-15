@@ -108,7 +108,7 @@ describe.skipIf(process.platform !== "linux")("inactive generation/preclaim stor
       expect(f.receipts.getCommittedReady(f.workspace, 2)).toEqual(committed);
     } finally { await f.close(); }
   });
-  it.each([Reason.TreeChanged,Reason.BaselineMissing])("ordinary v2 %s retirement preserves the held attempt and survives the next claim", async (reason) => {
+  it.each([Reason.TreeChanged,Reason.BaselineMissing] as const)("ordinary v2 %s retirement preserves the held attempt and survives the next claim", async (reason) => {
     const f=await fixture();
     try {
       const attempt=claimDependencyConsumer(f.owners,f.workspace,launch,randomUUID()), held=f.owners.read(f.workspace)!;

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CiEnvelopePublication, publishCiEnvelopeCatalogData } from "./current-h1-tool-inputs-ci.ts";
+import { CiEnvelopePublication, publishCiEnvelopeCatalogData,formatCiVisibleFailure,CiDataPhase,CiFailureErrorType } from "./current-h1-tool-inputs-ci.ts";
 import { ciIndexOperationalBytes } from "./current-h1-tool-inputs-ci-index.ts";
 import { PythonDataCatalogStatus, PythonEnvelopeKind, serializeFixedSignedPythonEnvelopeData, type CapturedEnvelope, type SignedPackage, type EnvelopeEntry, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 const sha=(bytes:Buffer|string)=>createHash("sha256").update(bytes).digest("hex");
@@ -25,6 +25,7 @@ function ownOutputs(run:(directory:string,publish:(name:CiEnvelopePublication,bo
  try{run(directory,(name,body)=>writeFileSync(join(directory,name),body,{flag:"wx",mode:0o600}));}finally{rmSync(directory,{recursive:true});}
 }
 test("over-cap same DATA capture retains complete canonical body while original candidate stays absent/HOLD",()=>{
+ ciFailureVisibilityRegressions();
  const capture=fixture(),serialized=serializeFixedSignedPythonEnvelopeData(capture.catalog,limits);
  assert.equal(serialized.status,PythonDataCatalogStatus.CapacityHeld);assert.equal(serialized.bytes,null);
  assert(serialized.measurement.serializedBytes>131072);
@@ -56,3 +57,8 @@ test("fixed operational boundary is inclusive but plus one refuses before serial
   assert.deepEqual(readdirSync(directory),[]);
  });
 });
+
+function ciFailureVisibilityRegressions(){
+ const secret="TEST_PRIVATE_SECRET_token_cookie_provider_log";let reads=0;const native=new Error(secret);Object.defineProperty(native,"stack",{get(){reads++;throw Error("must not read stack");}});Object.defineProperty(native,"message",{get(){reads++;throw Error("must not read message");}});const proxy=new Proxy(native,{get(){reads++;throw Error("must not read");},getPrototypeOf(){reads++;throw Error("must not inspect");}});
+ for(const [error,type] of [[native,CiFailureErrorType.Error],[proxy,CiFailureErrorType.Unknown],[{message:secret,stack:secret},CiFailureErrorType.Unknown]] as const){const line=formatCiVisibleFailure(CiDataPhase.Sources,error);assert(line.startsWith("TEST_H1_CI_FAILURE ")&&line.endsWith("\n")&&Buffer.byteLength(line)<=8256);const row=JSON.parse(line.slice("TEST_H1_CI_FAILURE ".length));assert.equal(row.phase,CiDataPhase.Sources);assert.equal(row.errorType,type);assert.equal(row.sourceExtractor,null);assert.equal(row.nativeQualified,false);assert(!line.includes(secret));}assert.equal(reads,0);
+}

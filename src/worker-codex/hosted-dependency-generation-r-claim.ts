@@ -1,3 +1,5 @@
+import { claimOriginalHostedDependencyPreservedConsumer } from "./hosted-dependency-preservation-consumer";
+import { readHostedDependencyBinding } from "./hosted-dependency-workspace";
 import { readOriginalHostedDependencyRemovalIdle } from "./hosted-dependency-removal-history";
 import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
@@ -27,6 +29,10 @@ export function claimOriginalHostedDependencyRGeneration(fence:HostedActivationF
   const start=readHostedReadonlyDependencyStart(fence,startId),material=readHostedReadonlyDependencyMaterial(fence,epoch.identity),workspace=material.evidence.workspace;
   if(start.value.startId!==outer.startId || start.value.unit!==outer.unit || start.value.creatorId!==outer.creatorId || start.value.generation!==epoch.generation ||
       !sameDependencyProtectedReference(start.value.association,material.reference))held();
+  const binding=readHostedDependencyBinding(material.evidence.candidate.jobId);if(!binding)held();
+  const preserved=claimOriginalHostedDependencyPreservedConsumer(fence,binding,{installationId:start.value.installationId,bootId:start.value.bootId,runtimeSha:start.value.runtimeSha,
+    grantDigest:start.value.grantDigest,startId,unit:outer.unit,kind:DependencyConsumerLaunchKind.ManagedReadonlyLocalV1,
+    association:material.reference,origin:start.reference},access);if(preserved)return preserved;
   const reader=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=reader.read(workspace);}finally{reader.close();}

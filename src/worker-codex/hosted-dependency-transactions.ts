@@ -1,15 +1,16 @@
+import { HostedDependencyScratchDirectory, HostedDependencyScratchLayoutKind, readHostedDependencyScratchDirectoryPin, readHostedDependencyScratchLayout } from "./hosted-dependency-scratch-layout";
 import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { removeCurrentHostedDependencyCommittedTrash, recoverCurrentHostedDependencyCommittedTrash } from "./hosted-current-dependency-origin";
+import { removeCurrentHostedDependencyCommittedTrash, recoverCurrentHostedDependencyCommittedTrash, preserveCurrentHostedDependencyForExplicitReinstallation } from "./hosted-current-dependency-origin";
 import { readHostedDependencyEvictionEnabled as enabled } from "./hosted-dependency-eviction-enabled-policy";
 import { readCurrentHostedDependencyMaintenanceAuthority, claimCurrentHostedDependencyMaintenance,
   assertCurrentHostedDependencyMaintenance, retireCurrentHostedDependencyEviction, releaseCurrentHostedDependencyMaintenance,
   renameCurrentHostedDependencyMaintenanceTree } from "./hosted-current-dependency-origin";
 import { assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as State, DependencyTreeObservationStatus as Observed,
   assertDependencyMaintenance, claimDependencyMaintenance, releaseDependencyMaintenance, parseDependencyOwner, isDependencyConsumerOwner,
-  parseDependencyReceipt, parseHostedOrdinaryStart, DependencyReceiptParseStatus, sameDependencyMaintenanceAttempt, sameDependencyTree, sameDependencyAttempt,
+  parseDependencyReceipt, parseHostedOrdinaryStart, DependencyReceiptParseStatus, sameDependencyMaintenanceAttempt, sameDependencyProtectedReference, sameDependencyTree, sameDependencyAttempt,
   type DependencyMaintenanceAttempt, type DependencyReceipt, type DependencyTrashIntent, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -44,7 +45,7 @@ export type HostedDependencyEvictionCandidate = { readonly jobId: string; readon
 export enum HostedDependencyTransactionOutcome { Evicted = "evicted", Skipped = "skipped", TrashRemoved = "trash_removed" }
 type Ready = Extract<DependencyReceipt, { state: State.Ready }>;
 type Header = { version: 1; attempt: DependencyMaintenanceAttempt; ready: Ready; trash: DependencyTrashIntent };
-const root = "/var/lib/subscription-runtime-host-policy", operations = root + "/dependency-transactions", trashRoot = root + "/dependency-trash";
+const root = "/var/lib/subscription-runtime-host-policy", operations = root + "/dependency-transactions";
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 const hash = (v: Uint8Array): string => createHash("sha256").update(v).digest("hex");
@@ -69,7 +70,8 @@ export function assertHostedDependencyComparisonQuiescent(jobId: string, attempt
 function authority(jobId: string): Authority {
   // The old async remover has no authenticated physical lifetime. It cannot
   // run beside Active/pending/retiring roots through a nominal trash cwd.
-  assertLegacyDependencyWriterWorkspace(trashRoot);
+  const binding = readHostedDependencyBinding(jobId); if (!binding) fail();
+  assertLegacyDependencyWriterWorkspace(readHostedDependencyScratchLayout(binding.runtimeSha).trash);
   return withHostedActivationFence(fence => new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence,jobId));
 }
 function host(a: Authority): DependencyMaintenanceAttempt["host"] {
@@ -204,7 +206,7 @@ function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Abs
       header.ready.generation !== receipt.generation || header.ready.coverageRevision !== receipt.coverageRevision ||
       !encode(header.ready.workspace).equals(encode(receipt.workspace)) || header.ready.installKey !== receipt.installKey ||
       !sameDependencyTree(header.ready.tree, proof.tree) || header.ready.manifestDigest !== proof.manifestDigest) fail();
-  validateTrash(header.trash, proof.operationId);
+  validateTrash(header.trash, proof.operationId, header.attempt.host.runtimeSha);
   const evidence = readHostedPrivateBytes(`${operations}/${proof.operationId}.renamed.json`, 16384);
   if (!evidence || !evidence.equals(renamedEvidence(header)) || hash(evidence) !== proof.commitEvidenceId) fail();
   authenticateHistoricalReady(header.ready);
@@ -232,17 +234,17 @@ function authenticateHistoricalReady(ready: Ready): void {
   assertHostedDependencyReadySourceHistory(ready);
 }
 function headerPath(attempt: DependencyMaintenanceAttempt): string { return `${operations}/${attempt.operationId}.json`; }
-function validateTrash(trash: DependencyTrashIntent, operationId: string): void {
+function validateTrash(trash: DependencyTrashIntent, operationId: string, runtimeSha: string): void {
   // This adapter owns a single fixed namespace. Generic receipt identifiers
   // never become path components or authority for another protected directory.
   if (!uuid.test(operationId) || trash.operationId !== operationId ||
-      trash.destinationParent.canonicalPath !== trashRoot || trash.destinationName !== `dependency-${operationId}`) fail();
+      trash.destinationParent.canonicalPath !== readHostedDependencyScratchLayout(runtimeSha).trash || trash.destinationName !== `dependency-${operationId}`) fail();
 }
 function absent(path: string): boolean {
   try { lstatSync(path); return false; } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return true; throw e; }
 }
 async function finish(jobId: string, header: Header): Promise<{ outcome: HostedDependencyTransactionOutcome; revision: number }> {
-  validateTrash(header.trash, header.attempt.operationId);
+  validateTrash(header.trash, header.attempt.operationId, header.attempt.host.runtimeSha);
   let a = guard(jobId, header.attempt), receipt = readHostedDependencyReceipt(a.binding);
   const { bytes, placement } = await baseline(header.ready), destination = header.trash.destinationParent.canonicalPath + "/" + header.trash.destinationName;
   let originalLinks: DependencySourceLinkSession | undefined, detachedLinks: DependencySourceLinkSession | undefined;
@@ -358,7 +360,8 @@ export async function evictHostedDependencyCandidate(candidate: HostedDependency
     const receipt = readHostedDependencyReceipt(a.binding);
     if (receipt?.state !== State.Ready || receipt.revision !== candidate.revision || receipt.generation !== candidate.generation ||
         receipt.installKey !== candidate.installKey) fail();
-    ensureHostedDependencyDirectory(operations); ensureHostedDependencyDirectory(trashRoot);
+    ensureHostedDependencyDirectory(operations); prepareTrashRoot(a.binding.runtimeSha,a.binding.workspace.dev);
+    const trashRoot = readHostedDependencyScratchLayout(a.binding.runtimeSha).trash;
     const parent = lstatSync(trashRoot, { bigint: true });
     if (String(parent.dev) !== a.binding.workspace.dev) fail();
     {
@@ -416,7 +419,7 @@ async function removeLegacyHostedDependencyCommittedTrash(jobId: string, revisio
   const a = authority(jobId);
   if (!enabled()) return { outcome: HostedDependencyTransactionOutcome.Skipped };
   const committed = readHostedDependencyCommittedAbsent(a.binding, revision), proof = committed.receipt.evictionCommit;
-  validateTrash(proof.trash, proof.operationId);
+  validateTrash(proof.trash, proof.operationId, a.binding.runtimeSha);
   const header = historicalHeader(committed.receipt);
   const { bytes, placement } = await baseline(proof);
   const parent = openSync(operations, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), parentIdentity = fstatSync(parent, { bigint: true });
@@ -460,3 +463,47 @@ async function removeLegacyHostedDependencyCommittedTrash(jobId: string, revisio
   }
 }
 function fail(): never { throw new Error("dependency_transaction_unresolved"); }
+
+
+/** Explicit operator request dispatches through the defining lexical origin. */
+export function preserveHostedDependencyForExplicitReinstallation(jobId:string) {
+  return preserveCurrentHostedDependencyForExplicitReinstallation(jobId);
+}
+export function recoverHostedDependencyExplicitPreservation(jobId:string) {
+  return preserveCurrentHostedDependencyForExplicitReinstallation(jobId,true);
+}
+
+export { HostedDependencyExplicitPreservationOutcome } from "./hosted-dependency-preservation-effect";
+
+/** Called only after this defining issuer's original authority has rejoined.
+ * No late bind, chmod, migration or cleanup can repair a conflicting layout. */
+function prepareTrashRoot(runtimeSha: string, workspaceDevice: string): void {
+  const layout = readHostedDependencyScratchLayout(runtimeSha), path = layout.trash;
+  if (layout.kind === HostedDependencyScratchLayoutKind.Existing) { ensureHostedDependencyDirectory(path); return; }
+  const expected = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Parent);
+  const parent = openSync(layout.parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(parent, { bigint: true });
+    if (String(before.dev) !== expected.dev || String(before.ino) !== expected.ino || expected.dev !== workspaceDevice) fail();
+    const name = "dependency-trash"; let created = true;
+    try { mkdirSync(`/proc/self/fd/${parent}/${name}`, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; created = false; }
+    const child = openSync(`/proc/self/fd/${parent}/${name}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const p = fstatSync(parent, { bigint: true }), c = fstatSync(child, { bigint: true }), pin = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Trash);
+      if (p.dev !== before.dev || p.ino !== before.ino || p.mode !== before.mode || p.uid !== before.uid || p.gid !== before.gid ||
+          p.nlink !== before.nlink + (created ? 1n : 0n) || c.uid !== 0n || c.gid !== 0n || (c.mode & 0o7777n) !== 0o700n ||
+          pin.dev !== expected.dev || pin.mountId !== expected.mountId || String(c.dev) !== pin.dev || String(c.ino) !== pin.ino) fail();
+      const mount = (fd: number) => { const raw = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"), rows = [...raw.matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gm)];
+        if (Buffer.byteLength(raw) > 65536 || rows.length !== 1 || !rows[0]?.[1]) fail(); return rows[0]![1]!; };
+      if (mount(parent) !== expected.mountId || mount(child) !== pin.mountId) fail();
+      fsyncSync(child); fsyncSync(parent);
+      const same = (a: typeof p, b: typeof p) => (["dev","ino","uid","gid","mode","nlink","ctimeNs","mtimeNs"] as const).every(key => a[key] === b[key]);
+      if (!same(p,fstatSync(parent,{bigint:true})) || !same(c,fstatSync(child,{bigint:true})) ||
+          mount(parent) !== expected.mountId || mount(child) !== pin.mountId) fail();
+      const after = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Trash), parentAfter = readHostedDependencyScratchDirectoryPin(runtimeSha, HostedDependencyScratchDirectory.Parent);
+      if (after.canonicalPath !== path || after.dev !== pin.dev || after.ino !== pin.ino || after.mountId !== pin.mountId ||
+          parentAfter.dev !== expected.dev || parentAfter.ino !== expected.ino || parentAfter.mountId !== expected.mountId) fail();
+    } finally { closeSync(child); }
+  } finally { closeSync(parent); }
+}
