@@ -26,13 +26,14 @@ const fixtureDeadlineMs = 10_000;
 const fixtureMaxStderrBytes = 64 * 1024;
 // Node 26 has no transform-types flag, and the adapter uses a constructor
 // parameter property. The pinned project TypeScript therefore translates this
-// closed canonical allowlist (the adapter, its two imported leaves and the
+// closed canonical allowlist (the adapter, its three imported leaves and the
 // fixture) into a temporary ESM tree; no loader hook or open-ended transpile.
 const fixtureClosure = [
   "../project-control-evidence-custody-local-adapter",
   "../project-control-evidence-custody-materialization",
   "../project-control-custody-directory-publication",
   "./project-control-evidence-custody-crash-fixture",
+  "../project-control-custody-directory-read",
 ] as const;
 let stagedFixtureRoot: string | undefined;
 let stagedFixturePath = "";
