@@ -60,6 +60,18 @@ export type WorkerAccountRecoveryAuthority = Readonly<{
   assertTerminal(): void;
 }>;
 
+/** A trusted native source pins captured prior settlement and failed bytes.
+ * Publication fences both tasks; terminal means both are positively cold. The
+ * source retains the failed receipt and proves the current credential itself,
+ * rather than trusting serialized hashes or terminal/release booleans.
+ */
+export type WorkerAccountRecoveryReconciliationAuthority = WorkerAccountRecoveryAuthority & Readonly<{
+  rejectedTask: WorkerAccountRecoveryTask;
+  failedRecordSha256: string;
+  exemptedRecordSha256: string;
+  credential: WorkerAccountRecoveryKey;
+}>;
+
 const preparedRecoveries = new WeakSet<WorkerAccountRecoveryPreparation>();
 export function isWorkerAccountRecoveryPreparation(value: WorkerAccountRecoveryPreparation): boolean { return preparedRecoveries.has(value); }
 
