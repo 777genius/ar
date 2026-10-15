@@ -60,17 +60,44 @@ export function censusH1PatchedSource(root:string,tick:()=>void,profile=H1Source
  }catch(error){if(readH1SourceCensusFailure(error))throw error;return fail(H1SourceCensusReason.Filesystem);}finally{closeSync(rootFd);}
 }
 function read(fd:number,size:number,tick:()=>void):Buffer {const b=Buffer.alloc(size+1);let at=0;for(;;){tick();const n=readSync(fd,b,at,b.length-at,at);tick();if(!n)break;at+=n;assert(at<=size);}assert.equal(at,size);return b.subarray(0,at);}
+export enum H1SourceMountReason {Bytes="bytes",Count="count",Shape="shape",Target="target",Duplicate="duplicate",ReadOnly="read_only",Missing="missing",Filesystem="filesystem",SourceRoot="source_root",SourceDevice="source_device",SafetyFlags="safety_flags"}
+export enum H1SourceMountFilesystem {Proc="proc",Tmpfs="tmpfs",Devpts="devpts",Other="other"}
+interface H1SourceMountFacts {readonly reason:H1SourceMountReason;readonly row:number;readonly rows:number;readonly target:string|null;readonly targetSha256:string;readonly filesystem:H1SourceMountFilesystem;readonly sourceRoot:string|null;readonly sourceRootSha256:string;readonly device:string|null;readonly readOnly:boolean;readonly nosuid:boolean;readonly nodev:boolean;readonly noexec:boolean}
+const mountFailureFacts=new WeakMap<object,H1SourceMountFacts>();
+class H1SourceMountHeld extends Error {constructor(facts:H1SourceMountFacts){super("TEST H1 source mounts Held: "+facts.reason);mountFailureFacts.set(this,facts);}}
+export function readH1SourceMountFailure(error:unknown):H1SourceMountFacts|undefined {
+ if(types.isProxy(error)||!types.isNativeError(error)||Object.getPrototypeOf(error)!==H1SourceMountHeld.prototype)return undefined;
+ return mountFailureFacts.get(error);
+}
+/** Fixed bwrap mount DATA grammar. Its protective proc overmounts may only be
+ * read-only subroots of this same fresh proc filesystem, never extra bindings. */
+export function validateH1SourceMountData(body:string){
+ const base=new Set(["/","/inputs","/output","/tmp","/proc","/dev","/dev/shm","/dev/pts","/dev/ptmx","/dev/null","/dev/zero","/dev/full","/dev/random","/dev/urandom","/dev/tty"]),protective=new Set(["/proc/sys","/proc/sysrq-trigger","/proc/irq","/proc/bus"]),known=new Set([...base,...protective]),roots=new Set(["/","/sys","/sysrq-trigger","/irq","/bus"]);
+ let row=-1,count=0,target="",sourceRoot="",filesystem=H1SourceMountFilesystem.Other,device:string|null=null,options:string[]=[];
+ const fail=(reason:H1SourceMountReason):never=>{throw new H1SourceMountHeld(Object.freeze({reason,row,rows:count,target:known.has(target)?target:null,targetSha256:hash(target),filesystem,sourceRoot:roots.has(sourceRoot)?sourceRoot:null,sourceRootSha256:hash(sourceRoot),device,readOnly:options.includes("ro"),nosuid:options.includes("nosuid"),nodev:options.includes("nodev"),noexec:options.includes("noexec")}));},need=(v:unknown,reason:H1SourceMountReason)=>{if(!v)fail(reason);};
+ need(Buffer.byteLength(body)<=65536,H1SourceMountReason.Bytes);const lines=body.trimEnd().split("\n");count=lines.length;need(count>0&&count<=32,H1SourceMountReason.Count);
+ const seen=new Map<string,{target:string;root:string;device:string;filesystem:H1SourceMountFilesystem;options:readonly string[];row:number}>();
+ for(const [index,line] of lines.entries()){row=index;target="";sourceRoot="";filesystem=H1SourceMountFilesystem.Other;device=null;options=[];need(line.length<=4096,H1SourceMountReason.Shape);const cells=line.split(" "),separator=cells.indexOf("-");target=cells[4]??"";sourceRoot=cells[3]??"";options=(cells[5]??"").split(",");if(cells[2]&&/^[0-9]{1,20}:[0-9]{1,20}$/.test(cells[2]))device=cells[2];const type=cells[separator+1];if(type===H1SourceMountFilesystem.Proc||type===H1SourceMountFilesystem.Tmpfs||type===H1SourceMountFilesystem.Devpts)filesystem=type;
+  need(separator>=6&&cells.length===separator+4&&/^[0-9]{1,20}$/.test(cells[0]??"")&&/^[0-9]{1,20}$/.test(cells[1]??"")&&device!==null&&sourceRoot.startsWith("/")&&options.includes("ro")!==options.includes("rw"),H1SourceMountReason.Shape);need(known.has(target),H1SourceMountReason.Target);need(!seen.has(target),H1SourceMountReason.Duplicate);
+  if(target==="/"||target==="/inputs"||protective.has(target))need(options.includes("ro"),H1SourceMountReason.ReadOnly);
+  seen.set(target,{target,root:sourceRoot,device:device!,filesystem,options,row});
+ }
+ for(const required of ["/","/inputs","/output","/tmp","/proc","/dev"]){if(!seen.has(required)){row=-1;target=required;sourceRoot="";filesystem=H1SourceMountFilesystem.Other;device=null;options=[];fail(H1SourceMountReason.Missing);}}
+ const proc=seen.get("/proc")!;
+ for(const entry of seen.values()){if(entry.target!=="/proc"&&!protective.has(entry.target))continue;row=entry.row;target=entry.target;sourceRoot=entry.root;device=entry.device;filesystem=entry.filesystem;options=[...entry.options];need(filesystem===H1SourceMountFilesystem.Proc,H1SourceMountReason.Filesystem);need(sourceRoot===(target==="/proc"?"/":target.slice("/proc".length)),H1SourceMountReason.SourceRoot);need(device===proc.device,H1SourceMountReason.SourceDevice);need(["nosuid","nodev","noexec"].every(flag=>options.includes(flag)),H1SourceMountReason.SafetyFlags);}
+ return Object.freeze({rows:count,protectiveProcOverlays:Object.freeze([...seen.keys()].filter(target=>protective.has(target)).sort()),nativeQualified:false});
+}
 enum H1SourceChildPhase {Input="input",Namespace="namespace",Root="root",Privileges="privileges",Mounts="mounts",Configuration="configuration",Extract="dpkg_source",Census="source_census",Semantics="source_semantics",Revalidate="source_revalidation",Publish="publication"}
-enum H1SourceChildFailureKind {Census="source_census",Assertion="assertion",Unknown="unknown"}
+enum H1SourceChildFailureKind {Census="source_census",Mounts="source_mounts",Assertion="assertion",Unknown="unknown"}
 let childPhase=H1SourceChildPhase.Input;
 let childCommandFacts:Readonly<{status:number|null;signal:NodeJS.Signals|null;spawnFailed:boolean;stdoutBytes:number;stdoutSha256:string;stderrBytes:number;stderrSha256:string;stderrPrefixBase64:string;stderrCapturedBytes:number;stderrTruncated:boolean}>|null=null;
 /** Original fixed isolated child only: its explicit environment and mounted
  * image/inputs contain public authenticated source, never provider credentials.
  * Unknown Error messages, stacks, properties and environment are not emitted. */
 function sourceChildFailure(error:unknown):string {
- const census=readH1SourceCensusFailure(error)??null;
- const kind=census?H1SourceChildFailureKind.Census:!types.isProxy(error)&&types.isNativeError(error)&&Object.getPrototypeOf(error)===assert.AssertionError.prototype?H1SourceChildFailureKind.Assertion:H1SourceChildFailureKind.Unknown;
- return "TEST H1 isolated source extraction Held "+JSON.stringify({schemaVersion:1,phase:childPhase,kind,census,command:childCommandFacts,nativeQualified:false})+"\n";
+ const census=readH1SourceCensusFailure(error)??null,mounts=readH1SourceMountFailure(error)??null;
+ const kind=mounts?H1SourceChildFailureKind.Mounts:census?H1SourceChildFailureKind.Census:!types.isProxy(error)&&types.isNativeError(error)&&Object.getPrototypeOf(error)===assert.AssertionError.prototype?H1SourceChildFailureKind.Assertion:H1SourceChildFailureKind.Unknown;
+ return "TEST H1 isolated source extraction Held "+JSON.stringify({schemaVersion:1,phase:childPhase,kind,census,mounts,command:childCommandFacts,nativeQualified:false})+"\n";
 }
 function main(){
  assert(process.platform==="linux"&&process.getuid?.()===0&&process.getgid?.()===0);assert.equal(process.argv.length,4);const [family,dsc]=process.argv.slice(2);assert(Object.values(H1SemanticFamily).includes(family as H1SemanticFamily)&&dsc&&/^[A-Za-z0-9_.+%:~-]+\.dsc$/.test(dsc));
@@ -82,7 +109,7 @@ function main(){
  childPhase=H1SourceChildPhase.Privileges;
  const actor=readFileSync("/proc/self/status","utf8");assert(/^NoNewPrivs:\s+1$/m.test(actor));for(const cap of ["Inh","Prm","Eff","Bnd","Amb"])assert(new RegExp("^Cap"+cap+":\\s+0000000000000000$","m").test(actor));
  childPhase=H1SourceChildPhase.Mounts;
- const targets=new Set(["/","/inputs","/output","/tmp","/proc","/dev","/dev/shm","/dev/pts","/dev/ptmx","/dev/null","/dev/zero","/dev/full","/dev/random","/dev/urandom","/dev/tty"]),mounts=readFileSync("/proc/self/mountinfo","utf8").trimEnd().split("\n");assert(mounts.length<=32);const seen=new Set<string>();for(const line of mounts){const cells=line.split(" "),target=cells[4];assert(target&&targets.has(target)&&!seen.has(target));seen.add(target);if(target==="/"||target==="/inputs")assert(cells[5]!.split(",").includes("ro"));}for(const target of ["/","/inputs","/output","/tmp","/proc","/dev"])assert(seen.has(target));
+ const mountData=validateH1SourceMountData(readFileSync("/proc/self/mountinfo","utf8"));
  // Root image and input are read-only binds; output and tmp are bounded tmpfs.
  childPhase=H1SourceChildPhase.Configuration;
  for(const file of ["/etc/dpkg/dpkg-source.conf","/root/.dpkg-source","/nonexistent/.dpkg-source"])assert(!existsSync(file),"uncontrolled extraction configuration");
@@ -97,6 +124,6 @@ function main(){
  childPhase=H1SourceChildPhase.Revalidate;
  const after=censusH1PatchedSource("/output/tree",tick);assert.deepEqual(after,census);
  childPhase=H1SourceChildPhase.Publish;
- const body=Buffer.from(JSON.stringify({purpose:"PATCHED_SOURCE_UNADMITTED_DATA",family,extractor:"dpkg-source-3.0-quilt",vendor:"Ubuntu",command:{status:r.status,signal:r.signal,stdoutSha256:hash(r.stdout),stderrSha256:hash(r.stderr)},inventory:census,patches,semantic,compiledInputEquality:false,nativeQualified:false}));assert(body.length<=h1PatchedSourceLimits.recordBytes);tick();process.stdout.write(body);
+ const body=Buffer.from(JSON.stringify({purpose:"PATCHED_SOURCE_UNADMITTED_DATA",family,extractor:"dpkg-source-3.0-quilt",vendor:"Ubuntu",mounts:mountData,command:{status:r.status,signal:r.signal,stdoutSha256:hash(r.stdout),stderrSha256:hash(r.stderr)},inventory:census,patches,semantic,compiledInputEquality:false,nativeQualified:false}));assert(body.length<=h1PatchedSourceLimits.recordBytes);tick();process.stdout.write(body);
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){try{main();}catch(error){process.stderr.write(sourceChildFailure(error));process.exitCode=70;}}
