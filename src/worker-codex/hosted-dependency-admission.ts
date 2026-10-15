@@ -1,3 +1,4 @@
+import { readHostedDependencyCommittedPreservation } from "./hosted-dependency-preservation";
 import { prepareHostedDependencyRootHelpers } from "./hosted-dependency-root-preparation";
 import { randomUUID } from "node:crypto";
 import { lstatSync } from "node:fs";
@@ -76,7 +77,9 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     try { tree = lstatSync(`${binding.workspace.canonicalPath}/node_modules`); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      if (receipt ? receipt.state !== DependencyReceiptState.Absent : !hasHostedDependencyFreshAbsence(binding)) fail(Failure.NeedsInstall);
+      const preserved = receipt?.state === DependencyReceiptState.Unverified && preclaimed &&
+        readHostedDependencyCommittedPreservation(binding, receipt, preclaimed.attemptId);
+      if (receipt ? receipt.state !== DependencyReceiptState.Absent && !preserved : !hasHostedDependencyFreshAbsence(binding)) fail(Failure.NeedsInstall);
       absent = true;
     }
     if (tree && (!tree.isDirectory() || tree.isSymbolicLink())) fail(Failure.UnsafeTree);

@@ -1,3 +1,8 @@
+import { gzipSync } from "node:zlib";
+import { openDependencyTreePreservation, DependencyPreservationLocation } from "../worker-local/dependency-environment/dependency-tree-effects";
+import { hostedDependencyPreservationRoot, hostedDependencyQuarantineRoot, hostedDependencyPreservationPath,
+  readHostedDependencyPreparedPreservation, hostedDependencyPreservationCommit, readHostedDependencyCommittedPreservation,
+  type HostedDependencyPreparedPreservation } from "./hosted-dependency-preservation";
 import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { removeCurrentHostedDependencyCommittedTrash, recoverCurrentHostedDependencyCommittedTrash } from "./hosted-current-dependency-origin";
 import { readHostedDependencyEvictionEnabled as enabled } from "./hosted-dependency-eviction-enabled-policy";
@@ -9,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as State, DependencyTreeObservationStatus as Observed,
   assertDependencyMaintenance, claimDependencyMaintenance, releaseDependencyMaintenance, parseDependencyOwner, isDependencyConsumerOwner,
-  parseDependencyReceipt, parseHostedOrdinaryStart, DependencyReceiptParseStatus, sameDependencyMaintenanceAttempt, sameDependencyTree, sameDependencyAttempt,
+  parseDependencyReceipt, parseHostedOrdinaryStart, DependencyReceiptParseStatus, sameDependencyMaintenanceAttempt, sameDependencyProtectedReference, sameDependencyTree, sameDependencyAttempt,
   type DependencyMaintenanceAttempt, type DependencyReceipt, type DependencyTrashIntent, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -30,7 +35,7 @@ import { closeDependencySourceLinkSession, type DependencySourceLinkSession } fr
 import { hostedDependencyObservationLimits as limits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs } from "./hosted-dependency-materialization";
 import { ensureHostedDependencyDirectory, readHostedDependencyReceipt, publishHostedDependencyReceipt,
-  readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
+  readHostedDependencyCommittedAbsent, readHostedDependencyCommittedUnverified } from "./hosted-dependency-receipts";
 import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "./hosted-dependency-reference-veto";
 
 import { openHostedDependencyReadySourceLinks, assertHostedDependencyReadySourceHistory } from "./hosted-dependency-ready-source-links";
@@ -460,3 +465,151 @@ async function removeLegacyHostedDependencyCommittedTrash(jobId: string, revisio
   }
 }
 function fail(): never { throw new Error("dependency_transaction_unresolved"); }
+
+
+/** Explicit original operator request. Ordinary continuation never calls this.
+ * First bounded slice: no-Active Unverified only. Active retirement requires its
+ * own original source-custody transition, not a forged Ready/Evicting manifest.
+ * There is deliberately no quarantine removal or automatic GC API. */
+export async function preserveHostedDependencyForExplicitReinstallation(jobId: string) {
+  const selected = withHostedActivationFence(fence => {
+    const a = readCurrentHostedDependencyMaintenanceAuthority(fence, jobId), receipt = readHostedDependencyReceipt(a.binding);
+    if (receipt?.state !== State.Unverified || a.binding.version !== 2) fail();
+    const owners = owns();
+    try { const prior = owners.read(a.binding.workspace); if (prior?.owner || prior?.version !== 2 || prior.generationContinuity) fail(); }
+    finally { owners.close(); }
+    ensureHostedDependencyDirectory(operations);
+    ensureHostedDependencyDirectory(hostedDependencyPreservationRoot); ensureHostedDependencyDirectory(hostedDependencyQuarantineRoot);
+    const prefix = hostedDependencyPreservationPath(a.binding, receipt.revision);
+    // An existing intent belongs to recovery; never replace its owner or path.
+    if (readHostedPrivateBytes(prefix + ".prepared.json", 32768) || readHostedPrivateBytes(prefix + ".committed.json", 4096)) fail();
+    const parent = lstatSync(hostedDependencyQuarantineRoot, { bigint: true });
+    if (String(parent.dev) !== a.binding.workspace.dev) fail();
+    const attempt = claimCurrentHostedDependencyMaintenance(fence, jobId, randomUUID());
+    return { binding: a.binding, attempt, previous: readHostedDependencyCommittedUnverified(a.binding, receipt.revision),
+      trash: { operationId: attempt.operationId, originalTree: receipt.tree,
+        destinationParent: { canonicalPath: hostedDependencyQuarantineRoot, dev: String(parent.dev), ino: String(parent.ino) },
+        destinationName: `dependency-${attempt.operationId}` } };
+  });
+  return finishExplicitPreservation(jobId, selected);
+}
+/** Original persisted Maintenance identity must still authenticate. Ambiguous
+ * pre/post-rename or partial mappings stay held; recovery never creates a new
+ * operation, deletes a tree, restores through conflicting names or starts npm. */
+export async function recoverHostedDependencyExplicitPreservation(jobId: string) {
+  const selected = withHostedActivationFence(fence => {
+    const a = readCurrentHostedDependencyMaintenanceAuthority(fence, jobId), owners = owns(); let attempt: DependencyMaintenanceAttempt;
+    try { const owner = owners.read(a.binding.workspace); if (owner?.version !== 2 || owner.generationContinuity || owner.owner?.kind !== DependencyOwnerKind.Maintenance) fail(); attempt = owner.owner.attempt; }
+    finally { owners.close(); }
+    maintenanceUnderFence(fence, jobId, attempt);
+    const receipt = readHostedDependencyReceipt(a.binding); if (receipt?.state !== State.Unverified) fail();
+    const prefix = hostedDependencyPreservationPath(a.binding, receipt.revision);
+    if (readHostedPrivateBytes(prefix + ".prepared.json", 32768)) {
+      const prepared = readHostedDependencyPreparedPreservation(a.binding, receipt);
+      if (!sameDependencyMaintenanceAttempt(prepared.header.attempt, attempt)) fail();
+      return { binding: a.binding, attempt, previous: prepared.header.previous, trash: prepared.header.trash, prepared };
+    }
+    if (readHostedPrivateBytes(prefix + ".committed.json", 4096)) fail();
+    // Crash before prepared publication cannot have renamed: the fixed source
+    // must still exist, destination must be absent, and the same owner resumes.
+    const parent = lstatSync(hostedDependencyQuarantineRoot, { bigint: true });
+    if (!parent.isDirectory() || parent.uid !== 0n || (parent.mode & 0o7777n) !== 0o700n || String(parent.dev) !== a.binding.workspace.dev) fail();
+    return { binding: a.binding, attempt, previous: readHostedDependencyCommittedUnverified(a.binding, receipt.revision),
+      trash: { operationId: attempt.operationId, originalTree: receipt.tree,
+        destinationParent: { canonicalPath: hostedDependencyQuarantineRoot, dev: String(parent.dev), ino: String(parent.ino) },
+        destinationName: `dependency-${attempt.operationId}` } };
+  });
+  return finishExplicitPreservation(jobId, selected);
+}
+type ExplicitPreservationSelection = Pick<HostedDependencyPreparedPreservation, "attempt" | "previous" | "trash"> & {
+  binding: HostedDependencyBinding; prepared?: ReturnType<typeof readHostedDependencyPreparedPreservation>;
+};
+async function finishExplicitPreservation(jobId: string, selected: ExplicitPreservationSelection) {
+  const { binding, attempt, previous, trash } = selected, destination = `${hostedDependencyQuarantineRoot}/${trash.destinationName}`;
+  const assertCurrent = (fence?: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence) => {
+    const a = fence ? maintenanceUnderFence(fence, jobId, attempt) : guard(jobId, attempt), owners = owns();
+    try { const owner = owners.read(binding.workspace); if (owner?.version !== 2 || owner.generationContinuity) fail(); }
+    finally { owners.close(); }
+    if (!encode(a.binding).equals(encode(binding)) || !encode(readHostedDependencyReceipt(binding)).equals(encode(previous.receipt))) fail();
+    return a;
+  };
+  // Uses the genuine installed creator/installer mappings and exact drain path.
+  const a = assertCurrent(); covered(a);
+  const sourceAbsent = absent(binding.workspace.canonicalPath + "/node_modules"), targetAbsent = absent(destination);
+  if (sourceAbsent === targetAbsent || sourceAbsent && !selected.prepared) fail();
+  const operation = await openDependencyTreePreservation({ workspace: binding.workspace, trash, limits },
+    sourceAbsent ? DependencyPreservationLocation.Preserved : DependencyPreservationLocation.Original);
+  let closed = false;
+  try {
+    let prepared = selected.prepared;
+    if (!prepared) {
+      withHostedActivationFence(fence => {
+        maintenanceUnderFence(fence, jobId, attempt); assertCurrent(fence);
+        const inventoryPath = `${hostedDependencyQuarantineRoot}/${attempt.operationId}.inventory.json.gz`, compressed = gzipSync(operation.inventory.canonicalBytes);
+        publishPreservationInventory(inventoryPath, compressed);
+        const inventory = pinReferenceFile(inventoryPath, 4 * 1024 * 1024);
+        if (!inventory.bytes.equals(compressed)) fail();
+        const header: HostedDependencyPreparedPreservation = { version: 1, binding, attempt, previous, trash,
+          inventory: { reference: inventory.reference, digest: operation.inventory.digest, logicalBytes: operation.inventory.logicalBytes, entries: operation.inventory.entries } };
+        createReadonlyPrivateRecord(hostedDependencyPreservationPath(binding, previous.receipt.revision) + ".prepared.json", encode(header));
+        prepared = readHostedDependencyPreparedPreservation(binding, previous.receipt);
+        if (!encode(prepared.header).equals(encode(header))) fail();
+      });
+    }
+    if (!prepared || prepared.header.inventory.digest !== operation.inventory.digest ||
+        !sameDependencyMaintenanceAttempt(prepared.header.attempt, attempt)) fail();
+    const committed = withHostedActivationFence(fence => {
+      maintenanceUnderFence(fence, jobId, attempt); const a = assertCurrent(fence);
+      const current = readHostedDependencyPreparedPreservation(binding, previous.receipt);
+      if (!sameDependencyProtectedReference(current.reference, prepared!.reference)) fail();
+      assertHostedDependencyReferenceVeto(binding.workspace, destination, covered(a), DependencyReferenceEffect.Eviction,
+        { session: operation.referenceSession, operationId: attempt.operationId });
+      operation.commit(current.header.inventory.digest);
+      // Mapping publication follows both parent syncs, then independently reads
+      // the protected inode/content association before owner release or npm.
+      const evidence = encode(hostedDependencyPreservationCommit(current));
+      createReadonlyPrivateRecord(current.prefix + ".committed.json", evidence);
+      if (!pinReferenceFile(current.prefix + ".committed.json", 4096).bytes.equals(evidence)) fail();
+      return current;
+    });
+    const result = await operation.close(); closed = true;
+    if (result.closeFailures) {
+      createReadonlyPrivateRecord(`${operations}/${attempt.operationId}.close-unresolved.json`, encode({ version: 1, operationId: attempt.operationId })); fail();
+    }
+    assertCurrent();
+    if (!readHostedDependencyCommittedPreservation(binding, previous.receipt, attempt.operationId)) fail();
+    release(jobId, attempt);
+    return { outcome: HostedDependencyExplicitPreservationOutcome.Preserved, operationId: attempt.operationId,
+      mappingDigest: hash(encode(committed.header)), destination, preservedBytes: committed.header.inventory.logicalBytes, entries: committed.header.inventory.entries };
+  } finally {
+    if (!closed && (await operation.close()).closeFailures)
+      createReadonlyPrivateRecord(`${operations}/${attempt.operationId}.close-unresolved.json`, encode({ version: 1, operationId: attempt.operationId }));
+    // Every error keeps the persisted owner/intent. No inferred rollback.
+  }
+}
+export enum HostedDependencyExplicitPreservationOutcome { Preserved = "preserved" }
+
+/** Unlike the small-record writer, this bounded full inventory can exceed 64KiB.
+ * Replay re-syncs the exact existing inode; conflicting/partial bytes remain held. */
+function publishPreservationInventory(path: string, bytes: Buffer): void {
+  if (!bytes.length || bytes.length > 4 * 1024 * 1024) fail();
+  let fd: number;
+  try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!pinReferenceFile(path, 4 * 1024 * 1024).bytes.equals(bytes)) fail();
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    const parent = openSync(hostedDependencyQuarantineRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(parent); } finally { closeSync(parent); }
+    return;
+  }
+  try {
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.uid !== 0n || stat.nlink !== 1n || (stat.mode & 0o7777n) !== 0o600n) fail();
+    writeFileSync(fd, bytes); fsyncSync(fd);
+  } finally { closeSync(fd); }
+  const parent = openSync(hostedDependencyQuarantineRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(parent); } finally { closeSync(parent); }
+  if (!pinReferenceFile(path, 4 * 1024 * 1024).bytes.equals(bytes)) fail();
+}
