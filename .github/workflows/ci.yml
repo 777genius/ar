@@ -418,8 +418,26 @@ jobs:
           npm ci
           npm run build:packages
           npm run typecheck:native-probe
+          sr_native_phase=root_typecheck_driver
+          sr_native_phase_on_exit() {
+            sr_native_phase_rc=$?
+            trap - EXIT
+            case "$sr_native_phase" in
+              root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator)
+                if [[ "$sr_native_phase_rc" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( sr_native_phase_rc <= 255 )); then
+                  printf '\nSR_NATIVE_SOURCE_PHASE_V1 phase=%s exit=%s\n' "$sr_native_phase" "$sr_native_phase_rc" || true
+                else
+                  printf '\n%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN' || true
+                fi ;;
+              *) printf '\n%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN' || true ;;
+            esac
+            exit "$sr_native_phase_rc"
+          }
+          trap sr_native_phase_on_exit EXIT
           npm run typecheck:native-probe:root-source
+          sr_native_phase=contracts_driver
           npm run test:native-probe
+          sr_native_phase=root_tmpfs
           # Docker owns this empty bounded tmpfs; never use the overlay backing.
           test -d /var/lib/subscription-runtime-host-policy
           test ! -L /var/lib/subscription-runtime-host-policy
@@ -428,6 +446,7 @@ jobs:
           [[ -z "$(find /var/lib/subscription-runtime-host-policy -mindepth 1 -maxdepth 1 -print -quit)" ]]
           install -d -m 0700 /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
             /var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs
+          sr_native_phase=root_principal
           # Observe the actual principal before Vitest can project fixture facts.
           node --input-type=module-typescript - <<'ROOT_TEST_AUTHORITY'
           import assert from 'node:assert/strict';
@@ -439,6 +458,7 @@ jobs:
             assert.equal(readlinkSync(`/proc/self/ns/${ns}`), readlinkSync(`/proc/1/ns/${ns}`));
           }
           ROOT_TEST_AUTHORITY
+          sr_native_phase=root_tests
           SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
@@ -448,10 +468,12 @@ jobs:
             src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json
+          sr_native_phase=root_validator_compile
           node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
             --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
             --target ES2022 --module NodeNext --moduleResolution NodeNext \
             scripts/require-archive-root-result.mts
+          sr_native_phase=root_validator
           node --experimental-strip-types scripts/require-archive-root-result.mts
           TEST_COMMAND
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
@@ -497,6 +519,12 @@ jobs:
           if [[ -f "$owned/container.stdout" && ! -L "$owned/container.stdout" ]] &&
             [[ "$native_stdout_size" =~ ^(0|[1-9][0-9]{0,10})$ ]] && (( native_stdout_size <= 16777216 )) &&
             LC_ALL=C timeout --signal=TERM --kill-after=5s 10s awk '
+              /^SR_NATIVE_SOURCE_PHASE_V1 / {
+                if ($0 !~ /^SR_NATIVE_SOURCE_PHASE_V1 phase=(root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator) exit=(0|[1-9][0-9]{0,2})$/) { bad=1; exit }
+                split($3,e,"=");
+                if (seen["phase"]++ || ++n>32 || (bytes+=length($0)+1)>16384 || e[2]+0>255) { bad=1; exit }
+                lines[n]=$0
+              }
               /^SR_NATIVE_SOURCE_PUBLIC_V1 / {
                 if ($0 !~ /^SR_NATIVE_SOURCE_PUBLIC_V1 (contracts|root_typecheck) passed=[01] inputsStable=([01]|UNKNOWN) checks=(0|[1-9][0-9]{0,2}|UNKNOWN) index=(0|[1-9][0-9]{0,2}|UNKNOWN) exit=(0|[1-9][0-9]{0,2}|UNKNOWN) signal=(NONE|SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ|UNKNOWN) naturalClose=([01]|UNKNOWN) cause=UNKNOWN$/) { bad=1; exit }
                 split($5,c,"="); split($6,i,"="); split($7,e,"=");
@@ -506,11 +534,20 @@ jobs:
                   ($2=="root_typecheck" && ($4!="inputsStable=UNKNOWN" || $9!="naturalClose=UNKNOWN"))) { bad=1; exit }
                 lines[n]=$0
               }
-              END { if (bad || !n) exit 1; for (j=1;j<=n;j++) print lines[j] }
+              END {
+                if (bad || !n) exit 1;
+                if (!seen["phase"]) {
+                  fallback="SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN";
+                  if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1;
+                  lines[n]=fallback
+                }
+                for (j=1;j<=n;j++) print lines[j]
+              }
             ' "$owned/container.stdout" > "$owned/native-public-markers.txt" 2>/dev/null; then
             cat "$owned/native-public-markers.txt"
           else
             printf '%s\n' "$unknown_marker"
+            printf '%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN'
           fi
           # Stream tar archives without following container symlinks or exposing
           # root-owned fixtures to runner-side extraction/upload traversal.
