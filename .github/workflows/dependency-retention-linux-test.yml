@@ -78,6 +78,7 @@ jobs:
             src/store-local-file/dependency-environment/tests/dependency-explicit-preservation-retirement.test.ts \
             src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts \
             src/worker-local/dependency-environment/tests/dependency-tree-preservation.test.ts \
+            src/worker-codex/tests/hosted-dependency-scratch-layout.test.ts \
             --maxWorkers 1 --no-cache --configLoader runner --silent --reporter=json \
             --outputFile=explicit-preservation-root-result.json >/dev/null 2>&1; then
             echo explicit_preservation_root_tests_failed

@@ -54,6 +54,25 @@ export const explicitPreservationRootCases = Object.freeze({
     "preservation data durability barrier refuses post-parent-sync destination-alias drift before reporting a committed effect",
     "a copied descriptor DTO never grants a preservation reference exception",
     "refuses unsupported host primitives before attempting a preservation"
+  ],
+  "src/worker-codex/tests/hosted-dependency-scratch-layout.test.ts": [
+    "imports without reading stage or selecting a root",
+    "retains exact schema1 namespaces",
+    "selects both reserved FULL siblings outside the exact jobs namespace",
+    "refuses absent original stage instead of falling back",
+    "refuses another authenticated source SHA",
+    "refuses malformed source SHA",
+    "refuses unknown schema and FULL contract",
+    "retains a conflicting legacy file instead of treating it as absence",
+    "actual mapping reader accepts the exact selected reserved FULL root",
+    "actual mapping reader holds an old differing root without hiding or rewriting history",
+    "actual Linux ROOT physical layout pins both real private siblings to the same actual parent mount",
+    "actual Linux ROOT physical layout permits only genuinely empty private old directories",
+    "actual Linux ROOT physical layout holds retained old bytes in dependency-quarantine",
+    "actual Linux ROOT physical layout holds retained old bytes in dependency-trash",
+    "actual Linux ROOT physical layout refuses a symlink alias without following or replacing it",
+    "actual Linux ROOT physical layout refuses nonprivate child mode without repairing it",
+    "actual Linux ROOT physical layout refuses a named replacement while retaining old inode, bytes and raw link"
   ]
 });
 function object(v:unknown):Record<string,unknown> {assert(v && typeof v==="object" && !Array.isArray(v));return v as Record<string,unknown>;}
