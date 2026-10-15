@@ -6,6 +6,7 @@ import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { parseMimoProxyFailureDetails, type MimoProxyFailure } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedForegroundResultRecord } from "./hosted-foreground-result";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
+import { parseCodexGoalAvailabilityFailure, type CodexGoalAvailabilityFailure } from "./application/codex-goal-availability-failure";
 
 const execFileAsync = promisify(execFile);
 const gitStatusTimeoutMs = 5_000;
@@ -18,6 +19,7 @@ export async function readCodexGoalResultSummary(path: string): Promise<{
   readonly status?: string;
   readonly reason?: string;
   readonly proxyFailure?: MimoProxyFailure;
+  readonly availabilityFailure?: CodexGoalAvailabilityFailure;
   readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
 }> {
   let governed = false;
@@ -28,6 +30,9 @@ export async function readCodexGoalResultSummary(path: string): Promise<{
     if (!isRecord(parsed)) return {};
     const foregroundOutput = record?.output;
     const proxyFailure = parsed.status === "failed" || parsed.status === "partial" ? parseMimoProxyFailureDetails(parsed.details) : undefined;
+    const availabilityFailure = parsed.reason === "account_unavailable" &&
+      (parsed.status === "blocked" || parsed.status === "failed" || parsed.status === "partial")
+      ? parseCodexGoalAvailabilityFailure(parsed.details) : undefined;
     return {
       ...(typeof parsed.status === "string" ? { status: parsed.status } : {}),
       ...(typeof parsed.reason === "string"
@@ -35,6 +40,7 @@ export async function readCodexGoalResultSummary(path: string): Promise<{
         : {}),
       ...(foregroundOutput ? { foregroundOutput } : {}),
       ...(proxyFailure ? { proxyFailure } : {}),
+      ...(availabilityFailure ? { availabilityFailure } : {}),
     };
   } catch {
     if (governed) throw new Error("hosted_foreground_result_unresolved");

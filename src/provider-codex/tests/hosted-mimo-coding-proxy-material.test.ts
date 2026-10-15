@@ -15,7 +15,8 @@ afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllEnvs(); 
 function setup(digest: string, taskTimeoutMs = 60000) {
   const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs, codexBinaryPath: "/opt/codex" };
   const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + taskTimeoutMs - 10000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
-  const proxy = { capability: "TEST-cap-" + digest, baseUrl: "http://127.0.0.1:1234/v1", revoke: vi.fn(), close: vi.fn(async () => {}) };
+  const proxy = { capability: "TEST-cap-" + digest, baseUrl: "http://127.0.0.1:1234/v1", revoke: vi.fn(), close: vi.fn(async () => {}),
+    upstreamFailureObservation: vi.fn<() => unknown>(() => undefined) };
   mocks.read.mockReturnValue(origin); mocks.current.mockImplementation(() => {}); mocks.credential.mockReturnValue("TEST-real-key-never-bootstrap"); mocks.start.mockResolvedValue(proxy);
   const input = { model: origin.model, lifetime, redactor: { registerSecret: vi.fn(), redact: (value: string) => value, assertNoKnownSecret: vi.fn() } };
   return { origin, lifetime, proxy, input };
@@ -141,6 +142,22 @@ it("joins concurrent listener closure instead of returning an early cleanup rece
   let done = false; void second.then(() => { done = true; });
   await Promise.resolve(); expect(done).toBe(false); finish(); await first;
   expect(f.proxy.close).toHaveBeenCalledOnce();
+});
+it("retains only bounded start-lifetime HTTP observations after close without invoking data getters", async () => {
+  const { HostedMimoCodingProxyOwner } = await import("../hosted-mimo-coding-proxy-material");
+  const f = setup("failure-facts"), owner = new HostedMimoCodingProxyOwner();
+  await owner.acquire(f.input); await owner.close();
+  f.proxy.upstreamFailureObservation.mockReturnValue({ count: 4096, lastStatus: 429, private: "TEST-secret-never-observed" });
+  expect(owner.failureDetails()).toEqual({ mimoProxyStartUpstreamHttpFailureCount: "4096", mimoProxyStartLastUpstreamStatus: "429" });
+  let invoked = 0;
+  const getter = { count: 1 }; Object.defineProperty(getter, "lastStatus", { get: () => { invoked++; throw Error("TEST secret getter"); } });
+  const proxy = new Proxy({}, { getOwnPropertyDescriptor() { invoked++; throw Error("TEST secret proxy"); } });
+  for (const value of [undefined, getter, proxy, { count: 4097, lastStatus: 429 }, { count: NaN, lastStatus: 429 },
+    { count: 0, lastStatus: 429 }, { count: 1, lastStatus: 0 }, { count: 1, lastStatus: 600 }, { count: 1, lastStatus: 429.5 }]) {
+    f.proxy.upstreamFailureObservation.mockReturnValue(value); expect(owner.failureDetails()).toBeUndefined();
+  }
+  f.proxy.upstreamFailureObservation.mockImplementation(() => { throw Error("TEST secret observation"); });
+  expect(owner.failureDetails()).toBeUndefined(); expect(invoked).toBe(0);
 });
 it("uses the already authenticated classified origin without a second full observation", async () => {
   const f = setup("f".repeat(64)); mocks.read.mockImplementation(() => { throw new Error("unexpected-second-full-read"); });

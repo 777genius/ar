@@ -2,8 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { hostedMimoCodingGitReadPaths } from "./hosted-mimo-coding-git";
 import { dirname, join } from "node:path";
+import { types } from "node:util";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
-import type { RedactorPort } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure, RedactorPort } from "@vioxen/subscription-runtime/core";
 import type { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
 import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent,
   type HostedMimoCodingWorkerOrigin } from "./hosted-mimo-worker-origin";
@@ -18,6 +19,7 @@ import { hostedMimoCodingGuestHome, hostedMimoCodingGuestCodexHome } from "./hos
 export type HostedMimoCodingProxyMaterial = Readonly<{
   origin: HostedMimoCodingWorkerOrigin;
   capability: string;
+  upstreamFailureObservation: MimoCredentialProxy["upstreamFailureObservation"];
   assertCurrent(): void;
   revoke(): void;
   close(): Promise<void>;
@@ -115,6 +117,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   const abort = () => proxy.revoke();
   const material: HostedMimoCodingProxyMaterial = Object.freeze({ origin, capability: proxy.capability,
     latestFailure: () => proxy.latestFailure(),
+    upstreamFailureObservation: () => proxy.upstreamFailureObservation(),
     assertCurrent() { if (closed) throw new Error("hosted_mimo_coding_proxy_closed"); assertCurrent(); },
     revoke() { proxy.revoke(); },
     close() {
@@ -153,6 +156,25 @@ export class HostedMimoCodingProxyOwner {
   private disposed = false;
   get retained(): boolean { return this.material !== undefined; }
   get latestFailure(): MimoProxyFailure | undefined { return this.material?.latestFailure(); }
+  /** Numeric start-lifetime observations only; this grants no live authority. */
+  failureDetails(): Readonly<Record<string, string>> | undefined {
+    try {
+      const value = this.material?.upstreamFailureObservation();
+      if (!value || types.isProxy(value)) return;
+      const count: unknown = Object.getOwnPropertyDescriptor(value, "count")?.value;
+      const status: unknown = Object.getOwnPropertyDescriptor(value, "lastStatus")?.value;
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > 4096 ||
+          typeof status !== "number" || !Number.isSafeInteger(status) || status < 100 || status > 599) return;
+      return Object.freeze({ mimoProxyStartUpstreamHttpFailureCount: String(count), mimoProxyStartLastUpstreamStatus: String(status) });
+    } catch { /* Optional observations never replace the provider's failure. */ }
+  }
+  annotateFailure(failure: ProviderFailure): ProviderFailure {
+    try {
+      const details = this.failureDetails();
+      if (details) return { ...failure, details: { ...failure.details, ...details } };
+    } catch { /* Optional proxy observations cannot change failure classification. */ }
+    return failure;
+  }
   async acquire(input: Parameters<typeof createHostedMimoCodingProxyMaterial>[0]): Promise<HostedMimoCodingProxyMaterial | null> {
     if (this.disposed) throw new Error("codex_driver_disposed");
     this.flight ??= createHostedMimoCodingProxyMaterial(input);

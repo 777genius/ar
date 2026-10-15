@@ -394,8 +394,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
         !input.abortSignal.aborted && outputAbortController.signal.aborted
           ? outputAbortController.signal.reason
           : error;
-      return codexDriverFailure({ error: outputFailure, evidenceError: error, redactor: input.redactor, startedAt,
+      const failure = codexDriverFailure({ error: outputFailure, evidenceError: error, redactor: input.redactor, startedAt,
         proxyFailure: this.codingProxyOwner.latestFailure, priorProxyFailure: priorMimoFailure });
+      return { ...failure, failure: this.codingProxyOwner.annotateFailure(failure.failure) };
     } finally {
       if (materialized) {
         if (this.executionLifetime) {

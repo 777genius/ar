@@ -21,6 +21,8 @@ export type MimoCredentialProxy = Readonly<{
   baseUrl: string;
   /** Disposable start-local authority, deliberately readable by its shell. */
   capability: string;
+  /** Start-lifetime facts, not attribution to a particular turn or failure. */
+  upstreamFailureObservation(): Readonly<{ count: number; lastStatus: number }> | undefined;
   revoke(): void;
   close(): Promise<void>;
   /** Retained even when a streaming response can no longer carry an error. */
@@ -79,7 +81,7 @@ export async function startMimoCredentialProxy(input: {
     void dispatcherClosing.catch(() => undefined);
     return dispatcherClosing;
   };
-  let revoked = false, requests = 0;
+  let revoked = false, requests = 0, upstreamFailureCount = 0, lastUpstreamStatus: number | undefined;
   let latestFailure: MimoProxyFailure | undefined;
   const revoke = () => {
     revoked = true;
@@ -158,6 +160,10 @@ export async function startMimoCredentialProxy(input: {
       phase = FailurePhase.Response;
       if (bounded(upstreamResponse.status, 100, 599)) upstreamStatus = upstreamResponse.status;
       if (!upstreamResponse.ok) {
+        try { if (bounded(upstreamResponse.status, 100, 599)) {
+          upstreamFailureCount = Math.min(upstreamFailureCount + 1, limits.maxRequests);
+          lastUpstreamStatus = upstreamResponse.status;
+        } } catch { /* Observation cannot replace the original HTTP response. */ }
         const details = failure(upstreamStatus === undefined ? FailureReason.Response : FailureReason.Http);
         try { await upstreamResponse.body?.cancel(); } catch { /* Keep the received HTTP failure. */ }
         reply(response, 502, "proxy_upstream_failed", upstreamStatus, details); return;
@@ -213,6 +219,8 @@ export async function startMimoCredentialProxy(input: {
   let closing: Promise<void> | undefined;
   return Object.freeze({ baseUrl: `http://127.0.0.1:${address.port}/v1`, capability, revoke,
     latestFailure: () => latestFailure,
+    upstreamFailureObservation: () => lastUpstreamStatus === undefined ? undefined :
+      Object.freeze({ count: upstreamFailureCount, lastStatus: lastUpstreamStatus }),
     close() {
       if (closing) return closing;
       clearTimeout(expiry); revoke();
