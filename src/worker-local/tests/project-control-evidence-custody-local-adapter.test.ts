@@ -143,6 +143,53 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     expect(swapped).toBe(true);
   });
 
+  it("rejects replacement of the admitted root before opening metadata bytes", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-admitted-read-race-"));
+    try {
+      const root = join(outer, "root"), file = join(root, "package.json");
+      await mkdir(root); await writeFile(file, "original bytes");
+      const identity = await lstat(root); let reachedReadCompletion = false;
+      const custody = new LocalProjectControlEvidenceCustody(async point => {
+        if (point === "before_immutable_read_open") {
+          await rename(root, join(outer, "original-root")); await mkdir(root);
+          await writeFile(file, "outside original admitted root");
+        }
+        if (point === "after_immutable_read_before_lexical_reopen") reachedReadCompletion = true;
+      });
+      await expect(custody.readImmutableFile(file, 1024,
+        { canonicalPath: root, dev: identity.dev, ino: identity.ino })).rejects.toThrow();
+      expect(reachedReadCompletion).toBe(false);
+    } finally { await rm(outer, { recursive: true, force: true }); }
+  });
+
+  it("reads contained link text without following its target", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-link-read-"));
+    try {
+      await writeFile(join(outer, "target"), "private target bytes");
+      await symlink("target", join(outer, "link"));
+      const custody = new LocalProjectControlEvidenceCustody();
+      expect(await custody.readSymbolicLink(join(outer, "link"))).toBe("target");
+      await expect(custody.readSymbolicLink(join(outer, "target"))).rejects.toThrow("link_invalid");
+    } finally { await rm(outer, { recursive: true, force: true }); }
+  });
+
+  it.each(["parent", "leaf"] as const)("rejects a %s replacement during a held-parent link read", async kind => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-link-race-"));
+    try {
+      const parent = join(outer, "parent"), link = join(parent, "link");
+      await mkdir(parent); await symlink("target", link);
+      let swapped = false;
+      const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
+        if (point !== "after_link_read_before_lexical_revalidation" || path !== link || swapped) return;
+        swapped = true;
+        if (kind === "parent") { await rename(parent, join(outer, "original")); await mkdir(parent); await symlink("other", link); }
+        else { await rename(link, join(parent, "original-link")); await symlink("other", link); }
+      });
+      await expect(custody.readSymbolicLink(link)).rejects.toThrow();
+      expect(swapped).toBe(true);
+    } finally { await rm(outer, { recursive: true, force: true }); }
+  });
+
   it("rejects a directory lexical replacement after listing", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-list-race-"));
     const listed = join(outer, "listed");
