@@ -1,5 +1,10 @@
+import { ChildLifetimeError, ChildLifetimeFailure } from "@vioxen/subscription-runtime/core";
+import { AppServerTurnCheckpointError } from "../../app-server/application/app-server-turn-checkpoint";
+import { AppServerUsageError } from "../../app-server/domain/app-server-usage-error";
 import { describe, expect, it, vi } from "vitest";
 import { completeValidatedNativeGoal } from "../../app-server/application/app-server-validated-goal-completion";
+import { AppServerOutputValidationError, AppServerOutputValidationStage as Stage, AppServerOutputValidationCode as Code, validateAppServerCompletedOutput } from "../../app-server/application/app-server-output-validation-error";
+import { classifyCodexFailure } from "../../failure-classifier";
 import type { CodexThreadGoal } from "../../app-server/domain/app-server-types";
 
 const active: CodexThreadGoal = { threadId: "TEST-thread", objective: "Prepare accepted output", status: "active" };
@@ -65,9 +70,59 @@ describe("trusted completed output and real native Goal completion", () => {
   });
 
   it("does not mark rejected output complete or expose the validator error payload", async () => {
-    const f = fixture(); f.validate.mockRejectedValue(new Error("TEST-private-source"));
-    await expect(completeValidatedNativeGoal(f.input)).rejects.toThrow("codex_goal_completed_output_rejected");
+    const f = fixture(); const original = new Error("TEST-private-source"); f.validate.mockRejectedValue(original);
+    const failure = await completeValidatedNativeGoal(f.input).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AppServerOutputValidationError);
+    expect((failure as Error).cause).toBeUndefined();
+    expect((failure as Error).message).toBe("codex_goal_completed_output_rejected");
+    expect(JSON.stringify(classifyCodexFailure(failure))).not.toContain("TEST-private-source");
     expect(f.client.setGoal).not.toHaveBeenCalled(); expect(f.client.getGoal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["parse", Stage.Parse, Code.ParseFailed],
+    ["normalize", Stage.Normalize, Code.NormalizeFailed],
+    ["throw", Stage.Product, Code.ProductException],
+    ["false", Stage.Product, Code.ProductRejected],
+  ] as const)("reports finite %s rejection without completing or retaining private causes", async (mode, stage, code) => {
+    const f = fixture(); const original = Object.assign(new Error("TEST-private-output-and-credential"), {
+      details: { arbitrary: "TEST-private-details" }, stdout: "TEST-private-stdout", stderr: "TEST-private-stderr",
+    });
+    f.validate.mockImplementation(async () => validateAppServerCompletedOutput({
+      text: "TEST-private-source",
+      parse: () => { if (mode === "parse") throw original; return {}; },
+      normalize: (value) => { if (mode === "normalize") throw original; return value; },
+      validate: () => { if (mode === "throw") throw original; return mode !== "false"; },
+    }));
+    const failure = await completeValidatedNativeGoal(f.input).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AppServerOutputValidationError);
+    expect((failure as AppServerOutputValidationError).cause).toBeUndefined();
+    expect(JSON.stringify(failure)).not.toContain("TEST-private");
+    const projected = classifyCodexFailure(failure);
+    expect(projected).toEqual({ code: "unknown_runtime_failure", retryable: true,
+      reconnectRequired: false, safeMessage: "Codex completed output did not pass host validation.",
+      details: { rawCause: "codex_goal_completed_output_rejected", outputValidationStage: stage, outputValidationCode: code } });
+    const legacy = classifyCodexFailure(new Error("codex_goal_completed_output_rejected"));
+    expect({ code: projected.code, retryable: projected.retryable, reconnectRequired: projected.reconnectRequired })
+      .toEqual({ code: legacy.code, retryable: legacy.retryable, reconnectRequired: legacy.reconnectRequired });
+    expect(JSON.stringify(projected)).not.toContain("TEST-private");
+    expect(f.client.setGoal).not.toHaveBeenCalled();
+    expect(f.client.getGoal).not.toHaveBeenCalled();
+  });
+
+  it("preserves checkpoint and child-lifetime classification ahead of nested validation diagnostics", () => {
+    const validation = new AppServerOutputValidationError(Stage.Product, Code.ProductRejected);
+    for (const error of [new AppServerTurnCheckpointError(validation),
+      new AppServerUsageError(new AppServerTurnCheckpointError(validation))]) {
+      expect(classifyCodexFailure(error)).toMatchObject({
+        code: "checkpoint_unprotected", retryable: false, reconnectRequired: false,
+      });
+    }
+    const lifetime = new ChildLifetimeError(ChildLifetimeFailure.Expired);
+    const nested = new Error("TEST-wrapper", { cause: lifetime });
+    expect(classifyCodexFailure(nested)).toEqual(classifyCodexFailure(lifetime));
+    const projected = classifyCodexFailure(new AppServerUsageError(validation));
+    expect(projected.details?.outputValidationCode).toBe(Code.ProductRejected);
   });
 
   it("honors cancellation after acceptance before native mutation", async () => {

@@ -1,3 +1,4 @@
+import { AppServerOutputValidationError, AppServerOutputValidationStage, AppServerOutputValidationCode } from "./app-server/application/app-server-output-validation-error";
 import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
@@ -39,6 +40,15 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
   ) {
     return classifyCodexFailure(error.cause);
   }
+  if (error instanceof AppServerOutputValidationError) return {
+    code: "unknown_runtime_failure", retryable: true, reconnectRequired: false,
+    safeMessage: "Codex completed output did not pass host validation.",
+    details: { rawCause: "codex_goal_completed_output_rejected",
+      outputValidationStage: Object.values(AppServerOutputValidationStage).includes(error.stage)
+        ? error.stage : AppServerOutputValidationStage.Unknown,
+      outputValidationCode: Object.values(AppServerOutputValidationCode).includes(error.validationCode)
+        ? error.validationCode : AppServerOutputValidationCode.Unknown },
+  };
   if (
     isCodexAppServerRateLimitsRejectedError(error) &&
     error.reason === "quota_limited"
