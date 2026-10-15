@@ -44,6 +44,21 @@ function hostRelease(v:unknown):H1HostRelease{const d=record(v,["source","sha256
 const definitionKeys=["mountAll","mountSysfs","mountCgroups","devSetup","inaccessibleNodes","notify","hostReleaseTransform"] as const;
 export enum H1DistroAssurance {SignedPublisher="ubuntu_signed_publisher_binary_and_source_attribution"}
 export type H1StagedSubject=Readonly<{schemaVersion:1|2;distroFactsSha256?:string;assurance?:H1DistroAssurance;sourceSha:string;validatorSha256:string;machineId:string;bootId:string;rootIdentity:H1ObjectIdentity;catalog:readonly H1CatalogEntry[];definitions:Readonly<Record<typeof definitionKeys[number],string>&{pythonGetpath?:string}>;mounts:readonly H1MountRow[];hostRelease:H1HostRelease;syntheticBootId:string}>;
+/** Host-owned DATA port for the fixed original-source distro adapter. Keeping
+ * contracts here prevents the installed/lifetime host graph importing CI I/O.
+ * These objects are facts and descriptor custody only, never qualification. */
+export interface H1OriginalDistroObject {readonly path:string;readonly sha256:string;readonly fd:number}
+export interface H1DistroFactHandles {revalidate():void;descriptors():readonly number[];close():void}
+export interface H1DistroFactInput {
+ readonly subject:H1StagedSubject;readonly manifestFd:number;readonly reviewRootFd:number;
+ readonly bootstrapReviewFd:number;readonly bootstrapReviewSha256:string;
+ readonly catalogFiles:readonly H1OriginalDistroObject[];readonly hostFiles:readonly H1OriginalDistroObject[];
+ readonly verifierFiles:readonly H1OriginalDistroObject[];readonly deadline:number;
+}
+export interface H1DistroSourcePort {
+ h1DistroFactsData(value:unknown):Readonly<{verifiers:readonly Readonly<{path:string;sha256:string}>[]}>;
+ retainH1SignedDistroFacts(input:H1DistroFactInput):Promise<H1DistroFactHandles>;
+}
 function uuid(v:unknown):string{const s=text(v);need(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(s));return s;}
 /** DATA only. Expected rows in an independently installed record are not run facts. */
 export function h1StagedSubjectData(v:unknown):H1StagedSubject{

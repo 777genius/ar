@@ -6,7 +6,7 @@ import {performance} from "node:perf_hooks";
 import {posix} from "node:path";
 import {spawnSync} from "node:child_process";
 import {constants,openSync,closeSync,fstatSync,lstatSync,statSync,readSync,readlinkSync,type BigIntStats} from "node:fs";
-import {H1CatalogKind,H1DistroAssurance,type H1StagedSubject} from "./dependency-full-h1-staged-tools-TEST.js";
+import {H1CatalogKind,H1DistroAssurance,type H1StagedSubject,type H1OriginalDistroObject,type H1DistroFactHandles,type H1DistroFactInput,type H1DistroSourcePort} from "./dependency-full-h1-staged-tools-TEST.js";
 import {H1ElfRole,validateH1ElfRole,h1LibcCanonicalPath,h1OriginalHostNspawnSha256,h1OriginalHostNspawnRunpath} from "./dependency-full-h1-elf-role-TEST.js";
 import {parsePythonEnvelopeElf} from "./dependency-full-python-envelope-TEST.js";
 import {assertUbuntuArchiveSignature,parseUbuntuRelease,assertCompleteUbuntuIndex,joinCompleteUbuntuIndex,CiUbuntuPocket,CiUbuntuComponent,ciUbuntuSources} from "../../scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts";
@@ -70,7 +70,6 @@ export function h1DistroFactsData(v:unknown):H1DistroFacts{
  return Object.freeze({schemaVersion:1,assurance:H1DistroAssurance.SignedPublisher,sourceSha:text(r.sourceSha,/^[a-f0-9]{40}$/),assets:Object.freeze(assets),releases:Object.freeze(releases),packages:Object.freeze(packages),members:Object.freeze(members),semantics:Object.freeze(semantics),verifiers:Object.freeze(verifiers),verifierAliases,hostAliases,verifierReview,compiledInputEquality:false,reproducibleBuild:false});
 }
 export const h1DistroAssetName=(sha256:string)=>"h1-distro-"+digest(sha256)+".bin";
-export interface H1OriginalDistroObject {readonly path:string;readonly sha256:string;readonly fd:number}
 /** Equality/coverage DATA only. The original parent supplies its actual retained
  * catalog and separate HOST monitor object roster, never a report from Python. */
 export function checkH1DistroMemberCoverageData(subject:H1StagedSubject,facts:H1DistroFacts,catalogFiles:readonly H1OriginalDistroObject[],hostFiles:readonly H1OriginalDistroObject[],verifierFiles:readonly H1OriginalDistroObject[]= []):void{
@@ -97,12 +96,10 @@ export function h1DistroLibraryRouteData(aliases:readonly Readonly<{path:string;
 export function h1DistroSharedObjectRoleData(bytes:Buffer,canonicalPath:string,aliases:readonly Readonly<{path:string;target:string}>[]){
  const inspected=validateH1ElfRole(bytes,H1ElfRole.Extension);need(inspected.soname,H1DistroHeld.Coverage);need(libraryPath.split(":").some(dir=>h1DistroLibraryRouteData(aliases,dir,inspected.soname!)===canonicalPath),H1DistroHeld.Coverage);return validateH1ElfRole(bytes,H1ElfRole.SharedObject,inspected.soname);
 }
-export interface H1DistroFactHandles {revalidate():void;descriptors():readonly number[];close():void}
-interface OriginalInput {readonly subject:H1StagedSubject;readonly manifestFd:number;readonly reviewRootFd:number;readonly bootstrapReviewFd:number;readonly bootstrapReviewSha256:string;readonly catalogFiles:readonly H1OriginalDistroObject[];readonly hostFiles:readonly H1OriginalDistroObject[];readonly verifierFiles:readonly H1OriginalDistroObject[];readonly deadline:number}
 /** Called from the genuine parent's fixed catalog-retained original module.
  * This public function still returns only DATA handles; no copied invocation
  * can enter the native parent's lexical consume operation. */
-export async function retainH1SignedDistroFacts(input:OriginalInput):Promise<H1DistroFactHandles>{
+export async function retainH1SignedDistroFacts(input:H1DistroFactInput):Promise<H1DistroFactHandles>{
  need(process.platform==="linux"&&process.getuid?.()===0&&process.geteuid?.()===0,H1DistroHeld.Custody);need(input.subject.schemaVersion===2&&input.subject.assurance===H1DistroAssurance.SignedPublisher,H1DistroHeld.Schema);
  let closed=false,stage=H1DistroHeld.Custody;const files=new Map<string,{fd:number;identity:string;asset:Asset}>(),archives:ReturnType<typeof retainOriginalAcquiredArchive>[]=[],external=new Map<number,string>(),hostDirectories=new Map<string,{fd:number;identity:string}>(),hostRoutes=new Map<string,{needed:readonly string[];directories:readonly string[]}>(),aliases:{fd:number;path:string;target:string;identity:string}[]=[];let root=-1;let rootStamp="";let verifierNamespace:(()=>void)|undefined;
  const tick=()=>{need(!closed,H1DistroHeld.Closed);need(Number.isFinite(input.deadline)&&performance.now()<input.deadline,H1DistroHeld.Deadline);};
@@ -168,3 +165,7 @@ export async function retainH1SignedDistroFacts(input:OriginalInput):Promise<H1D
   rejoinNames();return Object.freeze({revalidate,descriptors(){try{rejoinNames();return Object.freeze([root,...[...files.values()].map(f=>f.fd),...archives.map(a=>a.fd),...aliases.map(a=>a.fd),...[...hostDirectories.values()].map(d=>d.fd)]);}catch(error){finish();throw error;}},close:finish});
  }catch(error){finish();if(types.isNativeError(error)&&Object.getPrototypeOf(error)===H1DistroFailure.prototype)throw error;held(stage);}
 }
+
+/** Compile-checked implementation of the host-owned DATA port. The genuine
+ * native caller imports this from its single fixed catalog-retained module. */
+export const h1DistroSourcePort:H1DistroSourcePort=Object.freeze({h1DistroFactsData,retainH1SignedDistroFacts});

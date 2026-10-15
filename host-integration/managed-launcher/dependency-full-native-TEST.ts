@@ -2,7 +2,7 @@ import { OriginalFullPeerPreloadSelectionKind, originalFullProjectControlPreload
 import { originalFullGuestNativeSourcePaths } from "./hosted-full-guest-source-inventory.js";
 import { H1ElfRole, validateH1ElfRole } from "./dependency-full-h1-elf-role-TEST.js";
 import {H1ConstructorHeld,h1HeldError,readH1ConstructorHeld,h1ReadonlyCache,retainH1ConstructorLoadFacts,checkH1PythonRouteData,checkH1ActorStatusData,h1OriginalDeadlineData,H1ApiKind,H1PidView,checkH1OwnedCgroupData,checkH1ApiObjectData,checkH1HostReleaseData} from "./dependency-full-h1-constructor-closure-TEST.js";
-import type {H1DistroFactHandles,H1OriginalDistroObject} from "./dependency-full-h1-constructor-build-facts-TEST.js";
+import type {H1DistroFactHandles,H1OriginalDistroObject,H1DistroSourcePort} from "./dependency-full-h1-staged-tools-TEST.js";
 import type { FullPositiveCopyRow } from "./dependency-full-positive-copy-TEST.js";
 import { originalProviderSetupSlot, providerSetupQueryClosureData, type OriginalSetupTask, type OriginalSetupFact, type OriginalSetupContext } from "./dependency-full-provider-setup-TEST.js";
 import { managedSystemdRunExecutable, fullPositiveTestRoot, fullPositiveTestJob, fullPositiveTestEntry, parseNativeUnitProperties } from "./launch.mjs";
@@ -1036,7 +1036,8 @@ function originalH1StagedSlot(c:ReturnType<typeof acquire>,parent:FullParentSess
       // One exact original-source module, already retained in the complete
       // source catalog. It owns DATA I/O only; no installed-relative source
       // shortcut, caller-selected import, callback or authority registration.
-      const factsModule:typeof import("./dependency-full-h1-constructor-build-facts-TEST.js")=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.js").href);
+      const factsSource:Readonly<{h1DistroSourcePort:H1DistroSourcePort}>=await import(pathToFileURL(c.tuple.source+"/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.js").href);
+      const factsModule=factsSource.h1DistroSourcePort;
       c.validate();rejoinDeadline();check(!revoked && selectedGuest()===originalGuest);
       const manifestBytes=readFd(originalDistroInput.manifestFd);check(hash(manifestBytes)===c.h1Subject.distroFactsSha256);
       const manifest=factsModule.h1DistroFactsData(JSON.parse(manifestBytes.toString("utf8")));
