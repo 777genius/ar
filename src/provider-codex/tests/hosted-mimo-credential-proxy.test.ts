@@ -80,14 +80,30 @@ it("streams SSE across chunks and removes upstream key/capability echoes spannin
   } finally { await f.proxy.close(); }
 });
 
-it.each([302, 401, 500])("never retries or forwards upstream error/redirect credentials (%s)", async status => {
-  const transport = vi.fn<typeof fetch>(async () => new Response(key, { status, headers: { location: "https://evil.test/" + key } }));
+it.each([302, 401, 429, 500, 502, 503])("never retries or forwards upstream error/redirect credentials (%s)", async status => {
+  let capability = "";
+  const transport = vi.fn<typeof fetch>(async () => new Response(key + capability, { status,
+    headers: { location: "https://evil.test/" + key, "x-secret": key, "retry-after": "60" } }));
   const f = await fixture(transport);
+  capability = f.proxy.capability;
   try {
     const response = await f.post(); expect(response.status).toBe(502);
-    expect(await response.text()).toBe('{"error":{"code":"proxy_upstream_failed"}}');
+    expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed", upstream_status: status } });
     expect(transport).toHaveBeenCalledOnce(); expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-secret")).toBeNull(); expect(response.headers.get("retry-after")).toBeNull();
   } finally { await f.proxy.close(); }
+});
+
+it("does not invent an upstream failure status for transport, empty body, or unsupported content", async () => {
+  for (const transport of [async () => { throw Error(key); }, async () => new Response(null),
+    async () => new Response(key, { headers: { "content-type": "text/plain" } }), async () => Response.error()]) {
+    const fetchUpstream = vi.fn<typeof fetch>(transport), f = await fixture(fetchUpstream);
+    try {
+      const response = await f.post(); expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed" } });
+      expect(fetchUpstream).toHaveBeenCalledOnce();
+    } finally { await f.proxy.close(); }
+  }
 });
 
 it("enforces concurrency, revokes active upstream and refuses further requests", async () => {
