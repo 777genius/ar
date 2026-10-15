@@ -4,6 +4,19 @@ import { researchHostCommandFailure, researchHash, researchPublish, researchRead
 export enum ResearchAdmissionFailureStage {
   AuthorityCurrent = "authority-current", MaterialCurrent = "material-current",
 }
+export type ResearchAdmissionTiming = Readonly<{
+  admissionAuthorityElapsedMs: number; admissionArtifactElapsedMs: number; admissionExecutableElapsedMs: number;
+}>;
+/** Measures one existing synchronous operation; observation cannot change it. */
+export function researchAdmissionMeasure<T>(effect: () => T, observe: (elapsedMs: number) => void): T {
+  let started: number | undefined;
+  try { started = performance.now(); } catch { /* Observation only. */ }
+  try { return effect(); }
+  finally { try {
+    const elapsed = started === undefined ? NaN : performance.now() - started;
+    if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 86_400_000) observe(elapsed);
+  } catch { /* Preserve the operation's exact result or exception. */ } }
+}
 /** Private observation only. The retained immutable bytes bind it to the exact
  * start; diagnostic publication never replaces or retries the original denial. */
 export function researchAdmissionObservation(directory: string, specBytes: Buffer, bindingBytes: Buffer):

@@ -502,6 +502,8 @@ async function runCodexGoalAdmitted(
         const prefix = "mimo_" + timing.scope + "_";
         return [[prefix + "outcome", timing.outcome], [prefix + "elapsedMs", timing.elapsedMs],
           [prefix + "admissionCount", timing.admissionCount], [prefix + "admissionElapsedMs", timing.admissionElapsedMs],
+          ...Object.entries(timing).filter(([key]) => key === "admissionAuthorityElapsedMs" || key === "admissionArtifactElapsedMs" || key === "admissionExecutableElapsedMs")
+            .map(([key, value]) => [prefix + key, value]),
           [prefix + "successfulGitCount", timing.successfulGitCount], [prefix + "successfulGitElapsedMs", timing.successfulGitElapsedMs]];
       })),
     });
@@ -519,7 +521,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const researchAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   const assertProviderAdmission = input.assertStorageAdmission || researchAdmission
-    ? () => { input.assertStorageAdmission?.(); researchAdmission?.(); } : undefined;
+    ? () => { input.assertStorageAdmission?.(); return researchAdmission?.(); } : undefined;
   assertProviderAdmission?.();
   const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
     ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
@@ -532,7 +534,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
   // Signed dependency workspaces retain their independent purpose-qualified route.
   const ownedSnapshotGit = ownedMimoWorker && !dependencyGit
-    ? new OwnedMimoSnapshotGitRunner(config.workspacePath, () => { assertProviderAdmission?.(); },
+    ? new OwnedMimoSnapshotGitRunner(config.workspacePath, () => assertProviderAdmission?.(),
         input.observeOwnedMimoSnapshotTiming) : undefined;
   const snapshotGit = dependencyGit ?? ownedSnapshotGit;
   const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({

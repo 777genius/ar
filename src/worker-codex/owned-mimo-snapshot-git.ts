@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, types } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import type { SafeExecutionCommandRunner, WorkspaceSnapshotter, SafeExecutionWorkspaceAccess } from "@vioxen/subscription-runtime/worker-core";
 import { classifyManagedDependencyGitArgs, ManagedDependencyGitOperation,
@@ -7,6 +7,7 @@ import { classifyManagedDependencyGitArgs, ManagedDependencyGitOperation,
 
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
+import type { ResearchAdmissionTiming } from "./research-launch-admission-diagnostics";
 
 const execute = promisify(execFile);
 export const ownedMimoSnapshotGitBudgetMs = 30_000;
@@ -15,9 +16,10 @@ export enum MimoSnapshotTimingOutcome { Completed = "completed", Failed = "faile
 export type MimoSnapshotTiming = Readonly<{
   scope: MimoSnapshotTimingScope; outcome: MimoSnapshotTimingOutcome; elapsedMs: number;
   admissionCount: number; admissionElapsedMs: number; successfulGitCount: number; successfulGitElapsedMs: number;
-}>;
+}> & Partial<ResearchAdmissionTiming>;
 type TimingCounters = { admissionCount: number; admissionElapsedMs: number; successfulGitCount: number;
-  successfulGitElapsedMs: number; invalid: boolean };
+  successfulGitElapsedMs: number; invalid: boolean; partCount: number; parts: ResearchAdmissionTiming };
+const admissionPartKeys = ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs"] as const;
 enum TimingCounterKind { Admission = "admission", SuccessfulGit = "successful_git" }
 const timingNow = (): number | undefined => {
   try { const value = performance.now(); return Number.isFinite(value) ? value : undefined; } catch { return undefined; }
@@ -93,7 +95,8 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
     if (this.#observed.has(scope)) return operation();
     this.#observed.add(scope);
     const counters: TimingCounters = { admissionCount: 0, admissionElapsedMs: 0,
-      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false };
+      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false, partCount: 0,
+      parts: { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0 } };
     this.#timing = counters;
     const started = timingNow(); let outcome = MimoSnapshotTimingOutcome.Failed;
     try { const result = await operation(); outcome = MimoSnapshotTimingOutcome.Completed; return result; }
@@ -103,7 +106,9 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       if (!counters.invalid && elapsedMs !== undefined) {
         try { this.#observe(Object.freeze({ scope, outcome, elapsedMs,
           admissionCount: counters.admissionCount, admissionElapsedMs: counters.admissionElapsedMs,
-          successfulGitCount: counters.successfulGitCount, successfulGitElapsedMs: counters.successfulGitElapsedMs })); }
+          successfulGitCount: counters.successfulGitCount, successfulGitElapsedMs: counters.successfulGitElapsedMs,
+          ...(counters.partCount === counters.admissionCount && counters.partCount > 0 &&
+            Object.values(counters.parts).reduce((sum, value) => sum + value, 0) <= counters.admissionElapsedMs ? counters.parts : {}) })); }
         catch { /* Optional observations never replace the original result or error. */ }
       }
     }
@@ -118,9 +123,20 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
     if (counters.admissionElapsedMs > 86_400_000 || counters.successfulGitElapsedMs > 86_400_000) counters.invalid = true;
   }
   #invalid(): never { this.#failure = new Error("owned_mimo_snapshot_git_invalid"); throw this.#failure; }
+  #recordParts(value: unknown): void {
+    const counters = this.#timing;
+    if (!counters || !value || typeof value !== "object" || types.isProxy(value)) return;
+    try {
+      const values = admissionPartKeys.map(key => Object.getOwnPropertyDescriptor(value, key)?.value as unknown);
+      if (!values.every((v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 86_400_000)) return;
+      if (admissionPartKeys.some((key, i) => counters.parts[key] + values[i]! > 86_400_000)) return;
+      counters.parts = Object.fromEntries(admissionPartKeys.map((key, i) => [key, counters.parts[key] + values[i]!])) as ResearchAdmissionTiming;
+      counters.partCount++;
+    } catch { /* Optional data never invokes getters or replaces a guard outcome. */ }
+  }
   assertHealthy(): void {
     const started = this.#timing ? timingNow() : undefined;
-    try { this.#assertCurrent(); if (this.#failure) throw this.#failure; }
+    try { const parts: unknown = this.#assertCurrent(); this.#recordParts(parts); if (this.#failure) throw this.#failure; }
     catch (error) { this.#failure = error instanceof Error ? error : new Error("owned_mimo_snapshot_git_invalid"); throw this.#failure; }
     finally { this.#record(TimingCounterKind.Admission, started); }
   }

@@ -16,10 +16,10 @@ import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoff
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
-import { researchAdmissionObservation, ResearchAdmissionFailureStage } from "./research-launch-admission-diagnostics";
+import { researchAdmissionObservation, researchAdmissionMeasure, ResearchAdmissionFailureStage, type ResearchAdmissionTiming } from "./research-launch-admission-diagnostics";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
-const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
+const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => ResearchAdmissionTiming | void>();
 const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: () => void }>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 export const researchJobAuthority = (jobId: string): string => join(researchAuthorityRoot, researchName(researchId(jobId)));
@@ -127,10 +127,10 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
   assertResearchProjectLaunchAuthorityBytes(spec);
   if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
 }
-function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
+function assertResearchMaterialBytes(spec: ResearchStartSpec, observe?: (role: ResearchMaterialRole, elapsedMs: number) => void): void {
   if (spec.runtimeDirectory !== installedResearchRuntimeDirectory()) researchInvalid();
   const assertDigest = (role: Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>, read: () => string, expected: string): void => {
-    try { if (read() !== expected) researchInvalid(); }
+    try { if ((observe ? researchAdmissionMeasure(read, elapsed => observe(role, elapsed)) : read()) !== expected) researchInvalid(); }
     catch (error) { throw annotateResearchMaterialFailure(error, role); }
   };
   assertDigest(ResearchMaterialRole.RuntimeArtifact, () => researchArtifactDigest(spec.runtimeDirectory), spec.artifactSha256);
@@ -230,7 +230,7 @@ function registeredResearchHandoffGuard(jobId: string, startId: string, allowClo
   };
 }
 export function captureResearchRuntime(identity: HostedTestEgressIdentity, ownerPid = process.pid): {
-  readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => void;
+  readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => ResearchAdmissionTiming | void;
   readonly assertAuthorityCurrent: () => void; readonly assertInertAuthorityCurrent: () => void;
 } {
   assertResearchInitialRoot(); assertResearchSharedHost();
@@ -258,17 +258,24 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   });
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
-  const assertCurrent = (): void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
-    assertAuthorityCurrent();
-    assertResearchMaterialBytes(spec);
-    assertAuthorityCurrent();
+  const assertCurrent = (): ResearchAdmissionTiming | void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
+    let admissionAuthorityElapsedMs = 0, admissionArtifactElapsedMs = 0, admissionExecutableElapsedMs = 0, samples = 0;
+    const authority = (): void => { researchAdmissionMeasure(assertAuthorityCurrent, elapsed => { admissionAuthorityElapsedMs += elapsed; samples++; }); };
+    authority();
+    assertResearchMaterialBytes(spec, (role, elapsed) => {
+      if (role === ResearchMaterialRole.RuntimeArtifact) admissionArtifactElapsedMs += elapsed;
+      else admissionExecutableElapsedMs += elapsed;
+      samples++;
+    });
+    authority();
+    if (samples === 5) return Object.freeze({ admissionAuthorityElapsedMs, admissionArtifactElapsedMs, admissionExecutableElapsedMs });
   });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
   return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent, assertInertAuthorityCurrent });
 }
 
-export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {
+export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => ResearchAdmissionTiming | void) | undefined {
   return factory ? factoryGuards.get(factory) : undefined;
 }
 export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexProviderEgressProfileId | undefined {

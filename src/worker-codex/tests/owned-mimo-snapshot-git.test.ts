@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { OwnedMimoSnapshotGitRunner, MimoSnapshotGitFailure, MimoSnapshotTimingScope,
   type MimoSnapshotTiming, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "../owned-mimo-snapshot-git";
+import { researchAdmissionMeasure } from "../research-launch-admission-diagnostics";
 
 const boundary = vi.hoisted(() => ({ failure: undefined as unknown, options: undefined as Record<string, unknown> | undefined }));
 vi.mock("node:child_process", async original => {
@@ -116,6 +117,7 @@ it("observes only initial access/snapshot while separating real Git from unchang
   await linked();
   const observations: MimoSnapshotTiming[] = [], guard = vi.fn(() => {
     const until = performance.now() + 1; while (performance.now() < until) { /* TEST admission cost */ }
+    return { admissionAuthorityElapsedMs: 0.4, admissionArtifactElapsedMs: 0.3, admissionExecutableElapsedMs: 0.1 };
   });
   const runner = new OwnedMimoSnapshotGitRunner(workspace, guard, timing => observations.push(timing));
   const access = ownedMimoWorkspaceAccess(runner), snapshot = ownedMimoWorkspaceSnapshotter(runner);
@@ -129,11 +131,50 @@ it("observes only initial access/snapshot while separating real Git from unchang
     expect(timing.admissionElapsedMs).toBeGreaterThanOrEqual(timing.admissionCount);
     expect(timing.successfulGitElapsedMs).toBeGreaterThan(0);
     expect(timing.elapsedMs).toBeGreaterThanOrEqual(timing.admissionElapsedMs + timing.successfulGitElapsedMs);
-    expect(Object.keys(timing).sort()).toEqual(["scope", "outcome", "elapsedMs", "admissionCount", "admissionElapsedMs", "successfulGitCount", "successfulGitElapsedMs"].sort());
+    expect(timing.admissionAuthorityElapsedMs).toBeCloseTo(timing.admissionCount * 0.4);
+    expect(timing.admissionArtifactElapsedMs).toBeCloseTo(timing.admissionCount * 0.3);
+    expect(timing.admissionExecutableElapsedMs).toBeCloseTo(timing.admissionCount * 0.1);
+    expect(Object.keys(timing).sort()).toEqual(["scope", "outcome", "elapsedMs", "admissionCount", "admissionElapsedMs", "successfulGitCount", "successfulGitElapsedMs", "admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs"].sort());
   }
   expect(JSON.stringify(observations)).not.toContain(workspace);
   await access.assertGitWorkspace({ workspacePath: workspace }); await snapshot.capture({ workspacePath: workspace });
   expect(guard).toHaveBeenCalledTimes(48); expect(observations).toHaveLength(2);
+});
+
+it("drops invalid admission parts without invoking getters or proxy traps", async () => {
+  let invoked = 0;
+  const valid = { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0 };
+  const getter = { ...valid }; Object.defineProperty(getter, "admissionArtifactElapsedMs", { get: () => { invoked++; throw Error("TEST private"); } });
+  const proxy = new Proxy(valid, { getOwnPropertyDescriptor: () => { invoked++; throw Error("TEST private"); } });
+  for (const value of [getter, proxy, { ...valid, admissionAuthorityElapsedMs: NaN }, { ...valid, admissionArtifactElapsedMs: -1 }, { ...valid, admissionExecutableElapsedMs: Infinity }, { ...valid, admissionAuthorityElapsedMs: 86_400_001 }]) {
+    const seen: MimoSnapshotTiming[] = [], runner = new OwnedMimoSnapshotGitRunner(workspace, () => value, t => seen.push(t));
+    await expect(runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => { runner.assertHealthy(); return 7; })).resolves.toBe(7);
+    expect(seen).toHaveLength(1); expect(seen[0]).not.toHaveProperty("admissionAuthorityElapsedMs");
+  }
+  expect(invoked).toBe(0);
+});
+
+it("phase clocks and observers never replace the actual operation result or thrown identity", () => {
+  const result = {}, original = Error("TEST exact refusal"), observe = vi.fn(() => { throw Error("TEST observer"); });
+  const assertOriginalThrown = (): void => {
+    let caught: unknown;
+    try { researchAdmissionMeasure(() => { throw original; }, observe); } catch (error) { caught = error; }
+    expect(caught).toBe(original);
+  };
+  expect(researchAdmissionMeasure(() => result, observe)).toBe(result);
+  assertOriginalThrown();
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => { throw Error("TEST clock"); });
+  try {
+    observe.mockClear(); expect(researchAdmissionMeasure(() => result, observe)).toBe(result);
+    assertOriginalThrown();
+    expect(observe).not.toHaveBeenCalled();
+    for (const value of [NaN, Infinity]) {
+      clock.mockReturnValue(value);
+      expect(researchAdmissionMeasure(() => result, observe)).toBe(result);
+      assertOriginalThrown();
+      expect(observe).not.toHaveBeenCalled();
+    }
+  } finally { clock.mockRestore(); }
 });
 
 it("throwing observers preserve success, actual abort and sticky ownership failure", async () => {
