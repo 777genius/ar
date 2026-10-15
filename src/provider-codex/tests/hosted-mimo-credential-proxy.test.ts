@@ -1,6 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { Agent } from "undici";
+import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { codexDriverFailure } from "../codex-driver-failure";
 import { startMimoCredentialProxy, type MimoCredentialProxyLimits } from "../hosted-mimo-credential-proxy";
 
 const key = "TEST-mimo-shared-key-do-not-expose";
@@ -128,6 +130,13 @@ it("retains only a closed network cause through the real proxy HTTP boundary", a
       transport_code: "ENOTFOUND", request_number: 1, elapsed_ms: expect.any(Number) });
     expect(f.proxy.latestFailure()).toEqual(body.error.details);
     expect(JSON.stringify(body)).not.toContain(key);
+    const observation = f.proxy.latestFailure();
+    const context = { error: Error("TEST-turn-failed"), evidenceError: Error("TEST-turn-failed"),
+      redactor: new DefaultRedactor(), startedAt: Date.now(), proxyFailure: observation };
+    const result = codexDriverFailure(context);
+    expect(result.failure.details).toMatchObject({ mimoProxyReason: "upstream_transport_error",
+      mimoProxyPhase: "upstream_request", mimoTransportCode: "ENOTFOUND", mimoProxyRequestNumber: "1" });
+    expect(codexDriverFailure({ ...context, priorProxyFailure: observation }).failure.details).not.toHaveProperty("mimoProxyReason");
     expect(transport).toHaveBeenCalledOnce();
   } finally { await f.proxy.close(); }
 });

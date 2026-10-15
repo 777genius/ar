@@ -1,6 +1,6 @@
 import { HostedMimoProfile } from "./hosted-mimo-profile";
 import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome } from "./hosted-mimo-coding-proxy-material";
-import { safeNativeWebFromError } from "./app-server/domain/app-server-usage-error";
+import { codexDriverFailure } from "./codex-driver-failure";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained, assertHostedMimoCodingWorkerHomeRetained, readHostedMimoWorkerProfileOrigin } from "./hosted-mimo-worker-origin";
@@ -29,7 +29,6 @@ import {
 } from "./capabilities";
 import { classifyCodexFailure } from "./failure-classifier";
 import { createCodexTextDeltaRedactor } from "./codex-text-delta-redactor";
-import { usageFromError } from "./app-server/domain/app-server-usage-error";
 import {
   type CodexExecutionEngine,
   type CodexMaterializedSession,
@@ -38,7 +37,6 @@ import {
   type CodexServiceTier,
   PackagedCodexJsonExecutionEngine,
   codexSandboxModeForControls,
-  codexExecutionFailure,
 } from "./codex-json-execution-engine";
 import {
   CodexEphemeralSessionMaterializer,
@@ -396,30 +394,8 @@ export class CodexJsonAgentDriver implements AgentDriver {
         !input.abortSignal.aborted && outputAbortController.signal.aborted
           ? outputAbortController.signal.reason
           : error;
-      const failure = codexExecutionFailure(outputFailure, input.redactor);
-      const proxyFailure = this.codingProxyOwner.latestFailure;
-      const nativeWeb = safeNativeWebFromError(error, input.redactor);
-      return {
-        ...failure,
-        ...(proxyFailure && proxyFailure !== priorMimoFailure ? { failure: {
-          ...failure.failure, details: { ...failure.failure.details,
-            mimoProxyReason: proxyFailure.reason, mimoProxyPhase: proxyFailure.phase,
-            mimoProxyElapsedMs: String(proxyFailure.elapsed_ms),
-            mimoProxyRequestNumber: String(proxyFailure.request_number),
-            ...(proxyFailure.upstream_status === undefined ? {} : { mimoUpstreamStatus: String(proxyFailure.upstream_status) }),
-            ...(proxyFailure.transport_code === undefined ? {} : { mimoTransportCode: proxyFailure.transport_code }),
-            ...(proxyFailure.validation_code === undefined ? {} : { mimoValidationCode: proxyFailure.validation_code }),
-          },
-        } } : {}),
-        telemetry: {
-          durationMs: Date.now() - startedAt,
-          finishReason: finishReasonForFailure(failure.failure.code),
-          ...(nativeWeb === undefined ? {} : { nativeWeb }),
-          ...(usageFromError(error)
-            ? { usage: usageFromError(error)! }
-            : {}),
-        },
-      };
+      return codexDriverFailure({ error: outputFailure, evidenceError: error, redactor: input.redactor, startedAt,
+        proxyFailure: this.codingProxyOwner.latestFailure, priorProxyFailure: priorMimoFailure });
     } finally {
       if (materialized) {
         if (this.executionLifetime) {
@@ -679,19 +655,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     } catch (error) {
       this.managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
-      const failure = codexExecutionFailure(error, input.redactor);
-      const nativeWeb = safeNativeWebFromError(error, input.redactor);
-      return {
-        ...failure,
-        telemetry: {
-          durationMs: Date.now() - startedAt,
-          finishReason: finishReasonForFailure(failure.failure.code),
-          ...(nativeWeb === undefined ? {} : { nativeWeb }),
-          ...(usageFromError(error)
-            ? { usage: usageFromError(error)! }
-            : {}),
-        },
-      };
+      return codexDriverFailure({ error, evidenceError: error, redactor: input.redactor, startedAt });
     } finally {
       if (ownsMaterialized) {
         await materialized.release();
@@ -991,21 +955,4 @@ function readTaskManagedRunId(task: ProviderTask): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-}
-
-function finishReasonForFailure(
-  code: ProviderFailure["code"],
-):
-  | "completed"
-  | "waiting_for_input"
-  | "max_turns"
-  | "cancelled"
-  | "timeout"
-  | "budget_exceeded"
-  | "provider_error" {
-  if (code === "task_cancelled") return "cancelled";
-  if (code === "task_timeout") return "timeout";
-  if (code === "goal_slice_exhausted") return "max_turns";
-  if (code === "budget_exceeded") return "budget_exceeded";
-  return "provider_error";
 }
