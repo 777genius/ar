@@ -3,12 +3,14 @@ import { dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand, researchExecutableDigest } from "./research-launch-host";
 import { researchCustody } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
-import { assertHostedMimoProjectRouteOpen, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding } from "./hosted-mimo-project-bridge";
+import { assertHostedMimoProjectRouteOpen, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, type HeldMimoPreparationFence } from "./hosted-mimo-project-bridge";
 import { loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
 
 /** Operator-only enrollment of an already onboarded workstream/controller.
  * This mode is never reachable from the restricted transport's request DTO. */
-export async function onboardHostedMimoProject(inputPath: string): Promise<unknown> {
+export async function onboardHostedMimoProject(inputPath: string, preparation?: Readonly<{
+  heldFence: HeldMimoPreparationFence; assertCurrent(): void;
+}>): Promise<unknown> {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   const input = JSON.parse(hostedMimoBridgeMetadataBytes(inputPath).toString());
   const request = parseMimoProjectBridgeRequest({ kind: "MimoProject", schemaVersion: 1,
@@ -17,10 +19,15 @@ export async function onboardHostedMimoProject(inputPath: string): Promise<unkno
   const binding = parseHostedMimoProjectBinding(input, request);
   if (hostedMimoBridgeMetadataBytes("/etc/machine-id").toString().trim() !== binding.machineId)
     throw new Error("mimo_project_bridge_machine_mismatch");
-  assertHostedMimoProjectRouteOpen(binding);
+  const assertCurrent = (): void => {
+    preparation?.assertCurrent();
+    assertHostedMimoProjectRouteOpen(binding, preparation?.heldFence);
+  };
+  assertCurrent();
   researchCustody(binding.stateRoot); researchCustody(binding.scratchRoot);
   researchCustody(binding.sourceWorkspacePath); researchCustody(binding.registryRootDir);
   const controller = await loadProjectControlController({ registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId });
+  if (preparation) assertCurrent();
   if (controller.scope.projectId !== binding.projectId || !controller.scope.allowedAccountIds?.includes("account-q"))
     throw new Error("mimo_project_bridge_scope_denied");
   const jobPrefixes = controller.scope.jobIdPrefixes ?? [], tmuxPrefixes = controller.scope.tmuxSessionPrefixes ?? [];
@@ -38,7 +45,8 @@ export async function onboardHostedMimoProject(inputPath: string): Promise<unkno
   researchExecutableDigest(binding.codexBinaryPath);
   const root = "/etc/subscription-runtime/mimo-projects", project = root + "/" + binding.projectId;
   researchCustody("/etc/subscription-runtime");
-  for (const path of [root, project]) { if (!existsSync(path)) mkdirSync(path, { mode: 0o700 }); researchCustody(path); }
+  for (const path of [root, project]) { if (!existsSync(path)) { if (preparation) assertCurrent(); mkdirSync(path, { mode: 0o700 }); } researchCustody(path); }
+  if (preparation) assertCurrent();
   writeFileSync(project + "/" + binding.workstreamId + ".json", JSON.stringify(binding) + "\n", { flag: "wx", mode: 0o600 });
   return { ok: true, projectId: binding.projectId, workstreamId: binding.workstreamId, sourceCommit: binding.sourceCommit };
 }

@@ -1,12 +1,14 @@
 import { onboardHostedMimoProject } from "./hosted-mimo-project-bridge-onboard";
-import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-operation";
-import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
+import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, operationErrorCode } from "./hosted-mimo-project-bridge-operation";
 const chunks: Buffer[] = [];
 let size = 0;
 try {
   if (process.argv[2] === "--prepare-project" && process.argv.length === 4) {
     const { prepareHostedMimoProject } = await import("./hosted-mimo-project-bridge-prepare");
     process.stdout.write(JSON.stringify(await prepareHostedMimoProject(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--resume-project-preparation" && process.argv.length === 4) {
+    // No generic transport can prove that the original producer is closed.
+    throw new Error("mimo_project_bridge_prepare_resume_refused");
   } else if (process.argv[2] === "--reconcile-interrupted-create" && process.argv.length === 4) {
     const { reconcileHostedMimoInterruptedCreate } = await import("./hosted-mimo-interrupted-create-reconciliation");
     process.stdout.write(JSON.stringify(await reconcileHostedMimoInterruptedCreate(process.argv[3]!)) + "\n");
@@ -28,11 +30,7 @@ try {
   process.stdout.write(JSON.stringify({ ok: true, result }) + "\n");
   }
 } catch (error) {
-  const message = error instanceof Error && (
-    /^mimo_project_bridge_[a-z_]+$/.test(error.message) ||
-    error.message === InterruptedProjectCreateErrorCode.ReconciliationRefused ||
-    error.message === "hosted_research_launch_denied")
-    ? error.message : "mimo_project_bridge_operation_failed";
+  const message = operationErrorCode(error);
   process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
   process.exitCode = 1;
 }

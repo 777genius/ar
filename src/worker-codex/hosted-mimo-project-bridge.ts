@@ -2,8 +2,9 @@ import { constants, closeSync, fstatSync, openSync, readFileSync, lstatSync, mkd
 import { dirname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
-import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-launch-host";
-import { researchCustody, researchHash, researchPath, researchRecord } from "./research-launch-files";
+import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand, researchProcessIdentity } from "./research-launch-host";
+import { researchCustody, researchHash, researchPath, researchRecord, researchDirectoryIdentity, assertResearchDirectory } from "./research-launch-files";
+import type { LocalControllerMaintenanceFence } from "@vioxen/subscription-runtime/store-local-file";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { workerLaunchAdmissionSchema, workerLaunchOwnsPath } from "./application/project-control/worker-launch-spec";
 import { hostedMimoProjectRuntime } from "./hosted-mimo-project-runtime-routing";
@@ -80,9 +81,37 @@ export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = 65536
     return bytes;
   } finally { closeSync(fd); }
 }
-export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBinding): void {
+declare const heldPreparationFenceBrand: unique symbol;
+export type HeldMimoPreparationFence = Readonly<{ [heldPreparationFenceBrand]: true }>;
+const heldPreparationFences = new WeakMap<HeldMimoPreparationFence, { stateRoot: string; assertCurrent(): void }>();
+/** Source-only ownership of a fence just acquired by this process. It cannot be
+ * serialized as permission or substituted with the public fence shape. */
+export function captureHeldMimoPreparationFence(binding: HostedMimoProjectBinding, fence: LocalControllerMaintenanceFence): HeldMimoPreparationFence {
+  const path = join(binding.stateRoot, ".controller-maintenance-fence.json"), directory = researchDirectoryIdentity(binding.stateRoot);
+  const stat = lstatSync(path), bytes = hostedMimoBridgeMetadataBytes(path), after = lstatSync(path), owner = JSON.parse(bytes.toString());
+  const processIdentity = JSON.stringify(researchProcessIdentity());
+  if (fence.path !== path || owner.schemaVersion !== 1 || owner.ownerToken !== fence.ownerToken || owner.pid !== process.pid ||
+      owner.processStartIdentity !== researchCommand("/usr/bin/ps", ["-p", String(process.pid), "-o", "lstart="]).trim() ||
+      stat.dev !== after.dev || stat.ino !== after.ino || stat.ctimeMs !== after.ctimeMs ||
+      (stat.mode & 0o077) !== 0) throw new Error("mimo_project_bridge_route_closed");
+  const capability = Object.freeze({}) as HeldMimoPreparationFence;
+  heldPreparationFences.set(capability, { stateRoot: binding.stateRoot, assertCurrent: () => {
+    assertResearchDirectory(directory);
+    const current = lstatSync(path);
+    if (binding.stateRoot !== directory.path || current.dev !== stat.dev || current.ino !== stat.ino || current.ctimeMs !== stat.ctimeMs ||
+        !hostedMimoBridgeMetadataBytes(path).equals(bytes) || JSON.stringify(researchProcessIdentity()) !== processIdentity)
+      throw new Error("mimo_project_bridge_route_closed");
+  } });
+  return capability;
+}
+export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBinding, heldFence?: HeldMimoPreparationFence): void {
+  if (heldFence) {
+    const held = heldPreparationFences.get(heldFence);
+    if (!held || held.stateRoot !== binding.stateRoot) throw new Error("mimo_project_bridge_route_closed");
+    held.assertCurrent();
+  }
   if (existsSync(join(binding.stateRoot, ".controller-recovery.json")) ||
-      existsSync(join(binding.stateRoot, ".controller-maintenance-fence.json")) ||
+      (!heldFence && existsSync(join(binding.stateRoot, ".controller-maintenance-fence.json"))) ||
       !binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
       existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.route-disabled`))
     throw new Error("mimo_project_bridge_route_closed");
