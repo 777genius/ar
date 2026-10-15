@@ -6,6 +6,7 @@ import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../index";
 import { FakeAppServerFactory } from "../app-server/testing/fake-app-server";
 import { StaticRunner } from "./codex-provider-test-support";
+import { completed, fixture } from "./app-server/native-web-test-support";
 
 async function setup(input: Record<string, unknown> = {}) {
   const workspace = await mkdtemp(join(tmpdir(), "codex-app-protocol-safety-"));
@@ -123,5 +124,36 @@ describe("Codex app-server protocol state bounds", () => {
       release();
       await test.close();
     }
+  });
+});
+
+describe("Codex app-server completed agent-message output", () => {
+  it.each([
+    { name: "empty final clears prior commentary", distinct: true, item: { text: "" }, expected: "" },
+    { name: "empty final clears the same item's delta", distinct: false, item: { text: "" }, expected: "" },
+    { name: "whitespace final replaces prior commentary", distinct: true, item: { text: " \n " }, expected: " \n " },
+    { name: "nonempty final replaces prior commentary", distinct: true, item: { text: "TEST final" }, expected: "TEST final" },
+    { name: "missing text leaves prior output unchanged", distinct: false, item: {}, expected: "TEST previous" },
+    { name: "null text leaves prior output unchanged", distinct: false, item: { text: null }, expected: "TEST previous" },
+    { name: "invalid text leaves prior output unchanged", distinct: false, item: { text: 42 }, expected: "TEST previous" },
+  ])("$name", async ({ distinct, item, expected }) => {
+    const initialId = distinct ? "TEST-commentary" : "TEST-final";
+    const test = await fixture((threadId, turnId) => {
+      const initial = { type: "agentMessage", id: initialId, text: "TEST previous" };
+      return [
+        { method: "item/started", params: { threadId, turnId, item: { ...initial, text: "" } } },
+        { method: "item/agentMessage/delta", params: { threadId, turnId, itemId: initialId, delta: "TEST previous" } },
+        ...(distinct ? [
+          completed(threadId, turnId, initial),
+          { method: "item/started", params: { threadId, turnId, item: { type: "agentMessage", id: "TEST-final", text: "" } } },
+        ] : []),
+        completed(threadId, turnId, { type: "agentMessage", id: "TEST-final", ...item }),
+      ];
+    }, { outputText: "" });
+    try {
+      const threadId = await test.client.startThread(test.input);
+      const result = await test.client.startTurn({ ...test.input, threadId });
+      expect(result).toMatchObject({ outputText: expected, completed: true, error: null });
+    } finally { await test.close(); }
   });
 });
