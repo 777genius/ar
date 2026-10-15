@@ -1,14 +1,45 @@
 /** DATA/refusal tests. No test creates the genuine native parent's private slot. */
 import test from "node:test";
+import {createHash} from "node:crypto";
+import {joinH1SourceSelection,joinH1BinarySource,type H1SourceSelection} from "../../scripts/dependency-retention-os-test/current-h1-source-record-TEST.ts";
 import assert from "node:assert/strict";
-import {h1DistroSourcePort,h1DistroFactsData,h1DistroAssetName,H1DistroDefinition,H1DistroLocation,H1VerifierRole,retainH1SignedDistroFacts} from "./dependency-full-h1-constructor-build-facts-TEST.js";
+import {checkH1DistroSemanticSourceData,h1DistroSourcePort,h1DistroFactsData,h1DistroAssetName,H1DistroDefinition,H1DistroLocation,H1VerifierRole,retainH1SignedDistroFacts} from "./dependency-full-h1-constructor-build-facts-TEST.js";
 import {H1DistroAssurance,requireQualifiedH1StagedConstructor} from "./dependency-full-h1-staged-tools-TEST.js";
 import {CiUbuntuPocket,CiUbuntuComponent} from "../../scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts";
 import {ToolInputArchitecture} from "../../scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts";
 const hash="a".repeat(64),other="b".repeat(64),asset={sha256:hash,bytes:1};
 function input(){return {schemaVersion:1,assurance:H1DistroAssurance.SignedPublisher,sourceSha:"a".repeat(40),assets:[asset],releases:[{pocket:CiUbuntuPocket.Noble,inRelease:asset,keyring:asset,indices:["main/binary-amd64/Packages","main/source/Sources","universe/binary-amd64/Packages","universe/source/Sources"].map(path=>({path,asset}))}],packages:[{package:"python3.12-minimal",version:"3.12.3-1ubuntu0.17",arch:ToolInputArchitecture.Amd64,archive:asset,releaseSha256:hash,component:CiUbuntuComponent.Main}],members:[{location:H1DistroLocation.Staged,path:"/usr/bin/python3.12",archiveSha256:hash,memberPath:"usr/bin/python3.12"}],semantics:Object.values(H1DistroDefinition).map(definition=>({definition,archiveSha256:hash,extraction:asset,containing:{path:definition===H1DistroDefinition.PythonGetpath?"Modules/getpath.py":"src/nspawn/nspawn.c",asset},helpers:[],review:asset})),verifiers:[{path:"/usr/bin/gpgv",role:H1VerifierRole.Gpgv,sha256:hash},{path:"/usr/bin/dpkg-deb",role:H1VerifierRole.DpkgDeb,sha256:hash},{path:"/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",role:H1VerifierRole.Loader,sha256:hash},{path:"/usr/lib/x86_64-linux-gnu/libc.so.6",role:H1VerifierRole.SharedObject,sha256:hash}],verifierAliases:[],hostAliases:[],verifierReview:asset,compiledInputEquality:false,reproducibleBuild:false};}
+// Portable complete-index association DATA fixtures; no signature/native grant.
+function sourceSelection(family:string,version:string,binaryName:string):H1SourceSelection{
+ const digest=(v:Buffer|string)=>createHash("sha256").update(v).digest("hex");
+ const binary={package:binaryName,version,arch:ToolInputArchitecture.Amd64,sha256:digest(binaryName+version),size:1,filename:"pool/main/test/"+binaryName+".deb"};
+ const packages=Buffer.from(`Package: ${binaryName}\nVersion: ${version}\nArchitecture: amd64\nSource: ${family} (${version})\nFilename: ${binary.filename}\nSize: 1\nSHA256: ${binary.sha256}\n\n`);
+ const sources=Buffer.from(`Package: ${family}\nVersion: ${version}\nDirectory: pool/main/test/${family}\nChecksums-Sha256:\n ${digest(family+version)} 1 ${family}.dsc\n\n`);
+ const origin={origin:"https://archive.ubuntu.com/ubuntu/dists/noble-updates",releaseSha256:digest("TEST complete-index release DATA")};
+ const identity=joinH1BinarySource(binary,packages,()=>{});assert(identity);
+ return joinH1SourceSelection(binary,identity,{...origin,path:"main/binary-amd64/Packages",sha256:digest(packages),size:packages.length},sources,{...origin,path:"main/source/Sources",sha256:digest(sources),size:sources.length},()=>{});
+}
 test("signed-publisher DATA remains distinct from reproduced compilation and never issues native authority",()=>{
  const selected=h1DistroSourcePort.h1DistroFactsData(input());assert.deepEqual(selected.verifiers,h1DistroFactsData(input()).verifiers);assert(Object.isFrozen(h1DistroSourcePort));const parsed=h1DistroFactsData(input());assert.equal(parsed.assurance,H1DistroAssurance.SignedPublisher);assert.equal(parsed.compiledInputEquality,false);assert.equal(parsed.reproducibleBuild,false);assert(Object.isFrozen(parsed)&&Object.isFrozen(parsed.members));assert.throws(requireQualifiedH1StagedConstructor,/selected_constructor_rows_not_qualified/);
+ const hostKey=H1DistroLocation.Host+":/usr/bin/systemd-nspawn",pythonKey=H1DistroLocation.Staged+":/usr/bin/python3.12";
+ const host18=sourceSelection("systemd","255.4-1ubuntu8.18","systemd-container"),old17=sourceSelection("systemd","255.4-1ubuntu8.17","libsystemd0");
+ // The old family-only check accepts this exact same-family pair; unchanged
+ // containing bytes/review hashes cannot repair the absent source association.
+ assert.equal(host18.source.name,old17.source.name);assert.equal(asset.sha256,hash);
+ const python=sourceSelection("python3.12","3.12.3-1ubuntu0.17","python3.12-minimal"),captured=new Map([[hostKey,host18],[pythonKey,python]]);
+ for(const definition of Object.values(H1DistroDefinition).filter(d=>d!==H1DistroDefinition.PythonGetpath)){
+  assert.throws(()=>checkH1DistroSemanticSourceData(definition,old17,captured),/distro_source_attribution/);
+  const sameSourceSubpackage=sourceSelection("systemd","255.4-1ubuntu8.18","libsystemd0");assert.notEqual(sameSourceSubpackage.binary.sha256,host18.binary.sha256);
+  assert.doesNotThrow(()=>checkH1DistroSemanticSourceData(definition,sameSourceSubpackage,captured));
+  for(const changed of [{...host18,stanzaSha256:other},{...host18,directory:"pool/main/foreign/systemd"},{...host18,artifacts:[{...host18.artifacts[0]!,sha256:other}]},{...host18,artifacts:[]},{...host18,artifacts:[{...host18.artifacts[0]!,size:2}]},{...host18,artifacts:[{...host18.artifacts[0]!,name:"foreign.dsc"}]}])assert.throws(()=>checkH1DistroSemanticSourceData(definition,changed,captured),/distro_source_attribution/);
+ }
+ assert.doesNotThrow(()=>checkH1DistroSemanticSourceData(H1DistroDefinition.PythonGetpath,python,captured));
+ assert.throws(()=>checkH1DistroSemanticSourceData(H1DistroDefinition.PythonGetpath,sourceSelection("python3.12","3.12.3-1ubuntu0.16","python3.12-minimal"),captured),/distro_source_attribution/);
+ for(const wrong of [new Map<string,H1SourceSelection>(),new Map([[H1DistroLocation.Staged+":/usr/bin/systemd-nspawn",host18]]),new Map([[H1DistroLocation.Verifier+":/usr/bin/systemd-nspawn",host18]]),new Map([[H1DistroLocation.Host+":/usr/bin/python3.12",python]])]){
+  assert.throws(()=>checkH1DistroSemanticSourceData(H1DistroDefinition.MountAll,host18,wrong),/distro_source_attribution/);
+  assert.throws(()=>checkH1DistroSemanticSourceData(H1DistroDefinition.PythonGetpath,python,wrong),/distro_source_attribution/);
+ }
+ assert.throws(()=>checkH1DistroSemanticSourceData("foreign" as H1DistroDefinition,host18,captured),/distro_source_attribution/);
  for(const changed of [{compiledInputEquality:true},{reproducibleBuild:true},{approved:true},{assurance:"compiler_reproduced"}])assert.throws(()=>h1DistroFactsData({...input(),...changed}));
 });
 test("missing HOST/staged package references, source definitions and substituted archive assets refuse",()=>{
