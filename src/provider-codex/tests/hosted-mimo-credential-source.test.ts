@@ -214,7 +214,8 @@ it.each([429, 200])("invalidates earlier positive proof on later quota (%i) and 
     expect(() => proof.assertCurrent()).toThrow("proof_invalid");
     await (await f.post()).text();
     expect(f.proxy.capacityRecoveryProof()).toBeUndefined();
-    expect(f.proxy.upstreamFailureObservation()).toEqual(status === 429 ? { count: 1, lastStatus: 429 } : undefined);
+    expect(f.proxy.upstreamFailureObservation()).toEqual(status === 429 ? { count: 1, lastStatus: 429 }
+      : { requestFailureCount: 1, lastFailureKind: "missing_completion" });
   } finally { await f.proxy.close(); }
 });
 

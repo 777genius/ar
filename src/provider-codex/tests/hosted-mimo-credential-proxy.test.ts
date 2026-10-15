@@ -19,7 +19,7 @@ it("pins upstream/model, bounds output tokens, and forwards no client headers or
   try {
     const response = await f.post(undefined, "/responses", { "x-injected": key });
     expect(response.status).toBe(200); expect(await response.text()).toBe('{"output":[]}');
-    expect(f.proxy.upstreamFailureObservation()).toBeUndefined();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1, lastFailureKind: "missing_completion" });
     expect(response.headers.get("x-secret")).toBeNull();
     const [url, init] = transport.mock.calls[0]!;
     expect(url).toBe("https://token-plan-sgp.xiaomimimo.com/v1/responses");
@@ -106,7 +106,7 @@ it("does not invent an upstream failure status for transport, empty body, or uns
     try {
       const response = await f.post(); expect(response.status).toBe(502);
       expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed" } });
-      expect(f.proxy.upstreamFailureObservation()).toBeUndefined();
+      expect(f.proxy.upstreamFailureObservation()?.lastStatus).toBeUndefined();
       expect(fetchUpstream).toHaveBeenCalledOnce();
     } finally { await f.proxy.close(); }
   }
@@ -548,4 +548,62 @@ it("creates no owned dispatcher when a trusted upstream transport is injected", 
   const f = await fixture(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
   try { await (await f.post()).text(); await f.proxy.close(); expect(destroyed).not.toHaveBeenCalled(); }
   finally { destroyed.mockRestore(); await f.proxy.close(); }
+});
+
+
+it("retains request termination at the reader before pipeline closes the downstream socket", async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const transport = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    stream = controller; controller.enqueue(Buffer.from('data: {"type":"response.created"}\n\n'));
+  } }), { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport);
+  try {
+    const response = await f.post(), reading = response.text();
+    stream.error(new Error("TEST-private-credential-and-body"));
+    await expect(reading).rejects.toThrow();
+    await f.proxy.close();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1, lastFailureKind: "upstream_body_read_failed" });
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it.each([
+  [Buffer.from([0xff]), "invalid_utf8"],
+  [Buffer.from('data: {"TEST-private":"unfinished"\n\n'), "protocol_projection_failed"],
+  [Buffer.alloc(2048, 120), "response_limit_exceeded"],
+] as const)("retains request termination at exact decoding/projection/limit boundaries (%s)", async (bytes, kind) => {
+  const transport = vi.fn<typeof fetch>(async () => new Response(bytes, { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport, { maxResponseBytes: 1024 });
+  try {
+    await expect(f.post().then(response => response.text())).rejects.toThrow(); await f.proxy.close();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1, lastFailureKind: kind });
+    expect(JSON.stringify(f.proxy.upstreamFailureObservation())).not.toContain("TEST-private");
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it("retains request termination for clean missing-completion EOF while normal complete disposal records none", async () => {
+  for (const completed of [false, true]) {
+    const body = completed ? '{"object":"response","id":"TEST-response","status":"completed","model":"mimo-v2.6-pro"}' : '{}';
+    const f = await fixture(async () => new Response(body, { headers: { "content-type": "application/json" } }));
+    try {
+      expect(await (await f.post()).text()).toBe(body); await f.proxy.close();
+      expect(f.proxy.upstreamFailureObservation()).toEqual(completed ? undefined : { requestFailureCount: 1, lastFailureKind: "missing_completion" });
+    } finally { await f.proxy.close(); }
+  }
+});
+
+it.each(["budget", "owner"] as const)("retains request termination before %s abort closes the downstream", async kind => {
+  const transport = vi.fn<typeof fetch>(async (_url, init) => await new Promise<Response>((_resolve, reject) => {
+    init!.signal!.addEventListener("abort", () => reject(Error("TEST-private")), { once: true });
+  }));
+  const f = await fixture(transport, { requestTimeoutMs: kind === "budget" ? 40 : 1000 });
+  try {
+    const pending = f.post(); await vi.waitFor(() => expect(transport).toHaveBeenCalledOnce());
+    if (kind === "owner") f.proxy.revoke();
+    const response = await pending; expect(response.status).toBe(503); await response.text(); await f.proxy.close();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1,
+      lastFailureKind: kind === "budget" ? "request_budget_expired" : "owner_revoked" });
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
 });
