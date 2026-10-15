@@ -22,6 +22,7 @@ import { installedResearchRuntimeDirectory } from "./research-launch-admission";
 import { assertResearchDirectory, researchArtifactDigest, researchCustody, researchDirectoryIdentity } from "./research-launch-files";
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { readResearchColdMountTable, researchMountWitnessRows } from "./research-mount-witness-frame";
+import { prepareResearchTerminalHandoffRepair } from "./research-terminal-handoff-repair";
 
 /** Native-only trusted composition port. A fixed reviewed owner adapter binds
  * its original service/terminal invocation to these exact immutable inputs.
@@ -221,8 +222,24 @@ export async function recoverOwnedMimoWorkerPreservation(expected: RegisteredRes
     });
   });
 }
+/** Explicit terminal-only settlement. Authenticated old scope bytes never become
+ * a launch permit; current permissions and locks authorize the preservation. */
+export async function repairOwnedMimoWorkerTerminalHandoff(expected: RegisteredResearchStartIdentity, historicalScope: unknown) {
+  assertResearchInitialRoot(true);
+  researchRecord(expected, "jobId,startId,specSha256,requestSha256");
+  return await withResearchJobMutationAsync(expected.jobId, async () => {
+    let current: ReturnType<typeof researchCurrentStart>;
+    try { current = researchCurrentStart(expected.jobId); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; current = terminalResearchStart(expected.jobId); }
+    if (current.spec.startId !== expected.startId || researchHash(current.bytes) !== expected.specSha256 ||
+        current.spec.requestSha256 !== expected.requestSha256) researchInvalid();
+    const repair = await prepareResearchTerminalHandoffRepair(current, historicalScope);
+    return await finalizeOwnedMimoWorkerUnlocked(expected.jobId, expected.startId, expected.specSha256, undefined, repair);
+  });
+}
 async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, specSha256: string,
-  originAuthority?: PreservationOriginAuthority): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
+  originAuthority?: PreservationOriginAuthority, terminalRepair?: Awaited<ReturnType<typeof prepareResearchTerminalHandoffRepair>>
+): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
   assertResearchInitialRoot(true);
   let current: ReturnType<typeof researchCurrentStart>, released = false;
   try { current = researchCurrentStart(jobId); }
@@ -236,8 +253,11 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   const registered = current.spec.registeredHandoff;
   let assertRegisteredBytes: (() => void) | undefined;
   if (registered) {
-    if (!released) await prepareResearchRegisteredHandoffAuthority(jobId, startId, assertResearchInitialRoot, true);
-    assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    if (terminalRepair) assertRegisteredBytes = terminalRepair.assertCurrent;
+    else {
+      if (!released) await prepareResearchRegisteredHandoffAuthority(jobId, startId, assertResearchInitialRoot, true);
+      assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    }
     assertRegisteredResearchHandoffPin(current.spec, current.directory);
   }
   const candidateBytes = researchRead(join(current.directory, "mimo-candidate.json"));
@@ -251,7 +271,7 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
     for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
     assertRegisteredBytes?.(); assertOriginal?.();
   };
-  if (!released) {
+  if (!released && !terminalRepair) {
     if (registered) await withCodexGoalRegistryMutation({ registryRootDir: registered.registryRootDir,
       requireExistingRegistryRoot: true, effect: async () => {
         await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
@@ -262,11 +282,11 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   assertTerminal();
   const guard = async (): Promise<void> => {
     if (originAuthority) assertOriginal = await originAuthority.assertCurrent();
-    if (registered) assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
+    if (registered && !terminalRepair) assertRegisteredBytes = await assertRegisteredResearchHandoffCurrent(registered, current.spec.request);
     assertTerminal();
   };
-  const publicationLease = registered && !released ? (originAuthority
-    ? originAuthority.withPublication : researchHandoffPublicationLease(jobId, startId)) : undefined;
+  const publicationLease = terminalRepair?.withPublication ?? (registered && !released ? (originAuthority
+    ? originAuthority.withPublication : researchHandoffPublicationLease(jobId, startId)) : undefined);
   const publishTerminal = async (): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> => {
   if (!existsSync(publicationPath)) {
     if (released) researchInvalid();
@@ -320,9 +340,10 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       assertTerminal();
       // An accepted response alone is not quota recovery. Only this existing cold
       // native/provider boundary can publish the exact-current-key exemption.
-      try { await settleResearchMimoCapacityRecovery(current, { assertTerminal, withPublication: async effect => await effect() }); }
+      try { if (!terminalRepair) await settleResearchMimoCapacityRecovery(current, { assertTerminal, withPublication: async effect => await effect() }); }
       catch { /* Changed limits/uncertain custody retain the consumed claim, not availability. */ }
-      assertTerminal(); releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
+      assertTerminal(); terminalRepair?.assertPublished();
+      releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
     };
     await publish();
   }

@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   materializeDurableCodexGoalHandoffPacket,
+  durableCodexGoalHandoffPacketFiles,
 } from "../codex-goal-durable-handoff-packet";
 import {
   terminalCodexGoalHandoffResultDetails,
@@ -79,6 +80,11 @@ describe("durable terminal handoff packet", () => {
     expect(packet?.manifest.layers.index.byteLength).toBeGreaterThan(0);
     expect(packet?.manifest.layers.worktree.byteLength).toBeGreaterThan(0);
     expect(packet?.manifest.layers.headRelative?.byteLength).toBeGreaterThan(0);
+    const files = durableCodexGoalHandoffPacketFiles(packet!.manifest);
+    expect(files.map(file => file.descriptor.path)).toEqual(["status.porcelain-v2.z", "index.patch", "worktree.patch",
+      "head-relative.patch", "untracked.tar", "untracked.paths.z", "quarantine.json"]);
+    expect(files.find(file => file.descriptor.path === "untracked.tar")?.maxBytes).toBe(128 * 1024 * 1024);
+    expect(files.filter(file => file.descriptor.path !== "untracked.tar").every(file => file.maxBytes === 32 * 1024 * 1024)).toBe(true);
 
     const reconstructed = join(fixture.root, "reconstructed");
     await git(fixture.root, ["clone", "--quiet", fixture.workspace, reconstructed]);
@@ -537,11 +543,13 @@ async function createFixture() {
   await mkdir(workspace);
   await mkdir(durableRoot);
   await git(workspace, ["init", "--quiet", "--initial-branch=main"]);
-  await git(workspace, ["config", "user.name", "Test"]);
-  await git(workspace, ["config", "user.email", "test@example.com"]);
+  await git(workspace, ["config", "user.name", "iliya"]);
+  await git(workspace, ["config", "user.email", "iliyazelenkog@gmail.com"]);
   await writeFile(join(workspace, "mixed.txt"), "base\n");
   await writeFile(join(workspace, "tracked.txt"), "base\n");
   await git(workspace, ["add", "."]);
+  expect(await gitText(workspace, ["var", "GIT_AUTHOR_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com>/);
+  expect(await gitText(workspace, ["var", "GIT_COMMITTER_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com>/);
   await git(workspace, ["commit", "--quiet", "-m", "base"]);
   return { root, workspace, durableRoot, base: (await gitText(
     workspace, ["rev-parse", "HEAD"]

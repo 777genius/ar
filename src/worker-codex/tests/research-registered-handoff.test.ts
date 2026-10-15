@@ -27,6 +27,8 @@ import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority }
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
+import { registeredTerminalRepairTests } from "./research-terminal-handoff-repair-test-support";
+import { parseCodexGoalProjectAccessScope } from "../codex-goal-access-plan";
 
 const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false, mimo: false, registry: "/TEST-project/registry" }));
 // This suite exercises the native registered boundary with real TEST manifests,
@@ -756,11 +758,13 @@ describe("native project launch authorization", () => {
   });
 });
 
-async function registeredMimoCandidate(dirty = false) {
+async function registeredMimoCandidate(dirty = false, normalizedScope = false) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
-  await initializeRegisteredFixture(); const coding = await grantAndRequest();
+  await initializeRegisteredFixture();
+  if (normalizedScope) state.scope = parseCodexGoalProjectAccessScope(state.scope);
+  const coding = await grantAndRequest();
   // Explicit retained pre-CodingV1 fixture: the current-authority path must
   // still settle old Worker attempts; fresh authorization cannot mint one.
   const { hostedProfile: _profile, maxGoalTurns: _turns, ...base } = coding;
@@ -968,6 +972,8 @@ describe("qualified preservation recovery (explicit offline Linux Host fixture)"
     });
   });
   afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  registeredTerminalRepairTests({ candidate: dirty => registeredMimoCandidate(dirty, true), scope: () => state.scope!,
+    setScope: scope => { state.scope = scope; }, registry: () => registry });
   it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {
     const current = await registeredMimoCandidate(true);
     const retained = ["spec.json", "binding.json", "mimo-candidate.json", "durable-pin.json"].map(name =>

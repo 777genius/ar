@@ -854,6 +854,22 @@ async function verifyManifestReferencedFiles(
   packetPath: string,
   manifest: DurableCodexGoalHandoffPacketManifest,
 ): Promise<void> {
+  for (const { descriptor, maxBytes } of durableCodexGoalHandoffPacketFiles(manifest)) {
+    const relative = assertSafeHandoffRelativePath(descriptor.path);
+    const absolute = join(packetPath, relative);
+    const item = await lstat(absolute);
+    if (item.size > maxBytes) throw new Error("handoff_file_byte_limit_exceeded");
+    const bytes = await readFile(absolute);
+    if (!item.isFile() || item.isSymbolicLink() ||
+      bytes.byteLength !== descriptor.byteLength ||
+      sha256HandoffContent(bytes) !== descriptor.sha256) {
+      throw new Error("handoff_packet_verification_failed");
+    }
+  }
+}
+/** Shared complete member roster and existing byte bounds for cold owners too. */
+export function durableCodexGoalHandoffPacketFiles(manifest: DurableCodexGoalHandoffPacketManifest):
+  readonly { readonly descriptor: PacketDescriptor; readonly maxBytes: number }[] {
   const descriptors: readonly PacketDescriptor[] = [
     manifest.status,
     manifest.layers.index,
@@ -863,19 +879,8 @@ async function verifyManifestReferencedFiles(
     manifest.untracked.paths,
     manifest.quarantine.manifest,
   ];
-  for (const descriptor of descriptors) {
-    const relative = assertSafeHandoffRelativePath(descriptor.path);
-    const absolute = join(packetPath, relative);
-    const item = await lstat(absolute);
-    if (item.size > (relative === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes))
-      throw new Error("handoff_file_byte_limit_exceeded");
-    const bytes = await readFile(absolute);
-    if (!item.isFile() || item.isSymbolicLink() ||
-      bytes.byteLength !== descriptor.byteLength ||
-      sha256HandoffContent(bytes) !== descriptor.sha256) {
-      throw new Error("handoff_packet_verification_failed");
-    }
-  }
+  return descriptors.map(descriptor => ({ descriptor, maxBytes:
+    assertSafeHandoffRelativePath(descriptor.path) === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes }));
 }
 
 async function verifyPublishedPacket(path: string, files: readonly PacketFile[]): Promise<void> {
