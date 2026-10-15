@@ -1,6 +1,6 @@
 import { join, basename } from "node:path";
 import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, rmdir, statfs, symlink, writeFile } from "node:fs/promises";
-import * as fs from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 import { inspectStandaloneProjectDependencies } from "../application/project-control/codex-goal-project-dependency-inspection";
@@ -8,6 +8,8 @@ import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock,
   type ProjectControlWorkspaceLease } from "../codex-goal-project-workspace-lock";
 import { hostedDependencyBindingRoot, hostedDependencyBindingName, HostedDependencyReferenceKind } from "../hosted-dependency-workspace";
 import type { CodexGoalJobManifestInput } from "../codex-goal-jobs";
+
+const nativeFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 
 // These cases use actual filesystem/lease evidence in the original service's
 // empty private policy tmpfs. Shared research mocks must not replace retained
@@ -24,6 +26,7 @@ const sameIdentity = (a: Identity, b: Identity): boolean => a.dev === b.dev && a
 (actualRoot ? describe : describe.skip)("standalone project dependency observation", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
+    syncBuiltinESMExports();
     // Refuse a changed identity rather than deleting a replacement or foreign
     // record. These are exclusively created paths in the private TEST mount.
     for (const [path, identity] of ownedBindings) {
@@ -175,10 +178,16 @@ const sameIdentity = (a: Identity, b: Identity): boolean => a.dev === b.dev && a
     await writeFile(table, `1 0 8:1 / ${f.workspace} rw - ext4 /dev/TEST rw\n`);
     // A negative observation only: no mount is created and this can grant no
     // authority. Every positive above keeps the actual native mount table.
-    const nativeOpen = fs.openSync;
-    vi.spyOn(fs, "openSync").mockImplementation((path, flags, mode) =>
+    const nativeOpen = nativeFs.openSync;
+    const observation = vi.spyOn(nativeFs, "openSync").mockImplementation((path, flags, mode) =>
       nativeOpen(path === "/proc/self/mountinfo" ? table : path, flags, mode));
-    await expect(f.withLease(async workspace => await inspectStandaloneProjectDependencies({ ...f.input, workspace }))).rejects.toThrow("dependency_admission:unsupported");
+    try {
+      syncBuiltinESMExports();
+      await expect(f.withLease(async workspace => await inspectStandaloneProjectDependencies({ ...f.input, workspace }))).rejects.toThrow("dependency_admission:unsupported");
+    } finally {
+      observation.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
   it("does not select a noncanonical or different child layout", async () => {
     const f = await fixture(); await f.withLease(async workspace => {
