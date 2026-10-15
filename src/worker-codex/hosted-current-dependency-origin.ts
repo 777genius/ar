@@ -16,7 +16,7 @@ import { captureOriginalHostedDependencyWarmRetirementFacts } from "./hosted-dep
 import { readOriginalHostedDependencyWarmBaseline } from "./hosted-dependency-generation-baseline-reader";
 import { assertOriginalHostedDependencyRetiredReady } from "./hosted-dependency-retired-ready-reader";
 import { claimOriginalHostedDependencyRGeneration } from "./hosted-dependency-generation-r-claim";
-import { fenceOriginalHostedDependencyRSourceOwner, releaseOriginalHostedDependencyRSourceOwner } from "./hosted-dependency-generation-r-source-closure";
+import { observeOriginalHostedUnverifiedRTerminal, fenceOriginalHostedDependencyRSourceOwner, releaseOriginalHostedDependencyRSourceOwner } from "./hosted-dependency-generation-r-source-closure";
 import { revokeOriginalHostedDependencyOriginResources } from "./hosted-dependency-original-revocation";
 import { releaseOriginalHostedDependencyCSourceOwner } from "./hosted-dependency-generation-source-closure";
 import { claimOriginalHostedDependencyCGeneration } from "./hosted-dependency-generation-c-claim";
@@ -114,6 +114,9 @@ export function fenceCurrentHostedReadonlyDependencySourceOwner(fence:HostedActi
   fenceOriginalHostedDependencyRSourceOwner(fence,result,rootInternalAccess); }
 export function releaseCurrentHostedReadonlyDependencySourceOwner(fence:HostedActivationFence):void {
   releaseOriginalHostedDependencyRSourceOwner(fence,rootInternalAccess); }
+/** Observe final FDA/discharge after revoke; the private access symbol stays here. */
+export function observeCurrentHostedUnverifiedRTerminal(fence:HostedActivationFence,result:import("../provider-codex/app-server/adapters/hosted-fd-launch").HostedForegroundResult) {
+  return observeOriginalHostedUnverifiedRTerminal(fence,result,rootInternalAccess); }
 export function claimCurrentHostedOrdinaryDependencyGeneration(fence:HostedActivationFence,startId:string) {
   return claimOriginalHostedDependencyCGeneration(fence,startId,rootInternalAccess);
 }

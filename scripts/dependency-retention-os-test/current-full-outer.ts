@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, readOriginalH1PrearmSnapshot, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullNativeCase, FullRestoreConsumer, FullRemovalCase, closeOriginalH1StagedObserver, readOriginalH1PrearmSnapshot, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { H1ReadinessRecord, h1Qualification, readH1ReadinessRecord, readOriginalH1SupervisorAcceptance, startOriginalH1StagedObserver, H1ObserverState } from "./current-removal-h1-fixture.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
@@ -45,7 +45,7 @@ const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
 const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
-const qualification=managedParent.removalCase===FullRemovalCase.ParentCrashH1?h1Qualification:restoreConsumer===FullRestoreConsumer.Readonly
+const qualification=managedParent.fullCase===FullNativeCase.LegacyUnverifiedR ? "native_legacy_compared_adoption_unverified_r_first_hot_only" : managedParent.removalCase===FullRemovalCase.ParentCrashH1?h1Qualification:restoreConsumer===FullRestoreConsumer.Readonly
   ? "native_actual_c_cold_hot_committed_absent_first_r_restore_only"
   : "native_actual_c_cold_hot_committed_absent_restore_coldv2_r_entries_only";
 const restoreConsumerMarker=restoreConsumer===FullRestoreConsumer.Readonly ? `--setenv=TEST_FULL_RESTORE_CONSUMER=${restoreConsumer} ` : "";
@@ -102,7 +102,8 @@ try {
   // Boot replaces guest /run with tmpfs. Keep protected inputs outside it and
   // bind the same validated directories readonly into the exact guest paths.
   directory(fullReviewed);
-  json(fullReviewed+"/input.json",{accountName:fullInput.accountName,reviewReference:fullInput.reviewReference,schemaVersion:1,sourceSha:fullInput.sourceSha});
+  json(fullReviewed+"/input.json",{accountName:fullInput.accountName,reviewReference:fullInput.reviewReference,schemaVersion:managedParent.fullCase===FullNativeCase.LegacyUnverifiedR?2:1,sourceSha:fullInput.sourceSha,
+    ...(managedParent.fullCase===FullNativeCase.LegacyUnverifiedR?{fullCase:managedParent.fullCase}:{} )});
   const publicFrom=root+"/run/TEST-real-codex-review";
   assert.equal(realpathSync(publicFrom),publicFrom);assert(!existsSync(publicReviewed));
   const publicFd=openSync(publicFrom,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);

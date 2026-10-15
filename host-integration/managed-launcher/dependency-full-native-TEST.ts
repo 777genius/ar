@@ -110,6 +110,12 @@ export enum FullNativeUnsupportedReason { H1PythonSourceClosure="h1_python_stdli
 function requireSupportedH1SourceClosure():void {
   throw new Error("TEST full managed ingress Held: "+FullNativeUnsupportedReason.H1PythonSourceClosure);
 }
+export enum FullNativeCase { ColdRestore = "cold_restore", LegacyUnverifiedR = "legacy_unverified_r" }
+/** Finite inspected configuration. It never supplies an enrollment/release. */
+export function fullNativeCase(value:unknown):FullNativeCase {
+  if(value===undefined)return FullNativeCase.ColdRestore;
+  check(value===FullNativeCase.ColdRestore || value===FullNativeCase.LegacyUnverifiedR);return value;
+}
 export enum FullRestoreConsumer { Ordinary="ordinary", Readonly="readonly" }
 /** Finite TEST case selection only. It carries no identity or launch authority. */
 export function fullNativeRestoreConsumer(value:unknown):FullRestoreConsumer {
@@ -131,7 +137,8 @@ export function fullReviewData(value:unknown) {
   check(value!==null && typeof value==="object" && !types.isProxy(value) && Object.getPrototypeOf(value)===Object.prototype);
   const version=Object.getOwnPropertyDescriptor(value,"schemaVersion");check(version && Object.hasOwn(version,"value"));
   if(version.value===2){
-    const review=fullData(value,[...fullReviewKeys,"removalCase","restoreConsumer"]);
+    const review=fullData(value,[...fullReviewKeys,"removalCase","restoreConsumer",...(Object.hasOwn(value,"fullCase")?["fullCase"]:[])]);
+    fullNativeCase(review.fullCase);
     fullPositiveAccountData(review.accountName);check(review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);
     if(hasPositiveHostDso(review.hostTools))fullHostToolsData(review);
     return review;
@@ -412,7 +419,8 @@ function acquire(context:RootContext=RootContext.Launcher){
     check(r.accountName===(r.schemaVersion===2?fullPositiveAccountData(r.accountName):"account-u") && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
     for(const key of ["nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256"])check(digest(r[key]));
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
-    const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase);
+    const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase),fullCase=fullNativeCase(r.fullCase);
+    if(fullCase===FullNativeCase.LegacyUnverifiedR)check(r.schemaVersion===2 && removalCase===FullRemovalCase.Positive && restoreConsumer===FullRestoreConsumer.Ordinary);
     check(removalCase!==FullRemovalCase.ParentCrashH1 || restoreConsumer===FullRestoreConsumer.Ordinary);
     if(removalCase===FullRemovalCase.ParentCrashH1){
       // The independent subject selects one retained physical catalog, never
@@ -525,7 +533,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);pins.hold(fullNativeOsBase,true,0o700);
     const git=spawnSync("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD^{tree}"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir,GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null"},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!git.error && git.status===0 && git.signal===null && git.stdout.trim()===r.sourceTree);
-    const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName,restoreConsumer,removalCase,review:r});
+    const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName,restoreConsumer,removalCase,fullCase,review:r});
     const namespace=readlinkSync("/proc/self/ns/mnt"),namespaceFd=pins.mountNamespace();
     if(context===RootContext.Parent)check(namespace!==readlinkSync("/proc/1/ns/mnt"));
     const validate=()=>{initialRoot(context);check(readlinkSync("/proc/self/ns/mnt")===namespace && readlinkSync(`/proc/self/fd/${namespaceFd}`)===namespace);pins.validate();h1LibcPins.validate();h1Catalog?.revalidate();check(readFileSync("/etc/machine-id","utf8").trim()===tuple.machineId && readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()===tuple.bootId);};
@@ -1213,6 +1221,7 @@ export function retainedCurrentFullParentDescriptors(value:object):readonly numb
 }
 export function assertRetainedCurrentFullParent(value:unknown):void {check(value!==null && typeof value==="object");const rejoin=fullParents.get(value);check(rejoin);rejoin();}
 export interface FullParentSession {
+  readonly fullCase:FullNativeCase;
   readonly removalCase:FullRemovalCase;
   readonly unit:string;revalidate():void;liveBindings():readonly string[];
   registerGuest(id:string,root:string,fragmentSha256:string):void;
@@ -1405,7 +1414,7 @@ export function retainCurrentFullParent():FullParentSession {
     const fd=openSync(`/proc/self/fd/${parent}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
     try{writeFileSync(fd,JSON.stringify(data)+"\n");fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(parent);revalidate();
   }
-  try{revalidate();const session=Object.freeze({removalCase:c.tuple.removalCase,unit:fullNativeUnit,revalidate,
+  try{revalidate();const session=Object.freeze({fullCase:c.tuple.fullCase,removalCase:c.tuple.removalCase,unit:fullNativeUnit,revalidate,
     liveBindings(){
       revalidate();check(!liveRootCreated);const job=c.pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
       mkdirSync(`/proc/self/fd/${job}/full-parent-live`,{mode:0o700});fsyncSync(job);
