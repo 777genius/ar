@@ -52,3 +52,4 @@ export { OpenWorkerLayoutErrorCode, assertHostedOpenWorkerLayout, renderHostedOp
   hostedOpenWorkerExtraDenyDirectories, hostedOpenWorkerForbiddenReadRoots } from "./hosted-open-worker-permissions";
 
 export { prepareHostedMimoCodingEngineAuthority, type HostedMimoCodingEngineAuthority } from "./hosted-mimo-coding-engine-authority";
+export { parseMimoProxyFailureDetails, type MimoProxyFailure } from "./mimo-proxy-failure";

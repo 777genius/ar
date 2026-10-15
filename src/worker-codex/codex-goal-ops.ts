@@ -22,7 +22,7 @@ import {
   type RuntimeResultEnvelope,
   type RuntimeResultStatus,
 } from "@vioxen/subscription-runtime/worker-core";
-import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault, type MimoProxyFailure } from "@vioxen/subscription-runtime/provider-codex";
 import { resolveCodexGoalMimoEnvVarName } from "./codex-goal-mimo-account-slots";
 import {
   createCodexGoalResultRecorder,
@@ -136,6 +136,7 @@ export type CodexGoalStatus = {
   readonly resultExists?: boolean;
   readonly resultStatus?: string;
   readonly resultReason?: string;
+  readonly resultProxyFailure?: MimoProxyFailure;
   readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
   readonly resultUpdatedAt?: string;
   readonly workspaceExists?: boolean;
@@ -513,6 +514,7 @@ export async function collectCodexGoalStatus(
     ...(visibleResult.reason === undefined
       ? {}
       : { resultReason: visibleResult.reason }),
+    ...(visibleResult.proxyFailure ? { resultProxyFailure: visibleResult.proxyFailure } : {}),
     ...(result.foregroundOutput === undefined ? {} : { foregroundOutput: result.foregroundOutput }),
     ...(visibleResult.updatedAt === undefined
       ? {}

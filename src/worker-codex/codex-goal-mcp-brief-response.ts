@@ -31,7 +31,7 @@ const briefKeys = [
 ] as const;
 
 const statusKeys = [
-  "tmuxAlive", "resultExists", "resultStatus", "resultReason", "workspaceExists",
+  "tmuxAlive", "resultExists", "resultStatus", "resultReason", "resultProxyFailure", "workspaceExists",
   "workspaceDirty", "changedFiles", "logExists", "progressExists",
   "progressStatus", "progressProcessAlive", "appServerProcessAlive",
   "progressResultStatus", "progressResultReason", "progressAttemptCount",

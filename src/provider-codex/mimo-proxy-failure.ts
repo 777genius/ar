@@ -53,6 +53,37 @@ export type MimoProxyFailure = Readonly<{
   validation_code?: MimoProxyValidationCode;
 }>;
 
+/** Rebuild public diagnostics from closed fields, never forwarding result JSON. */
+export function parseMimoProxyFailureDetails(input: unknown): MimoProxyFailure | undefined {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  try {
+    const own = (key: string): unknown => {
+      const d = Object.getOwnPropertyDescriptor(input, key);
+      return d && "value" in d ? d.value : undefined;
+    };
+    const reason = Object.values(MimoProxyFailureReason).find(v => v === own("mimoProxyReason"));
+    const phase = Object.values(MimoProxyFailurePhase).find(v => v === own("mimoProxyPhase"));
+    const integer = (value: unknown, min: number, max: number): number | undefined => {
+      if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,15})$/.test(value)) return undefined;
+      const n = Number(value);
+      return Number.isSafeInteger(n) && n >= min && n <= max ? n : undefined;
+    };
+    const elapsed = integer(own("mimoProxyElapsedMs"), 0, Number.MAX_SAFE_INTEGER);
+    const request = integer(own("mimoProxyRequestNumber"), 1, 4096);
+    if (!reason || !phase || elapsed === undefined || request === undefined) return undefined;
+    const statusValue = own("mimoUpstreamStatus"), transportValue = own("mimoTransportCode"), validationValue = own("mimoValidationCode");
+    const status = integer(statusValue, 100, 599);
+    const transport = Object.values(MimoProxyTransportCode).find(v => v === transportValue);
+    const validation = Object.values(MimoProxyValidationCode).find(v => v === validationValue);
+    if (statusValue !== undefined && status === undefined || transportValue !== undefined && transport === undefined ||
+        validationValue !== undefined && validation === undefined) return undefined;
+    return Object.freeze({ reason, phase, elapsed_ms: elapsed, request_number: request,
+      ...(status === undefined ? {} : { upstream_status: status }),
+      ...(transport === undefined ? {} : { transport_code: transport }),
+      ...(validation === undefined ? {} : { validation_code: validation }) });
+  } catch { return undefined; }
+}
+
 export function mimoProxyValidationCode(error: unknown): MimoProxyValidationCode {
   try {
     if (error instanceof SyntaxError) return MimoProxyValidationCode.Json;
