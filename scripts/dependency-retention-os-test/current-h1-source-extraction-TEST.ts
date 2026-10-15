@@ -26,6 +26,33 @@ export function h1ExtractorFailureKind(error:unknown):H1ExtractorFailureKind {
  if(types.isProxy(error)||!types.isNativeError(error))return H1ExtractorFailureKind.Unknown;
  return Object.getPrototypeOf(error)===assert.AssertionError.prototype?H1ExtractorFailureKind.Assertion:H1ExtractorFailureKind.Error;
 }
+export enum H1SourceSandboxDiagnosticState {Empty="empty",Classified="classified",Unmatched="unmatched",UnsupportedBytes="unsupported_bytes",Oversized="oversized"}
+export enum H1SourceSandboxOperation {UserMap="user_map",Namespace="namespace",Mount="mount",Execute="execute",Option="option",Capability="capability",Seccomp="seccomp",Loader="dynamic_loader",NodeModule="node_module",NodeBootstrap="node_bootstrap",IsolatedChild="isolated_child"}
+export enum H1SourceSandboxErrno {Permission="permission_denied",Prohibited="operation_not_permitted",Missing="not_found",Invalid="invalid_argument",ReadOnly="read_only",Unsupported="not_supported",Memory="out_of_memory",Space="no_space"}
+export enum H1SourceSandboxSpawnCode {Absent="absent",Unknown="unknown",Missing="ENOENT",Permission="EACCES",Prohibited="EPERM",Buffer="ENOBUFS",Timeout="ETIMEDOUT",Memory="ENOMEM",Again="EAGAIN"}
+/** Only the fixed bwrap TEST child supplies stderr: explicit environment,
+ * authenticated public image/source, no provider/auth input. Retain its exact
+ * bounded bytes in the artifact, never log them. Unknown Error payloads are
+ * never read; finite classifications remain observations, not causal proof. */
+export function h1SourceSandboxDiagnostics(stderr:Buffer,spawnError:unknown){
+ let spawnCode=spawnError===undefined?H1SourceSandboxSpawnCode.Absent:H1SourceSandboxSpawnCode.Unknown;
+ if(!types.isProxy(spawnError)&&types.isNativeError(spawnError)){const descriptor=Object.getOwnPropertyDescriptor(spawnError,"code");if(descriptor&&"value" in descriptor&&Object.values(H1SourceSandboxSpawnCode).includes(descriptor.value as H1SourceSandboxSpawnCode)&&descriptor.value!==H1SourceSandboxSpawnCode.Absent&&descriptor.value!==H1SourceSandboxSpawnCode.Unknown)spawnCode=descriptor.value as H1SourceSandboxSpawnCode;}
+ const operations=new Set<H1SourceSandboxOperation>(),errnos=new Set<H1SourceSandboxErrno>();let state=H1SourceSandboxDiagnosticState.Empty,lineCount:number|null=0;
+ if(stderr.length>8192){state=H1SourceSandboxDiagnosticState.Oversized;lineCount=null;}
+ else if(!stderr.every(byte=>byte===9||byte===10||byte===13||byte>=32&&byte<=126)){state=H1SourceSandboxDiagnosticState.UnsupportedBytes;lineCount=null;}
+ else if(stderr.length){const lines=stderr.toString("ascii").split("\n");if(lines.at(-1)==="")lines.pop();lineCount=lines.length;
+  if(lines.length>16||lines.some(line=>line.length>1024))state=H1SourceSandboxDiagnosticState.Oversized;
+  else{for(const line of lines){
+   if(line==="TEST H1 isolated source extraction Held")operations.add(H1SourceSandboxOperation.IsolatedChild);
+   if(line.startsWith("bwrap:")){if(/(?:uid|gid).*map|map.*(?:uid|gid)/i.test(line))operations.add(H1SourceSandboxOperation.UserMap);if(/namespace/i.test(line))operations.add(H1SourceSandboxOperation.Namespace);if(/mount|pivot.root|newroot/i.test(line))operations.add(H1SourceSandboxOperation.Mount);if(/execvp|execve|execut/i.test(line))operations.add(H1SourceSandboxOperation.Execute);if(/option|argument|usage/i.test(line))operations.add(H1SourceSandboxOperation.Option);if(/capabilit|capset|capget/i.test(line))operations.add(H1SourceSandboxOperation.Capability);if(/seccomp/i.test(line))operations.add(H1SourceSandboxOperation.Seccomp);}
+   if(line.startsWith("/runtime/node:")&&line.includes("error while loading shared libraries:"))operations.add(H1SourceSandboxOperation.Loader);
+   if(/^(?:Error \[ERR_(?:MODULE_NOT_FOUND|UNKNOWN_FILE_EXTENSION|UNSUPPORTED_DIR_IMPORT)\]|Error: Cannot find module)/.test(line))operations.add(H1SourceSandboxOperation.NodeModule);
+   if(/^(?:node:internal[/:]|Node\.js v[0-9]|SyntaxError:|ReferenceError:)/.test(line))operations.add(H1SourceSandboxOperation.NodeBootstrap);
+   for(const [pattern,errno] of [[/Permission denied/,H1SourceSandboxErrno.Permission],[/Operation not permitted/,H1SourceSandboxErrno.Prohibited],[/No such file or directory/,H1SourceSandboxErrno.Missing],[/Invalid argument/,H1SourceSandboxErrno.Invalid],[/Read-only file system/,H1SourceSandboxErrno.ReadOnly],[/(?:Operation|Function) not (?:supported|implemented)/,H1SourceSandboxErrno.Unsupported],[/Cannot allocate memory/,H1SourceSandboxErrno.Memory],[/No space left on device/,H1SourceSandboxErrno.Space]] as const)if(pattern.test(line))errnos.add(errno);
+  }state=operations.size||errnos.size?H1SourceSandboxDiagnosticState.Classified:H1SourceSandboxDiagnosticState.Unmatched;}
+ }
+ return Object.freeze({state,stderrBytes:stderr.length,stderrLines:lineCount,stderrCaptureEncoding:"base64",stderrPrefixBase64:stderr.subarray(0,16384).toString("base64"),stderrCapturedBytes:Math.min(stderr.length,16384),stderrTruncated:stderr.length>16384,operations:Object.freeze([...operations].sort()),errnos:Object.freeze([...errnos].sort()),spawnFailed:spawnError!==undefined,spawnCode});
+}
 interface H1BootstrapElfObject {readonly name:string;readonly path:string;readonly sha256:string;readonly bytes:number;readonly needed:readonly string[];readonly alias:Readonly<{path:string;target:string}>|null}
 /** Joins previously observed bootstrap bytes to the actual complete image
  * census. This DATA comparison neither chooses paths nor grants authority. */
@@ -102,7 +129,7 @@ export async function collectH1PatchedSourceData(input:Input):Promise<void>{
   site=H1ExtractorSite.Bwrap;const bwrap=retainOriginalAcquiredArchive(join(root,"usr/bin/bwrap"),tick);held.push(bwrap);const rejoin=()=>{tick();assert.equal(lstatSync(scratch,{bigint:true}).ino,own.ino);for(const h of held)h.rejoin();for(const h of input.sourceArchives)h.rejoin();assert.deepEqual(censusH1PatchedSource(root,tick,H1SourceCensusProfile.ToolImage),inventory);tick();};
   stage=H1ExtractorStage.Source;for(const selection of input.sourceSelections){site=H1ExtractorSite.Custody;rejoin();site=H1ExtractorSite.Args;const family=selection.source.name;assert(Object.values(H1SemanticFamily).includes(family as H1SemanticFamily));const dsc=selection.artifacts.find(row=>row.name.endsWith(".dsc"));assert(dsc);const args=h1SourceSandboxArgv(root,join(scratch,"source-"+family),family as H1SemanticFamily,dsc.name);
    site=H1ExtractorSite.Sandbox;const r=spawnSync("/proc/self/fd/3",args,{argv0:"/usr/bin/bwrap",shell:false,cwd:scratch,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch},stdio:["ignore","pipe","pipe",bwrap.fd],timeout:Math.max(1,Math.floor(Math.min(150000,input.deadline-performance.now()))),killSignal:"SIGKILL",maxBuffer:h1PatchedSourceLimits.recordBytes});rejoin();
-   site=H1ExtractorSite.Record;file(join(evidence,family+"-source-extractor-command.json"),JSON.stringify({sourceSha:input.sourceSha,args,status:r.status,signal:r.signal,stdoutSha256:hash(r.stdout??Buffer.alloc(0)),stderrSha256:hash(r.stderr??Buffer.alloc(0)),nativeQualified:false})+"\n");site=H1ExtractorSite.Sandbox;assert(!r.error&&r.status===0&&r.signal===null,"unsupported source sandbox/extraction Held");
+   site=H1ExtractorSite.Record;file(join(evidence,family+"-source-extractor-command.json"),JSON.stringify({sourceSha:input.sourceSha,args,status:r.status,signal:r.signal,stdoutBytes:r.stdout?.length??0,stderrBytes:r.stderr?.length??0,stdoutSha256:hash(r.stdout??Buffer.alloc(0)),stderrSha256:hash(r.stderr??Buffer.alloc(0)),diagnostics:h1SourceSandboxDiagnostics(r.stderr??Buffer.alloc(0),r.error),nativeQualified:false})+"\n");site=H1ExtractorSite.Sandbox;assert(!r.error&&r.status===0&&r.signal===null,"unsupported source sandbox/extraction Held");
    site=H1ExtractorSite.Body;const body:unknown=JSON.parse(r.stdout.toString("utf8"));assert(body&&typeof body==="object"&&"purpose" in body&&body.purpose==="PATCHED_SOURCE_UNADMITTED_DATA"&&"nativeQualified" in body&&body.nativeQualified===false);
    site=H1ExtractorSite.Record;file(join(evidence,family+"-patched-constructor-inputs-UNADMITTED.json"),JSON.stringify({sourceSha:input.sourceSha,selection,extractorImageSha256:imageHash,body,compiledInputEquality:false,hostNspawnProvenance:false,nativeQualified:false})+"\n");
   }site=H1ExtractorSite.Custody;rejoin();stage=H1ExtractorStage.Complete;site=H1ExtractorSite.Complete;
