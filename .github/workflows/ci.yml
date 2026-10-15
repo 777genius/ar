@@ -659,16 +659,70 @@ jobs:
               "$TEST_NODE" --test --test-reporter=tap "$TEST_EMIT/dependency-full-h1-staged-tools-TEST.node-test.js" "$TEST_EMIT/dependency-full-native-TEST.node-test.js"
           fi 2>&1 | tee dependency-h1-staged-data-ci-evidence/root-tests.tap
           TAP=dependency-h1-staged-data-ci-evidence/root-tests.tap
-          grep -Eq '^ok [0-9]+ - actual retained physical inode replacement, extra entry, nlink and deadline refuse$' "$TAP"
-          grep -Eq '^ok [0-9]+ - actual owned read expires at post-I/O monotonic check and closes permanently$' "$TAP"
-          grep -Eq '^ok [0-9]+ - actual invalid literal alias bytes refuse including equal encoded-size case$' "$TAP"
-          grep -Eq '^ok [0-9]+ - unsupported H1 stdlib closure cannot reach private tool callbacks$' "$TAP"
-          grep -Eq '^ok [0-9]+ - source package contract keeps legacy and binds selected Positive package bytes$' "$TAP"
-          grep -Fxq '# tests 37' "$TAP"
-          grep -Fxq '# pass 37' "$TAP"
-          grep -Fxq '# fail 0' "$TAP"
-          grep -Fxq '# skipped 0' "$TAP"
-          if grep -q ' # SKIP ' "$TAP"; then exit 1; fi
+          # Bind every required source case, not just a total that can hide substitutions.
+          TAP="$TAP" "$TEST_NODE" --input-type=module-typescript - <<'H1_STAGED_DATA_RESULT'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const expected = new Set([
+            "complete DATA subject and captured manifest never qualify a constructor",
+            "unknown fields, kinds and missing selected-build definitions refuse",
+            "proxy and accessor DATA refuse without executing getters",
+            "alias escape, missing target, cycle and duplicate physical roster refuse",
+            "unknown and executable/config shadow mount rows refuse",
+            "HOST release branch, bytes and actual cells stay separate and exact",
+            "synthetic boot ID cannot replace original host boot authority",
+            "catalog bounds, writable file and nlink2 refuse",
+            "actual retained physical inode replacement, extra entry, nlink and deadline refuse",
+            "actual owned read expires at post-I/O monotonic check and closes permanently",
+            "ordinary Unicode is retained while lone surrogates refuse before byte conversion",
+            "actual invalid literal alias bytes refuse including equal encoded-size case",
+            "installer capability DATA requires only ptrace, no inherited/ambient capabilities, and NNP",
+            "installer snapshot large-leaf DATA is exact measured Claude bytes only",
+            "counterfeit accessors and proxies cannot execute during request capture",
+            "command cells are descriptor snapshots rather than later caller reads",
+            "public catalog paths never admit protected, escaped or executable input",
+            "unknown or extra review fields remain refused DATA",
+            "recognized request is copied DATA and changed limits cannot enter ROOT admission",
+            "readonly mount DATA refuses stacked/writable/foreign physical observations",
+            "FULL guest roots refuse global and foreign staging prefixes",
+            "FULL input readonly mounts override job scratch write access",
+            "H1 is a separate finite removal case with one fixed parent argv flag",
+            "H1 libc requires exact reviewed root-owned two-link metadata",
+            "H1 libc two-name DATA never widens to unknown hardlink routes",
+            "unsupported H1 stdlib closure cannot reach private tool callbacks",
+            "FULL review schema2 is exact fixed-r Positive/Ordinary and cannot downgrade",
+            "Positive HOST libc DATA is finite and consumed exactly once",
+            "Positive HOST libc DATA cannot select schema1 H1 or another role",
+            "Positive HOST libc DATA never invokes input hooks",
+            "schema2 finite account selection accepts exactly account-r or account-w",
+            "schema2 protected outer review must match the exact selected account",
+            "Positive HOST two fixed DSO roles consume the observed22 canonical rows",
+            "FULL H1 separate subject digest is exact DATA-only selection",
+            "Positive HOST second DSO rejects broadened roles and unconsumed proofs",
+            "Positive HOST second DSO DATA never invokes hooks",
+            "Positive HOST stable ancestry compares objects across namespace-local mounts",
+            "source package contract keeps legacy and binds selected Positive package bytes",
+            "staged constructor, census and close reject copied original-parent DATA before any physical work",
+          ]);
+          const total = expected.size;
+          const lines = readFileSync(process.env.TAP!, 'utf8').trimEnd().split(/\r?\n/);
+          assert.deepEqual(lines.filter(line => line === 'TAP version 13'), ['TAP version 13']);
+          assert.deepEqual(lines.filter(line => /^1\.\./.test(line)), [`1..${total}`]);
+          const cases = lines.filter(line => /^(?:not )?ok\b/.test(line));
+          assert.equal(cases.length, total);
+          for (const [index, line] of cases.entries()) {
+            const match = /^ok ([1-9][0-9]*) - (.+)$/.exec(line);
+            assert(match);
+            assert.equal(Number(match[1]), index + 1);
+            assert(expected.delete(match[2]!));
+          }
+          assert.equal(expected.size, 0);
+          for (const [label, value] of [['tests', total], ['suites', 0], ['pass', total], ['fail', 0], ['cancelled', 0], ['skipped', 0], ['todo', 0]] as const) {
+            assert.deepEqual(lines.filter(line => line.startsWith(`# ${label} `)), [`# ${label} ${value}`]);
+          }
+          assert(!lines.some(line => /^Bail out!| # (?:SKIP|TODO)\b/i.test(line)));
+          console.log(`Validated ${total} exact staged DATA cases without skips.`);
+          H1_STAGED_DATA_RESULT
       - name: Retain staged H1 DATA exact-source physical TEST evidence even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
