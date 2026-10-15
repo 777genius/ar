@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ read: vi.fn(), current: vi.fn(), credential: vi.fn(), start: vi.fn() }));
 vi.mock("../hosted-mimo-worker-origin", () => ({ readHostedMimoCodingWorkerOrigin: mocks.read, assertHostedMimoCodingWorkerOriginCurrent: mocks.current }));
-vi.mock("../hosted-mimo-credential-source", () => ({ resolveHostedMimoCodingProxyCredential: mocks.credential }));
+vi.mock("../hosted-mimo-credential-source", () => ({ captureHostedMimoCodingProxyCredential: mocks.credential }));
 vi.mock("../hosted-mimo-credential-proxy", () => ({ startMimoCredentialProxy: mocks.start }));
 import { createHostedMimoCodingProxyMaterial } from "../hosted-mimo-coding-proxy-material";
 import { hostedMimoCodingBootstrapForFrame } from "../hosted-mimo-coding-bootstrap-registry";
@@ -16,8 +16,9 @@ function setup(digest: string, taskTimeoutMs = 60000) {
   const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs, codexBinaryPath: "/opt/codex" };
   const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + taskTimeoutMs - 10000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
   const proxy = { capability: "TEST-cap-" + digest, baseUrl: "http://127.0.0.1:1234/v1", revoke: vi.fn(), close: vi.fn(async () => {}),
+    capacityRecoveryProof: vi.fn(() => undefined),
     upstreamFailureObservation: vi.fn<() => unknown>(() => undefined) };
-  mocks.read.mockReturnValue(origin); mocks.current.mockImplementation(() => {}); mocks.credential.mockReturnValue("TEST-real-key-never-bootstrap"); mocks.start.mockResolvedValue(proxy);
+  mocks.read.mockReturnValue(origin); mocks.current.mockImplementation(() => {}); mocks.credential.mockImplementation(() => ({ bytes: Buffer.from("TEST-real-key-never-bootstrap"), credentialFingerprint: "a".repeat(64), assertCurrent() {} })); mocks.start.mockResolvedValue(proxy);
   const input = { model: origin.model, lifetime, redactor: { registerSecret: vi.fn(), redact: (value: string) => value, assertNoKnownSecret: vi.fn() } };
   return { origin, lifetime, proxy, input };
 }
@@ -215,4 +216,62 @@ it("keeps linked-worktree Git discovery available through the inner read-only pe
     await expect(createHostedMimoCodingProxyMaterial(denied.input)).rejects.toThrow("mimo_coding_git_binding_invalid");
     expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
   } finally { await material?.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("binds only source fingerprint/model before listener startup and guards later dispatch observations", async () => {
+  const f = setup("recovery-binding-before-listen");
+  const sourceCurrent = vi.fn(), requestCurrent = vi.fn();
+  const capture = { bytes: Buffer.from("TEST-real-key-never-bootstrap"), credentialFingerprint: "b".repeat(64), assertCurrent: sourceCurrent };
+  mocks.credential.mockReturnValue(capture);
+  let resolve!: (current: () => void) => void;
+  const bind = vi.fn<import("../hosted-mimo-coding-proxy-material").HostedMimoCapacityRecoveryBinder>(() =>
+    new Promise(done => { resolve = done; }));
+  const flight = createHostedMimoCodingProxyMaterial({ ...f.input, bindCapacityRecoveryCredential: bind });
+  expect(bind).toHaveBeenCalledOnce(); expect(mocks.start).not.toHaveBeenCalled();
+  const binding = bind.mock.calls[0]![0];
+  expect(Object.keys(binding)).toEqual(["credentialFingerprint", "requestedModel", "assertCurrent"]);
+  expect(binding).toMatchObject({ credentialFingerprint: "b".repeat(64), requestedModel: "mimo-v2.6-pro" });
+  expect(JSON.stringify(binding)).not.toContain("TEST-real-key");
+  const reads = sourceCurrent.mock.calls.length; binding.assertCurrent(); expect(sourceCurrent).toHaveBeenCalledTimes(reads + 1);
+  resolve(requestCurrent);
+  const material = await flight;
+  try {
+    expect(mocks.start).toHaveBeenCalledOnce();
+    expect(mocks.start.mock.calls[0]![0].credentialCapture).toBe(capture);
+    expect(requestCurrent).toHaveBeenCalled();
+    requestCurrent.mockImplementation(() => { throw Error("TEST legacy revision changed"); });
+    expect(() => mocks.start.mock.calls[0]![0].assertCurrent()).toThrow("legacy revision changed");
+    expect(capture.bytes.every(byte => byte === 0)).toBe(true);
+  } finally { await material?.close(); }
+});
+
+it.each(["rejected", "expired", "source-changed", "guard-rejected"])("never starts a proxy after failed recovery binding (%s)", async failure => {
+  const f = setup(`recovery-binding-${failure}`);
+  const { HostedMimoCodingProxyOwner } = await import("../hosted-mimo-coding-proxy-material");
+  const owner = new HostedMimoCodingProxyOwner();
+  let sourceValid = true;
+  const capture = { bytes: Buffer.from("TEST-real-key-never-bootstrap"), credentialFingerprint: "c".repeat(64),
+    assertCurrent() { if (!sourceValid) throw Error("TEST source changed"); } };
+  mocks.credential.mockReturnValue(capture);
+  const bind = vi.fn(async () => {
+    if (failure === "rejected") throw Error("TEST binding rejected");
+    if (failure === "expired") f.lifetime.close(Error("TEST original deadline"));
+    if (failure === "source-changed") sourceValid = false;
+    return () => { if (failure === "guard-rejected") throw Error("TEST guard rejected"); };
+  });
+  const input = { ...f.input, bindCapacityRecoveryCredential: bind };
+  await expect(owner.acquire(input)).rejects.toThrow("TEST");
+  await expect(owner.acquire(input)).rejects.toThrow("TEST");
+  expect(bind).toHaveBeenCalledOnce(); expect(mocks.credential).toHaveBeenCalledOnce();
+  expect(mocks.start).not.toHaveBeenCalled();
+  expect(owner.capacityRecoveryProof()).toBeUndefined();
+  expect(capture.bytes.every(byte => byte === 0)).toBe(true);
+});
+
+
+it("refuses an explicit recovery binder when no current Coding origin can invoke it", async () => {
+  const f = setup("recovery-origin-required"); mocks.read.mockReturnValue(null);
+  const bind = vi.fn(async () => () => {});
+  await expect(createHostedMimoCodingProxyMaterial({ ...f.input, bindCapacityRecoveryCredential: bind })).rejects.toThrow("origin_required");
+  expect(bind).not.toHaveBeenCalled(); expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
 });

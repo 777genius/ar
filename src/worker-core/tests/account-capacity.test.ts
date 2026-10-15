@@ -4,6 +4,7 @@ import {
   BoundedSubscriptionWorkerPool,
   InMemoryWorkerAccountCapacityStore,
   accountCapacityAwareWorkerFactory,
+  prepareWorkerAccountTaskRecovery,
   type CapacityAwareSubscriptionWorker,
   type SubscriptionWorker,
   type SubscriptionWorkerPrewarmResult,
@@ -12,6 +13,20 @@ import {
 } from "../index";
 
 describe("AccountCapacityAwareWorker", () => {
+  it("refuses a JSON-cloned pending preparation even when called outside the pool", async () => {
+    const clock = new MutableClock(new Date("2026-06-01T01:00:00.001Z")), store = expiredQuotaStore();
+    const preparation = prepareWorkerAccountTaskRecovery({ state: store.readState({ accountId: "account-a", now: clock.now() })!,
+      recordSha256: "a".repeat(64), recordSetSha256: "b".repeat(64), demand: { provider: "codex", model: "mimo-v2.6-pro" }, now: clock.now() })!;
+    const forged = JSON.parse(JSON.stringify(preparation)) as typeof preparation;
+    const inner = new FakeWorker("TEST-forged-worker", "must-not-run", { availability: "available" });
+    let recoveryRuns = 0;
+    const worker = new AccountCapacityAwareWorker({ worker: inner, accountCapacityStore: store, accountId: "account-a", clock,
+      taskRecovery: { capacity: () => ({ availability: "cooldown", recoveryPending: forged }),
+        run: async () => { recoveryRuns++; return "must-not-run"; } } });
+    await expect(worker.run("forged-task")).rejects.toMatchObject({ code: "subscription_worker_account_unavailable" });
+    expect(recoveryRuns).toBe(0); expect(inner.runCount).toBe(0);
+  });
+
   it("propagates provider-neutral account cooldown to sibling workers", () => {
     const clock = new MutableClock(new Date("2026-06-01T00:00:00.000Z"));
     const resetAt = new Date("2026-06-01T01:00:00.000Z");

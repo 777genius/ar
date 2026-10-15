@@ -20,6 +20,7 @@ import { researchAdmissionObservation, researchAdmissionMeasure, ResearchAdmissi
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => ResearchAdmissionTiming | void>();
+const factoryRetainedGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
 const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: () => void }>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 export const researchJobAuthority = (jobId: string): string => join(researchAuthorityRoot, researchName(researchId(jobId)));
@@ -284,6 +285,10 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
 export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => ResearchAdmissionTiming | void) | undefined {
   return factory ? factoryGuards.get(factory) : undefined;
 }
+/** Source-issued process/authority fence; never hashes material or queries systemd. */
+export function researchProviderRetainedAuthorityGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {
+  return factory ? factoryRetainedGuards.get(factory) : undefined;
+}
 export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexProviderEgressProfileId | undefined {
   if (!researchUnitFromCurrentProcess()) return undefined;
   return captureResearchRuntime(identity).profileId;
@@ -311,6 +316,7 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
     signal: (unit, signal) => signalResearchProvider(captured.directory, unit, signal),
   });
   factoryGuards.set(factory, captured.assertCurrent);
+  factoryRetainedGuards.set(factory, captured.assertInertAuthorityCurrent);
   if (captured.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) mimoWorkerFactories.set(factory, captured.spec);
   return factory;
 }

@@ -1,3 +1,4 @@
+import type { HostedMimoCapacityRecoveryBinder } from "../provider-codex/codex-json-agent-driver";
 import type { OpenWorkerLaunch } from "./project-control-worker-mode";
 import { assertOwnedMimoWorkerFactory, ownedMimoWorkerStart } from "./research-launch-admission";
 import { ChildExecutionBudget, deriveRuntimeStorageRoots } from "@vioxen/subscription-runtime/core";
@@ -14,6 +15,7 @@ import {
 } from "./codex-session-home-profile";
 
 export type FileBackendCodexWorkerOptions = {
+  readonly bindMimoCapacityRecoveryCredential?: HostedMimoCapacityRecoveryBinder;
   readonly storageRootDir?: string;
   readonly childBudget?: ChildExecutionBudget;
   readonly executionLifetime?: AppServerExecutionLifetime;

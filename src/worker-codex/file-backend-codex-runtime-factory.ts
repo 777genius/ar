@@ -411,6 +411,7 @@ function createCodexAgentDriver(input: {
     workspacePath: options.workspacePath!, model: options.model!, codexBinaryPath: options.codexBinaryPath!,
   }) : undefined;
   return new CodexJsonAgentDriver({
+    ...(options.bindMimoCapacityRecoveryCredential ? { bindMimoCapacityRecoveryCredential: options.bindMimoCapacityRecoveryCredential } : {}),
     ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
     ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
     engine: executionEngine === "packaged-exec"

@@ -11,6 +11,8 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import {
+  prepareWorkerAccountTaskRecovery,
+  type WorkerAccountRecoveryPreparation,
   WorkerAccountCapacityClaimStatus,
   WorkerAccountCapacityPhase,
   WorkerAccountCapacityRecheckMode,
@@ -38,7 +40,8 @@ import {
   localWorkerAccountCapacityRevisionedStorageVersion as revisionedStorageVersion,
   localWorkerAccountCapacityStorageVersion as storageVersion,
 } from "../domain/local-worker-account-capacity-record-policy";
-import { assertNoRestrictiveLegacyAccountRecords } from "./local-worker-account-capacity-legacy-fence";
+import { assertNoRestrictiveLegacyAccountRecords, readLegacyAccountCapacityRecords, type InspectedLegacyAccountRecord } from "./local-worker-account-capacity-legacy-fence";
+import { LocalWorkerAccountTaskRecovery } from "./local-worker-account-task-recovery";
 
 export type LocalFileWorkerAccountCapacityStoreOptions = {
   readonly rootDir: string;
@@ -87,6 +90,8 @@ type PersistedClaim = {
 export class LocalFileWorkerAccountCapacityStore
   implements WorkerAccountCapacityStore
 {
+  private taskRecoveryFence: (() => void) | undefined;
+
   constructor(
     private readonly options: LocalFileWorkerAccountCapacityStoreOptions,
   ) {}
@@ -148,6 +153,12 @@ export class LocalFileWorkerAccountCapacityStore
   }
 
   observe(input: WorkerAccountLimitSignal): WorkerAccountCapacityState | null {
+    return this.options.restrictiveLegacyAccountIdPrefixes?.length
+      ? this.withRecordLock(join(this.options.rootDir, "original-task-recovery"), () => this.observeUnlocked(input))
+      : this.observeUnlocked(input);
+  }
+
+  private observeUnlocked(input: WorkerAccountLimitSignal): WorkerAccountCapacityState | null {
     this.assertLegacyAccountIdentity();
     const accountId = normalizeWorkerAccountId(input.accountId);
     if (!accountId) return null;
@@ -378,10 +389,7 @@ export class LocalFileWorkerAccountCapacityStore
     );
   }
 
-  private assertLegacyAccountIdentity(): void {
-    const prefixes = this.options.restrictiveLegacyAccountIdPrefixes;
-    if (!prefixes) return;
-    assertNoRestrictiveLegacyAccountRecords(this.options.rootDir, prefixes, (value, recordPath, claim) => {
+  private inspectLegacyRecord(value: unknown, recordPath: string, claim: boolean): InspectedLegacyAccountRecord | null {
       if (claim && (!isPersistedClaim(value) || value.recordId !== recordPath ||
           !optionalDate(value.claimedAt) || !optionalDate(value.expiresAt) || Date.parse(value.expiresAt) <= Date.parse(value.claimedAt))) return null;
       const record = claim && isPersistedClaim(value)
@@ -394,6 +402,50 @@ export class LocalFileWorkerAccountCapacityStore
           (capacity.details?.accountId !== undefined && capacity.details.accountId !== record.accountId)) return null;
       return { accountId: record.accountId, demandKey: workerRuntimeDemandKey(demand),
         restrictive: capacity.availability !== "available" };
+  }
+
+  private assertLegacyAccountIdentity(): void {
+    if (this.taskRecoveryFence) { this.taskRecoveryFence(); return; }
+    const prefixes = this.options.restrictiveLegacyAccountIdPrefixes;
+    if (!prefixes) return;
+    assertNoRestrictiveLegacyAccountRecords(this.options.rootDir, prefixes, this.inspectLegacyRecord.bind(this));
+  }
+
+  prepareTaskRecovery(input: { demand: WorkerRuntimeDemand; now: Date }): WorkerAccountRecoveryPreparation | undefined {
+    return this.originalTaskRecovery().prepareAdmission(input.demand, input.now);
+  }
+
+  originalTaskRecovery(): LocalWorkerAccountTaskRecovery {
+    const snapshot = (demand: WorkerRuntimeDemand, now: Date): WorkerAccountRecoveryPreparation | undefined => {
+      const prefixes = this.options.restrictiveLegacyAccountIdPrefixes;
+      if (!prefixes?.length) return;
+      const records = readLegacyAccountCapacityRecords(this.options.rootDir, this.inspectLegacyRecord.bind(this));
+      const restrictive = records.filter(record => record.restrictive);
+      if (!restrictive.some(record => prefixes.some(prefix => record.accountId.startsWith(prefix)))) return;
+      // One exact old quota revision only; extra/current/unknown restrictions stay closed.
+      if (restrictive.length !== 1 || restrictive[0]!.claim || !prefixes.some(prefix => restrictive[0]!.accountId.startsWith(prefix)))
+        throw new Error("worker_account_capacity_legacy_identity_unresolved");
+      const selected = restrictive[0]!, record = parsePersistedRecord(selected.value);
+      const capacity = record && parsePersistedCapacity(record.capacity);
+      if (!record || !capacity || records.some(row => row.claim && row.path === selected.path))
+        throw new Error("worker_account_capacity_legacy_identity_unresolved");
+      const prepared = prepareWorkerAccountTaskRecovery({
+        state: stateFromResolved({ path: selected.path, record, capacity }, now), recordSha256: selected.sha256,
+        recordSetSha256: hashText(JSON.stringify(records.map(row => [row.path, row.sha256, row.custodySha256]).sort((a, b) => a[0]!.localeCompare(b[0]!)))), demand, now });
+      if (!prepared) throw new Error("worker_account_capacity_legacy_identity_unresolved");
+      return prepared;
+    };
+    return new LocalWorkerAccountTaskRecovery({ rootDir: this.options.rootDir, prepare: snapshot,
+      assertPreparation: preparation => {
+        if (JSON.stringify(snapshot(preparation.demand, new Date())) !== JSON.stringify(preparation))
+          throw new Error("worker_account_task_recovery_revision_changed");
+      },
+      withMutation: effect => this.withRecordLock(join(this.options.rootDir, "original-task-recovery"), effect),
+      scopedStore: assertLegacy => {
+        const view = new LocalFileWorkerAccountCapacityStore(this.options);
+        view.taskRecoveryFence = assertLegacy;
+        return view;
+      },
     });
   }
 

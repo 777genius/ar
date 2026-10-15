@@ -1,3 +1,5 @@
+export type FileBackendCodexSafeExecutorRunInput = import("./file-backend-codex-safe-executor-contract").FileBackendCodexSafeExecutorRunInput;
+import { ResearchMimoTaskRecoveryExecution, type ResearchMimoTaskRecoveryOwner } from "./research-mimo-capacity-recovery";
 import { resolveFileBackendCodexSafeExecutorOptions } from "./file-backend-codex-safe-executor-storage";
 export { resolveFileBackendCodexSafeExecutorOptions } from "./file-backend-codex-safe-executor-storage";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
@@ -90,6 +92,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly mimoTaskRecoveryOwner?: ResearchMimoTaskRecoveryOwner;
   readonly storageRootDir?: string;
   readonly assertProviderAdmission?: () => void;
   readonly childBudget?: ChildExecutionBudget;
@@ -156,15 +159,7 @@ export type FileBackendCodexSafeExecutorInput =
    { readonly storageRootDir: string; readonly stateRootDir?: string;
     readonly accounts: readonly InheritedStorageSafeExecutorAccountInput[] });
 
-export type FileBackendCodexSafeExecutorRunInput = FileBackendCodexWorkerJob & {
-  readonly jobId?: string;
-  readonly taskId: string;
-  readonly originalPrompt?: string;
-  readonly effectMode?: TaskEffectMode;
-  readonly staleLockMs?: number;
-  readonly maxAccountCycles?: number;
-  readonly safeExecutionPolicy?: SafeExecutionPolicy;
-};
+
 
 type WorkerAccount = {
   readonly account: FileBackendCodexSafeExecutorAccount;
@@ -186,6 +181,7 @@ export class FileBackendCodexSafeExecutor {
   private startPromise: Promise<void> | null = null;
   private disposed = false;
   private childRunEntered = false;
+  private readonly taskRecoveryExecution: ResearchMimoTaskRecoveryExecution | undefined;
 
   private readonly options: FileBackendCodexSafeExecutorOptions;
 
@@ -253,6 +249,11 @@ export class FileBackendCodexSafeExecutor {
       ),
     });
     this.accountCapacityStore = aliasedAccountCapacityStore;
+    this.taskRecoveryExecution = options.mimoTaskRecoveryOwner ? new ResearchMimoTaskRecoveryExecution({
+      owner: options.mimoTaskRecoveryOwner, store: this.accountCapacityStore, options,
+      worker: () => this.workerAccounts[0]?.worker,
+      accountId: () => options.accounts[0]!.worker.capacityAccountId ?? safeExecutorAccountLabel(options.accounts[0]!, 0),
+    }) : undefined;
     this.pool = new BoundedSubscriptionWorkerPool({
       poolId: this.executorId,
       slots: options.accounts.length,
@@ -274,6 +275,7 @@ export class FileBackendCodexSafeExecutor {
       slotSelector: ({ slots }) => this.selectRoundRobinSlot(slots),
       workerFactory: accountCapacityAwareWorkerFactory({
         accountCapacityStore: this.accountCapacityStore,
+        ...(this.taskRecoveryExecution ? { taskRecovery: this.taskRecoveryExecution } : {}),
         accountWideLimitReasons: ["quota_limited", "provider_session_invalid"],
         requireCapacityRecheckWhenDue: true,
         recheckClaimTtlMs: 5 * 60_000,
@@ -307,6 +309,7 @@ export class FileBackendCodexSafeExecutor {
           const { rateLimitsSnapshotHandler, ...workerOptions } = account.worker;
           const worker = new FileBackendCodexWorker({
             ...workerOptions,
+            ...(this.taskRecoveryExecution ? { bindMimoCapacityRecoveryCredential: this.taskRecoveryExecution.bindCredential } : {}),
             onSessionInvalid: (capacity) => {
               this.accountCapacityStore.observe({
                 accountId: account.worker.capacityAccountId ?? safeExecutorAccountLabel(account, slotIndex),
@@ -579,8 +582,12 @@ export class FileBackendCodexSafeExecutor {
   async dispose(): Promise<void> {
     this.options.executionLifetime?.close();
     if (this.disposed) return;
-    await this.pool.dispose();
-    this.disposed = true;
+    const response = this.taskRecoveryExecution?.responseBeforeDispose();
+    try {
+      await this.pool.dispose();
+      this.taskRecoveryExecution?.afterDispose(response);
+    } catch (error) { this.taskRecoveryExecution?.failed(); throw error; }
+    finally { this.disposed = true; }
   }
 
   private async startOnce(): Promise<void> {
@@ -609,7 +616,7 @@ export class FileBackendCodexSafeExecutor {
     slots: readonly WorkerPoolSlotSnapshot[],
   ): WorkerPoolSlotSnapshot | null {
     const available = slots.filter(
-      (slot) => !slot.busy && slot.capacity.availability === "available",
+      (slot) => !slot.busy && (slot.capacity.availability === "available" || slot.capacity.recoveryPending !== undefined),
     );
     if (available.length === 0) return null;
 

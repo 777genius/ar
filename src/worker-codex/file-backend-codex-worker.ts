@@ -1,5 +1,6 @@
 import { assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { hashText } from "./codex-account-identity";
 import {
   DefaultRedactor,
   type AgentUsage,
@@ -252,6 +253,10 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
       this.workerState = "failed";
       throw error;
     }
+  }
+
+  capacityRecoveryProof() {
+    return this.agentDriver instanceof CodexJsonAgentDriver ? this.agentDriver.capacityRecoveryProof() : undefined;
   }
 
   async run(
@@ -540,11 +545,6 @@ function delay(ms: number, abortSignal: AbortSignal): Promise<void> {
       { once: true },
     );
   });
-}
-
-
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 const systemClock: ClockPort = {

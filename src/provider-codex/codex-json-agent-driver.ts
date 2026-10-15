@@ -1,5 +1,8 @@
 import { HostedMimoProfile } from "./hosted-mimo-profile";
-import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome } from "./hosted-mimo-coding-proxy-material";
+import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome, type HostedMimoCapacityRecoveryBinder } from "./hosted-mimo-coding-proxy-material";
+import type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
+export type { HostedMimoCapacityRecoveryBinder, HostedMimoCurrentCredentialBinding } from "./hosted-mimo-coding-proxy-material";
+export type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
 import { safeNativeWebFromError } from "./app-server/domain/app-server-usage-error";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
@@ -27,7 +30,7 @@ import {
   codexProviderId,
   defaultCodexModel,
 } from "./capabilities";
-import { classifyCodexFailure } from "./failure-classifier";
+import { classifyCodexFailure, codexFinishReasonForFailure } from "./failure-classifier";
 import { createCodexTextDeltaRedactor } from "./codex-text-delta-redactor";
 import { usageFromError } from "./app-server/domain/app-server-usage-error";
 import {
@@ -71,6 +74,8 @@ type CodexJsonAgentDriverBaseOptions = {
     retainHome(codexHome: string): Promise<void>;
   };
   readonly assertProviderAdmission?: () => void;
+  /** Source-only binding before the hosted Coding proxy can listen or dispatch. */
+  readonly bindMimoCapacityRecoveryCredential?: HostedMimoCapacityRecoveryBinder;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
@@ -198,6 +203,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
       options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
     this.mimoConfigToml = options.mimoConfigToml;
     this.sourceEnv = options.sourceEnv;
+  }
+
+  capacityRecoveryProof(): HostedMimoCapacityRecoveryProof | undefined {
+    return this.codingProxyOwner.capacityRecoveryProof();
   }
 
   async runTask(input: Parameters<AgentDriver["runTask"]>[0]): Promise<ProviderTaskResult> {
@@ -402,7 +411,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         failure: this.codingProxyOwner.annotateFailure(failure.failure),
         telemetry: {
           durationMs: Date.now() - startedAt,
-          finishReason: finishReasonForFailure(failure.failure.code),
+          finishReason: codexFinishReasonForFailure(failure.failure.code),
           ...(nativeWeb === undefined ? {} : { nativeWeb }),
           ...(usageFromError(error)
             ? { usage: usageFromError(error)! }
@@ -432,6 +441,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   }): Promise<CodexMaterializedSession> {
     this.executionLifetime?.assertActive();
     const hosted = (this.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    if (this.options.bindMimoCapacityRecoveryCredential && !hosted) throw new Error("hosted_mimo_capacity_recovery_origin_required");
     const credential = hosted ? undefined : loadCodexApiKeyCredential({
           backend: CodexModelBackend.XiaomiMimoTokenPlan,
           envVarName: this.mimoApiKeyEnvVarName,
@@ -440,9 +450,14 @@ export class CodexJsonAgentDriver implements AgentDriver {
         });
     const egressPolicy = codexMimoTokenPlanEgressPolicy();
     const profileOrigin = hosted ? readHostedMimoWorkerProfileOrigin() : null;
+    if (this.options.bindMimoCapacityRecoveryCredential && profileOrigin?.profile !== HostedMimoProfile.CodingV1) {
+      throw new Error("hosted_mimo_capacity_recovery_origin_required");
+    }
     if (profileOrigin?.profile === HostedMimoProfile.CodingV1 && !this.executionLifetime) throw new Error("hosted_mimo_coding_lifetime_required");
     const codingMaterial = profileOrigin?.profile === HostedMimoProfile.CodingV1 && this.executionLifetime
-      ? await this.codingProxyOwner.acquire({ model: this.model, origin: profileOrigin.origin, envKeyName: this.mimoApiKeyEnvVarName, lifetime: this.executionLifetime, redactor: input.redactor }) : null;
+      ? await this.codingProxyOwner.acquire({ model: this.model, origin: profileOrigin.origin, envKeyName: this.mimoApiKeyEnvVarName, lifetime: this.executionLifetime, redactor: input.redactor,
+        ...(this.options.bindMimoCapacityRecoveryCredential ? { bindCapacityRecoveryCredential: this.options.bindMimoCapacityRecoveryCredential } : {}),
+      }) : null;
     const workerOrigin = profileOrigin?.origin ?? null;
     const tempRoot = await allocateHostedMimoAdmissionHome(workerOrigin, codingMaterial, this.sourceEnv);
     const home = join(tempRoot, "home");
@@ -674,7 +689,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         ...failure,
         telemetry: {
           durationMs: Date.now() - startedAt,
-          finishReason: finishReasonForFailure(failure.failure.code),
+          finishReason: codexFinishReasonForFailure(failure.failure.code),
           ...(nativeWeb === undefined ? {} : { nativeWeb }),
           ...(usageFromError(error)
             ? { usage: usageFromError(error)! }
@@ -980,21 +995,4 @@ function readTaskManagedRunId(task: ProviderTask): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-}
-
-function finishReasonForFailure(
-  code: ProviderFailure["code"],
-):
-  | "completed"
-  | "waiting_for_input"
-  | "max_turns"
-  | "cancelled"
-  | "timeout"
-  | "budget_exceeded"
-  | "provider_error" {
-  if (code === "task_cancelled") return "cancelled";
-  if (code === "task_timeout") return "timeout";
-  if (code === "goal_slice_exhausted") return "max_turns";
-  if (code === "budget_exceeded") return "budget_exceeded";
-  return "provider_error";
 }

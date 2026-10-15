@@ -1,3 +1,4 @@
+import { isWorkerAccountRecoveryPreparation } from "./account-capacity/domain/worker-account-task-recovery";
 import { SubscriptionWorkerError } from "./errors";
 import type {
   CapacityAwareSubscriptionWorker,
@@ -157,4 +158,10 @@ function summarizeReasons(snapshots: readonly WorkerPoolSlotSnapshot[]): string 
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([reason, count]) => `${reason}:${count}`)
     .join(",");
+}
+
+/** A pending passage is not Available; only its source-issued worker can consume it. */
+export function runnableWorkerCapacity(capacity: WorkerCapacitySnapshot): boolean {
+  return capacity.availability === "available" || capacity.availability === "cooldown" &&
+    capacity.recoveryPending !== undefined && isWorkerAccountRecoveryPreparation(capacity.recoveryPending);
 }

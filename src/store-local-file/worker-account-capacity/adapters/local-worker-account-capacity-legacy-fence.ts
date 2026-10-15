@@ -2,15 +2,27 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, type Dirent, type Stats } from "node:fs";
 import { join } from "node:path";
 
-type InspectedRecord = Readonly<{ accountId: string; demandKey: string | null; restrictive: boolean }>;
+export type InspectedLegacyAccountRecord = Readonly<{ accountId: string; demandKey: string | null; restrictive: boolean }>;
 
 /** Read-only compatibility fence. Unknown or changing legacy state is never availability. */
 export function assertNoRestrictiveLegacyAccountRecords(
   rootDir: string,
   prefixes: readonly string[],
-  inspect: (value: unknown, recordPath: string, claim: boolean) => InspectedRecord | null,
+  inspect: (value: unknown, recordPath: string, claim: boolean) => InspectedLegacyAccountRecord | null,
 ): void {
   if (prefixes.length === 0) return;
+  if (readLegacyAccountCapacityRecords(rootDir, inspect).some(record => record.restrictive && prefixes.some(prefix => record.accountId.startsWith(prefix))))
+    throw new Error("worker_account_capacity_legacy_identity_unresolved");
+}
+
+export type LegacyAccountCapacityRecord = InspectedLegacyAccountRecord & Readonly<{ path: string; sha256: string; custodySha256: string; value: unknown; claim: boolean }>;
+
+/** Custody-checked immutable projection; it grants no dispatch or availability. */
+export function readLegacyAccountCapacityRecords(
+  rootDir: string,
+  inspect: (value: unknown, recordPath: string, claim: boolean) => InspectedLegacyAccountRecord | null,
+): readonly LegacyAccountCapacityRecord[] {
+  const records: LegacyAccountCapacityRecord[] = [];
   const fail = (): never => { throw new Error("worker_account_capacity_legacy_identity_unresolved"); };
   const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
   let remainingEntries = 4096, remainingBytes = 8 * 1024 * 1024;
@@ -21,7 +33,7 @@ export function assertNoRestrictiveLegacyAccountRecords(
     error instanceof Error && "code" in error && error.code === "ENOENT";
   let root: number;
   try { root = openSync(rootDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
-  catch (error) { if (missing(error)) return; fail(); }
+  catch (error) { if (missing(error)) return records; fail(); }
   try {
     const rootBefore = fstatSync(root!);
     const check = (path: string, fd: number, before: Stats): void => {
@@ -67,12 +79,15 @@ export function assertNoRestrictiveLegacyAccountRecords(
             let count = 0, read: number;
             while (count < bytes.length && (read = readSync(file, bytes, count, bytes.length - count, count)) > 0) count += read;
             if (count !== fileBefore.size || count > 64 * 1024) fail();
-            const record = inspect(JSON.parse(bytes.subarray(0, count).toString("utf8")), join(path, recordName), claim);
+            const value: unknown = JSON.parse(bytes.subarray(0, count).toString("utf8"));
+            const record = inspect(value, join(path, recordName), claim);
             check(leaf, file, fileBefore);
             if (!record) return fail();
             if (digest(record.accountId) !== (legacy ? recordName : accountHash) ||
                 (!legacy && recordName !== (record.demandKey === null ? "account.json" : `${digest(record.demandKey)}.json`))) fail();
-            if (record.restrictive && prefixes.some(prefix => record.accountId.startsWith(prefix))) fail();
+            records.push(Object.freeze({ ...record, path: join(path, recordName),
+              sha256: createHash("sha256").update(bytes.subarray(0, count)).digest("hex"),
+              custodySha256: digest(JSON.stringify(["dev", "ino", "mode", "uid", "gid", "nlink", "size", "ctimeMs", "mtimeMs"].map(key => fileBefore[key as keyof Stats]))), value, claim }));
           } finally { closeSync(file); }
         }
         check(path, directory!, before);
@@ -81,6 +96,7 @@ export function assertNoRestrictiveLegacyAccountRecords(
     visit(join(rootDir, "account-capacity"), null, true);
     visit(join(rootDir, "account-capacity-v2"), null, false);
     check(rootDir, root!, rootBefore);
-  } catch { fail(); }
+    return records;
+  } catch { return fail(); }
   finally { closeSync(root!); }
 }
