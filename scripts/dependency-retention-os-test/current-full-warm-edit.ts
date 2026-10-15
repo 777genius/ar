@@ -7,12 +7,12 @@ import { readHostedDependencyBinding } from "../../dist/provider-codex/app-serve
 import { readHostedDependencyEstablishedReceipt } from "../../dist/worker-codex/hosted-dependency-receipts.js";
 import { DependencyReceiptState } from "../../dist/worker-core/index.js";
 import { assertCurrentClosedEntry } from "./current-closed-entry.js";
-import { assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { assertRootScope, type CurrentOrdinaryRoots } from "./current-cold-hot-root.js";
 const original = Buffer.from("export const liveValue = 6;\n"), changed = Buffer.from("export const liveValue = 6;\nexport const liveRevision = 'TEST-live-v2';\n");
 /** The result only reauthenticates CURRENT closure. Actual ROOT ownership,
  * common exclusion, idle/native/barrier census authorize this one own edit.
  * No current-origin symbol/issuer/DTO is reconstructed or supplied. */
-export function editCurrentPureLinkedLeaf(roots: CurrentColdHotRoots, result: HostedForegroundResult) {
+export function editCurrentPureLinkedLeaf(roots: CurrentOrdinaryRoots, result: HostedForegroundResult) {
   assertHostedForegroundResult(result); assertRootScope(roots);
   return withHostedActivationFence(fence => {
     const closed = assertCurrentClosedEntry(fence,roots.jobRoot,result);

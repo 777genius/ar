@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { assertRootScope, type CurrentOrdinaryRoots } from "./current-cold-hot-root.js";
 function ancestry(path:string) {
   for(let parent=dirname(path);;parent=dirname(parent)) {
     const stat=lstatSync(parent);assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0 && !(stat.mode&0o022));
@@ -25,7 +25,7 @@ function publicFile(path:string) {
       sha256:createHash("sha256").update(bytes.subarray(0,length)).digest("hex")});
   } finally {closeSync(fd);}
 }
-function authMetadata(roots:CurrentColdHotRoots) {
+function authMetadata(roots:CurrentOrdinaryRoots) {
   // Stat only, including the mounted leaf. No open/read/hash/copy of auth.json.
   const path=roots.jobRoot+"/auth/"+roots.accountName+"/auth.json";ancestry(path);
   const s=lstatSync(path,{bigint:true});assert(s.isFile() && !s.isSymbolicLink() && s.uid===0n && s.gid===0n && s.nlink===1n);
@@ -34,7 +34,7 @@ function authMetadata(roots:CurrentColdHotRoots) {
 }
 /** Called only after actual fresh ROOT preparation and before first consumer.
  * These literals are synthetic preservation markers, never credentials/grants. */
-export function prepareEvictRestoreSentinels(roots:CurrentColdHotRoots) {
+export function prepareEvictRestoreSentinels(roots:CurrentOrdinaryRoots) {
   assertRootScope(roots);
   for(const path of [roots.jobRoot+"/TEST-public-key-marker",roots.jobRoot+"/state/TEST-retention-state-marker",
     roots.jobRoot+"/TEST-retention-output-marker",roots.workspace+"/TEST-untracked-authored-cache",
@@ -42,7 +42,7 @@ export function prepareEvictRestoreSentinels(roots:CurrentColdHotRoots) {
     ancestry(path);writeFileSync(path,"TEST preservation marker only\n",{flag:"wx",mode:0o600});
   }
 }
-export function captureEvictRestoreSentinels(roots:CurrentColdHotRoots) {
+export function captureEvictRestoreSentinels(roots:CurrentOrdinaryRoots) {
   assertRootScope(roots);
   const workspacePaths=["source-sentinel",".gitignore",".git/HEAD",".git/config",".git/index",".git/TEST-ignored-state-marker",
     "package.json","package-lock.json","TEST-current-local.test.ts","packages/live/package.json","packages/live/index.ts",
@@ -53,7 +53,7 @@ export function captureEvictRestoreSentinels(roots:CurrentColdHotRoots) {
   const files=paths.map(publicFile);assert(files.reduce((sum,file)=>sum+file.size,0)<=32*1024*1024);
   return Object.freeze({files:Object.freeze(files),auth:authMetadata(roots)});
 }
-export function assertEvictRestoreSentinels(roots:CurrentColdHotRoots,expected:ReturnType<typeof captureEvictRestoreSentinels>) {
+export function assertEvictRestoreSentinels(roots:CurrentOrdinaryRoots,expected:ReturnType<typeof captureEvictRestoreSentinels>) {
   assert.deepEqual(captureEvictRestoreSentinels(roots),expected);
   // Export only known public marker count/digests. Auth metadata stays private.
   return Object.freeze({publicFiles:expected.files.length,sha256:createHash("sha256").update(JSON.stringify(expected.files)).digest("hex")});

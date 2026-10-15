@@ -73,7 +73,8 @@ export async function assertRegisteredLegacyComparison(candidateJobId: string, r
       const actual = assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
       assert.equal(actual.version, 2); assert.deepEqual(receipt.tree, selected.tree);
       return { outcome: LegacyRegisteredExpectation.Compared, candidatePreserved: true,
-        legacyComparedPublished: true, comparisonVersion: actual.version, readyRevision: receipt.revision } as const;
+        legacyComparedPublished: true, comparisonVersion: actual.version, readyRevision: receipt.revision,
+        referenceInstallation:{start:actual.reference.start,completion:actual.reference.completion,terminal:actual.reference.terminal,output:actual.reference.output} } as const;
     });
   } finally { closeDependencySourceExposure(capture.exposure); }
 }
