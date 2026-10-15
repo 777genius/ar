@@ -703,3 +703,7 @@ function isAlreadyExistsError(error: unknown): boolean {
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// Actual fixed composition captures these implementations before any escape.
+Object.freeze(LocalFileLeaseStore);
+Object.freeze(LocalFileLeaseStore.prototype);

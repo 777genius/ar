@@ -1,4 +1,5 @@
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
+import type { CodexGoalAvailabilityFailure } from "./application/codex-goal-availability-failure";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 export { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 import { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
@@ -22,7 +23,7 @@ import {
   type RuntimeResultEnvelope,
   type RuntimeResultStatus,
 } from "@vioxen/subscription-runtime/worker-core";
-import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault, type MimoProxyFailure } from "@vioxen/subscription-runtime/provider-codex";
 import { resolveCodexGoalMimoEnvVarName } from "./codex-goal-mimo-account-slots";
 import {
   createCodexGoalResultRecorder,
@@ -136,6 +137,8 @@ export type CodexGoalStatus = {
   readonly resultExists?: boolean;
   readonly resultStatus?: string;
   readonly resultReason?: string;
+  readonly resultProxyFailure?: MimoProxyFailure;
+  readonly resultAvailabilityFailure?: CodexGoalAvailabilityFailure;
   readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
   readonly resultUpdatedAt?: string;
   readonly workspaceExists?: boolean;
@@ -513,6 +516,8 @@ export async function collectCodexGoalStatus(
     ...(visibleResult.reason === undefined
       ? {}
       : { resultReason: visibleResult.reason }),
+    ...(visibleResult.proxyFailure ? { resultProxyFailure: visibleResult.proxyFailure } : {}),
+    ...(visibleResult.availabilityFailure ? { resultAvailabilityFailure: visibleResult.availabilityFailure } : {}),
     ...(result.foregroundOutput === undefined ? {} : { foregroundOutput: result.foregroundOutput }),
     ...(visibleResult.updatedAt === undefined
       ? {}

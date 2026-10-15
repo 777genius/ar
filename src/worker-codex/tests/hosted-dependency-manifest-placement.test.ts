@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostedManifestLimitsRevision as Revision, HostedManifestPlacementFailure as Failure,
   issueFreshHostedManifestPlacement as issue, openHostedDependencyManifestPlacement as open } from "../hosted-dependency-manifest-placement";
+import * as privateInputs from "../../provider-codex/app-server/adapters/hosted-private-physical-inputs";
 import { DependencyManifestStorageFailure as BlobFailure, LocalDependencyManifestBlobStore } from "../../store-local-file/dependency-environment/local-dependency-manifest-blob-store";
 
 // Actual private TEST files and retained descriptors; only the initial host
@@ -30,7 +31,21 @@ vi.mock("node:fs", async original => {
     realpathSync: (path: string) => { const mapped = local(path), actual = real.realpathSync(mapped); return mapped === actual ? path : actual; },
     readFileSync: (path: string | number, options?: Parameters<typeof real.readFileSync>[1]) => {
       if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot + "\n";
-      if (path === "/proc/self/mountinfo" && fixture.mountAlias) return Buffer.concat([real.readFileSync(path), Buffer.from(fixture.mountAlias)]);
+      if (path === "/proc/self/mountinfo") {
+        // Namespace facts are synthetic in this fixture. Join its actual
+        // scratch filesystem/mount ID without importing unrelated Host mounts.
+        const fd = real.openSync(fixture.root, real.constants.O_RDONLY | real.constants.O_DIRECTORY | real.constants.O_NOFOLLOW);
+        try {
+          const id = /^mnt_id:\s+([1-9][0-9]*)$/m.exec(real.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"))?.[1];
+          if (!id) throw new Error("TEST mount identity unavailable");
+          const dev = BigInt(real.fstatSync(fd).dev);
+          const major = (dev >> 8n & 0xfffn) | (dev >> 32n & 0xfffff000n);
+          const minor = (dev & 0xffn) | (dev >> 12n & 0xffffff00n);
+          const bytes = Buffer.from(`${id} 0 ${major}:${minor} / / rw - ext4 /dev/TEST rw\n` + fixture.mountAlias);
+          const encoding = typeof options === "string" ? options : options?.encoding;
+          return encoding ? bytes.toString(encoding) : bytes;
+        } finally { real.closeSync(fd); }
+      }
       return real.readFileSync(typeof path === "string" ? local(path) : path, options);
     },
     openSync: (path: string, flags: number, mode?: number) => real.openSync(local(path), flags, mode),
@@ -200,6 +215,47 @@ describe.skipIf(process.platform !== "linux")("fresh protected scratch manifests
     await expect(store.get(digest)).rejects.toThrow(); await expect(store.put(bytes)).rejects.toThrow(); expect(() => store?.assertCurrent(fixture.fence)).toThrow();
     expect(await readdir(join(fixture.root, "policy"))).not.toContain("dependency-manifests");
     expect(await readFile(join(fixture.root, "sentinel"), "utf8")).toBe("TEST original source bytes");
+  });
+  it.each(["unknown-version", "legacy-backing", "full-ordinary", "missing-contract", "wrong-contract", "extra", "noncanonical", "sha", "manifest"])
+    ("rejects invalid stage %s before placement publication", async fault => {
+      await configure();
+      const path = local("/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json");
+      const value = { schemaVersion: 1, runtimeDirectory, runtimeSha: "c".repeat(40), runtimeManifestSha256: "d".repeat(64) };
+      const changed = fault === "unknown-version" ? { ...value, schemaVersion: 3 }
+        : fault === "legacy-backing" ? { ...value, backingInterval: "original_full_parent_proc_v1" }
+        : fault === "full-ordinary" ? { ...value, schemaVersion: 2, backingInterval: "original_full_parent_proc_v1" }
+        : fault === "missing-contract" ? { ...value, schemaVersion: 2 }
+        : fault === "wrong-contract" ? { ...value, schemaVersion: 2, backingInterval: "wrong" }
+        : fault === "extra" ? { ...value, extra: true }
+        : fault === "sha" ? { ...value, runtimeSha: "e".repeat(40) }
+        : fault === "manifest" ? { ...value, runtimeManifestSha256: "e".repeat(64) } : value;
+      const bytes = fault === "noncanonical" ? Buffer.from(JSON.stringify(value, null, 2) + "\n") : encode(changed);
+      await writeFile(path, bytes, { mode: 0o600 });
+      expect(() => issue(fixture.fence, installation())).toThrow(`dependency_manifest_placement:${Failure.Unsafe}`);
+      expect(await readFile(path)).toEqual(bytes); expect(await readdir(join(fixture.root, "scratch"))).toEqual([]);
+      expect(await readdir(join(fixture.root, "policy"))).not.toContain("dependency-manifest-placement.json");
+      expect(await readFile(join(fixture.root, "sentinel"), "utf8")).toBe("TEST original source bytes");
+    });
+  it("binds the real decoder reread to the originally held stage bytes", async () => {
+    await configure();
+    const stagePath = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json";
+    const path = local(stagePath), value = { schemaVersion: 1, runtimeDirectory, runtimeSha: "c".repeat(40), runtimeManifestSha256: "d".repeat(64) };
+    await writeFile(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+    const actual = privateInputs.readHostedPrivateBytes, real = await vi.importActual<typeof import("node:fs")>("node:fs");
+    let reads = 0;
+    const spy = vi.spyOn(privateInputs, "readHostedPrivateBytes").mockImplementation((selected, bound) => {
+      const bytes = actual(selected, bound);
+      if (selected === stagePath && ++reads === 1) real.writeFileSync(path, encode(value), { mode: 0o600 });
+      return bytes;
+    });
+    try {
+      // A fresh canonical reread alone succeeds; the old loose held parse would
+      // also succeed. The actual consumer must refuse their different bytes.
+      expect(() => issue(fixture.fence, installation())).toThrow(`dependency_manifest_placement:${Failure.Unsafe}`);
+      expect(reads).toBe(2); expect(await readFile(path)).toEqual(encode(value));
+      expect(await readdir(join(fixture.root, "scratch"))).toEqual([]);
+      expect(await readdir(join(fixture.root, "policy"))).not.toContain("dependency-manifest-placement.json");
+    } finally { spy.mockRestore(); }
   });
   it("holds actual configured byte quota on scratch and keeps existing bytes untouched", async () => {
     store = await issued(); const leaf = join(fixture.root, "scratch/dependency-manifests", installationId);

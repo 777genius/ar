@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostedTestEgressGrant } from "../hosted-test-egress-contract";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
-const fs = vi.hoisted(() => ({ readFile: vi.fn(), readlink: vi.fn(), lstat: vi.fn(),
+const fs = vi.hoisted(() => ({ access: vi.fn(), readdir: vi.fn(), readFile: vi.fn(), readlink: vi.fn(), lstat: vi.fn(),
   mkdir: vi.fn(), open: vi.fn(), realpath: vi.fn(), link: vi.fn(), unlink: vi.fn(),
   readFileSync: vi.fn(), readlinkSync: vi.fn(), lstatSync: vi.fn() }));
 vi.mock("node:fs/promises", () => fs);
@@ -23,6 +23,8 @@ import { assertHostedTestEgressOperator, writeHostedTestEgressGrant,
 
 describe("host operator namespace and publication adapter (mock files only)", () => {
   beforeEach(() => {
+    fs.access.mockRejectedValue(new Error("unexpected TEST dependency metadata read"));
+    fs.readdir.mockRejectedValue(new Error("unexpected TEST dependency metadata read"));
     vi.spyOn(process, "getuid").mockReturnValue(0);
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     fs.readFile.mockResolvedValue("0 0 4294967295\n");

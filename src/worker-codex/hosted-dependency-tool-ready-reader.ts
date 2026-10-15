@@ -5,7 +5,7 @@ import { assertHostedActivationFence, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } from "./hosted-dependency-committed-history";
-import { assertHostedDependencyQualifiedToolEntry, readHostedDependencyQualifiedToolEntry, readCurrentHostedDependencyRootQualification,
+import { assertHostedDependencyQualifiedToolEntry, readHostedDependencyQualifiedToolAdmission, readCurrentHostedDependencyRootQualification,
   type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 
 import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
@@ -58,10 +58,11 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
     try {
       assertAttempt();
       if (entry) {
-        const facts = readHostedDependencyQualifiedToolEntry(entry);
-        if (!encode(facts.workspace).equals(encode(binding.workspace))) fail();
-        assertAttempt();
-        return Object.freeze({ status: DependencyToolReadyReadStatus.Ready, facts });
+        const admitted = readHostedDependencyQualifiedToolAdmission(entry);
+        const workspace=admitted.status===DependencyToolReadyReadStatus.Ready ? admitted.facts.workspace :
+          (admitted.status===DependencyToolReadyReadStatus.Usable || admitted.status===DependencyToolReadyReadStatus.Baseline) ? admitted.execution.workspace : fail();
+        if (!encode(workspace).equals(encode(binding.workspace))) fail();
+        assertAttempt();return admitted;
       }
       const history = readHostedDependencyCommittedHistory(identity.jobId);
       if (history.status !== HostedDependencyHistoryStatus.Known || !encode(history.binding).equals(encode(binding))) return unknown;
@@ -84,7 +85,8 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
     if (!sameDependencyAttempt(current.attempt,attempt) || !encode(current.binding).equals(encode(binding))) fail();
     assertAttempt();
     if (entry) assertHostedDependencyQualifiedToolEntry(entry, held, DependencyOwnerPhase.Running);
-    if (reader.readCurrent().status !== DependencyToolReadyReadStatus.Ready) fail();
+    const read=reader.readCurrent();
+    if(read.status!==DependencyToolReadyReadStatus.Ready && !(entry && (read.status===DependencyToolReadyReadStatus.Usable || read.status===DependencyToolReadyReadStatus.Baseline)))fail();
   };
   assertCurrent(fence);
   return Object.freeze({ reader, assertCurrent, origin:context });

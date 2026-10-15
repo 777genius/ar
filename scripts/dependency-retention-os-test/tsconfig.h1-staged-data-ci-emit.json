@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "rewriteRelativeImportExtensions": true,
+    "allowJs": true,
+    "types": [
+      "node"
+    ],
+    "rootDir": "../..",
+    "outDir": "../../outputs/TEST-h1-staged-data-ci-emit"
+  },
+  "files": [
+    "../../dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js",
+    "../../dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js",
+    "../../dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js",
+    "../../dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js",
+    "../../dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js",
+    "../../host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts",
+    "../../host-integration/managed-launcher/dependency-full-native-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts",
+    "../../host-integration/managed-launcher/launch.mjs",
+    "../../host-integration/managed-launcher/payload-guard.mjs",
+    "../../host-integration/managed-launcher/profiles.mjs",
+    "../../host-integration/host-jobs/storage-policy.mjs"
+  ]
+}

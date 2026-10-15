@@ -1,3 +1,4 @@
+import { readHostedOriginalUsableInstallationRecipe, readHostedOriginalUsableParentRoots } from "./hosted-original-usable-parent-recipe";
 import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync,
@@ -10,7 +11,9 @@ import { LocalDependencyManifestBlobStore } from "../store-local-file/dependency
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot as policyRoot } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
+import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-stage";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 
 export enum HostedManifestLimitsRevision { TestUnqualifiedV1 = "registry_test_manifest_bounds_v1_unqualified" }
 export enum HostedManifestPlacementFailure { Unsupported = "unsupported", Retained = "retained", Drift = "drift", Unsafe = "unsafe", Closed = "closed" }
@@ -122,24 +125,34 @@ function outsideGrants(scratch: Pin, installation: HostedInstallation): void {
     }
   }
 }
-function installationFacts(installation: HostedInstallation): void {
+function installationFacts(installation: HostedInstallation, fence?: HostedActivationFence): void {
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const stage = readHostedPrivateBytes("/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json", 4096);
   const inventoryBytes = readHostedPrivateBytes(join(policyRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
   if (!stage || !inventoryBytes) fail();
-  const value = decode(stage); fields(value, "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion");
+  let value: ReturnType<typeof readOriginalHostedDependencyBackingStage>;
+  try { value = readOriginalHostedDependencyBackingStage(); } catch { fail(); }
+  // The decoder rereads the fixed stage. Bind that result to these held bytes.
+  if (!stage.equals(encode(value))) fail();
   const inventory = readHostedReadonlyHostInventory();
-  if (value.schemaVersion !== 1 || value.runtimeDirectory !== runtimeDirectory || installation.runtimeDirectory !== runtimeDirectory ||
+  if (value.runtimeDirectory !== runtimeDirectory || installation.runtimeDirectory !== runtimeDirectory ||
     value.runtimeSha !== installation.runtimeSha || value.runtimeManifestSha256 !== installation.runtimeManifestSha256 ||
     inventory.hostId !== installation.hostId || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4 && inventory.schemaVersion !== 5) || hash(inventoryBytes) !== installation.inventorySha256) fail();
   const jobPrefix = join(policyRoot, "dependency-test-jobs/jobs");
   for (const c of inventory.ordinaryCreators) {
     if (!/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(c.jobId) || c.jobRootDir !== join(jobPrefix, c.jobId) || c.workspacePath !== c.jobRootDir + "/workspace" ||
       c.childSlotSha256 !== undefined || c.launch.command !== process.execPath || c.launch.cwd !== c.workspacePath ||
-      c.launch.args[0] !== runtimeDirectory + "/dist/worker-codex/codex-goal-cli.js" || c.launch.args[1] !== "run" ||
+      c.launch.args[0] !== runtimeDirectory + "/dist/worker-codex/codex-goal-cli.js" || (c.launch.args[1] !== "run" && c.launch.args[1] !== "tool") ||
       c.launch.args.some(arg => /^--(?:tmux|tmux-session|dry-run|print-command|hosted-lifecycle|lifecycle(?:-[^=]+)?)(?:=|$)/.test(arg))) fail();
-    for (const [index, arg] of c.launch.args.entries()) {
-      if (arg === "--registry-root" && c.launch.args[index + 1] !== c.jobRootDir + "/state/registry") fail();
+    // Only the existing fresh Store fence may validate an unpublished Usable
+    // draft. Later readers resolve against the actual published installation.
+    const originalDraft = c.launch.args[1] === "tool" && fence && readHostedOriginalUsableInstallationRecipe(fence, installation, c.launch);
+    const originalPublished = c.launch.args[1] === "tool" && !originalDraft
+      ? readHostedOriginalUsableParentRoots(c.launch, c.jobRootDir, c.workspacePath) : null;
+    const recipe = c.launch.args[1] === "tool" && !originalDraft
+      ? readHostedDependencyParentRecipe(c.launch, c.jobRootDir, c.workspacePath) : c.launch;
+    for (const [index, arg] of recipe.args.entries()) {
+      if (arg === "--registry-root" && recipe.args[index + 1] !== (originalPublished?.registry ?? c.jobRootDir + "/state/registry")) fail();
       if (arg.startsWith("--registry-root=")) fail();
     }
   }
@@ -176,8 +189,8 @@ function createDirectory(path: string): void {
 export function issueFreshHostedManifestPlacement(fence: HostedActivationFence, candidate: HostedInstallation): void {
   assertHostedActivationFence(fence); assertHostedActivationOperator(); const selected = policy(); if (!selected) return;
   const installation = parseHostedInstallation(candidate), kernel = new HostedReadonlyHostKernel();
-  const session = kernel.operatorSession(); kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
-  installationFacts(installation); noReferences();
+  const session = kernel.operatorSession(); kernel.verifyExclusiveInventory(fence); kernel.verifyDescriptorBoundary();
+  installationFacts(installation, fence); noReferences();
   if (session.hostId !== installation.hostId || session.bootId !== selected.value.bootId) fail();
   outsideGrants(selected.value.scratchRoot, installation);
   const fd = directory(selected.value.scratchRoot.canonicalPath, false);
@@ -192,7 +205,7 @@ export function issueFreshHostedManifestPlacement(fence: HostedActivationFence, 
       const record: Placement = { version: 1, installation, policySha256: hash(selected.bytes), limitsRevision: selected.value.limitsRevision,
         scratchRoot: selected.value.scratchRoot, family: facts(family, familyFd), blobs: facts(blobs, blobsFd), bootId: session.bootId };
       if (record.family.mountId !== record.scratchRoot.mountId || record.blobs.mountId !== record.scratchRoot.mountId) fail();
-      kernel.verifyExclusiveInventory(); assertHostedActivationFence(fence); noReferences();
+      kernel.verifyExclusiveInventory(fence); assertHostedActivationFence(fence); noReferences();
       if (!policy()?.bytes.equals(selected.bytes)) fail(HostedManifestPlacementFailure.Drift);
       assertPin(record.scratchRoot, fd, false); outsideGrants(record.scratchRoot, installation);
       createReadonlyPrivateRecord(placementPath, encode(record));

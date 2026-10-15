@@ -1,0 +1,421 @@
+name: Dependency retention CLOSED registration TEST
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Owned TEST registration topology, never Active qualification"
+        type: choice
+        options: [qualification, current-adoptable-backing]
+        default: qualification
+  pull_request:
+    paths:
+      - 'scripts/dependency-retention-os-test/**'
+      - '.github/workflows/dependency-retention-os-registration-test.yml'
+      - 'src/**/dependency-environment/**'
+      - 'src/**/hosted-dependency-*.ts'
+      - 'src/worker-codex/hosted-installation-*.ts'
+      - 'src/worker-codex/hosted-readonly-*.ts'
+      - 'src/worker-codex/hosted-test-egress-*.ts'
+      - 'src/worker-codex/hosted-full-backing-*.ts'
+      - 'host-integration/managed-launcher/**'
+      - 'src/provider-codex/app-server/adapters/hosted-*.ts'
+      - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
+      - 'src/core/host-infrastructure/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  owned-closed-registration:
+    # One fresh disposable GitHub VM. No worker/user host or existing service.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - name: Typecheck fixed current9ca PUBLIC stage proposal without execution
+        run: node node_modules/typescript/bin/tsc --project scripts/dependency-retention-os-test/tsconfig.public-stage-caller-9ca.json
+      - name: Typecheck fixed PUBLIC transport bootstrap without execution
+        run: node node_modules/typescript/bin/tsc --project scripts/dependency-retention-os-test/tsconfig.public-stage-transport-9ca.json
+      - run: npm run build
+      - name: Typecheck the retained handwritten OS fixture closure
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json
+      - name: Strict emit complete Python envelope TEST and retain exact source metadata
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          mkdir -p dependency-python-envelope-root-evidence
+          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"four-root-Linux-census-TEST-not-native-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-python-envelope-root-evidence/source.json
+          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
+          node --version > dependency-python-envelope-root-evidence/node-version.txt
+          node node_modules/typescript/bin/tsc --version > dependency-python-envelope-root-evidence/typescript-version.txt
+          grep -Fxq 'Version 6.0.3' dependency-python-envelope-root-evidence/typescript-version.txt
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.ts \
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.ts \
+            scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json \
+            scripts/dependency-retention-os-test/assemble-current-full.ts \
+            .github/workflows/dependency-retention-os-registration-test.yml \
+            > dependency-python-envelope-root-evidence/source.sha256
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json 2>&1 | tee dependency-python-envelope-root-evidence/strict-emit.log
+          sha256sum \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js \
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js \
+            > dependency-python-envelope-root-evidence/emitted.sha256
+      - name: Execute four real root Linux Python envelope census scenarios
+        run: |
+          set -o pipefail
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TMPDIR="$RUNNER_TEMP" TEST_PYTHON_ENVELOPE_ROOT_CI=1 \
+            "$TEST_NODE" --test --test-reporter=tap \
+            "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js" \
+            2>&1 | tee dependency-python-envelope-root-evidence/root-tests.tap
+          TAP=dependency-python-envelope-root-evidence/root-tests.tap
+          grep -Eq '^ok [0-9]+ - complete native census reconciles all candidates and refuses late unknown source/bytecode$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native candidate metadata refuses hardlinks and writable source even with matching content$' "$TAP"
+          grep -Eq '^ok [0-9]+ - alias literal size participates in file bound and largest-file measurement$' "$TAP"
+          grep -Eq '^ok [0-9]+ - native census refuses caller-owned fixture before reading candidate content # SKIP root-owned positive census requires separate Linux integration$' "$TAP"
+          grep -Fxq '# tests 17' "$TAP"
+          grep -Fxq '# pass 16' "$TAP"
+          grep -Fxq '# fail 0' "$TAP"
+          grep -Fxq '# skipped 1' "$TAP"
+          test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
+      - name: Retain exact-source Python envelope root TEST evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dependency-python-envelope-root-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-python-envelope-root-evidence/
+          if-no-files-found: error
+      - name: Prove completed-removal idle replay on root Linux, exact old red and new green
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            "$TEST_NODE" --experimental-strip-types \
+            "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/completed-removal-retry-ci.ts" \
+            "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$TEST_SOURCE_SHA"
+      - name: Retain completed-removal focused Linux regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dependency-completed-removal-retry-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-completed-removal-retry-evidence.json
+          if-no-files-found: error
+      - name: Emit finite TEST catalog before composition, copy and digest
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.catalog-emit.json
+      - name: Emit finite registration closure before owned root copy and digest
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.registration-emit.json
+      - name: Emit finite fresh current ROOT setup closure without activation
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-cold-hot-emit.json
+      - name: Check exact current idle source closure reconciliation
+        run: node --test scripts/dependency-retention-os-test/current-closed-entry.node-test.js
+      - name: Emit finite reviewed public Codex TEST input helpers
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-real-codex-emit.json
+      - name: Emit finite future FULL TEST caller without auth or activation
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-full-emit.json
+      - name: Check finite H1 supervisor readiness and one-shot continuation
+        run: node --test scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.js scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.js
+      - name: Check retained image descriptor and backing mount observation contracts
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node --test scripts/dependency-retention-os-test/current-full-backing-collector.node-test.js
+      - name: Execute real foreign process and FD census completion TEST
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node --test scripts/dependency-retention-os-test/current-full-backing-interval.node-test.js
+      - name: Strict emit reviewed eviction and restore TEST closure without effects
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
+      - name: Compile finite uninstalled ROOT profile and check refusal DATA only
+        run: |
+          node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.dependency-full-native-test.json
+          node --test host-integration/managed-launcher/dependency-full-native-TEST.node-test.js
+      - name: Retain finite public compiled profile delivery inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dependency-full-profile-public-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            host-integration/managed-launcher/dependency-full-native-TEST.js
+            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js
+            host-integration/managed-launcher/dependency-full-native-parent-TEST.js
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts
+            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.ts
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js
+            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.ts
+            scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json
+            scripts/dependency-retention-os-test/current-full-outer.js
+            scripts/dependency-retention-os-test/current-full-monitor-native-TEST.js
+            scripts/dependency-retention-os-test/current-full-backing-collector.js
+            scripts/dependency-retention-os-test/current-administrative-installation.js
+            scripts/dependency-retention-os-test/administrative-test-control.js
+            scripts/dependency-retention-os-test/administrative-installation-native-TEST.js
+            scripts/dependency-retention-os-test/administrative-maintenance-native-TEST.js
+            scripts/dependency-retention-os-test/administrative-forgery-native-TEST.js
+            scripts/dependency-retention-os-test/current-full-backing-interval.node-test.js
+            src/worker-codex/hosted-full-backing-proc.js
+            host-integration/managed-launcher/launch.mjs
+            host-integration/managed-launcher/hosted-host-policy.mjs
+            host-integration/managed-launcher/profiles.mjs
+            host-integration/managed-launcher/payload-guard.mjs
+            host-integration/host-jobs/storage-policy.mjs
+            package.json
+            scripts/dependency-retention-os-test/assemble-current-full.js
+            scripts/dependency-retention-os-test/common.js
+            scripts/dependency-retention-os-test/compose-current-real-codex.js
+            scripts/dependency-retention-os-test/current-backing-geometry.js
+            scripts/dependency-retention-os-test/current-closed-entry.js
+            scripts/dependency-retention-os-test/current-codex-public-catalog.js
+            scripts/dependency-retention-os-test/current-cold-hot-root.js
+            scripts/dependency-retention-os-test/current-configured-auth-mount.js
+            scripts/dependency-retention-os-test/current-entry-observations.js
+            scripts/dependency-retention-os-test/current-full-entry.js
+            scripts/dependency-retention-os-test/current-full-env.js
+            scripts/dependency-retention-os-test/current-full-flow.js
+            scripts/dependency-retention-os-test/current-full-evict-restore-flow.js
+            scripts/dependency-retention-os-test/current-evict-restore-readback.js
+            scripts/dependency-retention-os-test/current-evict-restore-sentinels.js
+            scripts/dependency-retention-os-test/current-full-guest.js
+            scripts/dependency-retention-os-test/current-full-outer-input.js
+            scripts/dependency-retention-os-test/current-full-r-entry.js
+            scripts/dependency-retention-os-test/current-full-r-continuation.js
+            scripts/dependency-retention-os-test/current-full-supervisor.js
+            scripts/dependency-retention-os-test/current-full-h1-supervision.js
+            scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.js
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.js
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.js
+            scripts/dependency-retention-os-test/current-full-warm-edit.js
+            scripts/dependency-retention-os-test/current-real-codex-input.js
+            scripts/dependency-retention-os-test/current-tools-fixture.js
+            scripts/dependency-retention-os-test/current-tools-lock-seed.js
+            scripts/dependency-retention-os-test/default-codex-config.js
+            scripts/dependency-retention-os-test/io-uring.js
+            scripts/dependency-retention-os-test/native-installer-observations.js
+            scripts/dependency-retention-os-test/native-registration-profile.js
+            scripts/dependency-retention-os-test/prepare-current-real-codex-capsule.js
+            scripts/dependency-retention-os-test/registration-failure-observation.js
+            scripts/dependency-retention-os-test/registration-npm-frame-observation.js
+            scripts/dependency-retention-os-test/registration-npm-public-catalog-0.js
+            scripts/dependency-retention-os-test/registration-npm-public-catalog-1.js
+            scripts/dependency-retention-os-test/assemble-current-full.ts
+            scripts/dependency-retention-os-test/common.ts
+            scripts/dependency-retention-os-test/compose-current-real-codex.ts
+            scripts/dependency-retention-os-test/current-backing-geometry.ts
+            scripts/dependency-retention-os-test/current-closed-entry.ts
+            scripts/dependency-retention-os-test/current-codex-public-catalog.ts
+            scripts/dependency-retention-os-test/current-cold-hot-root.ts
+            scripts/dependency-retention-os-test/current-configured-auth-mount.ts
+            scripts/dependency-retention-os-test/current-entry-observations.ts
+            scripts/dependency-retention-os-test/current-full-entry.ts
+            scripts/dependency-retention-os-test/current-full-env.ts
+            scripts/dependency-retention-os-test/current-full-flow.ts
+            scripts/dependency-retention-os-test/current-full-evict-restore-flow.ts
+            scripts/dependency-retention-os-test/current-evict-restore-readback.ts
+            scripts/dependency-retention-os-test/current-evict-restore-sentinels.ts
+            scripts/dependency-retention-os-test/current-full-guest.ts
+            scripts/dependency-retention-os-test/current-full-outer-input.ts
+            scripts/dependency-retention-os-test/current-full-outer.ts
+            scripts/dependency-retention-os-test/current-full-monitor-native-TEST.ts
+            scripts/dependency-retention-os-test/current-full-backing-collector.ts
+            scripts/dependency-retention-os-test/current-administrative-installation.ts
+            scripts/dependency-retention-os-test/administrative-test-control.ts
+            scripts/dependency-retention-os-test/administrative-installation-native-TEST.ts
+            scripts/dependency-retention-os-test/administrative-maintenance-native-TEST.ts
+            scripts/dependency-retention-os-test/administrative-forgery-native-TEST.ts
+            scripts/dependency-retention-os-test/run-public-stage-9ca.mts
+            scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts
+            scripts/dependency-retention-os-test/send-public-stage-9ca.mts
+            scripts/dependency-retention-os-test/current-full-backing-interval.node-test.ts
+            src/worker-codex/hosted-full-backing-proc.ts
+            scripts/dependency-retention-os-test/current-full-r-entry.ts
+            scripts/dependency-retention-os-test/current-full-r-continuation.ts
+            scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
+            scripts/dependency-retention-os-test/current-full-supervisor.ts
+            scripts/dependency-retention-os-test/current-full-h1-supervision.ts
+            scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.ts
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.ts
+            scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.ts
+            scripts/dependency-retention-os-test/current-full-warm-edit.ts
+            scripts/dependency-retention-os-test/current-real-codex-input.ts
+            scripts/dependency-retention-os-test/current-tools-fixture.ts
+            scripts/dependency-retention-os-test/current-tools-lock-seed.ts
+            scripts/dependency-retention-os-test/default-codex-config.ts
+            scripts/dependency-retention-os-test/io-uring.ts
+            scripts/dependency-retention-os-test/native-installer-observations.ts
+            scripts/dependency-retention-os-test/native-registration-profile.ts
+            scripts/dependency-retention-os-test/prepare-current-real-codex-capsule.ts
+            scripts/dependency-retention-os-test/registration-failure-observation.ts
+            scripts/dependency-retention-os-test/registration-npm-frame-observation.ts
+            scripts/dependency-retention-os-test/registration-npm-public-catalog-0.ts
+            scripts/dependency-retention-os-test/registration-npm-public-catalog-1.ts
+            scripts/dependency-retention-os-test/io-uring-probe.c
+            package-lock.json
+            packages/agent-account-observability/README.md
+            packages/agent-account-observability/package.json
+            packages/agent-account-observability/src/application/AccountObservationPlanner.ts
+            packages/agent-account-observability/src/application/InMemoryAccountInventory.ts
+            packages/agent-account-observability/src/application/ObserveAgentAccountPoolUseCase.ts
+            packages/agent-account-observability/src/application/ObserveAgentAccountUseCase.ts
+            packages/agent-account-observability/src/application/ports.ts
+            packages/agent-account-observability/src/domain/ObservationPolicy.ts
+            packages/agent-account-observability/src/domain/enums.ts
+            packages/agent-account-observability/src/domain/model.ts
+            packages/agent-account-observability/src/domain/tests/ObservationPolicy.test.ts
+            packages/agent-account-observability/src/index.ts
+            packages/agent-account-observability/src/infrastructure/AppServerLaunchThrottle.ts
+            packages/agent-account-observability/src/infrastructure/JsonRpcLineClient.ts
+            packages/agent-account-observability/src/infrastructure/ObservationCache.ts
+            packages/agent-account-observability/src/infrastructure/ProcessRunner.ts
+            packages/agent-account-observability/src/infrastructure/SerialAccountLock.ts
+            packages/agent-account-observability/src/infrastructure/tests/AppServerLaunchThrottle.test.ts
+            packages/agent-account-observability/src/infrastructure/tests/JsonRpcLineClient.test.ts
+            packages/agent-account-observability/src/infrastructure/tests/ProcessRunner.test.ts
+            packages/agent-account-observability/src/providers/claude-code/ClaudeCodeStatuslineQuotaReader.ts
+            packages/agent-account-observability/src/providers/claude-code/tests/ClaudeCodeStatuslineQuotaReader.test.ts
+            packages/agent-account-observability/src/providers/codex/CodexAccountObserver.ts
+            packages/agent-account-observability/src/providers/codex/CodexAppServerQuotaReader.ts
+            packages/agent-account-observability/src/providers/codex/CodexAuthReader.ts
+            packages/agent-account-observability/src/providers/codex/CodexExecProbe.ts
+            packages/agent-account-observability/src/providers/codex/codexTypes.ts
+            packages/agent-account-observability/src/providers/codex/codexUtils.ts
+            packages/agent-account-observability/src/providers/codex/tests/CodexAccountObserver.test.ts
+            packages/agent-account-observability/src/providers/codex/tests/CodexAppServerQuotaReader.test.ts
+            packages/agent-account-observability/src/providers/codex/tests/CodexAuthReader.test.ts
+            packages/agent-account-observability/tsconfig.json
+            packages/agent-account-observability/vitest.config.ts
+            packages/agent-account-observability/dist/application/AccountObservationPlanner.js
+            packages/agent-account-observability/dist/application/AccountObservationPlanner.js.map
+            packages/agent-account-observability/dist/application/AccountObservationPlanner.d.ts
+            packages/agent-account-observability/dist/application/AccountObservationPlanner.d.ts.map
+            packages/agent-account-observability/dist/application/InMemoryAccountInventory.js
+            packages/agent-account-observability/dist/application/InMemoryAccountInventory.js.map
+            packages/agent-account-observability/dist/application/InMemoryAccountInventory.d.ts
+            packages/agent-account-observability/dist/application/InMemoryAccountInventory.d.ts.map
+            packages/agent-account-observability/dist/application/ObserveAgentAccountPoolUseCase.js
+            packages/agent-account-observability/dist/application/ObserveAgentAccountPoolUseCase.js.map
+            packages/agent-account-observability/dist/application/ObserveAgentAccountPoolUseCase.d.ts
+            packages/agent-account-observability/dist/application/ObserveAgentAccountPoolUseCase.d.ts.map
+            packages/agent-account-observability/dist/application/ObserveAgentAccountUseCase.js
+            packages/agent-account-observability/dist/application/ObserveAgentAccountUseCase.js.map
+            packages/agent-account-observability/dist/application/ObserveAgentAccountUseCase.d.ts
+            packages/agent-account-observability/dist/application/ObserveAgentAccountUseCase.d.ts.map
+            packages/agent-account-observability/dist/application/ports.js
+            packages/agent-account-observability/dist/application/ports.js.map
+            packages/agent-account-observability/dist/application/ports.d.ts
+            packages/agent-account-observability/dist/application/ports.d.ts.map
+            packages/agent-account-observability/dist/domain/ObservationPolicy.js
+            packages/agent-account-observability/dist/domain/ObservationPolicy.js.map
+            packages/agent-account-observability/dist/domain/ObservationPolicy.d.ts
+            packages/agent-account-observability/dist/domain/ObservationPolicy.d.ts.map
+            packages/agent-account-observability/dist/domain/enums.js
+            packages/agent-account-observability/dist/domain/enums.js.map
+            packages/agent-account-observability/dist/domain/enums.d.ts
+            packages/agent-account-observability/dist/domain/enums.d.ts.map
+            packages/agent-account-observability/dist/domain/model.js
+            packages/agent-account-observability/dist/domain/model.js.map
+            packages/agent-account-observability/dist/domain/model.d.ts
+            packages/agent-account-observability/dist/domain/model.d.ts.map
+            packages/agent-account-observability/dist/index.js
+            packages/agent-account-observability/dist/index.js.map
+            packages/agent-account-observability/dist/index.d.ts
+            packages/agent-account-observability/dist/index.d.ts.map
+            packages/agent-account-observability/dist/infrastructure/AppServerLaunchThrottle.js
+            packages/agent-account-observability/dist/infrastructure/AppServerLaunchThrottle.js.map
+            packages/agent-account-observability/dist/infrastructure/AppServerLaunchThrottle.d.ts
+            packages/agent-account-observability/dist/infrastructure/AppServerLaunchThrottle.d.ts.map
+            packages/agent-account-observability/dist/infrastructure/JsonRpcLineClient.js
+            packages/agent-account-observability/dist/infrastructure/JsonRpcLineClient.js.map
+            packages/agent-account-observability/dist/infrastructure/JsonRpcLineClient.d.ts
+            packages/agent-account-observability/dist/infrastructure/JsonRpcLineClient.d.ts.map
+            packages/agent-account-observability/dist/infrastructure/ObservationCache.js
+            packages/agent-account-observability/dist/infrastructure/ObservationCache.js.map
+            packages/agent-account-observability/dist/infrastructure/ObservationCache.d.ts
+            packages/agent-account-observability/dist/infrastructure/ObservationCache.d.ts.map
+            packages/agent-account-observability/dist/infrastructure/ProcessRunner.js
+            packages/agent-account-observability/dist/infrastructure/ProcessRunner.js.map
+            packages/agent-account-observability/dist/infrastructure/ProcessRunner.d.ts
+            packages/agent-account-observability/dist/infrastructure/ProcessRunner.d.ts.map
+            packages/agent-account-observability/dist/infrastructure/SerialAccountLock.js
+            packages/agent-account-observability/dist/infrastructure/SerialAccountLock.js.map
+            packages/agent-account-observability/dist/infrastructure/SerialAccountLock.d.ts
+            packages/agent-account-observability/dist/infrastructure/SerialAccountLock.d.ts.map
+            packages/agent-account-observability/dist/providers/claude-code/ClaudeCodeStatuslineQuotaReader.js
+            packages/agent-account-observability/dist/providers/claude-code/ClaudeCodeStatuslineQuotaReader.js.map
+            packages/agent-account-observability/dist/providers/claude-code/ClaudeCodeStatuslineQuotaReader.d.ts
+            packages/agent-account-observability/dist/providers/claude-code/ClaudeCodeStatuslineQuotaReader.d.ts.map
+            packages/agent-account-observability/dist/providers/codex/CodexAccountObserver.js
+            packages/agent-account-observability/dist/providers/codex/CodexAccountObserver.js.map
+            packages/agent-account-observability/dist/providers/codex/CodexAccountObserver.d.ts
+            packages/agent-account-observability/dist/providers/codex/CodexAccountObserver.d.ts.map
+            packages/agent-account-observability/dist/providers/codex/CodexAppServerQuotaReader.js
+            packages/agent-account-observability/dist/providers/codex/CodexAppServerQuotaReader.js.map
+            packages/agent-account-observability/dist/providers/codex/CodexAppServerQuotaReader.d.ts
+            packages/agent-account-observability/dist/providers/codex/CodexAppServerQuotaReader.d.ts.map
+            packages/agent-account-observability/dist/providers/codex/CodexAuthReader.js
+            packages/agent-account-observability/dist/providers/codex/CodexAuthReader.js.map
+            packages/agent-account-observability/dist/providers/codex/CodexAuthReader.d.ts
+            packages/agent-account-observability/dist/providers/codex/CodexAuthReader.d.ts.map
+            packages/agent-account-observability/dist/providers/codex/CodexExecProbe.js
+            packages/agent-account-observability/dist/providers/codex/CodexExecProbe.js.map
+            packages/agent-account-observability/dist/providers/codex/CodexExecProbe.d.ts
+            packages/agent-account-observability/dist/providers/codex/CodexExecProbe.d.ts.map
+            packages/agent-account-observability/dist/providers/codex/codexTypes.js
+            packages/agent-account-observability/dist/providers/codex/codexTypes.js.map
+            packages/agent-account-observability/dist/providers/codex/codexTypes.d.ts
+            packages/agent-account-observability/dist/providers/codex/codexTypes.d.ts.map
+            packages/agent-account-observability/dist/providers/codex/codexUtils.js
+            packages/agent-account-observability/dist/providers/codex/codexUtils.js.map
+            packages/agent-account-observability/dist/providers/codex/codexUtils.d.ts
+            packages/agent-account-observability/dist/providers/codex/codexUtils.d.ts.map
+          if-no-files-found: error
+      - name: Check official platform resolution inside the existing readonly package root
+        run: node --test scripts/dependency-retention-os-test/current-codex-layout.node-test.js
+      - name: Check original FDA result boundary for content observations
+        run: node --test scripts/dependency-retention-os-test/current-entry-observations.node-test.js
+      - name: Check bounded TEST failure-observation privacy before OS launch
+        run: node --experimental-strip-types --test scripts/dependency-retention-os-test/registration-failure-observation.node-test.ts
+      - name: Check finite native installer observation parsing
+        run: node --experimental-strip-types --test scripts/dependency-retention-os-test/native-installer-observations.node-test.ts
+      - name: Check independent legacy manifest comparison on synthetic TEST trees
+        run: |
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.legacy-comparison-emit.json
+          node --test scripts/dependency-retention-os-test/legacy-manifest-comparison.node-test.js
+      - name: Run one original CLOSED registration in a private PID1 OS
+        id: native_closed_registration
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_GEOMETRY_MODE: ${{ github.event.inputs.test_mode || 'qualification' }}
+          TEST_DIAGNOSTIC_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C GITHUB_ACTIONS=true \
+            TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
+            TEST_DIAGNOSTIC_REPOSITORY_PRIVATE="$TEST_DIAGNOSTIC_REPOSITORY_PRIVATE" \
+            TEST_DIAGNOSTIC_STEP_OUTPUT="$GITHUB_OUTPUT" \
+            "$TEST_NODE" --experimental-strip-types \
+            "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/registration-outer.ts" \
+            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN" "$TEST_GEOMETRY_MODE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: dependency-retention-closed-registration-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-retention-os-evidence.json
+          if-no-files-found: error

@@ -1,5 +1,6 @@
+import { workerLaunchNarrowOwnedPathsSchema } from "./application/project-control/worker-launch-spec";
 import { z } from "zod";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend } from "../provider-codex/codex-model-backend";
 import { codexGoalObjectiveMaxChars } from "./codex-goal-jobs";
 import { CODEX_GOAL_EXECUTION_ENGINE_SCHEMA } from "./codex-goal-mcp-decision-contracts";
 import {
@@ -16,6 +17,9 @@ export const CODEX_GOAL_MODEL_BACKEND_SCHEMA = z.enum([
   CodexModelBackend.OpenAiChatGpt,
   CodexModelBackend.XiaomiMimoTokenPlan,
 ]);
+export const mimoOwnedPathsInputSchema = workerLaunchNarrowOwnedPathsSchema.optional().describe(
+  "Hosted MiMo Create/refill only: narrow enrolled ownership to exact files or trailing-slash directories. Cannot expand scope or change execution policy. Rejected on control operations.",
+);
 export const mimoThinkingInputSchema = z.boolean().optional().describe(
   "Hosted MiMo Create/refill only: true enables thinking (high), false disables it (none). Must agree with reasoningEffort. Rejected on control operations.",
 );
@@ -26,13 +30,13 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     configPath: z.string().optional(),
     storageRootDir: z.string().optional(),
     jobRootDir: z.string().optional(),
+    durableHandoffRootDir: z.string().optional(),
     authRootDir: z.string().optional(),
     stateRootDir: z.string().optional(),
     runtimeHomeRootDir: z.string().optional(),
     encryptionKeyPath: z.string().optional(),
     runtimeEventsPath: z.string().optional(),
     agentTempRootDir: z.string().optional(),
-    durableHandoffRootDir: z.string().optional(),
     workspacePath: z.string().optional(),
     promptPath: z.string().optional(),
     codexGoalObjective: z.string().max(codexGoalObjectiveMaxChars).describe(

@@ -1,4 +1,8 @@
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
 import { decodeHostedInventoryBytes, parseHostedInventoryV5 } from "../../../core/host-infrastructure/host-inventory";
+import { parseHostedInstallation } from "../../../core/host-infrastructure/hosted-installation";
+import { parseHostedReadonlyHostInventory } from "../../../core/host-infrastructure/readonly-host-inventory";
+import { assertConfiguredAuthAttachmentPhysical } from "./hosted-configured-auth-attachment";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -8,7 +12,7 @@ import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPh
 import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { dependencyToolCachePath, parseDependencyToolProfile, type DependencyToolProfile } from "../../../core/dependency-environment/dependency-tool-profile";
-import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 
 export const hostedDependencyPolicyRoot = "/var/lib/subscription-runtime-host-policy";
@@ -86,7 +90,47 @@ export function readHostedDependencyBinding(jobId: string): HostedDependencyBind
   return bytes ? parseHostedDependencyBinding(decodeHostedActivationBytes(bytes)) : null;
 }
 
-export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependencyBinding): void {
+/** Bounded factual inventory, including retained bindings of moved jobs.
+ * Absence grants no authority; malformed/unknown protected state is refused. */
+export function readHostedDependencyBindingInventory(): readonly HostedDependencyBinding[] {
+  assertHostedActivationOperator();
+  for(let path=dirname(hostedDependencyBindingRoot);;path=dirname(path)) {
+    const stat=lstatSync(path);
+    if(!stat.isDirectory() || stat.isSymbolicLink() || stat.uid!==0 || (stat.mode&0o022) || realpathSync(path)!==path)invalid();
+    if(path==="/")break;
+  }
+  let root;
+  try { root=lstatSync(hostedDependencyBindingRoot); }
+  catch(error) { if((error as NodeJS.ErrnoException).code==="ENOENT")return [];throw error; }
+  if(!root.isDirectory() || root.isSymbolicLink() || root.uid!==0 || (root.mode&0o077) ||
+    realpathSync(hostedDependencyBindingRoot)!==hostedDependencyBindingRoot)invalid();
+  const entries=readdirSync(hostedDependencyBindingRoot,{withFileTypes:true});
+  if(entries.length>128)invalid();
+  const bindings:HostedDependencyBinding[]=[];
+  for(const entry of entries) {
+    if(!entry.isFile() || entry.isSymbolicLink() || !/^[a-f0-9]{64}\.json$/.test(entry.name))invalid();
+    const path=hostedDependencyBindingRoot+"/"+entry.name, before=lstatSync(path);
+    if(!before.isFile() || before.isSymbolicLink() || before.uid!==0 || before.nlink!==1 ||
+      (before.mode&0o077) || before.size>16384)invalid();
+    const bytes=readHostedActivationBytes("dependency-bindings/"+entry.name);
+    if(!bytes || bytes.length>16384)invalid();
+    const binding=parseHostedDependencyBinding(decodeHostedActivationBytes(bytes));
+    if(hostedDependencyBindingName(binding.jobId)!=="dependency-bindings/"+entry.name)invalid();
+    const after=lstatSync(path), current=lstatSync(hostedDependencyBindingRoot);
+    if(before.dev!==after.dev || before.ino!==after.ino || before.size!==after.size ||
+      before.ctimeMs!==after.ctimeMs || before.mtimeMs!==after.mtimeMs || before.mode!==after.mode || before.uid!==after.uid ||
+      root.dev!==current.dev || root.ino!==current.ino || root.mode!==current.mode || root.uid!==current.uid ||
+      realpathSync(hostedDependencyBindingRoot)!==hostedDependencyBindingRoot)invalid();
+    bindings.push(binding);
+  }
+  const after=lstatSync(hostedDependencyBindingRoot);
+  if(root.dev!==after.dev || root.ino!==after.ino || root.mode!==after.mode || root.uid!==after.uid ||
+    root.ctimeMs!==after.ctimeMs || root.mtimeMs!==after.mtimeMs)invalid();
+  return Object.freeze(bindings);
+}
+
+type PhysicalWorkspaceSelection = Pick<HostedDependencyBinding, "jobRootDir" | "workspace">;
+function assertPhysicalWorkspaceShape(binding: PhysicalWorkspaceSelection): void {
   assertHostedActivationOperator();
   for (let path = binding.jobRootDir;; path = dirname(path)) {
     const stat = lstatSync(path);
@@ -99,12 +143,55 @@ export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependenc
   const git = lstatSync(`${binding.workspace.canonicalPath}/.git`);
   if (!git.isDirectory() || git.uid !== 0 || (git.mode & 0o022) || git.isSymbolicLink() || realpathSync(`${binding.workspace.canonicalPath}/.git`) !== `${binding.workspace.canonicalPath}/.git` ||
       readdirSync(`${binding.workspace.canonicalPath}/.git`).includes("commondir")) invalid();
-  // All mounts, including same-device bind mounts, veto this finite TEST profile.
+}
+function assertPhysicalWorkspaceMounts(jobRootDir: string,
+  attachment: import("../../../core/host-infrastructure/configured-auth-attachment").HostedConfiguredAuthAttachment | undefined): void {
+  let admitted = 0;
   for (const line of readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n")) {
     const fields = line.split(" ");
     if (fields.length < 10 || !fields.includes("-")) invalid();
     const point = fields[4]!.replace(/\\([0-7]{3})/g, (_, code: string) => String.fromCharCode(parseInt(code, 8)));
-    if (point === binding.jobRootDir || point.startsWith(`${binding.jobRootDir}/`)) invalid();
+    if (point === jobRootDir || point.startsWith(`${jobRootDir}/`)) {
+      if (!attachment || line !== attachment.targetMount || ++admitted !== 1) invalid();
+    }
+  }
+  if (attachment && admitted !== 1) invalid();
+}
+/** Factual inspection only: no installed binding, Ready proof or mount
+ * exception can be issued by expected paths/identities supplied to this reader. */
+export function assertHostedDependencyPhysicalWorkspaceInspection(selection: PhysicalWorkspaceSelection): void {
+  if (selection.workspace.canonicalPath !== selection.jobRootDir + "/workspace") invalid();
+  assertPhysicalWorkspaceShape(selection);
+  assertPhysicalWorkspaceMounts(selection.jobRootDir, undefined);
+}
+export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependencyBinding): void {
+  assertPhysicalWorkspaceShape(binding);
+  // An explicitly installed one-shot auth role is the only finite exception.
+  // Profile selection is original protected IO, never an exemption DTO.
+  const inventoryBytes=readHostedActivationBytes("readonly-inventory.json"), installationBytes=readHostedActivationBytes("host-installation.json");
+  let attachment: import("../../../core/host-infrastructure/configured-auth-attachment").HostedConfiguredAuthAttachment | undefined;
+  const decodedInventory=inventoryBytes ? decodeHostedActivationBytes(inventoryBytes) : undefined;
+  const hasAttachment=decodedInventory && typeof decodedInventory==="object" && "ordinaryCreators" in decodedInventory &&
+    Array.isArray(decodedInventory.ordinaryCreators) && decodedInventory.ordinaryCreators.some((c:unknown)=>c && typeof c==="object" && "jobId" in c && c.jobId===binding.jobId && "authAttachment" in c);
+  if(inventoryBytes && hasAttachment) {
+    const inventory=parseHostedReadonlyHostInventory(decodeHostedActivationBytes(inventoryBytes));
+    const creators=inventory.ordinaryCreators.filter(c=>c.jobId===binding.jobId);
+    attachment=creators[0]?.authAttachment;
+    if(attachment) {
+      if(binding.version!==2 || creators.length!==1 || !installationBytes) invalid();
+      const installed=parseHostedInstallation(decodeHostedActivationBytes(installationBytes));
+      if(installed.inventorySha256!==hash(inventoryBytes.toString("utf8")) || installed.installationId!==binding.installationId || installed.runtimeSha!==binding.runtimeSha ||
+        creators[0]!.jobRootDir!==binding.jobRootDir || creators[0]!.workspacePath!==binding.workspace.canonicalPath) invalid();
+      assertConfiguredAuthAttachmentPhysical(attachment);
+    }
+  }
+  // All other mounts, including same-device binds, still veto this TEST profile.
+  assertPhysicalWorkspaceMounts(binding.jobRootDir, attachment);
+  if(attachment) {
+    if(!inventoryBytes || !installationBytes ||
+      !readHostedActivationBytes("readonly-inventory.json")?.equals(inventoryBytes) ||
+      !readHostedActivationBytes("host-installation.json")?.equals(installationBytes)) invalid();
+    assertConfiguredAuthAttachmentPhysical(attachment);
   }
 }
 
@@ -116,7 +203,7 @@ export function assertHostedDependencyStartAllowed(startId: string): void {
  * not live host inventory or a JSON substitute for that kernel gate. Mixed
  * legacy hosts stay unsupported: privileged project Git actors are not enclosed
  * by old guest InaccessiblePaths. Inventoried host operators remain trusted. */
-export function assertHostedDependencyQualifiedInventory(): void {
+export function assertHostedDependencyQualifiedInventory(parentRecipeReader?: DependencyParentRecipeReader): void {
   const installationBytes = readHostedActivationBytes("host-installation.json"), inventoryBytes = readHostedActivationBytes("readonly-inventory.json"),
     activationBytes = readHostedActivationBytes("host-activation.json");
   if (!installationBytes || !inventoryBytes || !activationBytes) invalid();
@@ -165,8 +252,12 @@ export function assertHostedDependencyQualifiedInventory(): void {
     const launch = v.launch as Record<string, unknown>;
     if (launch.command !== process.execPath || launch.cwd !== v.workspacePath || !Array.isArray(launch.args) || launch.args.length < 2 ||
         launch.args[0] !== `${installation.runtimeDirectory}/dist/worker-codex/codex-goal-cli.js` ||
-        launch.args[1] !== "run" || launch.args.some(arg => typeof arg !== "string" ||
+        (launch.args[1] !== "run" && launch.args[1] !== "tool") || launch.args.some(arg => typeof arg !== "string" ||
           /^--(?:tmux|tmux-session|dry-run|print-command|hosted-lifecycle|lifecycle(?:-[^=]+)?)(?:=|$)/.test(arg))) invalid();
+    if (launch.args[1] === "tool") {
+      readHostedDependencyParentRecipe(launch as unknown as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch,
+        String(v.jobRootDir), String(v.workspacePath), parentRecipeReader);
+    }
     for (const [index, arg] of launch.args.entries()) {
       if (arg === "--registry-root" && launch.args[index + 1] !== `${v.jobRootDir}/state/registry`) invalid();
       if (arg.startsWith("--registry-root=")) invalid(); // Not an accepted parser option form.
@@ -177,7 +268,7 @@ export function assertHostedDependencyQualifiedInventory(): void {
       // This executes during enrollment/reservation, before the root CLI. A
       // legacy direct stdin.end(frame) must never reach an opted N3 writer.
       if (!collectorProfile || !readHostedFdProfile()) invalid();
-      assertHostedDependencyParentRecipe(launch.args as string[], binding.jobRootDir, binding.workspace.canonicalPath);
+      readHostedDependencyParentRecipe(launch as unknown as import("../../../core/host-infrastructure/host-inventory").HostedInventoryLaunch, binding.jobRootDir, binding.workspace.canonicalPath, parentRecipeReader);
     }
   }
   // The separately inventoried outer entry cannot provide a legacy bypass.
@@ -202,11 +293,11 @@ export function assertHostedDependencyQualifiedInventory(): void {
 }
 
 export function readHostedDependencyAttempt(binding: HostedDependencyBinding,
-  start: Readonly<Record<string, unknown>>, startId: string, phase = DependencyOwnerPhase.Running): DependencyAttempt {
+  start: Readonly<Record<string, unknown>>, startId: string, phase = DependencyOwnerPhase.Running, parentRecipeReader?: DependencyParentRecipeReader): DependencyAttempt {
   // Reference has no Running/provider entry. Its only supported owner is the
   // actual consumed Exclusive attempt used by the fixed materializer.
   if (binding.version === 3 && phase !== DependencyOwnerPhase.ExclusiveMutation) invalid();
-  assertHostedDependencyQualifiedInventory();
+  assertHostedDependencyQualifiedInventory(parentRecipeReader);
   assertHostedDependencyPhysicalWorkspace(binding);
   assertHostedDependencyStartAllowed(startId);
   if (start.installationId !== binding.installationId || start.grantSha256 !== binding.grantDigest ||

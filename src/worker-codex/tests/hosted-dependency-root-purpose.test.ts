@@ -1,3 +1,4 @@
+import { OriginalHostedDependencyRootPurpose } from "../hosted-dependency-root-purpose-view";
 import { describe, expect, it } from "vitest";
 import { assertHostedDependencyRootGitConfigBytes } from "../../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose, assertCurrentHostedDependencyRetiredReady,
@@ -36,12 +37,30 @@ describe("root purpose cannot be reconstructed from caller data", () => {
     const counterfeit = Object.defineProperty({},"origin",{get() { reads++; throw new Error("caller getter"); }});
     const fence = Object.defineProperty({},"held",{get() { reads++; throw new Error("caller fence"); }});
     expect(() => assertCurrentHostedDependencyRootPurpose(counterfeit as HostedDependencyRootPurposeContext,
-      HostedDependencyRootPurpose.ManagedGitReadV1,fence as HostedActivationFence)).toThrow("hosted_dependency_current_origin_unresolved");
+      HostedDependencyRootPurpose.ManagedGitReadV1,fence as HostedActivationFence)).toThrow();
     expect(() => assertCurrentHostedDependencyRetiredReady(counterfeit as HostedDependencyRootPurposeContext,fence as HostedActivationFence)).toThrow();
     // Regression: caller-selected descriptor paths must never enter an opener
     // before resolving the original opaque purpose. No positive permit is made.
     expect(() => openCurrentHostedDependencyRootDescriptor(counterfeit as HostedDependencyRootPurposeContext,
-      fence as HostedActivationFence,HostedDependencyRootDescriptorRecipe.AuthoredFileV1,"/caller/scope/file")).toThrow("hosted_dependency_current_origin_unresolved");
+      fence as HostedActivationFence,HostedDependencyRootDescriptorRecipe.AuthoredFileV1,"/caller/scope/file")).toThrow();
+    expect(reads).toBe(0);
+  });
+  it("rejects prototype copies, proxies and an unissued genuine class before any trap or fence", () => {
+    let reads = 0;
+    const target: object = Object.create(OriginalHostedDependencyRootPurpose.prototype);
+    const proxy = new Proxy(target, {
+      get() { reads++; throw new Error("TEST proxy get"); },
+      has() { reads++; throw new Error("TEST proxy has"); },
+      getPrototypeOf() { reads++; throw new Error("TEST proxy prototype"); },
+    });
+    const revoked = Proxy.revocable(target, {}); revoked.revoke();
+    const unissued = new OriginalHostedDependencyRootPurpose({} as CurrentHostedDependencyOrigin,
+      HostedDependencyRootPurpose.ManagedGitReadV1,Symbol("TEST unrelated access"));
+    const fence = Object.defineProperty({},"held",{get() { reads++; throw new Error("TEST fence getter"); }});
+    for (const value of [null, target, proxy, revoked.proxy, unissued]) {
+      expect(() => assertCurrentHostedDependencyRootPurpose(value as HostedDependencyRootPurposeContext,
+        HostedDependencyRootPurpose.ManagedGitReadV1,fence as HostedActivationFence)).toThrow("hosted_dependency_current_origin_unresolved");
+    }
     expect(reads).toBe(0);
   });
   it("managed provider publication and resources require the original issuer entry before caller data", () => {

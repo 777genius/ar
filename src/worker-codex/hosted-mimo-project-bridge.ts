@@ -5,7 +5,7 @@ import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-launch-host";
 import { researchCustody, researchHash, researchPath, researchRecord } from "./research-launch-files";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
-import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
+import { workerLaunchAdmissionSchema, workerLaunchOwnsPath } from "./application/project-control/worker-launch-spec";
 import { hostedMimoProjectRuntime } from "./hosted-mimo-project-runtime-routing";
 import { hostedMimoSealedSourcePort } from "./hosted-mimo-project-source";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
@@ -101,10 +101,12 @@ export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBindi
   }
 }
 
-function childAdmission(binding: HostedMimoProjectBinding, workspace: string) {
+function childAdmission(binding: HostedMimoProjectBinding, workspace: string, ownedPaths?: readonly string[]) {
   const template = workerLaunchAdmissionSchema.parse(binding.admission);
+  if (ownedPaths && !ownedPaths.every(path => workerLaunchOwnsPath(template.contract, path)))
+    throw new Error("mimo_project_bridge_ownership_expansion_denied");
   const sandboxRelative = relative(binding.sourceWorkspacePath, template.contract.executionPolicy.sandboxRoot);
-  return workerLaunchAdmissionSchema.parse({ ...template, contract: { ...template.contract,
+  return workerLaunchAdmissionSchema.parse({ ...template, contract: { ...template.contract, ...(ownedPaths ? { ownedPaths: [...ownedPaths] } : {}),
     executionPolicy: { ...template.contract.executionPolicy, sandboxRoot: join(workspace, sandboxRelative) } } });
 }
 function unwrap(value: { content: readonly { type: string; text?: string }[] }): unknown {
@@ -129,6 +131,7 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
   if (request.operation === MimoProjectBridgeOperation.Create) {
     assertHostedMimoProjectRouteOpen(binding);
     if (request.sourceCommit !== binding.sourceCommit) throw new Error("mimo_project_bridge_source_mismatch");
+    const admission = childAdmission(binding, workspace, request.ownedPaths);
     researchCustody(binding.stateRoot);
     if (!existsSync(records)) mkdirSync(records, { mode: 0o700 });
     researchCustody(records);
@@ -138,7 +141,7 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
       projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId, jobRoot, workspace }) + "\n", { flag: "wx", mode: 0o600 });
     return unwrap(await projectControlRefillWorkerFromSealedSource({ ...args, jobRootDir: jobRoot, workspacePath: workspace,
       sourceWorkspacePath: binding.sourceWorkspacePath, sourceRef: binding.sourceRef, expectedSourceCommit: binding.sourceCommit,
-      newBranch: `feat/${request.jobId}`, promptBody: request.prompt!, preStartAdmission: childAdmission(binding, workspace),
+      newBranch: `feat/${request.jobId}`, promptBody: request.prompt!, preStartAdmission: admission,
       confirmPreStartAdmission: true, confirmRefill: true, startWorker: false, overwrite: false, dependencyBootstrap: "off", executionMode: "sync",
       modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], model: "mimo-v2.6-pro", executionEngine: "app-server",
       maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: request.reasoningEffort ?? "medium",

@@ -34,7 +34,14 @@ environments.
 - `install`: run the locked package-manager command. This fails closed unless
   `confirmDependencyBootstrap=true` is supplied by trusted host configuration.
 
-The result is written to `dependency-preflight.json` when a job root is
+A no-start project-control refill of an exact, controller-scoped standalone TEST
+workspace can observe `off`/`preflight` metadata under its current workspace
+lease when the protected binding is positively absent. This observation creates
+no diagnostic, cache, installation, enrollment or launch authority. Managed or
+enrolled workspaces retain their protected admission path. Ordinary legacy
+bootstrap behavior remains unchanged.
+
+The bootstrap result is written to `dependency-preflight.json` when a job root is
 available. Install failures remain observable and do not silently fall through
 to an unlocked command.
 

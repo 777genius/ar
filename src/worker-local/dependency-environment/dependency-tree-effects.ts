@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, fstatSync, readFileSync, type BigIntStats } from "node:fs";
+import { constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, type BigIntStats } from "node:fs";
 import { lstat, open, readFile, rename, rmdir, statfs, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace,
@@ -78,6 +78,10 @@ async function mount(handle: FileHandle): Promise<string> {
   const info = await readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8"), id = /^mnt_id:\s*(\d+)\s*$/m.exec(info)?.[1];
   if (!id || info.length > 65536) fail(DependencyTreeEffectFailure.Unsupported); return id;
 }
+function mountSync(fd: number): string {
+  const info = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"), id = /^mnt_id:\s*(\d+)\s*$/m.exec(info)?.[1];
+  if (!id || info.length > 65536) fail(DependencyTreeEffectFailure.Unsupported); return id;
+}
 function component(value: string): Buffer {
   const bytes = Buffer.from(value, "base64");
   if (!bytes.length || bytes.toString("base64") !== value || bytes.includes(0) || bytes.includes(47) ||
@@ -139,6 +143,7 @@ function validate(input: DependencyTreeEffectInput): void {
 class Anchors {
   readonly retained: Anchor[] = [];
   readonly deadline: number;
+  private uncertainCloseFailures = 0;
   constructor(readonly limits: DependencyTreeObservationLimits) { this.deadline = performance.now() + limits.maxDurationMs; }
   check(): void { if (performance.now() > this.deadline) fail(DependencyTreeEffectFailure.Bounds); }
   async retain(path: string | Buffer, parent?: Anchor, name?: Buffer): Promise<Anchor> {
@@ -172,10 +177,28 @@ class Anchors {
       }
     }
   }
+  verifySync(items = this.retained): void {
+    for (const item of items) {
+      this.check();
+      if (!stable(item.before, fstatSync(item.handle.fd, { bigint: true })) || mountSync(item.handle.fd) !== item.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+      if (item.parent && item.name) {
+        const fresh = openSync(anchored(item.parent, item.name), directoryFlags | constants.O_NONBLOCK);
+        let failed = false;
+        try { if (!stable(item.before, fstatSync(fresh, { bigint: true })) || mountSync(fresh) !== item.mountId) fail(DependencyTreeEffectFailure.IdentityChanged); }
+        catch (error) { failed = true; throw error; }
+        finally { this.closeTemporary(fresh, failed); }
+      }
+    }
+  }
+  closeTemporary(fd: number, priorFailure: boolean): void {
+    try { closeSync(fd); } catch (error) {
+      this.uncertainCloseFailures++; // Never retry an uncertain numeric FD that could have been reused.
+      if (!priorFailure) throw error; // Preserve the original failed submission.
+    }
+  }
   async close(): Promise<{ readonly closeFailures: number }> {
-    let closeFailures = 0;
-    for (const item of this.retained.splice(0).reverse()) { try { await item.handle.close(); } catch { closeFailures++; } }
-    return { closeFailures }; // Cleanup facts never replace an effect outcome.
+    for (const item of this.retained.splice(0).reverse()) { try { await item.handle.close(); } catch { this.uncertainCloseFailures++; } }
+    return { closeFailures: this.uncertainCloseFailures }; // Cleanup facts never replace an effect outcome.
   }
 }
 async function protectTrash(parent: Anchor): Promise<void> {
@@ -204,10 +227,11 @@ async function absent(parent: Anchor, name: Buffer): Promise<void> {
 export async function openDependencyTreeRename(request: DependencyTreeEffectInput): Promise<{
   readonly referenceSession: DependencyTreeEffectReferenceSession;
   rename(): Promise<{ readonly tree: DependencyTreeIdentity; readonly manifestDigest: string }>;
+  prepareSynchronousRename(): Promise<Readonly<{ referenceSession:DependencyTreeEffectReferenceSession; commit(): { readonly tree: DependencyTreeIdentity; readonly manifestDigest: string } }>>;
   close(): Promise<{ readonly closeFailures: number }>;
 }> {
   const input = detach(request); validate(input); const original = manifest(input), anchors = new Anchors(input.limits);
-  let finished = false, running: Promise<void> | undefined;
+  let finished = false, closed = false, preparationFailed = false, running: Promise<void> | undefined, preparing: Promise<Readonly<{referenceSession:DependencyTreeEffectReferenceSession;commit():{tree:DependencyTreeIdentity;manifestDigest:string}}>> | undefined;
   try {
     if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
     const source = await anchors.path(input.workspace.canonicalPath, input.workspace), destination = await anchors.path(input.trash.destinationParent.canonicalPath, input.trash.destinationParent);
@@ -218,7 +242,81 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
     if (!sameDependencyTree(identity(tree.before), input.trash.originalTree) || tree.mountId !== source.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
     const target = Buffer.from(input.trash.destinationName);
     await absent(destination, target); await anchors.verify();
-    return { referenceSession: referenceSession(anchors, input), async rename() {
+    const prepare = async () => {
+      if(finished || closed || preparationFailed || !anchors.retained.length)fail(DependencyTreeEffectFailure.Closed);
+      finished=true; // Preparation owns this exact one-use physical session.
+      preparing=(async()=>{
+        await anchors.verify();const current=await observe(input,source,"node_modules",original,false);
+        await anchors.verify();await absent(destination,target);
+        const captured=new Map(current.identities.map(item=>[key(item.path),item])),directories=new Map<string,Anchor>([["[]",tree]]);
+        for(const entry of current.entries.filter(item=>item.kind===Kind.Directory && item.path.length)) {
+          const parent=directories.get(key(entry.path.slice(0,-1)));if(!parent)fail(DependencyTreeEffectFailure.ManifestMismatch);
+          const name=component(entry.path[entry.path.length-1]!),dir=await anchors.retain(anchored(parent,name),parent,name);
+          if(!sameDependencyTree(identity(dir.before),captured.get(key(entry.path))!.identity) || dir.mountId!==tree.mountId)fail(DependencyTreeEffectFailure.IdentityChanged);
+          directories.set(key(entry.path),dir);
+        }
+        await anchors.verify();let submitted=false;
+        return Object.freeze({referenceSession:referenceSession(anchors,input),commit() {
+          if(closed || preparationFailed || submitted || !anchors.retained.length)fail(DependencyTreeEffectFailure.Closed);
+          submitted=true; // Failure/uncertain publication cannot be replayed.
+          try {
+            anchors.verifySync();if(input.sourceLinkSession)sourceProof(input);
+            for(const entry of current.entries) {
+              anchors.check();const parent=entry.path.length ? directories.get(key(entry.path.slice(0,-1)))! : source,
+                name=entry.path.length ? component(entry.path[entry.path.length-1]!) : Buffer.from("node_modules"),path=anchored(parent,name);
+              const fd=openSync(path,pathFlags);let failed=false;
+              try {
+                const info=fstatSync(fd,{bigint:true});
+                if(!sameDependencyTree(identity(info),captured.get(key(entry.path))!.identity) || (info.mode&0o7777n)!==BigInt(entry.mode) ||
+                    mountSync(fd)!==tree.mountId || !info.isDirectory() && info.nlink!==1n)fail(DependencyTreeEffectFailure.IdentityChanged);
+                if(entry.kind===Kind.File) {
+                  if(!info.isFile() || info.size!==BigInt(entry.size) || info.size>BigInt(input.limits.maxTotalBytes))fail(DependencyTreeEffectFailure.ManifestMismatch);
+                  const file=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);let fileFailed=false;
+                  try {
+                    const before=fstatSync(file,{bigint:true});
+                    if(!stable(info,before) || before.size!==info.size || mountSync(file)!==tree.mountId)fail(DependencyTreeEffectFailure.IdentityChanged);
+                    const bytes=Buffer.alloc(65536),hash=createHash("sha256");let length=0;
+                    while(length<=Number(before.size)) {
+                      anchors.check();const count=readSync(file,bytes,0,Math.min(bytes.length,Number(before.size)-length+1),length);
+                      if(!count)break;hash.update(bytes.subarray(0,count));length+=count;
+                      if(BigInt(length)>before.size)fail(DependencyTreeEffectFailure.ManifestMismatch);
+                    }
+                    const after=fstatSync(file,{bigint:true});
+                    if(BigInt(length)!==before.size || hash.digest("hex")!==entry.sha256 || !stable(before,after) ||
+                        before.size!==after.size || before.mtimeNs!==after.mtimeNs || before.ctimeNs!==after.ctimeNs)fail(DependencyTreeEffectFailure.ManifestMismatch);
+                  }catch(error){fileFailed=true;throw error;}finally{anchors.closeTemporary(file,fileFailed);}
+                }else if(entry.kind===Kind.Symlink) {
+                  if(!info.isSymbolicLink() || readlinkSync(path,{encoding:"buffer"}).toString("base64")!==entry.target)fail(DependencyTreeEffectFailure.ManifestMismatch);
+                }else {
+                  if(!info.isDirectory())fail(DependencyTreeEffectFailure.ManifestMismatch);
+                  const names=readdirSync(path,{encoding:"buffer"}).map(v=>v.toString("base64")).sort(),
+                    expected=current.entries.filter(v=>v.path.length===entry.path.length+1 && key(v.path.slice(0,-1))===key(entry.path)).map(v=>v.path[v.path.length-1]!).sort();
+                  if(JSON.stringify(names)!==JSON.stringify(expected))fail(DependencyTreeEffectFailure.ManifestMismatch);
+                }
+                const after=lstatSync(path,{bigint:true});
+                if(!stable(info,after) || info.nlink!==after.nlink || info.size!==after.size || info.mtimeNs!==after.mtimeNs || info.ctimeNs!==after.ctimeNs)fail(DependencyTreeEffectFailure.IdentityChanged);
+              }catch(error){failed=true;throw error;}finally{anchors.closeTemporary(fd,failed);}
+            }
+            anchors.verifySync();if(input.sourceLinkSession)sourceProof(input);
+            try{lstatSync(anchored(destination,target));fail(DependencyTreeEffectFailure.Conflict);}
+            catch(error){if(!(error instanceof Error) || !("code" in error) || error.code!=="ENOENT")throw error;}
+            renameSync(anchored(source,Buffer.from("node_modules")),anchored(destination,target));
+            const moved=openSync(anchored(destination,target),directoryFlags|constants.O_NONBLOCK);let failed=false;
+            try{if(!stable(tree.before,fstatSync(moved,{bigint:true})) || mountSync(moved)!==destination.mountId)fail(DependencyTreeEffectFailure.IdentityChanged);}
+            catch(error){failed=true;throw error;}finally{anchors.closeTemporary(moved,failed);}
+            try{lstatSync(anchored(source,Buffer.from("node_modules")));fail(DependencyTreeEffectFailure.Conflict);}
+            catch(error){if(!(error instanceof Error) || !("code" in error) || error.code!=="ENOENT")throw error;}
+            // Retained descendant FDs remain the same tree under its new name;
+            // named checks now run relative to the relocated actual tree FD.
+            anchors.verifySync(anchors.retained.filter(item=>item!==tree));
+            fsyncSync(source.handle.fd);fsyncSync(destination.handle.fd);
+            return {tree:identity(tree.before),manifestDigest:input.manifestDigest};
+          }catch(error){preparationFailed=true;throw error;}
+        }});
+      })();
+      try{return await preparing;}catch(error){preparationFailed=true;await anchors.close();throw error;}finally{preparing=undefined;}
+    };
+    return { referenceSession: referenceSession(anchors, input), prepareSynchronousRename:prepare, async rename() {
       if (finished || anchors.retained.length === 0) fail(DependencyTreeEffectFailure.Closed);
       finished = true; // Single-use, including an uncertain or failed publication.
       let settle!: () => void; running = new Promise<void>(done => { settle = done; });
@@ -234,11 +332,11 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
       await source.handle.sync(); await destination.handle.sync();
       return { tree: identity(tree.before), manifestDigest: input.manifestDigest };
       } finally { settle(); }
-    }, async close() { finished = true; await running; return anchors.close(); } };
+    }, async close() { closed=true;finished = true; await preparing?.then(()=>undefined,()=>undefined);await running; return anchors.close(); } };
   } catch (error) { await anchors.close(); throw error; }
 }
 
-async function committed(input: DependencyTreeEffectInput, commit: ProtectedDependencyEvictionCommit, anchors: Anchors): Promise<void> {
+async function committed(input: DependencyTreeEffectInput, commit: ProtectedDependencyEvictionCommit, anchors: Anchors): Promise<Anchor> {
   if (commit.path.startsWith(input.workspace.canonicalPath + "/") ||
       commit.path.startsWith(`${input.trash.destinationParent.canonicalPath}/${input.trash.destinationName}/`) ||
       !/^[a-f0-9]{64}$/.test(commit.sha256)) fail(DependencyTreeEffectFailure.InvalidCommit);
@@ -270,17 +368,80 @@ async function committed(input: DependencyTreeEffectInput, commit: ProtectedDepe
     if (!stable(stat, await file.stat({ bigint: true }))) fail(DependencyTreeEffectFailure.InvalidCommit);
   } finally { await file.close(); }
   await anchors.verify();
+  return parent;
 }
 
 /** Only a verified remaining subset of an independently captured original full
  * manifest is removable. Caller holds fenced/drained exclusive mutation through
  * every await; partial effects retain commit+trash, never mint Absent/Ready.
  */
+export type DependencyCommittedTrashRemovalProgress = Readonly<{
+  operationId: string; removedEntries: number; remainingEntries: number;
+}>;
+/** Physical effect session, never an authorization token. The hosted original
+ * owner retains this exact session and supplies its own genuine fence at each
+ * synchronous submission. No path, permission callback or FD list is accepted. */
+export type DependencyCommittedTrashRemovalSteps = Readonly<{
+  referenceSession: DependencyTreeEffectReferenceSession;
+  progress(): DependencyCommittedTrashRemovalProgress;
+  removeNext(): DependencyCommittedTrashRemovalProgress;
+}>;
+/** Separate name-negative observer for last-unlink recovery. It reports only
+ * a durable absence fact; the host must join authenticated v2 intent, revoked
+ * actor lifetime and actual owner before publishing recovered completion.
+ * The ordinary removal opener still requires an existing named root. */
+export async function openCommittedDependencyTrashAbsence(request: DependencyTreeEffectInput & {
+  readonly commit: ProtectedDependencyEvictionCommit;
+}): Promise<Readonly<{ referenceSession: DependencyTreeEffectReferenceSession; confirmAbsence(): Readonly<{ operationId: string }>;
+  close(): Promise<{ readonly closeFailures: number }> }>> {
+  const input = { ...detach(request), commit: { ...request.commit, identity: { ...request.commit.identity } } }, anchors = new Anchors(input.limits);
+  validate(input); manifest(input, true); let closed = false, held = false;
+  try {
+    if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
+    const parent = await anchors.path(input.trash.destinationParent.canonicalPath, input.trash.destinationParent); await protectTrash(parent);
+    const commitParent = await committed(input, input.commit, anchors); await anchors.verify();
+    const name = Buffer.from(input.trash.destinationName), negative = () => {
+      try { lstatSync(anchored(parent, name)); fail(DependencyTreeEffectFailure.Conflict); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    };
+    negative();
+    const commitCurrent = () => {
+      const path = anchored(commitParent, Buffer.from(basename(input.commit.path))), fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let failed = false;
+      try {
+        const before = fstatSync(fd, { bigint: true }), buffer = Buffer.alloc(16385);
+        if (!before.isFile() || before.size < 1n || before.size > 16384n || before.nlink !== 1n || before.uid !== BigInt(process.geteuid!()) ||
+            (before.mode & 0o7777n) !== 0o600n || !sameDependencyTree(identity(before), input.commit.identity) || mountSync(fd) !== commitParent.mountId)
+          fail(DependencyTreeEffectFailure.InvalidCommit);
+        const count = readSync(fd, buffer, 0, buffer.length, 0), after = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
+        if (BigInt(count) !== before.size || digest(buffer.subarray(0, count)) !== input.commit.sha256 || !stable(before, after) || !stable(before, named) ||
+            before.size !== after.size || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.nlink !== named.nlink ||
+            before.size !== named.size || before.ctimeNs !== named.ctimeNs || before.mtimeNs !== named.mtimeNs)
+          fail(DependencyTreeEffectFailure.InvalidCommit);
+      } catch (error) { failed = true; throw error; }
+      finally { anchors.closeTemporary(fd, failed); }
+    };
+    const session = referenceSession(anchors, input);
+    return Object.freeze({ referenceSession: session, confirmAbsence() {
+      if (closed || held) fail(DependencyTreeEffectFailure.Closed);
+      try {
+        anchors.verifySync(); commitCurrent(); negative(); fsyncSync(parent.handle.fd); anchors.verifySync(); commitCurrent(); negative();
+        return Object.freeze({ operationId: input.trash.operationId });
+      } catch (error) { held = true; throw error; }
+    }, async close() { closed = true; return anchors.close(); } });
+  } catch (error) { await anchors.close(); throw error; }
+}
 export async function openCommittedDependencyTrashRemoval(request: DependencyTreeEffectInput & {
   readonly commit: ProtectedDependencyEvictionCommit; readonly maxRemovals: number;
-}): Promise<{ remove(): Promise<{ readonly operationId: string; readonly removedEntries: number }>; close(): Promise<{ readonly closeFailures: number }> }> {
+}): Promise<{
+  remove(): Promise<{ readonly operationId: string; readonly removedEntries: number }>;
+  prepareSynchronousRemoval(): Promise<DependencyCommittedTrashRemovalSteps>;
+  close(): Promise<{ readonly closeFailures: number }>;
+}> {
   const input = { ...detach(request), commit: { ...request.commit, identity: { ...request.commit.identity } }, maxRemovals: request.maxRemovals };
-  validate(input); const original = manifest(input, true), anchors = new Anchors(input.limits); let finished = false, running: Promise<void> | undefined;
+  validate(input); const original = manifest(input, true), anchors = new Anchors(input.limits);
+  let closed = false, preparationFailed = false, running: Promise<void> | undefined, preparing: Promise<DependencyCommittedTrashRemovalSteps> | undefined;
+  let steps: DependencyCommittedTrashRemovalSteps | undefined;
   if (!Number.isSafeInteger(input.maxRemovals) || input.maxRemovals < 1) fail(DependencyTreeEffectFailure.Bounds);
   try {
     if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
@@ -289,56 +450,107 @@ export async function openCommittedDependencyTrashRemoval(request: DependencyTre
     const root = await anchors.retain(anchored(parent, name), parent, name);
     if (!sameDependencyTree(identity(root.before), input.trash.originalTree) || root.mountId !== parent.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
     await committed(input, input.commit, anchors); await observe(input, parent, input.trash.destinationName, original, true); await anchors.verify();
-    return { async remove() {
-      if (finished || anchors.retained.length === 0) fail(DependencyTreeEffectFailure.Closed);
-      finished = true; // Retry opens the retained commit and remaining tree afresh.
-      let settle!: () => void; running = new Promise<void>(done => { settle = done; });
-      try {
-      await anchors.verify(); await committed(input, input.commit, anchors);
-      const current = await observe(input, parent, input.trash.destinationName, original, true); await anchors.verify();
-      const directories = new Map<string, Anchor>([["[]", root]]), captured = new Map(current.identities.map(item => [key(item.path), item]));
-      let removed = 0; const deleted = new Set<Anchor>();
-      for (const entry of current.entries.filter(e => e.kind === Kind.Directory && e.path.length > 0)) {
-        const owner = directories.get(key(entry.path.slice(0, -1)))!;
-        const dir = await anchors.retain(anchored(owner, component(entry.path[entry.path.length - 1]!)), owner, component(entry.path[entry.path.length - 1]!));
-        if (!sameDependencyTree(identity(dir.before), captured.get(key(entry.path))!.identity) || dir.mountId !== root.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
-        directories.set(key(entry.path), dir);
-      }
-      await anchors.verify();
-      // Inspect every remaining leaf before the first unlink, including a
-      // symlink's link count (ordinary file hardlinks are rejected by inventory).
-      for (const entry of current.entries) {
-        const owner = entry.path.length ? directories.get(key(entry.path.slice(0, -1)))! : parent;
-        const path = entry.path.length ? anchored(owner, component(entry.path[entry.path.length - 1]!)) : anchored(parent, name);
-        const pin = await open(path, pathFlags);
+    const prepare = async (): Promise<DependencyCommittedTrashRemovalSteps> => {
+      if (closed || preparationFailed || steps || preparing || !anchors.retained.length) fail(DependencyTreeEffectFailure.Closed);
+      preparing = (async () => {
+        await anchors.verify(); await committed(input, input.commit, anchors);
+        const current = await observe(input, parent, input.trash.destinationName, original, true); await anchors.verify();
+        const directories = new Map<string, Anchor>([["[]", root]]), captured = new Map(current.identities.map(item => [key(item.path), item]));
+        for (const entry of current.entries.filter(e => e.kind === Kind.Directory && e.path.length > 0)) {
+          const owner = directories.get(key(entry.path.slice(0, -1)))!;
+          const part = component(entry.path[entry.path.length - 1]!);
+          const dir = await anchors.retain(anchored(owner, part), owner, part);
+          if (!sameDependencyTree(identity(dir.before), captured.get(key(entry.path))!.identity) || dir.mountId !== root.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+          directories.set(key(entry.path), dir);
+        }
+        await anchors.verify();
+        // Every remaining leaf is inspected before any submission. No mount or
+        // hardlink is exempted by this session or its factual reference handle.
+        for (const entry of current.entries) {
+          const owner = entry.path.length ? directories.get(key(entry.path.slice(0, -1)))! : parent;
+          const path = entry.path.length ? anchored(owner, component(entry.path[entry.path.length - 1]!)) : anchored(parent, name);
+          const pin = await open(path, pathFlags);
+          try {
+            const info = await pin.stat({ bigint: true });
+            if (!sameDependencyTree(identity(info), captured.get(key(entry.path))!.identity) || (info.mode & 0o7777n) !== BigInt(entry.mode) ||
+                await mount(pin) !== root.mountId || (!info.isDirectory() && info.nlink !== 1n)) fail(DependencyTreeEffectFailure.IdentityChanged);
+          } finally { await pin.close(); }
+        }
+        await anchors.verify(); if (closed) fail(DependencyTreeEffectFailure.Closed);
+        const pending = [...current.entries].reverse(), deleted = new Set<Anchor>(); let removed = 0, failed = false;
+        const progress = (): DependencyCommittedTrashRemovalProgress => ({ operationId: input.trash.operationId, removedEntries: removed, remainingEntries: pending.length - removed });
+        steps = Object.freeze({ referenceSession: referenceSession(anchors, input), progress() {
+          if (closed || failed || !anchors.retained.length) fail(DependencyTreeEffectFailure.Closed);
+          return progress(); // Recorded progress only; no IO or authority.
+        }, removeNext() {
+          if (closed || failed || !anchors.retained.length) fail(DependencyTreeEffectFailure.Closed);
+          try {
+          anchors.check(); anchors.verifySync(anchors.retained.filter(item => !deleted.has(item)));
+          if (input.sourceLinkSession) sourceProof(input, true);
+          const entry = pending[removed];
+          if (!entry) return progress();
+          if (removed >= input.maxRemovals) fail(DependencyTreeEffectFailure.Bounds);
+          const owner = entry.path.length ? directories.get(key(entry.path.slice(0, -1)))! : parent;
+          const path = entry.path.length ? anchored(owner, component(entry.path[entry.path.length - 1]!)) : anchored(parent, name);
+          const pin = openSync(path, pathFlags); let pinFailure = false;
+          try {
+            const info = fstatSync(pin, { bigint: true });
+            if (!sameDependencyTree(identity(info), captured.get(key(entry.path))!.identity) || (info.mode & 0o7777n) !== BigInt(entry.mode) || mountSync(pin) !== root.mountId)
+              fail(DependencyTreeEffectFailure.IdentityChanged);
+            if ((entry.kind === Kind.File && (!info.isFile() || info.nlink !== 1n)) || (entry.kind === Kind.Symlink && (!info.isSymbolicLink() || info.nlink !== 1n)) ||
+                (entry.kind === Kind.Directory && !info.isDirectory())) fail(DependencyTreeEffectFailure.ManifestMismatch);
+            if (entry.kind === Kind.File) {
+              if (info.size !== BigInt(entry.size) || info.size > BigInt(input.limits.maxTotalBytes)) fail(DependencyTreeEffectFailure.ManifestMismatch);
+              const file = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); let fileFailure = false;
+              try {
+                const before = fstatSync(file, { bigint: true });
+                if (!stable(info, before) || before.size !== info.size || mountSync(file) !== root.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
+                const bytes = Buffer.alloc(65536), hash = createHash("sha256"); let length = 0;
+                while (length <= Number(before.size)) {
+                  const count = readSync(file, bytes, 0, Math.min(bytes.length, Number(before.size) - length + 1), length);
+                  if (!count) break; hash.update(bytes.subarray(0, count)); length += count; anchors.check();
+                  if (BigInt(length) > before.size) fail(DependencyTreeEffectFailure.ManifestMismatch);
+                }
+                const after = fstatSync(file, { bigint: true });
+                if (BigInt(length) !== before.size || hash.digest("hex") !== entry.sha256 || !stable(before, after) ||
+                    before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) fail(DependencyTreeEffectFailure.ManifestMismatch);
+              } catch (error) { fileFailure = true; throw error; }
+              finally { anchors.closeTemporary(file, fileFailure); }
+            } else if (entry.kind === Kind.Symlink && readlinkSync(path, { encoding: "buffer" }).toString("base64") !== entry.target) fail(DependencyTreeEffectFailure.ManifestMismatch);
+            // Recheck the named leaf immediately before the single synchronous
+            // effect; caller exclusion remains necessary between observations.
+            const named = lstatSync(path, { bigint: true });
+            if (!stable(info, named) || named.nlink !== info.nlink || named.size !== info.size || named.mtimeNs !== info.mtimeNs || named.ctimeNs !== info.ctimeNs)
+              fail(DependencyTreeEffectFailure.IdentityChanged);
+            anchors.verifySync(anchors.retained.filter(item => !deleted.has(item)));
+            if (entry.kind === Kind.Directory) { rmdirSync(path); deleted.add(directories.get(key(entry.path))!); } else unlinkSync(path);
+            removed++; fsyncSync(owner.handle.fd);
+          } catch (error) { pinFailure = true; throw error; }
+          finally { anchors.closeTemporary(pin, pinFailure); }
+          if (removed === pending.length) {
+            try { lstatSync(anchored(parent, name)); fail(DependencyTreeEffectFailure.Conflict); }
+            catch (error) { if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error; }
+            anchors.verifySync(anchors.retained.filter(item => !deleted.has(item))); fsyncSync(parent.handle.fd);
+          }
+          return progress();
+          } catch (error) { failed = true; throw error; } // Uncertain step never authorizes a later effect.
+        } });
+        return steps;
+      })();
+      try { return await preparing; } catch (error) { preparationFailed = true; throw error; } finally { preparing = undefined; }
+    };
+    return {
+      prepareSynchronousRemoval: prepare,
+      async remove() {
+        if (closed || preparationFailed || steps || preparing || running) fail(DependencyTreeEffectFailure.Closed);
+        let settle!: () => void; running = new Promise<void>(done => { settle = done; });
         try {
-          const info = await pin.stat({ bigint: true });
-          if (!sameDependencyTree(identity(info), captured.get(key(entry.path))!.identity) || (info.mode & 0o7777n) !== BigInt(entry.mode) ||
-              await mount(pin) !== root.mountId || (!info.isDirectory() && info.nlink !== 1n)) fail(DependencyTreeEffectFailure.IdentityChanged);
-        } finally { await pin.close(); }
-      }
-      await anchors.verify();
-      for (const entry of [...current.entries].reverse()) {
-        anchors.check(); if (removed >= input.maxRemovals) fail(DependencyTreeEffectFailure.Bounds);
-        await anchors.verify(anchors.retained.filter(item => !deleted.has(item)));
-        if (input.sourceLinkSession) sourceProof(input, true);
-        const owner = entry.path.length ? directories.get(key(entry.path.slice(0, -1)))! : parent;
-        const path = entry.path.length ? anchored(owner, component(entry.path[entry.path.length - 1]!)) : anchored(parent, name);
-        const pin = await open(path, pathFlags);
-        try {
-          const info = await pin.stat({ bigint: true });
-          if (!sameDependencyTree(identity(info), captured.get(key(entry.path))!.identity) || (info.mode & 0o7777n) !== BigInt(entry.mode) || await mount(pin) !== root.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
-          if ((entry.kind === Kind.File && (!info.isFile() || info.nlink !== 1n)) || (entry.kind === Kind.Symlink && (!info.isSymbolicLink() || info.nlink !== 1n)) ||
-              (entry.kind === Kind.Directory && !info.isDirectory())) fail(DependencyTreeEffectFailure.ManifestMismatch);
-          // Whole remaining content was verified before the first effect. Actual
-          // caller exclusion, not inode snapshots, forbids writes between effects.
-          if (entry.kind === Kind.Directory) { await rmdir(path); deleted.add(directories.get(key(entry.path))!); } else await unlink(path);
-          removed++; await owner.handle.sync();
-        } finally { await pin.close(); }
-      }
-      finished = true; await absent(parent, name); await anchors.verify(anchors.retained.filter(item => !deleted.has(item))); await parent.handle.sync();
-      return { operationId: input.trash.operationId, removedEntries: removed };
-      } finally { settle(); }
-    }, async close() { finished = true; await running; return anchors.close(); } };
+          const prepared = await prepare(); let result = prepared.removeNext();
+          while (result.remainingEntries) result = prepared.removeNext();
+          return { operationId: result.operationId, removedEntries: result.removedEntries };
+        } finally { settle(); }
+      },
+      async close() { closed = true; await preparing?.then(() => undefined, () => undefined); await running; return anchors.close(); },
+    };
   } catch (error) { await anchors.close(); throw error; }
 }

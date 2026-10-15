@@ -40,9 +40,14 @@ export default defineConfig({
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-lane.test.ts",
+      // Include the mandatory fixture in the explicit ROOT archive selection;
+      // ordinary unit lanes cannot authenticate its ROOT filesystem evidence.
+      ...(process.env.SR_ARCHIVE_TEST_PRIVILEGE === "root" ? [] : [
+        "src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts",
+      ]),
     ],
-    // Keep each file isolated while bounding process and memory pressure.
     sequence: { sequencer: DurationBalancedSequencer },
+    // Keep each file isolated while bounding process and memory pressure.
     pool: "forks",
     isolate: true,
     fileParallelism: true,

@@ -47,13 +47,16 @@ vi.mock("node:child_process", () => ({ spawnSync: (executable: string, args: str
       if (os.afterTyped === "unit") os.service.MainPID = "43";
       if (os.afterTyped === "manager") os.busOwner = "u 43";
       if (os.afterTyped === "pin") os.files.set("/usr/bin/busctl", Buffer.from("changed during query"));
+      if (os.afterTyped === "cgroup") os.files.set("/proc/42/cgroup", Buffer.from("0::/system.slice/foreign.service\n1:name=systemd:/\n"));
       return { status: os.typedStatus, stdout: os.typedReply ?? zeroReply };
     }
     throw new Error("unplanned synthetic bus request");
   }
   if (executable !== "/usr/bin/systemctl" || args[0] !== "show") throw new Error("unplanned synthetic command");
   const source = args.at(-1) === "dbus.service" ? os.service : os.socket;
-  const keys = args[1]!.slice("--property=".length).split(",");
+  const property = args.find(arg => arg.startsWith("--property="));
+  if (!property) throw new Error("missing synthetic property operand");
+  const keys = property.slice("--property=".length).split(",");
   // v255 omits these genuinely empty structured arrays. Missing ordinary
   // fields are still emitted here only as explicitly synthetic scalar values.
   const rows = keys.filter(key => !arrayFields.includes(key) || source[key]).map(key => `${key}=${source[key] ?? ""}`);
@@ -108,6 +111,38 @@ describe("actual finite system-bus admission observations", () => {
     expect(os.queries.every(args => args[0] === "--address=unix:path=/run/dbus/system_bus_socket")).toBe(true);
     expect(os.queries.filter(args => args.includes("GetConnectionUnixProcessID"))).toHaveLength(2);
   });
+  // Replays the measured V10 layout; these OS observations remain synthetic.
+  it.each(["unified-first", "legacy-first"])("accepts measured hybrid bus membership with %s rows", order => {
+    const unified = "0::/system.slice/dbus.service\n", legacy = "1:name=systemd:/\n";
+    os.files.set("/proc/42/cgroup", Buffer.from(order === "unified-first" ? unified + legacy : legacy + unified));
+    expect(() => verifySystemBusInfrastructure(input)).not.toThrow();
+    expect(os.queries.filter(args => args.includes("GetConnectionUnixProcessID"))).toHaveLength(2);
+  });
+  it.each([
+    ["missing-unified", "1:name=systemd:/\n"],
+    ["duplicate-unified", "0::/system.slice/dbus.service\n0::/system.slice/dbus.service\n"],
+    ["conflicting-unified", "0::/system.slice/dbus.service\n0::/system.slice/foreign.service\n"],
+    ["duplicate-legacy", "0::/system.slice/dbus.service\n1:name=systemd:/\n1:name=systemd:/\n"],
+    ["blank-row", "0::/system.slice/dbus.service\n\n"],
+    ["carriage-return", "0::/system.slice/dbus.service\r\n"],
+    ["nul-row", "0::/system.slice/dbus.service\0\n"],
+    ["leading-space", " 0::/system.slice/dbus.service\n"],
+    ["trailing-space", "0::/system.slice/dbus.service \n"],
+    ["malformed-legacy", "0::/system.slice/dbus.service\n1:name=systemd\n"],
+    ["leading-zero-hierarchy", "0::/system.slice/dbus.service\n01:name=systemd:/\n"],
+    ["unknown-controller", "0::/system.slice/dbus.service\n2:cpu,cpuacct:/\n"],
+    ["unknown-named-hierarchy", "0::/system.slice/dbus.service\n2:name=systemd:/\n"],
+    ["legacy-group-authority", "0::/system.slice/dbus.service\n1:name=systemd:/system.slice/dbus.service\n"],
+    ["foreign-unified", "0::/system.slice/foreign.service\n1:name=systemd:/\n"],
+    ["path-traversal", "0::/system.slice/../system.slice/dbus.service\n1:name=systemd:/\n"],
+    ["unified-controllers", "0:name=systemd:/system.slice/dbus.service\n"],
+    ["empty-record", ""],
+    ["oversized-record", "0::/system.slice/dbus.service\n" + "1:name=systemd:/\n".repeat(300)],
+  ] as const)("refuses %s instead of discarding cgroup rows", (_fault, text) => {
+    os.files.set("/proc/42/cgroup", Buffer.from(text));
+    expect(() => verifySystemBusInfrastructure(input)).toThrow("system_bus_infrastructure_unqualified");
+    expect(os.queries).toHaveLength(0);
+  });
   it("keeps version1 parseable history but denies active entry before any unpinned query", () => {
     if (input.version !== 2) throw new Error("TEST expected v2");
     const { queryTool, ...history } = input;
@@ -126,7 +161,7 @@ describe("actual finite system-bus admission observations", () => {
       expect(() => verifySystemBusInfrastructure(input, fault === "expired-budget" ? () => 0 : undefined)).toThrow("unqualified");
       if (["changed-query-tool", "unsafe-query-parent", "expired-budget"].includes(fault)) expect(os.queries).toHaveLength(0);
     });
-  it.each(["unit", "manager", "pin"])("does not retain typed zeros after %s changes during the read", fault => {
+  it.each(["unit", "manager", "pin", "cgroup"])("does not retain typed zeros after %s changes during the read", fault => {
     os.afterTyped = fault;
     expect(() => verifySystemBusInfrastructure(input)).toThrow("unqualified");
     expect(os.queries.some(args => args.includes("get-property"))).toBe(true);

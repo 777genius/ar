@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, typ
 import { dirname } from "node:path";
 import { DependencyCustodyEvidenceKind, isDependencyCustodyObject, isDependencyProtectedReference,
   parseDependencyCustodyEvidence, sameDependencyWorkspace, type DependencyProtectedReference,
-  type DependencyReadonlyAdoptionEvidence, type DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
+  type DependencyReadonlyAdoptionEvidence, type DependencyReadonlyColdBaselineAdoptionEvidence, type DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, readHostedActivationBytes, type HostedActivationFence } from "./hosted-process-activation";
 
 const root = "/var/lib/subscription-runtime-host-policy";
@@ -93,7 +93,7 @@ export function readHostedReadonlyDependencyAssociation(fence: HostedActivationF
   try { lstatSync(`${root}/${name}`); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { if (readHostedActivationBytes(name)) invalid(); return null; } throw error; }
   const pinned = pin(name), evidence = parseDependencyCustodyEvidence(decode(pinned.bytes));
-  if (evidence.kind !== DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1 || !sameDependencyWorkspace(evidence.workspace, workspace)) invalid();
+  if ((evidence.kind !== DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1 && evidence.kind !== DependencyCustodyEvidenceKind.ReadonlyColdBaselineAdoptionV2) || !sameDependencyWorkspace(evidence.workspace, workspace)) invalid();
   return Object.freeze({ ...pinned, evidence });
 }
 export function readHostedReadonlyDependencyStart(fence: HostedActivationFence, startId: string) {
@@ -109,4 +109,4 @@ export function assertHostedOrdinaryDependencyNotAdopted(fence: HostedActivation
   const s = lstatSync(workspacePath, { bigint: true }); if (!s.isDirectory() || s.uid !== 0n) invalid();
   if (readHostedReadonlyDependencyAssociation(fence, { canonicalPath: workspacePath, dev: String(s.dev), ino: String(s.ino) })) invalid();
 }
-export type HostedReadonlyDependencyAssociation = Readonly<{ bytes: Buffer; reference: DependencyProtectedReference; evidence: DependencyReadonlyAdoptionEvidence }>;
+export type HostedReadonlyDependencyAssociation = Readonly<{ bytes: Buffer; reference: DependencyProtectedReference; evidence: DependencyReadonlyAdoptionEvidence | DependencyReadonlyColdBaselineAdoptionEvidence }>;

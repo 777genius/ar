@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { unitFor, validateStart, fingerprint } from './contract.mjs';
 import { managedLauncherInvocation, storageIssuerInvocation, validateStorageIssuerBinding, currentStorageAcquisition, currentStorageOwnership,
   cancelOwnedStorageTarget, decideStorageInvocation, ManagedPinObservation } from '../managed-launcher/launch.mjs';
-import { storageTargetUnit, parseNativeUnitProperties } from '../managed-launcher/launch.mjs';
+import { ManagedLauncherProfile, assertManagedLauncherProfile, storageTargetUnit, parseNativeUnitProperties } from '../managed-launcher/launch.mjs';
 import { requireManagedPinCapability, readManagedPinFile } from './storage-policy.mjs';
 import { randomUUID } from 'node:crypto';
 
@@ -27,10 +27,12 @@ export async function systemCommand(cmd, args, executeCommand = execute) {
   }
 }
 export class HostJobs {
+  /** @param {{stateDir:string, run?:typeof systemCommand, machineId?:()=>Promise<string>, clock?:()=>number, launcherProfile?:'standard'|'fixed_full_positive_test'}} options */
   constructor({ stateDir, run = systemCommand,
     machineId = async () => (await readFile('/etc/machine-id', 'utf8')).trim(),
-    clock = () => Date.now() }) {
-    Object.assign(this, { stateDir, run, machineId, clock });
+    clock = () => Date.now(), launcherProfile = ManagedLauncherProfile.Standard }) {
+    if (!Object.values(ManagedLauncherProfile).includes(launcherProfile)) throw new Error('invalid launcher profile');
+    Object.assign(this, { stateDir, run, machineId, clock, launcherProfile });
   }
   path(id) { return join(this.stateDir, `${unitFor(id)}.json`); }
   async read(id) {
@@ -56,6 +58,7 @@ export class HostJobs {
   }
   async start(request) {
     validateStart(request);
+    assertManagedLauncherProfile(this.launcherProfile, request.jobId);
     if (await this.machineId() !== request.machineId) throw new Error('machine identity mismatch');
     const digest = fingerprint(request);
     let record = await this.read(request.jobId);
@@ -110,7 +113,7 @@ export class HostJobs {
           cpuPercent: request.cpuPercent,
           ...(Object.hasOwn(request, 'startupSeconds') ? { startupSeconds: request.startupSeconds } : {}),
         },
-      });
+      }, this.launcherProfile);
       if (record.storageLifetime) {
         const binding = record.storageLifetime;
         // An installed root-owned path, never a worker-writable job directory.

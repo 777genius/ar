@@ -25,7 +25,7 @@ vi.mock("node:fs", async original => {
 });
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn() }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: z.any() }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: z.any() }));
 vi.mock("../codex-goal-mcp-project-control-deps", async original => ({ ...await original<object>(),
   loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: ["account-q"] } }) }));
 // Inject the terminal job-creation effect; retain the real manifest mapping.

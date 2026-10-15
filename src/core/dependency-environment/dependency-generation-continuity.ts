@@ -1,9 +1,13 @@
 import { isDependencyCustodyObject, isDependencyProtectedReference,
-  type DependencyProtectedReference } from "./dependency-custody-evidence";
+  type DependencyProtectedReference } from "./dependency-protected-reference";
 
-// This inactive checkpoint has no Active/Authenticated state or issuer. These
-// are retirement facts only; neither a record nor its epoch authorizes reuse.
-export enum DependencyGenerationContinuityKind { RetiredReadyV1 = "retired_ready_v1" }
+// Closed continuity records are facts only. Their parser and epoch do not
+// authorize reuse; current fixed physical composition authenticates exclusion.
+export enum DependencyGenerationContinuityKind {
+  RetiredReadyV1 = "retired_ready_v1",
+  BaselineAuthenticatedV1 = "baseline_authenticated_v1",
+  RetiredEvictingV1 = "retired_evicting_v1",
+}
 export type DependencyGenerationContinuityInvalidation = {
   readonly version: 1; readonly kind: DependencyGenerationContinuityKind.RetiredReadyV1;
   readonly operationId: string; readonly generation: string;

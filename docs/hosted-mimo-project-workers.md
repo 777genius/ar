@@ -35,6 +35,8 @@ Use the existing project status and stop tools for the same registered job. A su
 
 ### Shared current runtime and retained attempts
 
+A retained native start that failed before submission can lack the durable handoff pin required by normal cancellation. Keep that start fenced; do not reconstruct pins, delete its active slot, or replay Start. The trusted native composition exposes `abortUnsubmittedRegisteredResearchLaunch` for this distinct case. It requires the exact retained start/spec/request and a process-local proof from a reviewed finite owner adapter that the original submitting service has terminated. Under the original controller, workspace, registry and job fences, it verifies that no runtime/provider submission or pin mount exists, publishes an explicit abort witness, and releases the matching active slot last. Its `abortedBeforeSubmission` result is reservation settlement, not a completed model task, a clean-workspace claim or a worker result. The compatible writer reader independently revalidates the retained witness and physical closure. This contract is not a serialized bridge operation; missing or uncertain owner evidence remains blocked.
+
 Trusted routing activation uses the single root-private file `/etc/subscription-runtime/mimo-project-runtime-routing.json`. Schema 1 retains controller-origin routing. Schema 2 has exactly `schemaVersion: 2`, `legacyRuntimeDirectory`, `legacyArtifactSha256`, `currentRuntimeDirectory` and `currentArtifactSha256`. Both directories name immutable `/opt/subscription-runtime/releases/<40-character revision>` artifacts; the current directory must exactly match the protected `/opt/subscription-runtime/mimo-project-bridge-current` purpose pointer. This is host composition, never project YAML or caller authority.
 
 Use the existing reviewed installation/activation procedure: qualify and install the common release, activate its purpose pointer, then compare-and-swap the protected routing metadata from the reviewed previous bytes to schema 2 with the matching artifact digest. Until schema 2 is published, the new bridge conservatively retains schema 1 behavior. Later releases require the same paired pointer/metadata transition; drift refuses operations until they agree. There is no per-project runtime installation or controller provenance rewrite.
@@ -42,6 +44,9 @@ Use the existing reviewed installation/activation procedure: qualify and install
 With schema 2, new Create uses the common current runtime. Start may select current only with an exact protected no-first-effect birth, positively absent native and ordinary writer namespaces, and a fresh admission check. Before submission, it exclusively publishes a private exact-job origin intent in the fixed state-root `mimo-runtime-starts` depot. An uncertain pre-spec submission retains that origin. Status, Stop and retained Start use the protected native execution origin, then the exact intent, then original job birth or the qualified legacy baseline. An incomplete native namespace cannot fall back without an exact retained intent; an intent never grants writer release. Metadata, pointer, executable bytes and original authority witnesses are checked again before calls.
 
 After an owned failed Start has settled, a trusted host operator can explicitly call `recoverHostedMimoProjectPreEffectStartIntent` with the exact job selection, prior intent and manifest SHA256, qualified schema-2 routing and its current metadata/pointer witness. Recovery requires a released compatible birth and absent native, ordinary and both lexical/physical first-effect namespaces under protected publication. It preserves the original intent bytes in private `mimo-runtime-starts/pre-effect-history` before publishing the current origin. It does not launch the model or alter admission, birth, execution or account state. Reconcile a transport timeout against the same intent and receipt; do not replay an uncertain Start. Any executed or unknown owner remains fenced.
+
+An exact retained `protected_job_birth_publication_busy` Start can be explicitly submitted again with the identical request after its owned unit is cold, has zero PID, an empty cgroup and no queued job. The bridge rearms only when the current canonical controller, immutable binding, clean worker workspace at the configured source commit and original admission receipt still match, the receipt is `validated_not_launched` with zero launch authorizations, both compatible positive birth records remain intact, and account reservation, native authority, ordinary writer authority and both first-effect records are absent. It exclusively persists the proof and archives the old request, owner and result as the previous generation. The next owned unit revalidates the proof before invoking the unchanged normal Start handler. Unknown/consumed authority, another failure code or a partial rearm publication refuses recovery; it never deletes claims or births, rewrites admission or launches a provider from the proof itself.
+
 
 For a never-launched job with a verified admitted input patch, the first-launch admission proof accepts an absent progress PID only while the prepared job remains free of execution artifacts. The exact patch receipt, ownership, workspace lease and staged bytes are still checked; this does not authorize continuation of an earlier attempt.
 
@@ -117,6 +122,17 @@ On a Linux root host with scratch isolation enabled, the ordinary `codex-goal-cl
 Lifecycle commands in that namespace cannot satisfy the host MiMo initial-root namespace contract.
 Use the [trusted hosted bridge](#remote-agents-and-the-trusted-bridge) in its finite owned initial-host-root service.
 Do not bypass namespace checks with environment markers or edit reservations, leases or ownership records manually.
+
+For a generation-zero Create interrupted before registration, an operator can explicitly retain a failed attempt through
+`hosted-mimo-project-bridge-cli --reconcile-interrupted-create /absolute/private-plan.json` in a finite owned initial-host-root service.
+The root-owned mode-0600 plan has exactly `schemaVersion: 1`, `machineId`, `projectId`, `workstreamId`, `jobId`,
+`expectedBindingSha256`, `expectedOwnerSha256`, `expectedRequestSha256`, `expectedBootId` and `expectedInvocationId`.
+The runtime derives the original unit and paths. It requires structured PID-1 timeout evidence for the same boot/invocation,
+physical process and queue absence, unchanged builtin admission partials, and no manifest, birth, first effect or Start authority.
+Missing proof refuses reconciliation; a collected unit or default systemd success alone is insufficient.
+The canonical failure becomes settled only with its matching complete settlement receipt. Incomplete publication stays unresolved.
+This preserves all partials and reports `project_control_interrupted_create_timeout`; it never replays Create, adopts a root,
+permits Start or clears orphan debt. Preserve the original ID and receipts rather than replacing an uncertain attempt.
 
 Status can mutate canonical state. With a retained candidate, it reconciles the same native/provider attempt,
 publishes the canonical result and handoff, then releases the active reservation last.

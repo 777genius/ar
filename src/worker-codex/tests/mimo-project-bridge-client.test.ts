@@ -66,3 +66,24 @@ describe("scoped MiMo remote project client", () => {
     expect(() => parseMimoProjectClientRoutes({ schemaVersion: 1, routes: [route, route] })).toThrow("route_duplicate");
   });
 });
+
+it("forwards Create-only ownership while rejecting control overrides before transport", async () => {
+  const request = vi.fn(async (_request: unknown) => ({ ok: true }));
+  const args = { ...identity, ownedPaths: ["src/feature/one.ts"], thinking: true,
+    promptBody: "TEST edit", sourceCommit: "b".repeat(40), confirmCreate: true };
+  await delegateMimoProjectOperation(Operation.Create, args, { routes: [route], transport: async () => ({ request }) });
+  expect(request.mock.calls[0]![0]).toMatchObject({ ownedPaths: args.ownedPaths, reasoningEffort: "high" });
+  const transport = vi.fn();
+  for (const operation of [Operation.Start, Operation.Status, Operation.Stop])
+    await expect(delegateMimoProjectOperation(operation, { ...identity, ownedPaths: args.ownedPaths },
+      { routes: [route], transport })).rejects.toThrow("override_denied");
+  expect(transport).not.toHaveBeenCalled();
+});
+
+it("rejects hosted-only ownership without a remote route before local delegation", async () => {
+  const transport = vi.fn();
+  await expect(delegateMimoProjectOperation(Operation.Create, {
+    jobId: "local", ownedPaths: ["src/feature/one.ts"], confirmCreate: true,
+  }, { transport })).rejects.toThrow("mimo_project_remote_backend_conflict");
+  expect(transport).not.toHaveBeenCalled();
+});
