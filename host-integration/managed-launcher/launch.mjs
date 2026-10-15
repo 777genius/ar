@@ -227,7 +227,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     if (process.argv[1] !== fullPositiveTestEntry) denied();
     // Fixed protected FULL branch. The original manager's exclusive ledger is
     // already present; the helper retains the reviewed complete source closure.
-    const { fullNativeArguments } = await import('./dependency-full-native-TEST.js');
+    const { fullNativeArguments } = await import('./dependency-full-native-TEST.mjs');
     const native = fullNativeArguments(request);
     const invocation = Object.freeze({ command: managedSystemdRunExecutable, args: native.args });
     nativeInvocations.set(invocation, native.custody); return invocation;
