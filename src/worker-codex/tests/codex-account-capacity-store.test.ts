@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -21,8 +22,75 @@ import {
   type CodexGoalRunConfig,
 } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
+import { CodexModelBackend } from "../../provider-codex";
 
 describe("Codex shared account capacity store", () => {
+  it("preserves literal MiMo claim read, release and trusted resolution", async () => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-mimo-capacity-claim-"));
+    try {
+      const store = codexAccountCapacityStore(join(root, "auth"), { modelBackend: CodexModelBackend.XiaomiMimoTokenPlan });
+      const now = new Date("2026-10-15T10:00:00Z");
+      store.observe({ accountId: "account-q", observedAt: now, capacity: { availability: "cooldown", reason: "quota_limited",
+        cooldownUntil: new Date(now.getTime() + 1) } });
+      const due = new Date(now.getTime() + 2), state = store.readState({ accountId: "account-q", now: due })!;
+      const input = { state, ownerId: "TEST-owner", now: due, ttlMs: 60_000, mode: WorkerAccountCapacityRecheckMode.DueOnly };
+      const first = store.tryClaimRecheck(input);
+      expect(first.status).toBe(WorkerAccountCapacityClaimStatus.Claimed);
+      if (first.status !== WorkerAccountCapacityClaimStatus.Claimed) throw new Error("TEST claim absent");
+      expect(store.readState({ accountId: "account-q", now: due })?.revision).toBe(state.revision);
+      store.releaseRecheck({ claim: first.claim });
+      const second = store.tryClaimRecheck(input);
+      expect(second.status).toBe(WorkerAccountCapacityClaimStatus.Claimed);
+      if (second.status !== WorkerAccountCapacityClaimStatus.Claimed) throw new Error("TEST claim absent");
+      expect(store.resolveRecheck({ claim: second.claim, observedAt: due,
+        resolution: { type: WorkerAccountCapacityResolutionType.Available } }).status).toBe("applied");
+      expect(store.read({ accountId: "account-q", now: due })).toBeNull();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each([
+    { accountId: "codex-provider:TEST-legacy", availability: "cooldown" as const, version: "local-file-worker-account-capacity-v3", legacy: false },
+    { accountId: "codex-session:TEST-legacy", availability: "disabled" as const, version: "local-file-worker-account-capacity-v1", legacy: true },
+    { accountId: "codex-auth:TEST-legacy", availability: "quota_exhausted" as const, version: "local-file-worker-account-capacity-v2", legacy: false },
+  ])("preserves and refuses ambiguous MiMo legacy $accountId even after cooldown", async ({ accountId, availability, version, legacy }) => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-mimo-legacy-capacity-"));
+    try {
+      const authRoot = join(root, "auth"), scope = join(codexAccountCapacityRootDir(authRoot), "mimo-token-plan");
+      const accountHash = createHash("sha256").update(accountId).digest("hex");
+      const path = legacy ? join(scope, "account-capacity", accountHash)
+        : join(scope, "account-capacity-v2", accountHash, "account.json");
+      await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
+      const bytes = JSON.stringify({ storageVersion: version, revision: "TEST-revision", accountId,
+        capacity: { availability, reason: availability === "disabled" ? "provider_session_invalid" : "quota_limited",
+          cooldownUntil: "2026-10-15T10:00:00Z" }, updatedAt: "2026-10-15T09:00:00Z" });
+      await writeFile(path, bytes, { mode: 0o600 });
+      const store = codexAccountCapacityStore(authRoot, { modelBackend: CodexModelBackend.XiaomiMimoTokenPlan });
+      const now = new Date("2026-10-15T11:00:00Z");
+      expect(() => store.read({ accountId: "account-q", now })).toThrow("worker_account_capacity_legacy_identity_unresolved");
+      expect(() => store.readState({ accountId: "account-q", now })).toThrow("worker_account_capacity_legacy_identity_unresolved");
+      expect(() => store.observe({ accountId: "account-q", observedAt: now, capacity: { availability: "available" } }))
+        .toThrow("worker_account_capacity_legacy_identity_unresolved");
+      expect(() => store.clear({ accountId })).toThrow("worker_account_capacity_legacy_identity_unresolved");
+      expect(await readFile(path, "utf8")).toBe(bytes);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["malformed", "oversized", "symlink", "sidecar"] as const)("refuses uncertain MiMo legacy %s without cleanup", async kind => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-mimo-unknown-capacity-"));
+    try {
+      const authRoot = join(root, "auth"), scope = join(codexAccountCapacityRootDir(authRoot), "mimo-token-plan");
+      const dir = join(scope, "account-capacity-v2", "a".repeat(64));
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const path = join(dir, kind === "sidecar" ? "account.json.recheck-claim.json" : "account.json");
+      const bytes = kind === "oversized" ? "x".repeat(64 * 1024 + 1) : "{";
+      if (kind === "symlink") {
+        await writeFile(join(root, "TEST-target"), bytes); await symlink(join(root, "TEST-target"), path);
+      } else await writeFile(path, bytes);
+      const store = codexAccountCapacityStore(authRoot, { modelBackend: CodexModelBackend.XiaomiMimoTokenPlan });
+      expect(() => store.read({ accountId: "account-q" })).toThrow("worker_account_capacity_legacy_identity_unresolved");
+      expect(await readFile(path, "utf8")).toBe(bytes);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("shares capacity across jobs using one auth pool", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-shared-capacity-"));
     const authRootDir = join(root, "auth");

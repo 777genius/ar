@@ -18,6 +18,8 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { CodexAccountCapacityAliasStore } from "./codex-account-capacity-alias-store";
 
+export const mimoLegacyCapacityAccountIdPrefixes = ["codex-provider:", "codex-session:", "codex-auth:"] as const;
+
 export function codexAccountCapacityRootDir(authRootDir: string): string {
   const resolvedAuthRoot = resolve(authRootDir);
   const canonicalAuthRoot = existsSync(resolvedAuthRoot)
@@ -51,6 +53,8 @@ export function codexAccountCapacityStore(
     rootDir: backend === CodexModelBackend.XiaomiMimoTokenPlan
       ? join(codexAccountCapacityRootDir(authRootDir), "mimo-token-plan")
       : codexAccountCapacityRootDir(authRootDir),
+    ...(backend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? { restrictiveLegacyAccountIdPrefixes: mimoLegacyCapacityAccountIdPrefixes } : {}),
     ...(options.observability
       ? { observability: options.observability }
       : {}),
