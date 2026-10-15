@@ -362,9 +362,8 @@ export enum ImageFdTestStage {
   Sample="descriptor_sample", Revalidate="sample_revalidation", Material="material_veto",
 }
 export enum ImageFdTestExposure { Image="image_descriptor", Proc="proc_descriptor", Other="other_fixed_exposure" }
-export function createImageFdTestProgress(enteredAt:bigint,originalDeadline:bigint) {
-  // The unchanged administrative TEST has one original 120-second interval.
-  const originalStart=originalDeadline-120_000_000_000n;
+export function createImageFdTestProgress(enteredAt:bigint,originalStart:bigint,originalDeadline:bigint) {
+  // Observe the caller's actual monotonic origin; do not infer its interval.
   const milliseconds=(value:bigint)=>Number(value/1_000_000n);
   let stage=ImageFdTestStage.Entry,iterations=0,actors=0,samples=0,overflow=false;
   let markerPublished:boolean|null=null;

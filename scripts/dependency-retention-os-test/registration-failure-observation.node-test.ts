@@ -359,14 +359,14 @@ test("private-method and symbol labels never block or escape a known exact frame
 // A timeout on entry must remain distinct from an actual completed census
 // with no matching image and from no census at all. None is qualification.
 test("readonly image TEST progress distinguishes expired entry, observed no match and unobserved",()=>{
-  const deadline=120_000_000_000n;
-  const expired=createImageFdTestProgress(deadline,deadline).snapshot(deadline+1_000_000n);
+  const startedAt=7_000_000_000n,deadline=startedAt+240_000_000_000n;
+  const expired=createImageFdTestProgress(deadline,startedAt,deadline).snapshot(deadline+1_000_000n);
   assert.equal(expired.expiredOnEntry,true);assert.equal(expired.remainingOnEntryMs,0);
   assert.equal(expired.lastSample,null);assert.equal(expired.markerPublished,null);
-  const live=createImageFdTestProgress(20_000_000_000n,deadline);
-  const unknown=live.snapshot(21_000_000_000n);
+  const live=createImageFdTestProgress(startedAt+20_000_000_000n,startedAt,deadline);
+  const unknown=live.snapshot(startedAt+21_000_000_000n);
   assert.equal(unknown.expiredOnEntry,false);assert.equal(unknown.elapsedOnEntryMs,20000);
-  assert.equal(unknown.remainingOnEntryMs,100000);assert.equal(unknown.lastSample,null);
+  assert.equal(unknown.remainingOnEntryMs,220000);assert.equal(unknown.lastSample,null);
   live.stage(ImageFdTestStage.Budget);live.markerPublished();live.iteration();live.actorValidated();
   live.stage(ImageFdTestStage.Revalidate);live.sample([ImageFdTestExposure.Proc],false);
   const sampled=live.snapshot(deadline+2_000_000n);
@@ -378,7 +378,7 @@ test("readonly image TEST progress distinguishes expired entry, observed no matc
   assert.equal(unknown.lastSample,null); // Earlier unknown snapshot never turns into zero.
 });
 test("readonly image TEST facts retain only fixed exposures and image identity match with bounded counts",()=>{
-  const progress=createImageFdTestProgress(0n,120_000_000_000n),exposures=[ImageFdTestExposure.Image,ImageFdTestExposure.Image];
+  const progress=createImageFdTestProgress(0n,0n,120_000_000_000n),exposures=[ImageFdTestExposure.Image,ImageFdTestExposure.Image];
   progress.sample(exposures,true);exposures.push(ImageFdTestExposure.Other);
   const observed=progress.snapshot(1_000_000n);
   assert.deepEqual(observed.lastSample,{exposures:[ImageFdTestExposure.Image],imageIdentityMatch:true});
