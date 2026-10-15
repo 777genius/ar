@@ -1,5 +1,6 @@
 import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
+import { codexStructuredOutputFailureDetails } from "./codex-structured-output-schema";
 import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
@@ -205,6 +206,7 @@ function codexFailureDetails(
   }
   const details: Record<string, string> =
     error instanceof CodexAppServerTurnError ? { ...error.details() } : {};
+  Object.assign(details, codexStructuredOutputFailureDetails(error));
   const process = processFailureLike(error);
   if (process?.exitCode !== undefined) {
     details.exitCode = String(process.exitCode);
