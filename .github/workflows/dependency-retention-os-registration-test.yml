@@ -165,8 +165,70 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
       - name: Compile finite uninstalled ROOT profile and check refusal DATA only
         run: |
-          node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.dependency-full-native-test.json
-          node --test host-integration/managed-launcher/dependency-full-native-TEST.node-test.js
+          set -euo pipefail
+          PROFILE_EMIT=$(mktemp -d "$RUNNER_TEMP/TEST-full-profile-emit-XXXXXX")
+          export PROFILE_EMIT
+          # Preserve strict checking and allowJs while keeping every emit off source inputs.
+          node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.dependency-full-native-test.json \
+            --rootDir "$GITHUB_WORKSPACE" --outDir "$PROFILE_EMIT"
+          cp package.json "$PROFILE_EMIT/package.json"
+          cmp package.json "$PROFILE_EMIT/package.json"
+          for leaf in hosted-project-control-source-catalog hosted-full-guest-source-inventory hosted-signed-tool-elf hosted-fd-unit-lifecycle hosted-fd-unit-policy; do
+            relative="dist/provider-codex/app-server/adapters/$leaf.js"
+            mkdir -p "$PROFILE_EMIT/$(dirname "$relative")"
+            cp "$relative" "$PROFILE_EMIT/$relative"
+            cmp "$relative" "$PROFILE_EMIT/$relative"
+          done
+          node --test "$PROFILE_EMIT/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js"
+          # Downstream assembly uses source-local generated leaves. Publish only
+          # this closed TS/MTS output list; tracked HOST inputs can never be targets.
+          node --experimental-strip-types --input-type=module-typescript - <<'PUBLISH_PROFILE_TEST_OUTPUTS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { constants, copyFileSync, lstatSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const emitted=process.env.PROFILE_EMIT; assert(emitted);
+          const outputs=[
+            'host-integration/managed-launcher/hosted-project-control-source-catalog.js',
+            'host-integration/managed-launcher/hosted-full-guest-source-inventory.js',
+            'host-integration/managed-launcher/dependency-full-h1-elf-role-TEST.js',
+            'host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js',
+            'host-integration/managed-launcher/dependency-full-h1-rooted-reader-TEST.js',
+            'host-integration/managed-launcher/hosted-signed-tool-elf.js',
+            'host-integration/managed-launcher/dependency-full-python-envelope-TEST.js',
+            'host-integration/managed-launcher/dependency-full-h1-constructor-closure-TEST.js',
+            'host-integration/managed-launcher/dependency-full-positive-copy-TEST.js',
+            'host-integration/managed-launcher/hosted-fd-unit-lifecycle.js',
+            'host-integration/managed-launcher/hosted-fd-unit-policy.js',
+            'host-integration/managed-launcher/dependency-full-provider-setup-TEST.js',
+            'host-integration/managed-launcher/dependency-full-native-TEST.js',
+            'host-integration/managed-launcher/dependency-full-native-parent-TEST.js',
+            'host-integration/managed-launcher/dependency-full-native-TEST.node-test.js',
+            'host-integration/managed-launcher/launch-full-positive-TEST.mjs',
+            'host-integration/managed-launcher/full-positive-test-profile.mjs',
+            'host-integration/host-jobs/full-positive-manager-TEST.mjs',
+          ];
+          const tracked=new Set(execFileSync('git',['ls-files','-z'],{encoding:'utf8'}).split('\0'));
+          for(const relative of outputs) {
+            assert(!tracked.has(relative),'refuse tracked output destination');
+            const input=relative.replace(/\.js$/,'.ts').replace(/\.mjs$/,'.mts');
+            assert(tracked.has(input),'require exact tracked TypeScript input');
+            const from=join(emitted,relative),before=lstatSync(from,{bigint:true});
+            assert(before.isFile() && !before.isSymbolicLink() && before.nlink===1n);
+            const bytes=readFileSync(from);
+            try {
+              const existing=lstatSync(relative,{bigint:true});
+              assert(existing.isFile() && !existing.isSymbolicLink() && existing.nlink===1n);
+              assert(readFileSync(relative).equals(bytes),'existing generated output differs');
+            } catch(error) {
+              if(!(error instanceof Error) || !('code' in error) || error.code!=='ENOENT')throw error;
+              copyFileSync(from,relative,constants.COPYFILE_EXCL);
+            }
+            const after=lstatSync(from,{bigint:true});
+            assert.deepEqual([after.dev,after.ino,after.size,after.mtimeNs,after.ctimeNs],[before.dev,before.ino,before.size,before.mtimeNs,before.ctimeNs]);
+            assert(readFileSync(relative).equals(bytes));
+          }
+          PUBLISH_PROFILE_TEST_OUTPUTS
       - name: Retain finite public compiled profile delivery inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

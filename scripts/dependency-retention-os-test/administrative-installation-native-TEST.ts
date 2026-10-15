@@ -17,7 +17,7 @@ import {
   FullBackingExposure, readOriginalAdministrativeTaskReferences, retainFullProcProcess, sampleFullProcDescriptors
 }
 from "./current-full-backing-collector.js";
-import { observeAdministrativeRpcReason, observeRegistrationFailure, observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
+import { createImageFdTestProgress, ImageFdTestStage, ImageFdTestExposure, observeAdministrativeRpcReason, observeRegistrationFailure, observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
 const control="/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1/control";
 const actorUnit="subscription-runtime-installer-10000000-0000-4000-8000-9ca302fabd07.service";
 const forgedUnit="TEST-administrative-forgery.service";
@@ -38,6 +38,8 @@ export enum AdministrativeInstallationTestPhase {
   DeadBirth="dead_original_birth_veto", Complete="complete",
 }
 let currentPhase=AdministrativeInstallationTestPhase.NotStarted;
+let imageFdProgress:ReturnType<typeof createImageFdTestProgress>|undefined;
+export function observeAdministrativeImageFdTestProgress(){return imageFdProgress?.snapshot(process.hrtime.bigint());}
 /** Finite TEST progress only; it grants no source/admission or retry authority. */
 export function observeAdministrativeInstallationTestPhase():AdministrativeInstallationTestPhase { return currentPhase; }
 let forgedCommandObservation:TestAdministrativeCommandObservation|undefined;
@@ -219,19 +221,34 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
     // Actual fixed administrative inspection deliberately retains readonly
     // image FD. Every observed task must veto; readonly cannot waive exposure.
     currentPhase=AdministrativeInstallationTestPhase.ImageFd;
+    imageFdProgress=createImageFdTestProgress(process.hrtime.bigint(),deadline);
+    imageFdProgress.stage(ImageFdTestStage.Marker);
     imageFdCheck(ImageFdCheck.Marker,()=>writeFileSync(control+"/TEST-inspection-open","INSPECT_FIXED_IMAGE_READONLY\n",{
       flag:"wx",mode:0o400
     }
     ));
+    imageFdProgress.markerPublished();
     let material=false;
     while(!material){
+      imageFdProgress.stage(ImageFdTestStage.Budget);
       budget();
+      imageFdProgress.iteration();
       for(const anchor of anchors){
+        imageFdProgress.stage(ImageFdTestStage.Actor);
         imageFdCheck(ImageFdCheck.Actor,()=>assert(readOriginalPublicAdministrativeActor(anchor,sourceSha)));
+        imageFdProgress.actorValidated();
+        imageFdProgress.stage(ImageFdTestStage.Sample);
         const sample=imageFdCheck(ImageFdCheck.Sample,()=>sampleFullProcDescriptors(anchor,target,budget));
         material||=sample.exposures.has(FullBackingExposure.ImageDescriptor);
+        imageFdProgress.stage(ImageFdTestStage.Revalidate);
         imageFdCheck(ImageFdCheck.Revalidate,()=>sample.revalidate());
-        if(material)imageFdCheck(ImageFdCheck.Material,()=>assert.equal(readOriginalAdministrativeTaskReferences(anchor,sourceSha,before.originSha256,target,budget)?.material,true));
+        imageFdProgress.sample([...sample.exposures].map(value=>value===FullBackingExposure.ImageDescriptor ? ImageFdTestExposure.Image :
+          value===FullBackingExposure.ProcDescriptor ? ImageFdTestExposure.Proc : ImageFdTestExposure.Other),
+          sample.joins.some(row=>row.dev===target.image.dev && row.ino===target.image.ino));
+        if(material){
+          imageFdProgress.stage(ImageFdTestStage.Material);
+          imageFdCheck(ImageFdCheck.Material,()=>assert.equal(readOriginalAdministrativeTaskReferences(anchor,sourceSha,before.originSha256,target,budget)?.material,true));
+        }
       }
       if(!material)await new Promise<void>(resolve=>setTimeout(resolve,50));
     }

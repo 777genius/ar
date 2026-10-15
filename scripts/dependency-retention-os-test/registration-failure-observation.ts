@@ -354,3 +354,40 @@ export function validateAdministrativeRpcDiagnostic(value: unknown, sourceSha: s
     if (!row.status || row.signal !== AdministrativeSignal.None || row.spawnError !== AdministrativeSpawnError.None) return false;
   return Buffer.byteLength(JSON.stringify(row) + "\n") <= 4096;
 }
+
+/** Same-phase TEST progress only. Explicit monotonic samples never renew or
+ * enforce the caller's original deadline and never establish actor authority. */
+export enum ImageFdTestStage {
+  Unknown="unknown", Entry="entry", Marker="marker_publish", Budget="budget_check", Actor="actor_validation",
+  Sample="descriptor_sample", Revalidate="sample_revalidation", Material="material_veto",
+}
+export enum ImageFdTestExposure { Image="image_descriptor", Proc="proc_descriptor", Other="other_fixed_exposure" }
+export function createImageFdTestProgress(enteredAt:bigint,originalDeadline:bigint) {
+  // The unchanged administrative TEST has one original 120-second interval.
+  const originalStart=originalDeadline-120_000_000_000n;
+  const milliseconds=(value:bigint)=>Number(value/1_000_000n);
+  let stage=ImageFdTestStage.Entry,iterations=0,actors=0,samples=0,overflow=false;
+  let markerPublished:boolean|null=null;
+  let lastSample:Readonly<{exposures:readonly ImageFdTestExposure[];imageIdentityMatch:boolean|null}>|null=null;
+  const increment=(value:number)=>{if(value===65535){overflow=true;return value;}return value+1;};
+  return Object.freeze({
+    stage(value:ImageFdTestStage){stage=Object.values(ImageFdTestStage).includes(value) ? value : ImageFdTestStage.Unknown;},
+    markerPublished(){markerPublished=true;},
+    iteration(){iterations=increment(iterations);},
+    actorValidated(){actors=increment(actors);},
+    sample(exposures:readonly ImageFdTestExposure[],imageIdentityMatch:boolean){
+      samples=increment(samples);
+      lastSample=Object.freeze({exposures:Object.freeze([...new Set(exposures.map(value=>
+        Object.values(ImageFdTestExposure).includes(value) ? value : ImageFdTestExposure.Other))].sort()),
+        imageIdentityMatch:typeof imageIdentityMatch==="boolean" ? imageIdentityMatch : null});
+    },
+    snapshot(now:bigint){return Object.freeze({
+      purpose:"TEST_readonly_image_fd_progress_only",stage,
+      elapsedOnEntryMs:milliseconds(enteredAt-originalStart),remainingOnEntryMs:milliseconds(originalDeadline-enteredAt),
+      expiredOnEntry:enteredAt>=originalDeadline,elapsedInPhaseMs:milliseconds(now-enteredAt),
+      remainingMs:milliseconds(originalDeadline-now),deadlineExpired:now>=originalDeadline,
+      iterations,actorValidations:actors,completedSamples:samples,countLimitReached:overflow,
+      markerPublished,expectedImageIdentityKnown:true,lastSample,actorOpenReceipt:"not_observed",
+    });},
+  });
+}

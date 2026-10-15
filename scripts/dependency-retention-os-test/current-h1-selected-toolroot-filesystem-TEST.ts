@@ -14,6 +14,7 @@ export enum SelectedOutputOrigin { Archive="archive-data",Recipe="recipe-data" }
 export enum SelectedTransformation { Identity="identity",SitecustomizeRelative="SitecustomizeRelativeV1",LoaderNamespace="LoaderNamespaceV1" }
 export enum SelectedPhysicalDisposition { Complete="MATERIALIZED_UNADMITTED_DATA",PartialHeld="PARTIAL_HELD" }
 export enum SelectedPhysicalHold { Unknown="unknown",Plan="plan",Origin="origin",Namespace="namespace",Parent="parent",Budget="budget",Deadline="deadline",Ownership="ownership",Identity="identity",Content="content",Time="time",Filesystem="filesystem",Cancelled="cancelled" }
+export enum SelectedPhysicalIdentitySite { Unknown="unknown", DirectoryType="directory_type", DirectoryOriginal="directory_original_identity", DirectoryNamed="directory_handle_named_stamp", DirectoryFinalized="directory_finalized_stamp" }
 export enum SelectedPhysicalPhase { Unknown="unknown",Input="input",Originals="originals",Graph="graph",Recipe="recipe",Plan="plan",Anchor="anchor",Directories="directories",Regular="regular",Aliases="aliases",Finalize="finalize",Census="census",Publication="publication",Completion="completion",Cleanup="cleanup" }
 export const selectedRecipeSha256="9c13c0ed23d678ecb829486373f73bf46e3021fb31c4bfffaa0664fa0fd9ddd0";
 export interface SelectedRetainedStreamData {
@@ -38,15 +39,15 @@ export interface SelectedProvenance {
 }
 export class SelectedPhysicalHeld extends Error {
  readonly disposition=SelectedPhysicalDisposition.PartialHeld;
- constructor(readonly reason:SelectedPhysicalHold,readonly rootCreated:boolean,readonly phase:SelectedPhysicalPhase=SelectedPhysicalPhase.Unknown,readonly processedObjects:number=0){super("selected toolroot DATA HOLD: "+reason);this.name="SelectedPhysicalHeld";}
+ constructor(readonly reason:SelectedPhysicalHold,readonly rootCreated:boolean,readonly phase:SelectedPhysicalPhase=SelectedPhysicalPhase.Unknown,readonly processedObjects:number=0,readonly identitySite:SelectedPhysicalIdentitySite=SelectedPhysicalIdentitySite.Unknown){super("selected toolroot DATA HOLD: "+reason);this.name="SelectedPhysicalHeld";}
 }
 /** Finite diagnostic facts only; rejects exotic thrown values without hooks. */
-export function readSelectedPhysicalHoldFacts(error:unknown):Readonly<{reason:SelectedPhysicalHold;rootCreated:boolean;phase:SelectedPhysicalPhase;processedObjects:number}>|undefined {
+export function readSelectedPhysicalHoldFacts(error:unknown):Readonly<{reason:SelectedPhysicalHold;rootCreated:boolean;phase:SelectedPhysicalPhase;processedObjects:number;identitySite:SelectedPhysicalIdentitySite}>|undefined {
  if(error===null||typeof error!=="object"||types.isProxy(error)||!types.isNativeError(error)||Object.getPrototypeOf(error)!==SelectedPhysicalHeld.prototype)return undefined;
  const d=Object.getOwnPropertyDescriptors(error),value=(key:string)=>{const row=d[key];return row&&"value" in row?row.value:undefined;};
- const reason:unknown=value("reason"),rootCreated:unknown=value("rootCreated"),phase:unknown=value("phase"),processedObjects:unknown=value("processedObjects");
- if(value("disposition")!==SelectedPhysicalDisposition.PartialHeld||typeof reason!=="string"||!Object.values(SelectedPhysicalHold).includes(reason as SelectedPhysicalHold)||typeof rootCreated!=="boolean"||typeof phase!=="string"||!Object.values(SelectedPhysicalPhase).includes(phase as SelectedPhysicalPhase)||typeof processedObjects!=="number"||!Number.isSafeInteger(processedObjects)||processedObjects<0||processedObjects>1055)return undefined;
- return Object.freeze({reason:reason as SelectedPhysicalHold,rootCreated,phase:phase as SelectedPhysicalPhase,processedObjects});
+ const reason:unknown=value("reason"),rootCreated:unknown=value("rootCreated"),phase:unknown=value("phase"),processedObjects:unknown=value("processedObjects"),identitySite:unknown=value("identitySite");
+ if(value("disposition")!==SelectedPhysicalDisposition.PartialHeld||typeof reason!=="string"||!Object.values(SelectedPhysicalHold).includes(reason as SelectedPhysicalHold)||typeof rootCreated!=="boolean"||typeof phase!=="string"||!Object.values(SelectedPhysicalPhase).includes(phase as SelectedPhysicalPhase)||typeof processedObjects!=="number"||!Number.isSafeInteger(processedObjects)||processedObjects<0||processedObjects>1055||typeof identitySite!=="string"||!Object.values(SelectedPhysicalIdentitySite).includes(identitySite as SelectedPhysicalIdentitySite))return undefined;
+ return Object.freeze({reason:reason as SelectedPhysicalHold,rootCreated,phase:phase as SelectedPhysicalPhase,processedObjects,identitySite:identitySite as SelectedPhysicalIdentitySite});
 }
 interface Directory { fd:number;parent:number;name:string;initial:fs.BigIntStats }
 interface PhysicalRow { path:string;kind:Kind;identity:Readonly<Record<string,string>>;sha256:string;literalBytesBase64:string;literalSha256:string }
@@ -236,7 +237,12 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
  const tick=()=>{need(!cancelled,SelectedPhysicalHold.Cancelled);need(performance.now()<deadline,SelectedPhysicalHold.Deadline);};
  const checkDirectory=(d:Directory)=>{
   tick();const s=fs.fstatSync(d.fd,{bigint:true}),named=fs.lstatSync(anchored(d.parent,d.name),{bigint:true});
-  need(s.isDirectory()&&sameObject(s,d.initial)&&stamp(s)===stamp(named)&&(!finalized.has(d.fd)||stamp(s)===stamp(d.initial)),SelectedPhysicalHold.Identity);
+  // Same original vetoes and original sample order; only finite failure location.
+  const identityNeed=(value:boolean,site:SelectedPhysicalIdentitySite)=>{if(!value)throw new SelectedPhysicalHeld(SelectedPhysicalHold.Identity,false,SelectedPhysicalPhase.Unknown,0,site);};
+  identityNeed(s.isDirectory(),SelectedPhysicalIdentitySite.DirectoryType);
+  identityNeed(sameObject(s,d.initial),SelectedPhysicalIdentitySite.DirectoryOriginal);
+  identityNeed(stamp(s)===stamp(named),SelectedPhysicalIdentitySite.DirectoryNamed);
+  identityNeed(!finalized.has(d.fd)||stamp(s)===stamp(d.initial),SelectedPhysicalIdentitySite.DirectoryFinalized);
  };
  const checkPlan=()=>{intrinsicPrototypes();if(!detached.rejoin()){jsonData(originalPlan);need(hash(canonicalData(originalPlan))===planHash,SelectedPhysicalHold.Plan);}tick();};
  const joinAll=()=>{
@@ -355,7 +361,7 @@ export async function writeOwnedSelectedToolrootData(input:SelectedFilesystemInp
   phase=SelectedPhysicalPhase.Completion;need(hash(canonicalData(census()))===frozenPhysical,SelectedPhysicalHold.Identity);for(const original of originals)streamCheck(original);joinAll();
   completed=true;return Object.freeze({disposition:SelectedPhysicalDisposition.Complete,rootIdentity,records:Object.freeze(records.map(r=>Object.freeze(r))),measurement:Object.freeze(measurement),nativeQualified:false,fixedImageQualified:false,originalIssuerQualified:false});
  }catch(error){
-  throw new SelectedPhysicalHeld(readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem,rootCreated,phase,processedObjects);
+  throw new SelectedPhysicalHeld(readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem,rootCreated,phase,processedObjects,readSelectedPhysicalHoldFacts(error)?.identitySite??SelectedPhysicalIdentitySite.Unknown);
  }finally{
   phase=SelectedPhysicalPhase.Cleanup;let failed:SelectedPhysicalHold|undefined;
   for(const d of [...directories.values()].reverse())try{fs.fsyncSync(d.fd);if(completed&&!failed){tick();await checkpoint();}}catch(error){failed??=readSelectedPhysicalHoldFacts(error)?.reason??SelectedPhysicalHold.Filesystem;}

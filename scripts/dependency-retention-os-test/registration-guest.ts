@@ -1,4 +1,4 @@
-import { observeAdministrativeForgedRpcReason, observeAdministrativeForgedCommandResult, observeAdministrativeInstallationTestPhase, runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
+import { observeAdministrativeImageFdTestProgress, observeAdministrativeForgedRpcReason, observeAdministrativeForgedCommandResult, observeAdministrativeInstallationTestPhase, runAdministrativeInstallationRegression } from "./administrative-installation-native-TEST.js";
 /** One owned OS, one ORIGINAL CLOSED C/reference registration. No consumer,
  * baseline install, comparison, R adoption, account or provider is invoked. */
 import assert from "node:assert/strict";
@@ -36,7 +36,9 @@ catch (error: unknown) {
   evidence.failure = "TEST_original_closed_registration_failed";
   evidence.failureObservation = { inputStep, ...observeRegistrationFailure(error) };
   const forgedCommand = observeAdministrativeForgedCommandResult();
+  const imageFd = observeAdministrativeImageFdTestProgress();
   evidence.administrativeTestFailureObservation = { phase: observeAdministrativeInstallationTestPhase(),
+    ...(imageFd === undefined ? {} : { imageFd }),
     ...(forgedCommand === undefined ? {} : { forgedCommand }) };
   // Exact failed first-call scope only. No reason wording enters finite evidence.
   if (observeAdministrativeInstallationTestPhase() === "forged_application_launch") {
