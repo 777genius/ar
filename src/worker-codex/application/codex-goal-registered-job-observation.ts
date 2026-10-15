@@ -12,6 +12,11 @@ export async function collectRegisteredCodexGoalJobStatus(input: {
   await reconcileProjectMimoWorker(input);
   const status = await collectCodexGoalStatus(codexGoalStatusInputFromLaunch(input.launch), input.observation);
   const nativeLifecycle = await observeProjectMimoWorker(input);
-  return nativeLifecycle === undefined ? status : { ...status, nativeLifecycle,
-    recommendedAction: recommendCodexGoalAction({ ...status, nativeLifecycle, ...(input.launch.config.accessBoundary === undefined ? {} : { accessBoundary: input.launch.config.accessBoundary }) }) };
+  if (nativeLifecycle === undefined) return status;
+  const nativeStatus = { ...status, nativeLifecycle };
+  // A progress-PID descendant tree cannot rule out a separate native provider
+  // service. Preserve positive observations; an uncovered negative is unknown.
+  if (nativeStatus.appServerProcessAlive === false) delete nativeStatus.appServerProcessAlive;
+  return { ...nativeStatus,
+    recommendedAction: recommendCodexGoalAction({ ...nativeStatus, ...(input.launch.config.accessBoundary === undefined ? {} : { accessBoundary: input.launch.config.accessBoundary }) }) };
 }

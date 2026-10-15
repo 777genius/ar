@@ -1,8 +1,11 @@
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
 const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(),
-  authorize: vi.fn(), grant: vi.fn(), start: vi.fn(), current: vi.fn(), status: vi.fn(), service: vi.fn(), process: vi.fn(), cancel: vi.fn(), handoff: vi.fn(), terminal: vi.fn() }));
+  authorize: vi.fn(), grant: vi.fn(), start: vi.fn(), current: vi.fn(), status: vi.fn(), service: vi.fn(), process: vi.fn(), cancel: vi.fn(), handoff: vi.fn(), terminal: vi.fn(), finalize: vi.fn() }));
 vi.mock("../research-registered-handoff", () => ({ authorizeRegisteredResearchHandoff: state.authorize,
   assertRegisteredResearchHandoffCurrent: state.handoff }));
 vi.mock("../research-launch-owner", () => ({ grantRegisteredResearchLaunch: state.grant,
@@ -15,21 +18,25 @@ vi.mock("../research-launch-files", async importOriginal => ({ ...await importOr
   }, researchRead: (path: string) => {
     const bytes = state.files.get(path); if (!bytes) throw Object.assign(new Error("Missing TEST request"), { code: "ENOENT" }); return bytes;
   } }));
-vi.mock("../research-launch-lifecycle", () => ({ statusResearchLaunch: state.status, cancelRegisteredResearchLaunch: state.cancel, finalizeOwnedMimoWorker: vi.fn(), terminalResearchStart: state.terminal }));
+vi.mock("../research-launch-lifecycle", () => ({ statusResearchLaunch: state.status, cancelRegisteredResearchLaunch: state.cancel, finalizeOwnedMimoWorker: state.finalize, terminalResearchStart: state.terminal }));
 vi.mock("../research-launch-host", async importOriginal => ({ ...await importOriginal<object>(),
   assertResearchInitialRoot: vi.fn(), researchServiceIdentity: state.service, researchProcessIdentity: state.process }));
 import { researchDescription } from "../research-launch-host";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction } from "../codex-goal-ops";
 import { researchHash } from "../research-launch-files";
 import { launchProjectMimoWorker, observeProjectMimoWorker, stopProjectMimoWorker } from "../project-mimo-worker-launch";
-function launch(): CodexGoalLaunchInput {
-  return { config: { jobId: "TEST-child", taskId: "TEST-task", jobRootDir: "/TEST-job",
-    workspacePath: "/TEST-workspace", promptPath: "/TEST-job/prompt.md", authRootDir: "/TEST-auth",
+import { createCodexGoalObservationContext } from "../application/codex-goal-observation-context";
+import { collectRegisteredCodexGoalJobStatus } from "../application/codex-goal-registered-job-observation";
+import { buildCodexGoalBrief } from "../application/codex-goal-brief";
+import { isCodexGoalHeartbeatOnlyNoOutput } from "../application/codex-goal-decision";
+function launch(jobRootDir = "/TEST-job"): CodexGoalLaunchInput {
+  return { config: { jobId: "TEST-child", taskId: "TEST-task", jobRootDir,
+    workspacePath: "/TEST-workspace", promptPath: join(jobRootDir, "prompt.md"), authRootDir: "/TEST-auth",
     codexBinaryPath: "/TEST-bin/codex", accounts: [{ name: "account-q" }],
     modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: "mimo-v2.6-pro",
     taskTimeoutMs: 60000, maxAccountCycles: 1, prewarmOnStart: false,
     projectAccessScope: { projectId: "TEST-project", isolatedWorkspaceRoot: "/TEST-workspace", authRoot: "/TEST-auth" } },
-    cwd: "/TEST-workspace", logPath: "/TEST-job/log", cliCommand: ["node", "cli"] };
+    cwd: "/TEST-workspace", logPath: join(jobRootDir, "log"), cliCommand: ["node", "cli"] };
 }
 beforeEach(() => {
   state.files.clear(); vi.clearAllMocks(); state.current.mockReset(); state.service.mockReset(); state.handoff.mockReset(); state.handoff.mockResolvedValue(() => {}); state.terminal.mockReset();
@@ -82,17 +89,18 @@ describe("registered project MiMo dispatch", () => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+const temporaryRoots: string[] = [];
+afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(temporaryRoots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 describe("owned native MiMo observation", () => {
-  async function retained() {
+  async function retained(jobRootDir = "/TEST-job") {
     vi.stubGlobal("process", { ...process, platform: "linux", getuid: () => 0 });
     state.start.mockImplementationOnce(async (_path: string, requestSha256: string) => {
       const current = preparedStart(requestSha256, "native retained TEST"); acceptedSubmission(current);
       throw new Error("TEST lost response");
     });
-    await launchProjectMimoWorker({ registryRootDir: "/TEST-registry", controllerJobId: "TEST-controller", reservedLaunch: launch() });
+    await launchProjectMimoWorker({ registryRootDir: "/TEST-registry", controllerJobId: "TEST-controller", reservedLaunch: launch(jobRootDir) });
     state.status.mockReturnValue({ jobId: "TEST-child", unit: "TEST-unit", startId: "TEST-start", active: true, providers: [] });
-    return { registryRootDir: "/TEST-registry", launch: launch() };
+    return { registryRootDir: "/TEST-registry", launch: launch(jobRootDir) };
   }
   it("waits for positively owned active or pending native service without pretending tmux lives", async () => {
     const input = await retained();
@@ -100,6 +108,40 @@ describe("owned native MiMo observation", () => {
     expect(nativeLifecycle).toBe(CodexGoalNativeLifecycle.Active);
     if (nativeLifecycle === undefined) throw Error("TEST native observation missing");
     expect(recommendCodexGoalAction({ nativeLifecycle, tmuxAlive: false, resultExists: false })).toBe("wait_for_worker");
+  });
+  it.each([CodexGoalNativeLifecycle.Active, CodexGoalNativeLifecycle.Terminal, CodexGoalNativeLifecycle.Uncertain])(
+    "omits an uncovered negative app-server observation with native lifecycle %s", async lifecycle => {
+      const observed = await descendantObservation();
+      const input = { ...await retained(observed.jobRoot), observation: observed.context }; vi.clearAllMocks();
+      if (lifecycle === CodexGoalNativeLifecycle.Terminal) state.status.mockReturnValue({ jobId: "TEST-child", unit: "TEST-unit", startId: "TEST-start", active: false, providers: [] });
+      if (lifecycle === CodexGoalNativeLifecycle.Uncertain) state.status.mockImplementation(() => { throw Error("TEST status unavailable"); });
+      const before = [...state.files.entries()];
+      const status = await collectRegisteredCodexGoalJobStatus(input);
+      expect(status).not.toHaveProperty("appServerProcessAlive");
+      expect(status.nativeLifecycle).toBe(lifecycle);
+      expect(status.recommendedAction).toBe(lifecycle === CodexGoalNativeLifecycle.Active ? "wait_for_worker" : "check_log_or_result");
+      expect(observed.readProcessRows).toHaveBeenCalledTimes(1); expect(observed.readWorkspaceStatus).toHaveBeenCalledTimes(1); expect(state.status).toHaveBeenCalledTimes(1);
+      expect(state.start).not.toHaveBeenCalled(); expect(state.cancel).not.toHaveBeenCalled(); expect(state.finalize).not.toHaveBeenCalled();
+      expect([...state.files.entries()]).toEqual(before);
+      if (lifecycle === CodexGoalNativeLifecycle.Active) {
+        const brief = await buildCodexGoalBrief({ jobId: "TEST-child", launch: input.launch, status, accounts: [], staleAfterMs: 600_000, tailLines: 10 });
+        expect(brief.text).toContain("appServerProcessAlive unknown");
+        const prior = { ...status, appServerProcessAlive: false };
+        expect(isCodexGoalHeartbeatOnlyNoOutput({ status, staleAfterMs: 600_000 })).toBe(true);
+        expect(isCodexGoalHeartbeatOnlyNoOutput({ status, staleAfterMs: 600_000 })).toBe(isCodexGoalHeartbeatOnlyNoOutput({ status: prior, staleAfterMs: 600_000 }));
+      }
+    });
+  it("preserves a positive descendant app-server observation and exact PID with native ownership", async () => {
+    const observed = await descendantObservation(true);
+    const input = { ...await retained(observed.jobRoot), observation: observed.context };
+    const status = await collectRegisteredCodexGoalJobStatus(input);
+    expect(status).toMatchObject({ nativeLifecycle: CodexGoalNativeLifecycle.Active, appServerProcessAlive: true, appServerProcessPid: 101, recommendedAction: "wait_for_worker" });
+  });
+  it("keeps direct non-native descendant negatives unchanged", async () => {
+    const observed = await descendantObservation();
+    const original = launch(observed.jobRoot), direct = { ...original, config: { ...original.config, modelBackend: CodexModelBackend.OpenAiChatGpt } };
+    const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir: "/TEST-registry", launch: direct, observation: observed.context });
+    expect(status.appServerProcessAlive).toBe(false); expect(status.nativeLifecycle).toBeUndefined(); expect(state.status).not.toHaveBeenCalled();
   });
   it.each(["stale", "unknown"])("does not recommend restart on %s native observation", async fault => {
     const input = await retained();
@@ -123,6 +165,18 @@ describe("owned native MiMo observation", () => {
     expect(recommendCodexGoalAction({ tmuxAlive: false, resultExists: false })).toBe("start_worker");
   });
 });
+
+async function descendantObservation(appServer = false) {
+  const jobRoot = await mkdtemp(join(tmpdir(), "TEST-native-liveness-")); temporaryRoots.push(jobRoot);
+  await writeFile(join(jobRoot, "TEST-task.progress.json"), JSON.stringify({ pid: 100, status: "running", updatedAt: new Date().toISOString() }));
+  await writeFile(join(jobRoot, "log"), "");
+  const old = new Date(Date.now() - 1_200_000); await utimes(join(jobRoot, "log"), old, old);
+  const readProcessRows = vi.fn(async () => [{ pid: 100, ppid: 1, cpu: 0, command: "node subscription-runtime-codex-goal" },
+    ...(appServer ? [{ pid: 101, ppid: 100, cpu: 0, command: "codex app-server --listen stdio://" }] : [])]);
+  const readWorkspaceStatus = vi.fn(async () => ({ exists: true, dirty: false, changedFiles: [] }));
+  return { jobRoot, readProcessRows, readWorkspaceStatus,
+    context: createCodexGoalObservationContext({ readProcessRows, readWorkspaceStatus }) };
+}
 
 function preparedStart(requestSha256: string, text = "TEST exact prepared spec") {
   const request = JSON.parse(state.files.get("/TEST-authority/project-worker-request.json")!.toString());
