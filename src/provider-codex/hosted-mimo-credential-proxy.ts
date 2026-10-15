@@ -25,11 +25,12 @@ export type MimoCredentialProxy = Readonly<{
 
 const upstream = codexMimoConfirmedBaseUrl + "/responses";
 function invalid(): never { throw new Error("mimo_credential_proxy_configuration_invalid"); }
-function reply(response: ServerResponse, status: number, code: string): void {
+function reply(response: ServerResponse, status: number, code: string, upstreamStatus?: number): void {
   if (response.destroyed) return;
   if (response.headersSent) { response.destroy(); return; }
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
-  response.end(JSON.stringify({ error: { code } }));
+  response.end(JSON.stringify({ error: { code,
+    ...(typeof upstreamStatus === "number" && bounded(upstreamStatus, 100, 599) ? { upstream_status: upstreamStatus } : {}) } }));
 }
 function bounded(value: number, min: number, max: number): boolean {
   return Number.isSafeInteger(value) && value >= min && value <= max;
@@ -134,8 +135,11 @@ export async function startMimoCredentialProxy(input: {
         headers: { "content-type": "application/json", authorization: `Bearer ${key.toString("utf8")}` },
         body: JSON.stringify(body),
       });
-      if (!upstreamResponse.ok || !upstreamResponse.body) {
-        await upstreamResponse.body?.cancel(); reply(response, 502, "proxy_upstream_failed"); return;
+      if (!upstreamResponse.ok) {
+        await upstreamResponse.body?.cancel(); reply(response, 502, "proxy_upstream_failed", upstreamResponse.status); return;
+      }
+      if (!upstreamResponse.body) {
+        reply(response, 502, "proxy_upstream_failed"); return;
       }
       const contentType = upstreamResponse.headers.get("content-type")?.split(";")[0]?.trim();
       if (contentType !== "application/json" && contentType !== "text/event-stream") {
