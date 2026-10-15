@@ -620,6 +620,43 @@ jobs:
             outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
             outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
             > dependency-h1-staged-data-ci-evidence/emitted.sha256
+      - name: Prepare fixed public facts TAP curator
+        run: |
+          cat > dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts <<'H1_PUBLIC_TAP_CURATOR'
+          import assert from 'node:assert/strict';
+          import { constants, openSync, closeSync, lstatSync, fstatSync, readSync, fchmodSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const path = 'dependency-h1-staged-data-ci-evidence/facts-root-tests.tap';
+          let directory;
+          try { directory = lstatSync('dependency-h1-staged-data-ci-evidence', { bigint: true }); }
+          catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') process.exit(0); throw error; }
+          assert(directory.isDirectory() && !directory.isSymbolicLink() && (directory.mode & 0o022n) === 0n);
+          let before;
+          try { before = lstatSync(path, { bigint: true }); }
+          catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') process.exit(0); throw error; }
+          assert(before.isFile() && !before.isSymbolicLink() && (before.uid === 0n || before.uid === directory.uid) && before.nlink === 1n && before.size > 0n && before.size <= 1048576n && ((before.mode & 0o7777n) === 0o600n || (before.mode & 0o7777n) === 0o644n));
+          const stamp = (s: typeof before) => [s.dev,s.ino,s.mode,s.uid,s.gid,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(':');
+          const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          try {
+            assert.equal(stamp(fstatSync(fd, { bigint: true })), stamp(before));
+            const body = Buffer.alloc(Number(before.size) + 1); let at = 0;
+            for (;;) { const n = readSync(fd, body, at, body.length - at, at); if (!n) break; at += n; assert(at <= Number(before.size)); }
+            assert.equal(at, Number(before.size)); assert.equal(stamp(fstatSync(fd, { bigint: true })), stamp(before)); assert.equal(stamp(lstatSync(path, { bigint: true })), stamp(before));
+            // Fixed public TEST TAP only: publish its bounded original bytes for failure
+            // diagnosis as well as success. This operation cannot accept the test result.
+            const hash = createHash('sha256').update(body.subarray(0, at)).digest('hex');
+            if ((before.mode & 0o7777n) === 0o600n) { assert.equal(before.uid, 0n); fchmodSync(fd, 0o644); }
+            const after = fstatSync(fd, { bigint: true });
+            assert(after.dev === before.dev && after.ino === before.ino && after.uid === before.uid && after.gid === before.gid && after.nlink === 1n && after.size === before.size && after.mtimeNs === before.mtimeNs && (after.mode & 0o7777n) === 0o644n);
+            assert.equal(stamp(lstatSync(path, { bigint: true })), stamp(after));
+            const check = Buffer.alloc(at); let offset = 0;
+            while (offset < check.length) { const n = readSync(fd, check, offset, check.length - offset, offset); assert(n > 0); offset += n; }
+            assert.equal(createHash('sha256').update(check).digest('hex'), hash);
+            assert.equal(stamp(fstatSync(fd, { bigint: true })), stamp(after)); assert.equal(stamp(lstatSync(path, { bigint: true })), stamp(after));
+            console.log(JSON.stringify({ purpose: 'bounded-public-TEST-TAP-readability', bytes: at, sha256: hash, mode: '0644', nativeQualified: false }));
+          } finally { closeSync(fd); }
+          H1_PUBLIC_TAP_CURATOR
+          sha256sum dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts > dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.sha256
       - name: Collect independently signed exact tool DATA on disposable root ARC job
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -689,6 +726,7 @@ jobs:
           grep -Fxq '# pass 8' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
           grep -Fxq '# fail 0' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
           grep -Fxq '# skipped 0' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
+          "$TEST_NODE" "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts" 9<&-
           h1_rejoin_stage
           RUNNER_TEMP="$H1_STAGE" "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js" 9<&-
           h1_rejoin_stage
@@ -869,6 +907,17 @@ jobs:
           assert(!lines.some(line => /^Bail out!| # (?:SKIP|TODO)\b/i.test(line)));
           console.log(`Validated ${total} exact staged DATA cases without skips.`);
           H1_STAGED_DATA_RESULT
+      - name: Make only the bounded public ROOT facts TAP readable for artifact collection
+        if: always()
+        run: |
+          CURATOR=dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts
+          if [ ! -e "$CURATOR" ]; then
+            test ! -e dependency-h1-staged-data-ci-evidence/facts-root-tests.tap
+            exit $?
+          fi
+          sha256sum --check dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.sha256
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          sudo -n env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C "$TEST_NODE" "$CURATOR"
       - name: Retain staged H1 DATA exact-source physical TEST evidence even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

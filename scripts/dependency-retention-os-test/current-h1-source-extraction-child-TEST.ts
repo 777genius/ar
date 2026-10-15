@@ -7,7 +7,7 @@ import {constants,openSync,closeSync,fstatSync,lstatSync,readdirSync,readlinkSyn
 import {posix} from "node:path";
 import {pathToFileURL} from "node:url";
 import {types} from "node:util";
-import {H1SemanticFamily,H1SourceObjectKind,h1PatchedSourceLimits,readH1UbuntuPatchSeries,selectH1SemanticInputs,type H1SourceObject} from "./current-h1-source-semantics-TEST.ts";
+import {readH1SemanticFailure,H1SemanticFamily,H1SourceObjectKind,h1PatchedSourceLimits,readH1UbuntuPatchSeries,selectH1SemanticInputs,type H1SourceObject} from "./current-h1-source-semantics-TEST.ts";
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const stamp=(s:BigIntStats)=>[s.dev,s.ino,s.mode,s.uid,s.gid,s.nlink,s.size,s.mtimeNs,s.ctimeNs].join(":");
 /** Complete nofollow census. Retains file handles while reading and joins both
@@ -89,7 +89,7 @@ export function validateH1SourceMountData(body:string){
 }
 enum H1SourceChildPhase {Input="input",Namespace="namespace",Root="root",Privileges="privileges",Mounts="mounts",Configuration="configuration",Extract="dpkg_source",Census="source_census",Semantics="source_semantics",Revalidate="source_revalidation",Publish="publication"}
 enum H1SourceChildFailureKind {Census="source_census",Mounts="source_mounts",Assertion="assertion",Unknown="unknown"}
-let childPhase=H1SourceChildPhase.Input;
+let childPhase=H1SourceChildPhase.Input,childDeadlineExpired=false;
 let childCommandFacts:Readonly<{status:number|null;signal:NodeJS.Signals|null;spawnFailed:boolean;stdoutBytes:number;stdoutSha256:string;stderrBytes:number;stderrSha256:string;stderrPrefixBase64:string;stderrCapturedBytes:number;stderrTruncated:boolean}>|null=null;
 /** Original fixed isolated child only: its explicit environment and mounted
  * image/inputs contain public authenticated source, never provider credentials.
@@ -97,11 +97,11 @@ let childCommandFacts:Readonly<{status:number|null;signal:NodeJS.Signals|null;sp
 function sourceChildFailure(error:unknown):string {
  const census=readH1SourceCensusFailure(error)??null,mounts=readH1SourceMountFailure(error)??null;
  const kind=mounts?H1SourceChildFailureKind.Mounts:census?H1SourceChildFailureKind.Census:!types.isProxy(error)&&types.isNativeError(error)&&Object.getPrototypeOf(error)===assert.AssertionError.prototype?H1SourceChildFailureKind.Assertion:H1SourceChildFailureKind.Unknown;
- return "TEST H1 isolated source extraction Held "+JSON.stringify({schemaVersion:1,phase:childPhase,kind,census,mounts,command:childCommandFacts,nativeQualified:false})+"\n";
+ return "TEST H1 isolated source extraction Held "+JSON.stringify({schemaVersion:1,phase:childPhase,kind,census,mounts,command:childCommandFacts,semantics:readH1SemanticFailure(error)??null,deadlineExpired:childDeadlineExpired,nativeQualified:false})+"\n";
 }
 function main(){
  assert(process.platform==="linux"&&process.getuid?.()===0&&process.getgid?.()===0);assert.equal(process.argv.length,4);const [family,dsc]=process.argv.slice(2);assert(Object.values(H1SemanticFamily).includes(family as H1SemanticFamily)&&dsc&&/^[A-Za-z0-9_.+%:~-]+\.dsc$/.test(dsc));
- const deadline=performance.now()+120000,tick=()=>assert(performance.now()<deadline,"one extraction deadline");
+ const deadline=performance.now()+120000,tick=()=>{const within=performance.now()<deadline;if(!within)childDeadlineExpired=true;assert(within,"one extraction deadline");};
  childPhase=H1SourceChildPhase.Namespace;
  for(const name of ["mnt","net","pid","user"]){assert(process.env["TEST_OUTER_"+name]);assert.notEqual(readlinkSync("/proc/self/ns/"+name),process.env["TEST_OUTER_"+name]);}
  childPhase=H1SourceChildPhase.Root;
