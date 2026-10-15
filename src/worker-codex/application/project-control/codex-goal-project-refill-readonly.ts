@@ -1,3 +1,4 @@
+import { inspectStandaloneProjectDependencies } from "./codex-goal-project-dependency-inspection";
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -116,7 +117,7 @@ export async function tryReadOnlyProjectRefillContinuation(input: ReadOnlyRefill
       locks: projectControlWorkspaceLocks(controller.registryRootDir), scope: controller.scope,
       requestedWorkspacePath: manifest.workspacePath, expectedCanonicalWorkspacePath: canonicalWorkspacePath,
       owner: `project-refill-read-only:${controller.controller.jobId}:${manifest.jobId}`,
-      effect: async () => {
+      effect: async (workspace) => {
         const assertCurrent = async (): Promise<void> => {
           const current = await readCodexGoalJob({ registryRootDir: controller.registryRootDir, jobId: manifest.jobId });
           if (!isDeepStrictEqual(current, existing)) throw new Error("project_control_existing_job_mismatch:read_only_contract");
@@ -131,7 +132,9 @@ export async function tryReadOnlyProjectRefillContinuation(input: ReadOnlyRefill
             throw new Error("project_control_existing_worktree_real_path_changed");
         };
         await assertCurrent();
-        const dependencyPreflight = await inspectDependencyBootstrap(manifest.workspacePath, dependencyMode);
+        const dependencyPreflight = await inspectStandaloneProjectDependencies({ manifest, target: worktreeInput,
+          scope: controller.scope, registryRootDir: controller.registryRootDir, workspace, mode: dependencyMode }) ??
+          await inspectDependencyBootstrap(manifest.workspacePath, dependencyMode);
         assertProjectControlDependencyBootstrapReady(dependencyPreflight);
         const prompt = await assertReadablePrompt({ promptPath: manifest.promptPath, expectedBody: input.promptBody });
         await assertCurrent();
