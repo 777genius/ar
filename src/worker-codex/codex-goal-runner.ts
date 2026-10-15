@@ -1,3 +1,4 @@
+import { researchMimoTaskRecoveryOwner } from "./research-mimo-capacity-recovery";
 import { resolveCodexGoalRunInput } from "./application/codex-goal-storage-paths";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
@@ -563,6 +564,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
     ...(executionLifetime ? { executionLifetime } : {}),
+    ...(ownedMimoCoding ? { mimoTaskRecoveryOwner: researchMimoTaskRecoveryOwner(input.appServerProcessFactory)! } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
     ...(!childBudget && !ownedMimoWorker && input.controlInbox ? { controlInbox: input.controlInbox } : {}),

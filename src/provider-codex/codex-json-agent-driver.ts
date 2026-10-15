@@ -1,5 +1,8 @@
 import { HostedMimoProfile } from "./hosted-mimo-profile";
-import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome } from "./hosted-mimo-coding-proxy-material";
+import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome, type HostedMimoCapacityRecoveryBinder } from "./hosted-mimo-coding-proxy-material";
+import type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
+export type { HostedMimoCapacityRecoveryBinder, HostedMimoCurrentCredentialBinding } from "./hosted-mimo-coding-proxy-material";
+export type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
 import { readTaskGoalObjective, readTaskManagedRunId } from "./codex-task-metadata";
 import { snapshotSessionUpdate } from "./codex-session-update-snapshot";
 import { SessionExecutionUseDisposition } from "@vioxen/subscription-runtime/core";
@@ -71,6 +74,8 @@ type CodexJsonAgentDriverBaseOptions = {
     retainHome(codexHome: string): Promise<void>;
   };
   readonly assertProviderAdmission?: () => void;
+  /** Source-only binding before the hosted Coding proxy can listen or dispatch. */
+  readonly bindMimoCapacityRecoveryCredential?: HostedMimoCapacityRecoveryBinder;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
@@ -205,6 +210,8 @@ export class CodexJsonAgentDriver implements AgentDriver {
     this.#mimoConfigToml = options.mimoConfigToml;
     this.#sourceEnv = options.sourceEnv;
   }
+
+  capacityRecoveryProof(): HostedMimoCapacityRecoveryProof | undefined { return this.#codingProxyOwner.capacityRecoveryProof(); }
 
   async runTask(input: Parameters<AgentDriver["runTask"]>[0]): Promise<ProviderTaskResult> {
     const pending = this.#runTaskInvocation(input);
@@ -414,6 +421,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   }): Promise<CodexMaterializedSession> {
     this.#executionLifetime?.assertActive();
     const hosted = (this.#sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    if (this.#options.bindMimoCapacityRecoveryCredential && !hosted) throw new Error("hosted_mimo_capacity_recovery_origin_required");
     const credential = hosted ? undefined : loadCodexApiKeyCredential({
           backend: CodexModelBackend.XiaomiMimoTokenPlan,
           envVarName: this.#mimoApiKeyEnvVarName,
@@ -422,9 +430,14 @@ export class CodexJsonAgentDriver implements AgentDriver {
         });
     const egressPolicy = codexMimoTokenPlanEgressPolicy();
     const profileOrigin = hosted ? readHostedMimoWorkerProfileOrigin() : null;
+    if (this.#options.bindMimoCapacityRecoveryCredential && profileOrigin?.profile !== HostedMimoProfile.CodingV1) {
+      throw new Error("hosted_mimo_capacity_recovery_origin_required");
+    }
     if (profileOrigin?.profile === HostedMimoProfile.CodingV1 && !this.#executionLifetime) throw new Error("hosted_mimo_coding_lifetime_required");
     const codingMaterial = profileOrigin?.profile === HostedMimoProfile.CodingV1 && this.#executionLifetime
-      ? await this.#codingProxyOwner.acquire({ model: this.#model, origin: profileOrigin.origin, envKeyName: this.#mimoApiKeyEnvVarName, lifetime: this.#executionLifetime, redactor: input.redactor }) : null;
+      ? await this.#codingProxyOwner.acquire({ model: this.#model, origin: profileOrigin.origin, envKeyName: this.#mimoApiKeyEnvVarName, lifetime: this.#executionLifetime, redactor: input.redactor,
+        ...(this.#options.bindMimoCapacityRecoveryCredential ? { bindCapacityRecoveryCredential: this.#options.bindMimoCapacityRecoveryCredential } : {}),
+      }) : null;
     const workerOrigin = profileOrigin?.origin ?? null;
     const tempRoot = await allocateHostedMimoAdmissionHome(workerOrigin, codingMaterial, this.#sourceEnv);
     const home = join(tempRoot, "home");

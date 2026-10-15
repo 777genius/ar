@@ -1,3 +1,4 @@
+import { isWorkerAccountRecoveryPreparation } from "../domain/worker-account-task-recovery";
 import { SubscriptionWorkerError } from "../../errors";
 import type {
   CapacityAwareSubscriptionWorker,
@@ -33,6 +34,10 @@ import type { WorkerAccountCapacityStore } from "../ports";
 export type AccountCapacityAwareWorkerOptions<Job, Result> = {
   readonly worker: SubscriptionWorker<Job, Result>;
   readonly accountCapacityStore: WorkerAccountCapacityStore;
+  readonly taskRecovery?: Readonly<{
+    capacity(): WorkerCapacitySnapshot | undefined;
+    run(job: Job, options?: SubscriptionWorkerRunOptions): Promise<Result>;
+  }>;
   readonly accountId?: string;
   readonly accountIdFromCapacityDetails?: (
     details: Readonly<Record<string, string>> | undefined,
@@ -97,6 +102,9 @@ export class AccountCapacityAwareWorker<Job, Result>
     job: Job,
     options?: SubscriptionWorkerRunOptions,
   ): Promise<Result> {
+    const recovery = this.options.taskRecovery?.capacity();
+    if (recovery?.recoveryPending && isWorkerAccountRecoveryPreparation(recovery.recoveryPending)) return await this.options.taskRecovery!.run(job, options);
+    if (recovery) this.assertCapacityAvailable();
     await this.recheckDueCapacity();
     this.assertCapacityAvailable();
     try {
@@ -165,6 +173,8 @@ export class AccountCapacityAwareWorker<Job, Result>
   }
 
   capacity(): WorkerCapacitySnapshot {
+    const recovery = this.options.taskRecovery?.capacity();
+    if (recovery) return recovery;
     const now = this.clock.now();
     const workerCapacity = normalizeWorkerCapacitySnapshot(
       this.workerCapacity(),
@@ -361,6 +371,7 @@ export function accountCapacityAwareWorkerFactory<Job, Result>(
     return new AccountCapacityAwareWorker({
       worker: options.workerFactory(input),
       accountCapacityStore: options.accountCapacityStore,
+      ...(options.taskRecovery ? { taskRecovery: options.taskRecovery } : {}),
       ...(options.accountId ? { accountId: options.accountId } : {}),
       ...(options.accountIdFromCapacityDetails
         ? {

@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { assertHostedMimoCodingCredentialCapture, type HostedMimoCodingCredentialCapture } from "./hosted-mimo-credential-source";
+import { mimoResponseProofHash, observeMimoResponseCompletion, type HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
 import { codexMimoConfirmedBaseUrl } from "./codex-model-backend";
 import { MimoProxyFailureReason as FailureReason, MimoProxyFailurePhase as FailurePhase,
   mimoProxyTransportCode, mimoProxyValidationCode, type MimoProxyFailure } from "./mimo-proxy-failure";
@@ -22,6 +24,7 @@ export type MimoCredentialProxy = Readonly<{
   capability: string;
   /** Start-lifetime facts, not attribution to a particular turn or failure. */
   upstreamFailureObservation(): Readonly<{ count: number; lastStatus: number }> | undefined;
+  capacityRecoveryProof(): HostedMimoCapacityRecoveryProof | undefined;
   revoke(): void;
   close(): Promise<void>;
   /** Retained even when a streaming response can no longer carry an error. */
@@ -47,6 +50,7 @@ function bounded(value: number, min: number, max: number): boolean {
  * The shared key is never returned, persisted or placed in a child environment. */
 export async function startMimoCredentialProxy(input: {
   readonly apiKey: Uint8Array;
+  readonly credentialCapture?: HostedMimoCodingCredentialCapture;
   readonly model: string;
   readonly limits: MimoCredentialProxyLimits;
   /** Trusted transport seam; production defaults to one non-retrying fetch. */
@@ -64,10 +68,17 @@ export async function startMimoCredentialProxy(input: {
   const key = Buffer.from(input.apiKey);
   // Token Plan keys use an ASCII token alphabet; reject decoding ambiguity.
   if (!/^[A-Za-z0-9._-]+$/.test(key.toString("utf8"))) { key.fill(0); invalid(); }
+  const capture = input.credentialCapture;
+  try { if (capture) assertHostedMimoCodingCredentialCapture(capture, key); } catch (error) { key.fill(0); throw error; }
+  const assertCurrent = () => { input.assertCurrent?.(); capture?.assertCurrent(); };
   const model = input.model;
   const capability = randomBytes(32).toString("base64url");
   const auth = Buffer.from(`Bearer ${capability}`);
   const active = new Set<AbortController>();
+  const serving = new Set<Promise<void>>();
+  let disposed = false, proofInvalid = false, completedResponses = 0;
+  let requestSha256: string | undefined, responseIdSha256: string | undefined;
+  let closing: Promise<void> | undefined;
   let revoked = false, requests = 0, upstreamFailureCount = 0, lastUpstreamStatus: number | undefined;
   let latestFailure: MimoProxyFailure | undefined;
   const revoke = () => {
@@ -87,7 +98,7 @@ export async function startMimoCredentialProxy(input: {
     if (request.headers["content-encoding"] !== undefined || request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") {
       reply(response, 400, "proxy_request_invalid"); return;
     }
-    try { input.assertCurrent?.(); } catch { revoke(); reply(response, 503, "proxy_revoked"); return; }
+    try { assertCurrent(); } catch { proofInvalid = true; revoke(); reply(response, 503, "proxy_revoked"); return; }
     if (requests >= limits.maxRequests || active.size >= limits.maxConcurrency) { reply(response, 429, "proxy_limit"); return; }
     requests += 1;
     const requestNumber = requests;
@@ -134,17 +145,21 @@ export async function startMimoCredentialProxy(input: {
       }
       body.max_output_tokens ??= limits.maxOutputTokens;
       body.store = false;
-      try { input.assertCurrent?.(); } catch { revoke(); throw new Error("authority_revoked"); }
+      try { assertCurrent(); } catch { revoke(); throw new Error("authority_revoked"); }
       if (Date.now() >= limits.deadlineMs) { revoke(); throw new Error("aborted"); }
+      const requestBody = JSON.stringify(body);
+      const observedRequestSha256 = mimoResponseProofHash("request", requestBody);
+      const observation = observeMimoResponseCompletion(model);
       phase = FailurePhase.Transport;
       const upstreamResponse = await transport(upstream, {
         method: "POST", redirect: "manual", signal: controller.signal,
         headers: { "content-type": "application/json", authorization: `Bearer ${key.toString("utf8")}` },
-        body: JSON.stringify(body),
+        body: requestBody,
       });
       phase = FailurePhase.Response;
       if (bounded(upstreamResponse.status, 100, 599)) upstreamStatus = upstreamResponse.status;
       if (!upstreamResponse.ok) {
+        proofInvalid = true;
         try { if (bounded(upstreamResponse.status, 100, 599)) {
           upstreamFailureCount = Math.min(upstreamFailureCount + 1, limits.maxRequests);
           lastUpstreamStatus = upstreamResponse.status;
@@ -154,10 +169,12 @@ export async function startMimoCredentialProxy(input: {
         reply(response, 502, "proxy_upstream_failed", upstreamStatus, details); return;
       }
       if (!upstreamResponse.body) {
+        proofInvalid = true;
         reply(response, 502, "proxy_upstream_failed", undefined, failure(FailureReason.EmptyBody)); return;
       }
       const contentType = upstreamResponse.headers.get("content-type")?.split(";")[0]?.trim();
       if (contentType !== "application/json" && contentType !== "text/event-stream") {
+        proofInvalid = true;
         const details = failure(FailureReason.ContentType);
         try { await upstreamResponse.body.cancel(); } catch { /* Preserve the response classification. */ }
         reply(response, 502, "proxy_upstream_failed", undefined, details); return;
@@ -168,13 +185,22 @@ export async function startMimoCredentialProxy(input: {
       // Keep only enough trailing bytes to detect a secret split across chunks.
       // Reconstruct matches, never forward any upstream headers or error bodies.
       const secrets = [Buffer.from(key), Buffer.from(capability)];
-      const stream = Readable.from(redactedBody(upstreamResponse.body, secrets, limits.maxResponseBytes, contentType), { objectMode: false });
+      const stream = Readable.from(redactedBody(upstreamResponse.body, secrets, limits.maxResponseBytes, contentType, observation.observe, controller.signal), { objectMode: false });
       // pipeline destroys the HTTP response on a source failure. That close is
       // a consequence, not evidence that the client caused the failure.
       stream.once("error", () => { if (!clientDisconnected && !controller.signal.aborted) upstreamStreamFailed = true; });
       try { await pipeline(stream, response, { signal: controller.signal }); }
       finally { for (const secret of secrets) secret.fill(0); }
+      const responseId = observation.finish();
+      if (!responseId) proofInvalid = true;
+      else {
+        assertCurrent();
+        completedResponses += 1;
+        requestSha256 = observedRequestSha256;
+        responseIdSha256 = mimoResponseProofHash("response-id", responseId);
+      }
     } catch (error) {
+      proofInvalid = true;
       const reason = revoked ? FailureReason.Revoked : timedOut ? FailureReason.Timeout
         : upstreamStreamFailed ? FailureReason.Stream : clientDisconnected ? FailureReason.Disconnected : phase === FailurePhase.Stream ? FailureReason.Stream
           : phase === FailurePhase.Input ? FailureReason.Input : phase === FailurePhase.Response ? FailureReason.Response : FailureReason.Transport;
@@ -187,7 +213,11 @@ export async function startMimoCredentialProxy(input: {
       controller.signal.removeEventListener("abort", abortInput);
     }
   };
-  const server = createServer((request, response) => { void serve(request, response); });
+  const server = createServer((request, response) => {
+    const flight = serve(request, response);
+    serving.add(flight);
+    void flight.finally(() => serving.delete(flight));
+  });
   server.requestTimeout = Math.min(limits.requestTimeoutMs, 30000);
   server.headersTimeout = Math.min(limits.requestTimeoutMs, 10000);
   server.maxHeadersCount = 32;
@@ -205,9 +235,29 @@ export async function startMimoCredentialProxy(input: {
     latestFailure: () => latestFailure,
     upstreamFailureObservation: () => lastUpstreamStatus === undefined ? undefined :
       Object.freeze({ count: upstreamFailureCount, lastStatus: lastUpstreamStatus }),
-    async close() {
+    capacityRecoveryProof() {
+      if (!capture || proofInvalid || active.size || !completedResponses || !requestSha256 || !responseIdSha256) return;
+      try { capture.assertCurrent(); } catch { proofInvalid = true; return; }
+      const proof = Object.freeze({ credentialFingerprint: capture.credentialFingerprint, requestedModel: model,
+        requestSha256, responseIdSha256, completedResponses,
+        assertCurrent() {
+          if (proofInvalid || active.size || completedResponses !== proof.completedResponses ||
+              requestSha256 !== proof.requestSha256 || responseIdSha256 !== proof.responseIdSha256) {
+            throw new Error("mimo_capacity_recovery_proof_invalid");
+          }
+          try { capture.assertCurrent(); } catch (error) { proofInvalid = true; throw error; }
+        },
+        assertDisposed() { if (!disposed) throw new Error("mimo_capacity_recovery_proxy_not_disposed"); },
+      });
+      return proof;
+    },
+    close() {
+      if (closing) return closing;
       clearTimeout(expiry); revoke();
-      await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+      closing = Promise.all([Promise.all([...serving]), new Promise<void>(resolve => {
+        server.close(() => resolve()); server.closeAllConnections();
+      })]).then(() => { disposed = true; });
+      return closing;
     },
   });
 }
@@ -259,12 +309,17 @@ function redactJson(value: unknown, secrets: readonly string[], depth = 0): unkn
  * credential. This guarantees literal/JSON-escaped secret removal, not detection
  * of arbitrary encodings inside user content (for example base64 ciphertext). */
 async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: readonly Buffer[], maxBytes: number,
-  contentType: string): AsyncGenerator<Buffer> {
+  contentType: string, observe: (value: unknown, event?: string) => void, signal: AbortSignal): AsyncGenerator<Buffer> {
   const reader = body.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
+  let cancelling: Promise<void> | undefined;
+  const cancelReader = () => cancelling ??= reader.cancel().catch(() => undefined);
+  const abort = () => { void cancelReader(); };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   const secrets = secretBytes.map(secret => secret.toString("utf8"));
   const frameLimit = Math.min(maxBytes, 1024 * 1024);
   let pending = "", total = 0;
-  const serialize = (text: string) => JSON.stringify(redactJson(JSON.parse(text), secrets));
+  const serialize = (text: string) => { const value: unknown = JSON.parse(text); observe(value); return JSON.stringify(redactJson(value, secrets)); };
   type Frame = { event?: string; data: unknown; chain?: string; textField?: "delta" | "text"; messageText?: boolean };
   const queue: Frame[] = [];
   const sealedChains = new Set<string>();
@@ -335,7 +390,9 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
     // a fixed heartbeat, without releasing any pending credential lookahead.
     if (!data.length) return comment ? [Buffer.from(": ***\n\n")] : [];
     const textData = data.join("\n");
-    const safeData: unknown = textData === "[DONE]" ? textData : redactJson(JSON.parse(textData), secrets);
+    const parsed: unknown = textData === "[DONE]" ? textData : JSON.parse(textData);
+    observe(parsed, event);
+    const safeData: unknown = redactJson(parsed, secrets);
     const safeEvent = event ? String(redactJson(event, secrets)) : undefined;
     const record = safeData && typeof safeData === "object" && !Array.isArray(safeData) ? safeData as Record<string, unknown> : undefined;
     const chainKey = (type: string) => JSON.stringify([type, record?.item_id ?? null,
@@ -398,5 +455,5 @@ async function* redactedBody(body: ReadableStream<Uint8Array>, secretBytes: read
       if (pending) for (const bytes of frame(pending)) yield bytes;
       for (const bytes of release(true)) yield bytes;
     }
-  } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+  } finally { signal.removeEventListener("abort", abort); await cancelReader(); reader.releaseLock(); }
 }

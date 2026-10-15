@@ -20,6 +20,7 @@ import {
   isAuthBlockedCapacity,
   nextCooldownDrainAt,
   normalizeCapacity,
+  runnableWorkerCapacity,
 } from "./worker-pool-capacity";
 import {
   delay,
@@ -536,7 +537,7 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
     const snapshots = this.slotSnapshots(now);
     const available = snapshots.filter(
       (snapshot) =>
-        !snapshot.busy && snapshot.capacity.availability === "available",
+        !snapshot.busy && runnableWorkerCapacity(snapshot.capacity),
     );
     if (available.length === 0) {
       return { slot: null, snapshots };
@@ -556,7 +557,7 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
     if (
       !snapshot ||
       snapshot.busy ||
-      snapshot.capacity.availability !== "available"
+      !runnableWorkerCapacity(snapshot.capacity)
     ) {
       throw new SubscriptionWorkerError(
         "subscription_worker_pool_selector_invalid",

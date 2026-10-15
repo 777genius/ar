@@ -1,4 +1,5 @@
 import { assertHostedMimoCodingWorkerOriginCurrent, type HostedMimoCodingWorkerOrigin, readHostedMimoWorkerOrigin } from "./hosted-mimo-worker-origin";
+import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
@@ -70,6 +71,43 @@ export function resolveHostedMimoCodingProxyCredential(proof: HostedMimoCodingWo
   return credential;
 }
 
+/** Adapter-local captured source authority, never a serialized admission DTO. */
+export type HostedMimoCodingCredentialCapture = Readonly<{
+  bytes: Buffer;
+  credentialFingerprint: string;
+  assertCurrent(): void;
+}>;
+const credentialCaptures = new WeakSet<object>();
+
+export function hostedMimoCredentialFingerprint(bytes: Uint8Array): string {
+  return createHash("sha256").update("subscription-runtime:mimo-current-credential:v1\0").update(bytes).digest("hex");
+}
+
+export function assertHostedMimoCodingCredentialCapture(capture: HostedMimoCodingCredentialCapture, bytes: Uint8Array): void {
+  if (!credentialCaptures.has(capture) || capture.credentialFingerprint !== hostedMimoCredentialFingerprint(bytes)) {
+    throw new Error("hosted_mimo_credential_capture_invalid");
+  }
+  capture.assertCurrent();
+}
+
+export function captureHostedMimoCodingProxyCredential(origin: HostedMimoCodingWorkerOrigin, redactor: RedactorPort,
+  assertActive: () => void): HostedMimoCodingCredentialCapture {
+  const bytes = Buffer.from(resolveHostedMimoCodingProxyCredential(origin, redactor, assertActive));
+  const credentialFingerprint = hostedMimoCredentialFingerprint(bytes);
+  const capture = Object.freeze({ bytes, credentialFingerprint,
+    assertCurrent() {
+      // Final proof validation may run after task disposal. Recheck custody and
+      // origin without extending or reopening the task's execution lifetime.
+      const current = Buffer.from(resolveHostedMimoCodingProxyCredential(origin, redactor, () => {}));
+      try {
+        if (hostedMimoCredentialFingerprint(current) !== credentialFingerprint) throw new Error("hosted_mimo_credential_changed");
+      } finally { current.fill(0); }
+    },
+  });
+  credentialCaptures.add(capture);
+  return capture;
+}
+
 /** Narrow filesystem seam for synthetic tests. Production uses the fixed path above. */
 export function readHostedMimoCredentialAtPath(path: string, redactor: RedactorPort,
   expectedOwnerUid = 0, expectedFileOwnerUid = expectedOwnerUid): string {
@@ -97,8 +135,9 @@ export function readHostedMimoCredentialAtPath(path: string, redactor: RedactorP
         if (next === 0) break;
         count += next;
       }
-      const after = fstatSync(fd);
-      if (count !== before.size || after.size !== before.size || after.ctimeMs !== before.ctimeMs ||
+      const after = fstatSync(fd), current = lstatSync(path);
+      if (current.dev !== before.dev || current.ino !== before.ino || current.ctimeMs !== before.ctimeMs ||
+          count !== before.size || after.size !== before.size || after.ctimeMs !== before.ctimeMs ||
           after.mtimeMs !== before.mtimeMs || after.uid !== expectedFileOwnerUid || after.nlink !== 1 ||
           (after.mode & 0o7777) !== 0o600) invalid();
       const credential = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count)).trim();

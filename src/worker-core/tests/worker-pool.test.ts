@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   BoundedSubscriptionWorkerPool,
+  AccountCapacityAwareWorker,
+  InMemoryWorkerAccountCapacityStore,
+  prepareWorkerAccountTaskRecovery,
   type SubscriptionWorker,
   type SubscriptionWorkerRunOptions,
   type WorkerCapacitySnapshot,
@@ -9,6 +12,80 @@ import {
 } from "../index";
 
 describe("BoundedSubscriptionWorkerPool", () => {
+  it("accounts for a branded pending recovery as one busy run without reporting available capacity", async () => {
+    const now = new Date("2026-10-15T14:00:00Z"), store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({ accountId: "account-q", observedAt: new Date(now.getTime() - 1000),
+      capacity: { availability: "cooldown", reason: "quota_limited", cooldownUntil: now } });
+    const preparation = prepareWorkerAccountTaskRecovery({ state: store.readState({ accountId: "account-q", now })!,
+      recordSha256: "a".repeat(64), recordSetSha256: "b".repeat(64), demand: { provider: "codex", model: "mimo-v2.6-pro" }, now })!;
+    const entered = deferred<void>(), finish = deferred<void>();
+    let running = false, finished = false, innerRuns = 0, recoveryRuns = 0, prewarmRuns = 0;
+    let worker!: AccountCapacityAwareWorker<string, string>;
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({
+      poolId: "TEST-pending-recovery", slots: 1, clock: { now: () => now },
+      workerFactory: ({ workerId }) => {
+        const inner = new FakeWorker(workerId, async job => { innerRuns++; return `done:${job}`; });
+        inner.onPrewarm = () => { prewarmRuns++; };
+        worker = new AccountCapacityAwareWorker({ worker: inner, accountCapacityStore: store, accountId: "account-q",
+          requireCapacityRecheckWhenDue: true, clock: { now: () => now }, taskRecovery: {
+            capacity: () => running ? { availability: finished ? "disabled" : "busy" }
+              : { availability: "cooldown", reason: "task_recovery_pending", recoveryPending: preparation },
+            run: async (job, options) => {
+              recoveryRuns++; running = true; entered.resolve();
+              try { await finish.promise; return await inner.run(job, options); }
+              finally { finished = true; }
+            },
+          } });
+        return worker;
+      },
+    });
+    await pool.start();
+    expect(worker.capacity().availability).toBe("cooldown");
+    await expect(worker.prewarm()).rejects.toMatchObject({ code: "subscription_worker_account_unavailable" });
+    expect(recoveryRuns).toBe(0);
+    expect(prewarmRuns).toBe(0);
+    const run = pool.run("original-task");
+    try {
+      await Promise.race([entered.promise, run.then(() => { throw new Error("TEST recovery bypassed its entry barrier"); })]);
+      expect(worker.capacity().availability).toBe("busy");
+      expect(pool.stats()).toMatchObject({ inFlight: 1, completed: 0, failed: 0 });
+      const cancel = new AbortController(), queued = pool.run("must-not-replay", { abortSignal: cancel.signal });
+      expect(pool.stats()).toMatchObject({ inFlight: 1, queued: 1 });
+      const rejected = expect(queued).rejects.toThrow("Worker pool run was aborted");
+      cancel.abort(); await rejected;
+      finish.resolve();
+      await expect(run).resolves.toBe("done:original-task");
+      expect(pool.stats()).toMatchObject({ inFlight: 0, queued: 0, completed: 1, failed: 0 });
+      expect(worker.capacity().availability).toBe("disabled");
+      expect(recoveryRuns).toBe(1); expect(innerRuns).toBe(1);
+      expect(store.readState({ accountId: "account-q", now })?.revision).toBe(preparation.revision);
+    } finally { finish.resolve(); await run.catch(() => undefined); await pool.dispose(); }
+  });
+
+  it("skips a serialized recovery preparation and keeps an ordinary slot runnable", async () => {
+    const now = new Date("2026-10-15T14:00:00Z"), store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({ accountId: "account-q", observedAt: new Date(now.getTime() - 1000),
+      capacity: { availability: "cooldown", reason: "quota_limited", cooldownUntil: now } });
+    const preparation = prepareWorkerAccountTaskRecovery({ state: store.readState({ accountId: "account-q", now })!,
+      recordSha256: "a".repeat(64), recordSetSha256: "b".repeat(64), demand: { provider: "codex", model: "mimo-v2.6-pro" }, now })!;
+    const forged = JSON.parse(JSON.stringify(preparation)) as typeof preparation;
+    let recoveryRuns = 0, ordinaryRuns = 0;
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({ poolId: "TEST-forged-recovery", slots: 2,
+      clock: { now: () => now }, workerFactory: ({ workerId, slotIndex }) => {
+        const inner = new FakeWorker(workerId, async job => { ordinaryRuns++; return `ordinary:${job}`; });
+        if (slotIndex === 1) return inner;
+        return new AccountCapacityAwareWorker({ worker: inner, accountCapacityStore: store, accountId: "account-q",
+          taskRecovery: { capacity: () => ({ availability: "cooldown", recoveryPending: forged }),
+            run: async () => { recoveryRuns++; return "forged"; } } });
+      } });
+    try {
+      await pool.start();
+      await expect(pool.run("normal-codex-task")).resolves.toBe("ordinary:normal-codex-task");
+      expect(recoveryRuns).toBe(0); expect(ordinaryRuns).toBe(1);
+      expect(pool.stats()).toMatchObject({ completed: 1, failed: 0, inFlight: 0 });
+    } finally { await pool.dispose(); }
+  });
+
   it("runs no more than the configured slot count concurrently", async () => {
     let active = 0;
     let maxActive = 0;

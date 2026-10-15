@@ -11,6 +11,7 @@ import {
   type WorkerAccountCapacityStore,
   type WorkerAccountLeaseStore,
   type WorkerRuntimeDemand,
+  type WorkerAccountRecoveryPreparation,
 } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileWorkerAccountLeaseStore } from "@vioxen/subscription-runtime/store-local-file";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
@@ -46,12 +47,14 @@ type PersistedCodexProjectAccountReservation = {
 };
 
 type CodexProjectSharedAccountReservation = {
+  readonly recoveryPending?: WorkerAccountRecoveryPreparation;
   readonly mode: "shared";
   readonly accountId: string;
   readonly launch: CodexGoalLaunchInput;
 };
 
 type CodexProjectExclusiveAccountReservation = {
+  readonly recoveryPending?: WorkerAccountRecoveryPreparation;
   readonly mode: "exclusive";
   readonly accountId: string;
   readonly fencingToken: number;
@@ -256,6 +259,22 @@ async function reserveExclusiveCodexProjectAccount(
         ),
       ),
     });
+  const recoveryPending = prepareProjectRecovery(input, capacityStore, now);
+  if (recoveryPending) {
+    for (const accountId of eligibleAccountIds) {
+      const acquired = await leaseStore.acquire({ accountId, ownerId, ttlMs, now });
+      if (acquired.status !== "granted") continue;
+      const receipt = receiptFromLease(acquired.lease);
+      try { await writeReservation(receiptPath, receipt); }
+      catch (error) {
+        await leaseStore.release({ leaseId: acquired.lease.leaseId, ownerId, reason: "reservation_receipt_write_failed", now });
+        throw error;
+      }
+      retainReceipt(receipt);
+      return { ...reservationResult(input.launch, receipt, maxAccountCycles), recoveryPending };
+    }
+    throw new Error("project_control_account_reservation_unavailable");
+  }
   const selection = await new SelectRuntimeAccountUseCase().execute({
     allowedAccounts: eligibleAccountIds,
     demand: projectAccountDemand(input.launch),
@@ -327,6 +346,8 @@ async function selectSharedCodexProjectAccount(
     : stableSharedAccountOrder(eligible, input.manifest.jobId);
 
   for (const accountId of accounts) {
+    const pending = prepareProjectRecovery(input, capacityStore, now);
+    if (pending) return { ...sharedReservationResult(input.launch, accountId, maxAccountCycles), recoveryPending: pending };
     const capacity = capacityStore.read({ accountId, demand, now });
     if (capacity && capacity.availability !== "available") {
       unavailable.push({
@@ -750,6 +771,13 @@ function reservedAttemptBudget(input: {
   // maxAccountCycles value bounds one runner invocation; it is not a lifetime
   // retry policy for an externally authorized capacity continuation.
   return previousAttemptCount + 1;
+}
+
+function prepareProjectRecovery(input: { launch: CodexGoalLaunchInput; continuation?: CodexProjectAccountContinuation },
+  store: WorkerAccountCapacityStore, now: Date): WorkerAccountRecoveryPreparation | undefined {
+  return input.launch.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    input.continuation === undefined && input.launch.config.prewarmOnStart !== true
+    ? store.prepareTaskRecovery?.({ demand: projectAccountDemand(input.launch), now }) : undefined;
 }
 
 function projectAccountDemand(

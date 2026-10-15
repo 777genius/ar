@@ -1,3 +1,4 @@
+import { settleResearchMimoCapacityRecovery } from "./research-mimo-capacity-recovery";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -262,6 +263,11 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       assertRegisteredBytes?.();
       publishResearchMimoJobArtifact(current, "progress", { schemaVersion: 1, taskId: result.taskId,
         status: result.status === "done" ? "completed" : result.status, updatedAt: result.updatedAt, pid: 0 });
+      assertTerminal();
+      // An accepted response alone is not quota recovery. Only this existing cold
+      // native/provider boundary can publish the exact-current-key exemption.
+      try { await settleResearchMimoCapacityRecovery(current, { assertTerminal, withPublication: async effect => await effect() }); }
+      catch { /* Changed limits/uncertain custody retain the consumed claim, not availability. */ }
       assertTerminal(); releaseTerminalResearchStart(jobId, current, assertRegisteredBytes); // Reservation release is always last.
     };
     await publish();
