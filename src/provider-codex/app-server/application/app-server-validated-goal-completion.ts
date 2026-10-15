@@ -1,3 +1,4 @@
+import { AppServerOutputValidationError, AppServerOutputValidationStage, AppServerOutputValidationCode } from "./app-server-output-validation-error";
 import type { CodexAppServerClient } from "./app-server-client";
 import type { CodexThreadGoal } from "../domain/app-server-types";
 
@@ -32,8 +33,10 @@ export async function completeValidatedNativeGoal(input: {
   input.client.assertExecutionActive(input.abortSignal);
   try {
     await input.validate(input.outputText, { runId: input.runId, turnNumber: input.turnNumber });
-  } catch {
-    throw new Error("codex_goal_completed_output_rejected");
+  } catch (cause) {
+    if (cause instanceof AppServerOutputValidationError) throw cause;
+    throw new AppServerOutputValidationError(AppServerOutputValidationStage.Unknown,
+      AppServerOutputValidationCode.Unknown);
   }
   input.client.assertExecutionActive(input.abortSignal);
   const request = { threadId: input.threadId, timeoutMs: input.timeoutMs, abortSignal: input.abortSignal };

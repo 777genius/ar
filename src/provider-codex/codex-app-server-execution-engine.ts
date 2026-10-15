@@ -1,3 +1,4 @@
+import { validateAppServerCompletedOutput } from "./app-server/application/app-server-output-validation-error";
 import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-server/application/app-server-child-lifetime";
 export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
 import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
@@ -401,10 +402,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
           redactor: input.redactor,
           ...(validator === undefined ? {} : {
             validateCompletedOutput: async (outputText: string, context: { runId: string; turnNumber: number }) => {
-              const normalized = normalizeCodexStructuredOutput(schemaPlan!, parseStructuredOutput(outputText));
-              if (await validator(normalized, context) !== true) {
-                throw new Error("codex_goal_completed_output_rejected");
-              }
+              await validateAppServerCompletedOutput({ text: outputText,
+                parse: parseStructuredOutput,
+                normalize: (value) => normalizeCodexStructuredOutput(schemaPlan!, value),
+                validate: (value) => validator(value, context),
+              });
             },
           }),
           maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
