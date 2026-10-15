@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, link, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { lstat, link, mkdir, open, readdir, readlink, realpath, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -14,6 +14,10 @@ import type {
 } from "@vioxen/subscription-runtime/worker-core";
 import { materializeApprovedProjectControlCustody } from
   "./project-control-evidence-custody-materialization";
+import { assertExpectedReadPath, assertExpectedReadDirectory, openAbsoluteDirectoryNoSymlinks,
+  assertHeldRootLexicalBinding, safeSegment, code, deepCode, custodyError,
+  type EvidenceReadDirectoryIdentity } from "./project-control-custody-directory-read";
+export type { EvidenceReadDirectoryIdentity } from "./project-control-custody-directory-read";
 
 export class LocalProjectControlEvidenceCustody implements
     ProjectControlEvidenceCustodyPort {
@@ -40,10 +44,12 @@ export class LocalProjectControlEvidenceCustody implements
     }
   }
 
-  async readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile> {
+  async readImmutableFile(path: string, maxBytes: number, expected?: EvidenceReadDirectoryIdentity): Promise<ImmutableEvidenceFile> {
     assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
-    const held = await openAbsoluteFileNoSymlinks(lexical);
+    assertExpectedReadPath(lexical, expected);
+    await this.crashHook?.("before_immutable_read_open", lexical);
+    const held = await openAbsoluteFileNoSymlinks(lexical, expected);
     const handle = held.handle;
     try {
       const before = await handle.stat();
@@ -143,15 +149,20 @@ export class LocalProjectControlEvidenceCustody implements
     } finally { await closeHeldLexicalFile(held); }
   }
 
-  async pathKind(path: string) {
+  async pathKind(path: string, expected?: EvidenceReadDirectoryIdentity) {
     assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
+    assertExpectedReadPath(lexical, expected);
+    if (lexical === expected?.canonicalPath) {
+      const held = await openHeldLexicalDirectory(lexical, expected);
+      try { return "directory" as const; } finally { await closeHeldLexicalDirectory(held); }
+    }
     if (lexical === "/") return "directory" as const;
     let candidate = lexical;
     for (;;) {
       const parent = dirname(candidate);
       try {
-        const inspection = await this.openDirectoryForInspection(parent);
+        const inspection = await this.openDirectoryForInspection(parent, expected);
         try {
           const kind = await inspection.pathKind(basename(candidate));
           if (candidate === lexical || kind === "absent") return kind;
@@ -167,13 +178,14 @@ export class LocalProjectControlEvidenceCustody implements
     }
   }
 
-  async openDirectoryForInspection(path: string): Promise<EvidenceDirectoryInspection> {
+  async openDirectoryForInspection(path: string, expected?: EvidenceReadDirectoryIdentity): Promise<EvidenceDirectoryInspection> {
     assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
+    assertExpectedReadPath(lexical, expected);
     const parentPath = dirname(lexical);
     const parent = lexical === "/"
       ? undefined
-      : await openAbsoluteDirectoryNoSymlinks(parentPath);
+      : await openAbsoluteDirectoryNoSymlinks(parentPath, lexical === expected?.canonicalPath ? undefined : expected);
     let handle: Awaited<ReturnType<typeof open>>;
     try {
       handle = parent
@@ -187,6 +199,7 @@ export class LocalProjectControlEvidenceCustody implements
     let identity: Awaited<ReturnType<FileHandle["stat"]>>;
     try {
       identity = await handle.stat();
+      assertExpectedReadDirectory(lexical, identity, expected);
       await assertInspectionLexicalBinding({ lexical, handle, parent, identity });
     } catch (error) {
       await handle.close().catch(() => undefined);
@@ -226,12 +239,35 @@ export class LocalProjectControlEvidenceCustody implements
     };
   }
 
-  async listDirectory(path: string): Promise<readonly EvidenceDirectoryEntry[]> {
+  /** Read link text relative to a held no-follow parent. Never follows its
+   * target; callers must confine any subsequent resolution themselves. */
+  async readSymbolicLink(path: string, expected?: EvidenceReadDirectoryIdentity): Promise<string> {
+    assertLocalProjectControlEvidenceCustodySupported();
+    const lexical = resolve(path);
+    assertExpectedReadPath(lexical, expected);
+    const held = await openHeldLexicalDirectory(dirname(lexical), expected);
+    const child = `/proc/self/fd/${held.handle.fd}/${basename(lexical)}`;
+    try {
+      const before = await lstat(child);
+      if (!before.isSymbolicLink()) throw new Error("evidence_custody_link_invalid");
+      const target = await readlink(child);
+      if (target.length > 4096) throw new Error("evidence_custody_link_invalid");
+      await this.crashHook?.("after_link_read_before_lexical_revalidation", lexical);
+      const after = await lstat(child);
+      if (!after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino ||
+          before.size !== after.size || before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs)
+        throw new Error("evidence_custody_link_changed_during_read");
+      await assertHeldLexicalDirectory(held);
+      return target;
+    } finally { await closeHeldLexicalDirectory(held); }
+  }
+
+  async listDirectory(path: string, expected?: EvidenceReadDirectoryIdentity): Promise<readonly EvidenceDirectoryEntry[]> {
     assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     let held: HeldLexicalDirectory;
     try {
-      held = await openHeldLexicalDirectory(lexical);
+      held = await openHeldLexicalDirectory(lexical, expected);
     } catch (error) {
       const missingDirectory = deepCode(error) === "ENOENT" ||
         (error instanceof Error &&
@@ -457,38 +493,6 @@ async function assertHeldBoundaryChain(
   }
 }
 
-async function openAbsoluteDirectoryNoSymlinks(path: string) {
-  const lexical = resolve(path);
-  let handle = await open("/", constants.O_RDONLY | constants.O_DIRECTORY);
-  try {
-    const segments = lexical.split("/").filter(Boolean);
-    for (const [index, segment] of segments.entries()) {
-      safeSegment(segment);
-      let next;
-      try {
-        next = await open(`/proc/self/fd/${handle.fd}/${segment}`,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      } catch (error) {
-        if (index === segments.length - 1) {
-          throw custodyError("evidence_custody_root_noncanonical", error);
-        }
-        throw error;
-      }
-      await handle.close();
-      handle = next;
-    }
-    if (await realpath(`/proc/self/fd/${handle.fd}`) !== lexical) {
-      throw new Error("evidence_custody_root_noncanonical");
-    }
-    return handle;
-  } catch (error) {
-    await handle.close();
-    if (error instanceof Error &&
-      error.message === "evidence_custody_root_noncanonical") throw error;
-    throw custodyError("evidence_custody_ancestor_unsafe", error);
-  }
-}
-
 type HeldLexicalDirectory = {
   readonly lexical: string;
   readonly handle: FileHandle;
@@ -497,11 +501,12 @@ type HeldLexicalDirectory = {
 };
 
 async function openHeldLexicalDirectory(
-  lexical: string,
+  lexical: string, expected?: EvidenceReadDirectoryIdentity,
 ): Promise<HeldLexicalDirectory> {
+  assertExpectedReadPath(lexical, expected);
   const parent = lexical === "/"
     ? undefined
-    : await openAbsoluteDirectoryNoSymlinks(dirname(lexical));
+    : await openAbsoluteDirectoryNoSymlinks(dirname(lexical), lexical === expected?.canonicalPath ? undefined : expected);
   let handle: FileHandle | undefined;
   try {
     handle = parent
@@ -509,6 +514,7 @@ async function openHeldLexicalDirectory(
         constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
       : await openAbsoluteDirectoryNoSymlinks(lexical);
     const identity = await handle.stat();
+    assertExpectedReadDirectory(lexical, identity, expected);
     const held = { lexical, handle, parent, identity };
     await assertHeldLexicalDirectory(held);
     return held;
@@ -527,38 +533,9 @@ async function closeHeldLexicalDirectory(held: HeldLexicalDirectory): Promise<vo
   await held.handle.close().finally(async () => await held.parent?.close());
 }
 
-async function assertHeldRootLexicalBinding(
-  lexical: string,
-  handle: FileHandle,
-  identity: Awaited<ReturnType<FileHandle["stat"]>>,
-): Promise<void> {
-  let reopened: FileHandle | undefined;
-  try {
-    const current = await handle.stat();
-    if (current.dev !== identity.dev || current.ino !== identity.ino ||
-      await realpath(`/proc/self/fd/${handle.fd}`) !== lexical) {
-      throw new Error("evidence_custody_publication_root_drift");
-    }
-    reopened = await openAbsoluteDirectoryNoSymlinks(lexical);
-    const lexicalCurrent = await reopened.stat();
-    if (lexicalCurrent.dev !== identity.dev || lexicalCurrent.ino !== identity.ino) {
-      throw new Error("evidence_custody_publication_root_drift");
-    }
-    if (await realpath(`/proc/self/fd/${handle.fd}`) !== lexical) {
-      throw new Error("evidence_custody_publication_root_drift");
-    }
-  } catch (error) {
-    if (error instanceof Error &&
-      error.message === "evidence_custody_publication_root_drift") throw error;
-    throw new Error("evidence_custody_publication_root_drift", { cause: error });
-  } finally {
-    await reopened?.close();
-  }
-}
-
-async function openAbsoluteFileNoSymlinks(path: string) {
+async function openAbsoluteFileNoSymlinks(path: string, expected?: EvidenceReadDirectoryIdentity) {
   const lexical = resolve(path);
-  const parent = await openAbsoluteDirectoryNoSymlinks(dirname(lexical));
+  const parent = await openAbsoluteDirectoryNoSymlinks(dirname(lexical), expected);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(`/proc/self/fd/${parent.fd}/${basename(lexical)}`,
@@ -705,9 +682,11 @@ async function copyThroughHandle(input: {
 export type PublicationCrashHook = (
   point:
     | "after_immutable_read_before_lexical_reopen"
+    | "before_immutable_read_open"
     | "after_copy_read_before_lexical_reopen"
     | "after_path_classification_before_parent_revalidation"
     | "after_directory_listing_before_lexical_revalidation"
+    | "after_link_read_before_lexical_revalidation"
     | "after_temp_write"
     | "after_temp_fsync"
     | "after_ancestor_creation_before_parent_fsync"
@@ -975,26 +954,4 @@ export async function writeAll(
     }
     offset += bytesWritten;
   }
-}
-
-function safeSegment(value: string): void {
-  if (!value || value === "." || value === ".." || value.includes("/") ||
-    value.includes("\\")) throw new Error("evidence_custody_path_invalid");
-}
-function code(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error &&
-    typeof error.code === "string" ? error.code : undefined;
-}
-function deepCode(error: unknown): string | undefined {
-  const direct = code(error);
-  if (direct) return direct;
-  return error instanceof Error && error.cause !== undefined
-    ? deepCode(error.cause)
-    : undefined;
-}
-function custodyError(message: string, cause: unknown): Error & { code?: string } {
-  const error: Error & { code?: string } = new Error(message, { cause });
-  const causeCode = deepCode(cause);
-  if (causeCode !== undefined) error.code = causeCode;
-  return error;
 }

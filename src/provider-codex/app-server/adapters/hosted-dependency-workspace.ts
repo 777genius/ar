@@ -87,6 +87,45 @@ export function readHostedDependencyBinding(jobId: string): HostedDependencyBind
   return bytes ? parseHostedDependencyBinding(decodeHostedActivationBytes(bytes)) : null;
 }
 
+/** Bounded factual inventory, including retained bindings of moved jobs.
+ * Absence grants no authority; malformed/unknown protected state is refused. */
+export function readHostedDependencyBindingInventory(): readonly HostedDependencyBinding[] {
+  assertHostedActivationOperator();
+  for(let path=dirname(hostedDependencyBindingRoot);;path=dirname(path)) {
+    const stat=lstatSync(path);
+    if(!stat.isDirectory() || stat.isSymbolicLink() || stat.uid!==0 || (stat.mode&0o022) || realpathSync(path)!==path)invalid();
+    if(path==="/")break;
+  }
+  let root;
+  try { root=lstatSync(hostedDependencyBindingRoot); }
+  catch(error) { if((error as NodeJS.ErrnoException).code==="ENOENT")return [];throw error; }
+  if(!root.isDirectory() || root.isSymbolicLink() || root.uid!==0 || (root.mode&0o077) ||
+    realpathSync(hostedDependencyBindingRoot)!==hostedDependencyBindingRoot)invalid();
+  const entries=readdirSync(hostedDependencyBindingRoot,{withFileTypes:true});
+  if(entries.length>128)invalid();
+  const bindings:HostedDependencyBinding[]=[];
+  for(const entry of entries) {
+    if(!entry.isFile() || entry.isSymbolicLink() || !/^[a-f0-9]{64}\.json$/.test(entry.name))invalid();
+    const path=hostedDependencyBindingRoot+"/"+entry.name, before=lstatSync(path);
+    if(!before.isFile() || before.isSymbolicLink() || before.uid!==0 || before.nlink!==1 ||
+      (before.mode&0o077) || before.size>16384)invalid();
+    const bytes=readHostedActivationBytes("dependency-bindings/"+entry.name);
+    if(!bytes || bytes.length>16384)invalid();
+    const binding=parseHostedDependencyBinding(decodeHostedActivationBytes(bytes));
+    if(hostedDependencyBindingName(binding.jobId)!=="dependency-bindings/"+entry.name)invalid();
+    const after=lstatSync(path), current=lstatSync(hostedDependencyBindingRoot);
+    if(before.dev!==after.dev || before.ino!==after.ino || before.size!==after.size ||
+      before.ctimeMs!==after.ctimeMs || before.mtimeMs!==after.mtimeMs || before.mode!==after.mode || before.uid!==after.uid ||
+      root.dev!==current.dev || root.ino!==current.ino || root.mode!==current.mode || root.uid!==current.uid ||
+      realpathSync(hostedDependencyBindingRoot)!==hostedDependencyBindingRoot)invalid();
+    bindings.push(binding);
+  }
+  const after=lstatSync(hostedDependencyBindingRoot);
+  if(root.dev!==after.dev || root.ino!==after.ino || root.mode!==after.mode || root.uid!==after.uid ||
+    root.ctimeMs!==after.ctimeMs || root.mtimeMs!==after.mtimeMs)invalid();
+  return Object.freeze(bindings);
+}
+
 export function assertHostedDependencyPhysicalWorkspace(binding: HostedDependencyBinding): void {
   assertHostedActivationOperator();
   for (let path = binding.jobRootDir;; path = dirname(path)) {
