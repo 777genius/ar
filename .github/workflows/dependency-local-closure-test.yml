@@ -1,0 +1,50 @@
+name: Exact npm local closure TEST qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/dependency-local-closure-test/**'
+      - '.github/workflows/dependency-local-closure-test.yml'
+      - 'src/worker-core/dependency-environment/domain/dependency-local-closure.ts'
+      - 'src/worker-core/dependency-environment/domain/dependency-install-key.ts'
+      - 'src/worker-local/dependency-environment/capture-npm-local-closure.ts'
+      - 'src/worker-local/dependency-environment/build-test-npm-dependency-install-key.ts'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  npm-local-closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.23.3
+      - name: Pin the exact closed-profile npm in this fresh CI toolchain
+        run: |
+          npm install --global npm@10.9.9 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = '10.9.9'
+          printf 'TEST_NPM_ROOT=%s\n' "$(npm root --global)"'/npm' >> "$GITHUB_ENV"
+      - name: Install and build the accepted source in a fresh TEST checkout
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Typecheck the handwritten fixture against the actual built contracts
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-local-closure-test/tsconfig.json
+      - name: Run only registered fresh TEST npm input projects
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node --experimental-strip-types scripts/dependency-local-closure-test/run.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: npm-local-closure-TEST-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-local-closure-evidence
+          if-no-files-found: error

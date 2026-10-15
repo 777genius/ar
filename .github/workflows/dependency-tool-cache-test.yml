@@ -1,0 +1,41 @@
+name: Exact dependency tool cache TEST qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/dependency-tool-cache-test/**'
+      - '.github/workflows/dependency-tool-cache-test.yml'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-tool-cache:
+    # A new hosted VM/checkout and registered TEST filesystem on every execution.
+    # This standalone tool proof is not managed runtime/G1/native acceptance.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install exact repository-lock distributions in fresh TEST checkout
+        run: npm ci --ignore-scripts
+      - name: Typecheck handwritten public API qualification
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-tool-cache-test/tsconfig.json
+      - name: Exercise actual tools on new private registered TEST filesystem
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node --experimental-strip-types scripts/dependency-tool-cache-test/run.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: exact-tool-cache-TEST-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dependency-tool-cache-evidence
+          if-no-files-found: error
