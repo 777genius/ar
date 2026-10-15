@@ -59,31 +59,6 @@ import {
   writeRejectedProducerLedger,
 } from "./codex-goal-mcp-project-prepare-verifier-test-support";
 
-const ownedRunner = vi.hoisted(() => ({
-  path: undefined as string | undefined,
-  observe: undefined as
-    | ((child: import("node:child_process").ChildProcess) => void)
-    | undefined,
-}));
-
-vi.mock("node:child_process", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:child_process")>();
-  return {
-    ...original,
-    spawn: (...args: Parameters<typeof original.spawn>) => {
-      const child = original.spawn(...args);
-      if (
-        ownedRunner.path !== undefined &&
-        Array.isArray(args[1]) &&
-        args[1][0] === ownedRunner.path
-      ) {
-        ownedRunner.observe?.(child);
-      }
-      return child;
-    },
-  };
-});
-
 describe("project verifier preparation", () => {
   it("previews and atomically materializes two ordered reviewed outputs", async () => {
     const root = await mkdtemp(join(tmpdir(), "verifier-reviewed-aggregate-"));
@@ -411,6 +386,7 @@ describe("project verifier preparation", () => {
         InMemoryTransport.createLinkedPair();
       const previousRunnerPath =
         process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH;
+      let restoreRunnerObservation: (() => void) | undefined;
       let runnerCount = 0;
       const runnerExits: {
         code: number | null;
@@ -517,17 +493,26 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
 `,
           );
           await chmod(fakeRunnerPath, 0o755);
-          ownedRunner.path = fakeRunnerPath;
-          ownedRunner.observe = (child) => {
-            runnerCount += 1;
-            let error = false;
-            child.once("error", () => {
-              error = true;
-            });
-            child.once("close", (code, signal) => {
-              runnerExits.push({ code, signal, error });
-            });
-          };
+          // Observe the active fixture spawn without replacing its effect fence.
+          const processes = await import("node:child_process");
+          const fencedSpawn = processes.spawn;
+          const observation = vi.spyOn(processes, "spawn").mockImplementation(
+            (...args: Parameters<typeof processes.spawn>) => {
+              const child = fencedSpawn(...args);
+              if (Array.isArray(args[1]) && args[1][0] === fakeRunnerPath) {
+                runnerCount += 1;
+                let error = false;
+                child.once("error", () => {
+                  error = true;
+                });
+                child.once("close", (code, signal) => {
+                  runnerExits.push({ code, signal, error });
+                });
+              }
+              return child;
+            },
+          );
+          restoreRunnerObservation = () => observation.mockRestore();
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH =
             fakeRunnerPath;
         }
@@ -909,8 +894,7 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
             expect(exit).toEqual({ code: 0, signal: null, error: false });
           }
         } finally {
-          ownedRunner.path = undefined;
-          ownedRunner.observe = undefined;
+          restoreRunnerObservation?.();
           await Promise.allSettled([client.close(), server.close()]);
           // A timed-out child retains its disposable input rather than racing rm.
           if (runnersClosed) await rm(root, { recursive: true, force: true });
