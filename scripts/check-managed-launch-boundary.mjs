@@ -31,7 +31,7 @@ const trustedAdministrativeLaunchSources = new Map([
   ['scripts/dependency-retention-os-test/current-administrative-installation.ts',
     { bytes: 37519, sha256: '5846bc1efa56f25c59fbc740c1b1e6f1dc855d2f0832e9e76ff9dc222263a1f4' }],
   ['scripts/dependency-retention-os-test/administrative-installation-native-TEST.ts',
-    { bytes: 14222, sha256: '95d82bfda35f73523557e4a3f33e635ea163d2599d3754663f83f9feb2d2c623' }],
+    { bytes: 15380, sha256: 'a36efb4a26ef66a23002ac07f9392caab47166eddb6f14590153a66664880936' }],
 ]);
 const excludedDirectories = new Set(['node_modules', 'dist', '.git', 'docs', 'tests', '__tests__', 'fixtures', '__fixtures__', 'coverage']);
 const sourceExtension = /\.(?:[cm]?[jt]sx?|sh|bash|py)$/;
