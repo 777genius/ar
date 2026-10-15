@@ -1,3 +1,4 @@
+import { assertHostedDependencyLegacyComparedReady } from "../../dist/worker-codex/hosted-dependency-legacy-comparison-record.js";
 /** Assertions over original stored facts. No issuer, owner CAS or authority DTO. */
 import assert from "node:assert/strict";
 import { lstatSync } from "node:fs";
@@ -14,14 +15,14 @@ import { readHostedDependencyEstablishedReceipt, readHostedDependencyExistingCom
   from "../../dist/worker-codex/hosted-dependency-receipts.js";
 import { pinReferenceFile } from "../../dist/worker-codex/hosted-dependency-legacy-reference-records.js";
 import { HostedOrdinaryDependencyReaderKind } from "../../dist/worker-codex/hosted-ordinary-dependency-reader.js";
-import { assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { assertRootScope, type CurrentOrdinaryRoots, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { readHostedReadonlyDependencyStart } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-origin.js";
 import { DependencyConsumerLaunchKind } from "../../dist/core/index.js";
 import { type runCurrentReadonlyEntry } from "./current-full-r-entry.js";
 import { type runCurrentOrdinaryEntry } from "./current-full-entry.js";
 const policyRoot="/var/lib/subscription-runtime-host-policy";
 const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)+"\n");
-function binding(roots:CurrentColdHotRoots) {
+function binding(roots:CurrentOrdinaryRoots) {
   assertRootScope(roots);const value=readHostedDependencyBinding(roots.candidateJobId);
   assert(value && value.version===2);assert.deepEqual(value.workspace,roots.workspaceIdentity);return value;
 }
@@ -29,7 +30,7 @@ export function assertPathAbsent(path:string) {
   try {lstatSync(path);} catch(error) {if((error as NodeJS.ErrnoException).code==="ENOENT")return;throw error;}
   assert.fail("TEST expected actual absent path");
 }
-export function readEvictRestoreReady(roots:CurrentColdHotRoots) {
+export function readEvictRestoreReady(roots:CurrentOrdinaryRoots) {
   return withHostedActivationFence(fence=>{
     const selected=binding(roots),receipt=readHostedDependencyEstablishedReceipt(selected);
     assert(receipt && receipt.state===DependencyReceiptState.Ready);
@@ -40,7 +41,9 @@ export function readEvictRestoreReady(roots:CurrentColdHotRoots) {
 }
 /** Real protected Evicting successor, released RetiredEvicting owner and exact
  * historical header/source mapping are checked BEFORE the remover is called. */
-export function readEvictRestoreAbsent(roots:CurrentColdHotRoots,ready:ReturnType<typeof readEvictRestoreReady>) {
+export function readEvictRestoreAbsent(roots:CurrentOrdinaryRoots,ready:ReturnType<typeof readEvictRestoreReady>) {return readAbsent(roots,ready,false);}
+export function readLegacyEvictRestoreAbsent(roots:CurrentOrdinaryRoots,ready:ReturnType<typeof readEvictRestoreReady>) {return readAbsent(roots,ready,true);}
+function readAbsent(roots:CurrentOrdinaryRoots,ready:ReturnType<typeof readEvictRestoreReady>,legacy:boolean) {
   return withHostedActivationFence(fence=>{
     const selected=binding(roots),latest=readHostedDependencyEstablishedReceipt(selected);
     assert(latest && latest.state===DependencyReceiptState.Absent);assert.equal(latest.revision,ready.receipt.revision+2);
@@ -74,11 +77,20 @@ export function readEvictRestoreAbsent(roots:CurrentColdHotRoots,ready:ReturnTyp
     assert.equal(row.attempt.operationId,latest.operationId);
     const renamed=pinReferenceFile(operation+".renamed.json",16384);
     assert.equal(renamed.reference.sha256,proof.commitEvidenceId);
-    // This cohort is actual local install, never relabelled legacy comparison.
-    assert(ready.receipt.provenance.kind===DependencyInstallProofKind.CompletedLocalInstallV1);
-    assert.deepEqual(JSON.parse(renamed.bytes.toString("utf8")),{version:2,operationId:latest.operationId,workspace:latest.workspace,
-      epoch:row.attempt.epoch,tree:proof.tree,trash:proof.trash,manifestDigest:proof.manifestDigest,
-      headerSha256:header.reference.sha256,sourceBinding:ready.receipt.provenance.sourceBinding});
+    if(legacy){
+      assert(ready.receipt.provenance.kind===DependencyInstallProofKind.LegacyCompared);
+      const comparison=assertHostedDependencyLegacyComparedReady({...ready.receipt,provenance:ready.receipt.provenance});assert.equal(comparison.version,2);
+      assert(comparison.version===2);
+      assertLegacyRenamedEvidenceData(renamed.bytes,{version:3,operationId:latest.operationId,workspace:latest.workspace,
+        epoch:row.attempt.epoch,tree:proof.tree,trash:proof.trash,manifestDigest:proof.manifestDigest,
+        headerSha256:header.reference.sha256,comparisonEvidenceId:ready.receipt.provenance.comparisonEvidenceId,sourceBinding:comparison.candidateSourceBinding});
+    }else{
+      // Existing installed proof remains exact; legacy never passes this branch.
+      assert(ready.receipt.provenance.kind===DependencyInstallProofKind.CompletedLocalInstallV1);
+      assert.deepEqual(JSON.parse(renamed.bytes.toString("utf8")),{version:2,operationId:latest.operationId,workspace:latest.workspace,
+        epoch:row.attempt.epoch,tree:proof.tree,trash:proof.trash,manifestDigest:proof.manifestDigest,
+        headerSha256:header.reference.sha256,sourceBinding:ready.receipt.provenance.sourceBinding});
+    }
     return Object.freeze({absent,evicting,header:header.reference,renamed:renamed.reference,trash,operation});
   });
 }
@@ -88,7 +100,7 @@ export function assertRetainedEvictionProof(proof:ReturnType<typeof readEvictRes
 }
 /** Joins the producer's actual Absent capture before OS submission to the new
  * original FDA/result/provider final reader. Caller IDs alone never suffice. */
-export function assertSameRootFinalGateRestore(roots:CurrentColdHotRoots,old:ReturnType<typeof readEvictRestoreReady>,
+export function assertSameRootFinalGateRestore(roots:CurrentOrdinaryRoots,old:ReturnType<typeof readEvictRestoreReady>,
   proof:ReturnType<typeof readEvictRestoreAbsent>,entry:Awaited<ReturnType<typeof runCurrentOrdinaryEntry>>) {
   const selected=binding(roots),native=readHostedForegroundLaunchObservation(entry.result);
   const start=pinReferenceFile(policyRoot+"/ordinary-starts/"+native.startId+".json",65536);
@@ -139,4 +151,13 @@ export function assertSameRootReadonlyFinalGateRestore(roots:CurrentColdHotRoots
   assert.equal(restored.receipt.generation,entry.observation.attemptId);assert.notEqual(restored.receipt.generation,old.receipt.generation);
   assert.equal(restored.receipt.installKey,old.receipt.installKey);assertRetainedEvictionProof(proof);
   return Object.freeze({readerSha256:record.reference.sha256,selectedAbsent:proof.absent.reference,restoredReady:restored.reference,generation:restored.receipt.generation});
+}
+
+/** Pure DATA equality only; the caller above FIRST authenticates the original
+ * comparison and protected Ready/header. This helper issues no proof/grant. */
+export function assertLegacyRenamedEvidenceData(bytes:Uint8Array,expected:Readonly<{version:3;operationId:string;workspace:unknown;epoch:unknown;
+    tree:unknown;trash:unknown;manifestDigest:string;headerSha256:string;comparisonEvidenceId:string;sourceBinding:unknown}>) {
+  assert(bytes.byteLength>0 && bytes.byteLength<=16384);
+  const value:unknown=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
+  assert.deepEqual(value,expected);assert(encode(value).equals(Buffer.from(bytes)));
 }

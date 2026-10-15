@@ -13,20 +13,20 @@ import { loadJobLaunch } from "../../dist/worker-codex/application/codex-goal-jo
 import { codexGoalStateRootDir, codexGoalWorkerControlService, codexGoalWorkerControlTarget }
   from "../../dist/worker-codex/application/codex-goal-worker-control.js";
 import { EntryObservationState, readCurrentEntryContentObservation } from "./current-entry-observations.js";
-import { assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { assertRootScope, isPreparedCurrentPositiveAuxiliary, assertPreparedCurrentConfiguredAuth, type CurrentOrdinaryRoots } from "./current-cold-hot-root.js";
 import { currentFullEnvironment } from "./current-full-env.js";
-export enum FullEntryKind { Cold = "cold", Hot = "hot", Restored = "restored" }
-export enum FullRequestPhase { CurrentHot = "current_hot", ReadonlyFirst = "readonly_first", ReadonlyHot = "readonly_hot", ColdRestore = "cold_restore" }
+export enum FullEntryKind { Cold = "cold", Hot = "hot", Restored = "restored", ComparedReuse = "compared_reuse" }
+export enum FullRequestPhase { CurrentHot = "current_hot", ReadonlyFirst = "readonly_first", ReadonlyHot = "readonly_hot", ColdRestore = "cold_restore", LegacyReclaimRestore = "legacy_reclaim_restore", LegacyReclaimHot = "legacy_reclaim_hot" }
 /** A real registered job defines the inbox/state/workspace. Guidance requests
  * genuinely new disposable work; neither a journal deletion nor a run hook. */
-export async function requestCurrentNextWork(roots: CurrentColdHotRoots, phase: FullRequestPhase) {
+export async function requestCurrentNextWork(roots: CurrentOrdinaryRoots, phase: FullRequestPhase) {
   assertRootScope(roots);
   const loaded = await loadJobLaunch({ jobId: roots.candidateJobId, registryRootDir: roots.jobRoot + "/state/registry" });
   assert.equal(loaded.manifest.jobId, roots.candidateJobId);
   assert.equal(loaded.launch.config.jobRootDir, roots.jobRoot); assert.equal(loaded.launch.config.workspacePath, roots.workspace);
   assert.equal(codexGoalStateRootDir(loaded.launch), roots.jobRoot + "/state");
   const target = codexGoalWorkerControlTarget(loaded), service = codexGoalWorkerControlService(loaded.launch);
-  const body = phase === FullRequestPhase.CurrentHot
+  const body = (phase === FullRequestPhase.CurrentHot || phase === FullRequestPhase.LegacyReclaimHot)
     ? "Read the disposable TEST pure linked package index.ts. Report its exported liveRevision after the operator edit. Do not edit files or access credentials."
     : "Inspect the disposable TEST local packages with the configured read-only tools and report their exports. Do not edit files or access credentials.";
   const signal = await service.enqueueSignal({ target, intent: "guidance", deliveryMode: "next_safe_point", body,
@@ -35,10 +35,15 @@ export async function requestCurrentNextWork(roots: CurrentColdHotRoots, phase: 
 }
 /** No caller JSON can substitute for the original retained FDA result. Both
  * publication and the original provider-final reader independently join it. */
-export async function runCurrentOrdinaryEntry(roots: CurrentColdHotRoots, kind: FullEntryKind) {
+export async function runCurrentOrdinaryEntry(roots: CurrentOrdinaryRoots, kind: FullEntryKind) {
   assertRootScope(roots); assert.equal(readHostedInstallationActivation().activation.phase, HostedActivationPhase.Ordinary);
-  const launch = readHostedReadonlyHostInventory().runtimeLaunch;
-  assert.equal(launch.cwd, roots.workspace);
+  const inventory=readHostedReadonlyHostInventory();
+  const rows=inventory.ordinaryCreators.filter(row=>row.jobId===roots.candidateJobId && row.creatorId===roots.candidateJobId && row.jobRootDir===roots.jobRoot && row.workspacePath===roots.workspace);
+  assert.equal(rows.length,1);assertPreparedCurrentConfiguredAuth(roots);
+  // Only the original lexical auxiliary can select its pre-frozen C launch.
+  // The primary runtimeLaunch is never rewritten or supplied by this caller.
+  const launch=isPreparedCurrentPositiveAuxiliary(roots)?rows[0]!.launch:inventory.runtimeLaunch;
+  assert.deepEqual(launch,rows[0]!.launch);assert.equal(launch.cwd, roots.workspace);
   const result = await runHostedRuntimeForeground(launch.command, launch.args, launch.cwd, currentFullEnvironment());
   assert(typeof result !== "number", "TEST actual retained FDA result required");
   assertHostedForegroundResult(result); assert.equal(result.exitCode, 0);
@@ -49,7 +54,7 @@ export async function runCurrentOrdinaryEntry(roots: CurrentColdHotRoots, kind: 
   const content = readCurrentEntryContentObservation(roots.candidateJobId, result);
   assert.equal(content.state, EntryObservationState.Measured); assert(content.state === EntryObservationState.Measured);
   assert.equal(content.startId, native.startId); assert.equal(content.invocationId, native.invocationId);
-  const cold = kind === FullEntryKind.Cold || kind === FullEntryKind.Restored;
+  const cold = kind === FullEntryKind.Cold || kind === FullEntryKind.Restored || kind === FullEntryKind.ComparedReuse;
   assert.equal(content.attempted, cold ? 3 : 0);
   assert.equal(content.completed, cold ? 3 : 0);
   assert.equal(content.finalRoot, cold ? 1 : 0);
@@ -83,7 +88,7 @@ export function assertDistinctCurrentEntries(entries: readonly CurrentEntryIdent
 }
 
 /** Actual delivered receipt from the same registered inbox. Never a caller bool. */
-export async function assertCurrentNextWorkDelivered(roots:CurrentColdHotRoots, requested:Awaited<ReturnType<typeof requestCurrentNextWork>>) {
+export async function assertCurrentNextWorkDelivered(roots:CurrentOrdinaryRoots, requested:Awaited<ReturnType<typeof requestCurrentNextWork>>) {
   assertRootScope(roots);
   const loaded=await loadJobLaunch({jobId:roots.candidateJobId,registryRootDir:roots.jobRoot+"/state/registry"});
   const target=codexGoalWorkerControlTarget(loaded);assert.deepEqual(target,requested.target);

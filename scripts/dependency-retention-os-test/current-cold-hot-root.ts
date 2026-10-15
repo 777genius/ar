@@ -1,3 +1,4 @@
+import { assertPositiveAcceptanceRoster, PositiveAcceptanceRole } from "./current-positive-acceptance-roster.js";
 import { FullNativeCase } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
@@ -23,19 +24,26 @@ import { prepareCurrentLocalInputs, registerCurrentTools, currentNativeRecipe, c
 import { assertCurrentRealCodexInputs } from "./current-real-codex-input.ts";
 import { command, directory, directoryIdentity, digest, fileDigest, installedArtifactDigest, json, node, policy, runtime } from "./common.ts";
 export enum ColdHotPrerequisite { ConfiguredAuth = "configured_auth", IndependentPolicy = "independent_policy" }
-export type CurrentColdHotRoots = Readonly<{ candidateJobId: string; readonlyJobId: string; jobRoot: string; workspace: string;
+export type CurrentOrdinaryRoots = Readonly<{ candidateJobId: string; jobRoot: string; workspace: string;
   referenceJobId?:string; accountName: string; workspaceIdentity: ReturnType<typeof directoryIdentity>; sourceSha: string; runtimeManifestSha256: string }>;
-const preparedAuth = new WeakMap<CurrentColdHotRoots,{attachment:ReturnType<typeof mountCurrentConfiguredAuth>;final?:HostedForegroundResult;closed:boolean}>();
+export type CurrentColdHotRoots = CurrentOrdinaryRoots & Readonly<{readonlyJobId:string}>;
+const positiveAuxiliary = new WeakMap<CurrentColdHotRoots,CurrentOrdinaryRoots>();
+const auxiliaryRoots = new WeakSet<CurrentOrdinaryRoots>();
+export function currentPositiveAuxiliaryRoots(roots:CurrentColdHotRoots):CurrentOrdinaryRoots {
+  const auxiliary=positiveAuxiliary.get(roots);assert(auxiliary && auxiliaryRoots.has(auxiliary));assertRootScope(roots);assertRootScope(auxiliary);return auxiliary;
+}
+export function isPreparedCurrentPositiveAuxiliary(roots:CurrentOrdinaryRoots):boolean {return auxiliaryRoots.has(roots);}
+const preparedAuth = new WeakMap<CurrentOrdinaryRoots,{attachment:ReturnType<typeof mountCurrentConfiguredAuth>;final?:HostedForegroundResult;closed:boolean}>();
 /** Original lexical handle only; serialized roots cannot register or recover it. */
-export function assertPreparedCurrentConfiguredAuth(roots:CurrentColdHotRoots):void {
+export function assertPreparedCurrentConfiguredAuth(roots:CurrentOrdinaryRoots):void {
   const held=preparedAuth.get(roots);assert(held && !held.closed);assertCurrentConfiguredAuth(roots);
 }
 /** A result is retained as data only. Final release independently rejoins the
  * actual current Closed/idle/terminal/drained state under its original fence. */
-export function retainPreparedCurrentAuthCompletion(roots:CurrentColdHotRoots,result:HostedForegroundResult):void {
+export function retainPreparedCurrentAuthCompletion(roots:CurrentOrdinaryRoots,result:HostedForegroundResult):void {
   assertHostedForegroundResult(result);const held=preparedAuth.get(roots);assert(held && !held.closed);held.final=result;
 }
-export function closePreparedCurrentConfiguredAuth(roots:CurrentColdHotRoots):void {
+export function closePreparedCurrentConfiguredAuth(roots:CurrentOrdinaryRoots):void {
   const held=preparedAuth.get(roots);assert(held && !held.closed && held.final);held.attachment.close(held.final);held.closed=true;
 }
 /** New OS only. No installed creator row is removed; legacy cohort remains separate. */
@@ -100,13 +108,16 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
   // One-shot attachment exists before inventory freeze/install. Partial setup
   // cannot create an installed attachment role or admission authority.
   const authAttachment=mountCurrentConfiguredAuth(jobRoot,accountName,args);
+  // One closed four-role fixture is allocated before the ONLY inventory install.
+  // Auxiliary C has no readonly identity and never replaces runtimeLaunch.
+  const auxiliary = referenceJobId ? await preparePositiveAuxiliary(accountName,sourceSha,runtimeManifestSha256) : undefined;
   json(policy + "/readonly-inventory.json", { schemaVersion: 4, hostId: readFileSync("/etc/machine-id", "utf8").trim(),
     supervisorUnit, systemBusInfrastructure: bus, collectorProfile,
     units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest(fragment) },
       { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentSha256: bus.service.fragmentSha256 }],
     ordinaryCreators: [{ creatorId: candidateJobId, jobId: candidateJobId, jobRootDir: jobRoot, workspacePath: workspace, launch, authAttachment:authAttachment.profile },
       ...(referenceJobId?[{creatorId:referenceJobId,jobId:referenceJobId,jobRootDir:hostedDependencyJobRoot(referenceJobId),workspacePath:hostedDependencyJobRoot(referenceJobId)+"/workspace",
-        launch:{command:node,args:currentNativeRecipe(referenceJobId).map((arg,index,all)=>all[index-1]==="--accounts"?accountName:arg),cwd:hostedDependencyJobRoot(referenceJobId)+"/workspace"}}]:[])],
+        launch:{command:node,args:currentNativeRecipe(referenceJobId).map((arg,index,all)=>all[index-1]==="--accounts"?accountName:arg),cwd:hostedDependencyJobRoot(referenceJobId)+"/workspace"}}]:[]),...(auxiliary?.creators??[])],
     disabledCreators: [], runtimeLaunch: launch });
   const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages"; directory(stages);
   if (full) assertOriginalFullBackingPreparation();
@@ -118,7 +129,7 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
   new HostedInstallationActivationStore().install();
   const installed = readHostedInstallationActivation(); assert.equal(installed.activation.phase, HostedActivationPhase.Closed);
   assert.equal(installed.activation.ordinaryStarts.length, 0); assert.equal(installed.installation.runtimeSha, sourceSha);
-  assert.equal(readHostedReadonlyHostInventory().ordinaryCreators.length, referenceJobId?2:1);
+  assert.equal(readHostedReadonlyHostInventory().ordinaryCreators.length, referenceJobId?4:1);
   await registerCurrentTools(candidateJobId);
   if(referenceJobId){const referenceRoot=hostedDependencyJobRoot(referenceJobId);
     await writeHostedTestEgressGrant({schemaVersion:1,jobId:referenceJobId,jobRootDir:referenceRoot,workspacePath:referenceRoot+"/workspace",profileId:CodexProviderEgressProfileId.TestNpmQualification},undefined,
@@ -126,6 +137,20 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
     evidence.legacyCandidateBirth=await createCurrentLegacyCandidateTree(candidateJobId,120000);}
   const roots = Object.freeze({ candidateJobId, readonlyJobId, jobRoot, workspace, accountName,...(referenceJobId?{referenceJobId}:{}), workspaceIdentity: directoryIdentity(workspace), sourceSha, runtimeManifestSha256 });
   preparedAuth.set(roots,{attachment:authAttachment,closed:false});
+  if(auxiliary){
+    auxiliaryRoots.add(auxiliary.roots);preparedAuth.set(auxiliary.roots,{attachment:auxiliary.attachment,closed:false});positiveAuxiliary.set(roots,auxiliary.roots);
+    assert(referenceJobId);const inventory=readHostedReadonlyHostInventory();
+    evidence.acceptanceRoster=assertPositiveAcceptanceRoster([
+      {role:PositiveAcceptanceRole.PrimaryLegacy,jobId:candidateJobId,jobRoot,workspace},
+      {role:PositiveAcceptanceRole.PrimaryReference,jobId:referenceJobId,jobRoot:hostedDependencyJobRoot(referenceJobId),workspace:hostedDependencyJobRoot(referenceJobId)+"/workspace"},
+      {role:PositiveAcceptanceRole.AuxiliaryLegacyC,jobId:auxiliary.roots.candidateJobId,jobRoot:auxiliary.roots.jobRoot,workspace:auxiliary.roots.workspace},
+      {role:PositiveAcceptanceRole.AuxiliaryReference,jobId:auxiliary.referenceJobId,jobRoot:hostedDependencyJobRoot(auxiliary.referenceJobId),workspace:hostedDependencyJobRoot(auxiliary.referenceJobId)+"/workspace"},
+    ],inventory.ordinaryCreators,inventory.runtimeLaunch);
+    await registerCurrentTools(auxiliary.roots.candidateJobId);
+    await writeHostedTestEgressGrant({schemaVersion:1,jobId:auxiliary.referenceJobId,jobRootDir:hostedDependencyJobRoot(auxiliary.referenceJobId),workspacePath:hostedDependencyJobRoot(auxiliary.referenceJobId)+"/workspace",profileId:CodexProviderEgressProfileId.TestNpmQualification},undefined,
+      {candidateJobId:auxiliary.roots.candidateJobId,kind:HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1});
+    evidence.auxiliaryLegacyCandidateBirth=await createCurrentLegacyCandidateTree(auxiliary.roots.candidateJobId,120000);
+  }
   kernel.verifyExclusiveInventory();
   // Factual review request only. No reviewReference, issuer digest, lease or Ready.
   json(jobRoot + "/TEST-cold-policy-review-request.json", { schemaVersion: 1, candidateJobId, readonlyJobId,
@@ -134,9 +159,10 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
     runtimeLaunch: readHostedReadonlyHostInventory().runtimeLaunch });
   return roots;
 }
-export function assertRootScope(roots: CurrentColdHotRoots): void {
-  assert(/^TEST-os-[a-f0-9-]{36}$/.test(roots.candidateJobId) && /^TEST-os-[a-f0-9-]{36}$/.test(roots.readonlyJobId));
-  assert.notEqual(roots.candidateJobId, roots.readonlyJobId);
+export function assertRootScope(roots: CurrentOrdinaryRoots): void {
+  assert(/^TEST-os-[a-f0-9-]{36}$/.test(roots.candidateJobId));
+  if("readonlyJobId" in roots){assert(typeof roots.readonlyJobId==="string" && /^TEST-os-[a-f0-9-]{36}$/.test(roots.readonlyJobId));assert.notEqual(roots.candidateJobId,roots.readonlyJobId);}
+  else assert(auxiliaryRoots.has(roots),"TEST original lexical auxiliary C roots required");
   assert.equal(roots.jobRoot, hostedDependencyJobRoot(roots.candidateJobId)); assert.equal(roots.workspace, roots.jobRoot + "/workspace");
   assert.deepEqual(directoryIdentity(roots.workspace), roots.workspaceIdentity);
   const binding = readHostedDependencyBinding(roots.candidateJobId); assert(binding && binding.version === 2);
@@ -147,7 +173,7 @@ export function assertRootScope(roots: CurrentColdHotRoots): void {
 }
 /** Metadata only. Seed bytes are supplied by the authorized runtime, then read ONLY by
  * its actual FileBackendCodexSessionSeeder; this harness never copies or parses auth. */
-export function assertCurrentConfiguredAuth(roots: CurrentColdHotRoots): void {
+export function assertCurrentConfiguredAuth(roots: CurrentOrdinaryRoots): void {
   assertReadonlyHostOperator(); assertRootScope(roots);
   for (const path of [roots.jobRoot + "/auth", roots.jobRoot + "/auth/" + roots.accountName]) {
     const s = lstatSync(path); assert(s.isDirectory() && !s.isSymbolicLink() && s.uid === 0 && s.gid === 0 && (s.mode & 0o7777) === 0o700);
@@ -169,4 +195,29 @@ export function readCurrentIndependentColdPolicy(roots: CurrentColdHotRoots) {
   assert.equal(selected.runtimeSha, roots.sourceSha); assert.equal(selected.runtimeManifestSha256, roots.runtimeManifestSha256);
   assert.deepEqual([...selected.readonlyPaths].sort(), ["packages/live", "packages/packed", "TEST-readonly-local-custody"].map(p => roots.workspace + "/" + p).sort());
   readReadonlyReview(selected); return selected;
+}
+
+/** Preparation only: all physical identities and exact launch tuples exist before
+ * freeze; registration/install remains with the original shared writers above. */
+async function preparePositiveAuxiliary(accountName:string,sourceSha:string,runtimeManifestSha256:string) {
+  const candidateJobId="TEST-os-"+randomUUID(),referenceJobId="TEST-os-"+randomUUID();
+  const jobRoot=hostedDependencyJobRoot(candidateJobId),workspace=jobRoot+"/workspace",referenceRoot=hostedDependencyJobRoot(referenceJobId);
+  for(const root of [jobRoot,referenceRoot]){
+    for(const path of [root,root+"/workspace",root+"/state",root+"/state/registry"])directory(path);
+    writeFileSync(root+"/prompt",root===jobRoot?"Inspect the disposable TEST project with configured read-only tools. Do not edit files or access credentials.\n":"Dependency reference only.\n",{flag:"wx",mode:0o600});
+  }
+  prepareCurrentLocalInputs(candidateJobId);
+  writeFileSync(workspace+"/source-sentinel","TEST fresh cold/hot source\n",{flag:"wx",mode:0o600});
+  writeFileSync(workspace+"/.gitignore","node_modules/\n",{flag:"wx",mode:0o600});
+  for(const path of [workspace,referenceRoot+"/workspace"])command("/usr/bin/git",["init","--initial-branch=main",path]);
+  command("/usr/bin/git",["config","user.name","iliya"],30000,workspace);command("/usr/bin/git",["config","user.email","iliyazelenkog@gmail.com"],30000,workspace);
+  assert(command("/usr/bin/git",["var","GIT_AUTHOR_IDENT"],30000,workspace).startsWith("iliya <iliyazelenkog@gmail.com> "));
+  assert(command("/usr/bin/git",["var","GIT_COMMITTER_IDENT"],30000,workspace).startsWith("iliya <iliyazelenkog@gmail.com> "));
+  command("/usr/bin/git",["add","package.json","package-lock.json",".gitignore","source-sentinel","packages","TEST-current-local.test.ts","TEST-readonly-local-custody"],30000,workspace);
+  command("/usr/bin/git",["commit","-m","test: initialize disposable acceptance fixture"],30000,workspace);
+  const recipe=(jobId:string)=>currentNativeRecipe(jobId).map((arg,index,all)=>all[index-1]==="--accounts"?accountName:arg);
+  const args=recipe(candidateJobId),launch={command:node,args,cwd:workspace},attachment=mountCurrentConfiguredAuth(jobRoot,accountName,args);
+  const roots=Object.freeze({candidateJobId,referenceJobId,jobRoot,workspace,accountName,workspaceIdentity:directoryIdentity(workspace),sourceSha,runtimeManifestSha256});
+  return {roots,referenceJobId,attachment,creators:[{creatorId:candidateJobId,jobId:candidateJobId,jobRootDir:jobRoot,workspacePath:workspace,launch,authAttachment:attachment.profile},
+    {creatorId:referenceJobId,jobId:referenceJobId,jobRootDir:referenceRoot,workspacePath:referenceRoot+"/workspace",launch:{command:node,args:recipe(referenceJobId),cwd:referenceRoot+"/workspace"}}]};
 }

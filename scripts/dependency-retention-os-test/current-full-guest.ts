@@ -1,8 +1,9 @@
+import { runCurrentPositiveAcceptanceC, assertCurrentPositiveAcceptanceRetained } from "./current-positive-acceptance-roster.js";
 import { runCurrentExplicitPreservation } from "./current-explicit-preservation.js";
 import { FullNativeCase, fullNativeCase } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
-import { assertLegacyUnverifiedReadonlyContinuation } from "./legacy-unverified-r-continuation.js";
+import { assertLegacyUnverifiedReadonlyContinuationUntil } from "./legacy-unverified-r-continuation.js";
 import { consumeOriginalFullProjectControlGuestOnce, completeOriginalFullProjectControlGuestSetup } from "../../dist/worker-codex/hosted-project-control-native-origin.js";
-import { closePreparedCurrentConfiguredAuth } from "./current-cold-hot-root.js";
+import { closePreparedCurrentConfiguredAuth, currentPositiveAuxiliaryRoots } from "./current-cold-hot-root.js";
 import { assertOriginalFullBackingPreparation } from "../../dist/worker-codex/hosted-full-backing-interval.js";
 import { HostedReadonlyEpochStore } from "../../dist/worker-codex/hosted-readonly-epoch-store.js";
 import { readHostedDependencyBinding, hostedDependencyOwnerRoot } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
@@ -50,8 +51,14 @@ function prepareCurrentTestEvictionPolicy(roots:CurrentColdHotRoots,inputReferen
     assert.deepEqual(pinReferenceFile("/run/TEST-full-flow-input/input.json",4096).reference,inputReference);
     const actual=readHostedInstallationActivation();assert.equal(actual.activation.phase,HostedActivationPhase.Closed);
     assert.equal(actual.installation.runtimeSha,roots.sourceSha);assert.equal(actual.activation.ordinaryStarts.length,0);
-    const creators=readHostedReadonlyHostInventory().ordinaryCreators;assert.equal(creators.length,1);
-    assert.equal(creators[0]!.jobId,roots.candidateJobId);assert.equal(creators[0]!.workspacePath,roots.workspace);
+    const creators=readHostedReadonlyHostInventory().ordinaryCreators;
+    if(roots.referenceJobId){
+      const auxiliary=currentPositiveAuxiliaryRoots(roots);assert(auxiliary.referenceJobId);
+      assert.equal(creators.length,4);
+      assert.deepEqual(creators.map(row=>row.jobId),[roots.candidateJobId,roots.referenceJobId,auxiliary.candidateJobId,auxiliary.referenceJobId]);
+      assert.equal(creators.filter(row=>"authAttachment" in row && row.authAttachment!==undefined).length,2);
+      assertRootScope(auxiliary);
+    }else{assert.equal(creators.length,1);assert.equal(creators[0]!.jobId,roots.candidateJobId);assert.equal(creators[0]!.workspacePath,roots.workspace);}
     new HostedReadonlyHostKernel().verifyExclusiveInventory();
     const path="/var/lib/subscription-runtime-host-policy/dependency-retention-policy.json";
     const parent=lstatSync("/var/lib/subscription-runtime-host-policy");
@@ -110,9 +117,18 @@ try {
     assertOriginalFullBackingPreparation();assert(performance.now()<fullDeadline);await new Promise(resolve=>setTimeout(resolve,100));
   }
   if(fullCase===FullNativeCase.LegacyUnverifiedR){
-    assert(roots.referenceJobId);evidence.phase="legacy_unverified_r";
-    const continuation=await assertLegacyUnverifiedReadonlyContinuation(roots,roots.referenceJobId,Math.floor(fullDeadline-performance.now()));
+    assert(roots.referenceJobId);evidence.phase="positive_auxiliary_c";
+    const compositePolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);evidence.testEvictionPolicy=compositePolicy;
+    const acceptanceC=await runCurrentPositiveAcceptanceC(roots,fullDeadline);evidence.acceptanceC=acceptanceC;
+    assert.deepEqual(pinReferenceFile("/var/lib/subscription-runtime-host-policy/dependency-retention-policy.json",4096).reference,compositePolicy.reference);
+    evidence.phase="legacy_unverified_r";
+    const continuation=await assertLegacyUnverifiedReadonlyContinuationUntil(roots,roots.referenceJobId,fullDeadline);
     evidence.legacyUnverified=continuation;
+    const allEntries=[...acceptanceC.entries,...continuation.entries];assert.equal(allEntries.length,7);
+    assert.equal(new Set(allEntries.map(entry=>entry.startId)).size,7);assert.equal(new Set(allEntries.map(entry=>entry.invocationId)).size,7);
+    evidence.acceptanceRetained=await assertCurrentPositiveAcceptanceRetained(roots);
+    assert.deepEqual(pinReferenceFile("/var/lib/subscription-runtime-host-policy/dependency-retention-policy.json",4096).reference,compositePolicy.reference);
+    assert.equal(readHostedDependencyEvictionEnabled(),true);
     withHostedActivationFence(()=>{
       assertOriginalFullBackingPreparation();assertRootScope(roots);
       const actual=readHostedInstallationActivation(),epoch=new HostedReadonlyEpochStore().readEpoch();
