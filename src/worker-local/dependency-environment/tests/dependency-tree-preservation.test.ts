@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, fsyncSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { openDependencyTreePreservation, DependencyPreservationLocation, readDependencyTreeEffectReferenceAnchors } from "../dependency-tree-effects";
+// Keep the real filesystem and real fsync. Native ESM namespace properties
+// cannot be spied on in Node 22; the configurable mock facade changes only the
+// export container. A plain wrapper (not vi.fn) keeps each test's captured
+// pass-through independent of the spy implementation and prevents recursion.
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, fsyncSync: (fd: number) => actual.fsyncSync(fd) };
+});
 const limits = { maxEntries: 128, maxTotalBytes: 65536, maxManifestBytes: 65536, maxDurationMs: 30000 };
 async function identity(path: string) { const stat = await lstat(path, { bigint: true }); return { canonicalPath: path, dev: String(stat.dev), ino: String(stat.ino) }; }
 async function fixture() {
@@ -141,8 +149,26 @@ describe.skipIf(process.platform !== "linux")("preservation data durability barr
 
 });
 
-it("a copied descriptor DTO never grants a preservation reference exception", () => {
+it("a copied descriptor DTO never grants a preservation reference exception", async () => {
   expect(() => readDependencyTreeEffectReferenceAnchors({ operationId: randomUUID() }, { workspace: { canonicalPath: "/TEST", dev: "1", ino: "2" }, trashPath: "/protected/TEST", operationId: randomUUID() })).toThrow("closed");
+  // Portable preflight in this existing case keeps the finite Linux roster
+  // unchanged and makes ESM spy creation, real I/O, fault injection and restore
+  // run even when Darwin skips the eight Linux durability cases.
+  const root = await mkdtemp(join(tmpdir(), "TEST-preservation-fsync-spy-")), file = join(root, "sentinel");
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+    fs.writeFileSync(fd, "TEST real fsync sentinel");
+    const before = fs.fstatSync(fd), actual = fs.fsyncSync, synced: number[] = [];
+    const spy = vi.spyOn(fs, "fsyncSync").mockImplementation(selected => { actual(selected); synced.push(selected); });
+    try {
+      fsyncSync(fd); expect(synced).toEqual([fd]); expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockImplementationOnce(selected => { actual(selected); throw Object.assign(new Error("TEST fsync preflight EIO"), { code: "EIO" }); });
+      expect(() => fs.fsyncSync(fd!)).toThrow("TEST fsync preflight EIO"); expect(spy).toHaveBeenCalledTimes(2);
+    } finally { spy.mockRestore(); }
+    expect(fs.fsyncSync).toBe(actual); fs.fsyncSync(fd);
+    expect(fs.fstatSync(fd).ino).toBe(before.ino); expect(await readFile(file, "utf8")).toBe("TEST real fsync sentinel");
+  } finally { if (fd !== undefined) fs.closeSync(fd); await rm(root, { recursive: true, force: true }); }
 });
 it.skipIf(process.platform === "linux")("refuses unsupported host primitives before attempting a preservation", async () => {
   const operationId = randomUUID();
