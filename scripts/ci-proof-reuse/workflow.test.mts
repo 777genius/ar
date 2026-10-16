@@ -107,7 +107,8 @@ test('every Node 26 job installs the Linux libatomic prerequisite before setup-n
     }
     assert.equal(checked, jobsWithNode, `${file} Node jobs`);
     // Definitions only: an alias reuses the anchored step, including its condition.
-    assert.equal(text.match(/^ +if: runner\.os == 'Linux'$/gm)?.length ?? 0,
+    assert.equal(text.split('\n').filter((line, index, lines) =>
+      line.trim().replace(/^- /, '') === prerequisite && lines[index + 1]?.trim() === "if: runner.os == 'Linux'").length,
       text.match(new RegExp(`^ +- (?:${prerequisite}|&unit_test_node_prerequisite)$`, 'gm'))?.length ?? 0, `${file} limits every prerequisite step to Linux`);
     assert.ok(text.includes('sudo apt-get install -y --no-install-recommends libatomic1'), `${file} installs libatomic1 with apt`);
     assert.ok(text.includes('::error::libatomic.so.1 is missing and this Linux runner has no apt-get'), `${file} fails visibly without apt`);
