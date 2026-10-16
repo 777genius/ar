@@ -2,6 +2,7 @@ import { host, local, setupResearchFixture, cleanupResearchFixture } from "./res
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as processes from "node:child_process";
+import * as mountFrame from "../research-mount-witness-frame";
 import { researchDurableDirectories, researchDurableDirectory } from "../research-durable-handoff-directory";
 import { readResearchColdMountTable, researchMountWitnessRows } from "../research-mount-witness-frame";
 const native = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -98,4 +99,44 @@ it("rejects symlink ancestry before opening any path through it", () => {
   expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
   expect(opens.mock.calls.some(args => String(args[0]).startsWith("/proc/1/root/TEST-project/jobs/"))).toBe(false);
   expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(0);
+});
+
+
+it("derives each captured mount-table frame once while retaining both fresh table reads and target queries", () => {
+  const table = readResearchColdMountTable().trimEnd();
+  const split = String.prototype.split;
+  let derivations = 0;
+  const splitting = vi.spyOn(String.prototype, "split").mockImplementation(function(this: string, separator: unknown, limit?: number) {
+    if (separator === "\n" && String(this) === table) derivations++;
+    return Reflect.apply(split, this, [separator, limit]);
+  } as typeof split);
+  const opened = vi.spyOn(fs, "openSync");
+  host.calls.length = 0;
+  try { expect(researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toHaveLength(2); }
+  finally { splitting.mockRestore(); }
+  expect(derivations).toBe(2);
+  expect(opened.mock.calls.filter(args => args[0] === "/proc/1/mountinfo")).toHaveLength(2);
+  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(2);
+});
+
+
+it.each(["duplicate-initial", "duplicate-final", "changed-final"])("refuses selected raw mount row %s without leaking frame descriptors", fault => {
+  const table = readResearchColdMountTable();
+  const altered = fault === "changed-final" ? table.replace("/dev/TEST", "/dev/TEST-other") : table + table;
+  vi.spyOn(mountFrame, "readResearchColdMountTable").mockReturnValueOnce(fault === "duplicate-initial" ? altered : table).mockReturnValue(altered);
+  const opened = vi.spyOn(fs, "openSync");
+  expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
+  for (const result of opened.mock.results) if (result.type === "return") expect(() => native.fstatSync(result.value as number)).toThrow(expect.objectContaining({ code: "EBADF" }));
+});
+it("keeps exact raw mount ID tokens and ignores unrelated malformed rows", () => {
+  const expected = researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })));
+  const table = readResearchColdMountTable();
+  vi.spyOn(mountFrame, "readResearchColdMountTable").mockReturnValue("01 not-a-selected-row\n1\talso-not-selected\nmalformed unrelated\n" + table + "\n  ");
+  expect(researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toEqual(expected);
+});
+it("keeps independent scalar cold reads and refuses their raw row drift", () => {
+  const table = readResearchColdMountTable();
+  const cold = vi.spyOn(mountFrame, "readResearchColdMountTable").mockReturnValueOnce(table).mockReturnValue(table.replace("/dev/TEST", "/dev/TEST-other"));
+  expect(() => researchDurableDirectory(paths[0]!, false)).toThrow();
+  expect(cold).toHaveBeenCalledTimes(2);
 });
