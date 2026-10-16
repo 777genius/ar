@@ -907,6 +907,8 @@ jobs:
             "source package contract keeps legacy and binds selected Positive package bytes",
             "staged constructor, census and close reject copied original-parent DATA before any physical work",
             "explicit preservation FULL configuration stays schema2 positive ordinary only",
+            "schema3 Positive keeps original account/case/outer boundaries and distinct package pin",
+            "schema3 H1 uses original staged shape and explicit current source package without promoting old schema1",
           ]);
           const total = expected.size;
           const lines = readFileSync(process.env.TAP!, 'utf8').trimEnd().split(/\r?\n/);
