@@ -123,9 +123,11 @@ export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBindi
       !binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
       existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.route-disabled`))
     throw new Error("mimo_project_bridge_route_closed");
-  const yaml = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.yml`).toString("utf8");
-  // Read only the fixed scalar routing contract, not arbitrary YAML features.
-  // The reviewed Ansible template emits these scalars as plain/JSON strings.
+  assertHostedMimoWorkstreamDeclaration(binding, hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.yml`).toString("utf8"));
+}
+/** Reads only the fixed scalar routing contract, not arbitrary YAML features.
+ * The reviewed Ansible template and the attachment renderer emit these scalars as plain/JSON strings. */
+export function assertHostedMimoWorkstreamDeclaration(binding: Pick<HostedMimoProjectBinding, "projectId" | "workstreamId">, yaml: string): void {
   for (const [key, expected] of Object.entries({ project_id: binding.projectId, workstream_id: binding.workstreamId,
     state_root: `/srv/worker-state/jobs/${binding.projectId}/${binding.workstreamId}`, scratch_root: `/srv/workers/jobs/${binding.projectId}/${binding.workstreamId}`, routing_enabled: true })) {
     const lines = yaml.split("\n").filter(line => line.startsWith(key + ":"));

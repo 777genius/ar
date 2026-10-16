@@ -118,9 +118,39 @@ Preparation validates enabled routing and proof before creating fresh protected 
 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
 
+### Rendering an attachment from a card
+
+`--render-attachment` turns a short project card into the files an operator otherwise writes by hand. It is read-only and unprivileged: it reads the card (a regular file of at most 64 KiB), prints JSON on stdout and touches nothing else. The privileged surface is unchanged; the operator reviews the output, installs the files and runs the existing `--prepare-project` and `--configure-route`.
+
+```sh
+node <runtime>/dist/worker-codex/hosted-mimo-project-bridge-cli.js --render-attachment card.json
+```
+
+The card is a closed JSON object. Optional fields are `workstreamId` (default `main`), `packet` (`AGENTS.md` or `README.md`, default `AGENTS.md`) and `jobIdPrefix`; everything else is required:
+
+```json
+{
+  "projectId": "my-project",
+  "repositoryUrl": "https://github.com/example/my-repo.git", "branch": "main",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "sandboxSubdir": "sandbox",
+  "ownedPaths": ["src/", "docs/", "README.md"],
+  "taskTimeoutMs": 14400000, "appServerStartupTimeoutMs": 330000, "operationTimeoutMs": 900000,
+  "diskPeak": { "scratch": 21474836480, "durable": 2147483648 },
+  "host": { "alias": "worker-host", "machineId": "00000000000000000000000000000000", "socketDir": "/private/tmp/subscription-runtime-ssh",
+    "authRootDir": "/srv/worker-state/account-pools/auth", "codexBinaryPath": "/opt/subscription-runtime/codex/bin/codex" }
+}
+```
+
+`ownedPaths` and the `host` constants are required because a pure renderer cannot list tracked entries or read the host: take `ownedPaths` from `git ls-tree --name-only <commit>` (directories with a trailing slash, no globs) and the host values from the current inventory. The three timeouts have no default on purpose. `taskTimeoutMs` is the deadline of a whole task, so take it from the runbook value (14400000, four hours, for long tasks) or from the existing binding of a comparable line, never a guess. `diskPeak` is in bytes, covers clone, dependency install and build artifacts on scratch (`scratch`) and handoff, logs and receipts on durable state (`durable`), and is mandatory for every new project card.
+
+Output (`ok: true`): `workstreamYaml` (to install at its `path`), `preparationPlan` (the `--prepare-project` plan, using the [generic admission template](#generic-admission-template)), `localRoute` (a complete route file, the input of `--configure-route`), `snapshot` (the path and the commands to stage and install the reviewed snapshot), `nextCommands` (no-clobber install commands with modes, then the existing commands), `diskPeak` (the declared peak with the rule-B check to run by hand before each Start; no `capacity.json` is rendered) and `derivedDefaults`, which lists every value the renderer chose instead of the card. Review that list: it holds the workstream and repository key, the controller job ID, the job ID prefix (`<project>-<workstream>-job-`), the fixed commit identity and the fixed `service_tier: "default"` and `heavy_lock_path` values the platform-infra workstream contract requires (`heavy_lock_path` is inert for the runtime; its removal is owned by platform-infra). The output is checked with the parsers that preparation, the bridge route check and the local client use, and with the platform-infra id and URL patterns (ids without dots or underscores, `https://github.com/<owner>/<repo>.git`). An invalid card prints `ok: false`, `error: mimo_project_bridge_render_card_invalid` and an `issues` list, and exits 1.
+
+The project-level declaration `/etc/subscription-runtime/projects/<project>.yml` and any project route policy stay with platform-infra and are not rendered. The snapshot and install commands are operator guidance and run as written only after review.
+
 ### Generic admission template
 
-This is the single owner of the reusable admission template; runbooks and skills link here instead of copying it. Never copy an admission from an older binding: it may carry task-specific packets, a lane or a pinned check.
+This is the single owner of the reusable admission template; runbooks and skills link here instead of copying it. The executable owner is `genericMimoAdmission` in `src/worker-codex/hosted-mimo-project-admission.ts`, and a test fails if the JSON below differs from its output. Never copy an admission from an older binding: it may carry task-specific packets, a lane or a pinned check.
 
 ```json
 {
@@ -140,7 +170,7 @@ This is the single owner of the reusable admission template; runbooks and skills
 }
 ```
 
-Rules: use `README.md` instead of `AGENTS.md` only when the repository has no tracked `AGENTS.md`, and the packet must be tracked at `sourceCommit`. The commit fields are the only source-dependent values and `--advance-source` rewrites them. No `requiredChecks` command may contain a commit SHA or a digest. The refusal looks for any run of 40 or more hex characters in any case, so it also catches an unrelated 40-hex literal (a rare false positive; the plan then carries a reviewed template). Builtin launch admission only checks that each check's `cwd` is a directory in the workspace and never runs the command, so a pinned command protects nothing and only blocks later advances; `--prepare-project` refuses it (`mimo_project_bridge_prepare_admission_pinned`), and `--advance-source` refuses it, both in the current binding and in a template carried by the plan (`mimo_project_bridge_advance_admission_pinned`). Put no task, train or lane names in the packets or `laneId`; task instructions go into the Create prompt.
+Rules: use `README.md` instead of `AGENTS.md` only when the repository has no tracked `AGENTS.md`, and the packet must be tracked at `sourceCommit`. The commit fields are the only source-dependent values and `--advance-source` rewrites them. No `requiredChecks` command may contain a commit SHA or a digest. The refusal looks for any run of 40 or more hex characters in any case, so it also catches an unrelated 40-hex literal (a rare false positive; rewrite the command without the literal). Builtin launch admission only checks that each check's `cwd` is a directory in the workspace and never runs the command, so a pinned command protects nothing and only blocks later advances; `--prepare-project` refuses it (`mimo_project_bridge_prepare_admission_pinned`), and `--advance-source` refuses it, both in the current binding and in a template carried by the plan (`mimo_project_bridge_advance_admission_pinned`). Put no task, train or lane names in the packets or `laneId`; task instructions go into the Create prompt.
 
 ## Advancing the source of an enrolled workstream
 

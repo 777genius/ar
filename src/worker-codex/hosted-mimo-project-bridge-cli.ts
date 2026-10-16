@@ -6,6 +6,12 @@ try {
   if (process.argv[2] === "--prepare-project" && process.argv.length === 4) {
     const { prepareHostedMimoProject } = await import("./hosted-mimo-project-bridge-prepare");
     process.stdout.write(JSON.stringify(await prepareHostedMimoProject(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--render-attachment" && process.argv.length === 4) {
+    // Pure and unprivileged: reads the card, prints files for review, touches nothing else.
+    const { renderMimoAttachmentFromFile } = await import("./hosted-mimo-project-attachment-file");
+    const rendered = renderMimoAttachmentFromFile(process.argv[3]!);
+    process.stdout.write(JSON.stringify(rendered) + "\n");
+    if (!rendered.ok) process.exitCode = 1;
   } else if (process.argv[2] === "--advance-source" && (process.argv.length === 4 && process.argv[3] !== "--dry-run" || process.argv.length === 5 && process.argv[3] === "--dry-run")) {
     const { advanceHostedMimoProjectSource } = await import("./hosted-mimo-project-bridge-advance");
     process.stdout.write(JSON.stringify(await advanceHostedMimoProjectSource(process.argv[process.argv.length - 1]!, { dryRun: process.argv.length === 5 })) + "\n");
