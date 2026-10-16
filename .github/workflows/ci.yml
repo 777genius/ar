@@ -940,6 +940,7 @@ jobs:
             "schema2 protected outer review must match the exact selected account",
             "Positive HOST two fixed DSO roles consume the observed22 canonical rows",
             "FULL H1 separate subject digest is exact DATA-only selection",
+            "FULL H1 current single-link shared DSO keeps ordinary custody selection",
             "Positive HOST second DSO rejects broadened roles and unconsumed proofs",
             "Positive HOST second DSO DATA never invokes hooks",
             "Positive HOST stable ancestry compares objects across namespace-local mounts",
