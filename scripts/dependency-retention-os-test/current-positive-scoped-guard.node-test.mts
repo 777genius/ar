@@ -24,6 +24,41 @@ test('fresh operation-base refusal stops traversal before any FD check',()=>{con
 test('unrelated drift is deferred only until an explicit full-fence check',()=>{const f=fixture();try{const name=join(f.dir,'other');fs.writeFileSync(name,'other');const fd=fs.openSync(name,'r');try{const s=fs.fstatSync(fd),other:Held={fd,name:'other',path:name,live:true,parentHeld:f.root,ino:s.ino,dev:s.dev};fs.renameSync(name,name+'.old');fs.writeFileSync(name,'replacement');f.guard(f.leaf);assert.throws(()=>f.check(other));}finally{fs.closeSync(fd);}}finally{f.close();}});
 let baseExpression:ts.Expression|undefined;function findBase(n:ts.Node){if(ts.isVariableDeclaration(n)&&n.name.getText(parsed)==='baseGuard')baseExpression=n.initializer;ts.forEachChild(n,findBase);}findBase(parsed);assert(baseExpression);
 const baseJs=ts.transpileModule('const selected='+baseExpression.getText(parsed)+';',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
-function baseFixture(){let mount='1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 1:1 / /srv/workers rw - ext4 /dev/workers rw\n',namespace='ns',now=0,cancelled=false;const intake='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1';const ports={readFileSync(path:string){return path==='/proc/self/mountinfo'?mount:'boot';},readlinkSync(){return namespace;}};const get=new Function('fs','hold','performance','Buffer','INTAKE','boot','namespace','getCancelled','getDeadline',baseJs.replace(/\bcancelled\b/g,'getCancelled()').replace(/\bdeadline\b/g,'getDeadline()')+'return selected;');const check=get(ports,(v:unknown)=>assert(v),{now:()=>now},Buffer,intake,'boot','ns',()=>cancelled,()=>100) as ()=>void;return{check,mount:(v:string)=>{mount=v;},namespace:()=>{namespace='other';},expire:()=>{now=100;},cancel:()=>{cancelled=true;},intake};}
+function baseFixture(){let mount='1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 1:1 / /srv/workers rw - ext4 /dev/workers rw\n',namespace='ns',now=0,cancelled=false;const intake='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1';const ports={readFileSync(path:string){return path==='/proc/self/mountinfo'?mount:'boot';},readlinkSync(){return namespace;}};const get=new Function('fs','hold','performance','Buffer','INTAKE','boot','namespace','getCancelled','getDeadline','validateMountInfo',baseJs.replace(/\bcancelled\b/g,'getCancelled()').replace(/\bdeadline\b/g,'getDeadline()')+'return selected;');const check=get(ports,(v:unknown)=>assert(v),{now:()=>now},Buffer,intake,'boot','ns',()=>cancelled,()=>100,createCExactMountBoundaryValidator()) as ()=>void;return{check,mount:(v:string)=>{mount=v;},namespace:()=>{namespace='other';},expire:()=>{now=100;},cancel:()=>{cancelled=true;},intake};}
 test('exact fresh mount policy refuses new intake and ancestor mounts on every call',()=>{for(const target of ['intake','ancestor','child']){const f=baseFixture();f.check();const path=target==='intake'?f.intake:target==='child'?f.intake+'/child':'/srv/workers/public-intake';f.mount('3 2 1:1 / '+path+' rw - ext4 /dev/other rw\n');assert.throws(f.check);}});
 test('fresh namespace cancellation and absolute deadline are never memoized',()=>{for(const change of ['namespace','cancel','expire'] as const){const f=baseFixture();f.check();f[change]();assert.throws(f.check);}});
+
+import {createCExactMountBoundaryValidator,INTAKE} from './stage-current-positive-public.mts';
+const mountRow=(id:number,path:string)=>`${id} 1 0:1 / ${path} rw - ext4 /dev/TEST rw\n`;
+const mountSafe=mountRow(1,'/')+mountRow(2,'/srv/workers')+mountRow(3,'/TEST-memo-counter');
+function countPureParses<T>(work:()=>T):{value:T;parses:number}{
+ const split=String.prototype.split;let parses=0;
+ String.prototype.split=function(this:string,...args:unknown[]){if(args[0]==='\n'&&String(this).includes('/TEST-memo-counter'))parses++;return Reflect.apply(split,this,args);} as typeof split;
+ try{return {value:work(),parses};}finally{String.prototype.split=split;}
+}
+test('actual closed validator reuses successful equal text only; changed unsafe or failed text revalidates',()=>{
+ const validate=createCExactMountBoundaryValidator();
+ assert.equal(countPureParses(()=>{validate(mountSafe);validate(Buffer.from(mountSafe).toString());}).parses,1);
+ for(const path of ['/srv','/srv/workers/public-intake',INTAKE,INTAKE+'/child']){
+  const denied=mountSafe+mountRow(4,path);const r=countPureParses(()=>{assert.throws(()=>validate(denied),/intake_mount_boundary/);assert.throws(()=>validate(denied),/intake_mount_boundary/);});assert.equal(r.parses,2);
+ }
+ const changed=mountSafe.replace('/TEST-memo-counter','/TEST-memo-counter-changed');assert.equal(countPureParses(()=>{validate(changed);validate(changed);}).parses,1);
+ assert.throws(()=>validate('broken\n'),/mountinfo/);assert.throws(()=>validate('x'.repeat(8*1024**2+1)),/mountinfo_bound/);validate(mountSafe);
+});
+// Exact lexical guard bodies with explicit input/check ports. The read port does a
+// real full read of an owned temporary DATA file; it is not Linux kernel proof.
+test('exact full and scoped guard bodies share memo but freshly read every guard and rejoin every selected chain',()=>{
+ const selectedSource=source;
+ const ast=ts.createSourceFile('guard.mts',selectedSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),found=new Map<string,string>();
+ const visit=(n:ts.Node)=>{if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&['baseGuard','guard','scopedGuard'].includes(n.name.text)&&n.initializer)found.set(n.name.text,n.initializer.getText(ast));ts.forEachChild(n,visit);};visit(ast);assert.equal(found.size,3);
+ const dir=fs.mkdtempSync(join(tmpdir(),'TEST-mountparse-')),file=join(dir,'mountinfo');fs.writeFileSync(file,mountSafe);let reads=0,boots=0,namespaces=0,checks=0;
+ const root={name:'/',live:true,parentHeld:undefined},leaf={name:'owned',live:true,parentHeld:root};
+ const io={readFileSync:(path:string)=>{if(path==='/proc/self/mountinfo'){reads++;return fs.readFileSync(file,'utf8');}assert.equal(path,'/proc/sys/kernel/random/boot_id');boots++;return 'BOOT';},readlinkSync:(path:string)=>{assert.equal(path,'/proc/self/ns/mnt');namespaces++;return 'NS';}};
+ const memo=selectedSource.includes('const validateMountInfo=createCExactMountBoundaryValidator();')?'const validateMountInfo=createCExactMountBoundaryValidator();':'';
+ const body=`const boot='BOOT',namespace='NS',cancelled=false,deadline=Infinity,anchors=[root],sources=[],activeTarget=undefined;let guardCalls=0;const progress=()=>{};${memo}${[...found].map(([n,e])=>`const ${n}=${e};`).join('\n')}return {baseGuard,guard,scopedGuard};`;
+ const js=ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const run=new Function('fs','check','root','INTAKE','hold','createCExactMountBoundaryValidator',js)(io,()=>{checks++;},root,INTAKE,(v:unknown,w:string)=>{assert(v,w);},createCExactMountBoundaryValidator);
+ try{const count=countPureParses(()=>{run.guard();run.scopedGuard(leaf);run.baseGuard();});assert.equal(reads,3);assert.equal(boots,3);assert.equal(namespaces,3);assert.equal(checks,3);assert.equal(count.parses,1);
+ fs.writeFileSync(file,mountSafe+mountRow(4,INTAKE));assert.throws(()=>run.guard(),/intake_mount_boundary/);assert.throws(()=>run.scopedGuard(leaf),/intake_mount_boundary/);assert.equal(reads,5);assert.equal(boots,5);assert.equal(namespaces,5);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
