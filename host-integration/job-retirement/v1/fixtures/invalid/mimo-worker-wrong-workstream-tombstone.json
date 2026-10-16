@@ -1,0 +1,46 @@
+{
+  "schema": "subscription-runtime-retired-job",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "layout": "mimo-workstream",
+  "registryRootDir": "/srv/worker-state/mimo-projects/example-project/main/registry",
+  "jobId": "example-project-main-job-001",
+  "role": "worker",
+  "manifestSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "closedSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "terminal": {
+    "kind": "native-released",
+    "startId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+    "specSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "lastTerminalSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "output": {
+    "kind": "clean",
+    "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "workspace": {
+    "path": "/srv/workers/mimo-projects/example-project/main/workspaces/example-project-main-job-001",
+    "device": 66306,
+    "inode": 393218
+  },
+  "deletion": {
+    "scope": "workstream",
+    "workstreamTombstone": "/srv/worker-state/mimo-projects/example-project/other/retired.json"
+  },
+  "pins": [
+    {
+      "path": "/run/user/subscription-runtime-research-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/starts/0f0e0d0c-0b0a-4908-8706-050403020100/pins/job",
+      "action": "unmounted"
+    },
+    {
+      "path": "/run/user/subscription-runtime-research-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/starts/0f0e0d0c-0b0a-4908-8706-050403020100/pins/workspace",
+      "action": "unmounted"
+    },
+    {
+      "path": "/run/user/subscription-runtime-research-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/starts/0f0e0d0c-0b0a-4908-8706-050403020100/pins/durable-handoff",
+      "action": "unmounted"
+    }
+  ],
+  "retiredAt": "2026-10-16T12:00:01.000Z"
+}

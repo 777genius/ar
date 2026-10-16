@@ -253,7 +253,7 @@ Keep the retained failure evidence; cancellation does not fabricate a candidate 
 
 A bootstrap exit 70 before any provider can be a scratch admission failure.
 Read only the [finite startup diagnostics](../src/worker-codex/research-launch-diagnostics.ts), including the volume role and available/required bytes.
-Reserve the 5 GiB floor plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.
+Reserve the [scratch free-space floor](runbooks/host-scratch-storage.md#host-policy) (5 GiB unless the host configures `capacity`) plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.
 Preserve the exact job/start/spec identity on failure or timeout; improved capacity does not authorize replay of an immutable Start.
 
 For fresh enrollment, preload the reviewed source through the [protected snapshot preparation contract](#preparing-an-existing-project-without-launching-work).
@@ -276,6 +276,14 @@ A partial transition remains closed. Reconcile or resume the same exact plan; do
 If creation was interrupted after the new job root appeared but before canonical manifest publication, exact-plan replay returns `mimo_project_bridge_recovery_reconciliation_required`. Keep the guard and old controller; further reconciliation requires operator review. Recovery never adopts that existing root or publishes an uncertified replacement manifest.
 
 Preparation requires the owner identity exactly `iliya` / `iliyazelenkog@gmail.com`. Before privileged Git inspection it validates the complete local `.git` metadata tree, rejects linked/external Git stores and executable transport/include/filter configuration, and uses inert Git environment/flags that disable fsmonitor, hooks and inherited configuration. The source sandbox must be an actual directory represented by tracked files, and must still exist after clone; an empty or ignored-only directory is refused.
+
+## Retiring a finished workstream
+
+A finished workstream keeps its source and worktrees on scratch. Never delete them, the binding, the YAML or the state
+root by hand: Status and Stop open the workspace and fail without it. Close the route, then retire the whole workstream
+with the reviewed-plan operator command `--retire` described in the [job retirement runbook](runbooks/job-retirement.md).
+It proves every job terminal, tears down their research pins and writes tombstones; afterwards Status and Stop of its jobs
+answer `retired` from the tombstones, and the host retention tool deletes the scratch root.
 
 ## Availability across projects
 

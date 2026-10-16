@@ -14,6 +14,7 @@ import { assertPreparationSandbox } from "./hosted-mimo-project-bridge-prepare";
 import { hasPinnedRequiredCheck } from "./hosted-mimo-project-admission";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
 import { loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
+import { jobRetirementWorkstreamGuardPath } from "./job-retirement/job-retirement-records";
 
 const planDirectory = "/etc/subscription-runtime/mimo-advance";
 // A loose temporary ref: running workers see packed-refs through a file bind, so no packing and no packed-ref deletion.
@@ -91,6 +92,8 @@ const normalized = (binding: HostedMimoProjectBinding) => ({ ...binding, admissi
 function assertAdvanceRoute(binding: HostedMimoProjectBinding, heldFence?: HeldMimoPreparationFence): void {
   if (heldFence) assertHeldMimoPreparationFenceCurrent(binding, heldFence);
   if (existsSync(join(binding.stateRoot, ".controller-recovery.json"))) refuse("recovery_pending");
+  // A workstream that is being retired, or was, never moves its source again.
+  if (existsSync(jobRetirementWorkstreamGuardPath(binding.stateRoot))) refuse("retirement_pending");
   if (!binding.routingEnabled) throw new Error("mimo_project_bridge_route_closed");
   const markers = [`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`,
     `/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.route-disabled`];

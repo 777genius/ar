@@ -1,0 +1,31 @@
+{
+  "schema": "subscription-runtime-retired-job",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "layout": "mimo-workstream",
+  "registryRootDir": "/srv/worker-state/mimo-projects/example-project/main/registry",
+  "jobId": "example-project-main-controller",
+  "role": "controller",
+  "manifestSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "closedSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "terminal": {
+    "kind": "controller-closed",
+    "writer": "released"
+  },
+  "output": {
+    "kind": "clean",
+    "head": "cccccccccccccccccccccccccccccccccccccccc"
+  },
+  "workspace": {
+    "path": "/srv/workers/mimo-projects/example-project/main/source",
+    "device": 66306,
+    "inode": 262146
+  },
+  "deletion": {
+    "scope": "workstream",
+    "workstreamTombstone": "/srv/worker-state/mimo-projects/example-project/main/retired.json"
+  },
+  "pins": [],
+  "retiredAt": "2026-10-16T12:00:01.000Z"
+}

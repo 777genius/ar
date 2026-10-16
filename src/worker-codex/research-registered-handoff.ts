@@ -37,11 +37,12 @@ export class RegisteredResearchSinkPreparationUnresolved extends Error {
   constructor() { super("hosted_research_registered_sink_preparation_unresolved"); }
 }
 
-async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false, execution?: ResearchRegisteredExecution) {
+async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false,
+  execution?: ResearchRegisteredExecution, readRetired?: true) {
   const codexClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: request.codexBinaryPath,
     sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
   const current = await researchProjectLaunchInputs({ registryRootDir, controllerJobId, request, preStart,
-    ...(execution ? { execution } : {}), readPromptBytes: path => researchRegisteredPromptBytes(request.jobRootDir, path),
+    ...(execution ? { execution } : {}), ...(readRetired ? { readRetired } : {}), readPromptBytes: path => researchRegisteredPromptBytes(request.jobRootDir, path),
     bindSupportedRequest: ({ manifest, launch }, controller) => {
       const sink = researchPath(launch.config.durableHandoffRootDir);
       if (sink !== join(registryRootDir, "durable-handoffs")) throw new RegisteredResearchHandoffUnsupportedSink();
@@ -59,8 +60,8 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
     current.controller.controller.jobRootDir, "/usr", "/etc"] };
 }
 async function currentRegisteredHandoff(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false,
-  execution?: ResearchRegisteredExecution, beforeSinkEffects?: (assertAuthorityBytes: () => void) => Promise<void>) {
-  const current = await registeredHandoffInputs(registryRootDir, controllerJobId, request, preStart, execution);
+  execution?: ResearchRegisteredExecution, beforeSinkEffects?: (assertAuthorityBytes: () => void) => Promise<void>, readRetired?: true) {
+  const current = await registeredHandoffInputs(registryRootDir, controllerJobId, request, preStart, execution, readRetired);
   // The supported reservation is historical and single-use. Consume only after
   // current receipt/unsupported-field validation and before any sink effects.
   await beforeSinkEffects?.(current.assertAuthorityBytes);
@@ -156,10 +157,13 @@ export async function consumeRegisteredResearchHandoffAuthorization(
 }
 /** Fresh async observation ends in a synchronous current-byte guard for the
  * owner's next individual effect. The closure never caches admission. */
+/** `readRetired` is for the read-only writer observation, which a retirement
+ * replay needs while its guard already closes the job for every effect. */
 export async function assertRegisteredResearchHandoffCurrent(binding: ResearchRegisteredHandoff, request: ResearchOperatorRequest,
-  assertRoot: () => void = assertResearchInitialRoot): Promise<(observeScalarWitness?: (elapsedMs: number) => void, observeTargetQuery?: (elapsedMs: number) => void) => void> {
+  assertRoot: () => void = assertResearchInitialRoot, readRetired?: true): Promise<(observeScalarWitness?: (elapsedMs: number) => void, observeTargetQuery?: (elapsedMs: number) => void) => void> {
   assertRoot();
-  const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution);
+  const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution,
+    undefined, readRetired);
   if (digest(current.binding) !== digest(binding)) researchInvalid();
   assertResearchDurableDirectory(binding.durableDirectory);
   current.assertAuthorityBytes();

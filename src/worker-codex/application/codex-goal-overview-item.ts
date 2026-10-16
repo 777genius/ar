@@ -1,4 +1,5 @@
 import { collectRegisteredCodexGoalJobStatus, CodexGoalObservationMode } from "./codex-goal-registered-job-observation";
+import { jobRetirementAnswer, observeJobRetirement } from "../job-retirement/job-retirement-records";
 import {
   codexGoalJobToArgs,
   readCodexGoalJob,
@@ -44,7 +45,13 @@ export async function buildCodexGoalOverviewItem(
     const manifest = await readCodexGoalJob({
       registryRootDir: input.registryRootDir,
       jobId: input.jobId,
+      includeRetired: true,
     });
+    // A retired job holds no writer and its output is preserved: report it from
+    // its records, so a deleted workspace is never observed as debt.
+    const retirement = observeJobRetirement(input.registryRootDir, manifest.jobId);
+    if (retirement) return { ok: true, jobId: manifest.jobId, retired: true, workspacePath: manifest.workspacePath,
+      taskId: manifest.taskId, workerAlive: false, workspaceDirty: false, ...jobRetirementAnswer(retirement) };
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
     const status = await collectRegisteredCodexGoalJobStatus({
       registryRootDir: input.registryRootDir, launch, ...(input.mode ? { mode: input.mode } : {}), ...(input.observation ? { observation: input.observation } : {}),

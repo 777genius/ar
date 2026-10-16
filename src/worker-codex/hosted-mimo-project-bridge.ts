@@ -13,6 +13,7 @@ import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import { readCodexGoalJob } from "./codex-goal-jobs";
 import { protectedCodexGoalJobRuntimeProvenance } from "./protected-job-birth";
 import type { MimoAdmissionRepairPlan } from "./hosted-mimo-project-bridge-contract";
+import { retiredWorkstreamBridgeAnswer } from "./job-retirement/job-retirement-records";
 import { measureMimoProjectStartControlTiming, MimoProjectStartControlTimingScope,
   type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 
@@ -160,6 +161,9 @@ export async function handleHostedMimoProjectBridge(value: unknown, observeContr
   assertResearchInitialRoot(true); assertResearchSharedHost();
   if (readFileSync("/etc/machine-id", "utf8").trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   const bytes = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`), binding = parseHostedMimoProjectBinding(JSON.parse(bytes.toString("utf8")), request);
+  const retired = retiredWorkstreamBridgeAnswer(binding.stateRoot, request.jobId,
+    request.operation === MimoProjectBridgeOperation.Status || request.operation === MimoProjectBridgeOperation.Stop);
+  if (retired) return retired;
   const { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob,
     loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await measureMimoProjectStartControlTiming(
       MimoProjectStartControlTimingScope.RuntimeSelectionAndImport, () => hostedMimoProjectRuntime(binding, request), observeControlTiming);

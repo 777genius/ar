@@ -16,14 +16,17 @@ export async function researchProjectLaunchInputs(input: {
   readonly execution?: ResearchRegisteredExecution;
   readonly bindSupportedRequest: (loaded: Loaded, controller: Controller) => ResearchOperatorRequest;
   readonly readPromptBytes?: (path: string) => Buffer;
+  /** Read-only observation also reads closed and retired jobs; a launch never does. */
+  readonly readRetired?: true;
 }): Promise<{ readonly binding: ResearchProjectLaunchBinding; readonly request: ResearchOperatorRequest;
   readonly controller: Controller; readonly assertAuthorityBytes: () => void }> {
   const { registryRootDir, controllerJobId, request, execution } = input;
   const controllerPath = codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId });
   const manifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: request.jobId });
   const controllerBytes = researchRead(controllerPath), manifestBytes = researchRead(manifestPath);
-  const controller = await loadProjectControlController({ registryRootDir, controllerJobId });
-  const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
+  const retired = input.readRetired ? { includeRetired: true as const } : {};
+  const controller = await loadProjectControlController({ registryRootDir, controllerJobId }, retired);
+  const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId }, retired);
   const { manifest, launch } = loaded;
   researchCustody(registryRootDir);
   if (controller.registryRootDir !== registryRootDir || loaded.registryRootDir !== registryRootDir ||
@@ -52,8 +55,8 @@ export async function researchProjectLaunchInputs(input: {
   const binding = Object.freeze({ registryRootDir, controllerJobId, manifestSha256: digest(manifest),
     scopeSha256: digest(controller.scope), receiptSha256, requestSha256: researchHashRequest(boundRequest),
     ...(execution ? { registeredExecution: execution } : {}) });
-  const freshManifest = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
-  const freshController = await loadProjectControlController({ registryRootDir, controllerJobId });
+  const freshManifest = await loadJobLaunch({ registryRootDir, jobId: request.jobId }, retired);
+  const freshController = await loadProjectControlController({ registryRootDir, controllerJobId }, retired);
   if (digest(freshManifest.manifest) !== binding.manifestSha256 || digest(freshController.scope) !== binding.scopeSha256) researchInvalid();
   // Finish awaited observation with synchronous nofollow exact-byte custody.
   const assertAuthorityBytes = (): void => {

@@ -7,6 +7,7 @@ import { researchCustody, researchHash, researchRecord, researchPublish } from "
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
+import { retiredWorkstreamBridgeAnswer } from "./job-retirement/job-retirement-records";
 import { beginMimoProjectStartControlTiming, createMimoProjectStartControlTiming, mimoProjectStartControlReceipt,
   MimoProjectStartControlTimingScope, type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 import { readdirSync } from "node:fs";
@@ -57,7 +58,7 @@ export function operationErrorCode(error: unknown): string {
   const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
   if (typeof typedCode === "string" && approvedErrorCodes.has(typedCode)) return typedCode;
   const code = error.message.split(/[:;]/, 1)[0]!;
-  if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
+  if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_|job_retirement_)[a-z0-9_]{1,100}$/.test(code)) return code;
   switch (typedCode) {
     case "ENOENT": return "mimo_project_bridge_fs_not_found";
     case "EACCES": return "mimo_project_bridge_fs_access_denied";
@@ -199,6 +200,9 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
 }
 /** Read-only operation state for maintenance that must not race bridge operations. */
 export const observeHostedMimoProjectOperation = observation;
+/** Read-only: the exact retained owner's unit is cold (zero PID, empty control
+ * group, no queued job), the same proof controller recovery requires. */
+export const hostedMimoProjectOperationCold = (request: MimoProjectBridgeRequest): boolean => recoverableStatus(request, "controller-recovery");
 /** Status may reconcile an existing publication, but never submits a provider.
  * Recover only after the exact prior observer cannot execute any further work. */
 function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller-recovery"): boolean {
@@ -223,8 +227,14 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
     `/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`).toString()), request);
   if (hostedMimoBridgeMetadataBytes("/etc/machine-id").toString().trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   researchCustody(binding.stateRoot, true);
+  // A retired workstream answers from its tombstones, without a lease, an owned
+  // unit or a routed runtime, and therefore without opening any workspace.
+  const retired = retiredWorkstreamBridgeAnswer(binding.stateRoot, request.jobId, isStatusOrStop(request));
+  if (retired) return retired;
   return withHostedMimoWorkstreamActivity(binding.stateRoot, () => submitHostedMimoProjectBridgeUnfenced(value));
 }
+const isStatusOrStop = (request: MimoProjectBridgeRequest): boolean =>
+  request.operation === MimoProjectBridgeOperation.Status || request.operation === MimoProjectBridgeOperation.Stop;
 async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
   assertResearchInitialRoot(true); assertResearchSharedHost();

@@ -265,6 +265,13 @@ it("allows an advance while only the route-disabled markers close the route, nev
   await expect(advance(f, planFor(f))).resolves.toMatchObject({ ok: true }); expect(git(f.source, "rev-parse", "HEAD")).toBe(f.B);
 });
 
+it("never advances a workstream that is being or was retired", async () => {
+  const f = await fixture(), marker = `/etc/subscription-runtime/projects/${f.project}.route-disabled`;
+  file(f.state + "/.job-retirement.json", JSON.stringify({ schemaVersion: 1, planSha256: "a".repeat(64) }) + "\n"); file(marker, "TEST disabled\n");
+  const before = bindingBytes(f);
+  await expect(advance(f, planFor(f))).rejects.toThrow("mimo_project_bridge_advance_retirement_pending"); untouched(f, before);
+});
+
 it.each([
   ["a Create that is unresolved", { create: { state: "unresolved" } }],
   ["a created job whose Start never ran", { create: settledOk }],

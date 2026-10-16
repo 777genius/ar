@@ -20,10 +20,12 @@ import { codexGoalProgressPath } from "../codex-goal-runner";
 import { buildCodexGoalBrief } from "./codex-goal-brief";
 import { isSafeStartAction, nextActionForStatus } from "./codex-goal-decision";
 import {
+  registryRootFromInput,
   type CodexGoalJobIdInput,
   type CodexGoalJobLifecycleInput,
   type CodexGoalJobResultReconcileInput,
 } from "./codex-goal-use-case-inputs";
+import { jobRetirementAnswer, observeJobRetirement } from "../job-retirement/job-retirement-records";
 import {
   writeCodexGoalMaintenancePauseEvent,
   writeCodexGoalStopEvent,
@@ -34,6 +36,7 @@ import { codexGoalStatusInputFromLaunch as statusInput } from "./codex-goal-stat
 import {
   booleanValue,
   numberValue,
+  requiredRawString,
   stringValue,
 } from "./codex-goal-input-values";
 import {
@@ -278,6 +281,8 @@ export async function stopStoredJobLifecycle(
   args: CodexGoalJobLifecycleInput,
   deps: CodexGoalMcpJobLifecycleDeps,
 ): Promise<JsonObject> {
+  const retirement = observeJobRetirement(registryRootFromInput(args), requiredRawString(args.jobId, "jobId"));
+  if (retirement) return { ok: true, jobId: args.jobId, ...jobRetirementAnswer(retirement) };
   const loaded = await deps.loadJobLaunch(args);
   const projectControlDenial =
     projectControlGenericToolDenial({

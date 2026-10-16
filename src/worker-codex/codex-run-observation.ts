@@ -100,6 +100,7 @@ export class CodexRunObservationAdapter implements RunObservationPort {
     const manifest = await readCodexGoalJob({
       registryRootDir: this.registryRootDir,
       jobId: request.runId,
+      includeRetired: true,
     });
     const paths = codexManifestPaths(manifest, this.cwd);
     const status = await collectCodexGoalStatus({

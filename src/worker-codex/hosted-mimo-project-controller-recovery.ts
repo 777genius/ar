@@ -9,6 +9,7 @@ import { researchAuthorityRoot, researchCustody, researchHash, researchPublish }
 import { hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding } from "./hosted-mimo-project-bridge";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { createCodexGoalJob, parseStoredCodexGoalJobManifest, type CodexGoalJobManifest } from "./codex-goal-jobs";
+import { assertNoWorkstreamRetirement } from "./job-retirement/job-retirement-records";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 import { hostedMimoSealedSourcePort } from "./hosted-mimo-project-source";
@@ -99,6 +100,8 @@ export async function recoverHostedMimoController(inputPath: string): Promise<un
   const oldIdentity = lstatSync(old.jobRootDir);
   const registryIdentity = lstatSync(binding.registryRootDir);
   const validate = async () => {
+    // A workstream being or already retired is never given a new controller.
+    assertNoWorkstreamRetirement(binding.stateRoot, "mimo_project_bridge_retirement_pending");
     const now = lstatSync(old.jobRootDir), registry = lstatSync(binding.registryRootDir);
     if (now.dev !== oldIdentity.dev || now.ino !== oldIdentity.ino || registry.dev !== registryIdentity.dev || registry.ino !== registryIdentity.ino) fail();
     const rows = readdirSync(binding.registryRootDir, { withFileTypes: true });

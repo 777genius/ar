@@ -8,6 +8,7 @@ import {
   type ProjectControlBroker,
 } from "@vioxen/subscription-runtime/worker-core";
 import { assertLocalControllerMaintenanceFenceOpen, withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
+import { assertCodexGoalJobNotRetired } from "./job-retirement/job-retirement-records";
 import { withCurrentControllerLaunchPolicy } from "./codex-goal-mcp-project-controller-launch-policy";
 import { hostedStoredProjectStartPlan } from "./hosted-foreground-result";
 import { resolveStoredProjectStartPlan, type StoredProjectStartPlan } from "./stored-start-planning";
@@ -666,7 +667,8 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           owner: `project-start:${controller.controller.jobId}:${loaded.manifest.jobId}`,
           expectedScope: controller.scope,
           loadCurrentScope: async () => (await deps.loadProjectControlController(args)).scope,
-          effect: async () => await broker.startWorker({
+          // Under the controller activity lease no retirement can close the job.
+          effect: async () => { assertCodexGoalJobNotRetired(controller.registryRootDir, loaded.manifest.jobId); return await broker.startWorker({
               jobId: loaded.manifest.jobId,
               registryRoot: controller.registryRootDir,
               workspacePath: loaded.manifest.workspacePath,
@@ -686,7 +688,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
                         controlledRuntimeInPlaceContinuation.ownedPaths,
                     }
                 : {}),
-            }),
+            }); },
         }), deps.observeControlTiming);
       } catch (error) {
         let leafHeld = false;

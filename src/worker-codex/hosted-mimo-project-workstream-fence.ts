@@ -1,15 +1,19 @@
 import { existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { acquireLocalControllerActivityLease, releaseLocalControllerActivityLease } from "@vioxen/subscription-runtime/store-local-file";
+import { assertNoWorkstreamRetirement } from "./job-retirement/job-retirement-records";
 
 const fenceRetryMs = 250;
-/** A durable recovery guard outlives the maintenance process. Both ingress and
+/** A durable recovery or retirement guard outlives the maintenance process. Both ingress and
  * owned execution take a lease and recheck it before any operation effect.
  * Only the lease acquisition may wait for a maintenance fence, and only when
  * the caller has already persisted an operation that must publish a result. */
 export async function withHostedMimoWorkstreamActivity<T>(stateRoot: string, effect: () => Promise<T>,
   options: Readonly<{ fenceWaitMs: number }> = { fenceWaitMs: 0 }): Promise<T> {
-  const open = () => { if (existsSync(join(stateRoot, ".controller-recovery.json"))) throw new Error("mimo_project_bridge_recovery_pending"); };
+  const open = () => {
+    if (existsSync(join(stateRoot, ".controller-recovery.json"))) throw new Error("mimo_project_bridge_recovery_pending");
+    assertNoWorkstreamRetirement(stateRoot, "mimo_project_bridge_retirement_pending");
+  };
   open();
   const identity = lstatSync(stateRoot);
   const deadline = Date.now() + options.fenceWaitMs;

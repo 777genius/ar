@@ -222,7 +222,7 @@ export async function resumeHostedMimoProjectPreparation(inputPath: string, asse
           git(["rev-parse", "--verify", b.sourceRef + "^{commit}"]) !== b.sourceCommit || git(["status", "--porcelain"]) !== "") refused();
       assertPreparationSandbox(workspace, relative(b.sourceWorkspacePath, admission.contract.executionPolicy.sandboxRoot));
     }
-    // Reuse the existing validated scratch policy and its actual 5 GiB free floor;
+    // Reuse the existing validated scratch policy and its configured free floor;
     // no retained-after-build or later-install budget is added here.
     if (!resolveHostScratchTempRoot(controllerRoot)) refused();
     assertProducerClosed();

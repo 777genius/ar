@@ -438,6 +438,7 @@ async function withLegacyOutputRepairWorkspaceCustody<T>(input: {
       : await readCodexGoalJob({
           registryRootDir: input.controller.registryRootDir,
           jobId: summary.jobId,
+          includeRetired: true,
     });
     if (manifest.projectAccessScope?.projectId === input.controller.scope.projectId) {
       workspacePaths.add(await projectControlCanonicalWorkspacePath(
@@ -494,6 +495,7 @@ async function proveLegacyConsumedOutputSafe(input: {
         : await readCodexGoalJob({
             registryRootDir: input.registryRootDir,
             jobId: input.candidate.jobId,
+            includeRetired: true,
           });
       if (manifest.projectAccessScope?.projectId !== input.projectId) {
         reasons.push("current job manifest belongs to a different project");

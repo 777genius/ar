@@ -1,0 +1,42 @@
+{
+  "schema": "subscription-runtime-retired-workstream",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "projectId": "example-project",
+  "workstreamId": "main",
+  "machineId": "dddddddddddddddddddddddddddddddd",
+  "bindingSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "registryRootDir": "/srv/worker-state/mimo-projects/example-project/main/registry",
+  "scratchRoot": {
+    "path": "/srv/workers/mimo-projects/example-project",
+    "device": 66306,
+    "inode": 131074
+  },
+  "source": {
+    "path": "/srv/workers/mimo-projects/example-project/main/source",
+    "device": 66306,
+    "inode": 262146,
+    "head": "cccccccccccccccccccccccccccccccccccccccc",
+    "alternates": []
+  },
+  "jobs": [
+    {
+      "jobId": "example-project-main-job-001",
+      "role": "worker",
+      "tombstoneSha256": "2f2723e824da32b55bc48e1fefdbde27074d16743117b2d6d7224e3c802372d5"
+    },
+    {
+      "jobId": "example-project-main-controller",
+      "role": "controller",
+      "tombstoneSha256": "9b74fc89061f9ca4f1005d7d65b2c4ff7a7828f8153b5a00e760694d2f2c9da8"
+    }
+  ],
+  "unregisteredAttempts": [
+    {
+      "jobId": "example-project-main-job-003",
+      "workspace": null
+    }
+  ],
+  "retiredAt": "2026-10-16T12:00:02.000Z"
+}

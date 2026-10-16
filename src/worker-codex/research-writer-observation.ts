@@ -73,9 +73,11 @@ async function observeNativeResearchJobWriterAuthority(manifest: CodexGoalJobMan
       if (researchHash(grantBytes) !== spec.grantSha256 || grant.jobId !== manifest.jobId ||
           grant.jobRootDir !== manifest.jobRootDir || grant.workspacePath !== manifest.workspacePath) return { status: "unknown" };
     }
+    // Observation only: a closed or retired job is read too, effects are not.
     const assertAuthorityBytes = spec.registeredHandoff
-      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, request)
-      : spec.projectLaunchBinding ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request) : undefined;
+      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, request, assertResearchInitialRoot, true)
+      : spec.projectLaunchBinding ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request, assertResearchInitialRoot, true)
+        : undefined;
     const assertCurrent = (): boolean => sameOptionalBytes(active, optionalPrivateRecord(activePath)) &&
       sameOptionalBytes(grantBytes, optionalPrivateRecord(grantPath));
     // The installed path must match the protected first-plan profile provenance;
@@ -116,9 +118,10 @@ async function prepareNativeResearchJobWriterObservation(manifest: CodexGoalJobM
         spec.request.jobRootDir !== manifest.jobRootDir || spec.request.workspacePath !== manifest.workspacePath ||
         spec.request.promptPath !== manifest.promptPath || spec.request.modelBackend !== manifest.modelBackend ||
         researchHash(grantBytes) !== spec.grantSha256 || spec.runtimeDirectory !== installedResearchRuntimeDirectory()) return unknown;
+    // A retirement replay proves this job while its guard already closes it.
     const assertAuthorityBytes = spec.registeredHandoff
-      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request)
-      : await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding!, spec.request);
+      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request, assertResearchInitialRoot, true)
+      : await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding!, spec.request, assertResearchInitialRoot, true);
     const read = async (): Promise<ProjectAdmissionWriterObservation> => {
       try {
         assertResearchInitialRoot(true);

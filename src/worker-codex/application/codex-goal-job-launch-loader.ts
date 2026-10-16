@@ -19,22 +19,29 @@ export type LoadedCodexGoalJobLaunch = {
   readonly launch: CodexGoalLaunchInput;
 };
 
+/** The sink a stored job publishes its terminal handoff packets into. */
+export function codexGoalJobDurableHandoffRootDir(manifest: CodexGoalJobManifest, registryRootDir: string): string {
+  return manifest.durableHandoffRootDir ??
+    join(manifest.storage ? manifest.jobRootDir : registryRootDir, "durable-handoffs");
+}
+
+/** A closed or retired job is never loaded for an effect; Status and Stop
+ * answer such jobs from their records before reaching this loader. Only a
+ * read-only observation passes `includeRetired`, never from tool arguments. */
 export async function loadJobLaunch(
   args: CodexGoalJobIdInput,
+  options: { readonly includeRetired?: true } = {},
 ): Promise<LoadedCodexGoalJobLaunch> {
   const registryRootDir = registryRootFromInput(args);
-  const manifest = await readCodexGoalJob({
-    registryRootDir,
-    jobId: requiredRawString(args.jobId, "jobId"),
-  });
+  // The reader refuses a closed or retired job.
+  const manifest = await readCodexGoalJob({ registryRootDir, jobId: requiredRawString(args.jobId, "jobId"), ...options });
   return {
     registryRootDir,
     manifest,
     launch: await goalLaunchInput({
       ...codexGoalJobToArgs(manifest),
       ...(args.sourceEnv === undefined ? {} : { sourceEnv: args.sourceEnv }),
-      durableHandoffRootDir: manifest.durableHandoffRootDir ??
-        join(manifest.storage ? manifest.jobRootDir : registryRootDir, "durable-handoffs"),
+      durableHandoffRootDir: codexGoalJobDurableHandoffRootDir(manifest, registryRootDir),
     }),
   };
 }

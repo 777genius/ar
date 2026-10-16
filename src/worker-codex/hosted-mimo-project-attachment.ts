@@ -131,7 +131,7 @@ export function renderMimoAttachment(input: unknown): MimoAttachmentRendering {
       `# operator machine: save localRoute.content to a file, then`,
       `${clientCli} --configure-route <absolute path of that file>`],
     diskPeak: { scratchBytes: card.diskPeak.scratch, durableBytes: card.diskPeak.durable,
-      check: "Before each Start, free space on the scratch filesystem and on the filesystem holding /srv/worker-state must be at least 5 GiB plus this peak plus the unused declared peaks of the line's non-terminal jobs (rule B). Checked by hand; no capacity.json is rendered." },
+      check: "Before each Start, free space on the scratch filesystem and on the filesystem holding /srv/worker-state must be at least the scratch free-space floor (5 GiB, or the capacity floor of scratch-temp.json) plus this peak plus the unused declared peaks of the line's non-terminal jobs (rule B). Checked by hand; no capacity.json is rendered." },
     derivedDefaults: applied,
   };
 }

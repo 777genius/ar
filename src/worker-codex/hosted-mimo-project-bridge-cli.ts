@@ -24,6 +24,12 @@ try {
   } else if (process.argv[2] === "--recover-controller" && process.argv.length === 4) {
     const { recoverHostedMimoController } = await import("./hosted-mimo-project-controller-recovery");
     process.stdout.write(JSON.stringify(await recoverHostedMimoController(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--retire" && (process.argv.length === 4 && !process.argv[3]!.startsWith("--") ||
+      process.argv.length === 5 && ["--dry-run", "--cancel"].includes(process.argv[3]!))) {
+    const { retireHostedJobs } = await import("./job-retirement/job-retirement-command");
+    const mode = process.argv.length === 5 ? process.argv[3] : undefined;
+    process.stdout.write(JSON.stringify(await retireHostedJobs(process.argv[process.argv.length - 1]!,
+      { dryRun: mode === "--dry-run", cancel: mode === "--cancel" })) + "\n");
   } else if (process.argv[2] === "--onboard" && process.argv.length === 4) {
     process.stdout.write(JSON.stringify(await onboardHostedMimoProject(process.argv[3]!)) + "\n");
   } else if (process.argv[2] === "--execute-owned" && process.argv.length === 4) {
@@ -40,6 +46,9 @@ try {
   }
 } catch (error) {
   const message = operationErrorCode(error);
-  process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
+  // A retirement refusal names the job it is about; the job ID pattern keeps it bounded.
+  const jobId: unknown = message.startsWith("job_retirement_") && error instanceof Error ? Object.getOwnPropertyDescriptor(error, "jobId")?.value : undefined;
+  process.stdout.write(JSON.stringify({ ok: false, error: message,
+    ...(typeof jobId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(jobId) ? { jobId } : {}) }) + "\n");
   process.exitCode = 1;
 }
