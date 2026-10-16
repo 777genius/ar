@@ -156,6 +156,21 @@ Under the workstream maintenance fence the operation fetches the new objects fro
 
 If the process dies, or fails with an ordinary error after the first change to the source checkout (the fetch), its maintenance fence stays and keeps ingress and owned units closed (Create also fails closed through the sealed-source check while source, ref and binding disagree). A replay that finds the source already moved keeps the fence on any failure as well. The command line process exits after the error, so the fence it leaves is a dead one that the next advance recovers by itself. Replay the exact same plan; this is the only recovery and it needs no file edits, because the advance is forward-only and completes from every state after the fetch (fetched, ref moved, checked out, binding replaced, receipt missing), which the kill-and-replay test covers step by step: every step is additive or a compare-and-swap, a stale source `*.lock` is removed under the fence only when no Git process names the checkout, and replaying after completion reports `alreadyAdvanced`. A different plan is refused while source, ref and binding disagree. An interrupted checkout that leaves the source tree modified is refused (`mimo_project_bridge_advance_source_dirty`) for inspection instead of being reset. To recover, inspect `git -C <source> status` as the root operator, bring the tree back to a clean checkout of the old or the new commit by hand without touching job worktrees or branches, then replay the same plan. Refusals that happen before the first change (a dirty tree while HEAD and the ref are still at the old commit, a diverged ref, a running unit, a failed check) release the fence at once.
 
+## Resources
+
+The provider unit of a CodingV1 job has `MemoryHigh=7680M` and `MemoryMax=8G`; every other profile keeps `MemoryHigh=2G` and `MemoryMax=4G`.
+Swap is disabled, `CPUQuota` is 200% and `TasksMax` is 512. The limit is shared by the provider runtime, Codex and every command the model runs.
+Above `MemoryHigh` every process in the unit, Codex included, is throttled. A command that suddenly slows down sharply is near the limit: stop it instead of waiting.
+The unit sets `OOMPolicy=continue`: at `MemoryMax` the kernel kills the largest process in the unit, which is not necessarily the command that crossed the limit.
+Usually that is the heavy command, and it ends with exit 137 (usual, not guaranteed) that the model sees; the job keeps running.
+If the killed process is Codex or the runtime itself, the job still fails.
+Run heavy commands (type checks, builds, test runners) one at a time and split large inputs into batches.
+`NODE_OPTIONS=--max-old-space-size=3072` limits Node tools only, not native binaries such as the TypeScript 7 `tsc`; type check one package at a time.
+There is no per-project or per-line memory budget yet.
+
+For operators: a job can use 8G in the provider unit plus 6G in the outer unit, and there is no per-host limit on parallel jobs.
+Check `MemAvailable` before starting another job.
+
 ## Operator troubleshooting
 
 On a Linux root host with scratch isolation enabled, the ordinary `codex-goal-cli` main entry can enter a private mount namespace.
