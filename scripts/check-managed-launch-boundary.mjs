@@ -32,7 +32,7 @@ const trustedAdministrativeLaunchSources = new Map([
   ['scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts',
     { bytes: 22046, sha256: '803cc575ff7c535505ea4b831d80947930e8ceb68e889cbeaa0f52f7f0caaa11' }],
   ['scripts/dependency-retention-os-test/current-administrative-installation.ts',
-    { bytes: 37519, sha256: '5846bc1efa56f25c59fbc740c1b1e6f1dc855d2f0832e9e76ff9dc222263a1f4' }],
+    { bytes: 38483, sha256: '1022a93b997fac577abca55ff0866eeaef3121499e35ddf56f13b4816ae101e2' }],
   ['scripts/dependency-retention-os-test/administrative-installation-native-TEST.ts',
     { bytes: 15647, sha256: 'bd97904cbda131955d7c15ce7f181c283c581d050596f946e853eaad22ae5888' }],
 ]);

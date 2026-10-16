@@ -107,7 +107,9 @@ async function fixture(both:boolean){
   if(observed.status!==Observed.Complete)throw Error("TEST incomplete original physical tree");
   const blobs=await LocalDependencyManifestBlobStore.open({rootPath:f.blobs,maxManifestBytes:65536,maxStoredBytes:1048576,maxBlobs:8});try{await blobs.put(observed.canonicalBytes);}finally{await blobs.close();}
   const generation=randomUUID(),coverageRevision=hash(enc(selected())),base={version:1 as const,generation,workspace,coverageRevision};
-  const sourceBinding=join(f.root,"source-binding.json");await writeFile(sourceBinding,enc({TEST:"projected upstream local completion/source history"}),{mode:0o600});
+  const bindings=join(f.root,"dependency-source-bindings"),bindingDirectory=join(bindings,workspace.dev+"-"+workspace.ino);
+  await mkdir(bindings,{mode:0o700});await mkdir(bindingDirectory,{mode:0o700});
+  const sourceBinding=join(bindingDirectory,generation+".json");await writeFile(sourceBinding,enc({TEST:"projected upstream local completion/source history"}),{mode:0o600});
   const s=receipts();let ready:Extract<DependencyReceipt,{state:State.Ready}>;
   try{s.compareAndSwap(workspace,null,{...base,revision:1,state:State.Installing,operationId:generation,requestedKey:f.key,
     preservation:{kind:Preserve.KnownFreshAbsence,generation,workspace,coverageRevision,operationId:generation,absenceEvidenceId:"TEST-projected-prior-absence"}});
