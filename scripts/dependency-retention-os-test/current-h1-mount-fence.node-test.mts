@@ -65,8 +65,8 @@ function runCase(which:string){
   }else assert.fail('unknown test case');
   console.log(JSON.stringify({case:which,actualPrivateNamespace:true,fixtureOnly:true,originalInputDiskWrites:false,nativeQualified:false}));
  }finally{
-  for(const target of mountTargets.reverse()){const r=spawnSync('/usr/bin/umount',[target],{encoding:'utf8',timeout:5000});assert.equal(r.status,0,r.stderr);}
   for(const h of handles.reverse())fs.closeSync(h.fd);
+  for(const target of mountTargets.reverse()){const r=spawnSync('/usr/bin/umount',[target],{encoding:'utf8',timeout:5000});assert.equal(r.status,0,r.stderr);}
   if(workersFixture)fs.rmSync(workersFixture,{recursive:true,force:true});
   if(createdWorkersParent)try{fs.rmdirSync('/srv/workers');}catch(e){assert.equal((e as NodeJS.ErrnoException).code,'ENOTEMPTY');}
   fs.rmSync(temporary,{recursive:true,force:true});
