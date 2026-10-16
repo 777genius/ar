@@ -152,7 +152,7 @@ jobs:
       - name: Emit finite future FULL TEST caller without auth or activation
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-full-emit.json
       - name: Check finite H1 supervisor readiness and one-shot continuation
-        run: node --test scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.js scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.js scripts/dependency-retention-os-test/current-h1-ingress-negative-observations.node-test.js scripts/dependency-retention-os-test/current-h1-distro-delivery-data.node-test.js
+        run: node --test scripts/dependency-retention-os-test/current-full-h1-supervision.node-test.js scripts/dependency-retention-os-test/current-removal-h1-fixture.node-test.js scripts/dependency-retention-os-test/current-h1-ingress-negative-observations.node-test.js scripts/dependency-retention-os-test/current-h1-distro-delivery-data.node-test.js scripts/dependency-retention-os-test/current-eviction-prelock-io-TEST.node-test.js
       - name: Check retained image descriptor and backing mount observation contracts
         env:
           TMPDIR: ${{ runner.temp }}
@@ -288,6 +288,8 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-ingress-negative-observations.node-test.js
             scripts/dependency-retention-os-test/current-h1-distro-delivery-data.js
             scripts/dependency-retention-os-test/current-h1-distro-delivery-data.node-test.js
+            scripts/dependency-retention-os-test/current-eviction-prelock-io-TEST.js
+            scripts/dependency-retention-os-test/current-eviction-prelock-io-TEST.node-test.js
             scripts/dependency-retention-os-test/current-full-warm-edit.js
             scripts/dependency-retention-os-test/current-real-codex-input.js
             scripts/dependency-retention-os-test/current-tools-fixture.js
@@ -343,6 +345,8 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-ingress-negative-observations.node-test.ts
             scripts/dependency-retention-os-test/current-h1-distro-delivery-data.ts
             scripts/dependency-retention-os-test/current-h1-distro-delivery-data.node-test.ts
+            scripts/dependency-retention-os-test/current-eviction-prelock-io-TEST.ts
+            scripts/dependency-retention-os-test/current-eviction-prelock-io-TEST.node-test.ts
             scripts/dependency-retention-os-test/current-full-warm-edit.ts
             scripts/dependency-retention-os-test/current-real-codex-input.ts
             scripts/dependency-retention-os-test/current-tools-fixture.ts

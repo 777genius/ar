@@ -20,6 +20,7 @@
     "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts",
     "./current-positive-acceptance-roster.node-test.ts",
     "./current-h1-ingress-negative-observations.node-test.ts",
-    "./current-h1-distro-delivery-data.node-test.ts"
+    "./current-h1-distro-delivery-data.node-test.ts",
+    "./current-eviction-prelock-io-TEST.node-test.ts"
   ]
 }

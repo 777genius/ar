@@ -55,6 +55,7 @@ export async function runCurrentPositiveAcceptanceC(primary:import("./current-co
   const {LocalDependencyOwnerStore}=await import("../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js");
   const {readHostedDependencyBinding,hostedDependencyOwnerRoot}=await import("../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js");
   const {pinReferenceFile}=await import("../../dist/worker-codex/hosted-dependency-legacy-reference-records.js");
+  const {runCurrentPositiveEvictionPrelockRecovery}=await import("./current-eviction-prelock-io-TEST.js");
   const {HostedDependencyTransactionOutcome}=await import("../../dist/worker-codex/hosted-dependency-transactions.js");
   const {readHostedDependencyEvictionEnabled}=await import("../../dist/worker-codex/hosted-dependency-eviction-enabled-policy.js");
   const {assertCurrentClosedEntry}=await import("./current-closed-entry.js");
@@ -94,7 +95,7 @@ export async function runCurrentPositiveAcceptanceC(primary:import("./current-co
     assert.deepEqual(readEvictRestoreReady(roots),ready);const reuseOutput=await captureCurrentCompletedOutputData(roots,reuse.result);const reuseInstaller=measured(0,0);assertEvictRestoreSentinels(roots,sentinels);policyCurrent();
     // No private Ready/owner/history is synthesized. The original store retires
     // this genuine baseline and original remover authenticates RetiredEvicting.
-    store.resumeOrdinary();remaining();const evicted=await store.evictDependencyCandidate({jobId:roots.candidateJobId,revision:ready.receipt.revision,generation:ready.receipt.generation,installKey:ready.receipt.installKey});
+    const {evicted,recovery}=await runCurrentPositiveEvictionPrelockRecovery(roots,reuse,deadline);
     assert.equal(evicted.outcome,HostedDependencyTransactionOutcome.Evicted);remaining();const proof=readLegacyEvictRestoreAbsent(roots,ready);assertRetainedEvictionProof(proof);policyCurrent();
     const removed=await store.removeDependencyCommittedTrash(roots.candidateJobId,proof.absent.receipt.revision);remaining();
     assert.equal(removed.outcome,HostedDependencyTransactionOutcome.TrashRemoved);assert("operationId" in removed && "removedEntries" in removed);
@@ -132,7 +133,7 @@ export async function runCurrentPositiveAcceptanceC(primary:import("./current-co
       candidateJobId:roots.candidateJobId,referenceJobId:roots.referenceJobId,workspace:roots.workspaceIdentity,comparison,closed,policyReference:policy.reference,
       entries:[reuse.observation,restored.observation,hot.observation,...preservation.entries],installer:{reuse:reuseInstaller,restore:restoreInstaller,hot:hotInstaller},
       completedOutputs:[reuseOutput,restoreOutput,hotOutput],candidateManagedInstallCount:2,legacyCandidateBirthAccounting:"separate_ROOT_TEST_precursor_before_managed_counter",referenceInstallAccounting:"separate_original_comparison_proof_not_candidate_counter",warmEdit,restore,control:[restoreDelivery,hotDelivery],preservation,
-      eviction:{evicting:proof.evicting.reference,absent:proof.absent.reference,header:proof.header,renamed:proof.renamed,removedEntries:removed.removedEntries},
+      eviction:{recovery,evicting:proof.evicting.reference,absent:proof.absent.reference,header:proof.header,renamed:proof.renamed,removedEntries:removed.removedEntries},
       bytes:{logicalRemoved:null,allocatedRemoved:null,statfsDelta:null,measurement:"unavailable_no_capacity_claim"},remainingMs:remaining()});
   }finally{if(trace){try{trace.finish();}catch{process.stderr.write("TEST_positive_composite_observation_unresolved\n");}}}
 }

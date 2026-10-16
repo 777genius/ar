@@ -1,3 +1,4 @@
+import { readHostedDependencyScratchLayout } from "../../dist/worker-codex/hosted-dependency-scratch-layout.js";
 import { assertHostedDependencyLegacyComparedReady } from "../../dist/worker-codex/hosted-dependency-legacy-comparison-record.js";
 /** Assertions over original stored facts. No issuer, owner CAS or authority DTO. */
 import assert from "node:assert/strict";
@@ -53,7 +54,7 @@ function readAbsent(roots:CurrentOrdinaryRoots,ready:ReturnType<typeof readEvict
     assert.equal(latest.installKey,ready.receipt.installKey);assert.equal(proof.manifestDigest,ready.receipt.manifestDigest);
     assert.deepEqual(proof.tree,ready.receipt.tree);assert.deepEqual(proof.trash,evicting.receipt.trash);
     assert.deepEqual(evicting.receipt.tree,ready.receipt.tree);assert.equal(evicting.receipt.installKey,ready.receipt.installKey);
-    assert.equal(proof.trash.destinationParent.canonicalPath,policyRoot+"/dependency-trash");
+    assert.equal(proof.trash.destinationParent.canonicalPath,readHostedDependencyScratchLayout(selected.runtimeSha).trash);
     assert.equal(proof.trash.destinationName,"dependency-"+latest.operationId);
     const parent=lstatSync(proof.trash.destinationParent.canonicalPath,{bigint:true});
     assert(parent.isDirectory() && !parent.isSymbolicLink());assert.equal(String(parent.dev),proof.trash.destinationParent.dev);
