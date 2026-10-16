@@ -17,7 +17,8 @@ vi.mock("node:fs", async original => {
     const fn = (fs as unknown as Record<string, (...args: unknown[]) => unknown>)[name]!;
     result[name] = (...args: unknown[]) => {
       const answer = fn(...args.map(boundary.map));
-      if (["lstatSync", "statSync"].includes(name)) return Object.assign(answer as object, { uid: 0 });
+      // Only the advance plan and receipt are read as root-private operation files, which also pin the group.
+      if (["lstatSync", "statSync"].includes(name)) return Object.assign(answer as object, /\/(?:mimo-advance|source-advances)\//.test(String(args[0])) ? { uid: 0, gid: 0 } : { uid: 0 });
       return name === "realpathSync" ? boundary.unmap(answer as string) : answer;
     };
   }
@@ -98,6 +99,7 @@ vi.mock("../research-runtime-artifact", async original => {
 import { prepareHostedMimoProject, resumeHostedMimoProjectPreparation, preparationSafeGit, assertPreparationGitMetadata, assertPreparationSandbox } from "../hosted-mimo-project-bridge-prepare";
 import { resolveProjectSourceRevision } from "../application/project-control/codex-goal-project-source-revision";
 import { assertHostedMimoProjectRouteOpen, captureHeldMimoPreparationFence, handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
+import { advanceHostedMimoProjectSource } from "../hosted-mimo-project-bridge-advance";
 import { readCodexGoalJob } from "../codex-goal-jobs";
 import { loadProjectControlController } from "../codex-goal-mcp-project-control-deps";
 import { projectControlAdoptPublishedIntegrationCommit } from "../codex-goal-mcp-project-control-published-adoption";
@@ -193,8 +195,23 @@ it("real filesystem prepare creates a real scoped controller and onboards; fsmon
     expect(fs.existsSync(physical(state + "/registry/" + rejected.jobId))).toBe(false);
     sourceGit("update-ref", ref, sha);
   }
-
-
+  // Advance the same workstream to a newer reviewed commit: Create then accepts only the new commit, through the real handler.
+  sourceGit("remote", "set-url", "origin", url);
+  file(snapshot + "/doc.md", "TEST reviewed proof two\n");
+  git("-c", "core.fsmonitor=false", "add", "."); git("-c", "core.fsmonitor=false", "commit", "-m", "TEST second"); const next = git("rev-parse", "HEAD");
+  git("update-ref", "refs/remotes/origin/main", next);
+  const bindingPath = "/etc/subscription-runtime/mimo-projects/test-project/test-work.json", advancePlan = "/etc/subscription-runtime/mimo-advance/test-advance.json";
+  file(advancePlan, JSON.stringify({ schemaVersion: 1, projectId: binding.projectId, workstreamId: binding.workstreamId, machineId: machine,
+    expectedBindingSha256: createHash("sha256").update(fs.readFileSync(physical(bindingPath))).digest("hex"), expectedSourceCommit: sha, newSourceCommit: next,
+    sourceSnapshotPath: snapshot, acknowledgedJobIds: [] }));
+  await expect(advanceHostedMimoProjectSource(advancePlan)).resolves.toMatchObject({ ok: true, newCommit: next });
+  const advanced = { ...create, jobId: "test-worker-advanced", sourceCommit: next };
+  await expect(handleHostedMimoProjectBridge(advanced)).resolves.toMatchObject({ ok: true });
+  expect(cp.execFileSync("/usr/bin/git", ["-C", physical(scratch + "/workspaces/" + advanced.jobId), "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(next);
+  const superseded = { ...create, jobId: "test-worker-superseded" };
+  await expect(handleHostedMimoProjectBridge(superseded)).rejects.toThrow("mimo_project_bridge_source_mismatch");
+  expect(fs.existsSync(physical(scratch + "/workspaces/" + superseded.jobId))).toBe(false);
+  expect(fs.existsSync(physical(state + "/registry/" + superseded.jobId))).toBe(false);
 });
 
 
