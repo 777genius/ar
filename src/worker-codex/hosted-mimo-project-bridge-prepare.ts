@@ -9,6 +9,7 @@ import { researchCustody, researchPath, researchRecord, researchRead, researchHa
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
 import { assertHostedMimoProjectRouteOpen, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, captureHeldMimoPreparationFence, type HeldMimoPreparationFence } from "./hosted-mimo-project-bridge";
 import { onboardHostedMimoProject } from "./hosted-mimo-project-bridge-onboard";
+import { hasPinnedRequiredCheck } from "./hosted-mimo-project-admission";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -84,6 +85,8 @@ export async function prepareHostedMimoProject(inputPath: string): Promise<unkno
   if (git(["remote", "get-url", "origin"]) !== plan.repositoryUrl || git(["rev-parse", "--verify", b.sourceRef + "^{commit}"]) !== b.sourceCommit ||
       git(["rev-parse", "HEAD"]) !== b.sourceCommit || git(["status", "--porcelain"]) !== "") throw new Error("mimo_project_bridge_snapshot_invalid");
   const admission = workerLaunchAdmissionSchema.parse(b.admission), contract = admission.contract;
+  // A pinned check would block every later advance of this line; builtin admission never runs the command, so the pin protects nothing.
+  if (hasPinnedRequiredCheck(contract.requiredChecks)) throw new Error("mimo_project_bridge_prepare_admission_pinned");
   if ([contract.canonicalSha, contract.baseSha, contract.phaseStartSha].some(sha => sha !== undefined && sha !== b.sourceCommit))
     throw new Error("mimo_project_bridge_admission_source_mismatch");
   for (const path of [contract.controllerPacket, contract.lanePacket, ...contract.mandatoryDocs, ...contract.mandatoryScripts, ...contract.mandatoryFixtures])

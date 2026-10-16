@@ -118,9 +118,33 @@ Preparation validates enabled routing and proof before creating fresh protected 
 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
 
+### Generic admission template
+
+This is the single owner of the reusable admission template; runbooks and skills link here instead of copying it. Never copy an admission from an older binding: it may carry task-specific packets, a lane or a pinned check.
+
+```json
+{
+  "mode": "serial-builtin",
+  "contract": {
+    "kind": "worker-launch", "format": 1,
+    "canonicalSha": "<sourceCommit>", "baseSha": "<sourceCommit>", "phaseStartSha": "<sourceCommit>",
+    "packetRevision": "generic-r1",
+    "controllerPacket": "AGENTS.md", "lanePacket": "AGENTS.md",
+    "phaseId": "phase-01", "laneId": "generic", "inputPatchHash": null,
+    "reviewKind": "implementation",
+    "ownedPaths": ["<tracked top-level directories with a trailing slash, and tracked top-level files>"],
+    "mandatoryDocs": ["AGENTS.md"], "mandatoryScripts": [], "mandatoryFixtures": [],
+    "requiredChecks": [{ "id": "tree", "cwd": "<tracked sandbox directory>", "command": "git status --short" }],
+    "executionPolicy": { "mode": "sandbox-only", "sandboxRoot": "<scratchRoot>/source/<tracked sandbox directory>", "forbiddenRealProjects": ["/srv/workers/jobs"] }
+  }
+}
+```
+
+Rules: use `README.md` instead of `AGENTS.md` only when the repository has no tracked `AGENTS.md`, and the packet must be tracked at `sourceCommit`. The commit fields are the only source-dependent values and `--advance-source` rewrites them. No `requiredChecks` command may contain a commit SHA or a digest. The refusal looks for any run of 40 or more hex characters in any case, so it also catches an unrelated 40-hex literal (a rare false positive; the plan then carries a reviewed template). Builtin launch admission only checks that each check's `cwd` is a directory in the workspace and never runs the command, so a pinned command protects nothing and only blocks later advances; `--prepare-project` refuses it (`mimo_project_bridge_prepare_admission_pinned`), and `--advance-source` refuses it, both in the current binding and in a template carried by the plan (`mimo_project_bridge_advance_admission_pinned`). Put no task, train or lane names in the packets or `laneId`; task instructions go into the Create prompt.
+
 ## Advancing the source of an enrolled workstream
 
-A binding pins one exact source commit, and Create refuses any other. Bindings are never edited by hand. Until a runtime release containing `--advance-source` is installed on the host, a new commit needs a new workstream. Reuse one workstream per project and branch line: when the same branch has a newer reviewed commit, move the existing binding forward instead of preparing a new workstream. Use a new workstream for another branch or repository, a force-pushed branch (the move is forward-only), a wider ownership scope, or review/remediation work whose admission differs; the admission template (packets, review kind, lane, phase, checks) is fixed per binding and Create can only narrow `ownedPaths`. A reusable line uses a generic admission: `AGENTS.md` (or `README.md`) as both packets, `reviewKind: implementation`, one fixed lane/phase/packet revision, broad `ownedPaths` and SHA-free `requiredChecks`; task instructions go into the prompt.
+A binding pins one exact source commit, and Create refuses any other. Bindings are never edited by hand. Until a runtime release containing `--advance-source` is installed on the host, a new commit needs a new workstream. Reuse one workstream per project and branch line: when the same branch has a newer reviewed commit, move the existing binding forward instead of preparing a new workstream. Use a new workstream for another branch or repository, a force-pushed branch (the move is forward-only), a wider ownership scope, or review/remediation work whose admission differs; the admission template (packets, review kind, lane, phase, checks) is fixed per binding and Create can only narrow `ownedPaths`. A reusable line uses the [generic admission template](#generic-admission-template): `AGENTS.md` (or `README.md`) as both packets, `reviewKind: implementation`, one fixed lane/phase/packet revision, broad `ownedPaths` and SHA-free `requiredChecks`; task instructions go into the prompt.
 
 Refresh the reviewed snapshot first. The root operator never talks to the network and never runs Git inside a repository it does not own:
 
@@ -143,7 +167,7 @@ The binding directory `/etc/subscription-runtime/mimo-projects/<project>/` must 
 }
 ```
 
-Without `admission`, the new template is the current one with its `canonicalSha`, `baseSha` and `phaseStartSha` set to the new commit. If a `requiredChecks` command contains the old commit or any 64-hex digest, the plan must carry an explicit reviewed `admission` instead (`mimo_project_bridge_advance_admission_pinned`). Review the dry run, then apply it:
+Without `admission`, the new template is the current one with its `canonicalSha`, `baseSha` and `phaseStartSha` set to the new commit. If a `requiredChecks` command contains a commit SHA or digest (see the [generic admission template](#generic-admission-template)), the plan must carry an explicit reviewed `admission` instead, and that template must itself be SHA-free (`mimo_project_bridge_advance_admission_pinned`). Review the dry run, then apply it:
 
 ```sh
 node /opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js --advance-source --dry-run /etc/subscription-runtime/mimo-advance/<plan>.json

@@ -229,6 +229,12 @@ it("refuses hand-pinned checks until the plan carries a reviewed template", asyn
   expect(JSON.parse(bindingBytes(f).toString()).admission).toEqual(admission);
 });
 
+it("refuses an explicit template that pins the new commit again", async () => {
+  const f = await fixture(), before = bindingBytes(f);
+  const admission = { mode: "serial-builtin", contract: contractFor(f, f.B, `test "$(git rev-parse HEAD)" = ${f.B}`) };
+  await expect(advance(f, planFor(f, { admission }))).rejects.toThrow("mimo_project_bridge_advance_admission_pinned"); untouched(f, before);
+});
+
 it.each([
   ["a mandatory doc that is not in the snapshot", (c: ReturnType<typeof contractFor>) => ({ ...c, mandatoryDocs: ["README.md", "missing.md"] })],
   ["a check directory that is a file", (c: ReturnType<typeof contractFor>) => ({ ...c, requiredChecks: [{ id: "test", cwd: "README.md", command: "true" }] })],

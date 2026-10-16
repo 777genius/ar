@@ -11,6 +11,7 @@ import { assertHeldMimoPreparationFenceCurrent, assertHostedMimoProjectRouteOpen
 import { observeHostedMimoProjectOperation, readPrivateHostedMimoOperationBytes } from "./hosted-mimo-project-bridge-operation";
 import { assertPreparationGitMetadata, hostedMimoSealedSourcePort, preparationSafeGit } from "./hosted-mimo-project-source";
 import { assertPreparationSandbox } from "./hosted-mimo-project-bridge-prepare";
+import { hasPinnedRequiredCheck } from "./hosted-mimo-project-admission";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
 import { loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
 
@@ -57,12 +58,14 @@ function resultingBinding(current: HostedMimoProjectBinding, plan: AdvancePlan, 
     const raw = current.admission as { contract: Record<string, unknown> };
     const checks = workerLaunchAdmissionSchema.parse(current.admission).contract.requiredChecks;
     // Hand-pinned checks cannot be rewritten safely; the plan must then carry a reviewed template.
-    if (checks.some(check => check.command.includes(plan.expectedSourceCommit) || /[a-f0-9]{64}/.test(check.command))) refuse("admission_pinned");
+    if (hasPinnedRequiredCheck(checks)) refuse("admission_pinned");
     const contract = { ...raw.contract };
     for (const field of commitFields) if (Object.hasOwn(contract, field)) contract[field] = plan.newSourceCommit;
     admission = { ...raw, contract };
   }
   const parsed = workerLaunchAdmissionSchema.parse(admission);
+  // A template copied from an older binding with only the SHA updated would pin the line again.
+  if (plan.admission !== undefined && hasPinnedRequiredCheck(parsed.contract.requiredChecks)) refuse("admission_pinned");
   if (commitFields.some(field => parsed.contract[field] !== undefined && parsed.contract[field] !== plan.newSourceCommit)) refuse("admission_source_mismatch");
   const value = parseHostedMimoProjectBinding({ ...current, sourceCommit: plan.newSourceCommit, admission }, request);
   const bytes = JSON.stringify(value) + "\n";
