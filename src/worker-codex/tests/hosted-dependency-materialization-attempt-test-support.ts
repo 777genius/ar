@@ -12,6 +12,7 @@ import * as workspace from "../hosted-dependency-workspace";
 import * as capture from "../../worker-local/dependency-environment/capture-npm-install-inputs";
 import { NpmInputCaptureStatus, NpmInputCaptureReason } from "../../worker-local/dependency-environment/capture-npm-install-inputs";
 import { beginHostedDependencyInstallation, HostedDependencyInputCaptureError } from "../hosted-dependency-materialization-context";
+import { projectCapturePath, retainCapturePath } from "./hosted-materialization-capture-test-projection";
 import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
@@ -64,6 +65,52 @@ export function registerMaterializationAttemptTest(input: {
       // ownership syscall at that same boundary, never chown a runner's file
       // to host root; inventory/modes/bytes and Ready publication stay real.
       const projectedFs=await import("node:fs");
+      // Async capture already projects this same logical ancestry. Its sync
+      // revalidator must reopen those actual files through the same transport,
+      // rather than walking the fixture root's unrelated physical layout.
+      const fixtureOpen=projectedFs.openSync,fixtureLstat=projectedFs.lstatSync,
+        fixtureRename=projectedFs.renameSync,fixtureClose=projectedFs.closeSync;
+      const transport={captureAncestry:true,captureDirectories:new Map<number,string>()};
+      const rawFd=(path:unknown):path is Buffer=>Buffer.isBuffer(path) &&
+        /^\/proc\/self\/fd\/[0-9]+\//.test(path.subarray(0,64).toString("ascii"));
+      const logical=(path:Parameters<typeof fixtureOpen>[0]):string|undefined=>{
+        if(typeof path==="string")return path;
+        if(!rawFd(path))return undefined;
+        const text=path.toString("utf8");return Buffer.from(text).equals(path)?text:undefined;
+      };
+      const projected=(path:Parameters<typeof fixtureOpen>[0])=>{
+        const text=logical(path);if(text===undefined)return path;
+        const mapped=projectCapturePath(text,transport,input.local,"/mnt/TEST-private-manifests");
+        return mapped===text?path:mapped;
+      };
+      const retain=(fd:number,path:Parameters<typeof fixtureOpen>[0])=>{
+        const text=logical(path);if(text!==undefined)retainCapturePath(fd,text,transport);
+      };
+      const opened=vi.spyOn(projectedFs,"openSync").mockImplementation((path,flags,mode)=>{
+        const mapped=projected(path),fd=rawFd(mapped)?realFs.openSync(mapped,flags,mode):fixtureOpen(mapped,flags,mode);
+        retain(fd,path);return fd;
+      });
+      const named=vi.spyOn(projectedFs,"lstatSync").mockImplementation(((path,options)=>{
+        const mapped=projected(path);if(!rawFd(mapped))return fixtureLstat(mapped,options);
+        const stat=realFs.lstatSync(mapped,options);
+        return stat===undefined?undefined:Object.assign(stat,{uid:options?.bigint?0n:0,gid:options?.bigint?0n:0});
+      }) as typeof fixtureLstat);
+      const renamed=vi.spyOn(projectedFs,"renameSync").mockImplementation((from,to)=>{
+        if(rawFd(from)&&rawFd(to))realFs.renameSync(from,to);else fixtureRename(from,to);
+      });
+      const closed=vi.spyOn(projectedFs,"closeSync").mockImplementation(fd=>{
+        try {return fixtureClose(fd);}finally {transport.captureDirectories.delete(fd);}
+      });
+      // Observer ancestry is Buffer-based; capture ancestry is string-based.
+      // Both reopen actual mapped files; non-UTF8 names stay raw FD paths.
+      const asyncFs=await import("node:fs/promises"),fixtureAsyncOpen=asyncFs.open,fixtureAsyncLstat=asyncFs.lstat;
+      const asyncOpened=vi.spyOn(asyncFs,"open").mockImplementation(async(path,flags,mode)=>{
+        const handle=await fixtureAsyncOpen(projected(path),flags,mode),fd=handle.fd,close=handle.close.bind(handle);
+        retain(fd,path);handle.close=(async()=>{try {await close();}finally {transport.captureDirectories.delete(fd);}}) as typeof handle.close;
+        return handle;
+      });
+      const asyncNamed=vi.spyOn(asyncFs,"lstat").mockImplementation(((path,options)=>
+        fixtureAsyncLstat(projected(path),options)) as typeof fixtureAsyncLstat);
       vi.spyOn(projectedFs,"fchownSync").mockImplementation((fd,uid,gid)=>{
         expect([uid,gid]).toEqual([0,0]);
         expect(realFs.readlinkSync(`/proc/self/fd/${fd}`).startsWith(input.local("/var/lib/subscription-runtime-host-policy/TEST-concurrent-installer-output")+"/")).toBe(true);
@@ -148,7 +195,7 @@ export function registerMaterializationAttemptTest(input: {
         // Subsequent assertion/materialization failures need the same finite
         // phase facts, while Vitest retains the original exception as primary.
         console.error("TEST_CONCURRENT_ADMISSION_FACTS "+JSON.stringify(diagnostic()));throw error;
-      } finally {finishInstaller();await completed;input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
+      } finally {finishInstaller();await completed;asyncNamed.mockRestore();asyncOpened.mockRestore();closed.mockRestore();renamed.mockRestore();named.mockRestore();opened.mockRestore();transport.captureDirectories.clear();input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
     });
     it("rejects a replaced same-launch owner before Installing publication or installer launch", async () => {
       // Red if the final current-owner join accepts only launch identity: a
