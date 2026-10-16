@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "../managed-dependency-git-hygiene";
 import { researchCustody } from "../research-launch-files";
-import { JobRetirementRefusal, refuseRetirement } from "./job-retirement-contract";
+import { JobRetirementRefusal, JobRetirementRefused, refuseRetirement } from "./job-retirement-contract";
 
 const gitTimeoutMs = 120_000, gitMaxBytes = 32 * 1024 * 1024;
 /** Root reads of foreign repositories: no hooks, fsmonitor, system or global
@@ -31,6 +31,11 @@ function git(args: readonly string[], index?: string, input?: Buffer): Buffer {
     if (["ETIMEDOUT", "ENOBUFS"].includes((error as NodeJS.ErrnoException).code ?? "")) refuseRetirement(JobRetirementRefusal.GitLimitExceeded);
     throw error;
   }
+}
+/** A refusal already named, such as `git_limit_exceeded`, keeps its code
+ * through a catch that maps other Git failures to its own reason. */
+function keepRefusal(error: unknown): void {
+  if (error instanceof JobRetirementRefused) throw error;
 }
 export type RetirementGit = (args: readonly string[]) => Buffer;
 /** Status and diff trust the stat data cached in the index, and whoever wrote
@@ -106,7 +111,7 @@ function repositoryLayout(workspace: string): Omit<RetirementRepository, "head">
 function configKeys(path: string): Array<readonly [string, string | undefined, string]> {
   let listed: string;
   try { listed = git(["config", "--file", path, "--null", "--list"]).toString("utf8"); }
-  catch { return refuseRetirement(JobRetirementRefusal.GitConfigUnsafe); }
+  catch (error) { keepRefusal(error); return refuseRetirement(JobRetirementRefusal.GitConfigUnsafe); }
   return listed.split("\0").filter(Boolean).map(entry => {
     const key = entry.split("\n", 1)[0]!, first = key.indexOf("."), last = key.lastIndexOf(".");
     if (first <= 0 || last === key.length - 1) refuseRetirement(JobRetirementRefusal.GitConfigUnsafe);
@@ -175,7 +180,7 @@ export function inspectRetirementRepository(workspace: string): RetirementReposi
     const [gitDir, commonDir] = retirementGitText(workspace, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]).split("\n");
     if (!/^[a-f0-9]{40}$/.test(head) || !gitDir || !commonDir || canonicalRetirementPath(gitDir) !== layout.gitDir ||
         canonicalRetirementPath(commonDir) !== layout.commonDir) throw new Error("git");
-  } catch { return notRepository(); }
+  } catch (error) { keepRefusal(error); return notRepository(); }
   assertIndexHonest(workspace);
   return { head, ...layout };
 }
@@ -185,7 +190,7 @@ export function inspectRetirementRepository(workspace: string): RetirementReposi
 export function assertNoUnpublishedCommits(repository: string, refs: readonly string[], allBranches = false): void {
   let count: string;
   try { count = retirementGitText(repository, ["rev-list", "--count", ...refs, ...(allBranches ? ["--branches"] : []), "--not", "--remotes"]); }
-  catch { return refuseRetirement(JobRetirementRefusal.BranchUnpublishedCommits); }
+  catch (error) { keepRefusal(error); return refuseRetirement(JobRetirementRefusal.BranchUnpublishedCommits); }
   if (count !== "0") refuseRetirement(JobRetirementRefusal.BranchUnpublishedCommits);
 }
 export function existingRefs(repository: string, refs: readonly string[]): string[] {
