@@ -6,7 +6,7 @@ import {syncBuiltinESMExports} from "node:module";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ToolInputArchitecture,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
-import {joinH1BinarySource,joinH1SourceSelection,validateH1SourceDsc,retainH1SourceArchives,type H1SourceIndexOrigin} from "./current-h1-source-record-TEST.ts";
+import {joinH1BinarySource,joinH1SourceSelection,validateH1SourceDsc,retainH1SourceArchives,h1SourceLimits,type H1SourceIndexOrigin} from "./current-h1-source-record-TEST.ts";
 // Synthetic archive protocol bytes, never authenticated source or a native grant.
 const sha=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex"),noop=()=>{};
 const binary:AcquiredSignedPackage={package:"libpython3.12-minimal",version:"3.12.3-1ubuntu0.17",arch:ToolInputArchitecture.Amd64,sha256:"a".repeat(64),size:42,filename:"pool/main/p/python3.12/libpython3.12-minimal_TEST_amd64.deb"};
@@ -40,7 +40,7 @@ test("source selection requires exact same Release pocket component and full aut
  assert.throws(()=>fixture(undefined,s=>s.replace(source.version,"3:3.12.3-1ubuntu0.17")));
 });
 test("Sources and dsc require unique complete SHA256 rosters and confined single names",()=>{
- for(const transform of [(s:string)=>s+s,(s:string)=>s+checks,(s:string)=>s.replace("pool/main/p/python3.12","pool/main/../outside"),(s:string)=>s.replace(tarName,"../outside.tar.xz"),(s:string)=>s.replace(tarName,"extra.buildinfo"),(s:string)=>s.replace(` ${sha(tar)} ${tar.length}`,` ${sha(tar)} 67108865`),(s:string)=>s+"Checksums-Sha256:\n"+checks])assert.throws(()=>fixture(undefined,transform));
+ for(const transform of [(s:string)=>s+s,(s:string)=>s+checks,(s:string)=>s.replace("pool/main/p/python3.12","pool/main/../outside"),(s:string)=>s.replace(tarName,"../outside.tar.xz"),(s:string)=>s.replace(tarName,"extra.buildinfo"),(s:string)=>s.replace(` ${sha(tar)} ${tar.length}`,` ${sha(tar)} 134217729`),(s:string)=>s+"Checksums-Sha256:\n"+checks])assert.throws(()=>fixture(undefined,transform));
  const complete=fixture();assert.doesNotThrow(()=>validateH1SourceDsc(complete.selection,complete.dsc));
  for(const raw of [dscText.replace("Source: python3.12","Source: wrong"),dscText.replace(source.version,"3:3.12.3-1ubuntu0.17"),dscText.replace(checks,checks.split("\n")[0]+"\n"),dscText+checks,dscText+"Checksums-Sha256:\n"+checks]){const f=fixture(Buffer.from(raw));assert.throws(()=>validateH1SourceDsc(f.selection,f.dsc));}
  assert.throws(()=>validateH1SourceDsc(complete.selection,Buffer.concat([complete.dsc,Buffer.from("x")])));
@@ -53,6 +53,33 @@ test("complete clearsigned dsc framing is hashed but never becomes an uploader s
 test("source protocol deadline refusal cannot publish a partial selection",()=>{
  let calls=0;assert.throws(()=>joinH1BinarySource(binary,Buffer.from(binaryText()),()=>{if(++calls===2)throw Error("TEST expired");}),/expired/);
  const f=fixture();assert.throws(()=>joinH1SourceSelection(binary,source,origin("main/binary-amd64/Packages",Buffer.from(binaryText())),f.sourceIndex,origin("main/source/Sources",f.sourceIndex),()=>{throw Error("TEST expired");}),/expired/);
+});
+// Exact checksum rows copied from the actual signed noble-updates Sources index
+// a22680d4…323b1. This small projected index is DATA, not signed-index authority.
+const gccSource={name:"gcc-14",version:"14.2.0-4ubuntu2~24.04.1"};
+const gccChecks=` 768c314c11eeab56ccebb91eb42ec4a41122fa94f0d83400126401942622197b 97158172 gcc-14_14.2.0.orig.tar.gz
+ cfece214c2fb790ef5f3baffb9a53e40618e7ae12d053610b251e94d77d08ade 1950432 gcc-14_14.2.0-4ubuntu2~24.04.1.debian.tar.xz
+ 50950080874a6ec6780dd60c243e21d9cda9d736bb32bca98d16095d27cc01b5 46930 gcc-14_14.2.0-4ubuntu2~24.04.1.dsc
+`;
+function gccSelection(checks=gccChecks){
+ const b=Buffer.from(binaryText()),index=Buffer.from(`Package: ${gccSource.name}\nVersion: ${gccSource.version}\nDirectory: pool/main/g/gcc-14\nChecksums-Sha256:\n${checks}`);
+ return joinH1SourceSelection(binary,gccSource,origin("main/binary-amd64/Packages",b),index,origin("main/source/Sources",index),noop);
+}
+test("actual GCC signed checksum metadata fits the bounded source total without archive body allocation",()=>{
+ const selected=gccSelection();assert.equal(selected.artifacts.length,3);
+ assert.equal(selected.artifacts.find(row=>row.name.endsWith(".orig.tar.gz"))?.size,97158172);
+ assert.equal(selected.artifacts.find(row=>row.name.endsWith(".orig.tar.gz"))?.sha256,"768c314c11eeab56ccebb91eb42ec4a41122fa94f0d83400126401942622197b");
+ assert.equal(selected.artifacts.reduce((n,row)=>n+row.size,0),99155534);
+ assert.deepEqual(h1SourceLimits,{artifactBytes:128*1024*1024,totalBytes:128*1024*1024,dscBytes:256*1024,artifacts:16});
+});
+test("source artifact and complete aggregate remain capped at 128 MiB",()=>{
+ assert.throws(()=>gccSelection(gccChecks.replace("97158172","134217729")));
+ // Each individual artifact fits; their complete checksum roster exceeds the total.
+ assert.throws(()=>gccSelection(gccChecks.replace("97158172","104857600").replace("1950432","33554432")));
+ // Exact total is allowed as metadata; one additional byte still holds.
+ const exact=134217728-1950432-46930;
+ assert.equal(gccSelection(gccChecks.replace("97158172",String(exact))).artifacts.reduce((n,row)=>n+row.size,0),134217728);
+ assert.throws(()=>gccSelection(gccChecks.replace("97158172",String(exact+1))));
 });
 // Synthetic checksum-bound protocol fixtures; detached signatures are opaque DATA.
 function formatFixture(identity:{name:string;version:string},format:string,names:readonly string[],descriptorName?:string,innerNames=names){

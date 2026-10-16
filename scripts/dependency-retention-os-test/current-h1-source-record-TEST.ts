@@ -4,7 +4,7 @@ import {closeSync,constants,fstatSync,lstatSync,openSync,readdirSync,readSync,ty
 import {joinAcquiredSignedPackage,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
 import {assertCiPublicEvidenceBasename,assertCompleteUbuntuIndex,ciIndexOperationalBytes,type CiSignedIndexRow} from "./current-h1-tool-inputs-ci-index.ts";
 
-export const h1SourceLimits=Object.freeze({artifactBytes:64*1024*1024,totalBytes:128*1024*1024,dscBytes:256*1024,artifacts:16});
+export const h1SourceLimits=Object.freeze({artifactBytes:128*1024*1024,totalBytes:128*1024*1024,dscBytes:256*1024,artifacts:16});
 export interface H1SourceIdentity {readonly name:string;readonly version:string}
 export interface H1SourceIndexOrigin extends CiSignedIndexRow {readonly origin:string;readonly releaseSha256:string}
 export interface H1SourceArtifact {readonly name:string;readonly sha256:string;readonly size:number}
