@@ -20,6 +20,10 @@
     "./inspect-current-h1-public.mts",
     "./send-current-h1-public.mts",
     "./current-h1-public-transport.test.mts",
-    "./stage-current-h1-public.test.ts"
+    "./stage-current-h1-public.test.ts",
+    "./current-h1-scoped-guard.node-test.mts",
+    "./current-positive-public-transport.test.mts",
+    "./current-positive-scoped-guard.node-test.mts",
+    "./current-positive-stage-progress.node-test.mts"
   ]
 }
