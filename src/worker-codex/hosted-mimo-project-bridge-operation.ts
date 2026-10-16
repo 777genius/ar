@@ -7,6 +7,8 @@ import { researchCustody, researchHash, researchRecord, researchPublish } from "
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
+import { beginMimoProjectStartControlTiming, createMimoProjectStartControlTiming, mimoProjectStartControlReceipt,
+  MimoProjectStartControlTimingScope, type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 import { readdirSync } from "node:fs";
 import { InterruptedProjectCreateErrorCode, InterruptedProjectCreateDisposition, InterruptedProjectCreateTermination,
   type InterruptedProjectCreateOutcome } from "@vioxen/subscription-runtime/worker-core";
@@ -374,9 +376,14 @@ export async function executeHostedMimoProjectBridgeOperation(requestPath: strin
   // The request and owner are already persisted, so a source advance must delay
   // this unit instead of leaving the operation without a published result.
   const fenceWaitMs = Math.min(ownedUnitFenceWaitMs, Math.floor(binding.operationTimeoutMs / 4));
-  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => executeHostedMimoProjectBridgeOperationUnfenced(requestPath), { fenceWaitMs });
+  const timing = request.operation === MimoProjectBridgeOperation.Start ? createMimoProjectStartControlTiming() : undefined;
+  const acquired = beginMimoProjectStartControlTiming(MimoProjectStartControlTimingScope.WorkstreamFenceAcquire, timing?.observe);
+  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => {
+    acquired(); return executeHostedMimoProjectBridgeOperationUnfenced(requestPath, timing);
+  }, { fenceWaitMs });
 }
-async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: string): Promise<boolean> {
+async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: string,
+  timing?: Readonly<{ observe: MimoProjectStartControlTimingObserver; snapshot: ReturnType<typeof createMimoProjectStartControlTiming>["snapshot"] }>): Promise<boolean> {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   const request = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(requestPath).toString())), current = owner(request);
   if (current.requestPath !== requestPath || current.value.entry !== realpathSync(process.argv[1]!) || current.value.node !== realpathSync(process.execPath))
@@ -395,9 +402,10 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
         await assertPublicationBusyStartRearmCurrent(request, proof);
       }
     }
-    result = { ok: true, result: await handleHostedMimoProjectBridge(request) };
+    result = { ok: true, result: await handleHostedMimoProjectBridge(request, timing?.observe) };
     serialized = JSON.stringify(result) + "\n";
     if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
+    serialized = mimoProjectStartControlReceipt(serialized, timing);
   }
   catch (error) {
     result = { ok: false, error: operationErrorCode(error) };

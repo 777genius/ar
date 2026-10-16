@@ -41,6 +41,7 @@ vi.mock("../research-provider-root", () => ({ assertResearchProviderRoot: vi.fn(
 vi.mock("../hosted-dependency-installer-recipe", () => ({ hostedDependencyInstallerProperties: vi.fn(), hostedDependencyInstallerBootstrapCommand: vi.fn() }));
 import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, assertHostedMimoRecoveryOperationsSettled } from "../hosted-mimo-project-bridge-operation";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
+import { MimoProjectStartControlTimingScope as TimingScope, type MimoProjectStartControlTimingObserver } from "../research-launch-admission-diagnostics";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
 const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
 const entry = "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
@@ -137,6 +138,37 @@ it("does not invoke a code accessor while retaining a failed operation", async (
   } finally { process.argv[1] = previous!; }
 });
 function control(operation: MimoProjectBridgeOperation) { const { prompt: _prompt, sourceCommit: _commit, ...identity } = request; return { ...identity, operation }; }
+it.each(["success", "inner-refusal", "thrown", "clock-fault"])("keeps owned Start timing inside publication and round-trips %s without a second handler call", async scenario => {
+  await submitHostedMimoProjectBridge(request);
+  state.files.set(prefix + ".result.json", '{"ok":true,"result":{"ok":true}}\n');
+  const start = control(MimoProjectBridgeOperation.Start), base = prefix.replace(".create", ".start");
+  await submitHostedMimoProjectBridge(start);
+  const owner = JSON.parse(state.files.get(base + ".owner.json")!), previous = process.argv[1]; process.argv[1] = entry;
+  const clock = vi.spyOn(process, "uptime").mockReturnValue(1);
+  if (scenario === "clock-fault") clock.mockImplementation(() => { throw new Error("TEST clock fault"); });
+  const success = { ok: true, mode: "project_control_start", result: { status: "applied", resourceId: "TEST original native attempt" } };
+  const refusal = { ok: false, error: "TEST_refusal" };
+  state.handler.mockImplementation(async (_request: unknown, observe?: MimoProjectStartControlTimingObserver) => {
+    expect(state.files.has(base + ".result.json")).toBe(false);
+    expect(observe).toBeTypeOf("function");
+    observe?.(TimingScope.RuntimeSelectionAndImport, 10);
+    for (let i = 0; i < 3; i++) observe?.(TimingScope.PreBrokerObservation, 1);
+    observe?.(TimingScope.BrokerStart, 20);
+    if (scenario === "thrown") throw new Error("project_control_source_invalid: TEST private failure");
+    return scenario === "inner-refusal" ? refusal : success;
+  });
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    expect(await executeHostedMimoProjectBridgeOperation(base + ".request.json")).toBe(!["inner-refusal", "thrown"].includes(scenario));
+    const retained = state.files.get(base + ".result.json")!, result = JSON.parse(retained);
+    if (scenario === "success") expect(result.result.controlTiming).toMatchObject({ kind: "owned-start", preBrokerObservationElapsedMs: 3, brokerStartElapsedMs: 20, unattributedElapsedMsAtReceipt: 967 });
+    else if (scenario === "thrown") expect(retained).toBe('{"ok":false,"error":"project_control_source_invalid"}\n');
+    else expect(result).toEqual({ ok: true, result: scenario === "inner-refusal" ? refusal : success });
+    state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=");
+    expect(await submitHostedMimoProjectBridge(start)).toMatchObject({ state: "settled", result });
+    expect(state.files.get(base + ".result.json")).toBe(retained); expect(state.handler).toHaveBeenCalledOnce();
+  } finally { clock.mockRestore(); process.argv[1] = previous!; }
+});
 it("settles an oversized Status projection as a bounded response error", async () => {
   // Legal backslash-heavy filenames fit Git's 1MiB stdout limit but their
   // porcelain quoting expands again when the Status projection is serialized.

@@ -30,6 +30,7 @@ import { researchCustody, researchHash } from "../research-launch-files";
 import { onboardHostedMimoProject } from "../hosted-mimo-project-bridge-onboard";
 import { handleHostedMimoProjectBridge } from "../hosted-mimo-project-bridge";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
+import { MimoProjectStartControlTimingScope } from "../research-launch-admission-diagnostics";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST prompt", sourceCommit: "b".repeat(40) };
 const root = "/srv/worker-state/mimo-projects/test-project/test-stream", scratch = "/srv/workers/mimo-projects/test-project/test-stream";
 const config = "/etc/subscription-runtime/mimo-projects/test-project/test-stream.json";
@@ -84,6 +85,14 @@ it.each(["binding", "job", "missing-origin", "different-origin", "helper-custody
   expect(state.repair).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.load).not.toHaveBeenCalled();
 });
 describe("trusted MiMo bridge dispatch and retention", () => {
+  it("passes only source timing through runtime selection and the original Start without changing authority calls", async () => {
+    await handleHostedMimoProjectBridge(request); state.load.mockClear();
+    const observe = vi.fn();
+    await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Start), observe)).resolves.toEqual({ ok: true });
+    expect(observe).toHaveBeenCalledWith(MimoProjectStartControlTimingScope.RuntimeSelectionAndImport, expect.any(Number));
+    expect(state.start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ jobId: "test-job", confirmStart: true }), observe);
+    expect(state.load).toHaveBeenCalledOnce(); expect(state.stop).not.toHaveBeenCalled();
+  });
   it("derives paths and authority, then refuses replay", async () => {
     await handleHostedMimoProjectBridge(request);
     expect(state.refill).toHaveBeenCalledWith(expect.objectContaining({ registryRootDir: root + "/registry", controllerJobId: "test-controller", workspacePath: scratch + "/workspaces/test-job", jobRootDir: root + "/jobs/test-job", sourceRef: "origin/main", accounts: ["account-q"], startWorker: false }), expect.anything());

@@ -13,6 +13,8 @@ import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import { readCodexGoalJob } from "./codex-goal-jobs";
 import { protectedCodexGoalJobRuntimeProvenance } from "./protected-job-birth";
 import type { MimoAdmissionRepairPlan } from "./hosted-mimo-project-bridge-contract";
+import { measureMimoProjectStartControlTiming, MimoProjectStartControlTimingScope,
+  type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 
 type AdmissionRepairIdentity = Readonly<{ schemaVersion: 1; machineId: string; projectId: string; workstreamId: string; jobId: string }>;
 type PreviousAdmissionDeniedStart = Readonly<{ ownerSha256: string; requestSha256: string; resultSha256: string }>;
@@ -153,13 +155,14 @@ function unwrap(value: { content: readonly { type: string; text?: string }[] }):
   if (!text) throw new Error("mimo_project_bridge_response_invalid");
   return JSON.parse(text);
 }
-export async function handleHostedMimoProjectBridge(value: unknown): Promise<unknown> {
+export async function handleHostedMimoProjectBridge(value: unknown, observeControlTiming?: MimoProjectStartControlTimingObserver): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
   assertResearchInitialRoot(true); assertResearchSharedHost();
   if (readFileSync("/etc/machine-id", "utf8").trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   const bytes = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`), binding = parseHostedMimoProjectBinding(JSON.parse(bytes.toString("utf8")), request);
   const { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob,
-    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await hostedMimoProjectRuntime(binding, request);
+    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await measureMimoProjectStartControlTiming(
+      MimoProjectStartControlTimingScope.RuntimeSelectionAndImport, () => hostedMimoProjectRuntime(binding, request), observeControlTiming);
   const args: ProjectControlMcpArgs = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId, jobId: request.jobId };
   const controller = await loadProjectControlController(args);
   if (controller.scope.projectId !== request.projectId ||
@@ -224,7 +227,7 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
     throw new Error("mimo_project_bridge_attempt_invalid");
   if (request.operation === MimoProjectBridgeOperation.Start) {
     assertHostedMimoProjectRouteOpen(binding);
-    return unwrap(await projectControlStartStoredJob({ ...args, confirmStart: true }));
+    return unwrap(await projectControlStartStoredJob({ ...args, confirmStart: true }, observeControlTiming));
   }
   if (request.operation === MimoProjectBridgeOperation.Stop) return unwrap(await projectControlStopStoredJob({ ...args, confirmStop: true }));
   return { ok: true, projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId,
