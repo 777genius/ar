@@ -94,6 +94,14 @@ jobs:
       - run: npm run test:ci-tools
       - run: npm run check:dist
       - run: npm run check:boundaries
+      - name: Select exact HOST Node version for finite staging checks
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Verify fresh staging checks on exact HOST Node version
+        env:
+          TEST_C_FRESH_CHECK_EXACT_NODE24: "1"
+        run: node --test scripts/dependency-retention-os-test/current-positive-fresh-check.node-test.mts
 
   unit-test-shards:
     if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_unit == 'true') }}

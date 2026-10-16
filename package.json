@@ -182,7 +182,7 @@
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
     "test:crash-lane": "node scripts/crash-lane-runner.mts",
-    "test:ci-tools": "node --test scripts/tests/crash-lane-runner.test.mts scripts/ci-pr-cleanup/contract.test.mts && npm run build:ci-proof-reuse && node --test .tmp-ci-proof-reuse/contract.test.mjs .tmp-ci-proof-reuse/github.test.mjs .tmp-ci-proof-reuse/workflow.test.mjs",
+    "test:ci-tools": "node --test scripts/dependency-retention-os-test/current-positive-fresh-check.node-test.mts scripts/tests/crash-lane-runner.test.mts scripts/ci-pr-cleanup/contract.test.mts && npm run build:ci-proof-reuse && node --test .tmp-ci-proof-reuse/contract.test.mjs .tmp-ci-proof-reuse/github.test.mjs .tmp-ci-proof-reuse/workflow.test.mjs",
     "build:ci-proof-reuse": "node -e \"require('node:fs').rmSync('.tmp-ci-proof-reuse',{recursive:true,force:true})\" && tsc -p scripts/ci-proof-reuse/tsconfig.build.json",
     "typecheck:ci-tools": "tsc --noEmit -p scripts/tsconfig.crash-lane.json && tsc --noEmit -p scripts/ci-pr-cleanup/tsconfig.json && tsc --noEmit -p scripts/ci-proof-reuse/tsconfig.json",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
