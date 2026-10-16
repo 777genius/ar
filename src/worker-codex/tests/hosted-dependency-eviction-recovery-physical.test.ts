@@ -118,8 +118,8 @@ async function fixture(both:boolean){
         operationId:generation,verificationEvidenceId:observed.digest,installerDrainEvidenceId:"c".repeat(64),sourceBinding:pin(sourceBinding)}};
     s.compareAndSwap(workspace,1,ready);
     const o=owners();try{
-      const consumer=claimDependencyConsumer(o,workspace,{installationId:selected().installationId,runtimeSha:selected().runtimeSha,grantDigest:selected().grantDigest,
-        bootId:"00000000-0000-4000-8000-000000000002",startId:randomUUID(),unit:"TEST-projected-current.service"},generation);
+      const startId=randomUUID(),consumer=claimDependencyConsumer(o,workspace,{installationId:selected().installationId,runtimeSha:selected().runtimeSha,grantDigest:selected().grantDigest,
+        bootId:"00000000-0000-4000-8000-000000000002",startId,unit:`subscription-runtime-ordinary-${startId}.service`},generation);
       for(const name of ["baseline","barrier"])await writeFile(join(f.root,name+".json"),enc({TEST:name}),{mode:0o600});
       const current=o.read(workspace)!;o.compareAndSwap(workspace,current.revision,{...current,version:2,revision:current.revision+1,
         generationContinuity:{version:1,kind:Continuity.BaselineAuthenticatedV1,operationId:generation,generation,readyRevision:2,
