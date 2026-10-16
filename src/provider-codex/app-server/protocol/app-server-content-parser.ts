@@ -33,6 +33,7 @@ export function stringArrayField(
 }
 
 export function agentMessageText(item: Record<string, unknown>): string | null {
+  if (typeof item.text === "string") return item.text;
   return stringifyContent(item.text) ?? stringifyContent(item.content);
 }
 
