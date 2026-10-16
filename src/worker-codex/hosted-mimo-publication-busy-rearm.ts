@@ -20,7 +20,9 @@ function absent(path: string): boolean {
     throw error;
   }
 }
-/** Bookkeeping proof only. No lease, receipt, claim, birth or workspace changes. */
+/** Shared prelaunch bookkeeping proof. No lease, receipt, claim, birth or workspace changes.
+ * A released birth and absent whole native authority exclude grants, requests,
+ * attempts and active starts; an absent active file alone would not suffice. */
 export async function capturePublicationBusyStartRearm(request: MimoProjectBridgeRequest) {
   assertResearchInitialRoot(true);
   if (request.operation !== MimoProjectBridgeOperation.Start) refused();
@@ -83,4 +85,11 @@ export function publicationBusyRearmPath(stateRoot: string, jobId: string, previ
 export function isPublicationBusyResult(value: unknown): boolean {
   return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === "error,ok" &&
     (value as { ok?: unknown }).ok === false && (value as { error?: unknown }).error === "protected_job_birth_publication_busy";
+}
+
+/** A failure envelope only selects the proof path; it never proves no effects. */
+export function isPrelaunchStartFailureResult(value: unknown): boolean {
+  return isPublicationBusyResult(value) || (!!value && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join() === "error,ok" && (value as { ok?: unknown }).ok === false &&
+    (value as { error?: unknown }).error === "mimo_project_bridge_operation_failed");
 }

@@ -17,8 +17,8 @@ import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorizati
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
-import { admitResearchProcessFactory, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
-import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker,
+import { admitResearchProcessFactory, assertResearchCurrentAuthority, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, recoverOwnedMimoWorkerPreservation,
   terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
 import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
 import { bindResearchMimoWritableFootprint, observeResearchMimoAllocationWritableRoots, prepareResearchProviderRoot } from "../research-provider-root";
@@ -27,6 +27,8 @@ import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority }
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
+import { registeredTerminalRepairTests, registeredStoppedBeforeProviderTests } from "./research-terminal-handoff-repair-test-support";
+import { parseCodexGoalProjectAccessScope } from "../codex-goal-access-plan";
 
 const state = vi.hoisted(() => ({ scope: undefined as ProjectAccessScope | undefined, checkpointRequired: false, mimo: false, registry: "/TEST-project/registry" }));
 // This suite exercises the native registered boundary with real TEST manifests,
@@ -102,7 +104,6 @@ async function grantAndRequest() {
   return authorization.request;
 }
 const start = () => startRegisteredResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
-
 describe("explicit registered abort before the first bind (labelled Host fixture)", () => {
   const platform = process.platform;
   beforeEach(() => {
@@ -148,6 +149,28 @@ describe("explicit registered abort before the first bind (labelled Host fixture
     expect(vi.mocked(proof.assertTerminal).mock.calls.length).toBeGreaterThanOrEqual(4);
     expect(host.calls.filter(call => call.command === "/usr/bin/systemd-run" || call.command === "/usr/bin/mount" ||
       call.command === "/usr/bin/systemctl" && ["stop", "kill"].includes(call.args[0]!))).toEqual([]);
+    expect(host.authReads).toBe(0);
+  });
+  it.each([
+    ["model", "prepare"], ["model", "read"],
+    ["reasoningEffort", "prepare"], ["reasoningEffort", "read"],
+    ["accounts", "prepare"], ["accounts", "read"],
+    ["invalidAccounts", "prepare"], ["invalidAccounts", "read"],
+  ] as const)("refuses caller-only %s contradiction at %s without changing the registered manifest", async (field, phase) => {
+    const { expected, proof, manifest } = await incomplete();
+    await abortUnsubmittedRegisteredResearchLaunch(expected, proof);
+    const manifestPath = codexGoalJobManifestPath({ registryRootDir: registry, jobId: expected.jobId });
+    const registeredBytes = researchRead(manifestPath);
+    // A reordered caller object must normalize to the same registered identity.
+    const supplied = Object.fromEntries(Object.entries(manifest).reverse()) as typeof manifest;
+    const prepared = phase === "read" ? await prepareResearchJobWriterObservation(supplied) : undefined;
+    if (prepared) expect(await prepared()).toEqual({ status: "released" });
+    Object.assign(supplied, field === "model" ? { model: "TEST-contradictory-model" }
+      : field === "reasoningEffort" ? { reasoningEffort: "none" }
+      : { accounts: field === "invalidAccounts" ? [] : ["TEST-contradictory-account"] });
+    expect(await (prepared ?? await prepareResearchJobWriterObservation(supplied))()).toEqual({ status: "unknown" });
+    expect(researchRead(manifestPath)).toEqual(registeredBytes);
+    expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "released" });
     expect(host.authReads).toBe(0);
   });
   it.each(["submitter", "closing", "late-closing", "queued", "live", "mount", "binding", "provider", "receipt"] as const)("retains active on %s uncertainty", async fault => {
@@ -216,7 +239,6 @@ function mutateReceipt() {
   const receipt = JSON.parse(readFileSync(local(receiptPath()), "utf8"));
   writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, status: "admitted" }), { mode: 0o600 });
 }
-
 describe("registered durable handoff authorization (NEW TEST source fixtures only)", () => {
   it("retains registered prompt authority after sandbox preparation makes only the job root traversable", async () => {
     const authorization = await authorize();
@@ -428,7 +450,6 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     expect(existsSync(local(sink))).toBe(false);
     expect(host.authReads).toBe(0);
   });
-
   it("mints a single-use derived sink capability and rejects a serialized lookalike", async () => {
     const authorization = await authorize();
     expect(authorization.request.durableHandoffRootDir).toBe(sink);
@@ -526,13 +547,69 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     expect(host.authReads).toBe(0);
   });
   it("keeps the exact registered receipt live in synchronous runtime effect guards", async () => {
+    const platform = process.platform; Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await grantAndRequest(); const started = await start(); host.group = `/system.slice/${started.unit}`;
+      await bindRegisteredResearchRuntime(started.jobId, started.startId);
+      const captured = captureResearchRuntime(selected()), current = researchCurrentStart(started.jobId);
+      const shows = () => host.calls.filter(call => call.command === "/usr/bin/systemctl" && call.args[0] === "show").length;
+      const mounts = () => host.calls.filter(call => call.command === "/usr/bin/findmnt").length;
+      let tick = 0; const clock = vi.spyOn(performance, "now").mockImplementation(() => tick);
+      host.findmntHook = () => { tick += 1; };
+      const before = shows(), beforeMounts = mounts(), timing = captured.assertCurrent();
+      clock.mockRestore(); host.findmntHook = undefined;
+      expect([shows() - before, mounts() - beforeMounts]).toEqual([2, 10]);
+      expect(timing).toMatchObject({ admissionAuthorityElapsedMs: 10, admissionAuthorityServiceElapsedMs: 0,
+        admissionAuthorityScalarWitnessElapsedMs: 6, admissionAuthorityPairedPinElapsedMs: 4 });
+      const nextMounts = mounts(); captured.assertCurrent(); expect(mounts() - nextMounts).toBe(10);
+      const inertShows = shows(), inertMounts = mounts(); captured.assertInertAuthorityCurrent();
+      expect([shows() - inertShows, mounts() - inertMounts]).toEqual([0, 10]);
+      const authorityShows = shows(), authorityMounts = mounts(); captured.assertAuthorityCurrent();
+      expect([shows() - authorityShows, mounts() - authorityMounts]).toEqual([1, 20]);
+      const observers = { scalarWitness: () => { throw Error("TEST observer"); }, pairedPin: () => { throw Error("TEST observer"); } };
+      expect(() => assertResearchCurrentAuthority(started.jobId, current, undefined, false, observers)).not.toThrow();
+      mutateReceipt(); expect(() => captured.assertAuthorityCurrent()).toThrow();
+      expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+      expect(host.authReads).toBe(0);
+    } finally { Object.defineProperty(process, "platform", { value: platform }); }
+  });
+  // RED: dropping the final complete fence admits receipt/pin drift; dropping
+  // its native/process readback admits changes during the last cold witness.
+  it.each([
+    ["service", "receipt"], ["service", "service"], ["service", "process"],
+    ["material", "receipt"], ["material", "pin"],
+    ["final-mount", "grant"], ["final-mount", "receipt"], ["final-mount", "process"], ["pin-mount", "pin"],
+  ] as const)("refuses %s observation drift in %s before a runtime effect", async (phase, fault) => {
     await grantAndRequest(); const started = await start();
     host.group = `/system.slice/${started.unit}`;
     await bindRegisteredResearchRuntime(started.jobId, started.startId);
-    const captured = captureResearchRuntime(selected()); mutateReceipt();
-    expect(() => captured.assertAuthorityCurrent()).toThrow();
-    expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
-    expect(host.authReads).toBe(0);
+    const captured = captureResearchRuntime(selected()), current = researchCurrentStart(started.jobId);
+    let changed = false;
+    const mutate = (): void => {
+      changed = true;
+      if (fault === "receipt") mutateReceipt();
+      if (fault === "process") host.birth = "98765";
+      if (fault === "service") host.units.get(started.unit)!.invocation = "e".repeat(32);
+      if (fault === "pin") host.pins.delete(join(current.directory, "pins/durable-handoff"));
+      if (fault === "grant") researchPublish(join(researchJobAuthority(started.jobId), "grant.json"), {});
+    };
+    if (phase === "service") {
+      const sync = childProcess.spawnSync;
+      vi.spyOn(childProcess, "spawnSync").mockImplementation(((command: string, args: string[], options: unknown) => {
+        if (!changed && command === "/usr/bin/systemctl" && args[0] === "show" && args[1] === started.unit) mutate();
+        return Reflect.apply(sync, childProcess, [command, args, options]);
+      }) as typeof sync);
+    } else if (phase === "material") {
+      const files = await import("../research-launch-files"), read = files.researchArtifactDigest;
+      vi.spyOn(files, "researchArtifactDigest").mockImplementation(path => { const result = read(path); mutate(); return result; });
+    } else {
+      let observations = 0;
+      host.findmntHook = () => { if (++observations === (phase === "pin-mount" ? 8 : 10)) mutate(); };
+    }
+    const effect = vi.fn();
+    expect(() => { captured.assertCurrent(); effect(); }).toThrow();
+    expect(changed).toBe(true); expect(effect).not.toHaveBeenCalled();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   it("denies publication if the native grant changes during cold mount observation", async () => {
     await grantAndRequest(); const started = await start();
@@ -681,11 +758,13 @@ describe("native project launch authorization", () => {
   });
 });
 
-async function registeredMimoCandidate(dirty = false) {
+async function registeredMimoCandidate(dirty = false, normalizedScope = false, status: "partial" | "failed" = "partial") {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
-  await initializeRegisteredFixture(); const coding = await grantAndRequest();
+  await initializeRegisteredFixture();
+  if (normalizedScope) state.scope = parseCodexGoalProjectAccessScope(state.scope);
+  const coding = await grantAndRequest();
   // Explicit retained pre-CodingV1 fixture: the current-authority path must
   // still settle old Worker attempts; fresh authorization cannot mint one.
   const { hostedProfile: _profile, maxGoalTurns: _turns, ...base } = coding;
@@ -715,7 +794,7 @@ async function registeredMimoCandidate(dirty = false) {
     taskId: current.spec.request.taskId, startId: started.startId, specSha256: started.specSha256,
     bindingSha256: researchHash(researchRead(join(current.directory, "binding.json"))),
     result: buildRuntimeResultEnvelope({ provider: "codex", runId: started.jobId, taskId: current.spec.request.taskId,
-      status: "partial", evidence: ["TEST report retained"], nextAction: "continue" }) });
+      status, evidence: ["TEST report retained"], nextAction: "continue" }) });
   enterResearchOperatorScope(started.unit);
   return { ...started, ...current };
 }
@@ -783,11 +862,12 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
 
 /** Real registered authorization, native allocation, root plan and lifetime
  * witness. Only the shared TEST fixture substitutes Host process/kernel IO. */
-async function registeredCodingAllocation() {
+async function registeredCodingAllocation(beforeProvider = false) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
   await initializeRegisteredFixture();
+  if (beforeProvider) state.scope = parseCodexGoalProjectAccessScope(state.scope);
   for (const path of researchMimoCodingBootstrapPaths("/TEST-artifact")) {
     mkdirSync(local(dirname(path)), { recursive: true, mode: 0o700 });
     writeFileSync(local(path), path.endsWith("package.json") ? '{"type":"module"}' : "export {};", { mode: 0o644 });
@@ -795,6 +875,8 @@ async function registeredCodingAllocation() {
   await grantAndRequest(); const started = await start(), current = researchCurrentStart(started.jobId);
   host.group = `/system.slice/${started.unit}`;
   await bindRegisteredResearchRuntime(started.jobId, started.startId);
+  if (beforeProvider) { enterResearchOperatorScope(started.unit); return { ...started, ...current, provider: "",
+    manifest: await readCodexGoalJob({ registryRootDir: registry, jobId: started.jobId }) }; }
   const home = join(current.spec.request.jobRootDir, "home/mimo-TEST/codex-home");
   mkdirSync(local(home), { recursive: true, mode: 0o700 });
   researchPublish(join(current.directory, "mimo-home.json"), { schemaVersion: 1,
@@ -880,5 +962,39 @@ describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census
     if (fault === "spec") researchPublish(join(current.directory, "spec.json"), { ...current.spec, artifactSha256: "e".repeat(64) });
     expect(await read()).toEqual({ status: "unknown" }); expect(host.calls.filter(call => call.command === "/usr/bin/systemctl")).toHaveLength(calls);
     expect(host.authReads).toBe(0);
+  });
+});
+
+
+describe("qualified preservation recovery (explicit offline Linux Host fixture)", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
+      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(digest);
+    });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  registeredTerminalRepairTests({ candidate: (dirty, status) => registeredMimoCandidate(dirty, true, status), scope: () => state.scope!,
+    setScope: scope => { state.scope = scope; }, registry: () => registry, allocation: () => registeredCodingAllocation() });
+  registeredStoppedBeforeProviderTests({ start: () => registeredCodingAllocation(true), scope: () => state.scope!, setScope: scope => { state.scope = scope; } });
+  it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {
+    const current = await registeredMimoCandidate(true);
+    const retained = ["spec.json", "binding.json", "mimo-candidate.json", "durable-pin.json"].map(name =>
+      [name, researchRead(join(current.directory, name))] as const);
+    expect(await recoverOwnedMimoWorkerPreservation({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: current.spec.requestSha256 })).toMatchObject({ status: "partial" });
+    for (const [name, bytes] of retained) expect(researchRead(join(current.directory, name))).toEqual(bytes);
+    const output = JSON.parse(readFileSync(join(selected().jobRootDir, `${selected().taskId}.latest-result.json`), "utf8"));
+    expect(output.status).toBe("partial"); expect(output.details.handoffPacketPath.startsWith(sink + "/")).toBe(true);
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(false);
+    expect(runtimeArtifact.assertQualifiedResearchRuntimeArtifact).toHaveBeenCalled();
+  });
+  it("denies a changed original request before release or result publication", async () => {
+    const current = await registeredMimoCandidate(true);
+    await expect(recoverOwnedMimoWorkerPreservation({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, requestSha256: "0".repeat(64) })).rejects.toThrow("hosted_research_launch_denied");
+    expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(true);
+    expect(existsSync(local(join(current.directory, "mimo-publication.json")))).toBe(false);
   });
 });

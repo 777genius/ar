@@ -1,4 +1,4 @@
-import { collectRegisteredCodexGoalJobStatus } from "./codex-goal-registered-job-observation";
+import { collectRegisteredCodexGoalJobStatus, CodexGoalObservationMode } from "./codex-goal-registered-job-observation";
 import {
   codexGoalJobToArgs,
   readCodexGoalJob,
@@ -23,15 +23,17 @@ export type CodexGoalOverviewItemInput = {
   readonly staleAfterMs: number;
   readonly tailLines: number;
   readonly observation?: CodexGoalObservationContext;
+  readonly mode?: CodexGoalObservationMode;
 };
 
 export async function buildCodexGoalOverviewItems(
   inputs: readonly CodexGoalOverviewItemInput[],
+  mode = CodexGoalObservationMode.Reconcile,
 ): Promise<readonly JsonObject[]> {
   const observation = createCodexGoalObservationContext();
   return mapCodexGoalObservations(
     inputs,
-    (input) => buildCodexGoalOverviewItem({ ...input, observation }),
+    (input) => buildCodexGoalOverviewItem({ ...input, mode, observation }),
   );
 }
 
@@ -45,9 +47,10 @@ export async function buildCodexGoalOverviewItem(
     });
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
     const status = await collectRegisteredCodexGoalJobStatus({
-      registryRootDir: input.registryRootDir, launch, ...(input.observation ? { observation: input.observation } : {}),
+      registryRootDir: input.registryRootDir, launch, ...(input.mode ? { mode: input.mode } : {}), ...(input.observation ? { observation: input.observation } : {}),
     });
     const accounts = await listCodexGoalAccountStatuses({
+      readOnly: input.mode === CodexGoalObservationMode.ReadOnly,
       authRootDir: launch.config.authRootDir,
       accounts: launch.config.accounts.map((account) => account.name),
       stateRootDir: launch.config.stateRootDir ?? join(launch.config.jobRootDir, "state"),

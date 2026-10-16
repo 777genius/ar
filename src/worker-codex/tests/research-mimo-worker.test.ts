@@ -15,6 +15,7 @@ import { admitHostedReadonlyInputs } from "../hosted-readonly-admission";
 import { buildCodexGoalExecutorOptions, runCodexGoal } from "../codex-goal-runner";
 import { assertWorkerOptions } from "../file-backend-codex-worker-options";
 import { readHostedMimoWorkerOrigin } from "../../provider-codex/hosted-mimo-worker-origin";
+import { MimoSnapshotGitFailure, type MimoSnapshotTiming } from "../owned-mimo-snapshot-git";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
@@ -72,10 +73,21 @@ describe("owned standalone MiMo worker", () => {
     expect(policy.domains).toEqual(["token-plan-sgp.xiaomimimo.com"]);
     const factory = admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy });
     if (factory === undefined) throw new Error("Expected the owned MiMo worker provider factory");
+    const timings: MimoSnapshotTiming[] = [];
     const options = buildCodexGoalExecutorOptions({ config, appServerProcessFactory: factory,
-      providerEgressPolicy: policy, encryptionKey: new Uint8Array(32), stateRootDir: config.stateRootDir! });
+      providerEgressPolicy: policy, encryptionKey: new Uint8Array(32), stateRootDir: config.stateRootDir!,
+      observeOwnedMimoSnapshotTiming: timing => timings.push(timing) });
     expect(options.snapshotter).toBeDefined();
     expect(options.workspaceAccess).toBeDefined();
+    const cancelled = new AbortController(); cancelled.abort();
+    const firstFailure = await options.workspaceAccess!.assertGitWorkspace({ workspacePath: selected.workspacePath, abortSignal: cancelled.signal }).catch((error: unknown) => error);
+    expect(firstFailure).toBeInstanceOf(MimoSnapshotGitFailure);
+    await expect(options.snapshotter!.capture({ workspacePath: selected.workspacePath, abortSignal: cancelled.signal })).rejects.toBe(firstFailure);
+    expect(timings.map(t => [t.scope, t.outcome])).toEqual([["initial_access", "failed"], ["initial_snapshot", "failed"]]);
+    for (const timing of timings) for (const key of ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs", "admissionAuthorityServiceElapsedMs"] as const) {
+      expect(timing[key]).toBeTypeOf("number"); expect(timing[key]).toBeGreaterThanOrEqual(0);
+    }
+    for (const timing of timings) expect(timing.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing.admissionAuthorityElapsedMs!);
     expect(options.accounts).toHaveLength(1);
     expect(options.accounts[0]).not.toHaveProperty("codexAuthJsonPath");
     expect(options.maxAccountCycles).toBe(1);

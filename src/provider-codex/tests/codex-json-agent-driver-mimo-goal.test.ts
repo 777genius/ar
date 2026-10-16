@@ -12,6 +12,9 @@ import {
 import { FakeAppServerFactory } from "../app-server/testing/fake-app-server";
 import { StaticRunner } from "./codex-provider-test-support";
 import { HostedMimoCodingProxyOwner } from "../hosted-mimo-coding-proxy-material";
+import * as mimoOrigin from "../hosted-mimo-worker-origin";
+import { HostedMimoProfile } from "../hosted-mimo-profile";
+import { AppServerExecutionLifetime } from "../app-server/application/app-server-child-lifetime";
 import { codexExecutionFailure } from "../codex-json-execution-engine";
 
 /**
@@ -225,4 +228,32 @@ describe("Codex JSON agent driver — MiMo backend through the app-server goal p
       await driver.dispose();
     }
   });
+});
+
+
+it("passes the source-only recovery binder before hosted Coding materialization and exposes its retained proof", async () => {
+  const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 10000, maxGoalTurns: 1,
+    binding: { allocationId: "TEST", incarnationId: "TEST-recovery-binding" } });
+  const origin = {} as mimoOrigin.HostedMimoCodingWorkerOrigin;
+  const profile = vi.spyOn(mimoOrigin, "readHostedMimoWorkerProfileOrigin").mockReturnValue({ profile: HostedMimoProfile.CodingV1, origin });
+  const acquire = vi.spyOn(HostedMimoCodingProxyOwner.prototype, "acquire").mockRejectedValue(Error("TEST recovery binding denied"));
+  const proof = Object.freeze({ credentialFingerprint: "a".repeat(64), requestedModel: "mimo-v2.6-pro",
+    requestSha256: "b".repeat(64), responseIdSha256: "c".repeat(64), completedResponses: 2,
+    assertCurrent() {}, assertDisposed() {} });
+  const observation = vi.spyOn(HostedMimoCodingProxyOwner.prototype, "capacityRecoveryProof").mockReturnValue(proof);
+  const bind = vi.fn(async () => () => {}), factory = new FakeAppServerFactory();
+  const engine = new CodexAppServerExecutionEngine({ codexBinaryPath: "/TEST/never-start", processFactory: factory.create,
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, goalMode: true, nativeToolSurface: "disabled",
+    executionLifetime: lifetime, maxGoalTurns: 1, cleanThreadPrewarm: false });
+  const driver = new CodexJsonAgentDriver({ engine, executionLifetime: lifetime, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" }, bindMimoCapacityRecoveryCredential: bind });
+  try {
+    const result = await driver.runTask({ session: null, task: { kind: "structured-prompt", prompt: "TEST no provider call" },
+      workspace: { path: "/TEST/never-open" }, runner: new StaticRunner(""), redactor: new DefaultRedactor(),
+      abortSignal: new AbortController().signal });
+    expect(result.status).toBe("failed");
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ origin, lifetime, bindCapacityRecoveryCredential: bind }));
+    expect(factory.spawnCount).toBe(0);
+    expect(driver.capacityRecoveryProof()).toBe(proof);
+  } finally { await driver.dispose(); observation.mockRestore(); acquire.mockRestore(); profile.mockRestore(); }
 });

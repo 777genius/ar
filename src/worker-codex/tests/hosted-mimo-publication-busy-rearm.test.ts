@@ -18,7 +18,7 @@ vi.mock("../hosted-ordinary-writer-authority", () => ({ hostedOrdinaryWriterAuth
 vi.mock("../protected-job-birth", () => ({ withProtectedCodexGoalJobBirthPublication: async (effect: () => Promise<unknown>) => { state.inPublication = true; try { return await effect(); } finally { state.inPublication = false; } }, observeCompatibleProtectedCodexGoalJobBirth: async () => ({ status: state.birth }) }));
 vi.mock("../application/project-control/codex-goal-project-pre-start-admission", () => ({ assertProjectPreStartAdmissionLaunchBinding: (...args: unknown[]) => state.validate(...args), assertProjectPreStartAdmissionDescriptorPaths: (descriptor: typeof job.projectPreStartAdmission, jobRoot: string) => { for (const field of ["contractPath", "statePath", "receiptPath"] as const) if (descriptor[field] !== jobRoot + "/pre-start-admission/" + field.replace("Path", ".json")) throw new Error("project_control_pre_start_path_invalid"); } }));
 vi.mock("../application/project-control/codex-goal-project-pre-start-binding", () => ({ captureProjectPreStartBinding: async () => { expect(state.inPublication).toBe(false); return state.workspace; } }));
-import { capturePublicationBusyStartRearm, assertPublicationBusyStartRearmCurrent, isPublicationBusyResult } from "../hosted-mimo-publication-busy-rearm";
+import { capturePublicationBusyStartRearm, assertPublicationBusyStartRearmCurrent, isPublicationBusyResult, isPrelaunchStartFailureResult } from "../hosted-mimo-publication-busy-rearm";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "p", workstreamId: "s", jobId: "j", operation: MimoProjectBridgeOperation.Start } as const;
@@ -32,7 +32,7 @@ it("proves untouched positive birth with legacy absent count meaning zero, and r
   state.files.set(job.promptPath, "TEST changed");
   await expect(assertPublicationBusyStartRearmCurrent(request, proof)).rejects.toThrow("publication_busy_rearm_refused");
 });
-it.each(["authorized", "count", "native-authority", "reservation", "lexical-first-effect", "physical-first-effect", "ordinary-writer", "unknown-birth", "dirty", "head", "receipt-drift", "manifest-drift", "directory-drift", "intervening-first-effect"])("refuses consumed, unknown or changed authority: %s", async fault => {
+it.each(["authorized", "count", "native-authority", "reservation", "lexical-first-effect", "physical-first-effect", "ordinary-writer", "unknown-birth", "dirty", "head", "receipt-drift", "manifest-drift", "directory-drift", "intervening-first-effect", "intervening-authority", "intervening-reservation", "intervening-ordinary-writer"])("refuses consumed, unknown or changed authority: %s", async fault => {
   if (fault === "authorized") state.files.set(job.projectPreStartAdmission.receiptPath, JSON.stringify({ status: "launch_authorized" }));
   if (fault === "count") state.files.set(job.projectPreStartAdmission.receiptPath, JSON.stringify({ status: "validated_not_launched", launchAuthorizationCount: 1 }));
   if (fault === "native-authority") state.present.add("/run/user/subscription-runtime-research-v1/" + hash("j"));
@@ -47,9 +47,20 @@ it.each(["authorized", "count", "native-authority", "reservation", "lexical-firs
   if (fault === "manifest-drift") state.validate.mockImplementation(async () => { state.files.set(registry + "/j/job.json", "TEST replaced"); });
   if (fault === "directory-drift") state.validate.mockImplementation(async () => { state.changedDirectory = true; });
   if (fault === "intervening-first-effect") state.validate.mockImplementation(async () => { state.present.add("/run/user/subscription-runtime-research-v1/job-births/physical-1-2.first-effect.json"); });
+  if (fault === "intervening-authority") state.validate.mockImplementation(async () => { state.present.add("/run/user/subscription-runtime-research-v1/" + hash("j")); });
+  if (fault === "intervening-reservation") state.validate.mockImplementation(async () => { state.present.add(job.jobRootDir + "/account-reservation.json"); });
+  if (fault === "intervening-ordinary-writer") state.validate.mockImplementation(async () => { state.ordinaryAbsent = false; });
   await expect(capturePublicationBusyStartRearm(request)).rejects.toThrow("publication_busy_rearm_refused");
 });
 it("accepts only the exact closed busy envelope", () => {
   expect(isPublicationBusyResult({ ok: false, error: "protected_job_birth_publication_busy" })).toBe(true);
   for (const value of [{ ok: true, error: "protected_job_birth_publication_busy" }, { ok: false, error: "other" }, { ok: false, error: "protected_job_birth_publication_busy", result: {} }]) expect(isPublicationBusyResult(value)).toBe(false);
+});
+
+it("selects generic failure only for the exact closed envelope, never as effect-absence proof", () => {
+  expect(isPrelaunchStartFailureResult({ ok: false, error: "mimo_project_bridge_operation_failed" })).toBe(true);
+  expect(isPrelaunchStartFailureResult({ ok: false, error: "protected_job_birth_publication_busy" })).toBe(true);
+  for (const value of [{ ok: true, error: "mimo_project_bridge_operation_failed" },
+    { ok: false, error: "mimo_project_bridge_operation_failed", result: {} },
+    { ok: false, error: "mimo_project_bridge_type_error" }]) expect(isPrelaunchStartFailureResult(value)).toBe(false);
 });

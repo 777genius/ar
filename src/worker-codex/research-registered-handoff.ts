@@ -1,3 +1,4 @@
+import { researchAdmissionMeasure } from "./research-launch-admission-diagnostics";
 import { dirname, join, relative } from "node:path";
 import { lstatSync, mkdirSync } from "node:fs";
 import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
@@ -16,6 +17,8 @@ import { assertCodexProjectReservedLaunchAuthority, assertCodexProjectReservedAc
 import { assertFreshRegisteredResearchProfile, assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
 import { researchProjectLaunchInputs } from "./research-project-launch-inputs";
 import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
+import { parseCodexGoalProjectAccessScope } from "./codex-goal-access-plan";
+import { AccessBoundary, createAccessPolicyService, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 
 /** Root adapters must already hold the registered action's activity/workspace
  * locks and have authorized its receipt through the policy/semantic broker.
@@ -80,7 +83,7 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
   const readback = () => {
     const binding = Object.freeze({ ...current.binding, durableDirectory: researchDurableDirectory(sink) });
     current.assertAuthorityBytes();
-    return { request: current.request, binding, assertAuthorityBytes: current.assertAuthorityBytes };
+    return { request: current.request, binding, controller: current.controller, assertAuthorityBytes: current.assertAuthorityBytes };
   };
   try { researchCustody(sink, true); }
   catch (error) {
@@ -154,13 +157,18 @@ export async function consumeRegisteredResearchHandoffAuthorization(
 /** Fresh async observation ends in a synchronous current-byte guard for the
  * owner's next individual effect. The closure never caches admission. */
 export async function assertRegisteredResearchHandoffCurrent(binding: ResearchRegisteredHandoff, request: ResearchOperatorRequest,
-  assertRoot: () => void = assertResearchInitialRoot): Promise<() => void> {
+  assertRoot: () => void = assertResearchInitialRoot): Promise<(observeScalarWitness?: (elapsedMs: number) => void) => void> {
   assertRoot();
   const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution);
   if (digest(current.binding) !== digest(binding)) researchInvalid();
   assertResearchDurableDirectory(binding.durableDirectory);
   current.assertAuthorityBytes();
-  return () => { assertRoot(); assertResearchDurableDirectory(binding.durableDirectory); current.assertAuthorityBytes(); };
+  return observeScalarWitness => {
+    assertRoot();
+    if (observeScalarWitness) researchAdmissionMeasure(() => assertResearchDurableDirectory(binding.durableDirectory), observeScalarWitness);
+    else assertResearchDurableDirectory(binding.durableDirectory);
+    current.assertAuthorityBytes();
+  };
 }
 /** Publication holds the supported workspace, registry mutation and controller
  * activity fences for the complete async capture/readback. Per-effect guards
@@ -184,15 +192,58 @@ export async function withRegisteredResearchHandoffPublication<T>(binding: Resea
     }),
   });
 }
+/** Historical scope authenticates only immutable terminal inputs. Permission for
+ * preservation still comes from the current controller, under its own fences. */
+export async function prepareRegisteredResearchTerminalAuthority(binding: ResearchRegisteredHandoff,
+  request: ResearchOperatorRequest, historicalScope: unknown) {
+  assertResearchInitialRoot(true);
+  const historical = parseCodexGoalProjectAccessScope(historicalScope);
+  const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution);
+  assertResearchTerminalAccountTail(historical, current.controller.scope, binding.scopeSha256);
+  if (digest({ ...current.binding, scopeSha256: binding.scopeSha256 }) !== digest(binding)) researchInvalid();
+  const scope = current.controller.scope, policy = createAccessPolicyService({ boundary: AccessBoundary.ProjectScopedControl, scope });
+  if (!policy.canReadPath({ path: request.workspacePath }).allowed ||
+      !policy.canWritePath({ path: request.workspacePath }).allowed ||
+      !policy.canReadPath({ path: binding.durableDirectory.path }).allowed) researchInvalid();
+  // Canonical result/progress are typed broker effects through the exact admitted
+  // job pin. They do not grant raw writes to registry/job roots outside workspace.
+  const assertCurrent = (): void => {
+    assertResearchInitialRoot(true); assertResearchDurableDirectory(binding.durableDirectory); current.assertAuthorityBytes();
+  };
+  assertCurrent();
+  return { scope, assertCurrent,
+    withPublication: async <T>(effect: () => Promise<T>): Promise<T> => await withCurrentControllerScopeActivity({
+      controllerJobRootDir: current.controller.controller.jobRootDir, owner: `research-terminal:${request.jobId}`, expectedScope: scope,
+      loadCurrentScope: async () => (await loadProjectControlController({ registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId })).scope,
+      effect: async () => await withValidatedProjectWorkspaceLock({ locks: projectControlWorkspaceLocks(binding.registryRootDir), scope,
+        requestedWorkspacePath: request.workspacePath, expectedCanonicalWorkspacePath: request.workspacePath,
+        owner: `research-terminal:${request.jobId}`, effect: async () => await withCodexGoalRegistryMutation({
+          registryRootDir: binding.registryRootDir, requireExistingRegistryRoot: true,
+          effect: async () => { assertCurrent(); const result = await effect(); assertCurrent(); return result; },
+        }),
+      }),
+    }),
+  };
+}
+/** The one supported drift is an appended account tail, never a general scope
+ * subset. Hash the existing normalized parser output without a new projection. */
+export function assertResearchTerminalAccountTail(historical: ProjectAccessScope | undefined,
+  current: ProjectAccessScope, expectedSha256: string): asserts historical is ProjectAccessScope {
+  if (!historical || digest(historical) !== expectedSha256 || !historical.allowedAccountIds?.length ||
+      !current.allowedAccountIds || historical.allowedAccountIds.length >= current.allowedAccountIds.length ||
+      historical.allowedAccountIds.some((id, index) => id !== current.allowedAccountIds![index]) ||
+      digest({ ...current, allowedAccountIds: historical.allowedAccountIds }) !== digest(historical)) researchInvalid();
+}
 /** Pin record is published only after the owner verified the actual Host bind.
  * Cold witnesses detect mount loss/replacement even under a runtime target bind. */
-export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, directory: string): void {
+export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, directory: string, observePairedPin?: (elapsedMs: number) => void): void {
   const binding = spec.registeredHandoff;
   if (!binding) {
     if (spec.request.durableHandoffRootDir !== undefined) researchInvalid();
     return;
   }
-  const [source, pin] = researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }]);
+  const read = () => researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }]);
+  const [source, pin] = observePairedPin ? researchAdmissionMeasure(read, observePairedPin) : read();
   if (digest(source) !== digest(binding.durableDirectory)) researchInvalid();
   const r = researchRecord(JSON.parse(researchRead(join(directory, "durable-pin.json")).toString("utf8")), "schemaVersion,specSha256,pin");
   if (r.schemaVersion !== 1 || r.specSha256 !== researchHash(researchRead(join(directory, "spec.json")))) researchInvalid();

@@ -1,6 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { codexDriverFailure } from "../codex-driver-failure";
+import { createServer } from "node:http";
+import { Agent } from "undici";
 import { startMimoCredentialProxy, type MimoCredentialProxyLimits } from "../hosted-mimo-credential-proxy";
 
 const key = "TEST-mimo-shared-key-do-not-expose";
@@ -19,7 +21,7 @@ it("pins upstream/model, bounds output tokens, and forwards no client headers or
   try {
     const response = await f.post(undefined, "/responses", { "x-injected": key });
     expect(response.status).toBe(200); expect(await response.text()).toBe('{"output":[]}');
-    expect(f.proxy.upstreamFailureObservation()).toBeUndefined();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1, lastFailureKind: "missing_completion" });
     expect(response.headers.get("x-secret")).toBeNull();
     const [url, init] = transport.mock.calls[0]!;
     expect(url).toBe("https://token-plan-sgp.xiaomimimo.com/v1/responses");
@@ -116,46 +118,10 @@ it("does not invent an upstream failure status for transport, empty body, or uns
       expect(body).toMatchObject({ error: { code: "proxy_upstream_failed", details: { reason, request_number: 1 } } });
       expect(body.error).not.toHaveProperty("upstream_status");
       expect(JSON.stringify(body)).not.toContain(key);
-      expect(f.proxy.upstreamFailureObservation()).toBeUndefined();
+      expect(f.proxy.upstreamFailureObservation()?.lastStatus).toBeUndefined();
       expect(fetchUpstream).toHaveBeenCalledOnce();
     } finally { await f.proxy.close(); }
   }
-});
-
-it("retains only a closed network cause through the real proxy HTTP boundary", async () => {
-  const transport = vi.fn<typeof fetch>(async () => {
-    throw new TypeError(key, { cause: Object.assign(Error(key), { code: "ENOTFOUND", hostname: key }) });
-  });
-  const f = await fixture(transport);
-  try {
-    const response = await f.post(), body = await response.json();
-    expect(response.status).toBe(502);
-    expect(body.error.details).toEqual({ reason: "upstream_transport_error", phase: "upstream_request",
-      transport_code: "ENOTFOUND", request_number: 1, elapsed_ms: expect.any(Number) });
-    expect(f.proxy.latestFailure()).toEqual(body.error.details);
-    expect(JSON.stringify(body)).not.toContain(key);
-    const observation = f.proxy.latestFailure();
-    const context = { error: Error("TEST-turn-failed"), evidenceError: Error("TEST-turn-failed"),
-      redactor: new DefaultRedactor(), startedAt: Date.now(), proxyFailure: observation };
-    const result = codexDriverFailure(context);
-    expect(result.failure.details).toMatchObject({ mimoProxyReason: "upstream_transport_error",
-      mimoProxyPhase: "upstream_request", mimoTransportCode: "ENOTFOUND", mimoProxyRequestNumber: "1" });
-    expect(codexDriverFailure({ ...context, priorProxyFailure: observation }).failure.details).not.toHaveProperty("mimoProxyReason");
-    expect(transport).toHaveBeenCalledOnce();
-  } finally { await f.proxy.close(); }
-});
-
-it("does not evaluate arbitrary cause/code accessors or expose unknown error values", async () => {
-  let reads = 0;
-  const error = Object.defineProperties(Error(key), {
-    code: { get() { reads++; return key; } }, cause: { get() { reads++; return key; } },
-  });
-  const f = await fixture(async () => { throw error; });
-  try {
-    const body = await (await f.post()).json();
-    expect(body.error.details.transport_code).toBe("unknown");
-    expect(reads).toBe(0); expect(JSON.stringify(body)).not.toContain(key);
-  } finally { await f.proxy.close(); }
 });
 
 it("enforces concurrency, revokes active upstream and refuses further requests", async () => {
@@ -539,4 +505,162 @@ it("rejects unauthenticated callers without consulting retained custody", async 
     expect((await fetch(proxy.baseUrl + "/responses", { method: "POST" })).status).toBe(401);
     expect(current).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
   } finally { await proxy.close(); }
+});
+
+/** Actual loopback HTTP transport, with the old implicit idle budget scaled down.
+ * A test-only fetch redirect prevents any request reaching the fixed live API. */
+async function actualTransportFixture(requestBudgetMs: number, pauseMs: number, idle: "body" | "headers" = "body") {
+  let upstreamRequests = 0;
+  const server = createServer((_request, response) => {
+    upstreamRequests += 1;
+    if (idle === "body") {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"type":"response.created"}\n\n');
+    }
+    const timer = setTimeout(() => {
+      if (idle === "headers") response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end('data: {"type":"response.completed"}\n\n');
+    }, pauseMs);
+    response.once("close", () => clearTimeout(timer));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("TEST-address");
+  const shortIdle = new Agent({ bodyTimeout: 25, headersTimeout: 25 });
+  const realFetch = globalThis.fetch;
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+    if (String(url) === "https://token-plan-sgp.xiaomimimo.com/v1/responses") {
+      const dispatcher = (init as RequestInit & { dispatcher?: Agent } | undefined)?.dispatcher ?? shortIdle;
+      return realFetch(`http://127.0.0.1:${address.port}/responses`, { ...init, dispatcher } as RequestInit & { dispatcher: Agent });
+    }
+    throw Error("TEST-unexpected-upstream-url");
+  });
+  const proxy = await startMimoCredentialProxy({ apiKey: Buffer.from(key), model: "mimo-v2.6-pro",
+    limits: { ...limits(), deadlineMs: Date.now() + 10000, requestTimeoutMs: requestBudgetMs } });
+  return { proxy, requests: () => upstreamRequests,
+    post: () => realFetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+      authorization: `Bearer ${proxy.capability}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "mimo-v2.6-pro", stream: true }) }),
+    async close() { fetchSpy.mockRestore(); await proxy.close(); await shortIdle.destroy();
+      server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
+  };
+}
+
+it.each(["body", "headers"] as const)("uses the owned request budget for actual upstream %s idle instead of an implicit shorter timeout", async idle => {
+  const f = await actualTransportFixture(3000, 1500, idle);
+  try { expect(await (await f.post()).text()).toContain("response.completed"); expect(f.requests()).toBe(1); }
+  finally { await f.close(); }
+});
+
+it("keeps the original abort budget and destroys only its own dispatcher once on revoke and close", async () => {
+  const destroyed = vi.spyOn(Agent.prototype, "destroy");
+  const f = await actualTransportFixture(50, 1500);
+  try {
+    await expect((await f.post()).text()).rejects.toThrow();
+    f.proxy.revoke(); await f.proxy.close(); await f.proxy.close();
+    // Undici's promise overload recursively invokes its callback overload.
+    expect(destroyed.mock.calls.filter(args => args.length === 0)).toHaveLength(1);
+    expect(new Set(destroyed.mock.contexts).size).toBe(1); expect(f.requests()).toBe(1);
+  } finally { destroyed.mockRestore(); await f.close(); }
+});
+
+it("creates no owned dispatcher when a trusted upstream transport is injected", async () => {
+  const destroyed = vi.spyOn(Agent.prototype, "destroy");
+  const f = await fixture(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+  try { await (await f.post()).text(); await f.proxy.close(); expect(destroyed).not.toHaveBeenCalled(); }
+  finally { destroyed.mockRestore(); await f.proxy.close(); }
+});
+
+
+it("retains request termination at the reader before pipeline closes the downstream socket", async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const transport = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    stream = controller; controller.enqueue(Buffer.from('data: {"type":"response.created"}\n\n'));
+  } }), { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport);
+  try {
+    const response = await f.post(), reading = response.text();
+    stream.error(new Error("TEST-private-credential-and-body"));
+    await expect(reading).rejects.toThrow();
+    await f.proxy.close();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1, lastFailureKind: "upstream_body_read_failed" });
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it.each([
+  [Buffer.from([0xff]), "invalid_utf8"],
+  [Buffer.from('data: {"TEST-private":"unfinished"\n\n'), "protocol_projection_failed"],
+  [Buffer.alloc(2048, 120), "response_limit_exceeded"],
+] as const)("retains request termination at exact decoding/projection/limit boundaries (%s)", async (bytes, kind) => {
+  const transport = vi.fn<typeof fetch>(async () => new Response(bytes, { headers: { "content-type": "text/event-stream" } }));
+  const f = await fixture(transport, { maxResponseBytes: 1024 });
+  try {
+    await expect(f.post().then(response => response.text())).rejects.toThrow(); await f.proxy.close();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1, lastFailureKind: kind });
+    expect(JSON.stringify(f.proxy.upstreamFailureObservation())).not.toContain("TEST-private");
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it("retains request termination for clean missing-completion EOF while normal complete disposal records none", async () => {
+  for (const completed of [false, true]) {
+    const body = completed ? '{"object":"response","id":"TEST-response","status":"completed","model":"mimo-v2.6-pro"}' : '{}';
+    const f = await fixture(async () => new Response(body, { headers: { "content-type": "application/json" } }));
+    try {
+      expect(await (await f.post()).text()).toBe(body); await f.proxy.close();
+      expect(f.proxy.upstreamFailureObservation()).toEqual(completed ? undefined : { requestFailureCount: 1, lastFailureKind: "missing_completion" });
+    } finally { await f.proxy.close(); }
+  }
+});
+
+it.each(["budget", "owner"] as const)("retains request termination before %s abort closes the downstream", async kind => {
+  const transport = vi.fn<typeof fetch>(async (_url, init) => await new Promise<Response>((_resolve, reject) => {
+    init!.signal!.addEventListener("abort", () => reject(Error("TEST-private")), { once: true });
+  }));
+  const f = await fixture(transport, { requestTimeoutMs: kind === "budget" ? 40 : 1000 });
+  try {
+    const pending = f.post(); await vi.waitFor(() => expect(transport).toHaveBeenCalledOnce());
+    if (kind === "owner") f.proxy.revoke();
+    const response = await pending; expect(response.status).toBe(503); await response.text(); await f.proxy.close();
+    expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1,
+      lastFailureKind: kind === "budget" ? "request_budget_expired" : "owner_revoked" });
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it("retains only a closed network cause through the real proxy HTTP boundary", async () => {
+  const transport = vi.fn<typeof fetch>(async () => {
+    throw new TypeError(key, { cause: Object.assign(Error(key), { code: "ENOTFOUND", hostname: key }) });
+  });
+  const f = await fixture(transport);
+  try {
+    const response = await f.post(), body = await response.json();
+    expect(response.status).toBe(502);
+    expect(body.error.details).toEqual({ reason: "upstream_transport_error", phase: "upstream_request",
+      transport_code: "ENOTFOUND", request_number: 1, elapsed_ms: expect.any(Number) });
+    expect(f.proxy.latestFailure()).toEqual(body.error.details);
+    expect(JSON.stringify(body)).not.toContain(key);
+    const observation = f.proxy.latestFailure();
+    const context = { error: Error("TEST-turn-failed"), evidenceError: Error("TEST-turn-failed"),
+      redactor: new DefaultRedactor(), startedAt: Date.now(), proxyFailure: observation };
+    const result = codexDriverFailure(context);
+    expect(result.failure.details).toMatchObject({ mimoProxyReason: "upstream_transport_error",
+      mimoProxyPhase: "upstream_request", mimoTransportCode: "ENOTFOUND", mimoProxyRequestNumber: "1" });
+    expect(codexDriverFailure({ ...context, priorProxyFailure: observation }).failure.details).not.toHaveProperty("mimoProxyReason");
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it("does not evaluate arbitrary cause/code accessors or expose unknown error values", async () => {
+  let reads = 0;
+  const error = Object.defineProperties(Error(key), {
+    code: { get() { reads++; return key; } }, cause: { get() { reads++; return key; } },
+  });
+  const f = await fixture(async () => { throw error; });
+  try {
+    const body = await (await f.post()).json();
+    expect(body.error.details.transport_code).toBe("unknown");
+    expect(reads).toBe(0); expect(JSON.stringify(body)).not.toContain(key);
+  } finally { await f.proxy.close(); }
 });

@@ -2,7 +2,7 @@
 
 Agents select MiMo through the existing `codex_goal_project_refill_worker` or `codex_goal_project_create_job` MCP tools. There is no separate credential argument or provider process to launch manually. The project broker reserves the account, verifies the registered manifest and launch-admission receipt, and submits the owned runtime/provider services.
 
-Set these provider fields alongside the usual project, controller, workspace, prompt and admission inputs:
+For direct native broker calls on the Linux host as the initial root operator, set these provider fields alongside the usual project, controller, workspace, prompt and admission inputs. Remote agents using `mimoProjectId` and `mimoWorkstreamId` must use the narrower [MiMo project client DTO](mimo-project-client-transport.md); the host derives these provider fields, and the remote client rejects caller-supplied account, engine, cycle and prewarm overrides.
 
 ```json
 {
@@ -58,7 +58,7 @@ Deploy this capability only after exact-artifact native sandbox qualification an
 
 A local macOS agent uses the configured project bridge rather than submitting native services locally. The bridge runs through the existing restricted `sr-transport` SSH ingress, with no remote shell text or caller-selected executable. Its finite operations are `create`, `start`, `status` and `stop`; creation and start are separate so an uncertain response can be reconciled against the same job.
 
-The wire request contains only `kind: "MimoProject"`, `schemaVersion: 1`, expected `machineId`, `projectId`, `workstreamId`, `operation` and `jobId`. Creation also carries bounded `prompt` text and an exact 40-character `sourceCommit`. It accepts no paths, controller IDs, environment, credentials, tool names, admission commands or executable arguments.
+The wire request contains `kind: "MimoProject"`, `schemaVersion: 1`, expected `machineId`, `projectId`, `workstreamId`, `operation` and `jobId`. Creation also carries bounded `prompt` text, an exact 40-character `sourceCommit`, and optional `thinking`, `reasoningEffort` and `ownedPaths`. Only Create/refill can narrow ownership through exact relative files or trailing-slash directories within the enrolled scope; omission inherits that scope. Start, Status and Stop reject these Create-only fields. Caller-selected host/workspace paths, controller IDs, environment, credentials, tool names, admission commands and executable arguments are refused.
 
 The operator installs a root-owned protected purpose binding at `/etc/subscription-runtime/mimo-projects/<projectId>/<workstreamId>.json`, using these exact fields:
 
@@ -108,7 +108,7 @@ For an already configured, enabled project/workstream, the initial root operator
 node /opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js --prepare-project /etc/subscription-runtime/reviewed-mimo-preparation.json
 ```
 
-The protected JSON plan has exactly `schemaVersion: 1`, `binding` (the complete binding above), `sourceSnapshotPath`, `repositoryKey`, `repositoryUrl`, `workerJobPrefix`, `authRootDir` and `commitIdentity: {name,email}`. The repository key/URL, approved branch and exact source SHA must match the existing root-owned workstream YAML. URLs containing credentials are refused. The local snapshot must have protected root-owned ancestry, a clean checkout at that exact SHA, and the matching origin remote/ref. Supply the existing root-owned account pool directory as `authRootDir`; no credential is copied. `workerJobPrefix` is an explicit lowercase prefix ending in `-`.
+The protected JSON plan has exactly `schemaVersion: 1`, `binding` (the complete binding above), `sourceSnapshotPath`, `repositoryKey`, `repositoryUrl`, `workerJobPrefix`, `authRootDir` and `commitIdentity: {name,email}`. The repository key/URL, approved branch and exact source SHA must match the existing root-owned workstream YAML. Preparation supports GitHub repositories only, using `https://github.com/<owner>/<repo>` or `git@github.com:<owner>/<repo>`, with optional `.git`; other hosts and URLs containing credentials are refused. The local snapshot must have protected root-owned ancestry, a clean checkout at that exact SHA, and the matching origin remote/ref. Supply the existing root-owned account pool directory as `authRootDir`; no credential is copied. `workerJobPrefix` is an explicit lowercase prefix ending in `-`.
 
 The snapshot must already contain the reviewed, tracked controller/lane packets and mandatory documents/scripts/fixtures named by `binding.admission`, plus its actual sandbox directory. Canonical/base/phase source SHA fields must match the enrolled commit. Missing proof is refused; the helper does not invent a launch packet or run its checks. The binding source path must be exactly `<scratchRoot>/source`, and template sandbox paths remain source-anchored as described above.
 

@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
 const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.scope", birth: "12345", boot: "a".repeat(8) + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, nativeBackingFacts: false, foreign: new Set<string>(),
+  uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, nativeBackingFacts: false, legacyStoppedRoute: false, foreign: new Set<string>(),
   fdPaths: new Map<number, string>(), pins: new Map<string, string>(), calls: [] as { command: string; args: string[] }[],
   units: new Map<string, { description: string; pid: number; invocation: string; active: boolean; pending?: boolean;
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
@@ -92,7 +92,8 @@ vi.mock("node:url", async original => {
   const real = await original<typeof import("node:url")>();
   return { ...real, fileURLToPath: (url: URL | string) => {
     const path = real.fileURLToPath(url);
-    return path === process.cwd() + "/" ? "/TEST-artifact/" : path;
+    return path === process.cwd() + "/" ? (fixture.legacyStoppedRoute
+      ? "/opt/subscription-runtime/releases/2a9ca732123b8b0054dae1a38f754680272de77e/" : "/TEST-artifact/") : path;
   } };
 });
 vi.mock("node:fs", async original => {
@@ -355,7 +356,7 @@ export function setupResearchFixture(options: { readonly nativeBackingFacts?: bo
   nativeFs.chmodSync(fixture.root, 0o700);
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
+  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.legacyStoppedRoute = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
   fixture.operationRunnerObserver = undefined;
   fixture.taskTimeoutMs = 3600000;
   fixture.physicalPaths = fixture.nativeBackingFacts;

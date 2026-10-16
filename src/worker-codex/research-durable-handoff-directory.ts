@@ -22,7 +22,18 @@ export function parseResearchDurableDirectory(value: unknown, path: string): Res
   if (r.mountPoint !== "/" && path !== r.mountPoint && !path.startsWith(r.mountPoint + "/")) researchInvalid();
   return Object.freeze(r) as ResearchDurableDirectory;
 }
-type Frame = { table: string; rows: ReadonlyMap<number, Record<string, unknown>>; descriptors: Map<string, number> };
+type MountRows = ReadonlyMap<string, readonly string[]>;
+function indexMountRows(table: string): MountRows {
+  const result = new Map<string, string[]>();
+  for (const row of table.trimEnd().split("\n")) {
+    const id = row.split(" ", 1)[0]!;
+    const rows = result.get(id);
+    if (rows) rows.push(row);
+    else result.set(id, [row]);
+  }
+  return result;
+}
+type Frame = { mountRows: MountRows; rows: ReadonlyMap<number, Record<string, unknown>>; descriptors: Map<string, number> };
 export function researchDurableDirectory(path: string, privateLeaf = true): ResearchDurableDirectory {
   return durableDirectory(path, privateLeaf);
 }
@@ -48,7 +59,7 @@ function durableDirectory(path: string, privateLeaf = true, frame?: Frame): Rese
     const ids = [...info.matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
     if (ids.length !== 1) researchInvalid();
     const mountId = Number(ids[0]![1]);
-    const rows = (frame?.table ?? coldMountTable()).trimEnd().split("\n")
+    const rows = frame ? frame.mountRows.get(String(mountId)) ?? [] : coldMountTable().trimEnd().split("\n")
       .filter(row => row.split(" ", 1)[0] === String(mountId));
     if (rows.length !== 1) researchInvalid();
     const parts = rows[0]!.split(" "), separator = parts.indexOf("-");
@@ -74,7 +85,7 @@ function durableDirectory(path: string, privateLeaf = true, frame?: Frame): Rese
     try {
       const reopenedStat = fstatSync(reopened), freshInfo = readFileSync(`/proc/self/fdinfo/${reopened}`, "utf8");
       const freshIds = [...freshInfo.matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
-      const currentRows = (frame?.table ?? coldMountTable()).trimEnd().split("\n")
+      const currentRows = frame ? frame.mountRows.get(String(mountId)) ?? [] : coldMountTable().trimEnd().split("\n")
         .filter(row => row.split(" ", 1)[0] === String(mountId));
       if (!reopenedStat.isDirectory() || reopenedStat.uid !== 0 || (reopenedStat.mode & 0o022) ||
           privateLeaf && (reopenedStat.mode & 0o777) !== 0o700 ||
@@ -94,12 +105,12 @@ export function researchDurableDirectories(inputs: readonly Readonly<{ path: str
       assertDirectoryCustody(input.path, input.privateLeaf ?? true);
       descriptors.set(input.path, openSync("/proc/1/root" + input.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
     }
-    const table = coldMountTable(), rows = researchMountWitnessRows();
-    const result = inputs.map(input => durableDirectory(input.path, input.privateLeaf ?? true, { table, rows, descriptors }));
-    const final = coldMountTable().trimEnd().split("\n");
+    const mountRows = indexMountRows(coldMountTable()), rows = researchMountWitnessRows(inputs.length === 2 ? inputs.map(input => input.path) : undefined);
+    const result = inputs.map(input => durableDirectory(input.path, input.privateLeaf ?? true, { mountRows, rows, descriptors }));
+    const final = indexMountRows(coldMountTable());
     for (const witness of result) {
-      const original = table.trimEnd().split("\n").filter(row => row.split(" ", 1)[0] === String(witness.mountId));
-      const current = final.filter(row => row.split(" ", 1)[0] === String(witness.mountId));
+      const original = mountRows.get(String(witness.mountId)) ?? [];
+      const current = final.get(String(witness.mountId)) ?? [];
       if (original.length !== 1 || current.length !== 1 || current[0] !== original[0]) researchInvalid();
     }
     return result;

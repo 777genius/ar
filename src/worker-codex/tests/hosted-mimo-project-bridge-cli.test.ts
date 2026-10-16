@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
 import { researchInvalid } from "../research-launch-files";
 
-const adapter = vi.hoisted(() => ({ reconcileHostedMimoInterruptedCreate: vi.fn() }));
+const adapter = vi.hoisted(() => ({ reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn() }));
 vi.mock("../hosted-mimo-interrupted-create-reconciliation", () => adapter);
+vi.mock("../hosted-mimo-project-bridge-prepare", () => ({ resumeHostedMimoProjectPreparation: adapter.resumeHostedMimoProjectPreparation }));
 const originalArgv = process.argv, originalExitCode = process.exitCode;
 beforeEach(() => {
   vi.resetModules();
@@ -37,9 +38,24 @@ it("preserves the existing closed bridge error framing", async () => {
 });
 it.each([
   new Error("TEST_PRIVATE_PATH /private/TEST-secret"),
-  new Error("project_control_interrupted_create_reconciliation_refused: TEST-secret"),
-  new Error("hosted_research_launch_denied; TEST-secret"),
   "hosted_research_launch_denied",
 ])("keeps unknown, suffixed and untyped failures private: %s", async error => {
   await failure(error, "mimo_project_bridge_operation_failed");
+});
+
+it("refuses generic preparation resume without a trusted original-producer closure adapter", async () => {
+  process.argv = ["node", "/TEST/bridge-cli", "--resume-project-preparation", "/TEST/resume.json"];
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(adapter.resumeHostedMimoProjectPreparation).not.toHaveBeenCalled();
+  expect(adapter.reconcileHostedMimoInterruptedCreate).not.toHaveBeenCalled();
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"mimo_project_bridge_prepare_resume_refused"}\n');
+  expect(process.exitCode).toBe(1);
+});
+
+it.each([
+  [new Error("project_control_interrupted_create_reconciliation_refused: TEST-secret"), "project_control_interrupted_create_reconciliation_refused"],
+  [new Error("hosted_research_launch_denied; TEST-secret"), "hosted_research_launch_denied"],
+  [Object.assign(new Error("TEST private missing path"), { code: "ENOENT" }), "mimo_project_bridge_fs_not_found"],
+])("preserves safe canonical codes without private causes", async (error, code) => {
+  await failure(error, code);
 });

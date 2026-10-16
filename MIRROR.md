@@ -2,7 +2,8 @@
 
 `777genius/ar` is the public source repository for reproducible Subscription
 Runtime builds. New development and pull-request delivery use this repository. Existing source
-synchronizations retain their provenance without importing private Git history.
+synchronizations retain their provenance. The current integration additionally preserves
+the authorized private commit history through an ordinary merge parent.
 
 - Consumers must pin a full reviewed commit SHA and build that source.
 - Package publication remains temporarily owned by
@@ -16,7 +17,9 @@ synchronizations retain their provenance without importing private Git history.
 The October 2026 synchronization uses reviewed source commit
 `f97607a56c2a5e1c39cd98572beb858525eb82b2`, tree
 `d2966ece9dede4b1aeba9c07210e975f74450949`. It copies tracked source files only;
-private Git objects, commit ancestry, runtime state and credentials are excluded.
+at that historical stage private Git objects and commit ancestry were excluded.
+That source-only history policy is superseded by the all-history integration below;
+runtime state and credentials remain excluded.
 The public Apache license, security policy and secret-scanning configuration are
 preserved. Package metadata points to this repository; package publishing
 workflows remain excluded. The CI observer mount gate keeps the same executable
@@ -64,3 +67,42 @@ The standalone npm local-input and Vite/Vitest cache TEST workflows are retained
 from source `88fb4a926a5a28649334323fc5f57822e624837e`, with pinned actions and
 exact public-head checkout. They use fresh Ubuntu TEST filesystems, retain their
 original assertions, and grant no runtime admission or eviction authority.
+
+## October 16 shared-history integration
+
+The owner explicitly requested preserving all private commits and other PR history,
+with the same original commit IDs. The reviewed integration is prepared to compose public development
+parent `6fc333b7230412e4919681db5a7be2e64789d3b5` and private main parent
+`211945742cb7a09f7b133419effa37a6530fb79f` through an ordinary two-parent merge.
+On that normal merge commit, the 1,510 private commits absent from the public parent
+will remain reachable through
+the private parent; there is no squash, rebase, force rewrite or synthetic history.
+
+Source composition uses reviewed private source anchor
+`f97607a56c2a5e1c39cd98572beb858525eb82b2` to distinguish intentional public
+translation and subsequent public development from later private source changes.
+All 798 endpoint differences were classified: 682 paths retain private anchor
+bytes while public source evolved, and 116 require private post-anchor carry or
+explicit semantic resolution. Public architecture, retention and error handling,
+Apache licensing, repository metadata and CI/publication separation are preserved.
+A public extracted factory receives the corresponding private changes in its
+current module. The integration records an exact reviewed final tree rather than
+claiming equality to either parent.
+
+A bounded automated scan covered all 6,112 private-only historical blobs
+(101,915,061 bytes), with no skipped blobs. Its 22 private-key-marker matches were
+verified as synthetic test sentinel literals without key bodies. This records the
+scan's explicit pattern scope, not a universal guarantee about arbitrary secrets.
+Runtime state and provider credentials are never migrated as source assets.
+
+The final public integration must be merged back into the latest private main
+through an ordinary merge, retaining the public commit IDs and any newer private
+commits. Fetch and reconcile both tips before that backsync. Package publishing
+remains private; no public package-publishing workflow is introduced.
+
+This provenance does not establish successful exact-head CI, completed native
+TEST execution, all-eight retention acceptance, production activation or merge
+readiness by itself. Historical native `057204e44575a507c2168d7bdb0d3750e21329f0`
+receipts retain their original source/package identities and may support only
+explicitly unchanged properties; the integrated package adds the reviewed private
+`undici` dependency and requires its own source/build/consumer-closure validation.

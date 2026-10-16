@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +41,28 @@ afterEach(async () => {
 });
 
 describe("project account reservation", () => {
+  it.each(["shared", "exclusive"] as const)("prepares an expired legacy MiMo birth through %s reservation without Available or dispatch", async leaseMode => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-mimo-pending-birth-")); roots.push(root);
+    const scoped = singleAccountFixture(root, "TEST-mimo-pending");
+    const demand = { provider: "codex", model: "mimo-v2.6-pro", reasoningEffort: "high", serviceTier: "default" } as const;
+    const capacityRoot = join(root, "capacity");
+    const old = new LocalFileWorkerAccountCapacityStore({ rootDir: capacityRoot }).observe({
+      accountId: "codex-provider:old", demand, observedAt: new Date(Date.now() - 10_000), retainExpiredForRecheck: true,
+      capacity: { availability: "cooldown", reason: "quota_limited", cooldownUntil: new Date(Date.now() - 5_000) },
+    })!;
+    const oldBytes = readFileSync(old.recordId);
+    const capacityStore = new LocalFileWorkerAccountCapacityStore({ rootDir: capacityRoot, restrictiveLegacyAccountIdPrefixes: ["codex-provider:"] });
+    const launch = { ...scoped.launch, config: { ...scoped.launch.config, ...demand,
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, prewarmOnStart: false } };
+    const reservation = await reserveCodexProjectAccount({ manifest: { ...scoped.manifest, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan }, launch,
+      deps: { capacityStore, leaseMode, leaseStore: new InMemoryWorkerAccountLeaseStore() } });
+    expect(reservation.recoveryPending).toMatchObject({ phase: "prepared", revision: old.revision });
+    expect(reservation.recoveryPending).not.toHaveProperty("availability");
+    expect(reservation.launch.config.accounts).toHaveLength(1);
+    expect(readFileSync(old.recordId)).toEqual(oldBytes);
+    expect(() => capacityStore.read({ accountId: "account-a", demand })).toThrow("legacy_identity_unresolved");
+  });
+
   // RED: cloning, mutating, or replaying a supported selection would mint a
   // fresh execution budget without the original immutable reservation lineage.
   it("binds original selection, declared config and nested account metadata once", async () => {

@@ -40,7 +40,7 @@ describe("inert original-runtime admission preparation census", () => {
     // Registry parsing, admission preparation loop, original-runtime guards and
     // all executable byte/custody/descriptor reads remain production code.
     const current = vi.fn();
-    vi.spyOn(provenance, "researchJobRuntimeProvenance").mockImplementation(manifest => {
+    vi.spyOn(provenance, "researchForeignWriterRuntimeProvenance").mockImplementation(manifest => {
       const index = Number(manifest.jobId.at(-1)) % 2;
       return { runtimeDirectory: originals[index]!, artifactSha256: digests[index]!, assertCurrent: current };
     });
@@ -97,7 +97,7 @@ describe("inert original-runtime admission preparation census", () => {
     const file = join(directory, "dist/TEST.js"); fs.writeFileSync(file, "TEST initial", { mode: 0o600 });
     let artifactSha256 = files.researchArtifactDigest(directory);
     const current = vi.fn();
-    vi.spyOn(provenance, "researchJobRuntimeProvenance").mockImplementation(() => ({
+    vi.spyOn(provenance, "researchForeignWriterRuntimeProvenance").mockImplementation(() => ({
       runtimeDirectory: directory, artifactSha256, assertCurrent: current,
     }));
     const manifest = (index: number): CodexGoalJobManifest => ({ schemaVersion: 1, jobId: "TEST-bound-" + index,

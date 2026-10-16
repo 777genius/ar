@@ -1,3 +1,5 @@
+export type FileBackendCodexSafeExecutorRunInput = import("./file-backend-codex-safe-executor-contract").FileBackendCodexSafeExecutorRunInput;
+import { ResearchMimoTaskRecoveryExecution, type ResearchMimoTaskRecoveryOwner } from "./research-mimo-capacity-recovery";
 import { resolveFileBackendCodexSafeExecutorOptions } from "./file-backend-codex-safe-executor-storage";
 export { resolveFileBackendCodexSafeExecutorOptions } from "./file-backend-codex-safe-executor-storage";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
@@ -69,6 +71,7 @@ import {
 } from "./file-backend-codex-worker";
 import { CodexAccountCapacityRechecker } from "./application/codex-account-capacity-rechecker";
 import { CodexAccountCapacityAliasStore } from "./application/codex-account-capacity-alias-store";
+import { mimoLegacyCapacityAccountIdPrefixes } from "./application/codex-account-capacity-store";
 import { recordCodexAppServerRateLimitsSnapshot } from "./application/codex-live-quota-capacity";
 import {
   assertCodexSessionHomeProfile,
@@ -89,6 +92,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly mimoTaskRecoveryOwner?: ResearchMimoTaskRecoveryOwner;
   readonly storageRootDir?: string;
   readonly assertProviderAdmission?: () => void;
   readonly childBudget?: ChildExecutionBudget;
@@ -155,15 +159,7 @@ export type FileBackendCodexSafeExecutorInput =
    { readonly storageRootDir: string; readonly stateRootDir?: string;
     readonly accounts: readonly InheritedStorageSafeExecutorAccountInput[] });
 
-export type FileBackendCodexSafeExecutorRunInput = FileBackendCodexWorkerJob & {
-  readonly jobId?: string;
-  readonly taskId: string;
-  readonly originalPrompt?: string;
-  readonly effectMode?: TaskEffectMode;
-  readonly staleLockMs?: number;
-  readonly maxAccountCycles?: number;
-  readonly safeExecutionPolicy?: SafeExecutionPolicy;
-};
+
 
 type WorkerAccount = {
   readonly account: FileBackendCodexSafeExecutorAccount;
@@ -185,6 +181,7 @@ export class FileBackendCodexSafeExecutor {
   private startPromise: Promise<void> | null = null;
   private disposed = false;
   private childRunEntered = false;
+  private readonly taskRecoveryExecution: ResearchMimoTaskRecoveryExecution | undefined;
 
   private readonly options: FileBackendCodexSafeExecutorOptions;
 
@@ -213,13 +210,15 @@ export class FileBackendCodexSafeExecutor {
       options.observability ??
       options.accounts.find((account) => account.worker.observability)?.worker
         .observability;
+    const isMimo = isMimoSafeExecutorAccount(options.accounts[0]!);
     const baseAccountCapacityStore =
       options.accountCapacityStore ??
       new LocalFileWorkerAccountCapacityStore({
         rootDir: join(options.stateRootDir, "worker-account-capacity"),
+        ...(isMimo ? { restrictiveLegacyAccountIdPrefixes: mimoLegacyCapacityAccountIdPrefixes } : {}),
         ...(observability ? { observability } : {}),
       });
-    const aliasedAccountCapacityStore = new CodexAccountCapacityAliasStore({
+    const aliasedAccountCapacityStore = isMimo ? baseAccountCapacityStore : new CodexAccountCapacityAliasStore({
       ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
       authRootDir: options.authRootDir ?? options.stateRootDir,
       store: baseAccountCapacityStore,
@@ -250,6 +249,11 @@ export class FileBackendCodexSafeExecutor {
       ),
     });
     this.accountCapacityStore = aliasedAccountCapacityStore;
+    this.taskRecoveryExecution = options.mimoTaskRecoveryOwner ? new ResearchMimoTaskRecoveryExecution({
+      owner: options.mimoTaskRecoveryOwner, store: this.accountCapacityStore, options,
+      worker: () => this.workerAccounts[0]?.worker,
+      accountId: () => options.accounts[0]!.worker.capacityAccountId ?? safeExecutorAccountLabel(options.accounts[0]!, 0),
+    }) : undefined;
     this.pool = new BoundedSubscriptionWorkerPool({
       poolId: this.executorId,
       slots: options.accounts.length,
@@ -271,6 +275,7 @@ export class FileBackendCodexSafeExecutor {
       slotSelector: ({ slots }) => this.selectRoundRobinSlot(slots),
       workerFactory: accountCapacityAwareWorkerFactory({
         accountCapacityStore: this.accountCapacityStore,
+        ...(this.taskRecoveryExecution ? { taskRecovery: this.taskRecoveryExecution } : {}),
         accountWideLimitReasons: ["quota_limited", "provider_session_invalid"],
         requireCapacityRecheckWhenDue: true,
         recheckClaimTtlMs: 5 * 60_000,
@@ -301,8 +306,10 @@ export class FileBackendCodexSafeExecutor {
           if (!account) {
             throw new Error("file_backend_codex_safe_account_missing");
           }
+          const { rateLimitsSnapshotHandler, ...workerOptions } = account.worker;
           const worker = new FileBackendCodexWorker({
-            ...account.worker,
+            ...workerOptions,
+            ...(this.taskRecoveryExecution ? { bindMimoCapacityRecoveryCredential: this.taskRecoveryExecution.bindCredential } : {}),
             onSessionInvalid: (capacity) => {
               this.accountCapacityStore.observe({
                 accountId: account.worker.capacityAccountId ?? safeExecutorAccountLabel(account, slotIndex),
@@ -325,7 +332,7 @@ export class FileBackendCodexSafeExecutor {
             ...(account.worker.observability || !observability
               ? {}
               : { observability }),
-            rateLimitsSnapshotHandler: async (input) => {
+            ...(!isMimo ? { rateLimitsSnapshotHandler: async (input) => {
               const admission = recordCodexAppServerRateLimitsSnapshot({
                 accountId:
                   account.worker.capacityAccountId ??
@@ -336,9 +343,9 @@ export class FileBackendCodexSafeExecutor {
               });
               if (admission.status === "rejected") return admission;
               return (
-                account.worker.rateLimitsSnapshotHandler?.(input) ?? admission
+                rateLimitsSnapshotHandler?.(input) ?? admission
               );
-            },
+            } } : {}),
             workerId: account.worker.workerId ?? workerId,
             workspacePath: options.workspacePath,
             ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
@@ -575,8 +582,12 @@ export class FileBackendCodexSafeExecutor {
   async dispose(): Promise<void> {
     this.options.executionLifetime?.close();
     if (this.disposed) return;
-    await this.pool.dispose();
-    this.disposed = true;
+    const response = this.taskRecoveryExecution?.responseBeforeDispose();
+    try {
+      await this.pool.dispose();
+      this.taskRecoveryExecution?.afterDispose(response);
+    } catch (error) { this.taskRecoveryExecution?.failed(); throw error; }
+    finally { this.disposed = true; }
   }
 
   private async startOnce(): Promise<void> {
@@ -605,7 +616,7 @@ export class FileBackendCodexSafeExecutor {
     slots: readonly WorkerPoolSlotSnapshot[],
   ): WorkerPoolSlotSnapshot | null {
     const available = slots.filter(
-      (slot) => !slot.busy && slot.capacity.availability === "available",
+      (slot) => !slot.busy && (slot.capacity.availability === "available" || slot.capacity.recoveryPending !== undefined),
     );
     if (available.length === 0) return null;
 

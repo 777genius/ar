@@ -18,6 +18,8 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { CodexAccountCapacityAliasStore } from "./codex-account-capacity-alias-store";
 
+export const mimoLegacyCapacityAccountIdPrefixes = ["codex-provider:", "codex-session:", "codex-auth:"] as const;
+
 export function codexAccountCapacityRootDir(authRootDir: string): string {
   const resolvedAuthRoot = resolve(authRootDir);
   const canonicalAuthRoot = existsSync(resolvedAuthRoot)
@@ -38,6 +40,7 @@ export function codexAccountCapacityStore(
   authRootDir: string,
   options: {
     readonly modelBackend?: CodexModelBackend;
+    readonly strictReads?: boolean;
     readonly assertProviderAdmission?: () => void;
     readonly authJsonPaths?: Readonly<Record<string, string>>;
     readonly authJsonByAlias?: Readonly<Record<string, string>>;
@@ -48,9 +51,12 @@ export function codexAccountCapacityStore(
   if (backend !== CodexModelBackend.OpenAiChatGpt && backend !== CodexModelBackend.XiaomiMimoTokenPlan)
     throw new Error("codex_account_capacity_model_backend_invalid");
   const store = new LocalFileWorkerAccountCapacityStore({
+    ...(options.strictReads ? { strictReads: true } : {}),
     rootDir: backend === CodexModelBackend.XiaomiMimoTokenPlan
       ? join(codexAccountCapacityRootDir(authRootDir), "mimo-token-plan")
       : codexAccountCapacityRootDir(authRootDir),
+    ...(backend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? { restrictiveLegacyAccountIdPrefixes: mimoLegacyCapacityAccountIdPrefixes } : {}),
     ...(options.observability
       ? { observability: options.observability }
       : {}),

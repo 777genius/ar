@@ -1,4 +1,5 @@
 import { setupResearchFixture, cleanupResearchFixture, host } from "./research-launch-fixture";
+import * as fs from "node:fs";
 import { AsyncResource } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -105,6 +106,68 @@ describe("bounded protected publication acquisition", () => {
     await tick(50);
     expect(await outcome).toBe("TEST-published"); expect(effect).toHaveBeenCalledOnce();
     expect(existsSync(lock)).toBe(false); independent.emitDestroy();
+  });
+  it("waits behind a real held owner without staging or fsyncing a losing owner", async () => {
+    const independent = new AsyncResource("TEST-contender-no-write");
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const first = withProtectedCodexGoalJobBirthPublication(async () => { await held; });
+    await Promise.resolve();
+    const before = readFileSync(lock), identity = lstatSync(lock);
+    const opened = vi.spyOn(fs, "openSync"), synced = vi.spyOn(fs, "fsyncSync");
+    const effect = vi.fn(async () => "TEST-once");
+    const second = independent.runInAsyncScope(() => withProtectedCodexGoalJobBirthPublication(effect));
+    const outcome = second.catch(error => error);
+    try {
+      await tick(100);
+      expect(opened).not.toHaveBeenCalled(); expect(synced).not.toHaveBeenCalled();
+      expect(readFileSync(lock)).toEqual(before); expect(lstatSync(lock).ino).toBe(identity.ino);
+      expect(effect).not.toHaveBeenCalled();
+    } finally { opened.mockRestore(); synced.mockRestore(); release(); await first; await tick(50); }
+    expect(await outcome).toBe("TEST-once"); expect(effect).toHaveBeenCalledOnce();
+    expect(existsSync(lock)).toBe(false); independent.emitDestroy();
+  });
+  it("retains atomic link exclusion when a publisher wins after the absent-name read", () => {
+    const originalLink = fs.linkSync;
+    const link = vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      expect(to).toBe(lock);
+      expect(JSON.parse(readFileSync(String(from), "utf8"))).toMatchObject({ process: { pid: process.pid } });
+      writeFileSync(lock, "TEST-racing-owner", { flag: "wx", mode: 0o600 });
+      return originalLink(from, to);
+    });
+    try {
+      expect(() => recordProtectedCodexGoalJobFirstEffect("/TEST-project/jobs/TEST-race"))
+        .toThrow("protected_job_birth_publication_busy");
+      expect(link).toHaveBeenCalledOnce(); expect(readFileSync(lock, "utf8")).toBe("TEST-racing-owner");
+      expect(readdirSync(join(researchAuthorityRoot, "job-births"))).toEqual(["publication.lock"]);
+    } finally { link.mockRestore(); }
+  });
+  it.each(["malformed-file", "dangling-symlink"])("refuses existing %s without staging owner evidence", kind => {
+    const root = join(researchAuthorityRoot, "job-births"); mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (kind === "malformed-file") writeFileSync(lock, "TEST-not-an-owner", { mode: 0o600 });
+    else fs.symlinkSync("TEST-absent-target", lock);
+    const identity = lstatSync(lock), opened = vi.spyOn(fs, "openSync"), synced = vi.spyOn(fs, "fsyncSync");
+    try {
+      expect(() => recordProtectedCodexGoalJobFirstEffect("/TEST-project/jobs/TEST-malformed"))
+        .toThrow("protected_job_birth_publication_busy");
+      expect(opened.mock.calls.filter(([path, flags]) => String(path).includes("/.publication-") || flags === "wx"))
+        .toEqual([]); expect(synced).not.toHaveBeenCalled();
+      expect(lstatSync(lock).ino).toBe(identity.ino); expect(readdirSync(root)).toEqual(["publication.lock"]);
+    } finally { opened.mockRestore(); synced.mockRestore(); }
+  });
+  it("propagates a denied lock-name observation without owner writes or retries", async () => {
+    const originalStat = fs.lstatSync;
+    const denied = Object.assign(new Error("TEST denied"), { code: "EACCES" });
+    const stat = vi.spyOn(fs, "lstatSync").mockImplementation((...args) => {
+      if (args[0] === lock) throw denied;
+      return originalStat(...args);
+    });
+    const opened = vi.spyOn(fs, "openSync"), synced = vi.spyOn(fs, "fsyncSync"), effect = vi.fn(async () => {});
+    try {
+      await expect(withProtectedCodexGoalJobBirthPublication(effect)).rejects.toBe(denied);
+      expect(effect).not.toHaveBeenCalled(); expect(opened).not.toHaveBeenCalled(); expect(synced).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { stat.mockRestore(); opened.mockRestore(); synced.mockRestore(); }
   });
   it("times out before effects without deleting or changing a foreign lock", async () => {
     const bytes = foreignLock(), effect = vi.fn(async () => {});

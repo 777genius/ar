@@ -17,7 +17,6 @@ import type { CodexAppServerRolloutBudget } from "./app-server/domain/app-server
 import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server/application/app-server-rate-limits-monitor";
 import type { CodexAppServerProcessFactory } from "./app-server/application/app-server-process-port";
 import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
-import type { AppServerCompletedGoalOutputValidator } from "./app-server/application/app-server-validated-goal-completion";
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 import { CodexModelBackend } from "./codex-model-backend";
@@ -57,8 +56,6 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly reconnectGraceMs?: number;
   readonly goalMode?: boolean;
   readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
-  /** Trusted host callback for ordinary structured Goal tasks, not child/controller jobs. */
-  readonly completedGoalOutputValidator?: AppServerCompletedGoalOutputValidator;
   readonly maxGoalTurns?: number;
   readonly goalContinuePrompt?: string;
   readonly runStore?: ManagedRunStorePort;
@@ -95,12 +92,6 @@ export function appServerWireOutputSchema(options: CodexAppServerExecutionEngine
 
 /** Resolve and validate the original bounded execution fence before admission. */
 export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionEngineOptions): AppServerExecutionLifetime | undefined {
-  if (options.completedGoalOutputValidator !== undefined &&
-      (typeof options.completedGoalOutputValidator !== "function" || options.goalMode !== true ||
-       options.executionLifetime !== undefined || options.childBudget !== undefined ||
-       options.hostedControllerTools !== undefined || options.fallback !== undefined)) {
-    throw new Error("codex_goal_output_validator_profile_invalid");
-  }
   if (options.nativeGoalControls !== undefined && (options.nativeGoalControls !== true ||
       options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.hostedControllerTools !== undefined)) {
     throw new Error("codex_app_server_native_goal_controls_profile_invalid");

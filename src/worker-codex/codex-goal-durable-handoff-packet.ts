@@ -1,3 +1,4 @@
+import { handoffPreservationBudget } from "./codex-goal-handoff-preservation-budget";
 import { buildTar, tarPathFields } from "./codex-goal-handoff-untracked-tar";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -41,8 +42,8 @@ import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose,
 
 const execFileAsync = promisify(execFile);
 const maxGitBytes = 32 * 1024 * 1024;
-const maxFileBytes = 4 * 1024 * 1024;
-const maxTotalBytes = 16 * 1024 * 1024;
+const maxFileBytes = handoffPreservationBudget.sourceFileBytes;
+const maxTotalBytes = handoffPreservationBudget.untrackedBytes;
 const captureAttempts = 2;
 
 export const CODEX_GOAL_DURABLE_HANDOFF_PACKET_SCHEMA =
@@ -329,7 +330,7 @@ async function capturePacketFiles(input: {
   const safeUntracked: { path: string; bytes: Buffer; mode: number }[] = [];
   let totalBytes = 0;
   for (const path of input.identity.untrackedPaths) {
-    const classified = await readUntrackedPath(input.workspacePath, path, input.managedContext);
+    const classified = await readUntrackedPath(input.workspacePath, path, input.managedContext, maxTotalBytes - totalBytes);
     if (classified.quarantine) {
       quarantine.push(classified.quarantine);
       continue;
@@ -431,7 +432,7 @@ async function capturePacketFiles(input: {
   };
 }
 
-async function readUntrackedPath(workspacePath: string, path: string, managedContext?: HostedDependencyRootPurposeContext): Promise<{
+async function readUntrackedPath(workspacePath: string, path: string, managedContext: HostedDependencyRootPurposeContext | undefined, remainingBytes: number): Promise<{
   readonly file?: { readonly bytes: Buffer; readonly mode: number };
   readonly quarantine?: QuarantineEntry;
 }> {
@@ -459,6 +460,7 @@ async function readUntrackedPath(workspacePath: string, path: string, managedCon
   }
   if (!item.isFile()) return { quarantine: { path, reason: "special" } };
   if (item.size > maxFileBytes) throw new Error("handoff_file_byte_limit_exceeded");
+  if (item.size > remainingBytes) throw new Error("handoff_total_byte_limit_exceeded");
   if (managedContext !== undefined) return { file: {
     bytes: readManagedPacketSourceFile(managedContext, absolute, item), mode: item.mode & 0o777,
   } };
@@ -639,6 +641,13 @@ async function publishPacket(input: {
   readonly afterExistingPacketRead?: () => Promise<void>;
   readonly publicationAuthority?: { readonly assertPublicationAuthorized: (paths?: readonly string[]) => Promise<void> };
 }): Promise<MaterializedDurableCodexGoalHandoffPacket> {
+  let packetBytes = 0;
+  for (const file of input.captured.files) {
+    const maximum = file.path === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes;
+    if (file.bytes.length > maximum) throw new Error("handoff_file_byte_limit_exceeded");
+    packetBytes += file.bytes.length;
+    if (packetBytes > handoffPreservationBudget.packetBytes) throw new Error("handoff_total_byte_limit_exceeded");
+  }
   if (input.managedContext !== undefined) {
     await input.verifyWorkspaceStable();
     await input.publicationAuthority?.assertPublicationAuthorized([input.durableRootDir]);
@@ -725,10 +734,10 @@ function publishProtectedPacket(context: HostedDependencyRootPurposeContext, inp
       "untracked.tar", "untracked.paths.z", "quarantine.json", "manifest.json"]);
     const paths = new Set<string>(); let total = 0;
     for (const file of input.captured.files) {
-      if (!allowed.has(file.path) || paths.has(file.path) || file.bytes.length > maxGitBytes) throw new Error("handoff_packet_verification_failed");
+      if (!allowed.has(file.path) || paths.has(file.path) || file.bytes.length > (file.path === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes)) throw new Error("handoff_packet_verification_failed");
       paths.add(file.path); total += file.bytes.length;
     }
-    if (paths.size < 7 || !paths.has("manifest.json") || total > 256 * 1024 * 1024) throw new Error("handoff_total_byte_limit_exceeded");
+    if (paths.size < 7 || !paths.has("manifest.json") || total > handoffPreservationBudget.packetBytes) throw new Error("handoff_total_byte_limit_exceeded");
     const assertDirectory = (path: string): void => {
       const stat = syncFs.lstatSync(path, { bigint: true });
       if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0n || stat.gid !== 0n ||
@@ -742,7 +751,7 @@ function publishProtectedPacket(context: HostedDependencyRootPurposeContext, inp
         const before = syncFs.fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.nlink !== 1n || before.uid !== 0n || before.gid !== 0n ||
             (before.mode & 0o7777n) !== 0o600n || before.dev.toString() !== scope.durableHandoffRoot.dev ||
-            before.size > BigInt(maxGitBytes)) throw new Error("handoff_packet_verification_failed");
+            before.size > BigInt(path.endsWith("/untracked.tar") ? handoffPreservationBudget.packetFileBytes : maxGitBytes)) throw new Error("handoff_packet_verification_failed");
         assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
         const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
         while (offset < bytes.length) {
@@ -845,6 +854,22 @@ async function verifyManifestReferencedFiles(
   packetPath: string,
   manifest: DurableCodexGoalHandoffPacketManifest,
 ): Promise<void> {
+  for (const { descriptor, maxBytes } of durableCodexGoalHandoffPacketFiles(manifest)) {
+    const relative = assertSafeHandoffRelativePath(descriptor.path);
+    const absolute = join(packetPath, relative);
+    const item = await lstat(absolute);
+    if (item.size > maxBytes) throw new Error("handoff_file_byte_limit_exceeded");
+    const bytes = await readFile(absolute);
+    if (!item.isFile() || item.isSymbolicLink() ||
+      bytes.byteLength !== descriptor.byteLength ||
+      sha256HandoffContent(bytes) !== descriptor.sha256) {
+      throw new Error("handoff_packet_verification_failed");
+    }
+  }
+}
+/** Shared complete member roster and existing byte bounds for cold owners too. */
+export function durableCodexGoalHandoffPacketFiles(manifest: DurableCodexGoalHandoffPacketManifest):
+  readonly { readonly descriptor: PacketDescriptor; readonly maxBytes: number }[] {
   const descriptors: readonly PacketDescriptor[] = [
     manifest.status,
     manifest.layers.index,
@@ -854,17 +879,8 @@ async function verifyManifestReferencedFiles(
     manifest.untracked.paths,
     manifest.quarantine.manifest,
   ];
-  for (const descriptor of descriptors) {
-    const relative = assertSafeHandoffRelativePath(descriptor.path);
-    const absolute = join(packetPath, relative);
-    const item = await lstat(absolute);
-    const bytes = await readFile(absolute);
-    if (!item.isFile() || item.isSymbolicLink() ||
-      bytes.byteLength !== descriptor.byteLength ||
-      sha256HandoffContent(bytes) !== descriptor.sha256) {
-      throw new Error("handoff_packet_verification_failed");
-    }
-  }
+  return descriptors.map(descriptor => ({ descriptor, maxBytes:
+    assertSafeHandoffRelativePath(descriptor.path) === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes }));
 }
 
 async function verifyPublishedPacket(path: string, files: readonly PacketFile[]): Promise<void> {

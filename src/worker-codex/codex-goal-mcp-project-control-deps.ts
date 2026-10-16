@@ -1,3 +1,4 @@
+import { CodexGoalObservationMode } from "./application/codex-goal-registered-job-observation";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation, createResearchJobWriterObservationPreparer } from "./research-writer-observation";
 import { LocalConsumedOutputLedgerMutationLock } from "../worker-local/consumed-output-ledger-local-adapter";
 import {
@@ -90,6 +91,12 @@ export const codexProjectAdmissionDeps: CodexProjectAdmissionDeps = {
     };
   },
   evidenceCustody: projectControlEvidenceCustody,
+};
+
+/** Public query composition; command/Status dependencies retain reconciliation. */
+export const codexProjectAdmissionQueryDeps: CodexProjectAdmissionDeps = {
+  ...codexProjectAdmissionDeps,
+  buildOverviewItems: inputs => buildCodexGoalOverviewItems(inputs, CodexGoalObservationMode.ReadOnly),
 };
 
 export function codexProjectControlBroker(

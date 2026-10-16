@@ -2,6 +2,58 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 
 type JsonSchema = Readonly<Record<string, unknown>>;
 
+enum StructuredOutputRootKind {
+  Object = "object", Array = "array", String = "string", Number = "number",
+  Boolean = "boolean", Null = "null", Unknown = "unknown",
+}
+const rejectedRootDetails = new WeakMap<object, Readonly<Record<string, string>>>();
+
+/** Only source-issued validation errors carry observations; arbitrary error details are never read. */
+export function codexStructuredOutputFailureDetails(error: unknown): Readonly<Record<string, string>> | undefined {
+  return typeof error === "object" && error !== null ? rejectedRootDetails.get(error) : undefined;
+}
+
+function rootKind(value: unknown): StructuredOutputRootKind {
+  if (value === null) return StructuredOutputRootKind.Null;
+  if (Array.isArray(value)) return StructuredOutputRootKind.Array;
+  switch (typeof value) {
+    case "object": return StructuredOutputRootKind.Object;
+    case "string": return StructuredOutputRootKind.String;
+    case "number": return StructuredOutputRootKind.Number;
+    case "boolean": return StructuredOutputRootKind.Boolean;
+    default: return StructuredOutputRootKind.Unknown;
+  }
+}
+
+function rejectedRootShape(schema: JsonSchema, value: unknown): Readonly<Record<string, string>> | undefined {
+  // Observe the selected raw JSON root, before normalization. Type bits mean
+  // JSON types only, not enum/item/whole-schema validity. Unsupported schemas omit observations.
+  if (!isRecord(schema.properties)) return undefined;
+  const keys = Object.keys(schema.properties).sort(); // Bit i uses this deterministic source-schema key order.
+  if (keys.length > 16) return undefined;
+  const kind = rootKind(value);
+  let presence = 0, validTypes = 0;
+  const descriptors = kind === StructuredOutputRootKind.Object ? Object.getOwnPropertyDescriptors(value) : undefined;
+  for (const [index, key] of keys.entries()) {
+    const property = schema.properties[key];
+    if (!isRecord(property) || typeof property.type !== "string" && !Array.isArray(property.type)) return undefined;
+    const descriptor = descriptors?.[key];
+    if (!descriptor?.enumerable) continue;
+    if (!("value" in descriptor)) return undefined;
+    presence += 2 ** index;
+    const types = typeof property.type === "string" ? [property.type] : property.type;
+    const fieldKind = rootKind(descriptor.value);
+    if (types.includes(fieldKind) && (fieldKind !== StructuredOutputRootKind.Number || Number.isFinite(descriptor.value)) ||
+        types.includes("integer") && Number.isInteger(descriptor.value)) validTypes += 2 ** index;
+  }
+  const extraCount = descriptors === undefined ? undefined
+    : Object.keys(descriptors).filter(key => descriptors[key]!.enumerable && !keys.includes(key)).length;
+  if (extraCount !== undefined && extraCount > 65_535) return undefined;
+  return Object.freeze({ structuredOutputRootKind: kind, structuredOutputExpectedKeyCount: String(keys.length),
+    structuredOutputExpectedKeyPresenceBits: String(presence), structuredOutputExpectedFieldTypeValidBits: String(validTypes),
+    ...(extraCount === undefined ? {} : { structuredOutputExtraRootKeyCount: String(extraCount) }) });
+}
+
 export type CodexStructuredOutputSchemaPlan = {
   readonly providerSchema: JsonSchema;
   readonly codexSchema: JsonSchema;
@@ -73,7 +125,12 @@ export function prepareCodexStructuredOutputSchema(
         0,
       );
       if (!validateProviderOutput(normalized)) {
-        invalidOutput(validationDetail(validateProviderOutput));
+        const error = new Error(`codex_structured_output_invalid:${validationDetail(validateProviderOutput)}`);
+        try {
+          const details = rejectedRootShape(providerSchema, value);
+          if (details) rejectedRootDetails.set(error, details);
+        } catch { /* Optional diagnostics cannot change rejection or its original cause. */ }
+        throw error;
       }
       return normalized;
     },
