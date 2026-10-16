@@ -4,6 +4,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { LocalFileAttemptJournal } from "@vioxen/subscription-runtime/store-local-file";
+import { InMemoryWorkspaceLockStore, SafeExecutionRunner, SubscriptionWorkerError } from "@vioxen/subscription-runtime/worker-core";
+import { managedRunFailureToWorkerError } from "../file-backend-codex-managed-run-recovery";
+import type { FileBackendCodexWorkerResult } from "../file-backend-codex-worker";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexJsonAgentDriver } from "../../provider-codex/codex-json-agent-driver";
 import { CodexModelBackend } from "../../provider-codex/codex-model-backend";
@@ -77,18 +81,26 @@ it.each([
     const formatted = await runTurn();
     expect(formatted.status).toBe("failed");
     if (formatted.status !== "failed") throw Error("TEST expected actual driver failure");
-    const failureDetails = formatted.failure.details;
-    if (!failureDetails) throw Error("TEST expected actual driver failure details");
+    if (!formatted.failure.details) throw Error("TEST expected actual driver failure details");
     const stale = await runTurn();
     expect(stale.status).toBe("failed");
     if (stale.status !== "failed") throw Error("TEST expected unrelated later failure");
     expect(stale.failure.details).not.toHaveProperty("mimoProxyReason");
     expect(engineTurns).toBe(2);
-    execute.mockImplementation(async () => ({ status: "failed" as const, attempts: [],
-      reason: "unknown_error" as const, safeMessage: "Synthetic proxy failure",
-      failureDetails,
-      task: { taskId, workspaceRunId: taskId, workspacePath, effectMode: "read_only" as const,
-        provider: "codex", status: "failed" as const, startedAt: new Date(), updatedAt: new Date(), attempts: [] } }));
+    const workerError = managedRunFailureToWorkerError(formatted);
+    const journalRoot = join(root, "attempt-journal");
+    const journal = new LocalFileAttemptJournal(journalRoot);
+    const safeRunner = new SafeExecutionRunner({ journal, lockStore: new InMemoryWorkspaceLockStore(),
+      snapshotter: { async capture() { return { mode: "filesystem" as const, workspacePath,
+        capturedAt: new Date(), dirty: false, changedFiles: [], fingerprint: "unchanged",
+        summary: "unchanged isolated TEST workspace" }; } } });
+    const poolRun = vi.fn(async () => {
+      throw new SubscriptionWorkerError("subscription_worker_pool_slot_failed", "TEST worker failed", { cause: workerError });
+    });
+    execute.mockImplementation(() => safeRunner.run<{ workspacePath: string }, FileBackendCodexWorkerResult>({
+      taskId, workspace: { mode: "existing_locked", path: workspacePath }, effectMode: "read_only",
+      provider: "codex", pool: { run: poolRun }, job: { workspacePath }, originalPrompt: "TEST",
+      policy: { maxAttempts: 1 } }));
     await runCodexGoal({ taskId, jobRootDir, workspacePath, promptPath, outputPath,
       authRootDir: join(root, "synthetic-auth-not-used"), accounts: codexGoalAccountSlots(["account-a"]) },
     { createExecutor: () => ({ run: execute, dispose }) });
@@ -114,6 +126,13 @@ it.each([
     expect(transport).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
+    expect(poolRun).toHaveBeenCalledOnce();
+    const journaled = await new LocalFileAttemptJournal(journalRoot).readTask({ taskId });
+    expect(journaled?.attempts).toHaveLength(1);
+    expect(journaled?.lastFailureDetails).toMatchObject({ mimoProxyReason: scenario.reason,
+      mimoProxyPhase: scenario.phase, mimoProxyRequestNumber: "1",
+      ...(scenario.kind === "http" ? { mimoUpstreamStatus: "503" } : { mimoTransportCode: "ENOTFOUND" }) });
+    for (const sentinel of [secret, capability, privateBody]) expect(JSON.stringify(journaled)).not.toContain(sentinel);
     expect(persisted.changedFiles).toEqual([]);
   } finally { await driver.dispose(); latest.mockRestore(); await proxy.close();
     await rm(root, { recursive: true, force: true }); }
