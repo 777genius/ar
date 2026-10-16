@@ -36,12 +36,24 @@ type Held={fd:number;name:string;real:string;directory:boolean;dev:bigint;ino:bi
 const fdPath=(h:Held)=>`/proc/self/fd/${h.fd}`;
 function mount(fd:number):string {const m=/^mnt_id:\s+(\d+)$/m.exec(fs.readFileSync(`/proc/self/fdinfo/${fd}`,"utf8"));hold(m,"fd_mount");return m[1]!;}
 function absent(path:string):void {try{fs.lstatSync(path);}catch(e){if((e as NodeJS.ErrnoException).code==="ENOENT")return;throw e;}throw new Error("PUBLIC_STAGE_HOLD:already_exists");}
+/** Operation-scoped successful EXACT-text memoization only. Caller still
+ * freshly reads kernel text and rejoins every boot/ns/FD/mount on every guard. */
+export function createH1ExactMountBoundaryValidator():(lines:string)=>void {
+ let successful:string|undefined;
+ return (lines:string)=>{
+  hold(Buffer.byteLength(lines)<=8*1024**2,"mountinfo_bound");
+  if(lines===successful)return;
+  for(const l of lines.trim().split("\n")){const p=l.split(" ")[4];hold(p,"mountinfo");hold(!(p!=="/srv/workers"&&p!=="/"&&INTAKE.startsWith(p+"/"))&&!p.startsWith(INTAKE+"/")&&p!==INTAKE,"intake_mount_boundary");}
+  successful=lines;
+ };
+}
 export async function stageCurrentH1Public(manifestSha:string):Promise<void> {
  hold(process.platform==="linux"&&process.arch==="x64"&&process.getuid?.()===0&&process.getgid?.()===0&&process.execPath===BOOTSTRAP,"fixed_linux_root_bootstrap");
  const originalUmask=process.umask(0o077);const deadline=performance.now()+120000,handles:Held[]=[],sources:Held[]=[],anchors:Held[]=[],sourcePins=new Map<Held,Pin>();let cancelled=false,objects=0;const signal=()=>{cancelled=true;};
  process.on("SIGTERM",signal);process.on("SIGINT",signal);const boot=fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8"),namespace=fs.readlinkSync("/proc/self/ns/mnt");let workers:Held|undefined,activeTarget:Held|undefined;
  const check=(h:Held)=>{if(!h.directory)assertRegularName(h.fd,h.name);const s=fs.fstatSync(h.fd,{bigint:true}),n=fs.lstatSync(h.name,{bigint:true});hold(s.dev===h.dev&&s.ino===h.ino&&s.mode===h.mode&&s.uid===0n&&s.gid===0n&&!n.isSymbolicLink()&&n.dev===s.dev&&n.ino===s.ino&&n.mode===s.mode&&mount(h.fd)===h.mnt&&fs.realpathSync(fdPath(h))===h.real&&(h.directory?s.isDirectory():s.isFile()&&s.nlink===1n&&s.size===h.size&&s.ctimeNs===h.ctime&&s.mtimeNs===h.mtime),"held_named_changed");const fd=fs.openSync(h.name,C.O_RDONLY|C.O_NOFOLLOW|C.O_NONBLOCK|(h.directory?C.O_DIRECTORY:0));try{hold(mount(fd)===h.mnt&&fs.fstatSync(fd,{bigint:true}).ino===h.ino,"reopened_mount");}finally{fs.closeSync(fd);}};
- const guard=()=>{hold(!cancelled&&performance.now()<deadline,"cancelled_or_deadline");hold(boot===fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8")&&namespace===fs.readlinkSync("/proc/self/ns/mnt"),"boot_namespace_changed");for(const h of new Set([...anchors,...sources,...(activeTarget?[activeTarget]:[])]))check(h);const lines=fs.readFileSync("/proc/self/mountinfo","utf8");hold(Buffer.byteLength(lines)<=8*1024**2,"mountinfo_bound");for(const l of lines.trim().split("\n")){const p=l.split(" ")[4];hold(p,"mountinfo");hold(!(p!=="/srv/workers"&&p!=="/"&&INTAKE.startsWith(p+"/"))&&!p.startsWith(INTAKE+"/")&&p!==INTAKE,"intake_mount_boundary");}};
+ const validateMountInfo=createH1ExactMountBoundaryValidator();
+ const guard=()=>{hold(!cancelled&&performance.now()<deadline,"cancelled_or_deadline");hold(boot===fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8")&&namespace===fs.readlinkSync("/proc/self/ns/mnt"),"boot_namespace_changed");for(const h of new Set([...anchors,...sources,...(activeTarget?[activeTarget]:[])]))check(h);validateMountInfo(fs.readFileSync("/proc/self/mountinfo","utf8"));};
  const open=(name:string,directory:boolean):Held=>{const fd=fs.openSync(name,C.O_RDONLY|C.O_NOFOLLOW|C.O_NONBLOCK|(directory?C.O_DIRECTORY:0));try{const s=fs.fstatSync(fd,{bigint:true});hold((s.mode&0o022n)===0n,"writable_input");const h:Held={fd,name,real:fs.realpathSync(`/proc/self/fd/${fd}`),directory,dev:s.dev,ino:s.ino,mode:s.mode,mnt:mount(fd),size:s.size,ctime:s.ctimeNs,mtime:s.mtimeNs};handles.push(h);check(h);if(workers&&h.real.startsWith("/srv/workers/"))hold(h.dev===workers.dev&&h.mnt===workers.mnt,"nested_mount");return h;}catch(e){if(!handles.some(h=>h.fd===fd))fs.closeSync(fd);throw e;}};
  const release=(h:Held)=>{check(h);handles.splice(handles.indexOf(h),1);fs.closeSync(h.fd);};
  const prune=()=>{if(activeTarget)return;for(const h of [...handles].reverse())if(h.directory&&!anchors.includes(h))release(h);};
