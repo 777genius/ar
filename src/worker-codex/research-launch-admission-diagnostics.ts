@@ -10,9 +10,13 @@ export type ResearchAdmissionTiming = Readonly<{
   admissionAuthorityServiceElapsedMs?: number;
   admissionAuthorityScalarWitnessElapsedMs?: number;
   admissionAuthorityPairedPinElapsedMs?: number;
+  /** Query helper phases include custody/JSON work, not isolated subprocess CPU. */
+  admissionAuthorityScalarTargetQueryElapsedMs?: number;
+  admissionAuthorityPairedTargetQueryElapsedMs?: number;
 }>;
 /** Source-only observations; callbacks carry no authority or retained decision. */
-export type ResearchAuthorityTimingObservers = Readonly<{ scalarWitness?: (elapsedMs: number) => void; pairedPin?: (elapsedMs: number) => void }>;
+export type ResearchAuthorityTimingObservers = Readonly<{ scalarWitness?: (elapsedMs: number) => void; pairedPin?: (elapsedMs: number) => void;
+  scalarTargetQuery?: (elapsedMs: number) => void; pairedTargetQuery?: (elapsedMs: number) => void }>;
 /** Measures one existing synchronous operation; observation cannot change it. */
 export function researchAdmissionMeasure<T>(effect: () => T, observe: (elapsedMs: number) => void): T {
   let started: number | undefined;

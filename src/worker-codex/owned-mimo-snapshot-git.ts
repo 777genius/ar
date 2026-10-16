@@ -19,7 +19,8 @@ export type MimoSnapshotTiming = Readonly<{
 }> & Partial<ResearchAdmissionTiming>;
 type TimingCounters = { admissionCount: number; admissionElapsedMs: number; successfulGitCount: number;
   successfulGitElapsedMs: number; invalid: boolean; partCount: number; nestedCounts: Record<typeof authorityPartKeys[number], number>; parts: ResearchAdmissionTiming };
-const authorityPartKeys = ["admissionAuthorityServiceElapsedMs", "admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs"] as const;
+const authorityPartKeys = ["admissionAuthorityServiceElapsedMs", "admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs",
+  "admissionAuthorityScalarTargetQueryElapsedMs", "admissionAuthorityPairedTargetQueryElapsedMs"] as const;
 const admissionPartKeys = ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs"] as const;
 enum TimingCounterKind { Admission = "admission", SuccessfulGit = "successful_git" }
 const timingNow = (): number | undefined => {
@@ -97,9 +98,9 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
     this.#observed.add(scope);
     const counters: TimingCounters = { admissionCount: 0, admissionElapsedMs: 0,
       successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false, partCount: 0,
-      nestedCounts: { admissionAuthorityServiceElapsedMs: 0, admissionAuthorityScalarWitnessElapsedMs: 0, admissionAuthorityPairedPinElapsedMs: 0 },
+      nestedCounts: { admissionAuthorityServiceElapsedMs: 0, admissionAuthorityScalarWitnessElapsedMs: 0, admissionAuthorityPairedPinElapsedMs: 0, admissionAuthorityScalarTargetQueryElapsedMs: 0, admissionAuthorityPairedTargetQueryElapsedMs: 0 },
       parts: { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0,
-        admissionAuthorityServiceElapsedMs: 0, admissionAuthorityScalarWitnessElapsedMs: 0, admissionAuthorityPairedPinElapsedMs: 0 } };
+        admissionAuthorityServiceElapsedMs: 0, admissionAuthorityScalarWitnessElapsedMs: 0, admissionAuthorityPairedPinElapsedMs: 0, admissionAuthorityScalarTargetQueryElapsedMs: 0, admissionAuthorityPairedTargetQueryElapsedMs: 0 } };
     this.#timing = counters;
     const started = timingNow(); let outcome = MimoSnapshotTimingOutcome.Failed;
     try { const result = await operation(); outcome = MimoSnapshotTimingOutcome.Completed; return result; }
@@ -107,8 +108,10 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       this.#timing = undefined;
       const elapsedMs = elapsedTiming(started);
       if (!counters.invalid && elapsedMs !== undefined) {
-        const { admissionAuthorityServiceElapsedMs, admissionAuthorityScalarWitnessElapsedMs, admissionAuthorityPairedPinElapsedMs, ...outerParts } = counters.parts;
-        const nested = { admissionAuthorityServiceElapsedMs, admissionAuthorityScalarWitnessElapsedMs, admissionAuthorityPairedPinElapsedMs };
+        const { admissionAuthorityServiceElapsedMs, admissionAuthorityScalarWitnessElapsedMs, admissionAuthorityPairedPinElapsedMs,
+          admissionAuthorityScalarTargetQueryElapsedMs, admissionAuthorityPairedTargetQueryElapsedMs, ...outerParts } = counters.parts;
+        const nested = { admissionAuthorityServiceElapsedMs, admissionAuthorityScalarWitnessElapsedMs, admissionAuthorityPairedPinElapsedMs,
+          admissionAuthorityScalarTargetQueryElapsedMs, admissionAuthorityPairedTargetQueryElapsedMs };
         try { this.#observe(Object.freeze({ scope, outcome, elapsedMs,
           admissionCount: counters.admissionCount, admissionElapsedMs: counters.admissionElapsedMs,
           successfulGitCount: counters.successfulGitCount, successfulGitElapsedMs: counters.successfulGitElapsedMs,
@@ -140,8 +143,12 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       counters.partCount++;
       for (const key of authorityPartKeys) {
         const part = Object.getOwnPropertyDescriptor(value, key)?.value as unknown;
+        const parentKey = key === "admissionAuthorityScalarTargetQueryElapsedMs" ? "admissionAuthorityScalarWitnessElapsedMs"
+          : key === "admissionAuthorityPairedTargetQueryElapsedMs" ? "admissionAuthorityPairedPinElapsedMs" : "admissionAuthorityElapsedMs";
+        const parent = Object.getOwnPropertyDescriptor(value, parentKey)?.value as unknown;
         const sum = (counters.parts[key] ?? 0) + (typeof part === "number" ? part : NaN);
-        if (typeof part === "number" && Number.isFinite(part) && part >= 0 && part <= values[0]! && sum <= 86_400_000) {
+        if (typeof parent === "number" && Number.isFinite(parent) && parent >= 0 && parent <= values[0]! &&
+            typeof part === "number" && Number.isFinite(part) && part >= 0 && part <= parent && sum <= 86_400_000) {
           counters.parts = { ...counters.parts, [key]: sum }; counters.nestedCounts[key]++;
         }
       }

@@ -560,13 +560,13 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
       clock.mockRestore(); host.findmntHook = undefined;
       expect([shows() - before, mounts() - beforeMounts]).toEqual([2, 10]);
       expect(timing).toMatchObject({ admissionAuthorityElapsedMs: 10, admissionAuthorityServiceElapsedMs: 0,
-        admissionAuthorityScalarWitnessElapsedMs: 6, admissionAuthorityPairedPinElapsedMs: 4 });
+        admissionAuthorityScalarWitnessElapsedMs: 6, admissionAuthorityPairedPinElapsedMs: 4, admissionAuthorityScalarTargetQueryElapsedMs: 6, admissionAuthorityPairedTargetQueryElapsedMs: 4 });
       const nextMounts = mounts(); captured.assertCurrent(); expect(mounts() - nextMounts).toBe(10);
       const inertShows = shows(), inertMounts = mounts(); captured.assertInertAuthorityCurrent();
       expect([shows() - inertShows, mounts() - inertMounts]).toEqual([0, 10]);
       const authorityShows = shows(), authorityMounts = mounts(); captured.assertAuthorityCurrent();
       expect([shows() - authorityShows, mounts() - authorityMounts]).toEqual([1, 20]);
-      const observers = { scalarWitness: () => { throw Error("TEST observer"); }, pairedPin: () => { throw Error("TEST observer"); } };
+      const observers = { scalarWitness: () => { throw Error("TEST observer"); }, pairedPin: () => { throw Error("TEST observer"); }, scalarTargetQuery: () => { throw Error("TEST observer"); }, pairedTargetQuery: () => { throw Error("TEST observer"); } };
       expect(() => assertResearchCurrentAuthority(started.jobId, current, undefined, false, observers)).not.toThrow();
       mutateReceipt(); expect(() => captured.assertAuthorityCurrent()).toThrow();
       expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);

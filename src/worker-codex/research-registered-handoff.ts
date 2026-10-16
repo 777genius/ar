@@ -157,16 +157,16 @@ export async function consumeRegisteredResearchHandoffAuthorization(
 /** Fresh async observation ends in a synchronous current-byte guard for the
  * owner's next individual effect. The closure never caches admission. */
 export async function assertRegisteredResearchHandoffCurrent(binding: ResearchRegisteredHandoff, request: ResearchOperatorRequest,
-  assertRoot: () => void = assertResearchInitialRoot): Promise<(observeScalarWitness?: (elapsedMs: number) => void) => void> {
+  assertRoot: () => void = assertResearchInitialRoot): Promise<(observeScalarWitness?: (elapsedMs: number) => void, observeTargetQuery?: (elapsedMs: number) => void) => void> {
   assertRoot();
   const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution);
   if (digest(current.binding) !== digest(binding)) researchInvalid();
   assertResearchDurableDirectory(binding.durableDirectory);
   current.assertAuthorityBytes();
-  return observeScalarWitness => {
+  return (observeScalarWitness, observeTargetQuery) => {
     assertRoot();
-    if (observeScalarWitness) researchAdmissionMeasure(() => assertResearchDurableDirectory(binding.durableDirectory), observeScalarWitness);
-    else assertResearchDurableDirectory(binding.durableDirectory);
+    if (observeScalarWitness) researchAdmissionMeasure(() => assertResearchDurableDirectory(binding.durableDirectory, observeTargetQuery), observeScalarWitness);
+    else assertResearchDurableDirectory(binding.durableDirectory, observeTargetQuery);
     current.assertAuthorityBytes();
   };
 }
@@ -236,13 +236,13 @@ export function assertResearchTerminalAccountTail(historical: ProjectAccessScope
 }
 /** Pin record is published only after the owner verified the actual Host bind.
  * Cold witnesses detect mount loss/replacement even under a runtime target bind. */
-export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, directory: string, observePairedPin?: (elapsedMs: number) => void): void {
+export function assertRegisteredResearchHandoffPin(spec: ResearchStartSpec, directory: string, observePairedPin?: (elapsedMs: number) => void, observeTargetQuery?: (elapsedMs: number) => void): void {
   const binding = spec.registeredHandoff;
   if (!binding) {
     if (spec.request.durableHandoffRootDir !== undefined) researchInvalid();
     return;
   }
-  const read = () => researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }]);
+  const read = () => researchDurableDirectories([{ path: binding.durableDirectory.path }, { path: join(directory, "pins", "durable-handoff") }], observeTargetQuery);
   const [source, pin] = observePairedPin ? researchAdmissionMeasure(read, observePairedPin) : read();
   if (digest(source) !== digest(binding.durableDirectory)) researchInvalid();
   const r = researchRecord(JSON.parse(researchRead(join(directory, "durable-pin.json")).toString("utf8")), "schemaVersion,specSha256,pin");

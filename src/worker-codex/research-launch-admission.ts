@@ -21,7 +21,7 @@ import { researchAdmissionObservation, researchAdmissionMeasure, ResearchAdmissi
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => ResearchAdmissionTiming | void>();
 const factoryRetainedGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
-const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: (observeScalarWitness?: (elapsedMs: number) => void) => void }>();
+const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: (observeScalarWitness?: (elapsedMs: number) => void, observeTargetQuery?: (elapsedMs: number) => void) => void }>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 export const researchJobAuthority = (jobId: string): string => join(researchAuthorityRoot, researchName(researchId(jobId)));
 export function researchCurrentStart(jobId: string): { directory: string; spec: ResearchStartSpec; bytes: Buffer } {
@@ -66,7 +66,7 @@ function assertResearchProjectLaunchAuthorityBytes(spec: ResearchStartSpec, obse
   const current = researchCurrentStart(spec.request.jobId), witness = projectAuthorityWitnesses.get(current.directory);
   if (!witness || !current.bytes.equals(witness.bytes) || witness.spec !== JSON.stringify(spec)) researchInvalid();
   if (spec.projectLaunchBinding) assertResearchProjectGrantNotRevoked(spec.request.jobId, spec.grantSha256);
-  witness.assertAuthorityBytes(observe?.scalarWitness);
+  witness.assertAuthorityBytes(observe?.scalarWitness, observe?.scalarTargetQuery);
 }
 /** Registered workers keep their exact scoped receipt live in each trusted
  * process. A new process prepares a reader; it inherits no decision or permit. */
@@ -124,7 +124,7 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
-  assertRegisteredResearchHandoffPin(spec, join(pins, ".."), observe?.pairedPin);
+  assertRegisteredResearchHandoffPin(spec, join(pins, ".."), observe?.pairedPin, observe?.pairedTargetQuery);
   assertResearchProjectLaunchAuthorityBytes(spec, observe);
   if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
 }
@@ -286,9 +286,12 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
     let admissionAuthorityElapsedMs = 0, admissionArtifactElapsedMs = 0, admissionExecutableElapsedMs = 0, samples = 0;
     let admissionAuthorityServiceElapsedMs = 0, serviceSamples = 0;
     let admissionAuthorityScalarWitnessElapsedMs = 0, scalarSamples = 0, admissionAuthorityPairedPinElapsedMs = 0, pairSamples = 0;
+    let admissionAuthorityScalarTargetQueryElapsedMs = 0, scalarQuerySamples = 0, admissionAuthorityPairedTargetQueryElapsedMs = 0, pairQuerySamples = 0;
     const authorityTimings: ResearchAuthorityTimingObservers = {
       scalarWitness: elapsed => { admissionAuthorityScalarWitnessElapsedMs += elapsed; scalarSamples++; },
       pairedPin: elapsed => { admissionAuthorityPairedPinElapsedMs += elapsed; pairSamples++; },
+      scalarTargetQuery: elapsed => { admissionAuthorityScalarTargetQueryElapsedMs += elapsed; scalarQuerySamples++; },
+      pairedTargetQuery: elapsed => { admissionAuthorityPairedTargetQueryElapsedMs += elapsed; pairQuerySamples++; },
     };
     const authority = (): void => { researchAdmissionMeasure(() => checkAdmissionAuthorityCurrent(elapsed => {
       admissionAuthorityServiceElapsedMs += elapsed; serviceSamples++;
@@ -300,13 +303,21 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
       samples++;
     });
     authority();
+    const scalarComplete = spec.registeredHandoff && scalarSamples === 6 && Number.isFinite(admissionAuthorityScalarWitnessElapsedMs) &&
+      admissionAuthorityScalarWitnessElapsedMs <= admissionAuthorityElapsedMs;
+    const pairComplete = spec.registeredHandoff && pairSamples === 2 && Number.isFinite(admissionAuthorityPairedPinElapsedMs) &&
+      admissionAuthorityPairedPinElapsedMs <= admissionAuthorityElapsedMs;
     if (samples === 5) return Object.freeze({ admissionAuthorityElapsedMs, admissionArtifactElapsedMs,
       admissionExecutableElapsedMs, ...(serviceSamples === 2 && Number.isFinite(admissionAuthorityServiceElapsedMs) &&
         admissionAuthorityServiceElapsedMs <= admissionAuthorityElapsedMs ? { admissionAuthorityServiceElapsedMs } : {}),
-      ...(spec.registeredHandoff && scalarSamples === 6 && Number.isFinite(admissionAuthorityScalarWitnessElapsedMs) &&
-        admissionAuthorityScalarWitnessElapsedMs <= admissionAuthorityElapsedMs ? { admissionAuthorityScalarWitnessElapsedMs } : {}),
-      ...(spec.registeredHandoff && pairSamples === 2 && Number.isFinite(admissionAuthorityPairedPinElapsedMs) &&
-        admissionAuthorityPairedPinElapsedMs <= admissionAuthorityElapsedMs ? { admissionAuthorityPairedPinElapsedMs } : {}) });
+      ...(scalarComplete ? { admissionAuthorityScalarWitnessElapsedMs } : {}),
+      ...(pairComplete ? { admissionAuthorityPairedPinElapsedMs } : {}),
+      ...(scalarComplete && scalarQuerySamples === 6 && Number.isFinite(admissionAuthorityScalarTargetQueryElapsedMs) &&
+        admissionAuthorityScalarTargetQueryElapsedMs >= 0 && admissionAuthorityScalarTargetQueryElapsedMs <= admissionAuthorityScalarWitnessElapsedMs
+        ? { admissionAuthorityScalarTargetQueryElapsedMs } : {}),
+      ...(pairComplete && pairQuerySamples === 2 && Number.isFinite(admissionAuthorityPairedTargetQueryElapsedMs) &&
+        admissionAuthorityPairedTargetQueryElapsedMs >= 0 && admissionAuthorityPairedTargetQueryElapsedMs <= admissionAuthorityPairedPinElapsedMs
+        ? { admissionAuthorityPairedTargetQueryElapsedMs } : {}) });
   });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
