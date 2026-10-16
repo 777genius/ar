@@ -1,5 +1,6 @@
 /** One original PUBLIC installation-control operation. No application payload API. */
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import {
   spawnSync
 }
@@ -14,7 +15,7 @@ import {
 }
 from "node:fs";
 import {
-  dirname
+  basename, dirname
 }
 from "node:path";
 import {
@@ -274,7 +275,18 @@ function loaded(s:Readonly<Record<string,string>>):void{
   }
   ))assert.equal(s[key],value);
 }
-function actor(s:Readonly<Record<string,string>>,selection:Selection):AdministrativeActor{
+/** Only current package factual readers compose the existing canonical DATA parser.
+ * The original relocated operation keeps its exact historical raw-v2 predicates. */
+function sourceReaderCgroup(raw:string):string {
+  const name=basename(fileURLToPath(import.meta.url));
+  if(name==="administrative-installation.js")return raw;
+  assert.equal(name,"current-administrative-installation.js");
+  // Pure existing ESM helper has no top-level await; synchronous require is supported by
+  // original Node24 and Node22.12+ CI. Never resolve from cwd or an absolute fallback.
+  const parser=createRequire(import.meta.url)("../../dist/core/host-infrastructure/process-cgroup.js") as typeof import("../../dist/core/host-infrastructure/process-cgroup.js");
+  return parser.observedProcessCgroup(raw)+"\n";
+}
+function actor(s:Readonly<Record<string,string>>,selection:Selection,sourceReader=false):AdministrativeActor{
   loaded(s);
   const numeric="/proc/"+s.MainPID,fd=openSync(numeric,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);
   try{
@@ -291,7 +303,7 @@ function actor(s:Readonly<Record<string,string>>,selection:Selection):Administra
     assert.match(status,/^Gid:\s+0\s+0\s+0\s+0$/m);
     assert.match(status,/^NoNewPrivs:\s+1$/m);
     for(const cap of ["Inh","Prm","Eff","Bnd","Amb"])assert.match(status,new RegExp("^Cap"+cap+":\\s+0+$","m"));
-    assert.equal(readFileSync(prefix+"/cgroup","utf8"),"0::"+group+"\n");
+    const cgroup=readFileSync(prefix+"/cgroup","utf8");assert.equal(sourceReader?sourceReaderCgroup(cgroup):cgroup,"0::"+group+"\n");
     assert(readFileSync(prefix+"/cmdline").equals(Buffer.from([selection.node.path,selection.actor.path,"--maintain",""] .join("\0"))));
     const executable=openSync(prefix+"/exe",C.O_RDONLY),named=retain(selection.node.path,128*1024*1024);
     try{
@@ -621,7 +633,7 @@ export function readOriginalPublicAdministrativeActor(anchor:NativeAnchor,expect
       bigint:true
     }
     ).type,0x9fa0n);
-    const current=actor(show(),selected);
+    const current=actor(show(),selected,true);
     equal(current,value.actor);
     equal(current.root,earlier.producerRoot);
     assert.equal(current.user,earlier.producerUser);
@@ -632,7 +644,7 @@ export function readOriginalPublicAdministrativeActor(anchor:NativeAnchor,expect
     function taskJoin():void{
       anchor.revalidate();
       assert.equal(birth(anchor.path),anchor.birth);
-      assert.equal(readFileSync(anchor.path+"/cgroup","utf8"),"0::"+group+"\n");
+      assert.equal(sourceReaderCgroup(readFileSync(anchor.path+"/cgroup","utf8")),"0::"+group+"\n");
       equal(identity(statSync(anchor.path+"/root",{
         bigint:true
       }
@@ -657,7 +669,7 @@ export function readOriginalPublicAdministrativeActor(anchor:NativeAnchor,expect
     }
     for(const h of [origin,ready,before,catalog,review,...sources])rejoin(h,128*1024*1024);
     taskJoin();
-    equal(actor(show(),selected),current);
+    equal(actor(show(),selected,true),current);
     return current;
   }
   finally{

@@ -1,5 +1,6 @@
 /** Fixed FULL TEST backing observations. This module issues no REVIEW or grant. */
 import assert from "node:assert/strict";
+import { observedProcessCgroup } from "../../dist/core/host-infrastructure/process-cgroup.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, opendirSync, linkSync, unlinkSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type BigIntStats, type Dirent } from "node:fs";
@@ -450,7 +451,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
   assert.equal(text("/proc/self/uid_map",4096,budget).trim().replace(/\s+/g," "),"0 0 4294967295");
   assert.match(text("/proc/1/status",16384,budget),/^NSpid:\s+1$/m);
   assert(/^[a-f0-9]{32}$/.test(process.env.INVOCATION_ID??""));
-  assert.equal(text("/proc/self/cgroup",4096,budget).trim(),"0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/"+fullNativeUnit);
+  assert.equal(observedProcessCgroup(text("/proc/self/cgroup",4096,budget)),"0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/"+fullNativeUnit);
   const owned=dirname(root),image=owned+"/readonly-data.ext4",held:{path:string;
     fd:number;
     stat:BigIntStats;
@@ -571,7 +572,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     assert.equal(birthAt(prefix,budget),s.birth);
     assert.equal(readlinkSync(prefix+"/ns/mnt"),s.mnt);
     assert.equal(readlinkSync(prefix+"/ns/pid"),s.pidNamespace);
-    assert.equal(text(prefix+"/cgroup",4096,budget).trim(),s.group);
+    assert.equal(observedProcessCgroup(text(prefix+"/cgroup",4096,budget)),s.group);
     assert(same(identity(statSync(prefix+"/root",{bigint:true})),{dev:s.rootDev,ino:s.rootIno}));
     const status=text(prefix+"/status",16384,budget);
     assert.match(status,/^Uid:\s+0\s+0\s+0\s+0$/m);
@@ -613,7 +614,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     assert.equal(mountOwner(pid,mnt),user);
     assert.match(text(prefix+"/status",16384,budget),/^NSpid:\s+1$/m);
     assert.equal(text(prefix+"/uid_map",4096,budget).trim().replace(/\s+/g," "),"0 0 4294967295");
-    const group=text(prefix+"/cgroup",4096,budget).trim().split("\n");assert(group.includes("0::/init.scope") && group.every(row=>row==="0::/init.scope" || row==="1:name=systemd:/"));
+    assert.equal(observedProcessCgroup(text(prefix+"/cgroup",4096,budget)),"0::/init.scope");
     assert.equal(text("/sys/fs/cgroup/init.scope/cgroup.procs",4096,budget),"1\n");
     const path="/usr/lib/systemd/systemd",fd=hold(path,false,0o755n),named=fstatSync(fd,{bigint:true});
     assert(named.dev===2306n && named.ino===20482164n && named.size===100816n);
@@ -691,7 +692,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     assert.equal(processBirth(prefix),row.recoveryBirth);
     const status=text(prefix+"/status",16384,budget),ppid=/^PPid:\s+([1-9][0-9]*)$/m.exec(status)?.[1];assert(ppid);
     const supervisor="/proc/"+ppid;assert.equal(processBirth(supervisor),row.supervisorBirth);
-    assert(text(supervisor+"/cgroup",4096,budget)===text(prefix+"/cgroup",4096,budget));
+    assert.equal(observedProcessCgroup(text(supervisor+"/cgroup",4096,budget)),observedProcessCgroup(text(prefix+"/cgroup",4096,budget)));
     assert(readlinkSync(supervisor+"/ns/pid")===selection!.pidNamespace && same(identity(statSync(supervisor+"/root",{bigint:true})),{dev:selection!.rootDev,ino:selection!.rootIno}));
     const expectedSupervisor=["/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node","--experimental-strip-types","/opt/subscription-runtime-dependency-os-TEST/scripts/dependency-retention-os-test/current-full-supervisor.js","supervisor","--parent-crash-h1",""];
     assert.equal(text(supervisor+"/cmdline",32768,budget),expectedSupervisor.join("\0"));
@@ -713,7 +714,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
   function originalGuest(pid:number,prefix:string,user:string):boolean {
     assert(selection && guestSources);
     if(user!=="user:[4026531837]" || readlinkSync(prefix+"/ns/pid")!==selection.pidNamespace)return false;
-    const group=text(prefix+"/cgroup",4096,budget).trim();if(!group.startsWith("0::/system.slice/TEST-retention-os-"+id+".service/"))return false;
+    const group=observedProcessCgroup(text(prefix+"/cgroup",4096,budget));if(!group.startsWith("0::/system.slice/TEST-retention-os-"+id+".service/"))return false;
     const rootStat=statSync(prefix+"/root",{bigint:true});if(!same(identity(rootStat),{dev:selection.rootDev,ino:selection.rootIno}))return false;
     const nodePath="/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",argv=text(prefix+"/cmdline",32768,budget).split("\0");assert(argv.pop()==="");
     const exe=readlinkSync(prefix+"/exe");let script:string|undefined;

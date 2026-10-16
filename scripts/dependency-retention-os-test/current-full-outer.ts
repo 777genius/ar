@@ -3,6 +3,7 @@ import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } 
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
+import { observedProcessCgroup } from "../../dist/core/host-infrastructure/process-cgroup.js";
 import { captureFullAdministrativeBirth, retainFullBackingBirth, type FullGuestSelection } from "./current-full-backing-collector.js";
 import { CurrentBackingGeometry, CurrentGeometryQualification, currentBackingStorage } from "./current-backing-geometry.js";
 import { spawnSync } from "node:child_process";
@@ -521,7 +522,7 @@ function observeGuestBoot(root: string, registered: ReturnType<typeof directoryI
     const status = proc(`/proc/${pid}/status`, 16384); assert.match(status, /^Uid:\s+0\s+0\s+0\s+0$/m);
     const ids = /^NSpid:\s+([0-9 \t]+)$/m.exec(status)?.[1]?.trim().split(/\s+/).map(Number);
     assert(ids && ids.length >= 2 && ids[0] === pid && ids.at(-1) === 1);
-    const cg = proc(`/proc/${pid}/cgroup`, 4096).trim(); assert(cg === "0::" + group || cg.startsWith("0::" + group + "/"));
+    const cg = observedProcessCgroup(proc(`/proc/${pid}/cgroup`, 4096)); assert(cg === "0::" + group || cg.startsWith("0::" + group + "/"));
     const stat = proc(`/proc/${pid}/stat`, 4096), fields = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
     assert.match(fields[19] ?? "", /^[1-9][0-9]*$/);
     const currentRoot = statSync(`/proc/${pid}/root`, { bigint: true });
