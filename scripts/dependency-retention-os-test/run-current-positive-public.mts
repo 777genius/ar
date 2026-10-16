@@ -6,7 +6,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 const C=fs.constants,S='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node',NODE_SHA='7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c';
-const HELPER_SHA='49f41498204753cb013a8f3a6c81f1c983205f245cc6cf489137c7913f1f3e44';
+const HELPER_SHA='e6117f904e7d1d989165d196e61ac3d7ca36bf1c9c0877f63889e0d92b28acef';
 const names=['preparation-input.json','source.bundle','public-files.payload','stage-current-positive-public.mts','run-current-positive-public.mts','review.json','outer-input.json','public-input.json'] as const;
 const hash=(b:Uint8Array)=>createHash('sha256').update(b).digest('hex');
 function fact(v:unknown,why:string):asserts v{if(!v)throw new Error('PUBLIC_TRANSPORT_HOLD:'+why);}
