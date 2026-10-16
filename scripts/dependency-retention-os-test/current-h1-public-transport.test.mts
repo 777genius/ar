@@ -4,6 +4,11 @@ import {createHash} from 'node:crypto';
 import {parseDelivery as bootstrap,selectedUnit,packetNames,packetMode as bootstrapMode,H1InstallPhase} from './bootstrap-current-h1-public.mts';
 import {parseDelivery as runner,packetMode as runnerMode} from './run-current-h1-public.mts';
 import {parseDelivery as inspector,packetMode as inspectorMode} from './inspect-current-h1-public.mts';
+import {createH1ExactMountBoundaryValidator,INTAKE as H} from './stage-current-h1-public.mts';
+import {INTAKE} from './stage-current-positive-public.mts';
+import {knownChildFailure as cChild,transportFailureDiagnostic as cFailure} from './run-current-positive-public.mts';
+import {knownChildFailure as hChild,transportFailureDiagnostic as hFailure} from './run-current-h1-public.mts';
+
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex'),helper='6e5b0c00c93fc4a7a6db82ea81654fd98a4aa2acce1a51184a08aea665fe234a';
 function header(phase:H1InstallPhase){return {version:1,phase,sourceSha:'a'.repeat(40),manifestSha256:'b'.repeat(64),prepareDeliverySha256:phase===H1InstallPhase.Prepare?'':'c'.repeat(64),bootId:'11111111-1111-1111-1111-111111111111',files:packetNames(phase).map((name,i)=>({name,bytes:1,sha256:phase===H1InstallPhase.Prepare&&i===0?'b'.repeat(64):phase===H1InstallPhase.Prepare&&i===3?helper:'d'.repeat(64)}))};}
 function invoke(value:unknown,parse=bootstrap){const bytes=Buffer.from(JSON.stringify(value)+'\n');return parse(bytes,sha(bytes));}
@@ -17,4 +22,40 @@ test('actual producer mode DATA matches protected Finalize JSON and immutable pr
  const expectedPrivate=new Set(['review.json','h1-staged-subject.json','h1-distro-facts.json','h1-verifier-bootstrap-review.json']);
  for(const phase of Object.values(H1InstallPhase))for(const name of packetNames(phase))for(const mode of [bootstrapMode,runnerMode,inspectorMode])assert.equal(mode(phase,name),phase===H1InstallPhase.Finalize&&expectedPrivate.has(name)?0o600:0o400);
  for(const mode of [bootstrapMode,runnerMode,inspectorMode]){assert.throws(()=>mode(H1InstallPhase.Prepare,'review.json'));assert.throws(()=>mode(H1InstallPhase.Finalize,'../review.json'));assert.throws(()=>mode(H1InstallPhase.Finalize,'allow.json'));}
+});
+
+
+const row=(id:number,path:string,options='rw')=>`${id} 1 0:1 / ${path} ${options} - ext4 /dev/TEST ${options}\n`;
+const safe=row(1,'/')+row(2,'/srv/workers')+row(3,'/unrelated');
+test('exact-text cache still denies every changed intake or ancestor mount, including after prior success',()=>{
+ const intake=H;{const validate=createH1ExactMountBoundaryValidator();validate(safe);validate(Buffer.from(safe).toString());
+  validate(safe.replace('/unrelated','/another-unrelated'));
+  for(const path of ['/srv','/srv/workers/public-intake',intake,intake+'/source']){
+   assert.throws(()=>validate(safe+row(4,path)),/intake_mount_boundary/);
+   validate(safe); // Failed text never becomes an accepted cache entry.
+  }
+  assert.throws(()=>validate('broken\n'),/mountinfo/);assert.throws(()=>validate(' '.repeat(8*1024**2+1)),/mountinfo_bound/);validate(safe);
+ }
+});
+test('both transport sanitizers expose only finite guard/owned source facts, no raw child text or getters',()=>{
+ for(const [child,own,root,prefix] of [[cChild,cFailure,INTAKE,'PUBLIC_TRANSPORT_HOLD:'],[hChild,hFailure,H,'H1_TRANSPORT_HOLD:']] as const){
+  const stderr=Buffer.from('SECRET raw unrelated\nError: PUBLIC_STAGE_HOLD:cancelled_or_deadline\n    at hold (file://'+root+'/stage-current-positive-public.mts:25:60)\n    at guard (file://'+root+'/stage-current-positive-public.mts:122:12)\n');
+  const parsed=child(stderr);assert.equal(parsed.knownReason,'cancelled_or_deadline');assert.equal(parsed.sourceFrames.length,2);assert(!JSON.stringify(parsed).includes('SECRET'));
+  assert.equal(child(Buffer.from('Error: PUBLIC_STAGE_HOLD:SECRET')).knownReason,null);assert.equal(child(Buffer.alloc(65537)).sourceFrames.length,0);
+  let getters=0;const foreign=Object.defineProperties({}, {message:{get(){getters++;return 'SECRET';}},stack:{get(){getters++;return 'SECRET';}}});
+  assert.deepEqual(own(foreign),{reason:null,sourceFrames:[],child:null});assert.equal(getters,0);
+  assert.equal(own(Error(prefix+'phase_budget')).reason,'phase_budget');assert.equal(own(Error(prefix+'SECRET')).reason,null);
+ }
+});
+
+test('formatter refuses proxy traps/revoked proxies and Error accessor fields without invoking them',()=>{
+ for(const own of [cFailure,hFailure]){
+  let calls=0;const trap=new Proxy({}, {getOwnPropertyDescriptor(){calls++;throw Error('PRIVATE_CANARY');}});
+  assert.deepEqual(own(trap),{reason:null,sourceFrames:[],child:null});assert.equal(calls,0);
+  const rev=Proxy.revocable({},{});rev.revoke();assert.deepEqual(own(rev.proxy),{reason:null,sourceFrames:[],child:null});
+  const custom=Error();for(const key of ['message','name','stack'])Object.defineProperty(custom,key,{configurable:true,get(){calls++;throw Error('PRIVATE_CANARY');}});
+  const result=own(custom);assert.equal(calls,0);assert.equal(result.reason,null);assert.deepEqual(result.sourceFrames,[]);assert(!JSON.stringify(result).includes('PRIVATE_CANARY'));
+  for(const key of ['name','message']){const lazy=Error();Object.defineProperty(lazy,key,{get(){calls++;throw Error('PRIVATE_CANARY');}});assert.deepEqual(own(lazy).sourceFrames,[]);assert.equal(calls,0);}
+  const dataStack=Object.create(null) as Record<string,unknown>;dataStack.message='PRIVATE_CANARY';dataStack.stack='PRIVATE_CANARY';assert.deepEqual(own(dataStack),{reason:null,sourceFrames:[],child:null});
+ }
 });
