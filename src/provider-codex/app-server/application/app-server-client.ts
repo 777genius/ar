@@ -740,7 +740,7 @@ export class CodexAppServerClient {
       const item = readRecord(params?.item);
       if (item?.type === "agentMessage") {
         const text = agentMessageText(item);
-        if (text) {
+        if (text !== null) {
           const turn = this.ensureTurn(turnId);
           clearAppServerReconnectTimer(turn);
           replaceTurnOutput({
