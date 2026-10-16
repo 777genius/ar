@@ -11,14 +11,10 @@ import { readHostedDependencyPrivateScratchOperations, type HostedDependencyPriv
 import { parsePatchCoverage } from "./git-patch-content-coverage";
 import { promisify } from "node:util";
 import type { SafeExecutionCommandRunner } from "@vioxen/subscription-runtime/worker-core";
+import { managedDependencyGitEnvironment as cleanEnvironment, managedDependencyGitFlags } from "./managed-dependency-git-hygiene";
+export { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git-hygiene";
 const execute = promisify(execFile);
 
-export function managedDependencyGitEnvironment(): NodeJS.ProcessEnv {
-  return cleanEnvironment();
-}
-export const managedDependencyGitFlags: readonly string[] = Object.freeze([
-  "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=",
-]);
 /** Only fixed Git hygiene executes on the privileged side. Other commands and
  * project code belong to the contained provider/tool unit, never this adapter.
  */
@@ -243,11 +239,6 @@ function recordMembership(context: HostedDependencyRootPurposeContext, scope: Ho
     known.add(tree ? match[3]! : match[2]!);
   }
   membership.set(context, known);
-}
-function cleanEnvironment(): NodeJS.ProcessEnv {
-  return { PATH: "/nonexistent", LANG: "C.UTF-8", LC_ALL: "C.UTF-8", HOME: "/", TMPDIR: "/nonexistent",
-    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_COUNT: "0", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1" };
 }
 export async function runManagedDependencyGitBuffer(context: HostedDependencyRootPurposeContext, args: readonly string[], options: {
   readonly timeoutMs?: number; readonly maxBufferBytes?: number; readonly abortSignal?: AbortSignal;
