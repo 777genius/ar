@@ -1,4 +1,4 @@
-import { observeOriginalH1UnregisteredIngress, observeOriginalH1LiveHot, observeOriginalH1StaleSelection, retainOriginalH1IngressNegatives } from "./current-h1-ingress-negative-observations.js";
+import { observeOriginalH1UnregisteredIngress, observeOriginalH1LiveHot, observeOriginalH1StaleSelection, observeOriginalH1HistoricalVersion, retainOriginalH1IngressNegatives } from "./current-h1-ingress-negative-observations.js";
 /** Distinct fresh TEST lifecycle. Frozen four-entry mode stays unchanged. */
 import assert from "node:assert/strict";
 import { prepareCurrentHostedDependencyColdCustody, completeCurrentHostedDependencyColdCustody } from "../../dist/worker-codex/hosted-current-dependency-origin.js";
@@ -85,7 +85,7 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
       requestedCase:"EVICT-COMMIT-ABSENT",supportedPolicyVersion:1},0o600);
     const policy=await enabledRootInput(deadline);assertPolicyCurrent(policy);
     assertPathAbsent(roots.workspace+"/.next"); // This slice proves no .next cleanup.
-    const negativeReference=removalCase===FullH1Case.ParentCrash?await retainOriginalH1IngressNegatives(roots,deadline,await observeOriginalH1StaleSelection(roots,deadline,liveNegative!)):undefined;
+    const staleNegative=removalCase===FullH1Case.ParentCrash?await observeOriginalH1StaleSelection(roots,deadline,liveNegative!):undefined;
     if(removalCase===FullH1Case.ParentCrash)assertEvictRestoreSentinels(roots,sentinels);
     progress(EvictRestorePhase.Evict);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Ordinary);
     const evicted=await store.evictDependencyCandidate({jobId:roots.candidateJobId,revision:ready.receipt.revision,
@@ -97,7 +97,12 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
     // Remove while original owner is released RetiredEvicting, BEFORE new Active
     // generation. The existing global legacy-writer denial is left intact.
     progress(EvictRestorePhase.Remove);
-    if(removalCase===FullH1Case.ParentCrash){captureOriginalH1Checkpoint(roots,sentinels,proof,await captureCompletedRuntimePreservation(roots,hot.result),negativeReference!);await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
+    if(removalCase===FullH1Case.ParentCrash){
+      const preserved=await captureCompletedRuntimePreservation(roots,hot.result);
+      const negativeReference=await retainOriginalH1IngressNegatives(roots,deadline,await observeOriginalH1HistoricalVersion(roots,deadline,staleNegative!));
+      assertRetainedEvictionProof(proof);assertEvictRestoreSentinels(roots,sentinels);assertPolicyCurrent(policy);
+      assert.deepEqual(await captureCompletedRuntimePreservation(roots,hot.result),preserved);
+      captureOriginalH1Checkpoint(roots,sentinels,proof,preserved,negativeReference);await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
     const removed=await store.removeDependencyCommittedTrash(roots.candidateJobId,proof.absent.receipt.revision);
     assert.equal(removalCase,FullH1Case.Positive,"TEST_H1_original_parent_not_killed_at_proven_boundary_HOLD");
     assert.equal(removed.outcome,HostedDependencyTransactionOutcome.TrashRemoved);
