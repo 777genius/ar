@@ -12,6 +12,7 @@ import * as workspace from "../hosted-dependency-workspace";
 import * as capture from "../../worker-local/dependency-environment/capture-npm-install-inputs";
 import { NpmInputCaptureStatus, NpmInputCaptureReason } from "../../worker-local/dependency-environment/capture-npm-install-inputs";
 import { beginHostedDependencyInstallation, HostedDependencyInputCaptureError } from "../hosted-dependency-materialization-context";
+import { prepareHostedManifestScratchTestFixture } from "./hosted-manifest-placement-installation-test-support";
 import { projectCapturePath, retainCapturePath } from "./hosted-materialization-capture-test-projection";
 import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
@@ -38,14 +39,22 @@ function profile(): HostedDependencyInstallerProfile {
 export function registerMaterializationAttemptTest(input: {
   prepared: () => { binding: HostedDependencyBinding; retained: { start: HostedOrdinaryStart; reservation: HostedOrdinaryReservation } };
   local: (path: string) => string;
-  fixture: { captureAncestry: boolean; captureDirectories: Map<number, string> };
+  fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string> };
 }): void {
   describe.skipIf(process.platform !== "linux")("materialization attempt after async input capture", () => {
     it("five concurrent same-key cold admissions publish one Ready and refuse four before another installer", async () => {
       // Real ordinary-origin admission, owner/receipt CAS and materializer.
       // Only the selected installer boundary/profile is synthetic: no child or
       // current-v2/native qualification is claimed by this v1 adapter fixture.
+      // Configure storage BEFORE install so the original hook issues placement.
+      // Never synthesize a placement or Ready receipt after installation.
+      await prepareHostedManifestScratchTestFixture({ fixture:input.fixture,manifestScratch:"/mnt/TEST-private-manifests",local:input.local,
+        put:(name,value)=>writeFileSync(input.local(join("/var/lib/subscription-runtime-host-policy",name)),JSON.stringify(value)+"\n",{mode:0o600}) },true);
       const p = input.prepared(), binding = p.binding, path = binding.workspace.canonicalPath;
+      // Missing attempt records mean no installer only under an initialized
+      // private namespace; the mocked installer launches no actual child.
+      mkdirSync(input.local(installerRecipe.hostedDependencyInstallerRoot),{recursive:true,mode:0o700});
+      expect(readdirSync(input.local(installerRecipe.hostedDependencyInstallerRoot))).toEqual([]);
       const packageBytes = Buffer.from(JSON.stringify({ name: "five-cold-TEST", version: "1.0.0" }));
       const lockBytes = Buffer.from(JSON.stringify({ name: "five-cold-TEST", version: "1.0.0", lockfileVersion: 3,
         packages: { "": { name: "five-cold-TEST", version: "1.0.0" } } }));
