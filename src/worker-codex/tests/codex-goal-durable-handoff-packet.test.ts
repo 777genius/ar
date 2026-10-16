@@ -135,6 +135,15 @@ describe("durable terminal handoff packet", () => {
     expect(handoffPreservationRefusalReason(new Error("TEST permission refused"))).toBeUndefined();
   });
 
+  it("classifies only exact sensitive-path preservation refusals", () => {
+    for (const code of ["handoff_sensitive_path_rejected", "dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected"]) {
+      expect(handoffPreservationRefusalReason(new Error(code))).toBe("handoff_sensitive_path_rejected");
+    }
+    expect(handoffPreservationRefusalReason(new Error("handoff_sensitive_path_rejected:TEST-private-path"))).toBeUndefined();
+    expect(handoffPreservationRefusalReason(new Error("dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected:TEST-private-path"))).toBeUndefined();
+    expect(handoffPreservationRefusalReason({ message: "handoff_sensitive_path_rejected" })).toBeUndefined();
+  });
+
   it("keeps run-start base separate from a later committed HEAD and dirty layers", async () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.workspace, "tracked.txt"), "committed B\n");
