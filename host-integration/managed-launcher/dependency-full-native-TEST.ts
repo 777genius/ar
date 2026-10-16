@@ -1893,15 +1893,15 @@ function assertReadonlyMounts(pins:Pins,paths:readonly string[]){
   check(readFullMountTable("/proc/self/mountinfo")===raw);pins.validate();
 }
 
-/** One fixed demand: 8GiB summed caps plus 1GiB host reserve, 14GiB real OS
- * fixture backing. This measures availability, not a reservation or permit. */
+/** Fixed availability floors: 8GiB summed caps plus 1GiB host reserve, and
+ * owner-selected 5GiB fixture backing. This is not a reservation or permit. */
 function preflightCapacity(baseFd:number){
   const text=readFileSync("/proc/meminfo","utf8");check(Buffer.byteLength(text)<=65536);
   const available=[...text.matchAll(/^MemAvailable:\s+(\d+) kB$/gm)],swap=[...text.matchAll(/^SwapFree:\s+(\d+) kB$/gm)];
   check(available.length===1 && swap.length===1 && available[0]?.[1] && swap[0]?.[1]);
   check(BigInt(available[0][1])*1024n>=9n*1024n*1024n*1024n);check(BigInt(swap[0][1])>=0n);
   const s=fstatSync(baseFd);check(s.isDirectory() && s.uid===0 && s.gid===0 && (s.mode&0o7777)===0o700);
-  const fs=statfsSync(`/proc/self/fd/${baseFd}`,{bigint:true});check(fs.bavail*fs.bsize>=14n*1024n*1024n*1024n && fs.ffree>=100000n);
+  const fs=statfsSync(`/proc/self/fd/${baseFd}`,{bigint:true});check(fs.bavail*fs.bsize>=5n*1024n*1024n*1024n && fs.ffree>=100000n);
 }
 
 /** Actual kernel caps/cgroup values, not a systemd-owned label. Linux UAPI
