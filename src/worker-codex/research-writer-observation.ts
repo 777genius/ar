@@ -2,7 +2,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { observeHostedOrdinaryJobWriterAuthority, hostedOrdinaryWriterAuthorityAbsent, isHostedOrdinaryRuntime } from "./hosted-ordinary-writer-authority";
 import { observeCompatibleProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthNamespacePresent, protectedCodexGoalJobBirthPublicationActive } from "./protected-job-birth";
 import { pathToFileURL } from "node:url";
-import { researchJobRuntimeNamespaceAbsent, researchJobRuntimeProvenance } from "./research-job-runtime-provenance";
+import { researchJobRuntimeNamespaceAbsent, researchForeignWriterRuntimeProvenance } from "./research-job-runtime-provenance";
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
@@ -223,7 +223,7 @@ export async function prepareOriginalNativeWriterObservation(manifest: CodexGoal
 }
 async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
   modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader | undefined> {
-  const origin = researchJobRuntimeProvenance(manifest);
+  const origin = researchForeignWriterRuntimeProvenance(manifest);
   if (!origin || origin.runtimeDirectory === installedResearchRuntimeDirectory()) return undefined;
   const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
   if (protectedCodexGoalJobBirthPublicationActive()) return unknown;

@@ -2,16 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
-import { host, local } from "./research-launch-fixture";
+import { host, local, enterResearchOperatorScope } from "./research-launch-fixture";
 import { researchCurrentStart, researchJobAuthority } from "../research-launch-admission";
-import { repairOwnedMimoWorkerTerminalHandoff, finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
+import { repairOwnedMimoWorkerTerminalHandoff, finalizeOwnedMimoWorker, cancelRegisteredResearchLaunch } from "../research-launch-lifecycle";
 import { researchRead, researchPublish } from "../research-launch-files";
 import { prepareResearchJobWriterObservation } from "../research-writer-observation";
-import { codexGoalJobManifestPath, readCodexGoalJob } from "../codex-goal-jobs";
+import { codexGoalJobManifestPath, readCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import * as materialization from "../codex-goal-terminal-handoff-materialization";
 import * as admission from "../research-launch-admission";
 import * as runtimeArtifact from "../research-runtime-artifact";
 import { researchArtifactDigest } from "../research-launch-files";
+import { researchJobRuntimeProvenance } from "../research-job-runtime-provenance";
+import { observeResearchMimoAllocationWritableRoots } from "../research-provider-root";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { writeCodexGoalStoppedProgress } from "../application/codex-goal-lifecycle-markers";
 export { registeredStoppedBeforeProviderTests } from "./research-stopped-before-provider-test-support";
 
@@ -20,7 +24,53 @@ export { registeredStoppedBeforeProviderTests } from "./research-stopped-before-
 export function registeredTerminalRepairTests(input: {
   candidate(dirty?: boolean, status?: "partial" | "failed"): Promise<ReturnType<typeof researchCurrentStart> & { jobId: string; startId: string; specSha256: string; unit: string }>;
   scope(): ProjectAccessScope; setScope(scope: ProjectAccessScope): void; registry(): string;
+  allocation(): Promise<ReturnType<typeof researchCurrentStart> & { jobId: string; startId: string;
+    specSha256: string; unit: string; manifest: CodexGoalJobManifest }>;
 }): void {
+  // Inherits this suite's existing offline Linux/root and full-digest fixture.
+  describe("current installed writer origin classification (offline Host fixture)", () => {
+    it.each([false, true])("does not qualify ignored current origin; artifact failure=%s retains the same allocated fallback", async invalidArtifact => {
+      const current = await input.allocation();
+      const qualification = vi.mocked(runtimeArtifact.assertQualifiedResearchRuntimeArtifact);
+      expect(researchJobRuntimeProvenance(current.manifest)?.runtimeDirectory).toBe("/TEST-artifact");
+      if (invalidArtifact) {
+        fs.writeFileSync(local("/TEST-artifact/dist/main.js"), "TEST changed current artifact", { mode: 0o644 });
+        expect(researchJobRuntimeProvenance(current.manifest)).toBeUndefined();
+      }
+      qualification.mockClear();
+      const read = await prepareResearchJobWriterObservation(current.manifest);
+      const expected = { status: "allocated", roots: observeResearchMimoAllocationWritableRoots(current.spec)
+        .map(({ device, backingPath }) => ({ device, backingPath })) };
+      expect(await read()).toEqual(expected);
+      // Genuine baseline redundancy: one provenance scan preparing the reader,
+      // then another when its active reader independently observes native facts.
+      expect(qualification).not.toHaveBeenCalled();
+      const grant = join(researchJobAuthority(current.jobId), "grant.json");
+      researchPublish(grant, {});
+      expect(await read()).toEqual({ status: "unknown" });
+      expect(qualification).not.toHaveBeenCalled();
+    });
+
+    it("preserves exact terminal release and refuses retained-byte drift without an ignored current scan", async () => {
+      const current = await input.allocation();
+      const git = async (args: string[]) => await promisify(execFile)("git", ["-C", current.manifest.workspacePath, ...args], { env: {
+        ...process.env, GIT_AUTHOR_NAME: "iliya", GIT_AUTHOR_EMAIL: "iliyazelenkog@gmail.com",
+        GIT_COMMITTER_NAME: "iliya", GIT_COMMITTER_EMAIL: "iliyazelenkog@gmail.com",
+      } });
+      await git(["init"]); fs.writeFileSync(join(current.manifest.workspacePath, "proof.txt"), "TEST current-origin terminal\n");
+      await git(["add", "proof.txt"]); await git(["commit", "-m", "test: initialize current-origin terminal"]);
+      enterResearchOperatorScope(current.unit);
+      await cancelRegisteredResearchLaunch({ jobId: current.jobId, startId: current.startId,
+        specSha256: current.specSha256, requestSha256: current.spec.requestSha256 });
+      const qualification = vi.mocked(runtimeArtifact.assertQualifiedResearchRuntimeArtifact); qualification.mockClear();
+      const read = await prepareResearchJobWriterObservation(current.manifest);
+      expect(await read()).toEqual({ status: "released" });
+      expect(qualification).not.toHaveBeenCalled();
+      researchPublish(join(current.directory, "spec.json"), { ...current.spec, artifactSha256: "e".repeat(64) });
+      expect(await read()).toEqual({ status: "unknown" });
+      expect(qualification).not.toHaveBeenCalled();
+    });
+  });
   const identity = (current: Awaited<ReturnType<typeof input.candidate>>) => ({ jobId: current.jobId, startId: current.startId,
     specSha256: current.specSha256, requestSha256: current.spec.requestSha256 });
   async function cold() {

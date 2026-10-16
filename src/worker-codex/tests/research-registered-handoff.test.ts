@@ -976,7 +976,7 @@ describe("qualified preservation recovery (explicit offline Linux Host fixture)"
   });
   afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   registeredTerminalRepairTests({ candidate: (dirty, status) => registeredMimoCandidate(dirty, true, status), scope: () => state.scope!,
-    setScope: scope => { state.scope = scope; }, registry: () => registry });
+    setScope: scope => { state.scope = scope; }, registry: () => registry, allocation: () => registeredCodingAllocation() });
   registeredStoppedBeforeProviderTests({ start: () => registeredCodingAllocation(true), scope: () => state.scope!, setScope: scope => { state.scope = scope; } });
   it("uses the qualified producer with original registered authority and releases only after durable publication", async () => {
     const current = await registeredMimoCandidate(true);
