@@ -38,7 +38,7 @@ it.each([60000, 1200000, 7200000])("uses MiMo's reasoning/output allowance witho
       CODEX_HOME: "/job/home/mimo-1/codex-home", [codexMimoApiKeyEnvVarDefault]: f.proxy.capability,
     } })!;
     const provider = bootstrap.configToml.split("[model_providers.mimo]\n")[1]!.split("\n[")[0]!;
-    expect(provider.match(/^stream_idle_timeout_ms = (\d+)$/gm)).toEqual([`stream_idle_timeout_ms = ${limits.requestTimeoutMs}`]);
+    expect(provider.match(/^stream_idle_timeout_ms = (\d+)$/gm)).toEqual([`stream_idle_timeout_ms = ${Math.min(600000, limits.requestTimeoutMs)}`]);
   } finally { await material?.close(); }
 });
 it("keeps key out of bootstrap, zeroes key bytes, binds executable/workspace and consumes start once", async () => {
@@ -67,7 +67,7 @@ it("keeps key out of bootstrap, zeroes key bytes, binds executable/workspace and
     expect(bootstrap.configToml.match(/allow_upstream_proxy = false/g)).toHaveLength(3);
     expect(bootstrap.configToml).toContain('credential_broker = false');
     expect(bootstrap.configToml).toContain('request_max_retries = 0');
-    expect(bootstrap.configToml).toContain('stream_max_retries = 0');
+    expect(bootstrap.configToml).toContain('stream_max_retries = 8');
     expect(bootstrap.configToml).toContain('supports_websockets = false');
     expect(JSON.stringify(bootstrap)).not.toContain("TEST-real-key"); expect(JSON.stringify(bootstrap)).not.toContain(f.proxy.capability);
     expect(() => hostedMimoCodingBootstrapForFrame({ ...frame, command: "/bin/sh" })).toThrow("frame_invalid");

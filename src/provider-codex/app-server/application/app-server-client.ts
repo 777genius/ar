@@ -49,7 +49,7 @@ import {
   type TurnState,
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
-import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
+import { isCodexAppServerReconnectProgressMessage, isCodexAppServerTurnProgressMethod } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import {
   encodeJsonRpcMessage,
@@ -679,6 +679,7 @@ export class CodexAppServerClient {
     }
 
     if (typeof record.method !== "string") return;
+    if (isCodexAppServerTurnProgressMethod(record.method)) this.clearReconnectGraceForTurn(stringField(params, "turnId"));
     if (record.method === "thread/closed" || record.method === "thread/archived") {
       const threadId = stringField(params, "threadId");
       if (threadId) this.publicResearchTools.closeThread(threadId);
@@ -699,7 +700,6 @@ export class CodexAppServerClient {
     if (record.method === "item/agentMessage/delta") {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
-      clearAppServerReconnectTimer(turn);
       const delta = stringField(params, "delta") ?? "";
       if (appendTurnOutput({
         turn, text: delta, maxOutputBytes: this.options.maxOutputBytes,
@@ -742,7 +742,6 @@ export class CodexAppServerClient {
         const text = agentMessageText(item);
         if (text !== null) {
           const turn = this.ensureTurn(turnId);
-          clearAppServerReconnectTimer(turn);
           replaceTurnOutput({
             turn, text, maxOutputBytes: this.options.maxOutputBytes,
             reject: () => this.resolveTurn(turn),
@@ -809,6 +808,11 @@ export class CodexAppServerClient {
       );
       this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
     }
+  }
+
+  private clearReconnectGraceForTurn(turnId: string | null): void {
+    const turn = turnId ? this.findTurn(turnId) : null;
+    if (turn) clearAppServerReconnectTimer(turn);
   }
 
   private deferTurnsForReconnectProgress(
