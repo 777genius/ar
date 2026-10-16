@@ -517,7 +517,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
   }
   function select(seen:FullGuestSelection,namespaceFds:readonly number[]):void {
     assert(!selection && namespaceFds.length===3);
-    revalidateImage(6n*1024n*1024n*1024n);
+    revalidateImage(2n*1024n*1024n*1024n);
     const pairPath=fullNativeLiveRoot+"/current-full-pair.json",invocationPath=fullNativeLiveRoot+"/current-full-pair-invocation.json";
     const bytes=[pairPath,invocationPath].map(path=>{const fd=hold(path,false,0o600n);return fdBytes(fd,16384,budget);});
     const pair=fullData(JSON.parse(bytes[0]!.toString()),["schemaVersion","jobId","parentUnit","parentInvocationId","guestMachineId","parentProc","guestSources","unit","fragmentSha256","root","rootDev","rootIno","machineId","bootId","sourceSha",...(parent.removalCase===FullRemovalCase.ParentCrashH1?["removalCase","restoreConsumer"]:[])]);
@@ -872,7 +872,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       const roster=retainFullProcRoster(scanBudget),processes:ReturnType<typeof retainFullProcProcess>[]=[],anchors:FullProcTaskAnchor[]=[],views:ReturnType<typeof retainFullProcTaskView>[]=[],memberships:(()=>void)[]=[];
       let retainedDescriptors=0;
       completion=Object.freeze({revalidate(phase:FullProcRejoinPhase){phaseBudget.startRejoin(phase);try{roster.revalidate();for(const check of memberships)check();for(const view of views)view.revalidate();for(const anchor of anchors)anchor.revalidate();for(const process of processes)process.revalidate();roster.revalidate();phaseBudget.finishRejoin();}catch(error){phaseBudget.close();throw error;}},close(){phaseBudget.close();for(const view of views)view.close();for(const anchor of anchors)anchor.close();for(const process of processes)process.close();completion=undefined;}});
-      revalidateImage(6n*1024n*1024n*1024n);
+      revalidateImage(2n*1024n*1024n*1024n);
       revalidateSelection();
       // Capture only the genuine private session's retained slots after its
       // source/birth/invocation rejoin. Publication repeats that original join.
@@ -975,18 +975,18 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       }
       try{phaseBudget.finishCapture();completion.revalidate(FullProcRejoinPhase.PostCensus);}catch{phaseBudget.close();refusals.add(FullBackingRefusal.ProcUncertain);}
       if(unablePeers.some(peer=>capablePeers.has(peer.user)))refusals.add(FullBackingRefusal.OwnerUnclassified);
-      revalidateImage(6n*1024n*1024n*1024n);
+      revalidateImage(2n*1024n*1024n*1024n);
       revalidateSelection();
       const afterLoop=loopFacts(refusals);
       if(JSON.stringify(afterLoop)!==JSON.stringify(loop))refusals.add(FullBackingRefusal.KernelJoinUnavailable);
-      const result={schemaVersion:1,purpose:"TEST_backing_facts_only_no_exclusion_authority",pairSha256:hash(sealBytes[0]!),invocationSealSha256:hash(sealBytes[1]!),image:{...imageIdentity,bytes:String(6n*1024n*1024n*1024n),descriptorMountId:held.find(e=>e.path===image)!.mount},guest:selection,storageMount,loop,owners,observedTasks:tasks,observedKernelTasks:kernelTasks,observedDescriptors:descriptors,refusals:[...refusals].sort()};
+      const result={schemaVersion:1,purpose:"TEST_backing_facts_only_no_exclusion_authority",pairSha256:hash(sealBytes[0]!),invocationSealSha256:hash(sealBytes[1]!),image:{...imageIdentity,bytes:String(2n*1024n*1024n*1024n),descriptorMountId:held.find(e=>e.path===image)!.mount},guest:selection,storageMount,loop,owners,observedTasks:tasks,observedKernelTasks:kernelTasks,observedDescriptors:descriptors,refusals:[...refusals].sort()};
       assert(Buffer.byteLength(JSON.stringify(result))<=256*1024);
       if(!retainForPublication)completion.close();
       return result;
   }
   return Object.freeze({
     select,
-    revalidate(){revalidateImage(6n*1024n*1024n*1024n);
+    revalidate(){revalidateImage(2n*1024n*1024n*1024n);
       if(selection)revalidateSelection();
       if(qualifiedSeal)assert(boundedRead(fullNativeLiveRoot+"/current-full-backing.json",16384,budget).equals(qualifiedSeal));
     },
@@ -1000,7 +1000,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       const fd=openSync(pending,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}
       // Complete all causal joins before the once-only, no-overwrite link.
-      revalidateImage(6n*1024n*1024n*1024n);revalidateSelection();
+      revalidateImage(2n*1024n*1024n*1024n);revalidateSelection();
       assert(completion);completion.revalidate(FullProcRejoinPhase.QualificationPublication);
       linkSync(pending,final);unlinkSync(pending);fsyncSync(rootFd);qualifiedSeal=bytes;completion.close();return facts;
     },
@@ -1014,7 +1014,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       try{const facts=observe(FullProcObservation.Pulse);assert(Array.isArray(facts.refusals) && facts.refusals.length===0 && completion);
         const parentFd=hold(fullNativeLiveRoot,true,0o700n),path=`/proc/self/fd/${parentFd}/current-full-pulse-${request.nonce}.json`;
         const response=Buffer.from(JSON.stringify({schemaVersion:1,nonce:request.nonce,requestSha256:hash(bytes),pairSha256:request.pairSha256,invocationSealSha256:request.invocationSealSha256,backingSha256:request.backingSha256,factsSha256:hash(Buffer.from(JSON.stringify(facts)+"\n"))})+"\n");
-        revalidateImage(6n*1024n*1024n*1024n);revalidateSelection();completion.revalidate(FullProcRejoinPhase.PulsePublication);
+        revalidateImage(2n*1024n*1024n*1024n);revalidateSelection();completion.revalidate(FullProcRejoinPhase.PulsePublication);
         const pending=path+".pending",fd=openSync(pending,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
         try{writeFileSync(fd,response);fsyncSync(fd);}finally{closeSync(fd);}
         completion.revalidate(FullProcRejoinPhase.PulseLink);linkSync(pending,path);unlinkSync(pending);fsyncSync(parentFd);answeredPulses.add(requestPath);
@@ -1023,7 +1023,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
     prepareH1Terminal(){assert(!h1Terminal && !closed);h1Terminal=retainH1Terminal();},
     closeAfterTerminal(){
       assert(!closed && qualifiedSeal && selection);
-      parent.revalidate();revalidateImage(6n*1024n*1024n*1024n);
+      parent.revalidate();revalidateImage(2n*1024n*1024n*1024n);
       let terminal:Buffer,terminalFd:number|undefined;
       if(parent.removalCase===FullRemovalCase.ParentCrashH1){assert(h1Terminal);h1Terminal.revalidate();terminal=h1Terminal.terminal;}
       else {
@@ -1092,7 +1092,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
       function drained(path:string,depth:number){budget();assert(++groups<=4096 && depth<=16);let names:string[];try{names=readdirSync(path);}catch(error){assert((error as NodeJS.ErrnoException).code==="ENOENT");return;}
         assert(text(path+"/cgroup.procs",65536,budget)==="" && text(path+"/cgroup.threads",65536,budget)==="");for(const name of names){assert(/^[A-Za-z0-9_.:@+-]+$/.test(name));if(lstatSync(path+"/"+name).isDirectory())drained(path+"/"+name,depth+1);}}
       drained("/sys/fs/cgroup"+group,0);assert.deepEqual(stopped(),before);
-      revalidateImage(6n*1024n*1024n*1024n);parent.revalidate();if(h1Terminal)h1Terminal.revalidate();else{assert(terminalFd!==undefined);assert(fdBytes(terminalFd,16384,budget).equals(terminal));}
+      revalidateImage(2n*1024n*1024n*1024n);parent.revalidate();if(h1Terminal)h1Terminal.revalidate();else{assert(terminalFd!==undefined);assert(fdBytes(terminalFd,16384,budget).equals(terminal));}
       h1Terminal?.close();closed=true;collectorDescriptors.clear();selectedTask?.close();selectedProcess?.close();for(const entry of held)closeSync(entry.fd);for(const fd of extra)closeSync(fd);for(const entry of ownerNamespaces.values())closeSync(entry.fd);if(loopFd!==undefined){collectorDescriptors.delete(loopFd);closeSync(loopFd);}
       const result=Object.freeze({purpose:"actual_recursive_guest_and_original_source_terminal",terminalSha256:hash(terminal),...(h1Terminal?{h1ProofSha256:h1Terminal.proofSha256}:{}),groups});fullBackingTerminals.set(result,parent);return result;
     },
