@@ -44,6 +44,8 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts
+      - name: Check exact current source lock candidate DATA before assembly
+        run: node --experimental-strip-types --test scripts/dependency-retention-os-test/current-tools-lock-seed.node-test.ts
       - name: Typecheck fixed current9ca PUBLIC stage proposal without execution
         run: node node_modules/typescript/bin/tsc --project scripts/dependency-retention-os-test/tsconfig.public-stage-caller-9ca.json
       - name: Typecheck fixed PUBLIC transport bootstrap without execution
