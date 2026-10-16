@@ -24,6 +24,12 @@
     "./current-h1-scoped-guard.node-test.mts",
     "./current-positive-public-transport.test.mts",
     "./current-positive-scoped-guard.node-test.mts",
-    "./current-positive-stage-progress.node-test.mts"
+    "./current-positive-stage-progress.node-test.mts",
+    "./bootstrap-current-positive-public.mts",
+    "./run-current-positive-public.mts",
+    "./inspect-current-positive-public.mts",
+    "./mount-fence.node-test.mts",
+    "./current-h1-mount-fence-data.node-test.mts",
+    "./current-h1-mount-fence.node-test.mts"
   ]
 }

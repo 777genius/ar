@@ -104,6 +104,45 @@ jobs:
         env:
           TEST_C_FRESH_CHECK_EXACT_NODE24: "1"
         run: node --test scripts/dependency-retention-os-test/current-positive-fresh-check.node-test.mts
+      - name: Typecheck finite staging operator and mount guard tests
+        run: |
+          ./node_modules/.bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-original-publication.json
+          node --test scripts/dependency-retention-os-test/current-positive-public-transport.test.mts scripts/dependency-retention-os-test/current-h1-public-transport.test.mts
+      - name: Qualify finite staging mount guards on exact HOST Node
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_bin="$(readlink -f "$(command -v node)")"
+          test "$("$node_bin" --version)" = v24.21.0
+          test "$GITHUB_ACTIONS" = true
+          tap="$RUNNER_TEMP/staging-mount-guards.tap"
+          root_exec=()
+          if [ "$(id -u)" -ne 0 ] || [ "$(id -ru)" -ne 0 ] || [ "$(id -g)" -ne 0 ] || [ "$(id -rg)" -ne 0 ]; then
+            root_exec=(sudo -n -u root -g root)
+          fi
+          guard_status=0
+          "${root_exec[@]}" env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C GITHUB_ACTIONS=true "$node_bin" --test --test-concurrency=1 --test-reporter=tap \
+            scripts/dependency-retention-os-test/current-positive-scoped-guard.node-test.mts \
+            scripts/dependency-retention-os-test/mount-fence.node-test.mts \
+            scripts/dependency-retention-os-test/stage-current-h1-public.test.ts \
+            scripts/dependency-retention-os-test/current-h1-scoped-guard.node-test.mts \
+            scripts/dependency-retention-os-test/current-h1-mount-fence-data.node-test.mts \
+            scripts/dependency-retention-os-test/current-h1-mount-fence.node-test.mts > "$tap" || guard_status=$?
+          cat "$tap"
+          test "$guard_status" -eq 0
+          node --input-type=module - "$tap" <<'NODE'
+          import assert from 'node:assert/strict';
+          import {readFileSync} from 'node:fs';
+          const tap=readFileSync(process.argv[2],'utf8'),lines=tap.split('\n');
+          for(const [key,value] of [['tests',38],['pass',38],['fail',0],['skipped',0],['cancelled',0]]){
+            assert.deepEqual(lines.filter(line=>line.startsWith('# '+key+' ')),['# '+key+' '+value],key);
+          }
+          assert(!/# SKIP|# TODO/.test(tap));
+          for(const name of ['ancestor','output_same_inode','persistent_descendant','new_foreign_mount','unrelated_allowance']){
+            assert.equal(lines.filter(line=>new RegExp('^ok [0-9]+ - real private mount: '+name+'$').test(line)).length,2,name);
+          }
+          NODE
 
   unit-test-shards:
     if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_unit == 'true') }}

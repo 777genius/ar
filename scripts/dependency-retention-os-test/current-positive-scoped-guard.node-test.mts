@@ -25,7 +25,7 @@ test('unrelated drift is deferred only until an explicit full-fence check',()=>{
 let baseExpression:ts.Expression|undefined;function findBase(n:ts.Node){if(ts.isVariableDeclaration(n)&&n.name.getText(parsed)==='baseGuard')baseExpression=n.initializer;ts.forEachChild(n,findBase);}findBase(parsed);assert(baseExpression);
 const baseJs=ts.transpileModule('const selected='+baseExpression.getText(parsed)+';',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
 function baseFixture(){let mount='1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 1:1 / /srv/workers rw - ext4 /dev/workers rw\n',namespace='ns',now=0,cancelled=false;const intake='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1';const ports={readFileSync(path:string){return path==='/proc/self/mountinfo'?mount:'boot';},readlinkSync(){return namespace;}};const get=new Function('fs','hold','performance','Buffer','INTAKE','boot','namespace','getCancelled','getDeadline','validateMountInfo',baseJs.replace(/\bcancelled\b/g,'getCancelled()').replace(/\bdeadline\b/g,'getDeadline()')+'return selected;');const check=get(ports,(v:unknown)=>assert(v),{now:()=>now},Buffer,intake,'boot','ns',()=>cancelled,()=>100,createCExactMountBoundaryValidator()) as ()=>void;return{check,mount:(v:string)=>{mount=v;},namespace:()=>{namespace='other';},expire:()=>{now=100;},cancel:()=>{cancelled=true;},intake};}
-test('exact fresh mount policy refuses new intake and ancestor mounts on every call',()=>{for(const target of ['intake','ancestor','child']){const f=baseFixture();f.check();const path=target==='intake'?f.intake:target==='child'?f.intake+'/child':'/srv/workers/public-intake';f.mount('3 2 1:1 / '+path+' rw - ext4 /dev/other rw\n');assert.throws(f.check);}});
+test('scoped base does not enumerate unrelated mount topology; full fences own that policy',()=>{const f=baseFixture();f.check();f.mount('3 2 1:1 / '+f.intake+'/child rw - ext4 /dev/other rw\n');f.check();});
 test('fresh namespace cancellation and absolute deadline are never memoized',()=>{for(const change of ['namespace','cancel','expire'] as const){const f=baseFixture();f.check();f[change]();assert.throws(f.check);}});
 
 import {createCExactMountBoundaryValidator,INTAKE} from './stage-current-positive-public.mts';
@@ -47,7 +47,7 @@ test('actual closed validator reuses successful equal text only; changed unsafe 
 });
 // Exact lexical guard bodies with explicit input/check ports. The read port does a
 // real full read of an owned temporary DATA file; it is not Linux kernel proof.
-test('exact full and scoped guard bodies share memo but freshly read every guard and rejoin every selected chain',()=>{
+test('full guard freshly reads global topology while scoped guards freshly rejoin selected chains',()=>{
  const selectedSource=source;
  const ast=ts.createSourceFile('guard.mts',selectedSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),found=new Map<string,string>();
  const visit=(n:ts.Node)=>{if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&['baseGuard','guard','scopedGuard'].includes(n.name.text)&&n.initializer)found.set(n.name.text,n.initializer.getText(ast));ts.forEachChild(n,visit);};visit(ast);assert.equal(found.size,3);
@@ -58,7 +58,7 @@ test('exact full and scoped guard bodies share memo but freshly read every guard
  const body=`const boot='BOOT',namespace='NS',cancelled=false,deadline=Infinity,anchors=[root],sources=[],activeTarget=undefined;let guardCalls=0;const progress=()=>{};${memo}${[...found].map(([n,e])=>`const ${n}=${e};`).join('\n')}return {baseGuard,guard,scopedGuard};`;
  const js=ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
  const run=new Function('fs','check','root','INTAKE','hold','createCExactMountBoundaryValidator',js)(io,()=>{checks++;},root,INTAKE,(v:unknown,w:string)=>{assert(v,w);},createCExactMountBoundaryValidator);
- try{const count=countPureParses(()=>{run.guard();run.scopedGuard(leaf);run.baseGuard();});assert.equal(reads,3);assert.equal(boots,3);assert.equal(namespaces,3);assert.equal(checks,3);assert.equal(count.parses,1);
- fs.writeFileSync(file,mountSafe+mountRow(4,INTAKE));assert.throws(()=>run.guard(),/intake_mount_boundary/);assert.throws(()=>run.scopedGuard(leaf),/intake_mount_boundary/);assert.equal(reads,5);assert.equal(boots,5);assert.equal(namespaces,5);
+ try{const count=countPureParses(()=>{run.guard();run.scopedGuard(leaf);run.baseGuard();});assert.equal(reads,1);assert.equal(boots,3);assert.equal(namespaces,3);assert.equal(checks,3);assert.equal(count.parses,1);
+ fs.writeFileSync(file,mountSafe+mountRow(4,INTAKE));assert.throws(()=>run.guard(),/intake_mount_boundary/);run.scopedGuard(leaf);assert.equal(reads,2);assert.equal(boots,5);assert.equal(namespaces,5);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
