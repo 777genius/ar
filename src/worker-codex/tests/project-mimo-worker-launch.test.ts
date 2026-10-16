@@ -1,4 +1,4 @@
-import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,9 +24,10 @@ vi.mock("../research-launch-host", async importOriginal => ({ ...await importOri
 import { researchDescription } from "../research-launch-host";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction } from "../codex-goal-ops";
 import { researchHash } from "../research-launch-files";
-import { launchProjectMimoWorker, observeProjectMimoWorker, stopProjectMimoWorker } from "../project-mimo-worker-launch";
+import { launchProjectMimoWorker, observeProjectMimoWorker, observeProjectMimoWorkerReadOnly, stopProjectMimoWorker } from "../project-mimo-worker-launch";
 import { createCodexGoalObservationContext } from "../application/codex-goal-observation-context";
-import { collectRegisteredCodexGoalJobStatus } from "../application/codex-goal-registered-job-observation";
+import { projectControlAdmissionSnapshot } from "../codex-goal-mcp-project-control-tool-handlers";
+import { collectRegisteredCodexGoalJobStatus, CodexGoalObservationMode } from "../application/codex-goal-registered-job-observation";
 import { buildCodexGoalBrief } from "../application/codex-goal-brief";
 import { isCodexGoalHeartbeatOnlyNoOutput } from "../application/codex-goal-decision";
 function launch(jobRootDir = "/TEST-job"): CodexGoalLaunchInput {
@@ -39,7 +40,7 @@ function launch(jobRootDir = "/TEST-job"): CodexGoalLaunchInput {
     cwd: "/TEST-workspace", logPath: join(jobRootDir, "log"), cliCommand: ["node", "cli"] };
 }
 beforeEach(() => {
-  state.files.clear(); vi.clearAllMocks(); state.current.mockReset(); state.service.mockReset(); state.handoff.mockReset(); state.handoff.mockResolvedValue(() => {}); state.terminal.mockReset();
+  state.files.clear(); vi.clearAllMocks(); state.finalize.mockReset(); state.current.mockReset(); state.service.mockReset(); state.handoff.mockReset(); state.handoff.mockResolvedValue(() => {}); state.terminal.mockReset();
   state.terminal.mockImplementation(() => { throw Object.assign(Error("TEST no terminal"), { code: "ENOENT" }); });
   state.service.mockImplementation(() => { throw Error("TEST unknown service"); });
   state.process.mockReturnValue({ pid: 999, birthTicks: "99", bootId: "00000000-0000-4000-8000-000000000000",
@@ -102,6 +103,51 @@ describe("owned native MiMo observation", () => {
     state.status.mockReturnValue({ jobId: "TEST-child", unit: "TEST-unit", startId: "TEST-start", active: true, providers: [] });
     return { registryRootDir: "/TEST-registry", launch: launch(jobRootDir) };
   }
+  it.each([false, true])("public admission and operations are non-recovering queries (receipt=%s)", async receiptPresent => {
+    const observed = await descendantObservation(), input = await retained(observed.jobRoot);
+    const registryRootDir = join(observed.jobRoot, "registry"), controllerJobId = "TEST-controller";
+    const current = state.current(); current.spec.registeredHandoff.registryRootDir = registryRootDir;
+    current.spec.request.workspacePath = observed.jobRoot;
+    const attemptPath = "/TEST-authority/project-worker-attempt.json";
+    if (receiptPresent) {
+      const receipt = JSON.parse(state.files.get(attemptPath)!.toString()); receipt.registryRootDir = registryRootDir;
+      state.files.set(attemptPath, Buffer.from(JSON.stringify(receipt)));
+    } else state.files.delete(attemptPath);
+    state.files.set(current.directory + "/mimo-candidate.json", Buffer.from("TEST pending canonical candidate"));
+    const scope = { projectId: "TEST-project", jobIdPrefixes: ["TEST-child"], registryRoot: registryRootDir, workspaceRoots: [observed.jobRoot] };
+    const manifest = { schemaVersion: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      jobId: "TEST-child", taskId: "TEST-task", jobRootDir: observed.jobRoot, workspacePath: observed.jobRoot,
+      promptPath: join(observed.jobRoot, "prompt.md"), authRootDir: "/TEST-auth", accounts: ["account-q"],
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: "mimo-v2.6-pro", projectAccessScope: scope };
+    for (const [id,value] of [["TEST-child",manifest],[controllerJobId,{ ...manifest,jobId:controllerJobId,accessBoundary:"project_scoped_control" }]] as const) {
+      await mkdir(join(registryRootDir,id), { recursive: true });
+      await writeFile(join(registryRootDir,id,"job.json"),JSON.stringify(value));
+    }
+    const before = [...state.files.entries()], manifestBytes = await readFile(join(registryRootDir,"TEST-child","job.json"));
+    vi.clearAllMocks(); state.finalize.mockImplementation(() => { throw Error("TEST query attempted finalization"); });
+    const response = (await projectControlAdmissionSnapshot({ registryRootDir,controllerJobId,
+      operation:"create_job",workerRole:"read_only",includeDetails:true })).structuredContent;
+    expect(response.ok).toBe(true); expect(response.operations).toBeDefined(); expect(response.snapshot).toBeDefined();
+    expect(state.finalize).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.cancel).not.toHaveBeenCalled();
+    expect([...state.files.entries()]).toEqual(before);
+    expect(await readFile(join(registryRootDir,"TEST-child","job.json"))).toEqual(manifestBytes);
+    expect(state.current).toHaveBeenCalled();
+    if (!receiptPresent) expect(response.decision).toMatchObject({ allowed:false });
+  });
+  it("keeps an absent attempt uncertain without recovering it in an explicit read query", async () => {
+    const observed=await descendantObservation(), input=await retained(observed.jobRoot);
+    state.files.delete("/TEST-authority/project-worker-attempt.json");
+    state.files.set("/TEST-attempt/mimo-candidate.json",Buffer.from("TEST retained candidate"));
+    const before=[...state.files.entries()]; vi.clearAllMocks();
+    await expect(collectRegisteredCodexGoalJobStatus({ ...input,observation:observed.context,mode:CodexGoalObservationMode.ReadOnly }))
+      .rejects.toThrow("project_mimo_worker_observation_unproven");
+    expect(state.finalize).not.toHaveBeenCalled(); expect([...state.files.entries()]).toEqual(before);
+    expect(await observeProjectMimoWorkerReadOnly(input)).toBe(CodexGoalNativeLifecycle.Uncertain);
+    // The command-facing default still recovers and settles this same candidate.
+    await collectRegisteredCodexGoalJobStatus({ ...input, observation: observed.context });
+    expect(state.finalize).toHaveBeenCalledTimes(1);
+    expect(state.files.has("/TEST-authority/project-worker-attempt.json")).toBe(true);
+  });
   it("waits for positively owned active or pending native service without pretending tmux lives", async () => {
     const input = await retained();
     const nativeLifecycle = await observeProjectMimoWorker(input);

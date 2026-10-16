@@ -67,7 +67,7 @@ export async function launchProjectMimoWorker(input: {
   return started;
 }
 
-enum AttemptPurpose { Observe = "observe", Cleanup = "cleanup" }
+enum AttemptPurpose { Observe = "observe", Cleanup = "cleanup", ReadOnly = "read_only" }
 
 /** One explicit status observation reconciles an already staged candidate.
  * No polling, detached owner, replacement launch or completion inferred from exit. */
@@ -106,6 +106,7 @@ async function recoverProjectMimoWorkerAttempt(input: {
   let retained: Buffer | undefined;
   try { retained = researchRead(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (!retained && purpose === AttemptPurpose.ReadOnly) throw new Error("project_mimo_worker_attempt_unproven");
   const current = captured ?? researchCurrentStart(jobId), { spec } = current;
   const requestPath = join(authority, "project-worker-request.json"), requestBytes = researchRead(requestPath);
   if (!spec.registeredHandoff || spec.registeredHandoff.registryRootDir !== input.registryRootDir ||
@@ -234,13 +235,23 @@ export async function stopProjectMimoWorker(input: {
 
 /** Observe only the independently validated retained native attempt. Submission
  * receipts and missing tmux sessions are never proof of its lifecycle. */
+export async function observeProjectMimoWorkerReadOnly(input: {
+  readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
+}): Promise<CodexGoalNativeLifecycle | undefined> {
+  return observeProjectMimoWorkerWithPurpose(input, AttemptPurpose.ReadOnly);
+}
 export async function observeProjectMimoWorker(input: {
   readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
 }): Promise<CodexGoalNativeLifecycle | undefined> {
+  return observeProjectMimoWorkerWithPurpose(input, AttemptPurpose.Observe);
+}
+async function observeProjectMimoWorkerWithPurpose(input: {
+  readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
+}, purpose: AttemptPurpose): Promise<CodexGoalNativeLifecycle | undefined> {
   if (!isProjectMimoWorkerLaunch(input.launch)) return;
   if (process.platform !== "linux" || process.getuid?.() !== 0) return CodexGoalNativeLifecycle.Uncertain;
   try {
-    const current = await currentProjectMimoWorker(input);
+    const current = await currentProjectMimoWorker(input, purpose);
     if (!current) {
       const directory = researchJobAuthority(input.launch.config.jobId ?? input.launch.config.taskId);
       for (const name of ["project-worker-request.json", "project-worker-attempt.json"]) {

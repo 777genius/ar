@@ -165,6 +165,7 @@ export async function gitWorkspaceStatus(
 ): Promise<CodexGoalWorkspaceStatus> {
   try {
     const { stdout } = await execFileAsync("git", [
+      "--no-optional-locks",
       "-C",
       path,
       "status",

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -18,6 +18,19 @@ describe("Codex goal workspace status", () => {
     await Promise.all(cleanup.splice(0).map((path) =>
       rm(path, { recursive: true, force: true })
     ));
+  });
+
+  it("does not refresh the Git index while reading a clean workspace", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "TEST-status-query-index-")); cleanup.push(workspacePath);
+    await execFileAsync("git", ["init", workspacePath]);
+    const file = join(workspacePath, "tracked.txt"); await writeFile(file, "TEST tracked content");
+    await execFileAsync("git", ["-C", workspacePath, "add", "tracked.txt"]);
+    const index = join(workspacePath, ".git", "index"), before = await readFile(index);
+    await utimes(file, new Date("2020-01-01"), new Date("2020-01-01"));
+    // The staged file is unchanged in the worktree; a normal optional refresh
+    // would update its cached stat information even though this is a read query.
+    await gitWorkspaceStatus(workspacePath);
+    expect(await readFile(index)).toEqual(before);
   });
 
   it("reports exact nested untracked file paths", async () => {
