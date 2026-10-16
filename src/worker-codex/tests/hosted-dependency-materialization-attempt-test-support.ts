@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { claimDependencyConsumer, fenceDependencyConsumer, DependencyAdmissionError, DependencyAdmissionFailure,
+import { claimDependencyConsumer, fenceDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError, DependencyAdmissionFailure,
   DependencyOwnerPhase, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind, DependencyInstallKeyError, DependencyInstallKeyFailure } from "../../worker-core/dependency-environment/domain/dependency-install-key";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -14,6 +14,7 @@ import { NpmInputCaptureStatus, NpmInputCaptureReason } from "../../worker-local
 import { beginHostedDependencyInstallation, HostedDependencyInputCaptureError } from "../hosted-dependency-materialization-context";
 import { prepareHostedManifestScratchTestFixture } from "./hosted-manifest-placement-installation-test-support";
 import { projectCapturePath, retainCapturePath } from "./hosted-materialization-capture-test-projection";
+import { materializeHostedDependencyAbsence } from "../hosted-dependency-materialization";
 import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
@@ -42,10 +43,11 @@ export function registerMaterializationAttemptTest(input: {
   fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string> };
 }): void {
   describe.skipIf(process.platform !== "linux")("materialization attempt after async input capture", () => {
-    it("five concurrent same-key cold admissions publish one Ready and refuse four before another installer", async () => {
-      // Real ordinary-origin admission, owner/receipt CAS and materializer.
-      // Only the selected installer boundary/profile is synthetic: no child or
-      // current-v2/native qualification is claimed by this v1 adapter fixture.
+    it("five concurrent same-key owner claims finish one real cold materialization and return four Busy", async () => {
+      // Real shared-core owner CAS plus original generic materializer. Core
+      // Running is owner state, not permission for public/current task execution.
+      // Only the installer boundary/profile and OS facts are synthetic; genuine
+      // current-C admission/Absent restore/Running/hot reuse remain separate.
       // Configure storage BEFORE install so the original hook issues placement.
       // Never synthesize a placement or Ready receipt after installation.
       await prepareHostedManifestScratchTestFixture({ fixture:input.fixture,manifestScratch:"/mnt/TEST-private-manifests",local:input.local,
@@ -66,7 +68,6 @@ export function registerMaterializationAttemptTest(input: {
       const absenceBytes=Buffer.from(JSON.stringify({version:1,workspace:binding.workspace,coverageRevision:receipts.dependencyCoverageRevision(binding)})+"\n");
       writeFileSync(input.local(absencePath),absenceBytes,{mode:0o600});
       vi.spyOn(installerRecipe,"readHostedDependencyInstallerProfile").mockImplementation(() => profile());
-      const {admitHostedDependencyConsumer}=await import("../hosted-dependency-admission");
       const {DependencyReceiptState}=await import("../../worker-core/dependency-environment/domain/dependency-receipt");
       const {qualifyHostedDependencyInstallerInputs,HostedDependencyInstallerRecipe}=await import("../hosted-dependency-installer-inputs");
       const realFs=await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -154,9 +155,22 @@ export function registerMaterializationAttemptTest(input: {
       const readOwner=()=>{const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});try{return store.read(binding.workspace);}finally{store.close();}};
       const refused:unknown[]=[];let release!:()=>void;
       const start=new Promise<void>(resolve=>{release=resolve;});
-      const config={taskId:binding.jobId,jobId:binding.jobId,jobRootDir:binding.jobRootDir,workspacePath:path};
+      const withOwners=<T>(action:(store:LocalDependencyOwnerStore)=>T)=>withHostedActivationFence(()=>{
+        const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+        try {return action(store);}finally {store.close();}
+      });
+      const materialize=async()=>{
+        // Immutable installation/start/reservation came from original fixture
+        // enrollment. The real materializer reauthenticates origin and owner.
+        const attempt=withOwners(store=>claimDependencyConsumer(store,binding.workspace,{
+          installationId:binding.installationId,bootId:p.retained.start.bootId,runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,
+          startId:p.retained.reservation.startId,unit:p.retained.reservation.unit},randomUUID()));
+        await materializeHostedDependencyAbsence(binding,attempt);
+        withOwners(store=>markDependencyConsumerRunning(store,binding.workspace,attempt));
+        return attempt;
+      };
       input.fixture.captureAncestry=true;
-      const calls=Array.from({length:5},()=>start.then(()=>admitHostedDependencyConsumer(config as Parameters<typeof admitHostedDependencyConsumer>[0]))
+      const calls=Array.from({length:5},()=>start.then(materialize)
         .catch(error=>{refused.push(error);throw error;}));
       // Attach all rejection handlers before any admission starts.
       const completed=Promise.allSettled(calls);release();
@@ -183,7 +197,7 @@ export function registerMaterializationAttemptTest(input: {
         return {installerCalls:install.mock.calls.length,installerPhase,refused:refused.slice(0,5).map(failureFacts),captureFacts,ownerPhase,receiptState};
       };
       try {
-        await Promise.race([entered,completed.then(()=>{throw new Error("TEST admissions ended before selected installer "+JSON.stringify(diagnostic()));})]);
+        await Promise.race([entered,completed.then(()=>{throw new Error("TEST owner/materializer operations ended before selected installer "+JSON.stringify(diagnostic()));})]);
         await expect.poll(()=>refused.length).toBe(4);
         expect(refused.every(error=>error instanceof DependencyAdmissionError && error.reason===DependencyAdmissionFailure.Busy)).toBe(true);
         expect(install).toHaveBeenCalledTimes(1);
@@ -197,6 +211,7 @@ export function registerMaterializationAttemptTest(input: {
         if(ready?.state!==DependencyReceiptState.Ready || installing?.state!==DependencyReceiptState.Installing)throw new Error("TEST production Ready was not published");
         expect(ready.installKey).toBe(installing.requestedKey);expect(ready.generation).toBe(installing.generation);
         expect(ready.revision).toBe(installing.revision+1);expect(ready.provenance.kind).toBe("completed_install");
+        const winner=results.find(row=>row.status==="fulfilled");expect(winner?.value.attemptId).toBe(ready.generation);
         expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.Running,attempt:{attemptId:ready.generation}});
         expect(readFileSync(input.local(join(path,"node_modules/module.js")),"utf8")).toBe("module.exports = 'one install';\n");
         expect(readFileSync(sentinelPath,"utf8")).toBe("preserved original source\n");expect(readFileSync(input.local(absencePath))).toEqual(absenceBytes);
