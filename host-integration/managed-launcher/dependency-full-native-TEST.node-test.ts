@@ -261,6 +261,28 @@ test("FULL H1 separate subject digest is exact DATA-only selection",()=>{
   let calls=0;const accessor={...review};Object.defineProperty(accessor,"h1StagedSubjectSha256",{enumerable:true,get(){calls++;return review.h1StagedSubjectSha256;}});
   assert.throws(()=>fullReviewData(accessor));assert.equal(calls,0);
 });
+// Actual Ubuntu255.4-1ubuntu8.18 shared-object hash from the retained HOST
+// capture. This checks DATA selection only; original Pins still opens and
+// authenticates the actual single-link object before any native effect.
+test("FULL H1 current single-link shared DSO keeps ordinary custody selection",()=>{
+  const previous=positiveTwoDsoReview(),oldShared=previous.hostTools.positiveHostSystemdShared;
+  const currentSha="cdc32d0d168e15bcf35707fb8b35a79a0326337a44c1b9306ae97c9f4cde22b6";
+  const {positiveHostSystemdShared:unused,...ordinaryShared}=previous.hostTools;
+  const systemdNspawnClosure=ordinaryShared.systemdNspawnClosure.map(row=>row.path===oldShared.path?{...row,sha256:currentSha}:row);
+  for(const schemaVersion of [1,3]){
+    const review={...previous,schemaVersion,accountName:"account-u",removalCase:"parent_crash_h1",h1StagedSubjectSha256:"5".repeat(64),hostTools:{...ordinaryShared,systemdNspawnClosure}};
+    const selected=fullReviewData(review),tools=selected.hostTools as Record<string,unknown>;
+    assert.equal(Object.hasOwn(tools,"positiveHostSystemdShared"),false);
+    assert.deepEqual((tools.systemdNspawnClosure as {path:string;sha256:string}[]).find(row=>row.path===oldShared.path),{path:oldShared.path,sha256:currentSha});
+    assert.throws(()=>fullReviewData({...review,hostTools:{...review.hostTools,systemdNspawnClosure:systemdNspawnClosure.filter(row=>row.path!==oldShared.path)}}));
+    assert.throws(()=>fullReviewData({...review,hostTools:{...review.hostTools,systemdNspawnClosure:systemdNspawnClosure.map(row=>row.path===oldShared.path?{...row,path:row.path.replace("255","256")}:row)}}));
+    const {positiveHostLibc:unusedLibc,...missingLibc}=review.hostTools;
+    assert.throws(()=>fullReviewData({...review,hostTools:missingLibc}));
+    assert.throws(()=>fullReviewData({...review,hostTools:{...review.hostTools,positiveHostSystemdShared:oldShared}}));
+    assert.throws(()=>fullReviewData({...review,hostTools:{...review.hostTools,positiveHostSystemdShared:{...oldShared,sha256:currentSha,tuple:{...oldShared.tuple,nlink:"1"}}}}));
+    assert.throws(()=>fullReviewData({...review,hostTools:{...review.hostTools,positiveHostLibc:{...review.hostTools.positiveHostLibc,libcTuple:{...review.hostTools.positiveHostLibc.libcTuple,nlink:"1"}}}}));
+  }
+});
 test("Positive HOST second DSO rejects broadened roles and unconsumed proofs",()=>{
   const review=positiveTwoDsoReview(),shared=review.hostTools.positiveHostSystemdShared,libc=review.hostTools.positiveHostLibc;
   for(const changed of [{path:libc.path},{path:shared.path.replace("255","256")},{sha256:libc.sha256},{extra:true},{tuple:libc.libcTuple},{tuple:{...shared.tuple,mode:"33261"}},{tuple:{...shared.tuple,nlink:"1"}},{tuple:{...shared.tuple,nlink:"3"}},{tuple:{...shared.tuple,uid:"1"}},{tuple:{...shared.tuple,gid:"1"}},{tuple:{...shared.tuple,extra:true}},{aliases:libc.libcAliases},{aliases:[...shared.aliases].reverse()},{aliases:[...shared.aliases,shared.path]},{aliases:[shared.aliases[0]!.replace("7f29ab33","8f29ab33"),shared.path]}])

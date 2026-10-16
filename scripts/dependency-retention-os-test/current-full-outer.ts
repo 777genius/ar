@@ -126,7 +126,7 @@ try {
     // Reserve real backing bytes before formatting, never a sparse capacity
     // claim. Retain the born image before formatting or service exposure; the
     // collector measures actual loop/mount joins without granting authority.
-    const bytes = 6n * 1024n * 1024n * 1024n, free = statfsSync(owned, { bigint: true });
+    const bytes = 2n * 1024n * 1024n * 1024n, free = statfsSync(owned, { bigint: true });
     assert(free.bavail * free.bsize >= bytes && free.ffree >= 100000n, "TEST readonly scratch capacity unavailable");
     dataImage = owned + "/readonly-data.ext4";
     const administrativeBeforeBirth = captureFullAdministrativeBirth(managedParent);

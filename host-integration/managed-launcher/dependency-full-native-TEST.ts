@@ -355,7 +355,8 @@ export function fullHostToolsData(review:Record<string,unknown>) {
     if(stagedReference)check(digest(review.h1StagedSubjectSha256));
     else {const subject=h1StagedSubjectData(review.h1StagedSubject);check(subject.sourceSha===review.sourceSha && subject.machineId===review.machineId && subject.bootId===review.bootId);}}
   if(exceptional && !stagedH1){check((review.schemaVersion===2 || review.schemaVersion===3) && review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);fullPositiveAccountData(review.accountName);}
-  if(stagedH1)check(libcSelected && sharedSelected);
+  // Other HOST DSOs retain ordinary Pins custody unless their exact optional exception is selected.
+  if(stagedH1)check(libcSelected);
   const tools=fullData(review.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(Object.hasOwn(review.hostTools as object,"namespaceSetupQueryClosure")?["namespaceSetupQueryClosure"]:[]),...(review.removalCase===FullRemovalCase.ParentCrashH1 && !stagedH1?["h1PythonClosure","h1NsenterClosure"]:[]),...(libcSelected?["positiveHostLibc"]:[]),...(sharedSelected?["positiveHostSystemdShared"]:[])]);
   const positive=libcSelected?fullPositiveHostLibcData(tools.positiveHostLibc):undefined,shared=sharedSelected?fullPositiveHostSystemdSharedData(tools.positiveHostSystemdShared):undefined;
   if(positive||shared){
@@ -371,6 +372,7 @@ export function fullHostToolsData(review:Record<string,unknown>) {
       if(shared && row.path===positiveHostSystemdSharedPath){check(sha256===shared.sha256);sharedConsumed++;}
       rows.push(Object.freeze({path:row.path,sha256}));
     }
+    if(stagedH1)check(rows.some(row=>row.path===positiveHostSystemdSharedPath));
     check(consumed===(positive?1:0) && sharedConsumed===(shared?1:0));tools.systemdNspawnClosure=Object.freeze(rows);
     if(positive)tools.positiveHostLibc=positive;if(shared)tools.positiveHostSystemdShared=shared;
   }
