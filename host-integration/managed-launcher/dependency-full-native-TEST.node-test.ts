@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import {FullNativeCase,FullRestoreConsumer,fullNativeCase,fullNativeCaseConfigurationData,fullPositiveInstallerCapabilitiesData,fullPositiveSnapshotLeafData,constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
+import {FullNativeCase,FullRestoreConsumer,fullNativeCase,fullNativeCaseConfigurationData,fullPositiveInstallerCapabilitiesData,fullPositiveSnapshotLeafData,constructOriginalH1StagedObserver,closeOriginalH1StagedObserver,readOriginalH1StagedTask,fullNativeSourcePackageHash,fullNativeReviewSourcePackageSchema, fullPositiveHostStableAncestors,FullPositiveAccount,fullPositiveOuterReviewData,fullReviewData, withOriginalH1PythonTool, withOriginalH1NamespaceTool, fullH1LibcAliasesData, fullH1LibcMetadataData, fullH1LibcMetadataMatches, FullRemovalCase, fullNativeRemovalCase, fullNativeParentArgv, captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
 // Red if unrelated capabilities or a different large leaf gain admission.
 // These parsers supply no namespace proof, descriptor custody or ROOT grant.
 test("installer capability DATA requires only ptrace, no inherited/ambient capabilities, and NNP",()=>{
@@ -142,7 +142,7 @@ test("FULL review schema2 is exact fixed-r Positive/Ordinary and cannot downgrad
   assert.equal(fullReviewData(common).schemaVersion,1);
   const next={...common,schemaVersion:2,accountName:"account-r",removalCase:"positive",restoreConsumer:"ordinary"};
   assert.equal(fullReviewData(next).schemaVersion,2);
-  for(const changed of [{schemaVersion:3},{accountName:"account-u"},{removalCase:"parent_crash_h1"},{restoreConsumer:"readonly"},{extra:true},{h1StagedSubject:{}},{hostIdentity:{}}])assert.throws(()=>fullReviewData({...next,...changed}));
+  for(const changed of [{schemaVersion:4},{accountName:"account-u"},{removalCase:"parent_crash_h1"},{restoreConsumer:"readonly"},{extra:true},{h1StagedSubject:{}},{hostIdentity:{}}])assert.throws(()=>fullReviewData({...next,...changed}));
   for(const key of ["removalCase","restoreConsumer"]){const missing:Record<string,unknown>={...next};delete missing[key];assert.throws(()=>fullReviewData(missing));}
   let calls=0;const accessor={...next};Object.defineProperty(accessor,"schemaVersion",{get(){calls++;return 1;},enumerable:true});assert.throws(()=>fullReviewData(accessor));assert.equal(calls,0);
   assert.throws(()=>fullReviewData({...common,hostIdentity:{}}));
@@ -300,7 +300,12 @@ test("Positive HOST stable ancestry compares objects across namespace-local moun
 
 test("source package contract keeps legacy and binds selected Positive package bytes",()=>{
   assert.equal(fullNativeSourcePackageHash(1),"68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29");
-  const bytes=readFileSync(new URL("../../package.json",import.meta.url));
+  const currentBytes=readFileSync(new URL("../../package.json",import.meta.url));
+  assert.equal(fullNativeSourcePackageHash(3),createHash("sha256").update(currentBytes).digest("hex"));
+  const current=JSON.parse(currentBytes.toString()) as {bundledDependencies:string[];dependencies:Record<string,string>};
+  assert.equal(current.dependencies.undici,"7.30.0");assert.equal(current.bundledDependencies.filter(v=>v==="undici").length,1);
+  const old=structuredClone(current);delete old.dependencies.undici;old.bundledDependencies=old.bundledDependencies.filter(v=>v!=="undici");
+  const bytes=Buffer.from(JSON.stringify(old,null,2)+"\n");
   const hash=(value:Buffer|string)=>createHash("sha256").update(value).digest("hex");
   assert.equal(fullNativeSourcePackageHash(2),"7fdbde9be28aa03e3c935d1eac9bca776796be9fa1142602e21ad25989bef334");
   assert.equal(fullNativeSourcePackageHash(2),hash(bytes));
@@ -313,7 +318,7 @@ test("source package contract keeps legacy and binds selected Positive package b
   assert.equal(hash(JSON.stringify(historical,null,2)+"\n"),"b30781b69ddf73bf53eb3bb02b073aeba00f4404bd796d485365dbc7dbe872ab");
   for(const changed of [historical,{...contract,license:"MIT"},{...contract,repository:{...contract.repository,url:"git+https://example.invalid/ar.git"}},
     {...contract,scripts:{...contract.scripts,"build:host-source-contracts":"true"}}])assert.notEqual(fullNativeSourcePackageHash(2),hash(JSON.stringify(changed,null,2)+"\n"));
-  for(const value of [undefined,null,0,3,"2",{},true])assert.throws(()=>fullNativeSourcePackageHash(value));
+  for(const value of [undefined,null,0,4,"2","3",{},true])assert.throws(()=>fullNativeSourcePackageHash(value));
 });
 
 test("staged constructor, census and close reject copied original-parent DATA before any physical work",async()=>{
@@ -330,10 +335,25 @@ test("explicit preservation FULL configuration stays schema2 positive ordinary o
   for(const value of [FullNativeCase.LegacyUnverifiedR,FullNativeCase.ExplicitPreservationC]){
     assert.equal(fullNativeCase(value),value);
     assert.equal(fullNativeCaseConfigurationData(value,2,FullRemovalCase.Positive,FullRestoreConsumer.Ordinary),value);
-    for(const schema of [undefined,1,3,"2"])assert.throws(()=>fullNativeCaseConfigurationData(value,schema,FullRemovalCase.Positive,FullRestoreConsumer.Ordinary));
+    for(const schema of [undefined,1,4,"2","3"])assert.throws(()=>fullNativeCaseConfigurationData(value,schema,FullRemovalCase.Positive,FullRestoreConsumer.Ordinary));
     assert.throws(()=>fullNativeCaseConfigurationData(value,2,FullRemovalCase.ParentCrashH1,FullRestoreConsumer.Ordinary));
     assert.throws(()=>fullNativeCaseConfigurationData(value,2,FullRemovalCase.Positive,FullRestoreConsumer.Readonly));
   }
   for(const value of [true,"explicit_preservation_c ","unknown",{},null])assert.throws(()=>fullNativeCase(value));
   assert.equal(fullNativeCaseConfigurationData(undefined,1,FullRemovalCase.Positive,FullRestoreConsumer.Readonly),FullNativeCase.ColdRestore);
+});
+
+// Source-version DATA selection only; no protected reference or actor is minted.
+test("schema3 Positive keeps original account/case/outer boundaries and distinct package pin",()=>{
+ const review={...positiveTwoDsoReview(),schemaVersion:3};
+ for(const accountName of [FullPositiveAccount.R,FullPositiveAccount.W]){const r={...review,accountName};assert.equal(fullReviewData(r).schemaVersion,3);assert.equal(fullNativeReviewSourcePackageSchema(r),3);assert.equal(fullNativeReviewSourcePackageSchema({...r,schemaVersion:2}),2);}
+ assert.notEqual(fullNativeSourcePackageHash(2),fullNativeSourcePackageHash(3));
+ for(const changed of [{accountName:"account-u"},{restoreConsumer:"readonly"},{removalCase:"parent_crash_h1"},{schemaVersion:4}])assert.throws(()=>fullReviewData({...review,...changed}));
+ for(const fullCase of [FullNativeCase.LegacyUnverifiedR,FullNativeCase.ExplicitPreservationC]){assert.equal(fullNativeCaseConfigurationData(fullCase,3,FullRemovalCase.Positive,FullRestoreConsumer.Ordinary),fullCase);assert.throws(()=>fullNativeCaseConfigurationData(fullCase,3,FullRemovalCase.ParentCrashH1,FullRestoreConsumer.Ordinary));}
+});
+test("schema3 H1 uses original staged shape and explicit current source package without promoting old schema1",()=>{
+ const review={...positiveTwoDsoReview(),schemaVersion:3,accountName:"account-u",removalCase:"parent_crash_h1",h1StagedSubjectSha256:"5".repeat(64),h1VerifierBootstrapSha256:"6".repeat(64)};
+ assert.equal(fullReviewData(review).schemaVersion,3);assert.equal(fullNativeReviewSourcePackageSchema(review),3);assert.equal(fullNativeReviewSourcePackageSchema({...review,schemaVersion:1}),2);
+ const {h1StagedSubjectSha256:unused,...missing}=review;assert.throws(()=>fullReviewData(missing));
+ for(const changed of [{accountName:"account-r"},{restoreConsumer:"readonly"},{removalCase:"positive"},{h1StagedSubject:{}},{h1StagedSubjectSha256:"nearby"},{schemaVersion:2}])assert.throws(()=>fullReviewData({...review,...changed}));
 });
