@@ -92,6 +92,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run typecheck:ci-tools
       - run: npm run test:ci-tools
+      - name: Verify fresh staging checks on CI Node version
+        run: node --test scripts/dependency-retention-os-test/current-positive-fresh-check.node-test.mts
       - run: npm run check:dist
       - run: npm run check:boundaries
       - name: Select exact HOST Node version for finite staging checks
