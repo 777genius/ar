@@ -283,7 +283,7 @@ function sourceReaderCgroup(raw:string):string {
   assert.equal(name,"current-administrative-installation.js");
   // Pure existing ESM helper has no top-level await; synchronous require is supported by
   // original Node24 and Node22.12+ CI. Never resolve from cwd or an absolute fallback.
-  const parser=createRequire(import.meta.url)("../../dist/core/host-infrastructure/process-cgroup.js") as typeof import("../../dist/core/host-infrastructure/process-cgroup.js");
+  const parser=createRequire(import.meta.url)("../../dist/core/host-infrastructure/process-cgroup.js") as typeof import("../../src/core/host-infrastructure/process-cgroup.js");
   return parser.observedProcessCgroup(raw)+"\n";
 }
 function actor(s:Readonly<Record<string,string>>,selection:Selection,sourceReader=false):AdministrativeActor{
