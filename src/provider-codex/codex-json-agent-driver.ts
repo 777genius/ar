@@ -1,10 +1,11 @@
+import type { CodexJsonAgentDriverOptions } from "./codex-json-agent-driver-options";
+export type { CodexJsonAgentDriverOptions } from "./codex-json-agent-driver-options";
 import { HostedMimoProfile } from "./hosted-mimo-profile";
 import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome } from "./hosted-mimo-coding-proxy-material";
 import { readTaskGoalObjective, readTaskManagedRunId } from "./codex-task-metadata";
 import { snapshotSessionUpdate } from "./codex-session-update-snapshot";
 import { SessionExecutionUseDisposition } from "@vioxen/subscription-runtime/core";
 import { codexDriverFailure } from "./codex-driver-failure";
-import { type HostedMimoCapacityRecoveryBinder } from "./hosted-mimo-coding-proxy-material";
 import type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
 export type { HostedMimoCapacityRecoveryBinder, HostedMimoCurrentCredentialBinding } from "./hosted-mimo-coding-proxy-material";
 export type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
@@ -67,47 +68,6 @@ import {
   codexMimoTokenPlanEgressPolicy,
   codexProviderEgressEnv,
 } from "./codex-provider-egress-policy";
-
-type CodexJsonAgentDriverBaseOptions = {
-  /** Trusted owned-worker storage port. It grants no credential authority. */
-  readonly mimoHomeLifecycle?: {
-    prepareHome(codexHome: string): Promise<void>;
-    retainHome(codexHome: string): Promise<void>;
-  };
-  readonly assertProviderAdmission?: () => void;
-  /** Source-only binding before the hosted Coding proxy can listen or dispatch. */
-  readonly bindMimoCapacityRecoveryCredential?: HostedMimoCapacityRecoveryBinder;
-  readonly executionLifetime?: AppServerExecutionLifetime;
-  readonly model?: string;
-  readonly reasoningEffort?: CodexReasoningEffort;
-  readonly serviceTier?: CodexServiceTier;
-  readonly warmupPrompt?: string;
-  readonly sessionMaterializer?: CodexSessionMaterializer;
-  readonly outputSchemas?: Readonly<Record<string, unknown>>;
-  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
-  readonly modelBackend?: CodexModelBackend;
-  /** Env var holding the MiMo Token Plan key. Only read when `modelBackend` is `XiaomiMimoTokenPlan`. */
-  readonly mimoApiKeyEnvVarName?: string;
-  /**
-   * Optional generated CODEX_HOME config for MiMo's no-session path. This is
-   * how bounded MCP-only workspace tool profiles reach the MiMo adapter
-   * without routing API-key material through the ChatGPT session store.
-   */
-  readonly mimoConfigToml?: string;
-  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-};
-
-export type CodexJsonAgentDriverOptions = CodexJsonAgentDriverBaseOptions &
-  (
-    | {
-        readonly engine: CodexExecutionEngine;
-      }
-    | {
-        readonly codexBinaryPath: string;
-        readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-        readonly timeoutMs?: number;
-      }
-  );
 
 export class CodexJsonAgentDriver implements AgentDriver {
   readonly agentId = codexJsonAgentId;
