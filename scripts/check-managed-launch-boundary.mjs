@@ -25,7 +25,7 @@ const trustedDependencyCommandDeclaration = 'export const hostedDependencySystem
 const trustedAdministrativeLaunchSources = new Map([
   // Reviewed fixed first-Positive ROOT installer transport; edits fail closed.
   ['scripts/dependency-retention-os-test/bootstrap-current-positive-public.mts',
-    { bytes: 14434, sha256: 'f70737587d3184d08585016fe61c9a7a746596ea436b10e96d3994a6e0ad93b9' }],
+    { bytes: 14434, sha256: 'f9703cc73982baf10abb7c38571c64f228ca377031f766b7f35a03bf7a876b7e' }],
   // Reviewed fixed original H1 Prepare/Finalize ROOT transport; exact bytes only.
   ['scripts/dependency-retention-os-test/bootstrap-current-h1-public.mts',
     { bytes: 23589, sha256: 'bea287919458d5061f0db41a207b1bc6513a638a78ccac46f21b90574042b6c8' }],
