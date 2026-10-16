@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
 import { researchInvalid } from "../research-launch-files";
 
-const adapter = vi.hoisted(() => ({ reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn() }));
+const adapter = vi.hoisted(() => ({ reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn() }));
 vi.mock("../hosted-mimo-interrupted-create-reconciliation", () => adapter);
+vi.mock("../hosted-mimo-project-bridge-advance", () => ({ advanceHostedMimoProjectSource: adapter.advanceHostedMimoProjectSource }));
 vi.mock("../hosted-mimo-project-bridge-prepare", () => ({ resumeHostedMimoProjectPreparation: adapter.resumeHostedMimoProjectPreparation }));
 const originalArgv = process.argv, originalExitCode = process.exitCode;
 beforeEach(() => {
@@ -59,3 +60,22 @@ it.each([
 ])("preserves safe canonical codes without private causes", async (error, code) => {
   await failure(error, code);
 });
+
+it.each([
+  [["--advance-source", "/TEST/plan.json"], { dryRun: false }],
+  [["--advance-source", "--dry-run", "/TEST/plan.json"], { dryRun: true }],
+])("routes %j to the source advance with only the dry-run choice", async (args, options) => {
+  process.argv = ["node", "/TEST/bridge-cli", ...args];
+  adapter.advanceHostedMimoProjectSource.mockResolvedValueOnce({ ok: true });
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(adapter.advanceHostedMimoProjectSource).toHaveBeenCalledExactlyOnceWith("/TEST/plan.json", options);
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":true}\n');
+});
+it.each([["--advance-source"], ["--advance-source", "--dry-run"], ["--advance-source", "/TEST/plan.json", "extra"], ["--advance-source", "--force", "/TEST/plan.json"]])(
+  "refuses the malformed source advance command line %j", async (...args) => {
+    process.argv = ["node", "/TEST/bridge-cli", ...args];
+    await import("../hosted-mimo-project-bridge-cli");
+    expect(adapter.advanceHostedMimoProjectSource).not.toHaveBeenCalled();
+    expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"mimo_project_bridge_request_invalid"}\n');
+    expect(process.exitCode).toBe(1);
+  });

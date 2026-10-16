@@ -66,9 +66,11 @@ export function parseHostedMimoProjectBinding(value: unknown, request: MimoProje
     throw new Error("mimo_project_bridge_admission_invalid");
   return Object.freeze(row) as HostedMimoProjectBinding;
 }
+/** Largest binding or other trusted metadata file any bridge reader accepts. */
+export const hostedMimoBridgeMetadataMaxBytes = 65536;
 /** Fixed trusted metadata only. The remote caller never selects an executable,
  * controller, credential, filesystem path or arbitrary MCP operation. */
-export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = 65536): Buffer {
+export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = hostedMimoBridgeMetadataMaxBytes): Buffer {
   researchCustody(dirname(path));
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -103,6 +105,12 @@ export function captureHeldMimoPreparationFence(binding: HostedMimoProjectBindin
       throw new Error("mimo_project_bridge_route_closed");
   } });
   return capability;
+}
+/** Source-only recheck that a fence captured by this process is still the one on disk. */
+export function assertHeldMimoPreparationFenceCurrent(binding: HostedMimoProjectBinding, heldFence: HeldMimoPreparationFence): void {
+  const held = heldPreparationFences.get(heldFence);
+  if (!held || held.stateRoot !== binding.stateRoot) throw new Error("mimo_project_bridge_route_closed");
+  held.assertCurrent();
 }
 export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBinding, heldFence?: HeldMimoPreparationFence): void {
   if (heldFence) {
