@@ -54,6 +54,53 @@ test("source protocol deadline refusal cannot publish a partial selection",()=>{
  let calls=0;assert.throws(()=>joinH1BinarySource(binary,Buffer.from(binaryText()),()=>{if(++calls===2)throw Error("TEST expired");}),/expired/);
  const f=fixture();assert.throws(()=>joinH1SourceSelection(binary,source,origin("main/binary-amd64/Packages",Buffer.from(binaryText())),f.sourceIndex,origin("main/source/Sources",f.sourceIndex),()=>{throw Error("TEST expired");}),/expired/);
 });
+// Synthetic checksum-bound protocol fixtures; detached signatures are opaque DATA.
+function formatFixture(identity:{name:string;version:string},format:string,names:readonly string[],descriptorName?:string,innerNames=names){
+ const stem=`${identity.name}_${identity.version.replace(/^[0-9]+:/,"")}`,name=descriptorName??`${stem}.dsc`;
+ const bytes=(name:string)=>Buffer.from(`TEST opaque archive/signature ${name}\n`);
+ const lines=(names:readonly string[])=>names.map(name=>` ${sha(bytes(name))} ${bytes(name).length} ${name}\n`).join("");
+ const dsc=Buffer.from(`Format: ${format}\nSource: ${identity.name}\nVersion: ${identity.version}\nChecksums-Sha256:\n${lines(innerNames)}`);
+ const b=Buffer.from(binaryText()),index=Buffer.from(`Package: ${identity.name}\nVersion: ${identity.version}\nDirectory: pool/main/p/${identity.name}\nChecksums-Sha256:\n ${sha(dsc)} ${dsc.length} ${name}\n${lines(names)}`);
+ const selection=joinH1SourceSelection(binary,identity,origin("main/binary-amd64/Packages",b),index,origin("main/source/Sources",index),noop);
+ return {selection,dsc};
+}
+const validateFormat=(...args:Parameters<typeof formatFixture>)=>{const f=formatFixture(...args);validateH1SourceDsc(f.selection,f.dsc);return f;};
+test("quilt detached signatures retain every checksum-bound original row without signature authority",()=>{
+ for(const ext of ["xz","bz2","gz","lzma","zst"]){
+  const orig=`python3.12_3.12.3.orig.tar.${ext}`,component=`python3.12_3.12.3.orig-doc.tar.${ext}`;
+  const f=validateFormat(source,"3.0 (quilt)",[orig,`${orig}.asc`,component,`${component}.asc`,patchName]);
+  assert.equal(f.selection.artifacts.length,6);assert.equal(f.selection.artifacts.filter(row=>row.name.endsWith(".asc")).length,2);
+  assert.deepEqual(Object.keys(f.selection),["source","binary","binaryIndex","sourceIndex","stanzaSha256","directory","artifacts"]);
+ }
+});
+test("detached signatures cannot select foreign suffixes missing originals or unjoined inner rows",()=>{
+ for(const name of [`${patchName}.asc`,`${dscName}.asc`,"unrelated.asc",`${tarName}.asc.asc`,"other.tar.xz.asc"])
+  assert.throws(()=>formatFixture(source,"3.0 (quilt)",[tarName,patchName,name]));
+ assert.throws(()=>formatFixture(source,"3.0 (quilt)",[`${tarName}.asc`,patchName]));
+ assert.throws(()=>validateFormat(source,"3.0 (quilt)",[tarName,`${tarName}.asc`,patchName],undefined,[tarName,patchName]));
+ const f=validateFormat(source,"3.0 (quilt)",[tarName,`${tarName}.asc`,patchName]);
+ const altered={...f.selection,artifacts:f.selection.artifacts.map(row=>row.name.endsWith(".asc")?{...row,sha256:"f".repeat(64)}:row)};
+ assert.throws(()=>validateH1SourceDsc(altered,f.dsc));
+});
+test("3.0 native accepts only one exact source-version archive plus its descriptor",()=>{
+ const native={name:"dpkg",version:"1.22.6ubuntu6.6"};
+ for(const ext of ["xz","gz","bz2","lzma","zst"]){const f=validateFormat(native,"3.0 (native)",[`dpkg_${native.version}.tar.${ext}`]);assert.equal(f.selection.artifacts.length,2);}
+ validateFormat({...native,version:`2:${native.version}`},"3.0 (native)",[`dpkg_${native.version}.tar.xz`]);
+ for(const names of [[`dpkg_${native.version}.orig.tar.xz`],[`dpkg_${native.version}.debian.tar.xz`],[`dpkg_${native.version}.tar.xz`,tarName],[`dpkg_${native.version}.tar.xz`,`dpkg_${native.version}.tar.gz`],["foreign_1.0.tar.xz"],["dpkg_1.22.6ubuntu6.5.tar.xz"],[`dpkg_${native.version}.tar.xz.asc`]])assert.throws(()=>validateFormat(native,"3.0 (native)",names));
+ assert.throws(()=>validateFormat(native,"3.0 (native)",[`dpkg_${native.version}.tar.xz`],"foreign_1.0.dsc"));
+ assert.throws(()=>validateFormat(native,"3.0 (quilt)",[`dpkg_${native.version}.tar.xz`]));
+});
+test("1.0 accepts exact nonnative orig gzip plus distro diff and optional bound signature",()=>{
+ const legacy={name:"pcre2",version:"10.42-4ubuntu2.1"},orig="pcre2_10.42.orig.tar.gz",diff="pcre2_10.42-4ubuntu2.1.diff.gz";
+ validateFormat(legacy,"1.0",[orig,diff]);validateFormat(legacy,"1.0",[orig,`${orig}.asc`,diff]);
+ for(const names of [[orig],[diff],[orig,diff,patchName],[orig,diff,tarName],["pcre2_10.42.orig.tar.xz",diff],["pcre2_10.41.orig.tar.gz",diff],[orig,"pcre2_10.42-4ubuntu2.0.diff.gz"],["pcre2_10.42-4ubuntu2.1.tar.gz"]])assert.throws(()=>validateFormat(legacy,"1.0",names));
+ for(const format of ["2.0","3.0 (git)","3.0 (custom)","unknown"])assert.throws(()=>validateFormat(legacy,format,[orig,diff]));
+ assert.throws(()=>validateFormat(legacy,"3.0 (native)",[orig,diff]));
+ assert.throws(()=>validateFormat(legacy,"3.0 (quilt)",[orig,diff]));
+ assert.throws(()=>validateFormat(source,"3.0 (quilt)",[tarName]));
+ assert.throws(()=>validateFormat(source,"3.0 (quilt)",[patchName]));
+ assert.throws(()=>validateFormat(source,"3.0 (quilt)",[tarName,patchName,"extra.buildinfo"]));
+});
 const rootLinux=process.platform==="linux"&&process.getuid?.()===0;
 function physicalFixture(){const root=fs.mkdtempSync(join(tmpdir(),"TEST-H1-source-")),f=fixture();fs.chmodSync(root,0o700);for(const [name,bytes] of f.files)fs.writeFileSync(join(root,name),bytes,{mode:0o600,flag:"wx"});return {root,...f};}
 test("ROOT source originals reject same-byte replacement extra membership hardlinks and symlinks",{skip:!rootLinux},()=>{
