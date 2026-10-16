@@ -199,6 +199,7 @@ jobs:
             'host-integration/managed-launcher/hosted-signed-tool-elf.js',
             'host-integration/managed-launcher/dependency-full-python-envelope-TEST.js',
             'host-integration/managed-launcher/dependency-full-h1-constructor-closure-TEST.js',
+            'host-integration/managed-launcher/dependency-full-positive-install-TEST.js',
             'host-integration/managed-launcher/dependency-full-positive-copy-TEST.js',
             'host-integration/managed-launcher/hosted-fd-unit-lifecycle.js',
             'host-integration/managed-launcher/hosted-fd-unit-policy.js',

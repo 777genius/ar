@@ -27,6 +27,7 @@
     "./launch-full-h1-TEST.mts",
     "../host-jobs/full-h1-manager-TEST.mts",
     "./dependency-full-h1-native-parent-TEST.ts",
+    "./dependency-full-positive-install-TEST.ts",
     "./dependency-full-h1-install-TEST.ts",
     "./dependency-full-h1-publication-copy-TEST.ts",
     "./dependency-full-h1-staged-tools-TEST.node-test.ts",
