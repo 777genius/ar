@@ -9,6 +9,15 @@ import {CiUbuntuPocket,CiUbuntuComponent} from "../../scripts/dependency-retenti
 import {ToolInputArchitecture} from "../../scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts";
 const hash="a".repeat(64),other="b".repeat(64),asset={sha256:hash,bytes:1};
 function input(){return {schemaVersion:1,assurance:H1DistroAssurance.SignedPublisher,sourceSha:"a".repeat(40),assets:[asset],releases:[{pocket:CiUbuntuPocket.Noble,inRelease:asset,keyring:asset,indices:["main/binary-amd64/Packages","main/source/Sources","universe/binary-amd64/Packages","universe/source/Sources"].map(path=>({path,asset}))}],packages:[{package:"python3.12-minimal",version:"3.12.3-1ubuntu0.17",arch:ToolInputArchitecture.Amd64,archive:asset,releaseSha256:hash,component:CiUbuntuComponent.Main}],members:[{location:H1DistroLocation.Staged,path:"/usr/bin/python3.12",archiveSha256:hash,memberPath:"usr/bin/python3.12"}],semantics:Object.values(H1DistroDefinition).map(definition=>({definition,archiveSha256:hash,extraction:asset,containing:{path:definition===H1DistroDefinition.PythonGetpath?"Modules/getpath.py":"src/nspawn/nspawn.c",asset},helpers:[],review:asset})),verifiers:[{path:"/usr/bin/gpgv",role:H1VerifierRole.Gpgv,sha256:hash},{path:"/usr/bin/dpkg-deb",role:H1VerifierRole.DpkgDeb,sha256:hash},{path:"/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",role:H1VerifierRole.Loader,sha256:hash},{path:"/usr/lib/x86_64-linux-gnu/libc.so.6",role:H1VerifierRole.SharedObject,sha256:hash}],verifierAliases:[],hostAliases:[],verifierReview:asset,compiledInputEquality:false,reproducibleBuild:false};}
+// Exact observed union identities. One-byte metadata fixtures are deliberately
+// NOT the signed bytes and cannot bypass the original native verifier.
+function fourReleaseInput(){const v=input(),rows=[
+ [CiUbuntuPocket.Noble,"cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0"],
+ [CiUbuntuPocket.Updates,"2a917766cbe287937499c6b41c629dd904b8aca523fc22f96e408f8c7b981f37"],
+ [CiUbuntuPocket.Security,"4ef9e99cad0ff1aff4c3115b15390ad18f4008ddaab409fa1a9579cf5bd9da96"],
+ [CiUbuntuPocket.Updates,"42d0833b154a7a5d7c5f5aabc3eab2d021d887d59826a2bdf150dcc800171b54"],
+ ] as const;v.assets.push(...rows.map(([,sha256])=>({sha256,bytes:1})));v.releases=rows.map(([pocket,sha256])=>({...v.releases[0]!,pocket,inRelease:{sha256,bytes:1}}));
+ v.packages[0]!.releaseSha256=rows[0][1];return v;}
 // Portable complete-index association DATA fixtures; no signature/native grant.
 function sourceSelection(family:string,version:string,binaryName:string):H1SourceSelection{
  const digest=(v:Buffer|string)=>createHash("sha256").update(v).digest("hex");
@@ -17,9 +26,15 @@ function sourceSelection(family:string,version:string,binaryName:string):H1Sourc
  const sources=Buffer.from(`Package: ${family}\nVersion: ${version}\nDirectory: pool/main/test/${family}\nChecksums-Sha256:\n ${digest(family+version)} 1 ${family}.dsc\n\n`);
  const origin={origin:"https://archive.ubuntu.com/ubuntu/dists/noble-updates",releaseSha256:digest("TEST complete-index release DATA")};
  const identity=joinH1BinarySource(binary,packages,()=>{});assert(identity);
- return joinH1SourceSelection(binary,identity,{...origin,path:"main/binary-amd64/Packages",sha256:digest(packages),size:packages.length},sources,{...origin,path:"main/source/Sources",sha256:digest(sources),size:sources.length},()=>{});
+ const binaryOrigin={...origin,path:"main/binary-amd64/Packages",sha256:digest(packages),size:packages.length},sourceOrigin={...origin,path:"main/source/Sources",sha256:digest(sources),size:sources.length};
+ assert.throws(()=>joinH1SourceSelection(binary,identity,binaryOrigin,sources,{...sourceOrigin,releaseSha256:other},()=>{}),/source association Held/);
+ assert.throws(()=>joinH1SourceSelection(binary,identity,binaryOrigin,sources,{...sourceOrigin,origin:"https://security.ubuntu.com/ubuntu/dists/noble-security"},()=>{}),/source association Held/);
+ const duplicateSources=Buffer.concat([sources,sources]);assert.throws(()=>joinH1SourceSelection(binary,identity,binaryOrigin,duplicateSources,{...sourceOrigin,sha256:digest(duplicateSources),size:duplicateSources.length},()=>{}),/source association Held/);
+ return joinH1SourceSelection(binary,identity,binaryOrigin,sources,sourceOrigin,()=>{});
 }
 test("signed-publisher DATA remains distinct from reproduced compilation and never issues native authority",()=>{
+ const union=h1DistroFactsData(fourReleaseInput());assert.equal(union.releases.length,4);
+ assert.equal(union.releases.filter(r=>r.pocket===CiUbuntuPocket.Updates).length,2);assert.equal(union.compiledInputEquality,false);assert.equal(union.reproducibleBuild,false);
  const selected=h1DistroSourcePort.h1DistroFactsData(input());assert.deepEqual(selected.verifiers,h1DistroFactsData(input()).verifiers);assert(Object.isFrozen(h1DistroSourcePort));const parsed=h1DistroFactsData(input());assert.equal(parsed.assurance,H1DistroAssurance.SignedPublisher);assert.equal(parsed.compiledInputEquality,false);assert.equal(parsed.reproducibleBuild,false);assert(Object.isFrozen(parsed)&&Object.isFrozen(parsed.members));assert.throws(requireQualifiedH1StagedConstructor,/selected_constructor_rows_not_qualified/);
  const hostKey=H1DistroLocation.Host+":/usr/bin/systemd-nspawn",pythonKey=H1DistroLocation.Staged+":/usr/bin/python3.12";
  const host18=sourceSelection("systemd","255.4-1ubuntu8.18","systemd-container"),old17=sourceSelection("systemd","255.4-1ubuntu8.17","libsystemd0");
@@ -43,6 +58,10 @@ test("signed-publisher DATA remains distinct from reproduced compilation and nev
  for(const changed of [{compiledInputEquality:true},{reproducibleBuild:true},{approved:true},{assurance:"compiler_reproduced"}])assert.throws(()=>h1DistroFactsData({...input(),...changed}));
 });
 test("missing HOST/staged package references, source definitions and substituted archive assets refuse",()=>{
+ const union=fourReleaseInput();
+ const duplicate=union.releases.map((r,i)=>i===3?{...r,inRelease:union.releases[1]!.inRelease}:r);assert.throws(()=>h1DistroFactsData({...union,releases:duplicate}));
+ const extra={sha256:"c".repeat(64),bytes:1};assert.throws(()=>h1DistroFactsData({...union,assets:[...union.assets,extra],releases:[...union.releases,{...union.releases[0]!,inRelease:extra}]}));
+ assert.throws(()=>h1DistroFactsData({...union,releases:union.releases.map((r,i)=>i===3?{...r,indices:r.indices.slice(1)}:r)}));
  const value=input();for(const changed of [{assets:[asset,{...asset,bytes:2}]},{assets:[]},{packages:[{...value.packages[0],releaseSha256:other}]},{members:[{...value.members[0],archiveSha256:other}]},{semantics:value.semantics.slice(1)},{semantics:[...value.semantics.slice(0,-1),value.semantics[0]]},{semantics:value.semantics.map(s=>({...s,containing:{...s.containing,asset:{sha256:other,bytes:1}}}))},{releases:value.releases.map(r=>({...r,indices:r.indices.slice(1)}))}])assert.throws(()=>h1DistroFactsData({...value,...changed}));
 });
 test("fixed verifier roles cannot introduce a caller executable or escaping alias",()=>{
