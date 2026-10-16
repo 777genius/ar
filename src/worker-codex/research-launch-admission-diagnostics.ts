@@ -8,7 +8,11 @@ export type ResearchAdmissionTiming = Readonly<{
   admissionAuthorityElapsedMs: number; admissionArtifactElapsedMs: number; admissionExecutableElapsedMs: number;
   /** Inclusive children of authority; never add these to the outer phase sum. */
   admissionAuthorityServiceElapsedMs?: number;
+  admissionAuthorityScalarWitnessElapsedMs?: number;
+  admissionAuthorityPairedPinElapsedMs?: number;
 }>;
+/** Source-only observations; callbacks carry no authority or retained decision. */
+export type ResearchAuthorityTimingObservers = Readonly<{ scalarWitness?: (elapsedMs: number) => void; pairedPin?: (elapsedMs: number) => void }>;
 /** Measures one existing synchronous operation; observation cannot change it. */
 export function researchAdmissionMeasure<T>(effect: () => T, observe: (elapsedMs: number) => void): T {
   let started: number | undefined;

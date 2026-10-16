@@ -503,7 +503,7 @@ async function runCodexGoalAdmitted(
         const prefix = "mimo_" + timing.scope + "_";
         return [[prefix + "outcome", timing.outcome], [prefix + "elapsedMs", timing.elapsedMs],
           [prefix + "admissionCount", timing.admissionCount], [prefix + "admissionElapsedMs", timing.admissionElapsedMs],
-          ...Object.entries(timing).filter(([key]) => key === "admissionAuthorityElapsedMs" || key === "admissionArtifactElapsedMs" || key === "admissionExecutableElapsedMs" || key === "admissionAuthorityServiceElapsedMs")
+          ...Object.entries(timing).filter(([key]) => key === "admissionAuthorityElapsedMs" || key === "admissionArtifactElapsedMs" || key === "admissionExecutableElapsedMs" || key === "admissionAuthorityServiceElapsedMs" || key === "admissionAuthorityScalarWitnessElapsedMs" || key === "admissionAuthorityPairedPinElapsedMs")
             .map(([key, value]) => [prefix + key, value]),
           [prefix + "successfulGitCount", timing.successfulGitCount], [prefix + "successfulGitElapsedMs", timing.successfulGitElapsedMs]];
       })),

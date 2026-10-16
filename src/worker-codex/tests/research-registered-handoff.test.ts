@@ -17,7 +17,7 @@ import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorizati
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
-import { admitResearchProcessFactory, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { admitResearchProcessFactory, assertResearchCurrentAuthority, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
 import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, recoverOwnedMimoWorkerPreservation,
   terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
 import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
@@ -104,7 +104,6 @@ async function grantAndRequest() {
   return authorization.request;
 }
 const start = () => startRegisteredResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
-
 describe("explicit registered abort before the first bind (labelled Host fixture)", () => {
   const platform = process.platform;
   beforeEach(() => {
@@ -240,7 +239,6 @@ function mutateReceipt() {
   const receipt = JSON.parse(readFileSync(local(receiptPath()), "utf8"));
   writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, status: "admitted" }), { mode: 0o600 });
 }
-
 describe("registered durable handoff authorization (NEW TEST source fixtures only)", () => {
   it("retains registered prompt authority after sandbox preparation makes only the job root traversable", async () => {
     const authorization = await authorize();
@@ -452,7 +450,6 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     expect(existsSync(local(sink))).toBe(false);
     expect(host.authReads).toBe(0);
   });
-
   it("mints a single-use derived sink capability and rejects a serialized lookalike", async () => {
     const authorization = await authorize();
     expect(authorization.request.durableHandoffRootDir).toBe(sink);
@@ -550,28 +547,31 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
     expect(host.authReads).toBe(0);
   });
   it("keeps the exact registered receipt live in synchronous runtime effect guards", async () => {
-    await grantAndRequest(); const started = await start();
-    host.group = `/system.slice/${started.unit}`;
-    await bindRegisteredResearchRuntime(started.jobId, started.startId);
-    const captured = captureResearchRuntime(selected());
-    const shows = () => host.calls.filter(call => call.command === "/usr/bin/systemctl" && call.args[0] === "show").length;
-    const mounts = () => host.calls.filter(call => call.command === "/usr/bin/findmnt").length;
-    const before = shows(), beforeMounts = mounts(), timing = captured.assertCurrent();
-    expect(shows() - before).toBe(2);
-    expect(mounts() - beforeMounts).toBe(10);
-    const nextMounts = mounts(); captured.assertCurrent();
-    expect(mounts() - nextMounts).toBe(10);
-    expect(timing?.admissionAuthorityServiceElapsedMs).toBeTypeOf("number");
-    expect(timing?.admissionAuthorityServiceElapsedMs).toBeGreaterThanOrEqual(0);
-    expect(timing?.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing!.admissionAuthorityElapsedMs);
-    const inertShows = shows(), inertMounts = mounts(); captured.assertInertAuthorityCurrent();
-    expect(shows()).toBe(inertShows); expect(mounts() - inertMounts).toBe(10);
-    const authorityShows = shows(), authorityMounts = mounts(); captured.assertAuthorityCurrent();
-    expect(shows() - authorityShows).toBe(1); expect(mounts() - authorityMounts).toBe(20);
-    mutateReceipt();
-    expect(() => captured.assertAuthorityCurrent()).toThrow();
-    expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
-    expect(host.authReads).toBe(0);
+    const platform = process.platform; Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await grantAndRequest(); const started = await start(); host.group = `/system.slice/${started.unit}`;
+      await bindRegisteredResearchRuntime(started.jobId, started.startId);
+      const captured = captureResearchRuntime(selected()), current = researchCurrentStart(started.jobId);
+      const shows = () => host.calls.filter(call => call.command === "/usr/bin/systemctl" && call.args[0] === "show").length;
+      const mounts = () => host.calls.filter(call => call.command === "/usr/bin/findmnt").length;
+      let tick = 0; const clock = vi.spyOn(performance, "now").mockImplementation(() => tick);
+      host.findmntHook = () => { tick += 1; };
+      const before = shows(), beforeMounts = mounts(), timing = captured.assertCurrent();
+      clock.mockRestore(); host.findmntHook = undefined;
+      expect([shows() - before, mounts() - beforeMounts]).toEqual([2, 10]);
+      expect(timing).toMatchObject({ admissionAuthorityElapsedMs: 10, admissionAuthorityServiceElapsedMs: 0,
+        admissionAuthorityScalarWitnessElapsedMs: 6, admissionAuthorityPairedPinElapsedMs: 4 });
+      const nextMounts = mounts(); captured.assertCurrent(); expect(mounts() - nextMounts).toBe(10);
+      const inertShows = shows(), inertMounts = mounts(); captured.assertInertAuthorityCurrent();
+      expect([shows() - inertShows, mounts() - inertMounts]).toEqual([0, 10]);
+      const authorityShows = shows(), authorityMounts = mounts(); captured.assertAuthorityCurrent();
+      expect([shows() - authorityShows, mounts() - authorityMounts]).toEqual([1, 20]);
+      const observers = { scalarWitness: () => { throw Error("TEST observer"); }, pairedPin: () => { throw Error("TEST observer"); } };
+      expect(() => assertResearchCurrentAuthority(started.jobId, current, undefined, false, observers)).not.toThrow();
+      mutateReceipt(); expect(() => captured.assertAuthorityCurrent()).toThrow();
+      expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
+      expect(host.authReads).toBe(0);
+    } finally { Object.defineProperty(process, "platform", { value: platform }); }
   });
   // RED: dropping the final complete fence admits receipt/pin drift; dropping
   // its native/process readback admits changes during the last cold witness.

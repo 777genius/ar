@@ -18,7 +18,8 @@ export type MimoSnapshotTiming = Readonly<{
   admissionCount: number; admissionElapsedMs: number; successfulGitCount: number; successfulGitElapsedMs: number;
 }> & Partial<ResearchAdmissionTiming>;
 type TimingCounters = { admissionCount: number; admissionElapsedMs: number; successfulGitCount: number;
-  successfulGitElapsedMs: number; invalid: boolean; partCount: number; serviceCount: number; parts: ResearchAdmissionTiming };
+  successfulGitElapsedMs: number; invalid: boolean; partCount: number; nestedCounts: Record<typeof authorityPartKeys[number], number>; parts: ResearchAdmissionTiming };
+const authorityPartKeys = ["admissionAuthorityServiceElapsedMs", "admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs"] as const;
 const admissionPartKeys = ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs"] as const;
 enum TimingCounterKind { Admission = "admission", SuccessfulGit = "successful_git" }
 const timingNow = (): number | undefined => {
@@ -95,9 +96,10 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
     if (this.#observed.has(scope)) return operation();
     this.#observed.add(scope);
     const counters: TimingCounters = { admissionCount: 0, admissionElapsedMs: 0,
-      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false, partCount: 0, serviceCount: 0,
+      successfulGitCount: 0, successfulGitElapsedMs: 0, invalid: false, partCount: 0,
+      nestedCounts: { admissionAuthorityServiceElapsedMs: 0, admissionAuthorityScalarWitnessElapsedMs: 0, admissionAuthorityPairedPinElapsedMs: 0 },
       parts: { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0,
-        admissionAuthorityServiceElapsedMs: 0 } };
+        admissionAuthorityServiceElapsedMs: 0, admissionAuthorityScalarWitnessElapsedMs: 0, admissionAuthorityPairedPinElapsedMs: 0 } };
     this.#timing = counters;
     const started = timingNow(); let outcome = MimoSnapshotTimingOutcome.Failed;
     try { const result = await operation(); outcome = MimoSnapshotTimingOutcome.Completed; return result; }
@@ -105,13 +107,14 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       this.#timing = undefined;
       const elapsedMs = elapsedTiming(started);
       if (!counters.invalid && elapsedMs !== undefined) {
-        const { admissionAuthorityServiceElapsedMs, ...outerParts } = counters.parts;
+        const { admissionAuthorityServiceElapsedMs, admissionAuthorityScalarWitnessElapsedMs, admissionAuthorityPairedPinElapsedMs, ...outerParts } = counters.parts;
+        const nested = { admissionAuthorityServiceElapsedMs, admissionAuthorityScalarWitnessElapsedMs, admissionAuthorityPairedPinElapsedMs };
         try { this.#observe(Object.freeze({ scope, outcome, elapsedMs,
           admissionCount: counters.admissionCount, admissionElapsedMs: counters.admissionElapsedMs,
           successfulGitCount: counters.successfulGitCount, successfulGitElapsedMs: counters.successfulGitElapsedMs,
           ...(counters.partCount === counters.admissionCount && counters.partCount > 0 &&
             Object.values(outerParts).reduce((sum, value) => sum + value, 0) <= counters.admissionElapsedMs
-            ? { ...outerParts, ...(counters.serviceCount === counters.partCount ? { admissionAuthorityServiceElapsedMs } : {}) } : {}) })); }
+            ? { ...outerParts, ...Object.fromEntries(authorityPartKeys.filter(key => counters.nestedCounts[key] === counters.partCount).map(key => [key, nested[key]])) } : {}) })); }
         catch { /* Optional observations never replace the original result or error. */ }
       }
     }
@@ -135,10 +138,12 @@ export class OwnedMimoSnapshotGitRunner implements SafeExecutionCommandRunner {
       if (admissionPartKeys.some((key, i) => counters.parts[key] + values[i]! > 86_400_000)) return;
       counters.parts = { ...counters.parts, ...Object.fromEntries(admissionPartKeys.map((key, i) => [key, counters.parts[key] + values[i]!])) } as ResearchAdmissionTiming;
       counters.partCount++;
-      const service = Object.getOwnPropertyDescriptor(value, "admissionAuthorityServiceElapsedMs")?.value as unknown;
-      const sum = (counters.parts.admissionAuthorityServiceElapsedMs ?? 0) + (typeof service === "number" ? service : NaN);
-      if (typeof service === "number" && Number.isFinite(service) && service >= 0 && service <= values[0]! && sum <= 86_400_000) {
-        counters.parts = { ...counters.parts, admissionAuthorityServiceElapsedMs: sum }; counters.serviceCount++;
+      for (const key of authorityPartKeys) {
+        const part = Object.getOwnPropertyDescriptor(value, key)?.value as unknown;
+        const sum = (counters.parts[key] ?? 0) + (typeof part === "number" ? part : NaN);
+        if (typeof part === "number" && Number.isFinite(part) && part >= 0 && part <= values[0]! && sum <= 86_400_000) {
+          counters.parts = { ...counters.parts, [key]: sum }; counters.nestedCounts[key]++;
+        }
       }
     } catch { /* Optional data never invokes getters or replaces a guard outcome. */ }
   }
