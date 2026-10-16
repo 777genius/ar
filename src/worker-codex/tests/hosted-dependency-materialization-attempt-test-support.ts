@@ -40,6 +40,77 @@ export function registerMaterializationAttemptTest(input: {
   fixture: { captureAncestry: boolean; captureDirectories: Map<number, string> };
 }): void {
   describe.skipIf(process.platform !== "linux")("materialization attempt after async input capture", () => {
+    it("five concurrent same-key cold admissions publish one Ready and refuse four before another installer", async () => {
+      // Real ordinary-origin admission, owner/receipt CAS and materializer.
+      // Only the selected installer boundary/profile is synthetic: no child or
+      // current-v2/native qualification is claimed by this v1 adapter fixture.
+      const p = input.prepared(), binding = p.binding, path = binding.workspace.canonicalPath;
+      const packageBytes = Buffer.from(JSON.stringify({ name: "five-cold-TEST", version: "1.0.0" }));
+      const lockBytes = Buffer.from(JSON.stringify({ name: "five-cold-TEST", version: "1.0.0", lockfileVersion: 3,
+        packages: { "": { name: "five-cold-TEST", version: "1.0.0" } } }));
+      writeFileSync(input.local(join(path,"package.json")),packageBytes,{mode:0o600});
+      writeFileSync(input.local(join(path,"package-lock.json")),lockBytes,{mode:0o600});
+      const sentinelPath=input.local(join(path,"TEST-concurrent-source"));writeFileSync(sentinelPath,"preserved original source\n",{mode:0o600});
+      const absencePath=`/var/lib/subscription-runtime-host-policy/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`;
+      mkdirSync(input.local(dirname(absencePath)),{recursive:true,mode:0o700});
+      const absenceBytes=Buffer.from(JSON.stringify({version:1,workspace:binding.workspace,coverageRevision:receipts.dependencyCoverageRevision(binding)})+"\n");
+      writeFileSync(input.local(absencePath),absenceBytes,{mode:0o600});
+      vi.spyOn(installerRecipe,"readHostedDependencyInstallerProfile").mockImplementation(() => profile());
+      const {admitHostedDependencyConsumer}=await import("../hosted-dependency-admission");
+      const {DependencyReceiptState}=await import("../../worker-core/dependency-environment/domain/dependency-receipt");
+      const {qualifyHostedDependencyInstallerInputs,HostedDependencyInstallerRecipe}=await import("../hosted-dependency-installer-inputs");
+      const realFs=await vi.importActual<typeof import("node:fs")>("node:fs");
+      // The outer fixture already projects root UID/GID. Keep the privileged
+      // ownership syscall at that same boundary, never chown a runner's file
+      // to host root; inventory/modes/bytes and Ready publication stay real.
+      const projectedFs=await import("node:fs");
+      vi.spyOn(projectedFs,"fchownSync").mockImplementation((fd,uid,gid)=>{
+        expect([uid,gid]).toEqual([0,0]);
+        expect(realFs.readlinkSync(`/proc/self/fd/${fd}`).startsWith(input.local("/var/lib/subscription-runtime-host-policy/TEST-concurrent-installer-output")+"/")).toBe(true);
+        const stat=realFs.fstatSync(fd);realFs.fchownSync(fd,stat.uid,stat.gid);
+      });
+      let enterInstaller!:()=>void,finishInstaller!:()=>void;
+      const entered=new Promise<void>(resolve=>{enterInstaller=resolve;}),finish=new Promise<void>(resolve=>{finishInstaller=resolve;});
+      const install=vi.spyOn(HostedDependencyInstaller.prototype,"install").mockImplementation(async request=>{
+        if(!("packageBytes" in request))throw new Error("TEST unexpected local installer recipe");
+        expect(request.workspace).toEqual(binding.workspace);expect(request.packageBytes).toEqual(packageBytes);expect(request.lockBytes).toEqual(lockBytes);
+        enterInstaller();await finish;
+        const stage=input.local("/var/lib/subscription-runtime-host-policy/TEST-concurrent-installer-output"),tree=join(stage,"node_modules");
+        realFs.mkdirSync(tree,{recursive:true,mode:0o700});realFs.writeFileSync(join(tree,"module.js"),"module.exports = 'one install';\n",{mode:0o600});
+        const stat=realFs.lstatSync(tree,{bigint:true}),qualified=qualifyHostedDependencyInstallerInputs(packageBytes,lockBytes);
+        const startId=randomUUID();return {recipe:HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1,lockName:qualified.lockName,
+          startId,unit:`subscription-runtime-installer-${startId}.service`,inputSha256:qualified.sha256,profileSha256:"a".repeat(64),completionSha256:"b".repeat(64),
+          output:{canonicalPath:tree,dev:String(stat.dev),ino:String(stat.ino)}};
+      });
+      const readOwner=()=>{const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});try{return store.read(binding.workspace);}finally{store.close();}};
+      const refused:unknown[]=[];let release!:()=>void;
+      const start=new Promise<void>(resolve=>{release=resolve;});
+      const config={taskId:binding.jobId,jobId:binding.jobId,jobRootDir:binding.jobRootDir,workspacePath:path};
+      input.fixture.captureAncestry=true;
+      const calls=Array.from({length:5},()=>start.then(()=>admitHostedDependencyConsumer(config as Parameters<typeof admitHostedDependencyConsumer>[0]))
+        .catch(error=>{refused.push(error);throw error;}));
+      // Attach all rejection handlers before any admission starts.
+      const completed=Promise.allSettled(calls);release();
+      try {
+        await Promise.race([entered,completed.then(()=>{throw new Error("TEST admissions ended before selected installer");})]);
+        await expect.poll(()=>refused.length).toBe(4);
+        expect(refused.every(error=>error instanceof DependencyAdmissionError && error.reason===DependencyAdmissionFailure.Busy)).toBe(true);
+        expect(install).toHaveBeenCalledTimes(1);
+        const held=readOwner();expect(held?.owner).toMatchObject({phase:DependencyOwnerPhase.ExclusiveMutation});
+        const installing=receipts.readHostedDependencyReceipt(binding);expect(installing?.state).toBe(DependencyReceiptState.Installing);
+        expect(existsSync(input.local(join(path,"node_modules")))).toBe(false);
+        finishInstaller();const results=await completed;
+        expect(results.filter(row=>row.status==="fulfilled")).toHaveLength(1);
+        expect(results.filter(row=>row.status==="rejected")).toHaveLength(4);expect(install).toHaveBeenCalledTimes(1);
+        const ready=receipts.readHostedDependencyReceipt(binding);expect(ready?.state).toBe(DependencyReceiptState.Ready);
+        if(ready?.state!==DependencyReceiptState.Ready || installing?.state!==DependencyReceiptState.Installing)throw new Error("TEST production Ready was not published");
+        expect(ready.installKey).toBe(installing.requestedKey);expect(ready.generation).toBe(installing.generation);
+        expect(ready.revision).toBe(installing.revision+1);expect(ready.provenance.kind).toBe("completed_install");
+        expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.Running,attempt:{attemptId:ready.generation}});
+        expect(readFileSync(input.local(join(path,"node_modules/module.js")),"utf8")).toBe("module.exports = 'one install';\n");
+        expect(readFileSync(sentinelPath,"utf8")).toBe("preserved original source\n");expect(readFileSync(input.local(absencePath))).toEqual(absenceBytes);
+      } finally {finishInstaller();await completed;input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
+    });
     it("rejects a replaced same-launch owner before Installing publication or installer launch", async () => {
       // Red if the final current-owner join accepts only launch identity: a
       // replacement owner has the same launch and a different epoch/attempt.
