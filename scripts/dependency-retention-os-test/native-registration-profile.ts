@@ -2,6 +2,7 @@
  * Observations remain factual until ORIGINAL installed readers authenticate them. */
 import { qualifyIoUringEffects } from "./io-uring.ts";
 import assert from "node:assert/strict";
+import { observedProcessCgroup } from "../../dist/core/host-infrastructure/process-cgroup.js";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer, createConnection, type Socket } from "node:net";
@@ -185,7 +186,7 @@ export async function issueNativeFdProfile(evidence: Record<string, unknown>, bu
         pid: readlinkSync(`/proc/${child.pid}/ns/pid`), net: actual.net };
       for (const kind of ["user", "mnt", "pid", "net"] as const) assert.equal(namespaces[kind], readlinkSync("/proc/self/ns/" + kind));
       assert.equal(actual.exe, node); assert.equal(actual.net, readlinkSync("/proc/self/ns/net"));
-      assert.equal(actual.group, boundedProc("/proc/self/cgroup", 4096).trim());
+      assert.equal(actual.group, observedProcessCgroup(boundedProc("/proc/self/cgroup", 4096)));
       const peerRows = query(), parent = hostedFdTable(process.pid), pairs: { fd: number; parent: string; child: string }[] = [];
       for (const fd of [0, 1, 2]) {
         const target = actual.descriptors.find(row => row.fd === fd); assert(target?.socket);
@@ -532,7 +533,7 @@ export async function issueActualSystemBusInfrastructure(evidence: Record<string
     return pid + ":" + fields[19];
   };
   const birth = processBirth(); assert.equal(readlinkSync("/proc/" + pid + "/exe"), SYSTEM_BUS_EXECUTABLE);
-  assert.equal(boundedProc("/proc/" + pid + "/cgroup", 4096).trim(), "0::" + SYSTEM_BUS_CONTROL_GROUP);
+  assert.equal(observedProcessCgroup(boundedProc("/proc/" + pid + "/cgroup", 4096)), "0::" + SYSTEM_BUS_CONTROL_GROUP);
   const mapped = new Set<string>();
   for (const line of boundedProc("/proc/" + pid + "/maps", 2 * 1024 * 1024).trim().split("\n")) {
     const row = /^[a-f0-9]+-[a-f0-9]+\s+[rwxps-]{4}\s+[a-f0-9]+\s+[a-f0-9]+:[a-f0-9]+\s+[0-9]+(?:\s+(.*))?$/.exec(line); assert(row);

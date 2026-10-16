@@ -149,7 +149,7 @@ try {
   evidence.phase=FullGuestSetup.Policy;evidence.testEvictionPolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);
   assert(removalCase!==FullH1Case.ParentCrash || consumer===FullGuestRestoreConsumer.Ordinary);
   const progress=(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};};
-  const evictRestore=await (consumer===FullGuestRestoreConsumer.Readonly ? runCurrentFullEvictReadonlyRestoreFlow(roots,progress) : runCurrentFullEvictRestoreFlow(roots,progress,removalCase));
+  const evictRestore=await (consumer===FullGuestRestoreConsumer.Readonly ? runCurrentFullEvictReadonlyRestoreFlow(roots,progress) : runCurrentFullEvictRestoreFlow(roots,progress,removalCase,removalCase===FullH1Case.ParentCrash?fullDeadline:undefined));
   // Preserve observed C slice if later independent review/R continuation fails.
   evidence.evictRestore=evictRestore;
   const restored=evictRestore.entries.at(-1);assert(restored);

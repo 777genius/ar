@@ -1,3 +1,4 @@
+import { observeOriginalH1UnregisteredIngress, observeOriginalH1LiveHot, observeOriginalH1StaleSelection, observeOriginalH1HistoricalVersion, retainOriginalH1IngressNegatives } from "./current-h1-ingress-negative-observations.js";
 /** Distinct fresh TEST lifecycle. Frozen four-entry mode stays unchanged. */
 import assert from "node:assert/strict";
 import { prepareCurrentHostedDependencyColdCustody, completeCurrentHostedDependencyColdCustody } from "../../dist/worker-codex/hosted-current-dependency-origin.js";
@@ -52,18 +53,19 @@ function measuredInstall(trace:ReturnType<typeof startNativeInstallerTrace>,prio
  * auth, proofs, holds and partial trash for original owned-OS teardown; earlier
  * protected provider/runtime result records are never rewritten by this test. */
 enum RestoreConsumer { Ordinary = "ordinary", Readonly = "readonly" }
-export function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,removalCase=FullH1Case.Positive) {return run(roots,progress,RestoreConsumer.Ordinary,removalCase);}
+export function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,removalCase=FullH1Case.Positive,h1AbsoluteEnd?:number) {return run(roots,progress,RestoreConsumer.Ordinary,removalCase,h1AbsoluteEnd);}
 export function runCurrentFullEvictReadonlyRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void) {return run(roots,progress,RestoreConsumer.Readonly);}
-async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,consumer:RestoreConsumer,removalCase=FullH1Case.Positive) {
+async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,consumer:RestoreConsumer,removalCase=FullH1Case.Positive,h1AbsoluteEnd?:number) {
   assert(removalCase===FullH1Case.Positive || (removalCase===FullH1Case.ParentCrash && consumer===RestoreConsumer.Ordinary));
   assertRootScope(roots);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Closed);
-  const deadline=performance.now()+27*60*1000,store=new HostedInstallationActivationStore();
+  if(removalCase===FullH1Case.ParentCrash)assert(typeof h1AbsoluteEnd==="number" && Number.isFinite(h1AbsoluteEnd) && h1AbsoluteEnd>performance.now() && h1AbsoluteEnd<=performance.now()+27*60*1000);
+  const deadline=removalCase===FullH1Case.ParentCrash?h1AbsoluteEnd!:performance.now()+27*60*1000,store=new HostedInstallationActivationStore();
   assertPreparedCurrentConfiguredAuth(roots);assertCurrentConfiguredAuth(roots);
   prepareEvictRestoreSentinels(roots);const initialSentinels=captureEvictRestoreSentinels(roots);
-  let openTrace:ReturnType<typeof startNativeInstallerTrace>|undefined=startNativeInstallerTrace(roots.candidateJobId,27*60*1000);
+  let openTrace:ReturnType<typeof startNativeInstallerTrace>|undefined=startNativeInstallerTrace(roots.candidateJobId,Math.floor(deadline-performance.now()));
   try {
     const birth=store.enrollOrdinary(roots.candidateJobId);assert.equal(birth.jobRootDir,roots.jobRoot);assert.equal(birth.workspacePath,roots.workspace);
-    progress(EvictRestorePhase.Cold);store.resumeOrdinary();const cold=await runCurrentOrdinaryEntry(roots,FullEntryKind.Cold);
+    progress(EvictRestorePhase.Cold);store.resumeOrdinary();if(removalCase===FullH1Case.ParentCrash){await observeOriginalH1UnregisteredIngress(roots,deadline);assertEvictRestoreSentinels(roots,initialSentinels);}const cold=await runCurrentOrdinaryEntry(roots,FullEntryKind.Cold);
     store.finishClosed();withHostedActivationFence(fence=>assertCurrentClosedEntry(fence,roots.jobRoot,cold.result));
     assertEvictRestoreSentinels(roots,initialSentinels);
     const coldReady=readEvictRestoreReady(roots),warmEdit=editCurrentPureLinkedLeaf(roots,cold.result);
@@ -71,7 +73,8 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
     // The intentional original pure-link edit is complete before this retained
     // source baseline; the driver does not claim model text proves liveRevision.
     const sentinels=captureEvictRestoreSentinels(roots),hotRequest=await requestCurrentNextWork(roots,FullRequestPhase.CurrentHot);
-    progress(EvictRestorePhase.Hot);store.resumeOrdinary();const hot=await runCurrentOrdinaryEntry(roots,FullEntryKind.Hot);
+    progress(EvictRestorePhase.Hot);store.resumeOrdinary();
+    const [hot,liveNegative]=await Promise.all([runCurrentOrdinaryEntry(roots,FullEntryKind.Hot),removalCase===FullH1Case.ParentCrash?observeOriginalH1LiveHot(roots,deadline,cold.observation.startId):Promise.resolve(undefined)]);
     const hotDelivery=await assertCurrentNextWorkDelivered(roots,hotRequest),ready=readEvictRestoreReady(roots);
     assert.deepEqual(ready,coldReady);assertEvictRestoreSentinels(roots,sentinels);
     const initialTrace=openTrace;openTrace=undefined;const initialInstaller=measuredInstall(initialTrace,0);
@@ -82,6 +85,8 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
       requestedCase:"EVICT-COMMIT-ABSENT",supportedPolicyVersion:1},0o600);
     const policy=await enabledRootInput(deadline);assertPolicyCurrent(policy);
     assertPathAbsent(roots.workspace+"/.next"); // This slice proves no .next cleanup.
+    const staleNegative=removalCase===FullH1Case.ParentCrash?await observeOriginalH1StaleSelection(roots,deadline,liveNegative!):undefined;
+    if(removalCase===FullH1Case.ParentCrash)assertEvictRestoreSentinels(roots,sentinels);
     progress(EvictRestorePhase.Evict);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Ordinary);
     const evicted=await store.evictDependencyCandidate({jobId:roots.candidateJobId,revision:ready.receipt.revision,
       generation:ready.receipt.generation,installKey:ready.receipt.installKey});
@@ -92,7 +97,12 @@ async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=
     // Remove while original owner is released RetiredEvicting, BEFORE new Active
     // generation. The existing global legacy-writer denial is left intact.
     progress(EvictRestorePhase.Remove);
-    if(removalCase===FullH1Case.ParentCrash){captureOriginalH1Checkpoint(roots,sentinels,proof,await captureCompletedRuntimePreservation(roots,hot.result));await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
+    if(removalCase===FullH1Case.ParentCrash){
+      const preserved=await captureCompletedRuntimePreservation(roots,hot.result);
+      const negativeReference=await retainOriginalH1IngressNegatives(roots,deadline,await observeOriginalH1HistoricalVersion(roots,deadline,staleNegative!));
+      assertRetainedEvictionProof(proof);assertEvictRestoreSentinels(roots,sentinels);assertPolicyCurrent(policy);
+      assert.deepEqual(await captureCompletedRuntimePreservation(roots,hot.result),preserved);
+      captureOriginalH1Checkpoint(roots,sentinels,proof,preserved,negativeReference);await requestOriginalH1(roots.candidateJobId,proof.absent.receipt.revision,roots.workspaceIdentity,proof.absent.reference);}
     const removed=await store.removeDependencyCommittedTrash(roots.candidateJobId,proof.absent.receipt.revision);
     assert.equal(removalCase,FullH1Case.Positive,"TEST_H1_original_parent_not_killed_at_proven_boundary_HOLD");
     assert.equal(removed.outcome,HostedDependencyTransactionOutcome.TrashRemoved);

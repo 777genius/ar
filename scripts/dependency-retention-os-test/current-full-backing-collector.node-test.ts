@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { closeSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { observedProcessCgroup } from "../../dist/core/host-infrastructure/process-cgroup.js";
+import { checkH1OwnedCgroupData } from "../../host-integration/managed-launcher/dependency-full-h1-constructor-closure-TEST.js";
+import { closeSync, copyFileSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
@@ -10,7 +14,7 @@ import { FullBackingExposure, FullProcObservation, FullProcRejoinPhase, FullProc
 
 import { matchFullBackingStorageMountData } from "../../src/worker-codex/hosted-full-backing-mount-data.js";
 
-import { MountRootKind, fullReadonlyMountData, readFullMountTable } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { fullNativeUnit, MountRootKind, fullReadonlyMountData, readFullMountTable } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 
 // The owned child is the same compiled TS fixture and exits through its private
 // IPC channel. No numeric-PID signal or external process is used for cleanup.
@@ -20,6 +24,34 @@ if(process.argv[2]==="--TEST-full-proc-anchor-child") {
   process.once("disconnect",()=>process.exit(0));
   process.send("TEST-proc-anchor-ready");
 } else {
+  test("observed HOST hybrid rows normalize before the unchanged FULL owned-group policies",()=>{
+    const fullNativeControlGroup="/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/"+fullNativeUnit,legacy="1:name=systemd:/\n",observedPackageGroup="/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/subscription-job-8d37758f0c5e344cd5b8c6de32dc76355be21d2f2805e833f919550892a751d5.service",raw=legacy+"0::"+observedPackageGroup+"\n";
+    // Retained actual package-unit191B digest proves the HOST format; it does not grant native membership.
+    assert.equal(Buffer.byteLength(raw),191);assert.equal(createHash("sha256").update(raw).digest("hex"),"dbcc7c5cef6694e3cf2fb2fbd757a58ff13411b92b719feaeb72861f7114a293");
+    assert.notEqual(raw.trim(),"0::"+observedPackageGroup);assert.equal(observedProcessCgroup(raw),"0::"+observedPackageGroup);
+    for(const group of [observedPackageGroup,fullNativeControlGroup,"/init.scope","/system.slice/dbus.service","/system.slice/TEST-retention-supervisor.service","/system.slice/subscription-runtime-installer-10000000-0000-4000-8000-9ca302fabd07.service","/system.slice/TEST-retention-os-11111111-1111-1111-1111-111111111111.service"]){
+      const owned="0::"+group;for(const input of [owned+"\n",legacy+owned+"\n",owned+"\n"+legacy]){assert.equal(observedProcessCgroup(input),owned);assert.doesNotThrow(()=>checkH1OwnedCgroupData(input,group));}
+      for(const malformed of [legacy+legacy+owned+"\n",legacy+owned+"\n"+owned+"\n","2:cpu:/\n"+owned+"\n","1:name=systemd:/foreign\n"+owned+"\n",owned+"/../foreign\n"]){assert.throws(()=>observedProcessCgroup(malformed));assert.throws(()=>checkH1OwnedCgroupData(malformed,group));}
+      const descendant=observedProcessCgroup(legacy+owned+"/payload\n");
+      assert.notEqual(descendant,owned);assert.throws(()=>checkH1OwnedCgroupData(legacy+owned+"/payload\n",group));
+      assert(descendant.startsWith(owned+"/"));assert(!observedProcessCgroup(legacy+owned+"-foreign/payload\n").startsWith(owned+"/"));
+      assert(!observedProcessCgroup(legacy+owned+"\n").startsWith(owned+"/"));
+    }
+  });
+  test("canonical pure ESM helper is synchronously loadable without a top-level-await transport",()=>{
+    const parser=createRequire(import.meta.url)("../../dist/core/host-infrastructure/process-cgroup.js") as typeof import("../../dist/core/host-infrastructure/process-cgroup.js");
+    assert.equal(parser.observedProcessCgroup("1:name=systemd:/\n0::/system.slice/dbus.service\n"),"0::/system.slice/dbus.service");
+    assert.throws(()=>parser.observedProcessCgroup("2:cpu:/\n0::/system.slice/dbus.service\n"));
+  });
+  test("original relocated administrative operation imports without any canonical source-package helper",()=>{
+    const root=mkdtempSync(join(tmpdir(),"TEST-administrative-relocated-"));
+    try{const copy=join(root,"administrative-installation.js");copyFileSync(fileURLToPath(new URL("./current-administrative-installation.js",import.meta.url)),copy);writeFileSync(join(root,"package.json"),JSON.stringify({type:"module"}));
+      // Do not pass the operation as argv[1]: its original entry would run maintain().
+      const code="const m=await import("+JSON.stringify(pathToFileURL(copy).href)+");if(typeof m.readOriginalPublicAdministrativeActor!=='function')throw Error('missing reader');process.stdout.write('TEST_RELOCATED_IMPORTED');";
+      const result=spawnSync(process.execPath,["--input-type=module","-e",code],{cwd:root,env:{PATH:"/nonexistent",LANG:"C",LC_ALL:"C"},encoding:"utf8",timeout:5000,maxBuffer:4096});
+      assert(!result.error&&result.signal===null);assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,"TEST_RELOCATED_IMPORTED");
+    }finally{rmSync(root,{recursive:true,force:true});}
+  });
   test("actual serialized collector Path root joins the runtime mount row across namespace-local IDs",()=>{
     const point="/var/lib/subscription-runtime-host-policy/dependency-test-jobs";
     const source=`111 10 7:19 / ${point} rw,relatime - ext4 /dev/loop19 rw\n`;

@@ -4,7 +4,7 @@ import {closeSync,constants,fstatSync,lstatSync,openSync,readdirSync,readSync,ty
 import {joinAcquiredSignedPackage,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
 import {assertCiPublicEvidenceBasename,assertCompleteUbuntuIndex,ciIndexOperationalBytes,type CiSignedIndexRow} from "./current-h1-tool-inputs-ci-index.ts";
 
-export const h1SourceLimits=Object.freeze({artifactBytes:64*1024*1024,totalBytes:128*1024*1024,dscBytes:256*1024,artifacts:16});
+export const h1SourceLimits=Object.freeze({artifactBytes:128*1024*1024,totalBytes:128*1024*1024,dscBytes:256*1024,artifacts:16});
 export interface H1SourceIdentity {readonly name:string;readonly version:string}
 export interface H1SourceIndexOrigin extends CiSignedIndexRow {readonly origin:string;readonly releaseSha256:string}
 export interface H1SourceArtifact {readonly name:string;readonly sha256:string;readonly size:number}
@@ -49,15 +49,21 @@ export function joinH1BinarySource(binary:AcquiredSignedPackage,index:Buffer,tic
   need(packageName(current.name)&&version(current.version));need(source===undefined||JSON.stringify(source)===JSON.stringify(current));source=current;
  });return source;
 }
-function artifactRows(value:string|undefined):readonly H1SourceArtifact[] {
+const origArchive=(name:string)=>/\.orig(?:-[A-Za-z0-9+.-]+)?\.tar\.(?:xz|gz|bz2|lzma|zst)$/.test(name);
+const sourceStem=(source:H1SourceIdentity)=>`${source.name}_${source.version.replace(/^[0-9]+:/,"")}`;
+const nativeArchive=(name:string,source:H1SourceIdentity)=>["xz","gz","bz2","lzma","zst"].some(extension=>name===`${sourceStem(source)}.tar.${extension}`);
+function artifactRows(value:string|undefined,source:H1SourceIdentity):readonly H1SourceArtifact[] {
  need(value!==undefined);const lines=value.split("\n");need(lines.shift()===""&&lines.length>0&&lines.length<=h1SourceLimits.artifacts);
  let total=0;const seen=new Set<string>();const rows=lines.map(line=>{
   const match=/^\s*([a-f0-9]{64}) ([1-9][0-9]*) ([A-Za-z0-9_.+%:~-]+)$/.exec(line);need(match);
   const name=match[3]!,size=Number(match[2]);assertCiPublicEvidenceBasename(name);
   need(!seen.has(name)&&Number.isSafeInteger(size)&&size<=h1SourceLimits.artifactBytes);seen.add(name);
-  need(/\.(?:dsc|(?:orig(?:-[A-Za-z0-9+.-]+)?|debian)\.tar\.(?:xz|gz|bz2|lzma|zst)|diff\.gz)$/.test(name));
+  need(/\.(?:dsc|(?:orig(?:-[A-Za-z0-9+.-]+)?|debian)\.tar\.(?:xz|gz|bz2|lzma|zst)|diff\.gz)$/.test(name)||nativeArchive(name,source)||(name.endsWith(".asc")&&origArchive(name.slice(0,-4))));
   total+=size;need(total<=h1SourceLimits.totalBytes);return Object.freeze({name,sha256:match[1]!,size});
- });need(rows.filter(row=>row.name.endsWith(".dsc")).length<=1);return Object.freeze(rows.sort((a,b)=>a.name<b.name?-1:1));
+ });need(rows.filter(row=>row.name.endsWith(".dsc")).length<=1);
+ // Detached upstream signatures remain checksum-bound DATA and require their exact archive.
+ for(const row of rows)if(row.name.endsWith(".asc"))need(seen.has(row.name.slice(0,-4)));
+ return Object.freeze(rows.sort((a,b)=>a.name<b.name?-1:1));
 }
 /** No cross-pocket/component merge: both full indices must join one signed Release. */
 export function joinH1SourceSelection(binary:AcquiredSignedPackage,source:H1SourceIdentity,binaryIndex:H1SourceIndexOrigin,
@@ -69,7 +75,7 @@ export function joinH1SourceSelection(binary:AcquiredSignedPackage,source:H1Sour
   const row=fields(raw);if(row.get("package")!==source.name||row.get("version")!==source.version)return;
   need(!selected);const directory=row.get("directory");need(directory&&/^pool\/(?:main|universe)\/(?:[A-Za-z0-9_+.-]+\/)*[A-Za-z0-9_+.-]+$/.test(directory));
   need(!directory.split("/").some(part=>part==="."||part==="..")&&directory.split("/")[1]===component);
-  const artifacts=artifactRows(row.get("checksums-sha256"));need(artifacts.filter(row=>row.name.endsWith(".dsc")).length===1);
+  const artifacts=artifactRows(row.get("checksums-sha256"),source);need(artifacts.filter(row=>row.name.endsWith(".dsc")).length===1);
   selected=Object.freeze({source:Object.freeze({...source}),binary,binaryIndex,sourceIndex,stanzaSha256:hash(raw),directory,artifacts});
  });need(selected);tick();return selected;
 }
@@ -84,9 +90,23 @@ function dscBody(bytes:Buffer):string {
 /** Archive hash authenticates the entire .dsc framing; this does not verify an uploader key. */
 export function validateH1SourceDsc(selection:H1SourceSelection,bytes:Buffer):void {
  const original=selection.artifacts.find(row=>row.name.endsWith(".dsc"));need(original&&bytes.length===original.size&&hash(bytes)===original.sha256);
- const row=fields(dscBody(bytes));need(row.get("format")==="3.0 (quilt)"&&row.get("source")===selection.source.name&&row.get("version")===selection.source.version);
- const artifacts=artifactRows(row.get("checksums-sha256"));need(!artifacts.some(row=>row.name.endsWith(".dsc")));
+ const row=fields(dscBody(bytes));need(row.get("source")===selection.source.name&&row.get("version")===selection.source.version);
+ const format=row.get("format");need(format==="3.0 (quilt)"||format==="3.0 (native)"||format==="1.0");
+ const artifacts=artifactRows(row.get("checksums-sha256"),selection.source);need(!artifacts.some(row=>row.name.endsWith(".dsc")));
  need(JSON.stringify(artifacts)===JSON.stringify(selection.artifacts.filter(row=>!row.name.endsWith(".dsc"))));
+ if(format==="3.0 (native)")need(original.name===`${sourceStem(selection.source)}.dsc`&&artifacts.length===1&&nativeArchive(artifacts[0]!.name,selection.source));
+ else if(format==="1.0"){
+  // Only the nonnative 1.0 form: one exact upstream gzip archive and its distro diff.
+  const stem=sourceStem(selection.source),dash=stem.lastIndexOf("-"),upstream=stem.slice(0,dash),orig=`${upstream}.orig.tar.gz`;
+  need(dash>stem.indexOf("_")&&original.name===`${stem}.dsc`);
+  need(artifacts.length===2||artifacts.length===3);
+  need(artifacts.some(item=>item.name===orig)&&artifacts.some(item=>item.name===`${stem}.diff.gz`));
+  need(artifacts.every(item=>item.name===orig||item.name===`${stem}.diff.gz`||item.name===`${orig}.asc`));
+ }else{
+  need(artifacts.some(item=>/\.orig\.tar\.(?:xz|gz|bz2|lzma|zst)$/.test(item.name)));
+  need(artifacts.filter(item=>/\.debian\.tar\.(?:xz|gz|bz2|lzma|zst)$/.test(item.name)).length===1);
+  need(artifacts.every(item=>origArchive(item.name)||(item.name.endsWith(".asc")&&origArchive(item.name.slice(0,-4)))||/\.debian\.tar\.(?:xz|gz|bz2|lzma|zst)$/.test(item.name)));
+ }
 }
 const stamp=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 /** Retain exact downloaded originals through selected binary acquisition; no extraction. */
