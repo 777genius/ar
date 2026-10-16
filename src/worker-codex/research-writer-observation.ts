@@ -236,7 +236,9 @@ async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModul
     const key = JSON.stringify([origin.runtimeDirectory, origin.artifactSha256]);
     let prepare = modules?.get(key);
     if (!prepare) {
-      guard(); // Each actual import has fresh executable qualification on both sides.
+      // Provenance already performed this pre-import qualification in the same
+      // synchronous path. No await or foreign code intervenes; recheck origin.
+      origin.assertCurrent();
       const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
       guard();
       const candidate = module.prepareResearchJobWriterObservation;
