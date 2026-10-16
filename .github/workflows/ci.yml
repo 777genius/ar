@@ -1153,7 +1153,7 @@ jobs:
           assert.equal(expected.size, 0);
           console.log(JSON.stringify({ scope: 'native-root-dependency-inspection-TEST', completedTests: report.numTotalTests }));
           DEPENDENCY_INSPECTION_ROOT_RESULT
-          # Seventeen real-filesystem component cases under the already verified ROOT principal.
+          # Nineteen real-filesystem component cases under the already verified ROOT principal.
           # Native permission/fence/path authority remains projected by these tests.
           sr_native_phase=root_tests
           SR_ARCHIVE_TEST_PRIVILEGE=root \
@@ -1163,6 +1163,7 @@ jobs:
             src/worker-codex/tests/hosted-dependency-installer-start-state-physical.test.ts \
             src/worker-codex/tests/hosted-dependency-committed-mapping-physical.test.ts \
             src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts \
+            src/worker-codex/tests/hosted-dependency-eviction-recovery-physical.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/dependency-retention-physical-root-result.json
           sr_native_phase=root_validator
@@ -1196,6 +1197,13 @@ jobs:
               ]
             ],
             [
+              "src/worker-codex/tests/hosted-dependency-eviction-recovery-physical.test.ts",
+              [
+                "current recovery real negative predicates, projected upstream authority reaches current both-roots conflict with real Evicting and preserves every file and held owner",
+                "current recovery real negative predicates, projected upstream authority reaches changed renamed-v2 evidence after real complete trash observation without publication"
+              ]
+            ],
+            [
               "src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts",
               [
                 "rejects a foreign caller before original selection or filesystem effect",
@@ -1213,10 +1221,10 @@ jobs:
             ]
           ].map(([path, names]) => [resolve(path as string), new Set(names as string[])]));
           assert.equal(report.success, true);
-          assert.equal(report.numTotalTests, 17);
-          assert.equal(report.numPassedTests, 17);
+          assert.equal(report.numTotalTests, 19);
+          assert.equal(report.numPassedTests, 19);
           for (const counter of ['numFailedTests', 'numPendingTests', 'numTodoTests']) assert.equal(report[counter], 0);
-          assert(Array.isArray(report.testResults) && report.testResults.length === 4);
+          assert(Array.isArray(report.testResults) && report.testResults.length === 5);
           for (const file of report.testResults) {
             const names = expected.get(file.name); assert(names);
             assert.equal(file.status, 'passed');
@@ -1225,7 +1233,7 @@ jobs:
             assert.equal(names.size, 0); assert(expected.delete(file.name));
           }
           assert.equal(expected.size, 0);
-          console.log(JSON.stringify({scope:'root-retention-physical-SOURCE-TEST',SourceOnly:true,Native:false,completedTests:17}));
+          console.log(JSON.stringify({scope:'root-retention-physical-SOURCE-TEST',SourceOnly:true,Native:false,completedTests:19}));
           DEPENDENCY_RETENTION_PHYSICAL_ROOT_RESULT
           sr_native_phase=root_tests
           if SR_ARCHIVE_TEST_PRIVILEGE=root \
