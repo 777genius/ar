@@ -4,14 +4,14 @@ import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { claimDependencyConsumer, fenceDependencyConsumer, DependencyAdmissionError, DependencyAdmissionFailure,
   DependencyOwnerPhase, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
-import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind } from "../../worker-core/dependency-environment/domain/dependency-install-key";
+import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind, DependencyInstallKeyError, DependencyInstallKeyFailure } from "../../worker-core/dependency-environment/domain/dependency-install-key";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
 import { hostedDependencyOwnerRoot, type HostedDependencyBinding } from "../hosted-dependency-workspace";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import * as workspace from "../hosted-dependency-workspace";
 import * as capture from "../../worker-local/dependency-environment/capture-npm-install-inputs";
-import { NpmInputCaptureStatus } from "../../worker-local/dependency-environment/capture-npm-install-inputs";
-import { beginHostedDependencyInstallation } from "../hosted-dependency-materialization-context";
+import { NpmInputCaptureStatus, NpmInputCaptureReason } from "../../worker-local/dependency-environment/capture-npm-install-inputs";
+import { beginHostedDependencyInstallation, HostedDependencyInputCaptureError } from "../hosted-dependency-materialization-context";
 import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
@@ -70,17 +70,30 @@ export function registerMaterializationAttemptTest(input: {
         const stat=realFs.fstatSync(fd);realFs.fchownSync(fd,stat.uid,stat.gid);
       });
       let enterInstaller!:()=>void,finishInstaller!:()=>void;
+      let installerPhase:"not_entered"|"recipe"|"workspace"|"package"|"lock"|"waiting"|"output"="not_entered";
       const entered=new Promise<void>(resolve=>{enterInstaller=resolve;}),finish=new Promise<void>(resolve=>{finishInstaller=resolve;});
       const install=vi.spyOn(HostedDependencyInstaller.prototype,"install").mockImplementation(async request=>{
-        if(!("packageBytes" in request))throw new Error("TEST unexpected local installer recipe");
-        expect(request.workspace).toEqual(binding.workspace);expect(request.packageBytes).toEqual(packageBytes);expect(request.lockBytes).toEqual(lockBytes);
-        enterInstaller();await finish;
+        installerPhase="recipe";if(!("packageBytes" in request))throw new Error("TEST unexpected local installer recipe");
+        installerPhase="workspace";expect(request.workspace).toEqual(binding.workspace);
+        installerPhase="package";expect(request.packageBytes).toEqual(packageBytes);
+        installerPhase="lock";expect(request.lockBytes).toEqual(lockBytes);
+        installerPhase="waiting";enterInstaller();await finish;installerPhase="output";
         const stage=input.local("/var/lib/subscription-runtime-host-policy/TEST-concurrent-installer-output"),tree=join(stage,"node_modules");
         realFs.mkdirSync(tree,{recursive:true,mode:0o700});realFs.writeFileSync(join(tree,"module.js"),"module.exports = 'one install';\n",{mode:0o600});
         const stat=realFs.lstatSync(tree,{bigint:true}),qualified=qualifyHostedDependencyInstallerInputs(packageBytes,lockBytes);
         const startId=randomUUID();return {recipe:HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1,lockName:qualified.lockName,
           startId,unit:`subscription-runtime-installer-${startId}.service`,inputSha256:qualified.sha256,profileSha256:"a".repeat(64),completionSha256:"b".repeat(64),
           output:{canonicalPath:tree,dev:String(stat.dev),ino:String(stat.ino)}};
+      });
+      // Pass through the original capture unchanged. Retain only its finite
+      // result so a rejected setup cannot hide behind the barrier error.
+      const captureFacts: { status: NpmInputCaptureStatus; reason?: NpmInputCaptureReason }[]=[];
+      const realCapture=capture.captureNpmInstallInputs;
+      vi.spyOn(capture,"captureNpmInstallInputs").mockImplementation(async request=>{
+        const result=await realCapture(request);
+        if(captureFacts.length<8)captureFacts.push(result.status===NpmInputCaptureStatus.Qualified ?
+          {status:result.status}:{status:result.status,reason:result.reason});
+        return result;
       });
       const readOwner=()=>{const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});try{return store.read(binding.workspace);}finally{store.close();}};
       const refused:unknown[]=[];let release!:()=>void;
@@ -91,8 +104,30 @@ export function registerMaterializationAttemptTest(input: {
         .catch(error=>{refused.push(error);throw error;}));
       // Attach all rejection handlers before any admission starts.
       const completed=Promise.allSettled(calls);release();
+      const failureFacts=(error:unknown)=>{
+        // Never serialize unknown messages, paths or stacks. Source sites are
+        // restricted to these reviewed production files plus numeric offsets.
+        const sites=error instanceof Error ? [...(error.stack??"").slice(0,16384).matchAll(
+          /\/(hosted-(?:dependency-admission|current-dependency-origin|dependency-current-facts|dependency-materialization(?:-context)?|dependency-local-materialization|dependency-staged-output)\.ts):(\d{1,6}):(\d{1,6})/g)]
+          .slice(0,4).map(match=>({file:match[1],line:Number(match[2]),column:Number(match[3])})):[];
+        if(error instanceof HostedDependencyInputCaptureError)return {kind:"input_capture",reason:error.reason,
+          capture:{status:error.captureFailure.status,reason:error.captureFailure.reason},sites};
+        if(error instanceof DependencyAdmissionError)return {kind:"admission",reason:
+          Object.values(DependencyAdmissionFailure).includes(error.reason)?error.reason:"unknown",sites};
+        if(error instanceof DependencyInstallKeyError)return {kind:"install_key",reason:
+          Object.values(DependencyInstallKeyFailure).includes(error.reason)?error.reason:"unknown",sites};
+        return {kind:error instanceof Error && error.message==="hosted_dependency_current_origin_unresolved" ?
+          "current_origin_unresolved":"unknown",sites};
+      };
+      const diagnostic=()=>{
+        let ownerPhase:DependencyOwnerPhase|"none"|"unreadable"="unreadable";
+        let receiptState:(typeof DependencyReceiptState)[keyof typeof DependencyReceiptState]|"none"|"unreadable"="unreadable";
+        try {ownerPhase=readOwner()?.owner?.phase??"none";}catch{/* Preserve the primary failure. */}
+        try {receiptState=receipts.readHostedDependencyReceipt(binding)?.state??"none";}catch{/* Preserve the primary failure. */}
+        return {installerCalls:install.mock.calls.length,installerPhase,refused:refused.slice(0,5).map(failureFacts),captureFacts,ownerPhase,receiptState};
+      };
       try {
-        await Promise.race([entered,completed.then(()=>{throw new Error("TEST admissions ended before selected installer");})]);
+        await Promise.race([entered,completed.then(()=>{throw new Error("TEST admissions ended before selected installer "+JSON.stringify(diagnostic()));})]);
         await expect.poll(()=>refused.length).toBe(4);
         expect(refused.every(error=>error instanceof DependencyAdmissionError && error.reason===DependencyAdmissionFailure.Busy)).toBe(true);
         expect(install).toHaveBeenCalledTimes(1);
@@ -109,6 +144,10 @@ export function registerMaterializationAttemptTest(input: {
         expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.Running,attempt:{attemptId:ready.generation}});
         expect(readFileSync(input.local(join(path,"node_modules/module.js")),"utf8")).toBe("module.exports = 'one install';\n");
         expect(readFileSync(sentinelPath,"utf8")).toBe("preserved original source\n");expect(readFileSync(input.local(absencePath))).toEqual(absenceBytes);
+      } catch(error) {
+        // Subsequent assertion/materialization failures need the same finite
+        // phase facts, while Vitest retains the original exception as primary.
+        console.error("TEST_CONCURRENT_ADMISSION_FACTS "+JSON.stringify(diagnostic()));throw error;
       } finally {finishInstaller();await completed;input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
     });
     it("rejects a replaced same-launch owner before Installing publication or installer launch", async () => {
