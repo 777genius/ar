@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ read: vi.fn(), current: vi.fn(), credential: vi.fn(), start: vi.fn() }));
 vi.mock("../hosted-mimo-worker-origin", () => ({ readHostedMimoCodingWorkerOrigin: mocks.read, assertHostedMimoCodingWorkerOriginCurrent: mocks.current }));
 vi.mock("../hosted-mimo-credential-source", () => ({ captureHostedMimoCodingProxyCredential: mocks.credential }));
-vi.mock("../hosted-mimo-credential-proxy", () => ({ startMimoCredentialProxy: mocks.start }));
+vi.mock("../hosted-mimo-credential-proxy", async original => ({ ...await original<object>(), startMimoCredentialProxy: mocks.start }));
 import { createHostedMimoCodingProxyMaterial } from "../hosted-mimo-coding-proxy-material";
 import { hostedMimoCodingBootstrapForFrame } from "../hosted-mimo-coding-bootstrap-registry";
 import { codexMimoApiKeyEnvVarDefault } from "../codex-model-backend";
@@ -16,7 +16,7 @@ function setup(digest: string, taskTimeoutMs = 60000) {
   const origin = { digest, startId: "12345678-1234-1234-1234-123456789abc", homeRoot: "/job/home", workspacePath: "/workspace", model: "mimo-v2.6-pro", maxGoalTurns: 32, taskTimeoutMs, codexBinaryPath: "/opt/codex" };
   const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + taskTimeoutMs - 10000, maxGoalTurns: 32, binding: { allocationId: "TEST", incarnationId: digest } });
   const proxy = { capability: "TEST-cap-" + digest, baseUrl: "http://127.0.0.1:1234/v1", revoke: vi.fn(), close: vi.fn(async () => {}),
-    capacityRecoveryProof: vi.fn(() => undefined),
+    capacityRecoveryProof: vi.fn(() => undefined), latestFailure: vi.fn(() => undefined),
     upstreamFailureObservation: vi.fn<() => unknown>(() => undefined) };
   mocks.read.mockReturnValue(origin); mocks.current.mockImplementation(() => {}); mocks.credential.mockImplementation(() => ({ bytes: Buffer.from("TEST-real-key-never-bootstrap"), credentialFingerprint: "a".repeat(64), assertCurrent() {} })); mocks.start.mockResolvedValue(proxy);
   const input = { model: origin.model, lifetime, redactor: { registerSecret: vi.fn(), redact: (value: string) => value, assertNoKnownSecret: vi.fn() } };
@@ -115,10 +115,9 @@ it("keeps a real proxy stream failure observable through its owner after closure
   const f = setup("retained-stream-diagnostic");
   let proxy: Awaited<ReturnType<typeof actual.startMimoCredentialProxy>> | undefined;
   mocks.start.mockImplementation(async (input: Parameters<typeof actual.startMimoCredentialProxy>[0]) => {
-    // This real-transport diagnostic case has synthetic material credentials;
-    // it exercises no recovery authority or proof. Genuine capture tests are separate.
-    const { credentialCapture: _syntheticCapture, ...diagnosticInput } = input;
-    proxy = await actual.startMimoCredentialProxy({ ...diagnosticInput,
+    // This diagnostic test uses the real proxy without granting a recovery proof from a mock capture.
+    const { credentialCapture: _mockCapture, ...transportInput } = input;
+    proxy = await actual.startMimoCredentialProxy({ ...transportInput,
       fetchUpstream: async () => new Response("data: invalid-TEST-json\n\n", { headers: { "content-type": "text/event-stream" } }) });
     return proxy;
   });
@@ -303,4 +302,26 @@ it("refuses an explicit recovery binder when no current Coding origin can invoke
   const bind = vi.fn(async () => () => {});
   await expect(createHostedMimoCodingProxyMaterial({ ...f.input, bindCapacityRecoveryCredential: bind })).rejects.toThrow("origin_required");
   expect(bind).not.toHaveBeenCalled(); expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+});
+
+
+it("retains only finite request failure facts after close without copying error payloads", async () => {
+  const f = setup("stream-facts-after-close");
+  const { HostedMimoCodingProxyOwner } = await import("../hosted-mimo-coding-proxy-material");
+  const owner = new HostedMimoCodingProxyOwner();
+  await owner.acquire(f.input); await owner.close();
+  f.proxy.upstreamFailureObservation.mockReturnValue({ requestFailureCount: 2, lastFailureKind: "upstream_body_read_failed",
+    message: "TEST-private-key-and-body", count: 1, lastStatus: 503 });
+  expect(owner.failureDetails()).toEqual({ mimoProxyStartRequestFailureCount: "2", mimoProxyStartLastFailureKind: "upstream_body_read_failed",
+    mimoProxyStartUpstreamHttpFailureCount: "1", mimoProxyStartLastUpstreamStatus: "503" });
+  let invoked = 0;
+  for (const value of [{ requestFailureCount: 0, lastFailureKind: "unknown" },
+    { requestFailureCount: 4097, lastFailureKind: "unknown" }, { requestFailureCount: 1, lastFailureKind: "TEST-private" },
+    { requestFailureCount: 1, get lastFailureKind() { invoked++; return "unknown"; } },
+    new Proxy({}, { getOwnPropertyDescriptor() { invoked++; throw Error("TEST-private"); } })]) {
+    f.proxy.upstreamFailureObservation.mockReturnValue(value); expect(owner.failureDetails()).toBeUndefined();
+  }
+  const failure = { kind: "TEST-original", retryable: false, details: { original: "retained" } } as unknown as Parameters<typeof owner.annotateFailure>[0];
+  f.proxy.upstreamFailureObservation.mockImplementation(() => { throw Error("TEST-private"); });
+  expect(owner.annotateFailure(failure)).toBe(failure); expect(invoked).toBe(0);
 });

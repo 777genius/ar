@@ -58,6 +58,7 @@ import { createLocalProviderRuntimeRegistry } from "@vioxen/subscription-runtime
 import type { ProviderRuntimeRegistry } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexProjectAdmissionDeps,
+  codexProjectAdmissionQueryDeps,
   codexProjectControlBroker,
   loadJobLaunch,
   loadProjectControlController,
@@ -90,7 +91,9 @@ function projectControlAdminDeps() {
 }
 
 export async function projectControlAdmissionSnapshot(args: ProjectControlMcpArgs) {
-  return mcpJson(await projectControlAdmissionSnapshotView(args, projectControlAdminDeps()));
+  return mcpJson(await projectControlAdmissionSnapshotView(args, {
+    ...projectControlAdminDeps(), admissionDeps: codexProjectAdmissionQueryDeps,
+  }));
 }
 
 export async function projectControlRepairLegacyOutputDebt(

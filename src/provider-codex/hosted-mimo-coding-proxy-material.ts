@@ -9,7 +9,7 @@ import type { AppServerExecutionLifetime } from "./app-server/application/app-se
 import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCurrent,
   type HostedMimoCodingWorkerOrigin } from "./hosted-mimo-worker-origin";
 import { captureHostedMimoCodingProxyCredential } from "./hosted-mimo-credential-source";
-import { startMimoCredentialProxy, type MimoCredentialProxy } from "./hosted-mimo-credential-proxy";
+import { MimoProxyFailureKind, startMimoCredentialProxy, type MimoCredentialProxy } from "./hosted-mimo-credential-proxy";
 import type { MimoProxyFailure } from "./mimo-proxy-failure";
 import { codexMimoApiKeyEnvVarDefault, CodexModelBackend, codexModelBackendModelProvidersConfigToml } from "./codex-model-backend";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, codexProviderEgressConfigToml } from "./codex-provider-egress-policy";
@@ -185,10 +185,10 @@ export class HostedMimoCodingProxyOwner {
   private material: HostedMimoCodingProxyMaterial | undefined;
   private disposed = false;
   get retained(): boolean { return this.material !== undefined; }
+  get latestFailure(): MimoProxyFailure | undefined { return this.material?.latestFailure(); }
   capacityRecoveryProof(): ReturnType<MimoCredentialProxy["capacityRecoveryProof"]> {
     return this.material?.capacityRecoveryProof();
   }
-  get latestFailure(): MimoProxyFailure | undefined { return this.material?.latestFailure(); }
   /** Numeric start-lifetime observations only; this grants no live authority. */
   failureDetails(): Readonly<Record<string, string>> | undefined {
     try {
@@ -196,9 +196,20 @@ export class HostedMimoCodingProxyOwner {
       if (!value || types.isProxy(value)) return;
       const count: unknown = Object.getOwnPropertyDescriptor(value, "count")?.value;
       const status: unknown = Object.getOwnPropertyDescriptor(value, "lastStatus")?.value;
-      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > 4096 ||
-          typeof status !== "number" || !Number.isSafeInteger(status) || status < 100 || status > 599) return;
-      return Object.freeze({ mimoProxyStartUpstreamHttpFailureCount: String(count), mimoProxyStartLastUpstreamStatus: String(status) });
+      const details: Record<string, string> = {};
+      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 1 && count <= 4096 &&
+          typeof status === "number" && Number.isSafeInteger(status) && status >= 100 && status <= 599) {
+        details.mimoProxyStartUpstreamHttpFailureCount = String(count);
+        details.mimoProxyStartLastUpstreamStatus = String(status);
+      }
+      const failures: unknown = Object.getOwnPropertyDescriptor(value, "requestFailureCount")?.value;
+      const kind: unknown = Object.getOwnPropertyDescriptor(value, "lastFailureKind")?.value;
+      if (typeof failures === "number" && Number.isSafeInteger(failures) && failures >= 1 && failures <= 4096 &&
+          typeof kind === "string" && Object.values(MimoProxyFailureKind).some(allowed => allowed === kind)) {
+        details.mimoProxyStartRequestFailureCount = String(failures);
+        details.mimoProxyStartLastFailureKind = kind;
+      }
+      return Object.keys(details).length ? Object.freeze(details) : undefined;
     } catch { /* Optional observations never replace the provider's failure. */ }
   }
   annotateFailure(failure: ProviderFailure): ProviderFailure {

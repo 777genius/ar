@@ -110,6 +110,44 @@ describe("trusted MiMo bridge dispatch and retention", () => {
     await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Stop))).resolves.toMatchObject({ ok: true });
     await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Status))).resolves.toMatchObject({ jobId: "test-job", status: { state: "done" } });
   });
+  it.each(["directory", "record"])("observes a direct job with no bridge attempt %s without writing metadata", async missing => {
+    if (missing === "directory") vi.mocked(researchCustody).mockImplementation(path => {
+      if (path === root + "/mimo-bridge-attempts") throw Object.assign(new Error("TEST missing directory"), { code: "ENOENT" });
+    });
+    const before = [...state.files.entries()];
+    try {
+      await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Status))).resolves.toMatchObject({ jobId: "test-job", status: { state: "done" } });
+      expect(state.load).toHaveBeenCalledTimes(1);
+      expect([...state.files.entries()]).toEqual(before);
+      expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.stop).not.toHaveBeenCalled();
+    } finally { vi.mocked(researchCustody).mockReset(); }
+  });
+  it.each([MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Stop])("still requires a bridge attempt for %s", async operation => {
+    await expect(handleHostedMimoProjectBridge(control(operation))).rejects.toThrow();
+    expect(state.load).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.stop).not.toHaveBeenCalled();
+  });
+  it.each(["malformed", "foreign-job"])("refuses a present %s bridge attempt during Status", async fault => {
+    await handleHostedMimoProjectBridge(request); state.load.mockClear();
+    const path = root + "/mimo-bridge-attempts/test-job.json";
+    state.files.set(path, Buffer.from(fault === "malformed" ? "{" : JSON.stringify({ ...JSON.parse(state.files.get(path)!.toString()), jobId: "foreign-job" })));
+    await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Status))).rejects.toThrow();
+    expect(state.load).not.toHaveBeenCalled();
+  });
+  it("does not reinterpret unsafe bridge attempt ancestry as absence", async () => {
+    vi.mocked(researchCustody).mockImplementation(path => {
+      if (path === root + "/mimo-bridge-attempts") throw Object.assign(new Error("TEST unsafe ancestry"), { code: "EACCES" });
+    });
+    try {
+      await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Status))).rejects.toThrow("TEST unsafe ancestry");
+      expect(state.load).not.toHaveBeenCalled();
+    } finally { vi.mocked(researchCustody).mockReset(); }
+  });
+  it("refuses a foreign workspace when Status has no bridge attempt", async () => {
+    const loaded = await state.load(); state.load.mockClear();
+    state.load.mockResolvedValue({ ...loaded, launch: { ...loaded.launch, config: { ...loaded.launch.config, workspacePath: "/TEST-foreign-workspace" } } });
+    await expect(handleHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Status))).rejects.toThrow("mimo_project_bridge_attempt_invalid");
+    expect(state.refill).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.stop).not.toHaveBeenCalled();
+  });
 });
 
 describe("root-only existing project enrollment", () => {

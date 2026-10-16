@@ -1,12 +1,13 @@
 import { HostedMimoProfile } from "./hosted-mimo-profile";
-import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome, type HostedMimoCapacityRecoveryBinder } from "./hosted-mimo-coding-proxy-material";
-import type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
-export type { HostedMimoCapacityRecoveryBinder, HostedMimoCurrentCredentialBinding } from "./hosted-mimo-coding-proxy-material";
-export type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
+import { HostedMimoCodingProxyOwner, allocateHostedMimoAdmissionHome } from "./hosted-mimo-coding-proxy-material";
 import { readTaskGoalObjective, readTaskManagedRunId } from "./codex-task-metadata";
 import { snapshotSessionUpdate } from "./codex-session-update-snapshot";
 import { SessionExecutionUseDisposition } from "@vioxen/subscription-runtime/core";
 import { codexDriverFailure } from "./codex-driver-failure";
+import { type HostedMimoCapacityRecoveryBinder } from "./hosted-mimo-coding-proxy-material";
+import type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
+export type { HostedMimoCapacityRecoveryBinder, HostedMimoCurrentCredentialBinding } from "./hosted-mimo-coding-proxy-material";
+export type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained, assertHostedMimoCodingWorkerHomeRetained, readHostedMimoWorkerProfileOrigin } from "./hosted-mimo-worker-origin";
@@ -32,7 +33,7 @@ import {
   codexProviderId,
   defaultCodexModel,
 } from "./capabilities";
-import { classifyCodexFailure } from "./failure-classifier";
+import { classifyCodexFailure, codexFinishReasonForFailure } from "./failure-classifier";
 import { createCodexTextDeltaRedactor } from "./codex-text-delta-redactor";
 import {
   type CodexExecutionEngine,
@@ -132,7 +133,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   readonly #serviceTier: CodexServiceTier | undefined;
   readonly #outputSchemas: Readonly<Record<string, unknown>>;
   readonly #sessionMaterializer: CodexSessionMaterializer;
-  readonly modelBackend: CodexModelBackend;
+  readonly #modelBackend: CodexModelBackend;
   readonly #mimoApiKeyEnvVarName: string;
   readonly #mimoConfigToml: string | undefined;
   readonly #sourceEnv: Readonly<Record<string, string | undefined>> | undefined;
@@ -197,9 +198,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
                 }
               : {}),
           };
-    this.modelBackend = modelBackend;
+    this.#modelBackend = modelBackend;
     this.#model =
-      options.model ?? codexModelBackendDefaultModel(this.modelBackend, defaultCodexModel);
+      options.model ?? codexModelBackendDefaultModel(this.#modelBackend, defaultCodexModel);
     this.#reasoningEffort = options.reasoningEffort ?? "low";
     this.#serviceTier = options.serviceTier;
     this.#outputSchemas = options.outputSchemas ?? {};
@@ -211,7 +212,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
     this.#sourceEnv = options.sourceEnv;
   }
 
-  capacityRecoveryProof(): HostedMimoCapacityRecoveryProof | undefined { return this.#codingProxyOwner.capacityRecoveryProof(); }
+  /** Readonly provider identity for the existing managed-run recovery contract. */
+  get modelBackend(): CodexModelBackend { return this.#modelBackend; }
+
+  capacityRecoveryProof(): HostedMimoCapacityRecoveryProof | undefined {
+    return this.#codingProxyOwner.capacityRecoveryProof();
+  }
 
   async runTask(input: Parameters<AgentDriver["runTask"]>[0]): Promise<ProviderTaskResult> {
     const pending = this.#runTaskInvocation(input);
@@ -235,7 +241,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
     const startedAt = Date.now();
-    if (this.modelBackend === CodexModelBackend.OpenAiChatGpt && !input.session) {
+    if (this.#modelBackend === CodexModelBackend.OpenAiChatGpt && !input.session) {
       return {
         status: "failed",
         failure: {
@@ -267,7 +273,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
       if (input.sessionExecutionUse && input.task.controls?.model !== undefined && input.task.controls.model !== this.#model) throw new Error("codex_managed_model_mismatch");
       this.#executionLifetime?.enterMaterialization(outputAbortSignal);
       if (input.logicalThread && this.#executionLifetime) throw new Error("child_continuation_denied");
-      if (this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+      if (this.#modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
         try {
           materialized = await this.#awaitMaterialization(this.#materializeMimoSession({
             redactor: input.redactor,
@@ -588,7 +594,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     let materialized = this.#managedRunSessions.get(input.runId) ?? null;
     let ownsMaterialized = false;
     if (!materialized) {
-      materialized = this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      materialized = this.#modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
         ? await this.#materializeMimoSession({ redactor: input.redactor })
         : await this.#materializeChatGptSession({
             session: input.session,
@@ -778,7 +784,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     if (this.#executionLifetime) throw new Error("child_prewarm_denied");
     let mimoMaterialized: CodexMaterializedSession | null = null;
     let sessionPrewarm: CodexSessionPrewarmResult;
-    if (this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    if (this.#modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
       mimoMaterialized = await this.#materializeMimoSession({
         redactor: input.redactor,
       });
@@ -931,7 +937,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     await this.#codingProxyOwner.close();
     await this.#engine.dispose?.();
     if (this.#materializations.size || this.#pendingReleases.size || (this.#executionLifetime && this.#activeRuns.size)) throw new Error("codex_driver_materialization_pending");
-    if (!(this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && this.#options.mimoHomeLifecycle && (this.#codingProxyOwner.retained || readHostedMimoWorkerOrigin())) &&
+    if (!(this.#modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && this.#options.mimoHomeLifecycle && (this.#codingProxyOwner.retained || readHostedMimoWorkerOrigin())) &&
         this.#executionLifetime && (!this.#executionLifetime.childBudget ||
         (this.#sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") &&
         ([...this.#retainedSessions].some(session => !this.#unusedSessions.has(session)) || this.#managedRunSessions.size)) {

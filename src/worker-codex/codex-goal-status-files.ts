@@ -195,6 +195,7 @@ export async function gitWorkspaceStatus(
   }
   try {
     const { stdout } = await execFileAsync("git", [
+      "--no-optional-locks",
       "-C",
       path,
       "status",

@@ -36,13 +36,10 @@ import {
   type CodexStructuredOutputSchemaPlan,
 } from "./codex-structured-output-schema";
 
-export type CodexReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+export const codexReasoningEfforts = Object.freeze([
+  "none", "minimal", "low", "medium", "high", "xhigh",
+] as const);
+export type CodexReasoningEffort = typeof codexReasoningEfforts[number];
 
 export type CodexServiceTier = string;
 

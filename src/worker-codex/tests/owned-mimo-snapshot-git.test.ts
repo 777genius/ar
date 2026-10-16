@@ -5,7 +5,9 @@ import { promisify } from "node:util";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { OwnedMimoSnapshotGitRunner, MimoSnapshotGitFailure, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "../owned-mimo-snapshot-git";
+import { OwnedMimoSnapshotGitRunner, MimoSnapshotGitFailure, MimoSnapshotTimingScope,
+  type MimoSnapshotTiming, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "../owned-mimo-snapshot-git";
+import { researchAdmissionMeasure } from "../research-launch-admission-diagnostics";
 
 const boundary = vi.hoisted(() => ({ failure: undefined as unknown, options: undefined as Record<string, unknown> | undefined }));
 vi.mock("node:child_process", async original => {
@@ -109,4 +111,137 @@ it("uses a finite 30s child budget, classifies timeout and never inherits ambien
   const childEnv = boundary.options?.env as Record<string, unknown>;
   expect([childEnv.GIT_CONFIG_COUNT, childEnv.GIT_CONFIG_NOSYSTEM, childEnv.GIT_NO_LAZY_FETCH, childEnv.GIT_OPTIONAL_LOCKS]).toEqual(["0", "1", "1", "0"]);
   expect(Object.hasOwn(childEnv, "TEST_SECRET_PAYLOAD")).toBe(false); expect(Object.hasOwn(childEnv, "GIT_DIR")).toBe(false);
+});
+
+it("observes only initial access/snapshot while separating real Git from unchanged admission checks", async () => {
+  await linked();
+  const observations: MimoSnapshotTiming[] = [], guard = vi.fn(() => {
+    const until = performance.now() + 1; while (performance.now() < until) { /* TEST admission cost */ }
+    return { admissionAuthorityElapsedMs: 0.4, admissionArtifactElapsedMs: 0.3, admissionExecutableElapsedMs: 0.1, admissionAuthorityServiceElapsedMs: 0.2, admissionAuthorityScalarWitnessElapsedMs: 0.15, admissionAuthorityPairedPinElapsedMs: 0.05 };
+  });
+  const runner = new OwnedMimoSnapshotGitRunner(workspace, guard, timing => observations.push(timing));
+  const access = ownedMimoWorkspaceAccess(runner), snapshot = ownedMimoWorkspaceSnapshotter(runner);
+  await access.assertGitWorkspace({ workspacePath: workspace });
+  expect(await snapshot.capture({ workspacePath: workspace })).toMatchObject({ mode: "git", dirty: false });
+  expect(guard).toHaveBeenCalledTimes(24);
+  expect(observations.map(t => [t.scope, t.outcome, t.admissionCount, t.successfulGitCount]))
+    .toEqual([["initial_access", "completed", 4, 1], ["initial_snapshot", "completed", 20, 9]]);
+  for (const timing of observations) {
+    expect(Object.isFrozen(timing)).toBe(true);
+    expect(timing.admissionElapsedMs).toBeGreaterThanOrEqual(timing.admissionCount);
+    expect(timing.successfulGitElapsedMs).toBeGreaterThan(0);
+    expect(timing.elapsedMs).toBeGreaterThanOrEqual(timing.admissionElapsedMs + timing.successfulGitElapsedMs);
+    expect(timing.admissionAuthorityElapsedMs).toBeCloseTo(timing.admissionCount * 0.4);
+    expect(timing.admissionArtifactElapsedMs).toBeCloseTo(timing.admissionCount * 0.3);
+    expect(timing.admissionExecutableElapsedMs).toBeCloseTo(timing.admissionCount * 0.1);
+    expect(timing.admissionAuthorityServiceElapsedMs).toBeCloseTo(timing.admissionCount * 0.2);
+    expect(timing.admissionAuthorityScalarWitnessElapsedMs).toBeCloseTo(timing.admissionCount * 0.15);
+    expect(timing.admissionAuthorityPairedPinElapsedMs).toBeCloseTo(timing.admissionCount * 0.05);
+    // Inclusive service time is already inside authority, not an extra outer phase.
+    expect(timing.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing.admissionAuthorityElapsedMs!);
+    expect(Object.keys(timing).sort()).toEqual(["scope", "outcome", "elapsedMs", "admissionCount", "admissionElapsedMs", "successfulGitCount", "successfulGitElapsedMs", "admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs", "admissionAuthorityServiceElapsedMs", "admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs"].sort());
+  }
+  expect(JSON.stringify(observations)).not.toContain(workspace);
+  await access.assertGitWorkspace({ workspacePath: workspace }); await snapshot.capture({ workspacePath: workspace });
+  expect(guard).toHaveBeenCalledTimes(48); expect(observations).toHaveLength(2);
+});
+
+it("drops invalid admission parts without invoking getters or proxy traps", async () => {
+  let invoked = 0;
+  const valid = { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0, admissionAuthorityServiceElapsedMs: 0 };
+  const getter = { ...valid }; Object.defineProperty(getter, "admissionArtifactElapsedMs", { get: () => { invoked++; throw Error("TEST private"); } });
+  const proxy = new Proxy(valid, { getOwnPropertyDescriptor: () => { invoked++; throw Error("TEST private"); } });
+  for (const value of [getter, proxy, { ...valid, admissionAuthorityElapsedMs: NaN }, { ...valid, admissionArtifactElapsedMs: -1 }, { ...valid, admissionExecutableElapsedMs: Infinity }, { ...valid, admissionAuthorityElapsedMs: 86_400_001 }]) {
+    const seen: MimoSnapshotTiming[] = [], runner = new OwnedMimoSnapshotGitRunner(workspace, () => value, t => seen.push(t));
+    await expect(runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => { runner.assertHealthy(); return 7; })).resolves.toBe(7);
+    expect(seen).toHaveLength(1); expect(seen[0]).not.toHaveProperty("admissionAuthorityElapsedMs");
+    expect(seen[0]).not.toHaveProperty("admissionAuthorityScalarWitnessElapsedMs");
+    expect(seen[0]).not.toHaveProperty("admissionAuthorityPairedPinElapsedMs");
+  }
+  expect(invoked).toBe(0);
+  const serviceGetter = { ...valid }; Object.defineProperty(serviceGetter, "admissionAuthorityServiceElapsedMs", { get: () => { invoked++; throw Error("TEST private service"); } });
+  const legacy = { admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0 };
+  for (const value of [legacy, serviceGetter, { ...valid, admissionAuthorityServiceElapsedMs: 1 }, { ...valid, admissionAuthorityServiceElapsedMs: NaN }]) {
+    const seen: MimoSnapshotTiming[] = [], runner = new OwnedMimoSnapshotGitRunner(workspace, () => value, timing => seen.push(timing));
+    await runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => { runner.assertHealthy(); runner.assertHealthy(); });
+    expect(seen[0]).toMatchObject({ admissionAuthorityElapsedMs: 0, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0 });
+    expect(seen[0]).not.toHaveProperty("admissionAuthorityServiceElapsedMs");
+  }
+  expect(invoked).toBe(0);
+});
+
+it("omits each incomplete or hostile witness metric independently without changing guards", async () => {
+  let invoked = 0;
+  for (const key of ["admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs"] as const) {
+    const other = key === "admissionAuthorityScalarWitnessElapsedMs" ? "admissionAuthorityPairedPinElapsedMs" : "admissionAuthorityScalarWitnessElapsedMs";
+    const valid = { admissionAuthorityElapsedMs: 1, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0, [other]: 0.2 };
+    const getter = { ...valid }; Object.defineProperty(getter, key, { get: () => { invoked++; throw Error("TEST private witness"); } });
+    for (const bad of [undefined, NaN, -1, Infinity, 2, getter]) {
+      let calls = 0; const seen: MimoSnapshotTiming[] = [];
+      const runner = new OwnedMimoSnapshotGitRunner(workspace, () => {
+        calls++; const until = performance.now() + 2; while (performance.now() < until) { /* TEST guard */ }
+        return calls === 1 ? { ...valid, [key]: 0.2 } : bad === getter ? getter : { ...valid, [key]: bad };
+      }, timing => seen.push(timing));
+      await expect(runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => { runner.assertHealthy(); runner.assertHealthy(); return 7; })).resolves.toBe(7);
+      expect(calls).toBe(2); expect(seen[0]).not.toHaveProperty(key);
+      expect(seen[0]?.[other]).toBeCloseTo(0.4);
+      expect(seen[0]?.admissionAuthorityElapsedMs).toBe(2);
+    }
+  }
+  expect(invoked).toBe(0);
+});
+
+it("phase clocks and observers never replace the actual operation result or thrown identity", () => {
+  const result = {}, original = Error("TEST exact refusal"), observe = vi.fn(() => { throw Error("TEST observer"); });
+  const assertOriginalThrown = (): void => {
+    let caught: unknown;
+    try { researchAdmissionMeasure(() => { throw original; }, observe); } catch (error) { caught = error; }
+    expect(caught).toBe(original);
+  };
+  expect(researchAdmissionMeasure(() => result, observe)).toBe(result);
+  assertOriginalThrown();
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => { throw Error("TEST clock"); });
+  try {
+    observe.mockClear(); expect(researchAdmissionMeasure(() => result, observe)).toBe(result);
+    assertOriginalThrown();
+    expect(observe).not.toHaveBeenCalled();
+    for (const value of [NaN, Infinity]) {
+      clock.mockReturnValue(value);
+      expect(researchAdmissionMeasure(() => result, observe)).toBe(result);
+      assertOriginalThrown();
+      expect(observe).not.toHaveBeenCalled();
+    }
+  } finally { clock.mockRestore(); }
+});
+
+it("throwing observers preserve success, actual abort and sticky ownership failure", async () => {
+  await linked();
+  const observer = vi.fn(() => { throw Error("TEST observation unavailable"); });
+  const runner = new OwnedMimoSnapshotGitRunner(workspace, () => {}, observer);
+  await expect(ownedMimoWorkspaceAccess(runner).assertGitWorkspace({ workspacePath: workspace })).resolves.toBeUndefined();
+  const controller = new AbortController(); controller.abort();
+  await expect(ownedMimoWorkspaceSnapshotter(runner).capture({ workspacePath: workspace, abortSignal: controller.signal }))
+    .rejects.toMatchObject({ name: "AbortError", code: "ABORT_ERR" });
+  expect(observer.mock.calls).toHaveLength(2);
+  const refused = Error("TEST original admission refusal");
+  const denied = new OwnedMimoSnapshotGitRunner(workspace, () => { throw refused; }, observer);
+  await expect(ownedMimoWorkspaceAccess(denied).assertGitWorkspace({ workspacePath: workspace })).rejects.toBe(refused);
+  await expect(ownedMimoWorkspaceAccess(denied).assertGitWorkspace({ workspacePath: workspace })).rejects.toBe(refused);
+});
+
+it("suppresses staggered same-scope overlap and later snapshot timing without changing any result", async () => {
+  const observer = vi.fn(), runner = new OwnedMimoSnapshotGitRunner(workspace, () => {}, observer);
+  let release!: () => void, releaseSecond!: () => void;
+  const first = runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => {
+    runner.assertHealthy(); await new Promise<void>(resolve => { release = resolve; }); return "TEST first";
+  });
+  const second = runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => {
+    runner.assertHealthy(); await new Promise<void>(resolve => { releaseSecond = resolve; });
+    runner.assertHealthy(); return "TEST second";
+  });
+  release(); await expect(first).resolves.toBe("TEST first");
+  await expect(runner.observeInitial(MimoSnapshotTimingScope.InitialSnapshot, async () => {
+    runner.assertHealthy(); releaseSecond(); await second; return "TEST third";
+  })).resolves.toBe("TEST third");
+  await expect(second).resolves.toBe("TEST second"); expect(observer).not.toHaveBeenCalled();
 });

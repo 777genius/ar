@@ -6,6 +6,9 @@ try {
   if (process.argv[2] === "--prepare-project" && process.argv.length === 4) {
     const { prepareHostedMimoProject } = await import("./hosted-mimo-project-bridge-prepare");
     process.stdout.write(JSON.stringify(await prepareHostedMimoProject(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--advance-source" && (process.argv.length === 4 && process.argv[3] !== "--dry-run" || process.argv.length === 5 && process.argv[3] === "--dry-run")) {
+    const { advanceHostedMimoProjectSource } = await import("./hosted-mimo-project-bridge-advance");
+    process.stdout.write(JSON.stringify(await advanceHostedMimoProjectSource(process.argv[process.argv.length - 1]!, { dryRun: process.argv.length === 5 })) + "\n");
   } else if (process.argv[2] === "--resume-project-preparation" && process.argv.length === 4) {
     // No generic transport can prove that the original producer is closed.
     throw new Error("mimo_project_bridge_prepare_resume_refused");

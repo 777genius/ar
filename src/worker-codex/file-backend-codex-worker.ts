@@ -537,7 +537,6 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 }
 
-
 const systemClock: ClockPort = {
   now: () => new Date(),
   monotonicMs: () => performance.now(),

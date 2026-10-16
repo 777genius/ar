@@ -45,6 +45,8 @@ import { LocalWorkerAccountTaskRecovery } from "./local-worker-account-task-reco
 
 export type LocalFileWorkerAccountCapacityStoreOptions = {
   readonly rootDir: string;
+  /** Query reads preserve malformed evidence and refuse instead of cleaning it. */
+  readonly strictReads?: boolean;
   readonly observability?: ObservabilityPort;
   readonly restrictiveLegacyAccountIdPrefixes?: readonly string[];
 };
@@ -137,7 +139,7 @@ export class LocalFileWorkerAccountCapacityStore
       : this.readAggregateRecord(accountId, input.now);
     if (!resolved) return null;
     if (resolved.record.accountId !== accountId) {
-      rmSync(resolved.path, { force: true });
+      this.discardInvalidRead(resolved.path);
       return null;
     }
     if (
@@ -146,7 +148,7 @@ export class LocalFileWorkerAccountCapacityStore
       workerRuntimeDemandKey(resolved.record.demand) !==
         workerRuntimeDemandKey(demand)
     ) {
-      rmSync(resolved.path, { force: true });
+      this.discardInvalidRead(resolved.path);
       return null;
     }
     return stateFromResolved(resolved, input.now);
@@ -470,12 +472,17 @@ export class LocalFileWorkerAccountCapacityStore
       .filter((entry): entry is ResolvedRecord => entry !== null);
   }
 
+  private discardInvalidRead(path: string): void {
+    if (this.options.strictReads) throw new Error("worker_account_capacity_query_unreadable");
+    rmSync(path, { force: true });
+  }
+
   private readResolvedRecord(path: string): ResolvedRecord | null {
     const record = this.readRecordPath(path);
     if (!record) return null;
     const capacity = parsePersistedCapacity(record.capacity);
     if (!capacity) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     return { path, record, capacity };
@@ -488,14 +495,14 @@ export class LocalFileWorkerAccountCapacityStore
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return null;
       if (error instanceof SyntaxError) {
-        rmSync(path, { force: true });
+        this.discardInvalidRead(path);
         return null;
       }
       throw error;
     }
     const record = parsePersistedRecord(parsed);
     if (!record) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     return record;
@@ -524,20 +531,20 @@ export class LocalFileWorkerAccountCapacityStore
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return null;
       if (error instanceof SyntaxError) {
-        rmSync(path, { force: true });
+        this.discardInvalidRead(path);
         return null;
       }
       throw error;
     }
     if (!isPersistedClaim(parsed)) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     const previous = parsePersistedCapacity(parsed.previous);
     const claimedAt = optionalDate(parsed.claimedAt);
     const expiresAt = optionalDate(parsed.expiresAt);
     if (!previous || !claimedAt || !expiresAt) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     return {

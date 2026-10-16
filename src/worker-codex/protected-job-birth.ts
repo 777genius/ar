@@ -39,6 +39,9 @@ function privateRoot(assertCurrent?: () => void): void {
 }
 function acquirePublication(assertCurrent?: () => void): () => void {
   privateRoot(assertCurrent);
+  // Presence only refuses; the existing atomic link still arbitrates an absent-name race.
+  try { lstatSync(publicationLock); throw new Error("protected_job_birth_publication_busy"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const nonce = randomUUID(), ownerPath = join(birthRoot, `.publication-${nonce}.owner.json`);
   const owner = { schemaVersion: 1, nonce, process: researchProcessIdentity() };
   // Fully write/fsync BEFORE publishing the name. An old mkdir owner remains

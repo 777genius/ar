@@ -6,8 +6,6 @@ import {
 } from "./codex-goal-mcp-decision-contracts";
 import {
   goalInputSchema,
-  mimoThinkingInputSchema,
-  mimoOwnedPathsInputSchema,
 } from "./codex-goal-mcp-input-schemas";
 import {
   jobIdInputSchema,
@@ -55,7 +53,7 @@ export function registerCodexGoalJobTools(server: McpServer, storageDefaults: Co
     "codex_goal_list_jobs",
     {
       title: "List Codex Goal Jobs",
-      description: "List stored Codex goal job manifests.",
+      description: "List job manifests from the local registry only. MiMo project/workstream selectors are unsupported; use codex_goal_status_by_id for a known hosted MiMo job.",
       inputSchema: jobRegistryInputSchema(),
     },
     withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
@@ -156,7 +154,7 @@ export function registerCodexGoalJobTools(server: McpServer, storageDefaults: Co
     {
       title: "Codex Goal Status By Job",
       description: "Inspect a stored Codex goal job using only jobId. For a configured remote MiMo project, add mimoProjectId and mimoWorkstreamId and omit registryRootDir/cwd. Returns owned operation states and canonical worker status when available; pending submission is not worker completion.",
-      inputSchema: { ...jobIdInputSchema(), thinking: mimoThinkingInputSchema, ownedPaths: mimoOwnedPathsInputSchema },
+      inputSchema: z.object(jobIdInputSchema()).strict(),
     },
     withCodexGoalMcpStorage(storageDefaults, async (args) => withMcpErrors(async () =>
       mcpJson(await getCodexGoalStatusByIdUseCase(args as JobIdMcpArgs)),

@@ -36,6 +36,7 @@ export function readPrivateHostedMimoOperationBytes(path: string, maximum: numbe
     throw new Error("mimo_project_bridge_operation_invalid");
   return bytes;
 }
+const ownedUnitFenceWaitMs = 120_000;
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
 const approvedErrorCodes = new Set([
   "mimo_project_runtime_routing_invalid",
@@ -195,6 +196,8 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
   return { state: "settled", unit: current.value.unit, result, terminalVerified: state.LoadState === "loaded" &&
     ["inactive", "failed"].includes(state.ActiveState ?? "") && state.MainPID === "0" };
 }
+/** Read-only operation state for maintenance that must not race bridge operations. */
+export const observeHostedMimoProjectOperation = observation;
 /** Status may reconcile an existing publication, but never submits a provider.
  * Recover only after the exact prior observer cannot execute any further work. */
 function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller-recovery"): boolean {
@@ -231,6 +234,9 @@ async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<un
   let generation = 0;
   let rearmProof: Readonly<{ ownerSha256: string; requestSha256: string; resultSha256: string; receiptSha256: string }> | undefined;
   const retainedFiles = operationFiles(request);
+  // A racing agent gets a retryable refusal before its job ID is consumed.
+  if (request.operation === MimoProjectBridgeOperation.Create && !existsSync(retainedFiles.ownerPath) && request.sourceCommit !== binding.sourceCommit)
+    throw new Error("mimo_project_bridge_source_mismatch");
   // A crash after archival must not resurrect generation zero as a fresh Start.
   if (request.operation === MimoProjectBridgeOperation.Start && !existsSync(retainedFiles.ownerPath) && existsSync(retainedFiles.root) &&
       readdirSync(retainedFiles.root).some(name => name.startsWith(`${request.jobId}.start.`)))
@@ -366,7 +372,10 @@ export async function executeHostedMimoProjectBridgeOperation(requestPath: strin
   const binding = parseHostedMimoProjectBinding(JSON.parse(hostedMimoBridgeMetadataBytes(
     `/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`).toString()), request);
   researchCustody(binding.stateRoot, true);
-  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => executeHostedMimoProjectBridgeOperationUnfenced(requestPath));
+  // The request and owner are already persisted, so a source advance must delay
+  // this unit instead of leaving the operation without a published result.
+  const fenceWaitMs = Math.min(ownedUnitFenceWaitMs, Math.floor(binding.operationTimeoutMs / 4));
+  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => executeHostedMimoProjectBridgeOperationUnfenced(requestPath), { fenceWaitMs });
 }
 async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: string): Promise<boolean> {
   assertResearchInitialRoot(true); assertResearchSharedHost();

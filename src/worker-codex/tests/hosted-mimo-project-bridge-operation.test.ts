@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { SafeExecutionError } from "../../worker-core/safe-execution/domain/safe-execution-policy";
-vi.mock("../hosted-mimo-project-workstream-fence", () => ({ withHostedMimoWorkstreamActivity: async (_root: string, effect: () => Promise<unknown>) => effect() }));
-const state = vi.hoisted(() => ({ files: new Map<string, string>(), fds: new Map<number, string>(), nextFd: 10000, command: vi.fn(), handler: vi.fn(), rearm: vi.fn(), busyCapture: vi.fn(), busyCurrent: vi.fn(), publicationFailure: undefined as "write" | "rename" | undefined }));
+vi.mock("../hosted-mimo-project-workstream-fence", () => ({ withHostedMimoWorkstreamActivity: async (_root: string, effect: () => Promise<unknown>, options?: object) => { state.fenceOptions.push(options); return effect(); } }));
+const state = vi.hoisted(() => ({ bindingCommit: "b".repeat(40), fenceOptions: [] as unknown[], files: new Map<string, string>(), fds: new Map<number, string>(), nextFd: 10000, command: vi.fn(), handler: vi.fn(), rearm: vi.fn(), busyCapture: vi.fn(), busyCurrent: vi.fn(), publicationFailure: undefined as "write" | "rename" | undefined }));
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (p: string) => state.files.has(p), readdirSync: (p: string) => [...state.files.keys()].filter(x => x.startsWith(p + "/")).map(x => x.slice(p.length + 1)), mkdirSync: (p: string) => state.files.set(p, ""),
   realpathSync: (p: string) => p === "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js" ? "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js" : p, lstatSync: (p: string) => ({ isFile: () => true, isDirectory: () => p.endsWith("/mimo-bridge-operations"), isSymbolicLink: () => false, uid: 0, gid: 0, nlink: 1, dev: 1, ino: p.length, ctimeMs: 1,
     size: Buffer.byteLength(state.files.get(p) ?? ""), mode: 0o100000 | (/\.json(?:\.tmp)?$/.test(p) ? 0o600 : 0o700) }),
@@ -22,7 +22,7 @@ vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), 
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn(), researchPublish: (path: string, value: unknown) => { if (state.files.has(path)) throw new Error("TEST retained proof"); state.files.set(path, JSON.stringify(value) + "\n"); } }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ handleHostedMimoProjectBridge: state.handler,
   assertHostedMimoAdmissionRepairStartRearm: state.rearm,
-  hostedMimoBridgeMetadataBytes: (p: string) => Buffer.from(state.files.get(p)!), parseHostedMimoProjectBinding: () => ({ operationTimeoutMs: 900000, stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream" }) }));
+  hostedMimoBridgeMetadataBytes: (p: string) => Buffer.from(state.files.get(p)!), parseHostedMimoProjectBinding: () => ({ sourceCommit: state.bindingCommit, operationTimeoutMs: 900000, stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream" }) }));
 vi.mock("../codex-goal-jobs", () => ({ readCodexGoalJob: vi.fn() }));
 vi.mock("../codex-goal-mcp-project-control-deps", () => ({ loadProjectControlController: vi.fn() }));
 vi.mock("../hosted-ordinary-writer-authority", () => ({ hostedOrdinaryWriterAuthorityAbsent: vi.fn() }));
@@ -44,7 +44,7 @@ import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contra
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
 const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
 const entry = "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
-beforeEach(() => { state.files.clear(); state.fds.clear(); state.publicationFailure = undefined; vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); state.busyCapture.mockResolvedValue({ schemaVersion: 1, requestSha256: "a".repeat(64), bindings: [], directories: [], workspaceBindingSha256: "b".repeat(64) }); state.busyCurrent.mockResolvedValue(undefined); state.rearm.mockResolvedValue({receiptSha256: researchHash("TEST finalization proof")}); });
+beforeEach(() => { state.bindingCommit = "b".repeat(40); state.fenceOptions.length = 0; state.files.clear(); state.fds.clear(); state.publicationFailure = undefined; vi.clearAllMocks(); state.files.set("/etc/machine-id", request.machineId); state.files.set("/etc/subscription-runtime/mimo-projects/test-project/test-stream.json", "{}"); state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive"); state.handler.mockResolvedValue({ ok: true }); state.busyCapture.mockResolvedValue({ schemaVersion: 1, requestSha256: "a".repeat(64), bindings: [], directories: [], workspaceBindingSha256: "b".repeat(64) }); state.busyCurrent.mockResolvedValue(undefined); state.rearm.mockResolvedValue({receiptSha256: researchHash("TEST finalization proof")}); });
 it("retains an exact owner before uncertain submission and never launches replacement", async () => {
   state.command.mockImplementationOnce(() => { expect(state.files.has(prefix + ".owner.json")).toBe(true); throw new Error("TEST transport timeout"); });
   await expect(submitHostedMimoProjectBridge(request)).rejects.toThrow("TEST transport timeout");
@@ -601,4 +601,32 @@ it.each(["request", "result", "owner"])("retains an incomplete rearm after archi
   expect(state.files).toEqual(afterCrash);
   expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(0);
   expect(state.files.get(stem + ".request.json.generation-0")).toBe(previous.get(stem + ".request.json"));
+});
+
+it("refuses a Create for a superseded source commit before retaining the request or owner", async () => {
+  state.bindingCommit = "c".repeat(40);
+  await expect(submitHostedMimoProjectBridge(request)).rejects.toThrow("mimo_project_bridge_source_mismatch");
+  expect([...state.files.keys()].filter(path => path.includes("mimo-bridge-operations"))).toEqual([]);
+  expect(state.command).not.toHaveBeenCalled();
+  // The same job ID stays usable with the current commit.
+  await expect(submitHostedMimoProjectBridge({ ...request, sourceCommit: state.bindingCommit })).resolves.toMatchObject({ pending: true });
+});
+it("keeps answering an identical retained Create after the binding moved forward", async () => {
+  await submitHostedMimoProjectBridge(request);
+  state.bindingCommit = "c".repeat(40);
+  await expect(submitHostedMimoProjectBridge(request)).resolves.toMatchObject({ ok: true, operation: MimoProjectBridgeOperation.Create });
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(1);
+});
+it("lets an owned unit wait for a maintenance fence inside its runtime limit", async () => {
+  await submitHostedMimoProjectBridge(request);
+  const owner = JSON.parse(state.files.get(prefix + ".owner.json")!);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockResolvedValue({ ok: true });
+    state.fenceOptions.length = 0;
+    await expect(executeHostedMimoProjectBridgeOperation(prefix + ".request.json")).resolves.toBe(true);
+    // 900 s operation timeout: a quarter is above the 120 s cap, so the cap applies.
+    expect(state.fenceOptions).toEqual([{ fenceWaitMs: 120000 }]);
+  } finally { process.argv[1] = previous!; }
 });

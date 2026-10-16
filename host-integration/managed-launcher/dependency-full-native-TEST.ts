@@ -150,7 +150,7 @@ export function fullNativeRestoreConsumer(value:unknown):FullRestoreConsumer {
  * checks remain mandatory. New positive cases never select the H1 route. */
 export function fullNativeCaseConfigurationData(value:unknown,schemaVersion:unknown,removalCase:FullRemovalCase,restoreConsumer:FullRestoreConsumer):FullNativeCase {
   const selected=fullNativeCase(value);
-  if(selected!==FullNativeCase.ColdRestore)check(schemaVersion===2 && removalCase===FullRemovalCase.Positive && restoreConsumer===FullRestoreConsumer.Ordinary);
+  if(selected!==FullNativeCase.ColdRestore)check((schemaVersion===2 || schemaVersion===3) && removalCase===FullRemovalCase.Positive && restoreConsumer===FullRestoreConsumer.Ordinary);
   return selected;
 }
 export enum FullPositiveAccount {R="account-r",W="account-w"}
@@ -167,20 +167,21 @@ const fullReviewKeys=["schemaVersion","sourceBaseSha","sourceSha","sourceTree","
 export function fullReviewData(value:unknown) {
   check(value!==null && typeof value==="object" && !types.isProxy(value) && Object.getPrototypeOf(value)===Object.prototype);
   const version=Object.getOwnPropertyDescriptor(value,"schemaVersion");check(version && Object.hasOwn(version,"value"));
-  if(version.value===2){
+  if(version.value===2 || version.value===3 && Object.getOwnPropertyDescriptor(value,"removalCase")?.value===FullRemovalCase.Positive){
     const review=fullData(value,[...fullReviewKeys,"removalCase","restoreConsumer",...(Object.hasOwn(value,"fullCase")?["fullCase"]:[])]);
     fullNativeCase(review.fullCase);
     fullPositiveAccountData(review.accountName);check(review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);
     if(hasPositiveHostDso(review.hostTools))fullHostToolsData(review);
     return review;
   }
-  check(version.value===1);
+  check(version.value===1 || version.value===3);
   const selected=Object.hasOwn(value,"restoreConsumer"),removalSelected=Object.hasOwn(value,"removalCase"),stagedInline=Object.hasOwn(value,"h1StagedSubject"),stagedReference=Object.hasOwn(value,"h1StagedSubjectSha256"),stagedSelected=stagedInline || stagedReference,bootstrapSelected=Object.hasOwn(value,"h1VerifierBootstrapSha256");
   check(!(stagedInline && stagedReference));
   const review=fullData(value,[...fullReviewKeys,...(selected?["restoreConsumer"]:[]),...(removalSelected?["removalCase"]:[]),...(stagedInline?["h1StagedSubject"]:[]),...(stagedReference?["h1StagedSubjectSha256"]:[]),...(bootstrapSelected?["h1VerifierBootstrapSha256"]:[])]);
   if(bootstrapSelected)check(stagedSelected && digest(review.h1VerifierBootstrapSha256));
   if(stagedReference)check(digest(review.h1StagedSubjectSha256));
   if(removalSelected)fullNativeRemovalCase(review.removalCase);
+  if(version.value===3)check(stagedSelected && review.removalCase===FullRemovalCase.ParentCrashH1 && review.restoreConsumer===FullRestoreConsumer.Ordinary && review.accountName==="account-u");
   if(stagedSelected)check(review.removalCase===FullRemovalCase.ParentCrashH1 && (review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary));
   if(selected)check(review.restoreConsumer===FullRestoreConsumer.Ordinary || review.restoreConsumer===FullRestoreConsumer.Readonly);
   if(stagedSelected)fullHostToolsData(review);else check(!hasPositiveHostDso(review.hostTools));
@@ -349,11 +350,11 @@ export function fullPositiveHostLibcData(value:unknown) {
 export function fullHostToolsData(review:Record<string,unknown>) {
   const libcSelected=hasPositiveHostLibc(review.hostTools),sharedSelected=hasPositiveHostSystemdShared(review.hostTools),exceptional=libcSelected||sharedSelected;
   const stagedInline=Object.hasOwn(review,"h1StagedSubject"),stagedReference=Object.hasOwn(review,"h1StagedSubjectSha256");check(!(stagedInline && stagedReference));
-  const stagedH1=review.schemaVersion===1 && review.removalCase===FullRemovalCase.ParentCrashH1 && (stagedInline || stagedReference);
+  const stagedH1=(review.schemaVersion===1 || review.schemaVersion===3) && review.removalCase===FullRemovalCase.ParentCrashH1 && (stagedInline || stagedReference);
   if(stagedH1){check(review.restoreConsumer===undefined || review.restoreConsumer===FullRestoreConsumer.Ordinary);
     if(stagedReference)check(digest(review.h1StagedSubjectSha256));
     else {const subject=h1StagedSubjectData(review.h1StagedSubject);check(subject.sourceSha===review.sourceSha && subject.machineId===review.machineId && subject.bootId===review.bootId);}}
-  if(exceptional && !stagedH1){check(review.schemaVersion===2 && review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);fullPositiveAccountData(review.accountName);}
+  if(exceptional && !stagedH1){check((review.schemaVersion===2 || review.schemaVersion===3) && review.removalCase===FullRemovalCase.Positive && review.restoreConsumer===FullRestoreConsumer.Ordinary);fullPositiveAccountData(review.accountName);}
   if(stagedH1)check(libcSelected && sharedSelected);
   const tools=fullData(review.hostTools,["git","systemctl","systemdRun","lsns","systemdPid1","bootstrapNode","systemdNspawn","systemdNspawnClosure",...(Object.hasOwn(review.hostTools as object,"namespaceSetupQueryClosure")?["namespaceSetupQueryClosure"]:[]),...(review.removalCase===FullRemovalCase.ParentCrashH1 && !stagedH1?["h1PythonClosure","h1NsenterClosure"]:[]),...(libcSelected?["positiveHostLibc"]:[]),...(sharedSelected?["positiveHostSystemdShared"]:[])]);
   const positive=libcSelected?fullPositiveHostLibcData(tools.positiveHostLibc):undefined,shared=sharedSelected?fullPositiveHostSystemdSharedData(tools.positiveHostSystemdShared):undefined;
@@ -383,7 +384,13 @@ export function fullNativeSourcePackageHash(schemaVersion:unknown):string {
   if(schemaVersion===1)return "68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29";
   // Current public ar source package: Apache-2.0 and the public repository URL.
   if(schemaVersion===2)return "7fdbde9be28aa03e3c935d1eac9bca776796be9fa1142602e21ad25989bef334";
+  if(schemaVersion===3)return "4564fe69d53213ce3dcf0ff9afd21e62f661b8073ddc19c06a6ccb1b4c3b8f79";
   return refuse();
+}
+/** Review already passed fullReviewData; this chooses an exact source package, never authority. */
+export function fullNativeReviewSourcePackageSchema(review:Record<string,unknown>):1|2|3 {
+  const r=fullReviewData(review);
+  return r.schemaVersion===3?3:r.schemaVersion===2?2:(Object.hasOwn(r,"h1StagedSubject")||Object.hasOwn(r,"h1StagedSubjectSha256"))?2:1;
 }
 export function fullPositiveHostStableAncestors(ancestors:readonly Readonly<{path:string;identity:string;mount:string}>[]):readonly Readonly<{path:string;identity:string}>[] {
   return ancestors.map(({path,identity})=>({path,identity}));
@@ -448,11 +455,11 @@ function acquire(context:RootContext=RootContext.Launcher,profile:NativeProfile=
   try{
     pins.hold(sharedAncestor,true);pins.hold(selectedReviewRoot,true,0o700);
     const r=fullReviewData(pins.json(selectedReview,32768));
-    if(context===RootContext.Installer)check(profile.kind===NativeProfileKind.Positive && r.schemaVersion===2);
-    if(profile.kind===NativeProfileKind.H1)check(r.schemaVersion===1 && r.removalCase===FullRemovalCase.ParentCrashH1 && fullNativeRestoreConsumer(r.restoreConsumer)===FullRestoreConsumer.Ordinary && fullNativeCase(r.fullCase)===FullNativeCase.ColdRestore && digest(r.h1StagedSubjectSha256) && digest(r.h1VerifierBootstrapSha256));
-    check((r.schemaVersion===1 || r.schemaVersion===2) && r.sourceBaseSha===sourceBase && sha(r.sourceSha) && sha(r.sourceTree));
+    if(context===RootContext.Installer)check(profile.kind===NativeProfileKind.Positive && (r.schemaVersion===2 || r.schemaVersion===3) && r.removalCase===FullRemovalCase.Positive);
+    if(profile.kind===NativeProfileKind.H1)check((r.schemaVersion===1 || r.schemaVersion===3) && r.removalCase===FullRemovalCase.ParentCrashH1 && fullNativeRestoreConsumer(r.restoreConsumer)===FullRestoreConsumer.Ordinary && fullNativeCase(r.fullCase)===FullNativeCase.ColdRestore && digest(r.h1StagedSubjectSha256) && digest(r.h1VerifierBootstrapSha256));
+    check((r.schemaVersion===1 || r.schemaVersion===2 || r.schemaVersion===3) && r.sourceBaseSha===sourceBase && sha(r.sourceSha) && sha(r.sourceTree));
     check(typeof r.machineId==="string" && /^[a-f0-9]{32}$/.test(r.machineId) && typeof r.bootId==="string" && /^[a-f0-9-]{36}$/.test(r.bootId));
-    check(r.accountName===(r.schemaVersion===2?fullPositiveAccountData(r.accountName):"account-u") && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
+    check(r.accountName===((r.schemaVersion===2 || r.schemaVersion===3 && r.removalCase===FullRemovalCase.Positive)?fullPositiveAccountData(r.accountName):"account-u") && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
     for(const key of ["nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256"])check(digest(r[key]));
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
     const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer),removalCase=fullNativeRemovalCase(r.removalCase),fullCase=fullNativeCaseConfigurationData(r.fullCase,r.schemaVersion,removalCase,restoreConsumer);
@@ -530,7 +537,7 @@ function acquire(context:RootContext=RootContext.Launcher,profile:NativeProfile=
     const parent=source+"/host-integration/managed-launcher/"+(profile.kind===NativeProfileKind.H1?"dependency-full-h1-native-parent-TEST.js":"dependency-full-native-parent-TEST.js");pins.publicFile(parent,requireDigest(r.parentSha256));
     // The staged H1 route consumes this exact current source package. The
     // legacy HOST schema1 contract retains its earlier package commitment.
-    pins.publicFile(source+"/package.json",fullNativeSourcePackageHash(h1Subject?2:r.schemaVersion));
+    pins.publicFile(source+"/package.json",fullNativeSourcePackageHash(fullNativeReviewSourcePackageSchema(r)));
     const head=pins.hold(source+"/.git/HEAD");check(readFd(head).equals(Buffer.from(sourceSha+"\n")));
     const catalogPath=selectedReviewRoot+"/public-installation.json";pins.publicFile(catalogPath,requireDigest(r.catalogSha256));
     const catalog=fullData(pins.json(catalogPath,2*1024*1024),["schemaVersion","sourceSha","sourceTree","files"]);
@@ -561,10 +568,10 @@ function acquire(context:RootContext=RootContext.Launcher,profile:NativeProfile=
       pins.publicFile(source+"/"+relative,requireDigest(row.sha256));
       if(!installing)pins.publicFile(integration+"/"+target,requireDigest(row.sha256));
     }
-    if(r.schemaVersion===2)for(const relative of ["host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/dependency-full-positive-copy-TEST.js"]){check(paths.has(relative));const row=fullData(catalog.files.find((entry:unknown)=>{const data=fullData(entry,["path","sha256"]);return data.path===relative;}),["path","sha256"]);if(!installing)pins.publicFile(integration+"/managed-launcher/"+basename(relative),requireDigest(row.sha256));}
+    if(r.schemaVersion===2 || r.schemaVersion===3 && r.removalCase===FullRemovalCase.Positive)for(const relative of ["host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js","host-integration/managed-launcher/dependency-full-positive-copy-TEST.js"]){check(paths.has(relative));const row=fullData(catalog.files.find((entry:unknown)=>{const data=fullData(entry,["path","sha256"]);return data.path===relative;}),["path","sha256"]);if(!installing)pins.publicFile(integration+"/managed-launcher/"+basename(relative),requireDigest(row.sha256));}
     for(const path of ["scripts/dependency-retention-os-test/current-full-outer.js","scripts/dependency-retention-os-test/current-full-guest.js","dist/worker-codex/codex-goal-cli.js"])check(paths.has(path));
     for(const [installedPath,key] of [[profile.outerReviewRoot+"/input.json","outerReviewSha256"],[profile.publicReviewRoot+"/input.json","publicReviewSha256"]] as const){const path=installing?positiveInstallationStage+(key==="outerReviewSha256"?"/outer-review/input.json":"/public-review/input.json"):installedPath;pins.hold(dirname(path),true,0o700);pins.publicFile(path,requireDigest(r[key]));pins.hold(path,false,0o600);
-      if(r.schemaVersion===2 && key==="outerReviewSha256")fullPositiveOuterReviewData(pins.json(path,4096),fullPositiveAccountData(r.accountName),sourceSha,requireDigest(r.nodeSha256));}
+      if((r.schemaVersion===2 || r.schemaVersion===3 && r.removalCase===FullRemovalCase.Positive) && key==="outerReviewSha256")fullPositiveOuterReviewData(pins.json(path,4096),fullPositiveAccountData(r.accountName),sourceSha,requireDigest(r.nodeSha256));}
 
     pins.hold("/srv/worker-state/account-pools/live-codex-auth/"+r.accountName,true);
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);pins.hold(fullNativeOsBase,true,0o700);

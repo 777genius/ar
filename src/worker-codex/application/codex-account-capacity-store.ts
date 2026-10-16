@@ -40,6 +40,7 @@ export function codexAccountCapacityStore(
   authRootDir: string,
   options: {
     readonly modelBackend?: CodexModelBackend;
+    readonly strictReads?: boolean;
     readonly assertProviderAdmission?: () => void;
     readonly authJsonPaths?: Readonly<Record<string, string>>;
     readonly authJsonByAlias?: Readonly<Record<string, string>>;
@@ -50,6 +51,7 @@ export function codexAccountCapacityStore(
   if (backend !== CodexModelBackend.OpenAiChatGpt && backend !== CodexModelBackend.XiaomiMimoTokenPlan)
     throw new Error("codex_account_capacity_model_backend_invalid");
   const store = new LocalFileWorkerAccountCapacityStore({
+    ...(options.strictReads ? { strictReads: true } : {}),
     rootDir: backend === CodexModelBackend.XiaomiMimoTokenPlan
       ? join(codexAccountCapacityRootDir(authRootDir), "mimo-token-plan")
       : codexAccountCapacityRootDir(authRootDir),

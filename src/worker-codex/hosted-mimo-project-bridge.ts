@@ -1,4 +1,4 @@
-import { constants, closeSync, fstatSync, openSync, readFileSync, lstatSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { constants, closeSync, fstatSync, openSync, readFileSync, lstatSync, mkdirSync, writeFileSync, existsSync, type Stats } from "node:fs";
 import { dirname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
@@ -66,9 +66,11 @@ export function parseHostedMimoProjectBinding(value: unknown, request: MimoProje
     throw new Error("mimo_project_bridge_admission_invalid");
   return Object.freeze(row) as HostedMimoProjectBinding;
 }
+/** Largest binding or other trusted metadata file any bridge reader accepts. */
+export const hostedMimoBridgeMetadataMaxBytes = 65536;
 /** Fixed trusted metadata only. The remote caller never selects an executable,
  * controller, credential, filesystem path or arbitrary MCP operation. */
-export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = 65536): Buffer {
+export function hostedMimoBridgeMetadataBytes(path: string, maximumBytes = hostedMimoBridgeMetadataMaxBytes): Buffer {
   researchCustody(dirname(path));
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -103,6 +105,12 @@ export function captureHeldMimoPreparationFence(binding: HostedMimoProjectBindin
       throw new Error("mimo_project_bridge_route_closed");
   } });
   return capability;
+}
+/** Source-only recheck that a fence captured by this process is still the one on disk. */
+export function assertHeldMimoPreparationFenceCurrent(binding: HostedMimoProjectBinding, heldFence: HeldMimoPreparationFence): void {
+  const held = heldPreparationFences.get(heldFence);
+  if (!held || held.stateRoot !== binding.stateRoot) throw new Error("mimo_project_bridge_route_closed");
+  held.assertCurrent();
 }
 export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBinding, heldFence?: HeldMimoPreparationFence): void {
   if (heldFence) {
@@ -176,13 +184,20 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
       maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: request.reasoningEffort ?? "medium",
       taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }, hostedMimoSealedSourcePort(binding)));
   }
-  researchCustody(records);
-  const retained = lstatSync(recordPath);
-  if (!retained.isFile() || retained.isSymbolicLink() || retained.uid !== 0 || retained.nlink !== 1 || (retained.mode & 0o077) !== 0 || retained.size > 4096)
-    throw new Error("mimo_project_bridge_attempt_invalid");
-  const record = researchRecord(JSON.parse(readFileSync(recordPath, "utf8")), "schemaVersion,requestSha256,projectId,workstreamId,jobId,jobRoot,workspace");
-  if (record.schemaVersion !== 1 || record.projectId !== request.projectId || record.workstreamId !== request.workstreamId || record.jobId !== request.jobId ||
-      record.jobRoot !== jobRoot || record.workspace !== workspace) throw new Error("mimo_project_bridge_attempt_invalid");
+  let retained: Stats | undefined;
+  try { researchCustody(records); retained = lstatSync(recordPath); }
+  catch (error) {
+    // Directly registered jobs predate bridge Create records. Status still uses
+    // their selected runtime, stored launch and native publication authority.
+    if (request.operation !== MimoProjectBridgeOperation.Status || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (retained) {
+    if (!retained.isFile() || retained.isSymbolicLink() || retained.uid !== 0 || retained.nlink !== 1 || (retained.mode & 0o077) !== 0 || retained.size > 4096)
+      throw new Error("mimo_project_bridge_attempt_invalid");
+    const record = researchRecord(JSON.parse(readFileSync(recordPath, "utf8")), "schemaVersion,requestSha256,projectId,workstreamId,jobId,jobRoot,workspace");
+    if (record.schemaVersion !== 1 || record.projectId !== request.projectId || record.workstreamId !== request.workstreamId || record.jobId !== request.jobId ||
+        record.jobRoot !== jobRoot || record.workspace !== workspace) throw new Error("mimo_project_bridge_attempt_invalid");
+  }
   if (request.operation === MimoProjectBridgeOperation.RepairAdmission || request.operation === MimoProjectBridgeOperation.FinalizeAdmissionRepair) {
     if (request.operation === MimoProjectBridgeOperation.RepairAdmission && researchHash(bytes) !== request.repairPlan!.expectedBindingSha256)
       throw new Error("mimo_project_bridge_binding_invalid");
