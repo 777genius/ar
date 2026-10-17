@@ -348,6 +348,11 @@ For adapter-level guarantees, see
 
 ## Development
 
+For development and tests, use Node.js 22.23.3 or a newer maintained 22.x,
+or Node.js 24.21.0 (the verified worker profile); for newer 24.x, use the
+project-supported profile. Checked-in CI uses Node.js 22; the explicitly
+verified test profiles are 22.23.3 and 24.21.0.
+
 Install dependencies and run the complete local quality gate:
 
 ```bash

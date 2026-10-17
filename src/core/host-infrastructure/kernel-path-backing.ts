@@ -110,7 +110,11 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
         // after the query; hidden same-target rows never supply authority.
         // Linux O_TMPFILE keeps the snapshot unnamed; O_EXCL prevents relinking.
         // Node's default stdin is a socket that findmnt cannot reopen via procfs.
-        snapshot = openSync("/tmp", 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600);
+        // Observation storage is independently configured, never inferred from
+        // the mount under inspection (which may still need scratch bootstrap).
+        const temporaryDirectory = process.env.TMPDIR ?? "/tmp";
+        if (!isAbsolute(temporaryDirectory)) return fail();
+        snapshot = openSync(temporaryDirectory, 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600);
         writeFileSync(snapshot, line + "\n", { encoding: "utf8" });
         output = execFileSync("findmnt", ["--kernel", "--tab-file", "/proc/self/fd/0", "--json", "--mountpoint", path, "--output", "ID,TARGET,UUID,FSROOT"],
           { stdio: [snapshot, "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
