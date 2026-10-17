@@ -24,36 +24,40 @@ async function fixture() {
   let ready!: Promise<void>;
   const peer = () => {
     const child = actual.spawn(process.execPath,
-      ["-e", `process.stdout.write(${JSON.stringify(hostedFdReadyMarker)});process.stdin.resume()`], { stdio: "pipe" });
+      ["-e", `process.stdin.resume();process.stdout.write(${JSON.stringify(hostedFdReadyMarker)})`], { stdio: "pipe" });
     peers.push({ child, closed: new Promise(resolve => child.once("close", () => resolve())) });
     return child;
   };
-  // Only the external spawn/control transport is substituted. The child,
-  // birth, /proc observations, stream gate and invalidation are genuine.
-  vi.mocked(processes.spawn).mockImplementation(command => {
-    if (command !== "/usr/bin/systemd-run") throw new Error("unexpected TEST transport");
-    spawned = peer();
-    ready = new Promise<void>((resolve, reject) => {
-      spawned!.stdout.once("data", () => resolve()); spawned!.once("error", reject);
-    });
-    return spawned;
+  const close = async () => {
+    for (const { child } of peers) if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await Promise.all(peers.map(({ closed }) => closed));
+  };
+  spawned = peer();
+  ready = new Promise<void>((resolve, reject) => {
+    spawned!.stdout.once("data", () => resolve()); spawned!.once("error", reject);
   });
-  vi.spyOn(observation, "readHostedFdProfile").mockReturnValue(parseFdCollectorProfile({
-    schemaVersion: 1, renderer: FdCollectorRenderer.SsV61Signed,
-    ss: executable("/usr/bin/ss"), node: executable(process.execPath),
-    wrappers: ["setpriv", "systemd-run", "tini", "unshare"].map(name => executable(`/usr/bin/${name}`)),
-    bootstraps: ["hosted-app-server-launcher", "hosted-dependency-installer-bootstrap",
-      "hosted-readonly-host-launch-cli", "hosted-readonly-runtime-bootstrap"].map(name => file(`/TEST-runtime/${name}.js`)),
-    limits: { setupTimeoutMs: 1000, collectorTimeoutMs: 500, maxOutputBytes: 4096, maxRows: 32,
-      maxBufferedInputBytes: 4096, maxEventPoll: 2, maxEventFd: 2, maxPipeEndpoints: 8, maxDevNullReserves: 2 },
-  }));
-  const control = vi.mocked(processes.spawnSync).mockReset().mockReturnValue({ pid: 0, output: [], stdout: Buffer.alloc(0),
-    stderr: Buffer.alloc(0), status: 0, signal: null });
-  return { peer, control, spawned: () => spawned!, ready: () => ready,
-    close: async () => {
-      for (const { child } of peers) if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-      await Promise.all(peers.map(({ closed }) => closed));
-    } };
+  try {
+    await ready;
+    // Only the external spawn/control transport is substituted. The child,
+    // birth, /proc observations, stream gate and invalidation are genuine.
+    vi.mocked(processes.spawn).mockImplementation(command => {
+      if (command !== "/usr/bin/systemd-run") throw new Error("unexpected TEST transport");
+      return spawned!;
+    });
+    vi.spyOn(observation, "readHostedFdProfile").mockReturnValue(parseFdCollectorProfile({
+      schemaVersion: 1, renderer: FdCollectorRenderer.SsV61Signed,
+      ss: executable("/usr/bin/ss"), node: executable(process.execPath),
+      wrappers: ["setpriv", "systemd-run", "tini", "unshare"].map(name => executable(`/usr/bin/${name}`)),
+      bootstraps: ["hosted-app-server-launcher", "hosted-dependency-installer-bootstrap",
+        "hosted-readonly-host-launch-cli", "hosted-readonly-runtime-bootstrap"].map(name => file(`/TEST-runtime/${name}.js`)),
+      limits: { setupTimeoutMs: 1000, collectorTimeoutMs: 500, maxOutputBytes: 4096, maxRows: 32,
+        maxBufferedInputBytes: 4096, maxEventPoll: 2, maxEventFd: 2, maxPipeEndpoints: 8, maxDevNullReserves: 2 },
+    }));
+    const control = vi.mocked(processes.spawnSync).mockReset().mockReturnValue({ pid: 0, output: [], stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0), status: 0, signal: null });
+    return { peer, control, spawned: () => spawned!, ready: () => ready,
+      close };
+  } catch (error) { await close(); throw error; }
 }
 
 // Old RED: stream failure deletes the live birth, so cancellation loses the
