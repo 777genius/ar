@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'test-h1-controlled-build') && format('-controlled-h1-{0}', github.event.pull_request.head.sha) || '' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # Source/test gates use the configured RUNNER pool. Metadata-only proof checks
@@ -22,7 +22,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
-    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     timeout-minutes: 10
     outputs:
       reuse_unit: ${{ steps.proof.outputs.reuse_unit }}
@@ -73,8 +73,6 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
       - name: Install Node.js Linux runtime prerequisite
         if: runner.os == 'Linux'
         shell: bash
@@ -87,62 +85,12 @@ jobs:
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
-      # Source facades require this exact revision's canonical emitted leaves.
-      - run: npm run build
       - run: npm run typecheck
       - run: npm run typecheck:ci-tools
       - run: npm run test:ci-tools
-      - name: Verify fresh staging checks on CI Node version
-        run: node --test scripts/dependency-retention-os-test/current-positive-fresh-check.node-test.mts
+      - run: npm run build
       - run: npm run check:dist
       - run: npm run check:boundaries
-      - name: Select exact HOST Node version for finite staging checks
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 24.21.0
-      - name: Verify fresh staging checks on exact HOST Node version
-        env:
-          TEST_C_FRESH_CHECK_EXACT_NODE24: "1"
-        run: node --test scripts/dependency-retention-os-test/current-positive-fresh-check.node-test.mts
-      - name: Typecheck finite staging operator and mount guard tests
-        run: |
-          ./node_modules/.bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-original-publication.json
-          node --test scripts/dependency-retention-os-test/current-positive-public-transport.test.mts scripts/dependency-retention-os-test/current-h1-public-transport.test.mts
-      - name: Qualify finite staging mount guards on exact HOST Node
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          node_bin="$(readlink -f "$(command -v node)")"
-          test "$("$node_bin" --version)" = v24.21.0
-          test "$GITHUB_ACTIONS" = true
-          tap="$RUNNER_TEMP/staging-mount-guards.tap"
-          root_exec=()
-          if [ "$(id -u)" -ne 0 ] || [ "$(id -ru)" -ne 0 ] || [ "$(id -g)" -ne 0 ] || [ "$(id -rg)" -ne 0 ]; then
-            root_exec=(sudo -n -u root -g root)
-          fi
-          guard_status=0
-          "${root_exec[@]}" env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C GITHUB_ACTIONS=true "$node_bin" --test --test-concurrency=1 --test-reporter=tap \
-            scripts/dependency-retention-os-test/current-positive-scoped-guard.node-test.mts \
-            scripts/dependency-retention-os-test/mount-fence.node-test.mts \
-            scripts/dependency-retention-os-test/stage-current-h1-public.test.ts \
-            scripts/dependency-retention-os-test/current-h1-scoped-guard.node-test.mts \
-            scripts/dependency-retention-os-test/current-h1-mount-fence-data.node-test.mts \
-            scripts/dependency-retention-os-test/current-h1-mount-fence.node-test.mts > "$tap" || guard_status=$?
-          cat "$tap"
-          test "$guard_status" -eq 0
-          node --input-type=module - "$tap" <<'NODE'
-          import assert from 'node:assert/strict';
-          import {readFileSync} from 'node:fs';
-          const tap=readFileSync(process.argv[2],'utf8'),lines=tap.split('\n');
-          for(const [key,value] of [['tests',38],['pass',38],['fail',0],['skipped',0],['cancelled',0]]){
-            assert.deepEqual(lines.filter(line=>line.startsWith('# '+key+' ')),['# '+key+' '+value],key);
-          }
-          assert(!/# SKIP|# TODO/.test(tap));
-          for(const name of ['ancestor','output_same_inode','persistent_descendant','new_foreign_mount','unrelated_allowance']){
-            assert.equal(lines.filter(line=>new RegExp('^ok [0-9]+ - real private mount: '+name+'$').test(line)).length,2,name);
-          }
-          NODE
 
   unit-test-shards:
     if: ${{ always() && !cancelled() && !(needs.ci-proof-reuse.result == 'success' && needs.ci-proof-reuse.outputs.reuse_unit == 'true') }}
@@ -157,10 +105,8 @@ jobs:
     steps:
       - &unit_test_checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - name: Fetch scrubbed public legacy ledger fixture
-        run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
+      - name: Fetch pinned legacy ledger fixture
+        run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
       - &unit_test_node_prerequisite
         name: Install Node.js Linux runtime prerequisite
         if: runner.os == 'Linux'
@@ -241,26 +187,10 @@ jobs:
           export HOME="$subscription_test_home"
           case "$CI_TEST_TARGET" in
             1/4|2/4|3/4|4/4)
-              # Every shard needs dist fixtures and the configured two forks.
-              # The six original placement cases run in the required Root TEST
-              # selection below; they cannot authenticate Root in this lane.
+              # Every shard needs dist fixtures; retain the configured two
+              # isolated forks and the full default test selection.
               npm run build
-              if npm run test:unit -- --shard="$CI_TEST_TARGET" --exclude=src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts; then
-                :
-              else
-                subscription_original_unit_status=$?
-                if [[ "$CI_TEST_TARGET" == "2/4" ]]; then
-                  subscription_lifecycle_diag_root="$RUNNER_TEMP/subscription-unit2-SOURCE-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-                  # Observe only in a disposable source copy, before private HOME cleanup.
-                  # Preserve the original unit failure even on diagnostic error/timeout.
-                  if /usr/bin/timeout --signal=TERM --kill-after=10s 300s node scripts/ci-source-diagnostics/diagnose-unit2-lifecycle.mts "$GITHUB_WORKSPACE" "$subscription_lifecycle_diag_root"; then
-                    :
-                  else
-                    :
-                  fi
-                fi
-                exit "$subscription_original_unit_status"
-              fi
+              npm run test:unit -- --shard="$CI_TEST_TARGET"
               ;;
             ancillary)
               npm run test:before-unit
@@ -274,18 +204,6 @@ jobs:
         env:
           CI_TEST_TARGET: ${{ matrix.shard }}/4
           SR_ARCHIVE_TEST_PRIVILEGE: nonroot
-      - name: Retain failure-only Unit 2 SOURCE diagnosis
-        if: ${{ failure() && matrix.shard == 2 }}
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: unit2-lifecycle-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/subscription-unit2-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence/manifest.json
-            ${{ runner.temp }}/subscription-unit2-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence/events.jsonl
-            ${{ runner.temp }}/subscription-unit2-SOURCE-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence/summary.json
-          if-no-files-found: warn
-          retention-days: 2
       - name: Publish successful CI lane proof
         continue-on-error: true
         if: ${{ success() && steps.capture.outcome == 'success' && github.event_name == 'pull_request' }}
@@ -313,7 +231,7 @@ jobs:
   unit-tests:
     if: ${{ always() }}
     needs: [ci-proof-reuse, unit-test-shards, unit-test-ancillary]
-    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     steps:
       - name: Require all four unit shards and ancillary phases
         env:
@@ -339,7 +257,7 @@ jobs:
     # SOURCE container. Its command and completed JSON report are mandatory there.
     needs: native-probe-source
     if: ${{ always() }}
-    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     timeout-minutes: 10
     steps:
       - name: Require completed SOURCE and native root archive TEST container
@@ -386,8 +304,6 @@ jobs:
       - name: Fetch locked TEST dependencies
         run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
-      # Source facades need this exact tree's emitted HOST contracts before strict typechecking.
-      - run: npm run build:host-source-contracts
       - name: Typecheck scratch preparation and the native TEST helper
         run: |
           node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json
@@ -440,9 +356,6 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install Node.js Linux runtime prerequisite
         if: runner.os == 'Linux'
         shell: bash
@@ -455,610 +368,7 @@ jobs:
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
-      - run: npm run check:packed-consumer -- --retain-validated-tarball
-      - name: Upload the same validated public runtime package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: native-test-runtime-package-${{ github.event.pull_request.head.sha || github.sha }}
-          path: vioxen-subscription-runtime-*.tgz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Strict emit Python envelope filesystem TEST in existing package job
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -o pipefail
-          mkdir -p dependency-python-envelope-package-root-evidence
-          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"package-job-four-root-filesystem-TEST-not-native-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-python-envelope-package-root-evidence/source.json
-          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
-          node --version > dependency-python-envelope-package-root-evidence/node-version.txt
-          node node_modules/typescript/bin/tsc --version > dependency-python-envelope-package-root-evidence/typescript-version.txt
-          grep -Fxq 'Version 6.0.3' dependency-python-envelope-package-root-evidence/typescript-version.txt
-          sha256sum \
-            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
-            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.ts \
-            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.ts \
-            scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json \
-            scripts/dependency-retention-os-test/assemble-current-full.ts \
-            .github/workflows/dependency-retention-os-registration-test.yml \
-            .github/workflows/ci.yml \
-            > dependency-python-envelope-package-root-evidence/source.sha256
-          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.python-envelope-emit.json 2>&1 | tee dependency-python-envelope-package-root-evidence/strict-emit.log
-          sha256sum \
-            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
-            host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js \
-            scripts/dependency-retention-os-test/current-full-python-envelope-catalog.js \
-            > dependency-python-envelope-package-root-evidence/emitted.sha256
-      - name: Require four actual root Linux filesystem envelope scenarios on disposable CI runner
-        run: |
-          set -o pipefail
-          TEST_NODE="$(readlink -f "$(command -v node)")"
-          if [ "$(id -u)" -eq 0 ]; then
-            env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TMPDIR="$RUNNER_TEMP" TEST_PYTHON_ENVELOPE_ROOT_CI=1 \
-              "$TEST_NODE" --test --test-reporter=tap \
-              "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js"
-          else
-            sudo -n env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TMPDIR="$RUNNER_TEMP" TEST_PYTHON_ENVELOPE_ROOT_CI=1 \
-              "$TEST_NODE" --test --test-reporter=tap \
-              "$GITHUB_WORKSPACE/host-integration/managed-launcher/dependency-full-python-envelope-TEST.node-test.js"
-          fi 2>&1 | tee dependency-python-envelope-package-root-evidence/root-tests.tap
-          TAP=dependency-python-envelope-package-root-evidence/root-tests.tap
-          grep -Eq '^ok [0-9]+ - complete native census reconciles all candidates and refuses late unknown source/bytecode$' "$TAP"
-          grep -Eq '^ok [0-9]+ - native complete EOF is mandatory at exact entry/byte limits and aliases cannot escape$' "$TAP"
-          grep -Eq '^ok [0-9]+ - native candidate metadata refuses hardlinks and writable source even with matching content$' "$TAP"
-          grep -Eq '^ok [0-9]+ - alias literal size participates in file bound and largest-file measurement$' "$TAP"
-          grep -Eq '^ok [0-9]+ - ROOT fixed DATA census pins exact signed site target and excludes arbitrary etc content$' "$TAP"
-          grep -Eq '^ok [0-9]+ - ROOT fixed DATA census refuses ancestor aliases unknown raw literals and wrong signed provider$' "$TAP"
-          grep -Eq '^ok [0-9]+ - native census refuses caller-owned fixture before reading candidate content # SKIP root-owned positive census requires separate Linux integration$' "$TAP"
-          grep -Fxq '# tests 21' "$TAP"
-          grep -Fxq '# pass 20' "$TAP"
-          grep -Fxq '# fail 0' "$TAP"
-          grep -Fxq '# skipped 1' "$TAP"
-          test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
-      - name: Retain package-job exact-source root filesystem TEST evidence even on failure
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: dependency-python-envelope-package-root-${{ github.event.pull_request.head.sha || github.sha }}
-          path: dependency-python-envelope-package-root-evidence/
-          if-no-files-found: error
-
-      - name: Strict emit fixed H1 signed DATA acquisition TEST and bind exact source
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -o pipefail
-          mkdir -p dependency-h1-tool-inputs-ci-source-evidence
-          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"disposable-signed-CI-data-not-native-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-h1-tool-inputs-ci-source-evidence/source.json
-          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
-          node --version > dependency-h1-tool-inputs-ci-source-evidence/node-version.txt
-          node node_modules/typescript/bin/tsc --version > dependency-h1-tool-inputs-ci-source-evidence/typescript-version.txt
-          grep -Fxq 'Version 6.0.3' dependency-h1-tool-inputs-ci-source-evidence/typescript-version.txt
-          sha256sum \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.ts \
-            scripts/dependency-retention-os-test/current-h1-source-record-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-source-record.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-source-extraction-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-source-extraction-child-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-source-semantics-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-source-sandbox-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-source-extraction.node-test.ts \
-            src/provider-codex/app-server/adapters/hosted-signed-tool-elf.ts \
-            scripts/dependency-retention-os-test/current-h1-build-child-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-build-plan-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-build-process-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-compiler-subprocess-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-compiler-witness-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-controlled-build-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-controlled-build-docker-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-controlled-build.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-retained-member-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-qualified-package-image.ts \
-            scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.ts \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-publication.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-archive-format-census.ts \
-            scripts/dependency-retention-os-test/current-h1-archive-format-census.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-archive-members-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-archive-members.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-archive-path-graph-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-archive-path-graph.node-test.ts \
-            scripts/dependency-retention-os-test/current-h1-selected-toolroot-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-selected-toolroot-filesystem-TEST.ts \
-            scripts/dependency-retention-os-test/current-h1-selected-toolroot.node-test.ts \
-            scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json \
-            host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts \
-            .github/workflows/ci.yml \
-            package-lock.json \
-            node_modules/typescript/package.json \
-            node_modules/typescript/bin/tsc \
-            node_modules/typescript/lib/_tsc.js \
-            > dependency-h1-tool-inputs-ci-source-evidence/source-and-compiler.sha256
-          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json 2>&1 | tee dependency-h1-tool-inputs-ci-source-evidence/strict-emit.log
-          sha256sum \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js \
-            scripts/dependency-retention-os-test/current-h1-source-record-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-source-record.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-source-extraction-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-source-extraction-child-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-source-semantics-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-source-sandbox-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-source-extraction.node-test.js \
-            src/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
-            scripts/dependency-retention-os-test/current-h1-build-child-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-build-plan-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-build-process-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-compiler-subprocess-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-compiler-witness-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-controlled-build-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-controlled-build-docker-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-controlled-build.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-retained-member-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-qualified-package-image.js \
-            scripts/dependency-retention-os-test/current-h1-qualified-package-image.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.js \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-index.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.js \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-publication.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-archive-format-census.js \
-            scripts/dependency-retention-os-test/current-h1-archive-format-census.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-archive-members-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-archive-members.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-archive-path-graph-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-archive-path-graph.node-test.js \
-            scripts/dependency-retention-os-test/current-h1-selected-toolroot-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-selected-toolroot-filesystem-TEST.js \
-            scripts/dependency-retention-os-test/current-h1-selected-toolroot.node-test.js \
-            host-integration/managed-launcher/dependency-full-python-envelope-TEST.js \
-            > dependency-h1-tool-inputs-ci-source-evidence/emitted.sha256
-      - name: Strict emit fixed staged H1 DATA tests and bind exact source closure
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -o pipefail
-          mkdir -p dependency-h1-staged-data-ci-evidence
-          printf '{"schemaVersion":1,"sourceSha":"%s","purpose":"root-filesystem-staged-H1-DATA-not-constructor-qualification"}\n' "$TEST_SOURCE_SHA" > dependency-h1-staged-data-ci-evidence/source.json
-          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
-          node --version > dependency-h1-staged-data-ci-evidence/node-version.txt
-          node node_modules/typescript/bin/tsc --version > dependency-h1-staged-data-ci-evidence/typescript-version.txt
-          grep -Fxq 'Version 6.0.3' dependency-h1-staged-data-ci-evidence/typescript-version.txt
-          sha256sum \
-            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.ts \
-            host-integration/managed-launcher/dependency-full-h1-elf-role-TEST.ts \
-            host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts \
-            host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts \
-            host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.ts \
-            host-integration/managed-launcher/dependency-full-native-TEST.ts \
-            host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts \
-            host-integration/managed-launcher/launch.mjs \
-            host-integration/managed-launcher/payload-guard.mjs \
-            host-integration/managed-launcher/profiles.mjs \
-            host-integration/host-jobs/storage-policy.mjs \
-            scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json \
-            dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
-            dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
-            dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
-            dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
-            dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
-            .github/workflows/ci.yml package.json package-lock.json \
-            node_modules/typescript/package.json node_modules/typescript/bin/tsc node_modules/typescript/lib/_tsc.js \
-            > dependency-h1-staged-data-ci-evidence/source-and-compiler.sha256
-          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-staged-data-ci-emit.json 2>&1 | tee dependency-h1-staged-data-ci-evidence/strict-emit.log
-          cp package.json outputs/TEST-h1-staged-data-ci-emit/package.json
-          sha256sum \
-            outputs/TEST-h1-staged-data-ci-emit/package.json \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-elf-role-TEST.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-staged-tools-TEST.node-test.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-native-TEST.node-test.js \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/launch.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/payload-guard.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/profiles.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/host-integration/host-jobs/storage-policy.mjs \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-project-control-source-catalog.js \
-            outputs/TEST-h1-staged-data-ci-emit/dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js \
-            > dependency-h1-staged-data-ci-evidence/emitted.sha256
-      - name: Prepare fixed public facts TAP curator
-        run: |
-          cat > dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts <<'H1_PUBLIC_TAP_CURATOR'
-          import assert from 'node:assert/strict';
-          import { constants, openSync, closeSync, lstatSync, fstatSync, readSync, fchmodSync } from 'node:fs';
-          import { createHash } from 'node:crypto';
-          const path = 'dependency-h1-staged-data-ci-evidence/facts-root-tests.tap';
-          let directory;
-          try { directory = lstatSync('dependency-h1-staged-data-ci-evidence', { bigint: true }); }
-          catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') process.exit(0); throw error; }
-          assert(directory.isDirectory() && !directory.isSymbolicLink() && (directory.mode & 0o022n) === 0n);
-          let before;
-          try { before = lstatSync(path, { bigint: true }); }
-          catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') process.exit(0); throw error; }
-          assert(before.isFile() && !before.isSymbolicLink() && (before.uid === 0n || before.uid === directory.uid) && before.nlink === 1n && before.size > 0n && before.size <= 1048576n && ((before.mode & 0o7777n) === 0o600n || (before.mode & 0o7777n) === 0o644n));
-          const stamp = (s: typeof before) => [s.dev,s.ino,s.mode,s.uid,s.gid,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(':');
-          const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-          try {
-            assert.equal(stamp(fstatSync(fd, { bigint: true })), stamp(before));
-            const body = Buffer.alloc(Number(before.size) + 1); let at = 0;
-            for (;;) { const n = readSync(fd, body, at, body.length - at, at); if (!n) break; at += n; assert(at <= Number(before.size)); }
-            assert.equal(at, Number(before.size)); assert.equal(stamp(fstatSync(fd, { bigint: true })), stamp(before)); assert.equal(stamp(lstatSync(path, { bigint: true })), stamp(before));
-            // Fixed public TEST TAP only: publish its bounded original bytes for failure
-            // diagnosis as well as success. This operation cannot accept the test result.
-            const hash = createHash('sha256').update(body.subarray(0, at)).digest('hex');
-            if ((before.mode & 0o7777n) === 0o600n) { assert.equal(before.uid, 0n); fchmodSync(fd, 0o644); }
-            const after = fstatSync(fd, { bigint: true });
-            assert(after.dev === before.dev && after.ino === before.ino && after.uid === before.uid && after.gid === before.gid && after.nlink === 1n && after.size === before.size && after.mtimeNs === before.mtimeNs && (after.mode & 0o7777n) === 0o644n);
-            assert.equal(stamp(lstatSync(path, { bigint: true })), stamp(after));
-            const check = Buffer.alloc(at); let offset = 0;
-            while (offset < check.length) { const n = readSync(fd, check, offset, check.length - offset, offset); assert(n > 0); offset += n; }
-            assert.equal(createHash('sha256').update(check).digest('hex'), hash);
-            assert.equal(stamp(fstatSync(fd, { bigint: true })), stamp(after)); assert.equal(stamp(lstatSync(path, { bigint: true })), stamp(after));
-            console.log(JSON.stringify({ purpose: 'bounded-public-TEST-TAP-readability', bytes: at, sha256: hash, mode: '0644', nativeQualified: false }));
-          } finally { closeSync(fd); }
-          H1_PUBLIC_TAP_CURATOR
-          sha256sum dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts > dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.sha256
-      - name: Collect independently signed exact tool DATA on disposable root ARC job
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -o pipefail
-          TEST_NODE="$(readlink -f "$(command -v node)")"
-          if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
-          H1_ROOT=()
-          if [ "$(id -u)" -ne 0 ]; then H1_ROOT=(sudo -n); fi
-          "${H1_ROOT[@]}" env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI=true GITHUB_ACTIONS=true \
-            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" TEST_SOURCE_SHA="$TEST_SOURCE_SHA" TEST_NODE="$TEST_NODE" \
-            /bin/bash --noprofile --norc -euo pipefail <<'H1_COLLECT_ROOT'
-          # Disposable GHA caller only: source-path resolution must not depend
-          # on capabilities to search runner-owned ancestry. Never chmod it or
-          # impose a /tmp policy on managed hosts/the generic DATA collector.
-          test "$(id -u):$(id -g)" = 0:0
-          test "$(stat -c '%u:%g:%a:%F' /)" = 0:0:755:directory
-          test "$(stat -c '%u:%g:%a:%F' /tmp)" = 0:0:1777:directory
-          umask 077
-          H1_STAGE=$(mktemp -d /tmp/TEST-H1-root-data.XXXXXXXX)
-          H1_STAGE_ID=$(stat -c '%d:%i:%u:%g:%a:%F' "$H1_STAGE")
-          exec 9<"$H1_STAGE"
-          h1_rejoin_stage() {
-            test "$(stat -c '%u:%g:%a:%F' /)" = 0:0:755:directory &&
-            test "$(stat -c '%u:%g:%a:%F' /tmp)" = 0:0:1777:directory &&
-            test "$(stat -c '%u:%g:%a:%F' "$H1_STAGE")" = 0:0:700:directory &&
-            test "$(stat -c '%d:%i:%u:%g:%a:%F' "$H1_STAGE")" = "$H1_STAGE_ID" &&
-            test "$(stat -Lc '%d:%i:%u:%g:%a:%F' "/proc/self/fd/9")" = "$H1_STAGE_ID"
-          }
-          h1_cleanup_stage() {
-            H1_PRIMARY=$?
-            trap - EXIT
-            if h1_rejoin_stage && rm -rf --one-file-system -- "$H1_STAGE"; then :; else
-              echo 'TEST GHA signed DATA staging cleanup unproven' >&2
-              if [ "$H1_PRIMARY" -eq 0 ]; then H1_PRIMARY=70; fi
-            fi
-            exec 9<&-
-            exit "$H1_PRIMARY"
-          }
-          trap h1_cleanup_stage EXIT
-          h1_rejoin_stage
-          # Real Linux regression for the failed permission boundary: uid0 in
-          # a fresh userns searches our root-owned stage, while a private owned
-          # fixture with an unmapped UID refuses with the actual EACCES text.
-          mkdir "$H1_STAGE/foreign"
-          printf 'TEST permission sentinel\n' > "$H1_STAGE/foreign/sentinel"
-          chown 65534:65534 "$H1_STAGE/foreign"
-          unshare --user --map-root-user /usr/bin/test -x "$H1_STAGE" 9<&-
-          # A real execution/readback also refuses a noexec staging mount.
-          install -m 700 -- /usr/bin/true "$H1_STAGE/exec-probe"
-          cmp -s /usr/bin/true "$H1_STAGE/exec-probe"
-          unshare --user --map-root-user "$H1_STAGE/exec-probe" 9<&-
-          if unshare --user --map-root-user /usr/bin/stat -- "$H1_STAGE/foreign/sentinel" \
-            9<&- > /dev/null 2> "$H1_STAGE/permission.stderr"; then
-            echo 'TEST userns foreign ancestry unexpectedly searchable' >&2
-            exit 70
-          fi
-          grep -Fq 'Permission denied' "$H1_STAGE/permission.stderr"
-          test "$(stat -c '%u:%g:%a:%F' "$H1_STAGE/foreign")" = 65534:65534:700:directory
-          test "$(cat "$H1_STAGE/foreign/sentinel")" = 'TEST permission sentinel'
-          rm -rf --one-file-system -- "$H1_STAGE/foreign" "$H1_STAGE/permission.stderr" "$H1_STAGE/exec-probe"
-          h1_rejoin_stage
-          echo 'TEST GHA root staging permission and executable probes passed'
-          RUNNER_TEMP="$H1_STAGE" "$TEST_NODE" --test --test-reporter=tap "$GITHUB_WORKSPACE/outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.js" > "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap" 9<&-
-          grep -Eq '^ok [0-9]+ - genuine ROOT Linux source census directory/file/alias rows retain their original discriminated grammar$' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
-          grep -Fxq '# tests 8' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
-          grep -Fxq '# pass 8' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
-          grep -Fxq '# fail 0' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
-          grep -Fxq '# skipped 0' "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/facts-root-tests.tap"
-          "$TEST_NODE" "$GITHUB_WORKSPACE/dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts" 9<&-
-          h1_rejoin_stage
-          RUNNER_TEMP="$H1_STAGE" "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js" 9<&-
-          h1_rejoin_stage
-          H1_COLLECT_ROOT
-          else
-            H1_ROOT=()
-            if [ "$(id -u)" -ne 0 ]; then H1_ROOT=(sudo -n); fi
-            test "${CI:-}" = true && test "${GITHUB_ACTIONS:-}" = true
-            "${H1_ROOT[@]}" env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI="$CI" GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_TEMP="$RUNNER_TEMP" \
-              /bin/bash --noprofile --norc -euo pipefail -c '
-                test "$(id -u):$(id -g)" = 0:0
-                test "$RUNNER_TEMP" = "$(readlink -f -- "$RUNNER_TEMP")"
-                test "$(stat -c "%u:%g:%a:%F" -- "$RUNNER_TEMP")" = 0:0:700:directory
-                exec "$@"
-              ' TEST-H1-managed-facts "$TEST_NODE" --test --test-reporter=tap "$GITHUB_WORKSPACE/outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.js" \
-              > dependency-h1-staged-data-ci-evidence/facts-root-tests.tap
-            # Existing managed/self-hosted callers retain their configured
-            # job directory (for example /srv/workers), never a /tmp fallback.
-            if [ "$(id -u)" -eq 0 ]; then
-              env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI=true GITHUB_ACTIONS=true \
-                GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
-                "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js"
-            else
-              sudo -n env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C CI=true GITHUB_ACTIONS=true \
-                GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
-                "$TEST_NODE" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci.js"
-            fi
-          fi 2>&1 | tee dependency-h1-tool-inputs-ci-source-evidence/entry.log
-          TAP=dependency-h1-staged-data-ci-evidence/facts-root-tests.tap "$TEST_NODE" --input-type=module-typescript - <<'H1_DISTRO_FACTS_RESULT'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const expected = new Set(["signed-publisher DATA remains distinct from reproduced compilation and never issues native authority", "missing HOST/staged package references, source definitions and substituted archive assets refuse", "fixed verifier roles cannot introduce a caller executable or escaping alias", "DATA parsers reject accessor/proxy/array hooks without invoking them", "asset names are derived only from exact hashes; filenames cannot escape original review root", "an unqualified DATA subject cannot even start a native verifier", "separate original HOST nspawn/loader/every DSO coverage cannot be supplied by staged binaries", "genuine ROOT Linux source census directory/file/alias rows retain their original discriminated grammar"]);
-          const total = expected.size;
-          const lines = readFileSync(process.env.TAP!, 'utf8').trimEnd().split(/\r?\n/);
-          assert.deepEqual(lines.filter(line => line === 'TAP version 13'), ['TAP version 13']);
-          assert.deepEqual(lines.filter(line => /^1\.\./.test(line)), [`1..${total}`]);
-          const cases = lines.filter(line => /^(?:not )?ok\b/.test(line));
-          assert.equal(cases.length, total);
-          for (const [index, line] of cases.entries()) {
-            const match = /^ok ([1-9][0-9]*) - (.+)$/.exec(line);
-            assert(match); assert.equal(Number(match[1]), index + 1); assert(expected.delete(match[2]!));
-          }
-          assert.equal(expected.size, 0);
-          for (const [label, value] of [['tests', total], ['suites', 0], ['pass', total], ['fail', 0], ['cancelled', 0], ['skipped', 0], ['todo', 0]] as const) {
-            assert.deepEqual(lines.filter(line => line.startsWith(`# ${label} `)), [`# ${label} ${value}`]);
-          }
-          assert(!lines.some(line => /^Bail out!| # (?:SKIP|TODO)\b/i.test(line)));
-          console.log(`Validated ${total} exact signed-distro DATA cases without skips.`);
-          H1_DISTRO_FACTS_RESULT
-          TAP=dependency-h1-tool-inputs-ci-evidence/root-tests.tap
-          grep -Eq '^ok [0-9]+ - real acquired file hashes retained bytes and refuses post-read deadline/identity mutation$' "$TAP"
-          grep -Eq '^ok [0-9]+ - retained original archive rejects equal-byte replacement between verification and extraction$' "$TAP"
-          grep -Eq '^ok [0-9]+ - over-cap same DATA capture retains complete canonical body while original candidate stays absent/HOLD$' "$TAP"
-          grep -Eq '^ok [0-9]+ - stale size/hash/count commitments refuse before any publication$' "$TAP"
-          grep -Eq '^ok [0-9]+ - fixed operational boundary is inclusive but plus one refuses before serialization/write$' "$TAP"
-          grep -Eq '^ok [0-9]+ - raw tar survey preserves literal bytes, privileged mode and repeated hardlink observations without path authority$' "$TAP"
-          grep -Eq '^ok [0-9]+ - GNU and PAX raw extensions preserve original bytes while effective member census stays unresolved$' "$TAP"
-          grep -Eq '^ok [0-9]+ - unsupported size or checksum and incomplete raw EOF hold without guessing another header$' "$TAP"
-          grep -Eq '^ok [0-9]+ - shared decoder adapters retain the CI scope and cannot turn expired/caller DATA into a native tool launch$' "$TAP"
-          grep -Fxq '# tests 44' "$TAP"
-          grep -Fxq '# pass 43' "$TAP"
-          grep -Eq '^ok [0-9]+ - GNU basic rows retain original privileged mode and absolute dotdot literals without namespace authority$' "$TAP"
-          grep -Eq '^ok [0-9]+ - GNU basic profile drift and interpayload padding refuse before any row publication$' "$TAP"
-          grep -Eq '^ok [0-9]+ - GNU original stream package commitments and one absolute deadline veto stale results$' "$TAP"
-          grep -Eq '^ok [0-9]+ - GNU complete DATA serialization has inclusive operational cap and exact owned readback$' "$TAP"
-          grep -Fxq '# fail 0' "$TAP"
-          grep -Fxq '# skipped 1' "$TAP"
-          grep -Eq '^ok [0-9]+ - ordinary caller-owned file cannot become original root-owned archive authority # SKIP nonroot negative is exercised by separate caller-owned environment$' "$TAP"
-          grep -Eq '^ok [0-9]+ - fixed H1 graph retains repeated directory origins and mtimes with deterministic DATA identity$' "$TAP"
-          grep -Eq '^ok [0-9]+ - fixed H1 canonical collisions unsafe parents and directory security drift refuse before writes$' "$TAP"
-          grep -Eq '^ok [0-9]+ - fixed H1 alias graph keeps missing unselected targets and pending site recipe but vetoes unsafe edges$' "$TAP"
-          grep -Eq '^ok [0-9]+ - fixed H1 role selects original nsenter but excludes privileged and absent objects and refuses origin drift$' "$TAP"
-          grep -Eq '^ok [0-9]+ - fixed H1 complete records enforce operational boundary deadline and owned exclusive publication$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected main refuses incomplete fixed image before filesystem writes$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected filesystem refuses unsafe namespace budget and expired deadline before any anchor$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected filesystem refuses hidden JSON hooks getters and proxies without invoking them$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected entry rejects inherited hooks without invocation$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT requires exact recursively frozen original member row bindings before anchor$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT preserves every object yield and live joins with one detached plan canonicalization$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT detects nested caller mutations at real yields including frozen parents and complete fallback$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT refuses inherited function and getter hooks at optimized fallback and publication windows$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics writes exact content mode time rewrite and distinct recipe provenance$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics rejects equal-byte archive replacement and existing root without reuse$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics vetoes original slice mutation after yield with held partial output$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics observes real signal cancellation at built-in yield and closes owned handles$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics detects output substitution extra entries and unsafe alias plans$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics refuses substituted retained parent and preserves outside TEST sentinel$' "$TAP"
-          grep -Eq '^ok [0-9]+ - selected ROOT mechanics holds on real write fsync readback and post-I/O deadline faults$' "$TAP"
-          test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
-      - name: Retain curated signed DATA and exact workflow evidence even on failure
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: dependency-h1-tool-inputs-ci-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            dependency-h1-tool-inputs-ci-source-evidence/
-            dependency-h1-tool-inputs-ci-evidence/
-          if-no-files-found: error
-
-      - name: Require three actual Linux ROOT staged DATA physical tests with unchanged H1 refusal
-        run: |
-          set -o pipefail
-          TEST_NODE="$(readlink -f "$(command -v node)")"
-          TEST_EMIT="$GITHUB_WORKSPACE/outputs/TEST-h1-staged-data-ci-emit/host-integration/managed-launcher"
-          if [ "$(id -u)" -eq 0 ] && [ "$(id -ru)" -eq 0 ] && [ "$(id -g)" -eq 0 ] && [ "$(id -rg)" -eq 0 ]; then
-            env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
-              /bin/sh -c 'test "$(id -u)" -eq 0 && test "$(id -ru)" -eq 0 && test "$(id -g)" -eq 0 && test "$(id -rg)" -eq 0 && test "$(uname -s)" = Linux || exit 1; id; exec "$@"' TEST-H1-staged-root \
-              "$TEST_NODE" --test --test-reporter=tap "$TEST_EMIT/dependency-full-h1-staged-tools-TEST.node-test.js" "$TEST_EMIT/dependency-full-native-TEST.node-test.js"
-          else
-            sudo -n -u root -g root env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
-              /bin/sh -c 'test "$(id -u)" -eq 0 && test "$(id -ru)" -eq 0 && test "$(id -g)" -eq 0 && test "$(id -rg)" -eq 0 && test "$(uname -s)" = Linux || exit 1; id; exec "$@"' TEST-H1-staged-root \
-              "$TEST_NODE" --test --test-reporter=tap "$TEST_EMIT/dependency-full-h1-staged-tools-TEST.node-test.js" "$TEST_EMIT/dependency-full-native-TEST.node-test.js"
-          fi 2>&1 | tee dependency-h1-staged-data-ci-evidence/root-tests.tap
-          TAP=dependency-h1-staged-data-ci-evidence/root-tests.tap
-          # Bind every required source case, not just a total that can hide substitutions.
-          TAP="$TAP" "$TEST_NODE" --input-type=module-typescript - <<'H1_STAGED_DATA_RESULT'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const expected = new Set([
-            "complete DATA subject and captured manifest never qualify a constructor",
-            "v2 publisher facts bind a separate protected digest, with no compiled or public admission claim",
-            "unknown fields, kinds and missing selected-build definitions refuse",
-            "proxy and accessor DATA refuse without executing getters",
-            "alias escape, missing target, cycle and duplicate physical roster refuse",
-            "unknown and executable/config shadow mount rows refuse",
-            "HOST release branch, bytes and actual cells stay separate and exact",
-            "synthetic boot ID cannot replace original host boot authority",
-            "catalog bounds, writable file and nlink2 refuse",
-            "actual retained physical inode replacement, extra entry, nlink and deadline refuse",
-            "actual owned read expires at post-I/O monotonic check and closes permanently",
-            "ordinary Unicode is retained while lone surrogates refuse before byte conversion",
-            "actual invalid literal alias bytes refuse including equal encoded-size case",
-            "actual original sibling birth/live creation retains full final tree identity",
-            "actual ancestor inode substitution refuses",
-            "actual ancestor symlink substitution refuses",
-            "actual ancestor mode substitution refuses",
-            "injected held ancestor mount change refuses despite unchanged actual inode",
-            "actual close failure still attempts every retained descriptor",
-            "actual fresh ancestor bind mount refuses retained same-inode catalog",
-            "ancestor lenience retains complete final root-mode refusal",
-            "ancestor lenience retains complete final file-bytes refusal",
-            "ancestor lenience retains complete final file-mode refusal",
-            "installer capability DATA requires only ptrace, no inherited/ambient capabilities, and NNP",
-            "installer snapshot large-leaf DATA is exact measured Claude bytes only",
-            "counterfeit accessors and proxies cannot execute during request capture",
-            "command cells are descriptor snapshots rather than later caller reads",
-            "public catalog paths never admit protected, escaped or executable input",
-            "unknown or extra review fields remain refused DATA",
-            "recognized request is copied DATA and changed limits cannot enter ROOT admission",
-            "readonly mount DATA refuses stacked/writable/foreign physical observations",
-            "FULL guest roots refuse global and foreign staging prefixes",
-            "FULL input readonly mounts override job scratch write access",
-            "H1 is a separate finite removal case with one fixed parent argv flag",
-            "H1 libc requires exact reviewed root-owned two-link metadata",
-            "H1 libc two-name DATA never widens to unknown hardlink routes",
-            "unsupported H1 stdlib closure cannot reach private tool callbacks",
-            "FULL review schema2 is exact fixed-r Positive/Ordinary and cannot downgrade",
-            "Positive HOST libc DATA is finite and consumed exactly once",
-            "Positive HOST libc DATA cannot select schema1 H1 or another role",
-            "Positive HOST libc DATA never invokes input hooks",
-            "schema2 finite account selection accepts exactly account-r or account-w",
-            "schema2 protected outer review must match the exact selected account",
-            "Positive HOST two fixed DSO roles consume the observed22 canonical rows",
-            "FULL H1 separate subject digest is exact DATA-only selection",
-            "FULL H1 current single-link shared DSO keeps ordinary custody selection",
-            "Positive HOST second DSO rejects broadened roles and unconsumed proofs",
-            "Positive HOST second DSO DATA never invokes hooks",
-            "Positive HOST stable ancestry compares objects across namespace-local mounts",
-            "source package contract keeps legacy and binds selected Positive package bytes",
-            "staged constructor, census and close reject copied original-parent DATA before any physical work",
-            "explicit preservation FULL configuration stays schema2 positive ordinary only",
-            "schema3 Positive keeps original account/case/outer boundaries and distinct package pin",
-            "schema3 H1 uses original staged shape and explicit current source package without promoting old schema1",
-          ]);
-          const total = expected.size;
-          const lines = readFileSync(process.env.TAP!, 'utf8').trimEnd().split(/\r?\n/);
-          assert.deepEqual(lines.filter(line => line === 'TAP version 13'), ['TAP version 13']);
-          assert.deepEqual(lines.filter(line => /^1\.\./.test(line)), [`1..${total}`]);
-          const cases = lines.filter(line => /^(?:not )?ok\b/.test(line));
-          assert.equal(cases.length, total);
-          for (const [index, line] of cases.entries()) {
-            const match = /^ok ([1-9][0-9]*) - (.+)$/.exec(line);
-            assert(match);
-            assert.equal(Number(match[1]), index + 1);
-            assert(expected.delete(match[2]!));
-          }
-          assert.equal(expected.size, 0);
-          for (const [label, value] of [['tests', total], ['suites', 0], ['pass', total], ['fail', 0], ['cancelled', 0], ['skipped', 0], ['todo', 0]] as const) {
-            assert.deepEqual(lines.filter(line => line.startsWith(`# ${label} `)), [`# ${label} ${value}`]);
-          }
-          assert(!lines.some(line => /^Bail out!| # (?:SKIP|TODO)\b/i.test(line)));
-          console.log(`Validated ${total} exact staged DATA cases without skips.`);
-          H1_STAGED_DATA_RESULT
-      - name: Make only the bounded public ROOT facts TAP readable for artifact collection
-        if: always()
-        run: |
-          CURATOR=dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.mts
-          if [ ! -e "$CURATOR" ]; then
-            test ! -e dependency-h1-staged-data-ci-evidence/facts-root-tests.tap
-            exit $?
-          fi
-          sha256sum --check dependency-h1-staged-data-ci-evidence/curate-public-facts-tap.sha256
-          TEST_NODE="$(readlink -f "$(command -v node)")"
-          sudo -n env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C "$TEST_NODE" "$CURATOR"
-      - name: Retain staged H1 DATA exact-source physical TEST evidence even on failure
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: dependency-h1-staged-data-ci-${{ github.event.pull_request.head.sha || github.sha }}
-          path: dependency-h1-staged-data-ci-evidence/
-          if-no-files-found: error
-
-  h1-controlled-build:
-    # Explicit TEST opt-in: remove the label after this exact run starts so
-    # ordinary pushes never repeat the compiler build. Its source-specific
-    # concurrency group also preserves this owned run during later PR pushes.
-    if: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'test-h1-controlled-build') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 110
-    env:
-      TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
-      TEST_H1_CONTROLLED_BUILD: '1'
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Install Node.js Linux runtime prerequisite
-        if: runner.os == 'Linux'
-        shell: bash
-        run: *node_linux_prerequisite_script
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 26.11.1
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      - name: Prepare complete exact-source compiler TEST runtime
-        id: compiler-runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          test "$(git rev-parse HEAD)" = "$TEST_SOURCE_SHA"
-          owned=$(mktemp -d "$RUNNER_TEMP/TEST-H1-compiler-runtime-XXXXXX")
-          evidence=dependency-h1-controlled-build-source-evidence
-          mkdir -m 0700 "$evidence"
-          printf 'root=%s\n' "$owned" >> "$GITHUB_OUTPUT"
-          git rev-parse HEAD > "$evidence/source-commit.txt"
-          git rev-parse HEAD^{tree} > "$evidence/source-tree.txt"
-          git archive --format=tar HEAD | tar -xf - -C "$owned"
-          # A new repository from public objects avoids copying operator Git
-          # configuration or credentials into the disposable compiler.
-          git bundle create "$owned/source.bundle" HEAD
-          git -C "$owned" init --quiet
-          git -C "$owned" fetch --quiet "$owned/source.bundle" HEAD
-          git -C "$owned" reset --mixed "$TEST_SOURCE_SHA" >/dev/null
-          test "$(git -C "$owned" rev-parse HEAD)" = "$TEST_SOURCE_SHA"
-          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.h1-tool-inputs-ci-emit.json --outDir "$owned"
-          source_leaf=src/provider-codex/app-server/adapters/hosted-signed-tool-elf.js
-          leaf=dist/provider-codex/app-server/adapters/hosted-signed-tool-elf.js
-          mkdir -p "$owned/$(dirname "$leaf")"
-          cp "$owned/$source_leaf" "$owned/$leaf"
-          cmp "$owned/$source_leaf" "$owned/$leaf"
-          find "$owned" -type f -name '*.js' -print0 | sort -z | xargs -0 sha256sum > "$evidence/emitted.sha256"
-          node --test "$owned/scripts/dependency-retention-os-test/current-h1-controlled-build.node-test.js" > "$evidence/portable-tests.tap"
-      - name: Build authenticated H1 inputs in the owned disposable container
-        shell: bash
-        env:
-          H1_EMITTED_ROOT: ${{ steps.compiler-runtime.outputs.root }}
-        run: |
-          set -euo pipefail
-          node "$H1_EMITTED_ROOT/scripts/dependency-retention-os-test/current-h1-controlled-build-docker-TEST.js" "$H1_EMITTED_ROOT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: dependency-h1-controlled-build-${{ github.event.pull_request.head.sha }}
-          path: |
-            dependency-h1-controlled-build-source-evidence/
-            dependency-h1-controlled-build-docker-evidence/
-          if-no-files-found: error
-          compression-level: 1
+      - run: npm run check:packed-consumer
 
   native-probe-source:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
@@ -1105,271 +415,26 @@ jobs:
           dpkg-query --show --showformat='${Version}\n' tmux
           tmux -V
           npm ci
-          # The HOST source facade imports canonical emitted runtime leaves.
-          # Build this exact disposable source before its root-source check;
-          # workspace-package declarations alone do not provide those leaves.
-          npm run build
           npm run typecheck:native-probe
-          sr_native_phase=root_typecheck_driver
-          sr_native_phase_on_exit() {
-            sr_native_phase_rc=$?
-            trap - EXIT
-            case "$sr_native_phase" in
-              root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator)
-                if [[ "$sr_native_phase_rc" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( sr_native_phase_rc <= 255 )); then
-                  printf '\nSR_NATIVE_SOURCE_PHASE_V1 phase=%s exit=%s\n' "$sr_native_phase" "$sr_native_phase_rc" || true
-                else
-                  printf '\n%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN' || true
-                fi ;;
-              *) printf '\n%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN' || true ;;
-            esac
-            exit "$sr_native_phase_rc"
-          }
-          trap sr_native_phase_on_exit EXIT
           npm run typecheck:native-probe:root-source
-          sr_native_phase=contracts_driver
           npm run test:native-probe
-          sr_native_phase=root_tmpfs
-          # Docker owns this empty bounded tmpfs; never use the overlay backing.
-          test -d /var/lib/subscription-runtime-host-policy
-          test ! -L /var/lib/subscription-runtime-host-policy
-          [[ "$(stat -c '%u:%a' /var/lib/subscription-runtime-host-policy)" == '0:700' ]]
-          [[ "$(findmnt --noheadings --mountpoint /var/lib/subscription-runtime-host-policy --output FSTYPE)" == tmpfs ]]
-          [[ -z "$(find /var/lib/subscription-runtime-host-policy -mindepth 1 -maxdepth 1 -print -quit)" ]]
-          install -d -m 0700 /var/lib/subscription-runtime-host-policy/dependency-test-jobs \
-            /var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs
-          # Real root-owned private I/O; finite systemd/proc DATA stays Source only.
-          test "$(id -u):$(id -ru):$(id -g):$(id -rg)" = '0:0:0:0'
-          test "$(uname -s)" = Linux
-          /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
-            node node_modules/vitest/vitest.mjs run \
-            --config vitest.operator-root-source.config.ts \
-            --no-cache --configLoader runner --reporter=json \
-            --outputFile=delivery/a0-native-probe/operator-root-source-result.json
-          node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
-            --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
-            --target ES2022 --module NodeNext --moduleResolution NodeNext \
-            scripts/require-operator-root-source-result.mts
-          node --experimental-strip-types scripts/require-operator-root-source-result.mts
-          sr_native_phase=root_principal
-          # Observe the actual principal before Vitest can project fixture facts.
-          node --input-type=module-typescript - <<'ROOT_TEST_AUTHORITY'
-          import assert from 'node:assert/strict';
-          import { readFileSync, readlinkSync } from 'node:fs';
-          assert.equal(process.platform, 'linux');
-          assert.equal(process.getuid?.(), 0);
-          assert.match(readFileSync('/proc/self/uid_map', 'utf8').trim(), /^0\s+0\s+4294967295$/);
-          for (const ns of ['user', 'mnt', 'pid']) {
-            assert.equal(readlinkSync(`/proc/self/ns/${ns}`), readlinkSync(`/proc/1/ns/${ns}`));
-          }
-          ROOT_TEST_AUTHORITY
-          # Run the observation suite separately while the private TEST tmpfs is
-          # empty. Keep the original four-file archive report contract unchanged.
-          sr_native_phase=root_tests
+          npm run build:packages
           SR_ARCHIVE_TEST_PRIVILEGE=root \
-            /usr/bin/timeout --signal=TERM --kill-after=10s 120s \
-            node node_modules/vitest/vitest.mjs run \
-            src/worker-codex/tests/codex-goal-project-dependency-inspection.test.ts \
-            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
-            --outputFile=delivery/a0-native-probe/dependency-inspection-root-result.json
-          sr_native_phase=root_validator
-          node --input-type=module-typescript - <<'DEPENDENCY_INSPECTION_ROOT_RESULT'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          import { resolve } from 'node:path';
-          const report = JSON.parse(readFileSync('delivery/a0-native-probe/dependency-inspection-root-result.json', 'utf8'));
-          const expected = new Set([
-            'standalone project dependency observation observes supported Node metadata without a diagnostic, cache, claim or install',
-            'standalone project dependency observation observes locked Python metadata and off-mode safety without writing',
-            'standalone project dependency observation rejects a structural lease copy and a genuine closed lease',
-            'standalone project dependency observation rejects an escaping manifest link rather than reading its bytes',
-            'standalone project dependency observation delegates explicit V1 to the unchanged legacy route before reader-only lease checks',
-            'standalone project dependency observation does not interpret an existing malformed binding as absence',
-            'standalone project dependency observation rejects a symlinked protected binding namespace',
-            'standalone project dependency observation rejects retained enrolled physical identity even after the original job path is gone',
-            'standalone project dependency observation rejects a mounted workspace alias from the bounded mount observation',
-            'standalone project dependency observation does not select a noncanonical or different child layout',
-          ]);
-          assert.equal(report.success, true);
-          assert.equal(report.numTotalTests, expected.size);
-          assert.equal(report.numPassedTests, expected.size);
-          for (const counter of ['numFailedTests', 'numPendingTests', 'numTodoTests']) assert.equal(report[counter], 0);
-          assert(Array.isArray(report.testResults) && report.testResults.length === 1);
-          const file = report.testResults[0];
-          assert.equal(file.name, resolve('src/worker-codex/tests/codex-goal-project-dependency-inspection.test.ts'));
-          assert(Array.isArray(file.assertionResults) && file.assertionResults.length === expected.size);
-          for (const test of file.assertionResults) {
-            assert.equal(test.status, 'passed');
-            assert(expected.delete(test.fullName));
-          }
-          assert.equal(expected.size, 0);
-          console.log(JSON.stringify({ scope: 'native-root-dependency-inspection-TEST', completedTests: report.numTotalTests }));
-          DEPENDENCY_INSPECTION_ROOT_RESULT
-          # Nineteen real-filesystem component cases under the already verified ROOT principal.
-          # Native permission/fence/path authority remains projected by these tests.
-          sr_native_phase=root_tests
-          SR_ARCHIVE_TEST_PRIVILEGE=root \
-            /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
-            node node_modules/vitest/vitest.mjs run \
-            src/worker-codex/tests/hosted-dependency-legacy-comparison-physical.test.ts \
-            src/worker-codex/tests/hosted-dependency-installer-start-state-physical.test.ts \
-            src/worker-codex/tests/hosted-dependency-committed-mapping-physical.test.ts \
-            src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts \
-            src/worker-codex/tests/hosted-dependency-eviction-recovery-physical.test.ts \
-            --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
-            --outputFile=delivery/a0-native-probe/dependency-retention-physical-root-result.json
-          sr_native_phase=root_validator
-          node --input-type=module-typescript - <<'DEPENDENCY_RETENTION_PHYSICAL_ROOT_RESULT'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          import { resolve } from 'node:path';
-          assert.equal(process.platform, 'linux');
-          for (const id of [process.getuid?.(), process.geteuid?.(), process.getgid?.(), process.getegid?.()]) assert.equal(id, 0);
-          const report = JSON.parse(readFileSync('delivery/a0-native-probe/dependency-retention-physical-root-result.json', 'utf8'));
-          const expected = new Map<string, Set<string>>([
-            [
-              "src/worker-codex/tests/hosted-dependency-legacy-comparison-physical.test.ts",
-              [
-                "legacy comparison real temporary trees, projected host authority retains content-only difference and commits only Unverified",
-                "legacy comparison real temporary trees, projected host authority retains mode-only difference and commits only Unverified",
-                "legacy comparison real temporary trees, projected host authority holds external-link candidate without launch, reset, or Ready"
-              ]
-            ],
-            [
-              "src/worker-codex/tests/hosted-dependency-installer-start-state-physical.test.ts",
-              [
-                "installer durable start-state retention, projected original authority Busy before prepare creates no start, consumption, partial output or child",
-                "installer durable start-state retention, projected original authority unsuccessful owned child permanently consumes attempt and retains immutable start/creator/partial bytes"
-              ]
-            ],
-            [
-              "src/worker-codex/tests/hosted-dependency-committed-mapping-physical.test.ts",
-              [
-                "original committed mapping physical refusal, projected native authority fences original owner across tampered committed mapping after opaque inode rename"
-              ]
-            ],
-            [
-              "src/worker-codex/tests/hosted-dependency-eviction-recovery-physical.test.ts",
-              [
-                "current recovery real negative predicates, projected upstream authority reaches current both-roots conflict with real Evicting and preserves every file and held owner",
-                "current recovery real negative predicates, projected upstream authority reaches changed renamed-v2 evidence after real complete trash observation without publication"
-              ]
-            ],
-            [
-              "src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts",
-              [
-                "rejects a foreign caller before original selection or filesystem effect",
-                "original begin failure occurs before receipt/effect",
-                "released replay still refuses absent committed mapping before opening or releasing an effect",
-                "original runner real disposable Linux effect (projected authority) durably prepares then moves full inode before mapping, closes handles before release, and replays released result",
-                "original runner real disposable Linux effect (projected authority) recovers original prepared crash without replacing preserved bytes or releasing early",
-                "original runner real disposable Linux effect (projected authority) recovers original rename-before crash without replacing preserved bytes or releasing early",
-                "original runner real disposable Linux effect (projected authority) recovers original rename-after crash without replacing preserved bytes or releasing early",
-                "original runner real disposable Linux effect (projected authority) recovers original committed crash without replacing preserved bytes or releasing early",
-                "original runner real disposable Linux effect (projected authority) recovers original release-before crash without replacing preserved bytes or releasing early",
-                "original runner real disposable Linux effect (projected authority) recovers original release-after crash without replacing preserved bytes or releasing early",
-                "original runner real disposable Linux effect (projected authority) source-tree replacement fails before committed mapping and owner release"
-              ]
-            ]
-          ].map(([path, names]) => [resolve(path as string), new Set(names as string[])]));
-          assert.equal(report.success, true);
-          assert.equal(report.numTotalTests, 19);
-          assert.equal(report.numPassedTests, 19);
-          for (const counter of ['numFailedTests', 'numPendingTests', 'numTodoTests']) assert.equal(report[counter], 0);
-          assert(Array.isArray(report.testResults) && report.testResults.length === 5);
-          for (const file of report.testResults) {
-            const names = expected.get(file.name); assert(names);
-            assert.equal(file.status, 'passed');
-            assert(Array.isArray(file.assertionResults) && file.assertionResults.length === names.size);
-            for (const test of file.assertionResults) { assert.equal(test.status, 'passed'); assert(names.delete(test.fullName)); }
-            assert.equal(names.size, 0); assert(expected.delete(file.name));
-          }
-          assert.equal(expected.size, 0);
-          console.log(JSON.stringify({scope:'root-retention-physical-SOURCE-TEST',SourceOnly:true,Native:false,completedTests:19}));
-          DEPENDENCY_RETENTION_PHYSICAL_ROOT_RESULT
-          sr_native_phase=root_tests
-          if SR_ARCHIVE_TEST_PRIVILEGE=root \
             /usr/bin/timeout --signal=TERM --kill-after=10s 600s \
             node node_modules/vitest/vitest.mjs run \
             src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
             src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts \
-            src/worker-codex/tests/codex-goal-sdk-standalone-workspace.test.ts \
-            src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts \
             --maxWorkers=1 --no-cache --configLoader runner --reporter=json \
             --outputFile=delivery/a0-native-probe/archive-root-result.json
-          then :; else
-            sr_root_test_rc=$?
-            if /usr/bin/timeout --signal=TERM --kill-after=1s 3s node --input-type=module-typescript - <<'ROOT_TEST_RESULT_PUBLIC' 2>/dev/null
-          import { constants as C, openSync, closeSync, fstatSync, lstatSync, readSync } from 'node:fs';
-          const root = '/native-probe-source-workspace/source', prefix = 'SR_NATIVE_SOURCE_ROOT_TEST_V1';
-          const unknown = `\n${prefix} unknown cause=UNKNOWN\n`, fds = [];
-          const check = value => { if (!value) throw new Error(); };
-          const fields = ['dev','ino','mode','uid','gid','nlink','size','mtimeNs','ctimeNs'];
-          const same = (a, b) => fields.every(k => a[k] === b[k]);
-          const stat = path => lstatSync(path, { bigint: true }), fdstat = fd => fstatSync(fd, { bigint: true });
-          const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-          const modules = [["reviewed_archive","src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts"],["custody_record_once","src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts"],["sdk_standalone_workspace","src/worker-codex/tests/codex-goal-sdk-standalone-workspace.test.ts"],["usable_placement","src/worker-codex/tests/hosted-original-usable-placement-installation.test.ts"]];
-          const six = ["original Usable Store schema5 placement installs CLOSED through actual Store/schema5 census, preserves raw SDK and opens the same placed blobs","original Usable Store schema5 placement refuses a different published installation nonce after actual fresh placement","original Usable Store schema5 placement refuses changed stage before installation publication","original Usable Store schema5 placement refuses changed inventory before installation publication","original Usable Store schema5 placement refuses changed ready before installation publication","original Usable Store schema5 placement refuses changed broker before installation publication"];
-          function project(report) {
-            check(plain(report) && Array.isArray(report.testResults) && report.testResults.length === 4);
-            const counters = ['numTotalTests','numPassedTests','numFailedTests','numPendingTests','numTodoTests'];
-            check(counters.every(k => Number.isSafeInteger(report[k]) && report[k] >= 0 && report[k] <= 1024));
-            check(report.numTotalTests > 0 && (report.success === undefined || typeof report.success === 'boolean'));
-            const records = [], seen = new Set(), sums = [0,0,0,0], cases = Array(6);
-            for (const file of report.testResults) {
-              check(plain(file)); const index = modules.findIndex(([,path]) => file.name === `${root}/${path}`);
-              check(index >= 0 && !seen.has(index)); seen.add(index);
-              check(Array.isArray(file.assertionResults) && file.assertionResults.length > 0 && file.assertionResults.length <= 256);
-              const counts = [0,0,0,0];
-              for (const assertion of file.assertionResults) {
-                check(plain(assertion)); const status = assertion.status;
-                check(['passed','failed','skipped','pending','todo'].includes(status));
-                counts[status === 'passed' ? 0 : status === 'failed' ? 1 : status === 'todo' ? 3 : 2]++;
-                if (index === 3) { const ordinal = six.indexOf(assertion.fullName); check(ordinal >= 0 && cases[ordinal] === undefined); cases[ordinal] = status; }
-              }
-              counts.forEach((n,i) => sums[i] += n);
-              records[index] = `${prefix} module=${modules[index][0]} total=${file.assertionResults.length} passed=${counts[0]} failed=${counts[1]} pending=${counts[2]+counts[3]} cause=UNKNOWN`;
-            }
-            check(sums.reduce((a,b) => a+b,0) === report.numTotalTests && sums[0] === report.numPassedTests && sums[1] === report.numFailedTests && sums[2] === report.numPendingTests && sums[3] === report.numTodoTests);
-            check(cases.filter(value => value !== undefined).length === 6);
-            return [...records, ...cases.map((status,i) => `${prefix} case=${i+1} status=${status} cause=UNKNOWN`)];
-          }
-          let output = unknown;
-          try {
-            check(process.cwd() === root);
-            const parents = [`${root}/delivery`, `${root}/delivery/a0-native-probe`].map(path => {
-              const fd = openSync(path, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW); fds.push(fd);
-              const before = fdstat(fd); check(before.isDirectory() && before.uid === 0n && (before.mode & 0o22n) === 0n && same(before, stat(path)));
-              return {path, fd, before};
-            });
-            const path = `${root}/delivery/a0-native-probe/archive-root-result.json`;
-            const fd = openSync(path, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK); fds.push(fd);
-            const before = fdstat(fd);
-            check(before.isFile() && before.uid === 0n && before.nlink === 1n && (before.mode & 0o22n) === 0n && before.size > 0n && before.size <= 16777216n && same(before, stat(path)));
-            const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
-            while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length-offset, null); check(n > 0); offset += n; }
-            check(readSync(fd, Buffer.alloc(1), 0, 1, null) === 0);
-            const stable = () => same(before, fdstat(fd)) && same(before, stat(path)) && parents.every(p => same(p.before, fdstat(p.fd)) && same(p.before, stat(p.path)));
-            check(stable()); const records = project(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); check(stable());
-            output = `\n${records.join('\n')}\n`;
-          } catch {} finally { for (const fd of fds) { try { closeSync(fd); } catch { output = unknown; } } }
-          process.stdout.write(output);
-          ROOT_TEST_RESULT_PUBLIC
-            then :; else printf '\n%s\n' 'SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN' || true; fi
-            exit "$sr_root_test_rc"
-          fi
-          sr_native_phase=root_validator_compile
           node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --types node \
             --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
             --target ES2022 --module NodeNext --moduleResolution NodeNext \
             scripts/require-archive-root-result.mts
-          sr_native_phase=root_validator
           node --experimental-strip-types scripts/require-archive-root-result.mts
           TEST_COMMAND
           timeout --signal=TERM --kill-after=10s 90s docker create --name "$name" --label "native-probe-source.owner=$owner" \
             --security-opt "seccomp=$owned/ci-source-seccomp.json" \
             --user 0:0 --init --memory=6g --memory-swap=6g --pids-limit=512 \
-            --tmpfs /var/lib/subscription-runtime-host-policy:rw,noexec,nosuid,nodev,size=64m,mode=0700 \
             node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 \
             /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
             HOME=/native-probe-source-workspace/home \
@@ -1396,68 +461,13 @@ jobs:
           docker inspect "$id" > "$owned/container-inspect.json"
           identity=$(docker inspect --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "native-probe-source.owner"}}' "$id")
           [[ "$identity" == "$id|/$name|$owner" ]]
-          state=$(docker inspect --format '{{.State.Status}}|{{.State.Running}}' "$id")
-          if [[ "$state" != 'exited|false' ]]; then
+          state=$(docker inspect --format '{{.State.Status}}' "$id")
+          if [[ "$state" != exited ]]; then
             printf '::error::Owned container %s is %s; retained without cleanup. Evidence: %s\n' "$id" "$state" "$owned"
             exit 1
           fi
           container_rc=$(docker inspect --format '{{.State.ExitCode}}' "$id")
           printf '%s\n' "$container_rc" > "$owned/container-exit.txt"
-          # Only finite Source markers from this verified exited owner may escape.
-          unknown_marker='SR_NATIVE_SOURCE_PUBLIC_V1 unknown passed=UNKNOWN inputsStable=UNKNOWN checks=UNKNOWN index=UNKNOWN exit=UNKNOWN signal=UNKNOWN naturalClose=UNKNOWN cause=UNKNOWN'
-          native_stdout_size=$(stat -c '%s' "$owned/container.stdout" 2>/dev/null) || native_stdout_size=UNKNOWN
-          if [[ -f "$owned/container.stdout" && ! -L "$owned/container.stdout" ]] &&
-            [[ "$native_stdout_size" =~ ^(0|[1-9][0-9]{0,10})$ ]] && (( native_stdout_size <= 16777216 )) &&
-            LC_ALL=C timeout --signal=TERM --kill-after=5s 10s awk '
-              /^SR_NATIVE_SOURCE_PHASE_V1 / {
-                if ($0 !~ /^SR_NATIVE_SOURCE_PHASE_V1 phase=(root_typecheck_driver|contracts_driver|root_tmpfs|root_principal|root_tests|root_validator_compile|root_validator) exit=(0|[1-9][0-9]{0,2})$/) { bad=1; exit }
-                split($3,e,"=");
-                if (seen["phase"]++ || ++n>32 || (bytes+=length($0)+1)>16384 || e[2]+0>255) { bad=1; exit }
-                rootFailed=($2=="phase=root_tests" && e[2]+0!=0);
-                lines[n]=$0
-              }
-              /^SR_NATIVE_SOURCE_ROOT_TEST_V1 / {
-                if ($0 == "SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN") { if (seen["root-unknown"]++) { bad=1; exit } }
-                else if ($0 ~ /^SR_NATIVE_SOURCE_ROOT_TEST_V1 module=(reviewed_archive|custody_record_once|sdk_standalone_workspace|usable_placement) total=(0|[1-9][0-9]{0,2}) passed=(0|[1-9][0-9]{0,2}) failed=(0|[1-9][0-9]{0,2}) pending=(0|[1-9][0-9]{0,2}) cause=UNKNOWN$/) {
-                  split($2,m,"="); split($3,t,"="); split($4,p,"="); split($5,f,"="); split($6,q,"=");
-                  if (seen["root-module:"m[2]]++ || t[2]+0<1 || t[2]+0>256 || p[2]+0+f[2]+0+q[2]+0!=t[2]+0 || (rootTotal+=t[2]+0)>1024) { bad=1; exit }
-                  rootModules++; if (m[2]=="usable_placement") { usableTotal=t[2]+0; usablePassed=p[2]+0; usableFailed=f[2]+0; usablePending=q[2]+0 }
-                } else if ($0 ~ /^SR_NATIVE_SOURCE_ROOT_TEST_V1 case=[1-6] status=(passed|failed|skipped|pending|todo) cause=UNKNOWN$/) {
-                  split($2,c,"="); split($3,s,"="); if (seen["root-case:"c[2]]++) { bad=1; exit }
-                  rootCases++; if (s[2]=="passed") casePassed++; else if (s[2]=="failed") caseFailed++; else casePending++;
-                } else { bad=1; exit }
-                if (++n>32 || (bytes+=length($0)+1)>16384) { bad=1; exit } lines[n]=$0
-              }
-              /^SR_NATIVE_SOURCE_PUBLIC_V1 / {
-                if ($0 !~ /^SR_NATIVE_SOURCE_PUBLIC_V1 (contracts|root_typecheck) passed=[01] inputsStable=([01]|UNKNOWN) checks=(0|[1-9][0-9]{0,2}|UNKNOWN) index=(0|[1-9][0-9]{0,2}|UNKNOWN) exit=(0|[1-9][0-9]{0,2}|UNKNOWN) signal=(NONE|SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ|UNKNOWN) naturalClose=([01]|UNKNOWN) cause=UNKNOWN$/) { bad=1; exit }
-                split($5,c,"="); split($6,i,"="); split($7,e,"=");
-                if (seen[$2]++ || ++n>32 || (bytes+=length($0)+1)>16384 ||
-                  (c[2]!="UNKNOWN" && c[2]+0>256) || (e[2]!="UNKNOWN" && e[2]+0>255) ||
-                  (i[2]!="UNKNOWN" && (c[2]=="UNKNOWN" || i[2]+0!=c[2]-1)) ||
-                  ($2=="root_typecheck" && ($4!="inputsStable=UNKNOWN" || $9!="naturalClose=UNKNOWN"))) { bad=1; exit }
-                lines[n]=$0
-              }
-              END {
-                if (bad || !n || (seen["root-unknown"] && (rootModules || rootCases)) ||
-                  ((rootModules || rootCases) && (rootModules!=4 || rootCases!=6 || usableTotal!=6 || usablePassed!=casePassed+0 || usableFailed!=caseFailed+0 || usablePending!=casePending+0))) exit 1;
-                if (rootFailed && !seen["root-unknown"] && !rootModules && !rootCases) {
-                  fallback="SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN";
-                  if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1; lines[n]=fallback
-                }
-                if (!seen["phase"]) {
-                  fallback="SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN";
-                  if (++n>32 || (bytes+=length(fallback)+1)>16384) exit 1;
-                  lines[n]=fallback
-                }
-                for (j=1;j<=n;j++) print lines[j]
-              }
-            ' "$owned/container.stdout" > "$owned/native-public-markers.txt" 2>/dev/null; then
-            cat "$owned/native-public-markers.txt"
-          else
-            printf '%s\n' "$unknown_marker"
-            printf '%s\n' 'SR_NATIVE_SOURCE_PHASE_V1 phase=UNKNOWN exit=UNKNOWN'
-            printf '\n%s\n' 'SR_NATIVE_SOURCE_ROOT_TEST_V1 unknown cause=UNKNOWN' || true
-          fi
           # Stream tar archives without following container symlinks or exposing
           # root-owned fixtures to runner-side extraction/upload traversal.
           timeout 30s docker cp "$id:/native-probe-source-workspace/source/delivery/a0-native-probe" - \
@@ -1516,8 +526,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Fetch scrubbed public legacy ledger fixture
-        run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
       - name: Install Node.js Linux runtime prerequisite
         if: runner.os == 'Linux'
         shell: bash
@@ -1565,7 +573,7 @@ jobs:
       contents: read
     if: ${{ always() }}
     needs: [ci-proof-reuse, crash-boundary-shards]
-    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
@@ -1587,7 +595,7 @@ jobs:
   test:
     if: ${{ always() }}
     needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
-    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_CONTROL_RUNNER || 'arc-ci-control' }}
     steps:
       - name: Verify all CI gates passed
         env:

@@ -1,0 +1,14 @@
+# The three-line rules-hash caller (keel 0.2). Copy to
+# .github/workflows/rules-hash.yml in the consumer repo. The push triggers
+# cover every gate branch in use across the estate; branches a repo lacks
+# never fire.
+name: rules-hash
+on:
+  pull_request:
+  push:
+    branches: [dev, dev2, main, master]
+permissions:
+  contents: read
+jobs:
+  rules-hash:
+    uses: vioxen/org-workflows/.github/workflows/rules-hash.yml@main

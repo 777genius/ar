@@ -1,3 +1,0 @@
-# Exact historical deterministic idempotency fixtures, not credentials.
-40a2eb82b6329a7ec15fd72f464e39a7cfb92169:src/worker-codex/tests/codex-goal-mcp.test.ts:generic-api-key:602
-40a2eb82b6329a7ec15fd72f464e39a7cfb92169:src/worker-codex/tests/codex-goal-mcp.test.ts:generic-api-key:611

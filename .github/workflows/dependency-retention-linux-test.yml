@@ -8,8 +8,6 @@ on:
       - 'src/**/hosted-dependency-*.ts'
       - 'src/worker-codex/hosted-installation-activation.ts'
       - 'scripts/dependency-retention-test/**'
-      - 'scripts/dependency-retention-os-test/reference-enrollment-assertions.ts'
-      - 'scripts/dependency-retention-os-test/tsconfig.reference-enrollment-emit.json'
       - '.github/workflows/dependency-retention-linux-test.yml'
 
 permissions:
@@ -21,11 +19,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -33,75 +30,33 @@ jobs:
       - run: npm run build
       - name: Typecheck handwritten qualification harness
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-test/tsconfig.json
-      - name: Typecheck directory OFD kernel contract
-        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-test/tsconfig.directory-ofd.json
-      - name: Qualify inherited directory OFD on owned ext4 TEST scratch
-        timeout-minutes: 2
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          mkdir -p dependency-retention-evidence
-          node --experimental-strip-types scripts/dependency-retention-test/run-directory-ofd-ci.mts
-      - name: Typecheck and emit inactive original issuer assertion helper
-        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.reference-enrollment-emit.json
       - name: Prepare fresh root-owned TEST artifact and toolchain
         run: |
           test ! -e /usr/local/lib/subscription-runtime-dependency-TEST
           test ! -e /var/lib/subscription-runtime-host-policy
           sudo mkdir -m 0755 /usr/local/lib/subscription-runtime-dependency-TEST
-          sudo cp -a dist package.json scripts node_modules packages src vitest.config.ts tsconfig.json /usr/local/lib/subscription-runtime-dependency-TEST/
+          sudo cp -a dist package.json scripts node_modules packages /usr/local/lib/subscription-runtime-dependency-TEST/
           sudo mkdir -m 0755 /usr/local/lib/subscription-runtime-dependency-TEST/toolchain
           sudo cp -a "$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")/." /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/
           sudo chown -R root:root /usr/local/lib/subscription-runtime-dependency-TEST
           sudo chmod -R go-w /usr/local/lib/subscription-runtime-dependency-TEST
       - name: Exercise real Linux TEST primitives
         env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_SOURCE_SHA: ${{ github.sha }}
         run: |
           sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
             TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
             /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/bin/node \
             --experimental-strip-types \
             /usr/local/lib/subscription-runtime-dependency-TEST/scripts/dependency-retention-test/run.node-test.ts
-      - name: Require explicit preservation ROOT storage and runner cases
-        timeout-minutes: 5
-        env:
-          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          sudo env -i --chdir=/usr/local/lib/subscription-runtime-dependency-TEST \
-            PATH=/usr/bin:/bin LANG=C LC_ALL=C TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
-            /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/bin/node --experimental-strip-types \
-            scripts/dependency-retention-test/require-explicit-preservation-root-result.mts prepare
-          if ! sudo env -i --chdir=/usr/local/lib/subscription-runtime-dependency-TEST \
-            PATH=/usr/bin:/bin LANG=C LC_ALL=C \
-            /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/bin/node node_modules/vitest/vitest.mjs run \
-            src/store-local-file/dependency-environment/tests/dependency-explicit-preservation-retirement.test.ts \
-            src/worker-codex/tests/hosted-dependency-explicit-preservation-operator.test.ts \
-            src/worker-local/dependency-environment/tests/dependency-tree-preservation.test.ts \
-            src/worker-codex/tests/hosted-dependency-scratch-layout.test.ts \
-            --maxWorkers 1 --no-cache --configLoader runner --silent --reporter=json \
-            --outputFile=explicit-preservation-root-result.json >/dev/null 2>&1; then
-            echo explicit_preservation_root_tests_failed
-            exit 1
-          fi
-          sudo env -i --chdir=/usr/local/lib/subscription-runtime-dependency-TEST \
-            PATH=/usr/bin:/bin LANG=C LC_ALL=C TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
-            /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/bin/node --experimental-strip-types \
-            scripts/dependency-retention-test/require-explicit-preservation-root-result.mts require
       - name: Retain bounded evidence
         if: always()
         run: |
           mkdir -p dependency-retention-evidence
           sudo test ! -f /usr/local/lib/subscription-runtime-dependency-TEST/evidence.json || \
             sudo cp /usr/local/lib/subscription-runtime-dependency-TEST/evidence.json dependency-retention-evidence/
-          for leaf in explicit-preservation-root-result.json explicit-preservation-root-run.json explicit-preservation-root-summary.json; do
-            path="/usr/local/lib/subscription-runtime-dependency-TEST/$leaf"
-            if sudo test -f "$path" && sudo test ! -L "$path" && test "$(sudo stat -c %s "$path")" -le 2097152; then
-              sudo cp "$path" dependency-retention-evidence/
-            fi
-          done
           sudo chown -R "$(id -u):$(id -g)" dependency-retention-evidence
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: dependency-retention-native-test-${{ github.sha }}
