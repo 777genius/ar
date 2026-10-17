@@ -447,10 +447,12 @@ async function runCodexGoalAdmitted(
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
     if (ownedMimoLifecycle) {
-      // Deferred result publication may lag (or never run); the progress file
-      // must still show the terminal state instead of a stale "running".
+      // Terminal outcomes publish only through the outside owner's finalization,
+      // but the run loop's end must land here: a lingering "running" progress
+      // over a dead run is a state mismatch the observation layer refuses to act
+      // on. "stopped" is the outcome-free terminal marker.
       await progressHeartbeat.stop();
-      await progressHeartbeat.write(progressFromResult(result));
+      await progressHeartbeat.write({ status: "stopped" });
       ownedMimoLifecycle.stage(resultInput);
       return result;
     }
