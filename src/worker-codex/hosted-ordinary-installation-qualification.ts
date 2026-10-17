@@ -289,7 +289,8 @@ export const qualificationRequiredArtifacts: readonly string[] = Object.freeze([
   "dist/core/host-infrastructure/host-inventory.js", "dist/core/host-infrastructure/host-installation-successor.js", "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
   ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-unit-lifecycle", "hosted-fd-unit-policy", "hosted-fd-prelude", "hosted-process-activation", "hosted-process-descriptors",
     "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
-    "system-bus-infrastructure", "systemd-service-arrays"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
+    "system-bus-infrastructure", "systemd-service-arrays", "elf-closure"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
+  ...["hosted-ordinary-installation-source-scope", "hosted-runtime-stage-curator", "hosted-fd-collector-profile-issuer", "hosted-runtime-issuer-cli"].map(name => "dist/worker-codex/" + name + ".js"),
   ...fixedCopiedCohort.map(path => "host-integration/" + path)]);
 export function qualificationCandidate(candidate: OrdinaryLauncherCandidate, prefix = ""): Buffer {
   if (!/^[a-f0-9]{40}$/.test(candidate.runtimeSha) || [candidate.runtimeManifestSha256, candidate.launcherSha256,
