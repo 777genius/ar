@@ -1,10 +1,12 @@
+import { assertHostedDependencyPreservationAdmission } from "./hosted-dependency-preservation-handoff";
+import { readHostedDependencyCommittedPreservation } from "./hosted-dependency-preservation";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyOwnerPhase, sameDependencyAttempt,
   sameDependencyTree, DependencyPreservationKind, DependencyReceiptState, type DependencyReceipt, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt } from "./hosted-current-dependency-origin";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, type CurrentHostedDependencyOrigin, assertOriginalHostedDependencyColdProducer, requiresCurrentHostedDependencyRootPurpose } from "./hosted-current-dependency-origin";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { buildTestNpmDependencyInstallKey, buildTestNpmLocalDependencyInstallKey } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";
 import { captureNpmInstallInputs, revalidateNpmInstallInputs, NpmInputCaptureStatus as Status, NpmInputCaptureReason as Reason,
@@ -23,12 +25,12 @@ function fail(reason = Failure.Unsupported): never { throw new DependencyAdmissi
  * predicate. Durable ExclusiveMutation and qualified creator exclusion span
  * awaits; this short fence reauthenticates them before each effect. */
 export function assertHostedDependencyMaterializationOwnerUnderFence(fence: HostedActivationFence,
-  binding: HostedDependencyBinding, attempt: DependencyAttempt): void {
-  const context = readCurrentHostedDependencyOrigin(fence), current = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+  binding: HostedDependencyBinding, attempt: DependencyAttempt, capturedOrigin?:CurrentHostedDependencyOrigin): void {
+  const context = capturedOrigin ?? readCurrentHostedDependencyOrigin(fence), current = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
   if (!sameDependencyAttempt(current.attempt,attempt) || JSON.stringify(current.binding) !== JSON.stringify(binding)) fail(Failure.StaleAttempt);
 }
-export function assertHostedDependencyMaterializationOwner(binding: HostedDependencyBinding, attempt: DependencyAttempt): void {
-  withHostedActivationFence(fence => assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt));
+export function assertHostedDependencyMaterializationOwner(binding: HostedDependencyBinding, attempt: DependencyAttempt, capturedOrigin?:CurrentHostedDependencyOrigin): void {
+  withHostedActivationFence(fence => assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt,capturedOrigin));
 }
 export class HostedDependencyInputCaptureError extends DependencyAdmissionError {
   constructor(readonly captureFailure: Exclude<NpmInputRevalidation, { status: Status.Qualified }>) { super(Failure.Unsupported); }
@@ -105,29 +107,38 @@ export function sameHostedDependencyKeyInputs(before: HostedDependencyKeyInputs,
 /** The existing legal absence/preservation transition. Owns its actual capture
  * and reads protected prior history; no caller key/record supplies authority.
  * The returned private-flow baseline is retained through subsequent awaits. */
-export async function beginHostedDependencyInstallation(binding: HostedDependencyBinding, attempt: DependencyAttempt) {
-  assertHostedDependencyMaterializationOwner(binding, attempt);
+export async function beginHostedDependencyInstallation(binding: HostedDependencyBinding, attempt: DependencyAttempt,capturedOrigin?:CurrentHostedDependencyOrigin,internalAccess?:symbol) {
+  if(capturedOrigin) {if(internalAccess===undefined)fail();withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess));}
+  else if(requiresCurrentHostedDependencyRootPurpose())fail();
+  assertHostedDependencyMaterializationOwner(binding, attempt,capturedOrigin);
   const previous = readHostedDependencyReceipt(binding), root = "/var/lib/subscription-runtime-host-policy";
   const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");
   const absence = previous ? null : readHostedPrivateBytes(`${root}/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`, 4096);
   const expectedAbsence = encode({ version: 1, workspace: binding.workspace, coverageRevision: dependencyCoverageRevision(binding) });
-  if (previous ? previous.state !== DependencyReceiptState.Absent : !absence?.equals(expectedAbsence)) fail();
-  const committed = previous ? readHostedDependencyCommittedAbsent(binding, previous.revision) : null;
+  if (previous ? previous.state !== DependencyReceiptState.Absent && previous.state !== DependencyReceiptState.Unverified : !absence?.equals(expectedAbsence)) fail();
+  const committed = previous?.state === DependencyReceiptState.Absent ? readHostedDependencyCommittedAbsent(binding, previous.revision) : null;
+  const preserved = previous?.state === DependencyReceiptState.Unverified ? readHostedDependencyCommittedPreservation(binding, previous, attempt.attemptId) : undefined;
+  if (previous?.state === DependencyReceiptState.Unverified && !preserved) fail();
   const inputs = await readHostedDependencyKeyInputs(binding), generation = attempt.attemptId;
   const base = { version: 1 as const, revision: (previous?.revision ?? 0) + 1, generation, workspace: binding.workspace, coverageRevision: dependencyCoverageRevision(binding) };
   const installing: Extract<DependencyReceipt, { state: DependencyReceiptState.Installing }> = { ...base, state: DependencyReceiptState.Installing, operationId: generation,
-    requestedKey: inputs.key.installKey, preservation: committed ? { kind: DependencyPreservationKind.CommittedAbsence,
+    requestedKey: inputs.key.installKey, preservation: preserved ?? (committed ? { kind: DependencyPreservationKind.CommittedAbsence,
       generation, workspace: binding.workspace, coverageRevision: base.coverageRevision, operationId: generation,
       prior: { generation: committed.receipt.generation, revision: committed.receipt.revision, operationId: committed.receipt.operationId,
         installKey: committed.receipt.installKey, tree: committed.receipt.evictionCommit.tree,
         manifestDigest: committed.receipt.evictionCommit.manifestDigest, commitEvidenceId: committed.receipt.evictionCommit.commitEvidenceId,
         receipt: committed.reference } } : { kind: DependencyPreservationKind.KnownFreshAbsence,
       generation, workspace: binding.workspace, coverageRevision: base.coverageRevision, operationId: generation,
-      absenceEvidenceId: createHash("sha256").update(absence ?? fail()).digest("hex") } };
+      absenceEvidenceId: createHash("sha256").update(absence ?? fail()).digest("hex") }) };
   withHostedActivationFence(fence => {
-    assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt);
+    if(capturedOrigin)assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess ?? fail());
+    else if(requiresCurrentHostedDependencyRootPurpose(fence))fail();
+    assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt,capturedOrigin);
+    assertHostedDependencyPreservationAdmission(fence,binding);
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+    if (previous?.state === DependencyReceiptState.Unverified &&
+        JSON.stringify(readHostedDependencyCommittedPreservation(binding, previous, generation)) !== JSON.stringify(preserved)) fail();
     publishHostedDependencyReceipt(binding, previous?.revision ?? null, installing);
   });
   return { inputs, installing };

@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.current-cold-hot-emit.json",
+  "compilerOptions": {
+    "rootDir": "../.."
+  },
+  "files": [
+    "./current-full-outer.ts",
+    "./current-full-supervisor.ts",
+    "./current-full-h1-supervision.node-test.ts",
+    "./current-removal-h1-fixture.node-test.ts",
+    "./current-full-guest.ts",
+    "./current-explicit-preservation.node-test.ts",
+    "./current-full-peer-query.ts",
+    "./current-full-control-git.ts",
+    "./current-full-backing-collector.node-test.ts",
+    "./current-full-backing-interval.node-test.ts",
+    "./legacy-unverified-r-continuation.ts",
+    "./legacy-unverified-r-continuation.node-test.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.ts",
+    "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.node-test.ts",
+    "./current-positive-acceptance-roster.node-test.ts",
+    "./current-h1-ingress-negative-observations.node-test.ts",
+    "./current-h1-distro-delivery-data.node-test.ts",
+    "./current-eviction-prelock-io-TEST.node-test.ts",
+    "./current-h1-source-record.node-test.ts"
+  ]
+}

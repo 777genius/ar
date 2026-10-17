@@ -4,8 +4,17 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
-const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(),
+const state = vi.hoisted(() => ({ queryCgroup:false, files: new Map<string, Buffer>(),
   authorize: vi.fn(), grant: vi.fn(), start: vi.fn(), current: vi.fn(), status: vi.fn(), service: vi.fn(), process: vi.fn(), cancel: vi.fn(), handoff: vi.fn(), terminal: vi.fn(), finalize: vi.fn() }));
+vi.mock("node:fs",async original=>{
+  const real=await original<typeof import("node:fs")>();
+  return {...real,readFileSync:((path,options)=>{
+    if(!state.queryCgroup || path!=="/proc/self/cgroup")return real.readFileSync(path,options);
+    const bytes=Buffer.from("0::/TEST-query-observer\n");
+    const encoding=typeof options==="string"?options:options?.encoding;
+    return encoding?bytes.toString(encoding):bytes;
+  }) as typeof real.readFileSync};
+});
 vi.mock("../research-registered-handoff", () => ({ authorizeRegisteredResearchHandoff: state.authorize,
   assertRegisteredResearchHandoffCurrent: state.handoff }));
 vi.mock("../research-launch-owner", () => ({ grantRegisteredResearchLaunch: state.grant,
@@ -125,8 +134,15 @@ describe("owned native MiMo observation", () => {
     }
     const before = [...state.files.entries()], manifestBytes = await readFile(join(registryRootDir,"TEST-child","job.json"));
     vi.clearAllMocks(); state.finalize.mockImplementation(() => { throw Error("TEST query attempted finalization"); });
-    const response = (await projectControlAdmissionSnapshot({ registryRootDir,controllerJobId,
-      operation:"create_job",workerRole:"read_only",includeDetails:true })).structuredContent;
+    // This fixture already projects a Linux root observer. Project its known
+    // non-hosted query cgroup too; the real Darwin /proc is unavailable and
+    // must not short-circuit the query before its read-only native observer.
+    let response:Awaited<ReturnType<typeof projectControlAdmissionSnapshot>>["structuredContent"];
+    state.queryCgroup=true;
+    try {
+      response=(await projectControlAdmissionSnapshot({ registryRootDir,controllerJobId,
+        operation:"create_job",workerRole:"read_only",includeDetails:true })).structuredContent;
+    } finally {state.queryCgroup=false;}
     expect(response.ok).toBe(true); expect(response.operations).toBeDefined(); expect(response.snapshot).toBeDefined();
     expect(state.finalize).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled(); expect(state.cancel).not.toHaveBeenCalled();
     expect([...state.files.entries()]).toEqual(before);

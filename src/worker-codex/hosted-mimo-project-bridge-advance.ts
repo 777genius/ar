@@ -1,9 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { acquireLocalControllerMaintenanceFence, releaseLocalControllerMaintenanceFence } from "@vioxen/subscription-runtime/store-local-file";
-import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
+import { assertResearchInitialRoot, assertResearchSharedHost } from "./research-launch-host";
 import { researchCustody, researchHash, researchPath, researchPublish, researchRecord } from "./research-launch-files";
 import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { assertHeldMimoPreparationFenceCurrent, assertHostedMimoProjectRouteOpen, captureHeldMimoPreparationFence, hostedMimoBridgeMetadataBytes,
@@ -201,17 +201,12 @@ async function acquireFence(binding: HostedMimoProjectBinding, plan: AdvancePlan
     await sleep(options.fenceRetryMs ?? fenceRetryMs);
   }
 }
-/** Only an orphan of a killed advance can still hold a source lock; the held fence excludes every bridge process. */
-function clearStaleGitLocks(binding: HostedMimoProjectBinding): void {
+/** The bridge fence does not own independent Git locks. Their producer may
+ * have no checkout path in argv, so no process-name scan can authorize unlink. */
+function sourceGitLocksPresent(binding: HostedMimoProjectBinding): boolean {
   const git = join(binding.sourceWorkspacePath, ".git");
-  const locks = ["index.lock", "HEAD.lock", "packed-refs.lock", join("refs/remotes", binding.sourceRef + ".lock"), incomingRef + ".lock"].map(name => join(git, name)).filter(existsSync);
-  if (!locks.length) return;
-  if (researchCommand("/usr/bin/ps", ["-A", "-ww", "-o", "args="]).split("\n").some(line => line.includes(binding.sourceWorkspacePath) && /\bgit\b/.test(line))) refuse("git_active");
-  for (const lock of locks) {
-    const stat = lstatSync(lock);
-    if (!stat.isFile() || stat.nlink !== 1) refuse("source_diverged");
-    unlinkSync(lock);
-  }
+  return ["index.lock", "HEAD.lock", "packed-refs.lock", join("refs/remotes", binding.sourceRef + ".lock"), incomingRef + ".lock"]
+    .some(name => existsSync(join(git, name)));
 }
 /** True when HEAD or the remote-tracking ref has left the old commit; an unreadable position counts as moved so the fence stays. */
 function sourceMoved(binding: HostedMimoProjectBinding, plan: AdvancePlan): boolean {
@@ -285,6 +280,14 @@ export async function advanceHostedMimoProjectSource(planPath: string, options: 
         receipt.newCommit !== plan.newSourceCommit || receipt.newBindingSha256 !== newBindingSha256) refuse("receipt_mismatch");
     return true;
   };
+  const assertCurrentSource = async (): Promise<void> => {
+    const sandbox = relative(binding.sourceWorkspacePath, workerLaunchAdmissionSchema.parse(next.value.admission).contract.executionPolicy.sandboxRoot);
+    await hostedMimoSealedSourcePort(next.value).resolveRevision({ sourceWorkspacePath: next.value.sourceWorkspacePath,
+      sourceRef: next.value.sourceRef, expectedSourceCommit: next.value.sourceCommit });
+    assertPreparationGitMetadata(binding.sourceWorkspacePath); assertPreparationSandbox(binding.sourceWorkspacePath, sandbox);
+  };
+  // A matching receipt is historical evidence, not proof that the checkout is still current.
+  if (state === "complete") await assertCurrentSource();
   if (options.dryRun) {
     const observed = state === "pending" ? observeBinding(binding, plan.acknowledgedJobIds) : { blockers: [], launchedJobIds: [], acknowledgedJobIds: [], staleJobIds: [] };
     if (state === "pending") advanceReceipt(plan, planBytes, newBindingSha256, observed);
@@ -298,7 +301,7 @@ export async function advanceHostedMimoProjectSource(planPath: string, options: 
   if (state === "complete" && !existsSync(fencePath) && receiptCurrent()) return { ...result, alreadyAdvanced: true };
   const { fence, observed } = await acquireFence(binding, plan, "mimo-advance:" + researchHash(planBytes), state === "pending", options);
   // From the first source effect on, any failure leaves the fence exactly as a crash would: the replay of the same plan finishes the job.
-  let effectsStarted = false, finished = false;
+  let effectsStarted = false, finished = false, sourceLocksUnresolved = false;
   try {
     const held = captureHeldMimoPreparationFence(binding, fence);
     // A replay finds the source already moved by an earlier run: any failure then must keep the fence, as the first run did.
@@ -308,11 +311,11 @@ export async function advanceHostedMimoProjectSource(planPath: string, options: 
     assertAdvanceRoute(binding, held);
     if (state === "pending" && observed.blockers.length) refuse("blocked");
     const receipt = advanceReceipt(plan, planBytes, newBindingSha256, observed);
-    if (state === "pending") { clearStaleGitLocks(binding); moveSource(binding, plan, options, () => { effectsStarted = true; }); }
-    const sandbox = relative(binding.sourceWorkspacePath, workerLaunchAdmissionSchema.parse(next.value.admission).contract.executionPolicy.sandboxRoot);
-    await hostedMimoSealedSourcePort(next.value).resolveRevision({ sourceWorkspacePath: next.value.sourceWorkspacePath,
-      sourceRef: next.value.sourceRef, expectedSourceCommit: next.value.sourceCommit });
-    assertPreparationGitMetadata(binding.sourceWorkspacePath); assertPreparationSandbox(binding.sourceWorkspacePath, sandbox);
+    if (state === "pending") {
+      if (sourceGitLocksPresent(binding)) { sourceLocksUnresolved = true; refuse("source_locked"); }
+      moveSource(binding, plan, options, () => { effectsStarted = true; });
+    }
+    await assertCurrentSource();
     if (state === "pending") {
       assertHeldMimoPreparationFenceCurrent(binding, held);
       if (!hostedMimoBridgeMetadataBytes(bindingPath).equals(bindingBytes)) refuse("binding_mismatch");
@@ -333,5 +336,5 @@ export async function advanceHostedMimoProjectSource(planPath: string, options: 
     }
     finished = true;
     return result;
-  } finally { if (finished || !effectsStarted) await releaseLocalControllerMaintenanceFence(fence); }
+  } finally { if (finished || !effectsStarted && !sourceLocksUnresolved) await releaseLocalControllerMaintenanceFence(fence); }
 }

@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "./hosted-readonly-observations";
 import { dirname, join } from "node:path";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -300,7 +301,7 @@ export async function observeHostedOrdinaryJobWriterAuthority(manifest: CodexGoa
  * cgroup prefix or caller identity, authorizes the selected ordinary route. */
 export function isHostedOrdinaryRuntime(): boolean {
   return process.platform === "linux" && /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-/.test(
-    readFileSync("/proc/self/cgroup", "utf8").trim());
+    observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")));
 }
 export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string }): CodexProviderEgressProfileId {
   return withHostedActivationFence(fence => {

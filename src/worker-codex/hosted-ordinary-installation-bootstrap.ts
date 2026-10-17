@@ -1,3 +1,8 @@
+import { runOriginalUsableGuestQualification } from "./hosted-ordinary-installation-broker-use";
+import { parseDependencyToolRegistration, type DependencyToolRegistration } from "../core/dependency-environment/dependency-tool-profile";
+import { hostedDependencyJobRoot } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { writeHostedTestEgressGrant } from "./hosted-test-egress-files";
+import { CodexProviderEgressProfileId } from "../provider-codex/codex-provider-egress-policy";
 import { validatePreparedOrdinaryLauncherQualification, runOrdinaryLauncherPairQualification, type OrdinaryLauncherCandidate, type OrdinaryLauncherQualificationFixture } from "./hosted-ordinary-installation-qualification";
 import { OrdinaryLauncherPublication, assertOrdinaryCollectorProfileUpgrade, type OrdinaryCopiedCohort, type OrdinaryPriorCollectorProfile } from "./hosted-ordinary-installation-launcher";
 import { resolveStoredProjectStartPlan } from "./stored-start-planning";
@@ -28,7 +33,7 @@ export type OrdinaryInstallationPacket = Readonly<{
   workEndEpochMs: number; cleanupEndEpochMs: number; issuedMonotonicNs: string;
   node: HostedInventoryFile; bootstrap: HostedInventoryFile;
   runtimeDirectory: string; runtimeSha: string; runtimeManifestSha256: string;
-  creator: HostedInventoryCreator; collectorProfile: FdCollectorProfilePin;
+  creator: HostedInventoryCreator; testTools?: DependencyToolRegistration; collectorProfile: FdCollectorProfilePin;
   systemBusInfrastructure: Readonly<Record<string, unknown>>;
   copiedLauncher: HostedInventoryFile; copiedCodec: HostedInventoryFile;
 }>;
@@ -37,7 +42,7 @@ export type QualifiedPairInstallationRequest = Readonly<{ schemaVersion: 1; pack
   preparedCollectorProfile: HostedInventoryFile; priorCollectorProfile: OrdinaryPriorCollectorProfile }>;
 type FundedQualifiedPacket = Omit<OrdinaryInstallationPacket, "schemaVersion"> & Omit<QualifiedPairInstallationRequest, "schemaVersion" | "packet"> &
   Readonly<{ schemaVersion: 2; qualificationRequestSha256: string }>;
-const packetKeys = "bootId,bootstrap,collectorProfile,copiedCodec,copiedLauncher,creator,hostId,issuedEpochMs,issuedMonotonicNs,operationId,runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion,systemBusInfrastructure,workEndEpochMs,cleanupEndEpochMs";
+const packetKeys = "bootId,bootstrap,collectorProfile,copiedCodec,copiedLauncher,creator,hostId,issuedEpochMs,issuedMonotonicNs,node,operationId,runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion,systemBusInfrastructure,workEndEpochMs,cleanupEndEpochMs";
 const qualificationKeys = "candidate,copiedCohort,preparedCollectorProfile,preparedFixture,priorCollectorProfile,qualificationRequestSha256";
 const copiedNames = ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs", "managed-launcher/storage-pressure-guard.mjs"] as const;
 function closed(value: unknown, keys: string): asserts value is Record<string, unknown> {
@@ -51,14 +56,22 @@ function packetPath(id: string): string {
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) denied(); return join(operationRoot, id + ".json");
 }
 function checkedPacket(input: OrdinaryInstallationPacket | FundedQualifiedPacket): OrdinaryInstallationPacket {
+  const selectedKeys = packetKeys + (Object.prototype.hasOwnProperty.call(input, "testTools") ? ",testTools" : "");
+  if (Object.prototype.hasOwnProperty.call(input, "testTools")) {
+    try {
+      parseDependencyToolRegistration(input.testTools);
+      const jobRoot = hostedDependencyJobRoot(input.creator.jobId);
+      if (input.creator.jobRootDir !== jobRoot || input.creator.workspacePath !== jobRoot + "/workspace") denied();
+    } catch { denied(); }
+  }
   if (input.schemaVersion === 2) {
-    closed(input, packetKeys + "," + qualificationKeys);
+    closed(input, selectedKeys + "," + qualificationKeys);
     if (!/^[a-f0-9]{64}$/.test(input.qualificationRequestSha256)) denied();
-    const projected = Object.fromEntries(packetKeys.split(",").map(key => [key, key === "schemaVersion" ? 1 : input[key as keyof typeof input]]));
+    const projected = Object.fromEntries(selectedKeys.split(",").map(key => [key, key === "schemaVersion" ? 1 : input[key as keyof typeof input]]));
     return checkedPacket(projected as OrdinaryInstallationPacket);
   }
   assertHostedActivationOperator(); packetPath(input.operationId);
-  if (Object.keys(input).sort().join(",") !== packetKeys.split(",").sort().join(",") ||
+  if (Object.keys(input).sort().join(",") !== selectedKeys.split(",").sort().join(",") ||
       input.runtimeDirectory !== fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "") || input.schemaVersion !== 1 || readFileSync("/etc/machine-id", "utf8").trim() !== input.hostId || collectBootId() !== input.bootId ||
       !Number.isSafeInteger(input.issuedEpochMs) || !Number.isSafeInteger(input.workEndEpochMs) || !Number.isSafeInteger(input.cleanupEndEpochMs) ||
       input.issuedEpochMs >= input.workEndEpochMs || input.workEndEpochMs >= input.cleanupEndEpochMs || !/^[0-9]{1,30}$/.test(input.issuedMonotonicNs) ||
@@ -167,6 +180,11 @@ export async function runQualifiedPairInstallationOperator(operationId: string) 
   const publication = new OrdinaryLauncherPublication(operation, pair, request.copiedCohort, request.preparedCollectorProfile, request.priorCollectorProfile);
   publication.publish(); admitInstalledPair(packet);
   if (!readHostedPrivateBytes(packet.collectorProfile.path, 64 * 1024)?.equals(readHostedPrivateBytes(request.preparedCollectorProfile.path, 64 * 1024)!)) denied();
+  // Optional fixed TEST qualification; a present malformed selection refuses.
+  let usable = true;
+  try { lstatSync(join(operationRoot, operationId + ".usable-fixture.json")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; usable = false; }
+  if (usable) await runOriginalUsableGuestQualification(operation);
   publication.consumeBeforeOriginalSupervisorBirth();
   return runFundedInstallationSupervisor(packet, operation);
 }
@@ -354,7 +372,15 @@ export async function runOrdinaryInstallationSupervisor(operationId: string): Pr
   const store = new HostedInstallationActivationStore();
   let sourceExitCode = 70;
   try {
-    collectOriginal(packet, false, () => store.install()); collectOriginal(packet, false, () => store.enrollOrdinary(packet.creator.creatorId)); collectOriginal(packet, false, () => store.resumeOrdinary());
+    collectOriginal(packet, false, () => store.install());
+    if (packet.testTools) {
+      budget(packet, false);
+      await writeHostedTestEgressGrant({ schemaVersion: 1, jobId: packet.creator.jobId,
+        jobRootDir: packet.creator.jobRootDir, workspacePath: packet.creator.workspacePath,
+        profileId: CodexProviderEgressProfileId.TestNpmQualification }, packet.testTools);
+      budget(packet, false);
+    }
+    collectOriginal(packet, false, () => store.enrollOrdinary(packet.creator.creatorId)); collectOriginal(packet, false, () => store.resumeOrdinary());
     budget(packet, false);
     sourceExitCode = hostedForegroundExitCode(await runHostedRuntimeForeground(packet.creator.launch.command, packet.creator.launch.args, packet.creator.launch.cwd, {}));
     if (sourceExitCode !== 0) denied();

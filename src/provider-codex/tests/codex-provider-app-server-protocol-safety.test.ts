@@ -136,6 +136,10 @@ describe("Codex app-server completed agent-message output", () => {
     { name: "missing text leaves prior output unchanged", distinct: false, item: {}, expected: "TEST previous" },
     { name: "null text leaves prior output unchanged", distinct: false, item: { text: null }, expected: "TEST previous" },
     { name: "invalid text leaves prior output unchanged", distinct: false, item: { text: 42 }, expected: "TEST previous" },
+    { name: "empty text overrides legacy content", distinct: true, item: { text: "", content: [{ type: "text", text: "TEST legacy" }] }, expected: "" },
+    { name: "missing text uses legacy content", distinct: false, item: { content: [{ type: "text", text: "TEST legacy" }] }, expected: "TEST legacy" },
+    { name: "null text uses legacy content", distinct: false, item: { text: null, content: [{ type: "text", text: "TEST legacy" }] }, expected: "TEST legacy" },
+    { name: "structured text retains legacy compatibility", distinct: false, item: { text: [{ type: "text", text: "TEST legacy" }] }, expected: "TEST legacy" },
   ])("$name", async ({ distinct, item, expected }) => {
     const initialId = distinct ? "TEST-commentary" : "TEST-final";
     const test = await fixture((threadId, turnId) => {

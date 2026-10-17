@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from "node:fs/promis
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { writeSync } from "node:fs";
 const workspace = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const compiler = join(workspace, "node_modules/typescript/bin/tsc");
 const evidence = resolve(process.env.SR_NATIVE_PROBE_EVIDENCE ?? join(workspace, "delivery/a0-native-probe"));
@@ -46,5 +47,11 @@ try {
 } finally {
   await mkdir(evidence, { recursive: true });
   await writeFile(join(evidence, `source-check-root-${Date.now()}.json`), JSON.stringify({ qualification: "read-only-root-source-typecheck-with-existing-package-built-in-disposable-storage", passed, checks }, null, 2) + "\n", { flag: "wx" });
+  // This existing record has no inputsStable/naturalClose/error fields.
+  const bounded = checks.length <= 256, last = bounded ? checks.at(-1) : undefined;
+  const exit = last?.exit !== null && Number.isInteger(last?.exit) && last!.exit! >= 0 && last!.exit! <= 255 ? last!.exit : "UNKNOWN";
+  const signal = last?.signal === null ? "NONE" : /^(SIGABRT|SIGALRM|SIGBUS|SIGCHLD|SIGCONT|SIGFPE|SIGHUP|SIGILL|SIGINT|SIGIO|SIGIOT|SIGKILL|SIGPIPE|SIGPOLL|SIGPROF|SIGPWR|SIGQUIT|SIGSEGV|SIGSTKFLT|SIGSTOP|SIGSYS|SIGTERM|SIGTRAP|SIGTSTP|SIGTTIN|SIGTTOU|SIGURG|SIGUSR1|SIGUSR2|SIGVTALRM|SIGWINCH|SIGXCPU|SIGXFSZ)$/.test(last?.signal ?? "") ? last!.signal : "UNKNOWN";
+  const marker = `SR_NATIVE_SOURCE_PUBLIC_V1 root_typecheck passed=${Number(passed)} inputsStable=UNKNOWN checks=${bounded ? checks.length : "UNKNOWN"} index=${last ? checks.length - 1 : "UNKNOWN"} exit=${exit} signal=${signal} naturalClose=UNKNOWN cause=UNKNOWN`;
+  try { writeSync(1, "\n" + marker + "\n"); } catch { /* Preserve the original result/exit. */ }
   await rm(temporary, { recursive: true, force: true });
 }

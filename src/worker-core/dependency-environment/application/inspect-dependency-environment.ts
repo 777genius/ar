@@ -20,6 +20,8 @@ export function inspectDependencyEnvironment(input: DependencyInspectionInput): 
   if (receipt?.state === DependencyReceiptState.Installing || receipt?.state === DependencyReceiptState.Evicting) {
     return result(Outcome.Busy, Reason.UnresolvedOperation);
   }
+  if (receipt?.state === DependencyReceiptState.Unverified && receipt.reason === DependencyUnverifiedReason.ExplicitOperatorReinstallation)
+    return result(Outcome.Busy, Reason.UnresolvedOperation);
   if (input.tree.state === TreeState.Unknown) return result(Outcome.Unknown, Reason.UnknownTree);
   if (input.tree.state === TreeState.Absent) {
     if (receipt?.state === DependencyReceiptState.Absent) {
@@ -44,6 +46,7 @@ export function inspectDependencyEnvironment(input: DependencyInspectionInput): 
       [DependencyUnverifiedReason.BaselineMissing]: Reason.BaselineMissing,
       [DependencyUnverifiedReason.TreeChanged]: Reason.TreeChanged,
       [DependencyUnverifiedReason.InputsChanged]: Reason.InputsChanged,
+      [DependencyUnverifiedReason.ExplicitOperatorReinstallation]: Reason.UnresolvedOperation,
     };
     return result(Outcome.UnverifiedReuse, reasons[receipt.reason]);
   }

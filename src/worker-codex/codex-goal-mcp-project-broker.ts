@@ -2,6 +2,7 @@ import { readPlannedProjectAdoptionProof } from "./application/project-control/c
 import { isProjectMimoWorkerLaunch, launchProjectMimoWorker, stopProjectMimoWorker } from "./project-mimo-worker-launch";
 import { recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
 import { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
+import { requiresStandaloneProjectWorkspace, materializeStandaloneProjectWorkspace, removeCreatedStandaloneProjectWorkspace } from "./project-standalone-workspace";
 export { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
 import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
@@ -686,6 +687,8 @@ function codexProjectControlPorts(
         }
         const proof = creationProof();
         if (!proof) throw new Error("project_control_creation_admission_missing");
+        const standalone = requiresStandaloneProjectWorkspace({ manifest: input.createManifest,
+          target: input.createWorktreeInput, scope: input.scope, registryRootDir: input.registryRootDir });
         if (proof.missing && (!proof.identity || await boundCreationTargetIdentity({ target: input.createWorktreeInput, scope: input.scope }) !== proof.identity)) {
           throw new Error("project_control_creation_admission_changed");
         }
@@ -696,6 +699,8 @@ function codexProjectControlPorts(
             const fastForwarded = await fastForwardExistingProjectWorktree({
               input: input.createWorktreeInput,
               scope: input.scope,
+              manifest: input.createManifest,
+              registryRootDir: input.registryRootDir,
             });
             if (fastForwarded) {
               return operationResult(input.createWorktreeInput.path);
@@ -772,8 +777,19 @@ function codexProjectControlPorts(
           throw new Error("project_control_creation_admission_changed");
         }
         try {
-          await execGit(args);
+          if (standalone) {
+            if (newBranch && (await execGitStdout(["-C", sourceWorkspacePath, "worktree", "list", "--porcelain"]))
+                .split("\n").includes(`branch refs/heads/${newBranch}`))
+              throw new Error("project_control_existing_branch_materialization_failed");
+            await materializeStandaloneProjectWorkspace({ path: input.createWorktreeInput.path, source: sourceWorkspacePath,
+              revision: input.createWorktreeInput.expectedRevision, branch: newBranch, existingBranchRevision });
+            // Preserve the source repository's original branch bookkeeping.
+            // update-ref's empty old value refuses a concurrent branch creator.
+            if (newBranch && !existingBranch) await execGit(["-c", "core.hooksPath=/dev/null", "-C", sourceWorkspacePath, "update-ref", `refs/heads/${newBranch}`,
+              input.createWorktreeInput.expectedRevision, "0".repeat(40)]);
+          } else await execGit(args);
         } catch (error) {
+          if (standalone) await removeCreatedStandaloneProjectWorkspace(input.createWorktreeInput.path);
           if (existingBranch) {
             throw new Error(
               "project_control_existing_branch_materialization_failed",
@@ -805,8 +821,11 @@ function codexProjectControlPorts(
           await revalidateAdmissionCreatedWorktree({
             expectedIdentity: admissionIdentity, target: input.createWorktreeInput, scope: input.scope,
           });
+          if (standalone && newBranch && existingBranchRevision) await execGit(["-c", "core.hooksPath=/dev/null", "-C", sourceWorkspacePath, "update-ref",
+            `refs/heads/${newBranch}`, input.createWorktreeInput.expectedRevision, existingBranchRevision]);
         } catch (error) {
-          await execGit([
+          if (standalone) await removeCreatedStandaloneProjectWorkspace(input.createWorktreeInput.path);
+          else await execGit([
             "-C",
             sourceWorkspacePath,
             "worktree",

@@ -1,3 +1,4 @@
+import { assertOriginalProtectedBirthPublicationDescriptorCurrent, assertOriginalProtectedBirthPublicationPathsCurrent, holdOriginalProtectedBirthPublicationError } from "./protected-job-birth";
 import { randomUUID } from "node:crypto";
 import {
   link,
@@ -9,9 +10,13 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 
+// Native publication uncertainty keeps the exact actual handle strongly held.
+// No timer, absent path or subsequent callback can infer positive completion.
+const originalPublicationHandles = new Set<FileHandle>();
 export enum DurableJsonPublishStatus {
   Published = "published",
   AlreadyExists = "already_exists",
@@ -185,9 +190,11 @@ export async function durableReplaceJsonFile(input: {
   readonly beforePublication?: () => Promise<void>;
   readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 }): Promise<void> {
+  const originalPublication = assertOriginalProtectedBirthPublicationPathsCurrent([input.path]);
   const parent = dirname(input.path);
   if (input.ensureParent !== false) {
     input.assertPublicationCurrent?.([parent]);
+    assertOriginalProtectedBirthPublicationPathsCurrent([parent]);
     await mkdir(parent, { recursive: true, mode: 0o700 });
     await syncDirectory(dirname(parent));
   }
@@ -195,6 +202,7 @@ export async function durableReplaceJsonFile(input: {
     parent,
     `.${input.path.slice(parent.length + 1)}.${process.pid}.${randomUUID()}.tmp`,
   );
+  let failed = false, originalError: unknown;
   try {
     input.assertPublicationCurrent?.([temporaryPath]);
     await writeSyncedFile({
@@ -205,20 +213,30 @@ export async function durableReplaceJsonFile(input: {
     });
     await input.beforePublication?.();
     input.assertPublicationCurrent?.([temporaryPath, input.path]);
+    assertOriginalProtectedBirthPublicationPathsCurrent([temporaryPath, input.path]);
     await rename(temporaryPath, input.path);
     await syncDirectory(parent);
-  } finally {
-    input.assertPublicationCurrent?.([temporaryPath]);
-    await unlink(temporaryPath).catch(ignoreMissingFile);
+  } catch (error) { failed = true; originalError = error; if (originalPublication) holdOriginalProtectedBirthPublicationError(); throw error; }
+  finally {
+    try {
+      if (!(failed && originalPublication)) {
+        input.assertPublicationCurrent?.([temporaryPath]);
+        assertOriginalProtectedBirthPublicationPathsCurrent([temporaryPath]);
+        await unlink(temporaryPath).catch(ignoreMissingFile);
+      }
+    } catch (error) { if (failed) throw originalError; throw error; }
   }
 }
 
 export async function durableConfirmFilePublication(path: string): Promise<void> {
-  const handle = await open(path, "r");
+  const originalPublication = assertOriginalProtectedBirthPublicationPathsCurrent([path]);
+  const handle = await open(path, "r"); if (originalPublication) originalPublicationHandles.add(handle);
+  let failed = false;
   try {
-    await handle.sync();
-  } finally {
-    await handle.close();
+    assertOriginalProtectedBirthPublicationDescriptorCurrent(path, handle.fd); await handle.sync();
+  } catch (error) { failed = true; if (originalPublication) holdOriginalProtectedBirthPublicationError(); throw error; }
+  finally {
+    if (!(failed && originalPublication)) { await handle.close(); originalPublicationHandles.delete(handle); }
   }
   await syncDirectory(dirname(path));
 }
@@ -228,13 +246,16 @@ export async function durablePublishJsonFile(input: {
   readonly value: unknown;
   readonly mode?: number;
 }): Promise<DurableJsonPublishStatus> {
+  const originalPublication = assertOriginalProtectedBirthPublicationPathsCurrent([input.path]);
   const parent = dirname(input.path);
+  assertOriginalProtectedBirthPublicationPathsCurrent([parent]);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await syncDirectory(dirname(parent));
   const temporaryPath = join(
     parent,
     `.${input.path.slice(parent.length + 1)}.${process.pid}.${randomUUID()}.tmp`,
   );
+  let failed = false, originalError: unknown;
   try {
     await writeSyncedFile({
       path: temporaryPath,
@@ -243,6 +264,7 @@ export async function durablePublishJsonFile(input: {
     });
     try {
       // Publish the synced inode without replacing an already durable result.
+      assertOriginalProtectedBirthPublicationPathsCurrent([temporaryPath, input.path]);
       await link(temporaryPath, input.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -253,8 +275,14 @@ export async function durablePublishJsonFile(input: {
     }
     await syncDirectory(parent);
     return DurableJsonPublishStatus.Published;
-  } finally {
-    await unlink(temporaryPath).catch(ignoreMissingFile);
+  } catch (error) { failed = true; originalError = error; if (originalPublication) holdOriginalProtectedBirthPublicationError(); throw error; }
+  finally {
+    try {
+      if (!(failed && originalPublication)) {
+        assertOriginalProtectedBirthPublicationPathsCurrent([temporaryPath]);
+        await unlink(temporaryPath).catch(ignoreMissingFile);
+      }
+    } catch (error) { if (failed) throw originalError; throw error; }
   }
 }
 
@@ -854,25 +882,46 @@ async function writeSyncedFile(input: {
   readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
 }): Promise<void> {
   input.assertPublicationCurrent?.([input.path]);
+  const originalPublication = assertOriginalProtectedBirthPublicationPathsCurrent([input.path]);
   const handle = await open(input.path, "wx", input.mode);
+  if (originalPublication) originalPublicationHandles.add(handle);
+  let failed = false;
   try {
     input.assertPublicationCurrent?.([input.path]);
-    await handle.writeFile(`${JSON.stringify(input.value, null, 2)}\n`, "utf8");
+    const bytes = Buffer.from(JSON.stringify(input.value, null, 2) + "\n");
+    for (let offset = 0; offset < bytes.length;) {
+      input.assertPublicationCurrent?.([input.path]);
+      assertOriginalProtectedBirthPublicationPathsCurrent([input.path]);
+      assertOriginalProtectedBirthPublicationDescriptorCurrent(input.path, handle.fd);
+      const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+      if (bytesWritten <= 0) throw new Error("project_control_publication_short_write");
+      offset += bytesWritten;
+    }
+    assertOriginalProtectedBirthPublicationDescriptorCurrent(input.path, handle.fd);
     await handle.sync();
-  } finally {
-    await handle.close();
+  } catch (error) { failed = true; if (originalPublication) holdOriginalProtectedBirthPublicationError(); throw error; }
+  finally {
+    if (!(failed && originalPublication)) {
+      try { await handle.close(); originalPublicationHandles.delete(handle); }
+      catch (error) { if (originalPublication) holdOriginalProtectedBirthPublicationError(); throw error; }
+    }
   }
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  let handle;
+  let handle: FileHandle | undefined, failed = false;
+  const originalPublication = assertOriginalProtectedBirthPublicationPathsCurrent([path]);
   try {
+    assertOriginalProtectedBirthPublicationPathsCurrent([path]);
     handle = await open(path, "r");
+    if (originalPublication) originalPublicationHandles.add(handle);
+    assertOriginalProtectedBirthPublicationDescriptorCurrent(path, handle.fd);
     await handle.sync();
   } catch (error) {
+    if (originalPublication) { failed = true; holdOriginalProtectedBirthPublicationError(); throw error; }
     if (!directorySyncUnsupported(error)) throw error;
   } finally {
-    await handle?.close();
+    if (handle && !(failed && originalPublication)) { await handle.close(); originalPublicationHandles.delete(handle); }
   }
 }
 

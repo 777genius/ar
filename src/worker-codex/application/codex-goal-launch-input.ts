@@ -2,7 +2,8 @@ import { resolveCodexGoalPaths, resolveCodexGoalStorageRoot } from "./codex-goal
 import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import { optionalWorkerMode } from "../project-control-worker-mode";
-import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
+import { assertChildGoalConfig } from "../child-execution-confinement";
+import { goalExecutionConfigFromRecord } from "../goal-execution-config";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -132,7 +133,7 @@ export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string, sourc
   const config: CodexGoalRunConfig = {
     ...storageData,
     ...configPaths,
-    ...childConfigFromRecord(merged),
+    ...goalExecutionConfigFromRecord(merged),
     ...(storageData.storage ? { runtimeHomeRootDir: paths.runtimeHomeRootDir ?? join(jobRootDir, "home"),
       durableHandoffRootDir: paths.durableHandoffRootDir ?? join(jobRootDir, "durable-handoffs") } : {}),
     ...(jobId === undefined ? {} : { jobId }),

@@ -35,7 +35,14 @@ vi.mock("node:child_process", async original => {
   const cp = await original<typeof import("node:child_process")>();
   return { ...cp, execFile: Object.assign((file: string, args: string[], ...rest: unknown[]) => (cp.execFile as Function)(file, args.map(arg => boundary.map(arg) as string), ...rest), { [Symbol.for("nodejs.util.promisify.custom")]: (file: string, args: string[], options: object) => new Promise((resolve, reject) => cp.execFile(file, args.map(arg => boundary.map(arg) as string), options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }), execFileSync: (file: string, args: string[], options: object) => cp.execFileSync(file, args.map(arg => boundary.map(arg) as string), options) };
 });
-vi.mock("../research-launch-host", async original => ({ ...await original<object>(), assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
+vi.mock("../research-launch-host", async original => ({ ...await original<object>(),
+  // Only the non-Linux fixture supplies TEST lock-owner metadata. Linux keeps
+  // the real procfs identity; publication still checks real files and custody.
+  ...(process.platform === "linux" ? {} : { researchProcessIdentity: (pid = process.pid) => ({
+    pid, birthTicks: "1", bootId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", machineId: "a".repeat(32),
+    controlGroup: "/TEST-recovery", namespaces: { user: "user:[1]", mnt: "mnt:[1]", pid: "pid:[1]", net: "net:[1]" },
+  }) }),
+  assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: (path: string, privateLeaf = false) => {
   // Host UID and fixed namespace are mapped; real directory/file/mode checks remain.
   const fs = require("node:fs") as typeof import("node:fs");

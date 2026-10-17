@@ -7,14 +7,15 @@ import type {
   RefreshThenRunResult,
   RunContext,
   RuntimeHealthCheckResult,
-  RuntimeEvent,
   RuntimeExecutionPlan,
   RuntimeWarning,
   SessionArtifact,
   SessionEnvelope,
 } from "../domain/types";
-import type { RuntimeDeps } from "../ports";
+import type { RuntimeDeps, SessionExecutionUse } from "../ports";
+import { TaskSessionWriteback } from "./task-session-writeback";
 import { runtimeHealthCheck } from "./runtime-health";
+import { buildRuntimeEvent } from "./runtime-events";
 import {
   blocked,
   failedTask,
@@ -46,6 +47,7 @@ export type SubscriptionRuntime = {
     readonly task: ProviderTask;
     readonly runContext: RunContext;
   }): Promise<RefreshThenRunResult>;
+  retryPendingTaskFinalizations():Promise<void>;
   healthCheck(input: {
     readonly providerInstanceId: string;
   }): Promise<RuntimeHealthCheckResult>;
@@ -78,15 +80,19 @@ export function createSubscriptionRuntime(
     runTask: (input) => kernel.runTask(input),
     refreshThenRunTask: (input) => kernel.refreshThenRunTask(input),
     healthCheck: (input) => kernel.healthCheck(input),
+    retryPendingTaskFinalizations:() => kernel.retryPendingTaskFinalizations(),
   };
 }
 
 class RuntimeKernel {
+  private readonly taskWriteback:TaskSessionWriteback;
+  readonly #pendingTaskFinalizations = new Map<SessionExecutionUse,{readonly result:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>;readonly source:Readonly<{sessionEnvelope?:SessionEnvelope;runContext:RunContext}>;readonly workspace:Awaited<ReturnType<RuntimeDeps["workspace"]["create"]>>;useCompleted?:true;pending?:Promise<ProviderTaskResult>}>();
+  private finalizationPending?:Promise<void>;
   constructor(
     private readonly deps: RuntimeDeps,
     private readonly policy: CompiledRuntimePolicy,
     private readonly executionPlan: RuntimeExecutionPlan,
-  ) {}
+  ) { this.taskWriteback = new TaskSessionWriteback(deps,policy,executionPlan); }
 
   async refreshSession(input: {
     readonly providerInstanceId: string;
@@ -175,6 +181,8 @@ class RuntimeKernel {
       });
     }
 
+    const sessionExecutionUse = await this.deps.sessionExecutionLifecycle?.begin();
+    try {
     const leaseStartedAt = this.deps.clock.monotonicMs();
     this.emit("lease.acquire.started", input.runContext.runId, {
       generation: String(session.generation),
@@ -265,6 +273,7 @@ class RuntimeKernel {
           runner: this.deps.runner,
           redactor: this.deps.redactor,
           abortSignal: input.runContext.abortSignal,
+          ...(sessionExecutionUse ? { sessionExecutionUse } : {}),
         });
         this.emit(
           "provider.refresh.completed",
@@ -408,6 +417,7 @@ class RuntimeKernel {
         });
       }
     }
+    } finally { await sessionExecutionUse?.complete(); }
   }
 
   async runTask(input: {
@@ -563,7 +573,9 @@ class RuntimeKernel {
         task: input.task,
         runContext: input.runContext,
       });
-      if (task.status === "failed" && shouldGuardedRefresh(task.failure)) {
+      if (task.status === "failed" &&
+          !task.warnings.some(warning => warning.code === "task_session_finalization_pending") &&
+          shouldGuardedRefresh(task.failure)) {
         this.emit("provider.refresh.guard.started", input.runContext.runId, {
           reason: task.failure.code,
         });
@@ -658,10 +670,14 @@ class RuntimeKernel {
     readonly task: ProviderTask;
     readonly runContext: RunContext;
   }): Promise<ProviderTaskResult> {
+    input = Object.freeze({...input,...(input.sessionEnvelope ? {sessionEnvelope:Object.freeze({...input.sessionEnvelope})} : {}),runContext:Object.freeze({...input.runContext})});
     if (input.session) {
       this.deps.redactor.registerSecret(input.session.bytes, "session");
     }
 
+    const sessionExecutionUse = await this.deps.sessionExecutionLifecycle?.begin();
+    let retainedTerminal = false;
+    try {
     const workspace = await this.deps.workspace.create({
       purpose: "run-task",
       isolation: "temp-dir",
@@ -676,6 +692,7 @@ class RuntimeKernel {
         runner: this.deps.runner,
         redactor: this.deps.redactor,
         abortSignal: input.runContext.abortSignal,
+        ...(sessionExecutionUse ? { sessionExecutionUse } : {}),
         onTaskStarted: async () => {
           await input.runContext.onProviderTaskStarted?.();
           this.emit("provider.task.started", input.runContext.runId, {
@@ -702,7 +719,12 @@ class RuntimeKernel {
         "subscription_runtime.provider_task_ms",
         this.deps.clock.monotonicMs() - taskStartedAt,
       );
-      return this.maybeWritebackTaskSessionUpdate({
+      if (sessionExecutionUse && result.status !== "waiting_for_input" && this.deps.agentDriver.finalizeTaskSession && this.deps.agentDriver.retireTaskSession) {
+        retainedTerminal = true;
+        this.#pendingTaskFinalizations.set(sessionExecutionUse,{result,source:Object.freeze({...(input.sessionEnvelope ? {sessionEnvelope:input.sessionEnvelope} : {}),runContext:input.runContext}),workspace});
+        return await this.settleTaskSession(sessionExecutionUse);
+      }
+      return await this.maybeWritebackTaskSessionUpdate({
         result,
         ...(input.sessionEnvelope
           ? { sessionEnvelope: input.sessionEnvelope }
@@ -710,28 +732,66 @@ class RuntimeKernel {
         runContext: input.runContext,
       });
     } finally {
-      await workspace.dispose?.();
+      if (!retainedTerminal) await workspace.dispose?.();
     }
+    } finally { if (!retainedTerminal) await sessionExecutionUse?.complete(); }
+  }
+
+  /** No supplied intent: retry only original application-owned terminal entries. */
+  async retryPendingTaskFinalizations():Promise<void> {
+    if (this.finalizationPending) return await this.finalizationPending;
+    const pending = (async () => {
+      for (const use of this.#pendingTaskFinalizations.keys()) {
+        await this.settleTaskSession(use);
+        if (this.#pendingTaskFinalizations.has(use)) throw new Error("task_session_finalization_pending");
+      }
+    })();
+    this.finalizationPending = pending;
+    try { await pending; } finally { if (this.finalizationPending === pending) delete this.finalizationPending; }
+  }
+
+  private async settleTaskSession(use:SessionExecutionUse):Promise<ProviderTaskResult> {
+    const held = this.#pendingTaskFinalizations.get(use);
+    if (!held) throw new Error("task_session_finalization_missing");
+    if (held.pending) return await held.pending;
+    const pending = (async () => {
+      try {
+        let result:ProviderTaskResult = held.result;
+        if (!held.useCompleted) {
+          result = await this.deps.agentDriver.finalizeTaskSession!(use);
+          result = await this.maybeWritebackTaskSessionUpdate({result,...held.source},use);
+          if (result.warnings.some(warning => warning.code.startsWith("task_session_update_writeback_") && warning.code !== "task_session_update_writeback_success")) throw new Error("task_session_finalization_pending");
+          await this.deps.agentDriver.retireTaskSession!(use); held.useCompleted = true;
+        }
+        await held.workspace.dispose?.();
+        if (this.#pendingTaskFinalizations.get(use) !== held) throw new Error("task_session_finalization_changed");
+        this.#pendingTaskFinalizations.delete(use); this.taskWriteback.forget(use); return result;
+      } catch {
+        return {...held.result,warnings:[...held.result.warnings,{code:"task_session_finalization_pending",safeMessage:"Original task result is retained until session finalization is acknowledged."}]};
+      }
+    })();
+    held.pending = pending;
+    try { return await pending; } finally { if (held.pending === pending) delete held.pending; }
   }
 
   private async maybeWritebackTaskSessionUpdate(input: {
     readonly result: ProviderTaskResult;
     readonly sessionEnvelope?: SessionEnvelope;
     readonly runContext: RunContext;
-  }): Promise<ProviderTaskResult> {
+  }, use?:SessionExecutionUse): Promise<ProviderTaskResult> {
     if (
-      input.result.status !== "completed" ||
+      input.result.status === "waiting_for_input" ||
       !input.result.sessionUpdate ||
       !input.sessionEnvelope
     ) {
       return input.result;
     }
 
-    const warnings = await this.writebackTaskSessionUpdate({
+    const warnings = await this.taskWriteback.write({
       sessionEnvelope: input.sessionEnvelope,
       sessionUpdate: input.result.sessionUpdate,
       runContext: input.runContext,
-    });
+    },use);
     if (warnings.length === 0) {
       return input.result;
     }
@@ -739,130 +799,6 @@ class RuntimeKernel {
       ...input.result,
       warnings: [...input.result.warnings, ...warnings],
     };
-  }
-
-  private async writebackTaskSessionUpdate(input: {
-    readonly sessionEnvelope: SessionEnvelope;
-    readonly sessionUpdate: SessionArtifact;
-    readonly runContext: RunContext;
-  }): Promise<readonly RuntimeWarning[]> {
-    if (this.executionPlan.kind !== "rotating-session") {
-      return [
-        {
-          code: "task_session_update_ignored",
-          safeMessage:
-            "Task session update was ignored because the runtime session does not rotate.",
-        },
-      ];
-    }
-    if (input.sessionUpdate.providerId !== input.sessionEnvelope.providerId) {
-      return [
-        {
-          code: "task_session_update_provider_mismatch",
-          safeMessage:
-            "Task session update was ignored because the provider did not match.",
-        },
-      ];
-    }
-
-    const nextHash = computeSessionGenerationHash({
-      artifact: input.sessionUpdate,
-    });
-    if (nextHash === input.sessionEnvelope.generationHash) {
-      return [];
-    }
-
-    const sessionStore = this.requireSessionStore();
-    const leaseStore = this.requireLeaseStore();
-    const lease = await leaseStore.acquire({
-      providerInstanceId: input.sessionEnvelope.providerInstanceId,
-      runId: input.runContext.runId,
-      attempt: input.runContext.attempt,
-      ttlMs: this.policy.timeoutMs,
-      restoredGenerationHash: input.sessionEnvelope.generationHash,
-    });
-    if (lease.status !== "granted") {
-      return [
-        {
-          code: `task_session_update_writeback_${lease.status}`,
-          safeMessage:
-            "Task session update could not be written back because the session lease was unavailable.",
-        },
-      ];
-    }
-
-    let leaseClosed = false;
-    const idempotencyKey = `${this.deps.idGenerator.idempotencyKey({
-      providerInstanceId: input.sessionEnvelope.providerInstanceId,
-      runId: input.runContext.runId,
-      attempt: input.runContext.attempt,
-      purpose: "writeback",
-    })}:task-session-update:${nextHash.slice(0, 16)}`;
-
-    try {
-      await leaseStore.finalize({
-        leaseId: lease.leaseId,
-        restoredGenerationHash: input.sessionEnvelope.generationHash,
-      });
-      this.emit("session.task_update.writeback.started", input.runContext.runId, {
-        leaseId: lease.leaseId,
-        expectedGeneration: String(input.sessionEnvelope.generation),
-      });
-      await leaseStore.markWritebackStarted({
-        leaseId: lease.leaseId,
-      });
-      const writeback = await sessionStore.write({
-        providerInstanceId: input.sessionEnvelope.providerInstanceId,
-        expectedGeneration: input.sessionEnvelope.generation,
-        nextArtifact: input.sessionUpdate,
-        idempotencyKey,
-        leaseId: lease.leaseId,
-      });
-
-      if (writeback.status === "stale_generation") {
-        return [
-          {
-            code: "task_session_update_writeback_stale_generation",
-            safeMessage:
-              "Task session update was skipped because a newer session generation already exists.",
-          },
-        ];
-      }
-
-      await leaseStore.markWritebackCommitted({
-        leaseId: lease.leaseId,
-        nextGenerationHash: writeback.generationHash,
-        idempotencyKey,
-      });
-      leaseClosed = true;
-      this.emit("session.task_update.writeback.completed", input.runContext.runId, {
-        status: writeback.status,
-        generation: String(writeback.generation),
-      });
-      this.deps.observability.count(
-        "subscription_runtime.task_session_update_writeback_success",
-      );
-      return [];
-    } catch (error) {
-      this.emit("session.task_update.writeback.failed", input.runContext.runId, {
-        reason: error instanceof Error ? error.message.slice(0, 120) : "unknown",
-      });
-      return [
-        {
-          code: "task_session_update_writeback_failed",
-          safeMessage:
-            "Task session update could not be written back after task execution.",
-        },
-      ];
-    } finally {
-      if (!leaseClosed) {
-        await this.releaseLeaseQuietly({
-          leaseId: lease.leaseId,
-          runId: input.runContext.runId,
-          reason: "task_session_update_writeback_not_committed",
-        });
-      }
-    }
   }
 
   private async inspectFreshness(input: {
@@ -908,15 +844,7 @@ class RuntimeKernel {
     metadata: Readonly<Record<string, string>> = {},
     durationMs?: number,
   ): void {
-    const event: RuntimeEvent = {
-      name,
-      providerId: this.deps.sessionDriver.providerId,
-      agentId: this.deps.agentDriver.agentId,
-      storeId: this.deps.sessionStore?.storeId ?? "none",
-      metadata,
-      ...(runId === undefined ? {} : { runId }),
-      ...(durationMs === undefined ? {} : { durationMs }),
-    };
+    const event = buildRuntimeEvent(this.deps, name, runId, metadata, durationMs);
     this.deps.observability.emit(event);
   }
 

@@ -47,13 +47,14 @@ import {
 import { FileBackendCodexPrewarmer } from "./file-backend-codex-prewarm";
 import { FileBackendCodexSessionSeeder } from "./file-backend-codex-session-seeding";
 import { FileBackendCodexSessionBinding } from "./file-backend-codex-session-binding";
+import { delay, refreshConflictDelayMs, shouldRetryRefreshConflict } from "./file-backend-codex-refresh-conflict-retry";
 
 import { resolveFileBackendCodexWorkerOptions, type FileBackendCodexWorkerInput, type FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
 export type { FileBackendCodexWorkerInput, FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
 export type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 export type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 export type { FileBackendCodexManagedRunResumeInput } from "./file-backend-codex-managed-run-recovery";
-import { assertWorkerOptions, assertCodexWorkerStarted } from "./file-backend-codex-worker-options";
+import { assertWorkerOptions } from "./file-backend-codex-worker-options";
 export type FileBackendCodexWorkerJob = {
   readonly runId?: string;
   readonly prompt: string;
@@ -99,6 +100,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 > {
   readonly workerId: string;
   private workerState: SubscriptionWorkerState = "created";
+  private disposing:Promise<void>|undefined;
   private readonly redactor: RedactorPort = new DefaultRedactor();
   private readonly runner: FileBackendCodexWorkerRuntimeParts["runner"];
   private readonly observability: ObservabilityPort;
@@ -136,7 +138,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     this.agentDriver = runtimeParts.agentDriver;
     const managedDriver = this.agentDriver instanceof CodexJsonAgentDriver ? this.agentDriver : undefined;
     this.sessionBinding = new FileBackendCodexSessionBinding(
-      managedDriver ? (runId) => managedDriver.hasManagedRunSession(runId) : undefined);
+      managedDriver ? (runId) => this.managedRuns.hasManagedRunSession(runId) : undefined);
     this.sessionStore = runtimeParts.sessionStore;
     this.runtime = runtimeParts.runtime;
     this.ownedWorkspace = runtimeParts.ownedWorkspace;
@@ -182,8 +184,8 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
       clock: this.clock,
       recordFailure: (failure) => this.recordFailure(failure),
       recordSuccessfulRun: () => this.recordSuccessfulRun(),
-      exportAuthJsonFileQuietly: (context) =>
-        this.sessionSeeder.exportAuthJsonFileQuietly(context),
+      exportAuthJsonFileQuietly: (context,requireAcknowledgement) =>
+        this.sessionSeeder.exportAuthJsonFileQuietly(context,requireAcknowledgement),
       // Recovery is part of the already admitted resume operation and keeps
       // its binding reservation through failure handling and writeback.
       runRecoveryJob: async (job) => await this.runWithSessionBinding(job, {}, false),
@@ -239,7 +241,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 
   async prewarm(): Promise<SubscriptionWorkerPrewarmResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    assertCodexWorkerStarted(this.workerState);
+    this.assertStarted();
     return await this.sessionBinding.reserve(() => this.prewarmWithSessionBinding());
   }
 
@@ -264,7 +266,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     options: SubscriptionWorkerRunOptions = {},
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    assertCodexWorkerStarted(this.workerState);
+    this.assertStarted();
     return await this.sessionBinding.reserve(() => this.runWithSessionBinding(job, options));
   }
 
@@ -274,7 +276,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     importSource = true,
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    assertCodexWorkerStarted(this.workerState);
+    this.assertStarted();
     assertProviderTaskSystemPrompt(job.systemPrompt, "job.systemPrompt");
     if (importSource) await this.sessionSeeder.importAuthJsonFileIfChanged("run");
     await this.rememberStoredQuotaGroup();
@@ -381,7 +383,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     input: FileBackendCodexManagedRunResumeInput,
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    assertCodexWorkerStarted(this.workerState);
+    this.assertStarted();
     return await this.sessionBinding.reserveResume(input.runId,
       () => this.sessionSeeder.importAuthJsonFileIfChanged("run"),
       () => this.managedRuns.resume(input));
@@ -453,15 +455,17 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 
   async dispose(): Promise<void> {
     if (this.workerState === "disposed") return;
+    if (this.disposing) return await this.disposing;
     this.workerState = "draining";
-    try {
-      if ("dispose" in this.agentDriver) {
-        await this.agentDriver.dispose();
-      }
-    } finally {
+    const pending = (async () => {
+      await this.runtime.retryPendingTaskFinalizations();
+      await this.managedRuns.cancelRetainedSessions();
+      if ("dispose" in this.agentDriver) await this.agentDriver.dispose();
       await this.ownedWorkspace?.dispose();
       this.workerState = "disposed";
-    }
+    })();
+    this.disposing = pending;
+    try { await pending; } finally { if (this.disposing === pending) this.disposing = undefined; }
   }
 
   capacity(): WorkerCapacitySnapshot {
@@ -515,36 +519,22 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   private rememberQuotaGroup(session: SessionArtifact): void {
     this.capacityTracker.rememberQuotaGroup(session);
   }
-}
 
-function shouldRetryRefreshConflict(result: RefreshThenRunResult): boolean {
-  if (result.status !== "blocked") return false;
-  if (result.reason === "stale_generation") return true;
-  return (
-    result.reason === "permission_required" &&
-    /session refresh is already leased/i.test(result.safeMessage)
-  );
-}
-
-function refreshConflictDelayMs(attempt: number): number {
-  return Math.min(1_000, 100 * 2 ** Math.max(0, attempt - 1));
-}
-
-function delay(ms: number, abortSignal: AbortSignal): Promise<void> {
-  if (abortSignal.aborted) {
-    return Promise.reject(new Error("subscription_worker_run_aborted"));
+  private assertStarted(): void {
+    if (this.workerState === "draining") throw new SubscriptionWorkerError("subscription_worker_disposed","Codex worker is draining.");
+    if (this.workerState === "disposed") {
+      throw new SubscriptionWorkerError(
+        "subscription_worker_disposed",
+        "Codex worker has been disposed.",
+      );
+    }
+    if (this.workerState === "created") {
+      throw new SubscriptionWorkerError(
+        "subscription_worker_not_started",
+        "Codex worker has not been started.",
+      );
+    }
   }
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    abortSignal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("subscription_worker_run_aborted"));
-      },
-      { once: true },
-    );
-  });
 }
 
 const systemClock: ClockPort = {

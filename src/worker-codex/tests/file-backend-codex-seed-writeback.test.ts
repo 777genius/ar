@@ -210,10 +210,10 @@ describe("source-bound Codex refresh writeback", () => {
     };
     try {
       await writeFile(join(root, "auth.json"), seed, { mode: 0o600 });
+      await writeFile(join(root, "writer-input.json"), JSON.stringify({ seed, refreshed, relogin }), { mode: 0o600 });
       for (const id of writers) {
         const child = run(process.execPath, [
-          fileURLToPath(new URL("../../../node_modules/vitest/vitest.mjs", import.meta.url)),
-          "run", fileURLToPath(import.meta.url), "-t", "publishes from an isolated writer process",
+          fileURLToPath(new URL("./file-backend-codex-seed-writeback-writer.mts", import.meta.url)),
         ], { env: { ...process.env, SR_SYNTHETIC_WRITEBACK_ROOT: root, SR_SYNTHETIC_WRITER: id }, timeout: 30_000 });
         // Handle each rejection before starting another real writer process.
         outcomes.push(Promise.allSettled([child]).then(results => results[0]!));
@@ -238,22 +238,9 @@ describe("source-bound Codex refresh writeback", () => {
       const results = await Promise.all(outcomes);
       throw new Error(`independent writer failure: ${JSON.stringify(results.map((result, index) => diagnostic(index, result)))}`, { cause: error });
     } finally {
-      // Preserve the fixture until both existing 30s-bounded CLI calls settle.
+      // Preserve the fixture until both existing 30s-bounded Node calls settle.
       await Promise.all(outcomes);
       await rm(root, { recursive: true, force: true });
     }
   });
-});
-
-// Invoked only with a NEW disposable fixture by the parent test.
-it.runIf(Boolean(process.env.SR_SYNTHETIC_WRITEBACK_ROOT))("publishes from an isolated writer process", async () => {
-  const root = process.env.SR_SYNTHETIC_WRITEBACK_ROOT!;
-  const id = process.env.SR_SYNTHETIC_WRITER!;
-  if (!["first", "second"].includes(id)) throw new Error("invalid_synthetic_writer");
-  await mkdir(root, { recursive: true });
-  await writeFile(join(root, `ready-${id}`), "synthetic ready");
-  await waitUntil(async () => { await readFile(join(root, "go")); return true; }, 20_000);
-  const custody = new FileBackendCodexSeedWriteback(join(root, "auth.json"));
-  const accepted = await custody.publish({ source: seed, expected: seed, next: id === "first" ? refreshed : relogin });
-  await writeFile(join(root, `result-${id}`), String(accepted));
 });

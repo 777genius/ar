@@ -1,15 +1,36 @@
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
+import type { HostedInventoryLaunch } from "../../../core/host-infrastructure/host-inventory";
+
+/** Configuration facts from the original protected stored SDK plan. The actual
+ * installed creator tuple and producer digest remain unchanged. This function
+ * issues no origin, reservation, descriptor or execution permission. */
+export function readHostedDependencyParentRecipe(launch: HostedInventoryLaunch, job: string, workspace: string, reader?: DependencyParentRecipeReader): HostedInventoryLaunch {
+  if (launch.args[1] !== "tool") {
+    assertHostedDependencyParentRecipe(launch.args, job, workspace, reader); return launch;
+  }
+  const args = launch.args;
+  if (args.length !== 6 || args[2] !== "codex_goal_project_start" || args[3] !== "--args-json" ||
+      args[5] !== "--json" || launch.cwd !== workspace) fail();
+  if (!reader) fail();
+  const resolved = reader.readStoredLaunch(launch, job, workspace);
+  if (resolved.command !== launch.command || resolved.cwd !== launch.cwd || resolved.args[0] !== args[0]) fail();
+  if (!reader.readOriginalUsableParentRoots(launch, job, workspace))
+    assertHostedDependencyParentRecipe(resolved.args, job, workspace, reader);
+  return resolved;
+}
+
 import { isHostedDependencySignedTaskId } from "./hosted-dependency-root-purpose-record";
 /** Closed N3 initial-host CLI writer recipe. It validates configuration only;
  * the caller must independently resolve the installed start/fence/binding. */
-export function assertHostedDependencyParentRecipe(args: readonly string[], job: string, workspace: string): void {
+export function assertHostedDependencyParentRecipe(args: readonly string[], job: string, workspace: string, reader?: DependencyParentRecipeReader): void {
   const values = new Map<string, string>(), seen = new Set<string>();
   const scalar = new Set(["--task-id", "--job-id", "--job-root", "--workspace", "--prompt", "--output", "--progress", "--log",
     "--state-root", "--durable-handoff-root", "--registry-root", "--cwd", "--accounts", "--auth-root", "--codex-binary",
     "--format", "--model", "--effort", "--service-tier", "--execution-engine", "--model-backend", "--edit-mode", "--permission-mode",
-    "--provider-sandbox-mode", "--worker-report-mode", "--app-server-startup-timeout-ms", "--access-boundary", "--network-access",
+    "--provider-sandbox-mode", "--project-access-scope-json", "--worker-report-mode", "--app-server-startup-timeout-ms", "--access-boundary", "--network-access",
     "--max-goal-turns", "--max-attempts", "--continuation-mode", "--codex-goal-objective", "--timeout-ms", "--timeout",
     "--progress-heartbeat-ms", "--max-account-cycles", "--stale-lock-ms", "--description", "--registry-description", "--tags", "--registry-tags"]);
-  const flags = new Set(["--allow-duplicate-accounts", "--no-require-git-workspace", "--prewarm"]);
+  const flags = new Set(["--no-tmux", "--allow-duplicate-accounts", "--no-require-git-workspace", "--prewarm"]);
   if (!args[0]?.endsWith("/codex-goal-cli.js") || args[1] !== "run" || workspace !== `${job}/workspace`) fail();
   for (let i = 2; i < args.length; i++) {
     const name = args[i]!;
@@ -32,6 +53,13 @@ export function assertHostedDependencyParentRecipe(args: readonly string[], job:
   exactOptional("--progress", `${job}/${task}.progress.json`); exactOptional("--log", `${job}/${task}.log`);
   exactOptional("--execution-engine", "app-server-goal");
   exactOptional("--model-backend", "openai-chatgpt");
+  const scopeJson = values.get("--project-access-scope-json");
+  if (scopeJson !== undefined) {
+    if (!reader) fail();
+    const scope = reader.readProjectAccessScope(scopeJson);
+    if (!scope || scope.registryRoot !== `${job}/state/registry` || !scope.workspaceRoots?.includes(workspace) ||
+        scope.workspaceRoots.some(path => path !== workspace)) fail();
+  }
   const sandbox = values.get("--provider-sandbox-mode");
   if (sandbox !== undefined && sandbox !== "read-only" && sandbox !== "workspace-write") fail();
   const output = values.get("--output");

@@ -43,6 +43,7 @@ export function readPrivateHostedMimoOperationBytes(path: string, maximum: numbe
 const ownedUnitFenceWaitMs = 120_000;
 const fixedEntry = "/opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
 const approvedErrorCodes = new Set([
+  "mimo_project_runtime_routing_invalid",
   "safe_execution_workspace_locked",
   "protected_job_birth_publication_busy",
   "protected_job_birth_authority_invalid",

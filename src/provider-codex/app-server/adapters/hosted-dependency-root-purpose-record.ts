@@ -1,3 +1,4 @@
+import type { DependencyToolUsableExecution, DependencyToolBaselineExecution } from "../../../core/dependency-environment/dependency-tool-execution";
 import type { DependencyAttempt, DependencyProtectedReference, DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
 import type { HostedDependencyRootGitProfile } from "./hosted-dependency-root-git-profile";
 import type { DependencyToolReadyFacts } from "../../../core/dependency-environment/dependency-tool-ready-reader";
@@ -16,35 +17,61 @@ export enum HostedDependencyRootPurpose {
   SessionRefreshV1 = "session_refresh_v1",
 }
 export type HostedDependencyRootDirectoryPin = Readonly<{ canonicalPath: string; dev: string; ino: string; mountId: string }>;
+export enum HostedDependencyRootOriginKind { ManagedReadonlyLocalV1 = "managed_readonly_local_v1", OrdinaryDependencyReaderV1 = "ordinary_dependency_reader_v1" }
 export type HostedDependencyRootScope = Readonly<{
   logicalJobId: string; logicalTaskId: string; executionJobId: string; jobRootDir: string;
   workspace: DependencyWorkspaceIdentity; attempt: DependencyAttempt;
-  ownerRevision: number; custodyReference: DependencyProtectedReference;
-}>;
+  ownerRevision: number;
+}> & (Readonly<{originKind:HostedDependencyRootOriginKind.ManagedReadonlyLocalV1;custodyReference:DependencyProtectedReference}> |
+  Readonly<{originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1;originReference:DependencyProtectedReference;
+    readerProducer:DependencyProtectedReference;readerEntry:DependencyProtectedReference}>);
 export type HostedDependencyManagedGitScope = HostedDependencyRootScope & Readonly<{
   rootGit: HostedDependencyRootGitProfile; protectedProfile: DependencyProtectedReference;
   durableHandoffRoot: HostedDependencyRootDirectoryPin; scratchParent: HostedDependencyRootDirectoryPin;
   authoredRoots: readonly HostedDependencyRootDirectoryPin[]; generatedRoots: readonly HostedDependencyRootDirectoryPin[];
   sourceLookupAncestors: readonly HostedDependencyRootDirectoryPin[];
 }>;
-export type HostedDependencyRootPreparationRecord = Readonly<{
-  version: 2; attempt: DependencyAttempt; custodyReference: DependencyProtectedReference;
-  providerReady: DependencyToolReadyFacts;
-  qualification: DependencyProtectedReference; ready: DependencyProtectedReference; readyRevision: number;
+type HostedDependencyRootPreparationCommon = Readonly<{
+  attempt: DependencyAttempt; qualification: DependencyProtectedReference;
   protectedProfile: DependencyProtectedReference; config: DependencyProtectedReference;
   configAncestors: readonly HostedDependencyRootDirectoryPin[];
   durableHandoffRoot: HostedDependencyRootDirectoryPin; scratchParent: HostedDependencyRootDirectoryPin;
   authoredRoots: readonly HostedDependencyRootDirectoryPin[]; generatedRoots: readonly HostedDependencyRootDirectoryPin[];
   sourceLookupAncestors: readonly HostedDependencyRootDirectoryPin[];
 }>;
+type HostedDependencyOrdinaryPreparationLineage=Readonly<{originReference:DependencyProtectedReference;
+  readerProducer:DependencyProtectedReference;readerEntry:DependencyProtectedReference}>;
+export type HostedDependencyReadyRootPreparation = HostedDependencyRootPreparationCommon & Readonly<{
+  providerReady:DependencyToolReadyFacts;ready:DependencyProtectedReference;readyRevision:number;
+}> & (Readonly<{version:2;custodyReference:DependencyProtectedReference}> |
+  Readonly<{version:3}>&HostedDependencyOrdinaryPreparationLineage);
+export type HostedDependencyUsableRootPreparation = HostedDependencyRootPreparationCommon & Readonly<{
+  execution:DependencyToolUsableExecution;unverified:DependencyProtectedReference;unverifiedRevision:number;
+}> & (Readonly<{version:4;custodyReference:DependencyProtectedReference}> |
+  Readonly<{version:5}>&HostedDependencyOrdinaryPreparationLineage);
+export type HostedDependencyBaselineRootPreparation=HostedDependencyRootPreparationCommon & Readonly<{
+  execution:DependencyToolBaselineExecution;baselineReady:DependencyProtectedReference;baselineReadyRevision:number;
+}> & (Readonly<{version:6;custodyReference:DependencyProtectedReference}> |
+  Readonly<{version:7}>&HostedDependencyOrdinaryPreparationLineage);
+export type HostedDependencyRootPreparationRecord=HostedDependencyReadyRootPreparation|HostedDependencyUsableRootPreparation|HostedDependencyBaselineRootPreparation;
 
 /** Fixed actual provider birth readback; factual data is not a registration permit. */
-export type HostedDependencyManagedProviderFacts = Readonly<{
-  version: 1; installationId: string; runtimeSha: string; hostId: string; bootId: string;
-  supervisorId: string; generation: number; unit: string; providerStartId: string; parentStartId: string;
-  logicalJobId: string; executionJobId: string; jobRootDir: string;
-  workspace: DependencyWorkspaceIdentity; attempt: DependencyAttempt;
-  custodyReference: DependencyProtectedReference; originReference: DependencyProtectedReference;
-  ready: DependencyProtectedReference; readyRevision: number; qualification: DependencyProtectedReference;
-  protectedProfile: DependencyProtectedReference;
+type HostedDependencyProviderBirthCommon=Readonly<{
+  installationId:string;runtimeSha:string;hostId:string;bootId:string;supervisorId:string;generation:number;
+  unit:string;providerStartId:string;parentStartId:string;logicalJobId:string;executionJobId:string;jobRootDir:string;
+  workspace:DependencyWorkspaceIdentity;attempt:DependencyAttempt;originReference:DependencyProtectedReference;
+  qualification:DependencyProtectedReference;protectedProfile:DependencyProtectedReference;
 }>;
+type HostedDependencyOrdinaryProviderLineage=Readonly<{
+  originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1;parentGeneration:number;
+  ordinaryProviderReference:DependencyProtectedReference;readerProducer:DependencyProtectedReference;readerEntry:DependencyProtectedReference;
+  ordinaryRelation:Readonly<{version:1;parentStartId:string;attemptId:string;epoch:number;providerStartId:string;startDigest:string;unit:string}>;
+}>;
+export type HostedDependencyManagedProviderFacts=HostedDependencyProviderBirthCommon & (
+  | Readonly<{ready:DependencyProtectedReference;readyRevision:number}> &
+    (Readonly<{version:1;custodyReference:DependencyProtectedReference}>|Readonly<{version:2}>&HostedDependencyOrdinaryProviderLineage)
+  | Readonly<{execution:DependencyToolUsableExecution;unverified:DependencyProtectedReference;unverifiedRevision:number}> &
+    (Readonly<{version:3;custodyReference:DependencyProtectedReference}>|Readonly<{version:4}>&HostedDependencyOrdinaryProviderLineage)
+  | Readonly<{execution:DependencyToolBaselineExecution;baselineReady:DependencyProtectedReference;baselineReadyRevision:number}> &
+    (Readonly<{version:5;custodyReference:DependencyProtectedReference}>|Readonly<{version:6}>&HostedDependencyOrdinaryProviderLineage)
+);

@@ -1,3 +1,4 @@
+import { assertOriginalHostedProjectControlRegistryBudgetCurrent, originalHostedProjectControlAllocationPathPresent, holdOriginalHostedProjectControlAllocationError } from "./hosted-project-control-native-allocation.js";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -26,22 +27,29 @@ export async function withCodexGoalRegistryMutation<T>(input: {
   const assertOrdinaryPublication = (paths: readonly string[] = [], jobRootDir?: string) => {
     if (original && currentHostedOrdinaryWriterExtent()?.startId !== original.startId) throw new Error("hosted_ordinary_writer_extent_invalid");
     assertHostedOrdinaryRegistryPublication(input.registryRootDir, projectControlWorkspaceLockRoot(input.registryRootDir), paths, jobRootDir);
+    assertOriginalHostedProjectControlRegistryBudgetCurrent(input.registryRootDir);
   };
-  assertOrdinaryPublication();
-  if (!input.requireExistingRegistryRoot) await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
-  const registryRootDir = await realpath(input.registryRootDir);
-  assertOrdinaryPublication();
-  const locks = projectControlWorkspaceLocks(registryRootDir, assertOrdinaryPublication);
-  const lease = await locks.acquire({
-    workspacePath: join(registryRootDir, ".manifest-mutation"),
-    owner: "job-registry-mutation",
-  });
+  const originalControlRegistry = originalHostedProjectControlAllocationPathPresent(input.registryRootDir);
   try {
     assertOrdinaryPublication();
-    return await input.effect(assertOrdinaryPublication);
-  } finally {
-    await locks.release(lease);
-  }
+    if (!input.requireExistingRegistryRoot) await mkdir(input.registryRootDir, { recursive: true, mode: 0o700 });
+    const registryRootDir = await realpath(input.registryRootDir);
+    assertOrdinaryPublication();
+    const locks = projectControlWorkspaceLocks(registryRootDir, assertOrdinaryPublication);
+    const lease = await locks.acquire({
+      workspacePath: join(registryRootDir, ".manifest-mutation"),
+      owner: "job-registry-mutation",
+    });
+    let failed = false, originalError: unknown;
+    try {
+      assertOrdinaryPublication();
+      return await input.effect(assertOrdinaryPublication);
+    } catch (error) { failed = true; originalError = error; if (originalControlRegistry) holdOriginalHostedProjectControlAllocationError(); throw error; }
+    finally {
+      try { await locks.release(lease); }
+      catch (error) { if (originalControlRegistry) { holdOriginalHostedProjectControlAllocationError(); if (failed) throw originalError; } throw error; }
+    }
+  } catch (error) { if (originalControlRegistry) holdOriginalHostedProjectControlAllocationError(); throw error; }
 }
 
 export async function withCodexGoalManifestUpdate<T>(input: {

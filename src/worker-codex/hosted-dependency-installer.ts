@@ -1,13 +1,18 @@
+import { assertOriginalHostedDependencyColdProducer, readOriginalHostedDependencyColdInstallerState, requiresCurrentHostedDependencyRootPurpose,
+  type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { HostedDependencyColdInstallerPhase } from "./hosted-dependency-cold-materialization-state";
+import { readHostedDependencyKeyInputs, assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization-context";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "./hosted-dependency-activation";
+import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { DependencyOwnerPhase, sameDependencyAttempt, type DependencyAttempt } from "../worker-core/dependency-environment/domain/dependency-owner";
 import type { DependencyWorkspaceIdentity } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyNpmLockName } from "../worker-core/dependency-environment/domain/dependency-install-key";
-import { readHostedDependencyBinding, readHostedDependencyAttempt } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { readHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { assertReadonlyHostOperator, decodePrivateJson, readonlyIdentityName } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -49,7 +54,12 @@ export type HostedDependencyInstallerCompletion = HostedDependencyInstallerCompl
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 const digest = (v: Buffer): string => createHash("sha256").update(v).digest("hex");
 function fail(): never { throw new Error("dependency_installer_unresolved"); }
-function assertOwner(fence: HostedActivationFence, request: HostedDependencyInstallerRequest): void {
+function assertOwner(fence: HostedActivationFence, request: HostedDependencyInstallerRequest,context?:CurrentHostedDependencyOrigin,access?:symbol): void {
+  if(context) {
+    if(access===undefined)fail();
+    const actual=assertOriginalHostedDependencyColdProducer(context,fence,access);
+    if(!sameDependencyAttempt(actual.attempt,request.attempt) || JSON.stringify(actual.binding.workspace)!==JSON.stringify(request.workspace))fail();return;
+  }
   assertReadonlyHostOperator();
   const origin = readHostedOrdinaryRuntime(fence), { start, installation, reservation } = origin, a = request.attempt.launch;
   const binding = readHostedDependencyBinding(start.jobId);
@@ -146,10 +156,130 @@ export function fenceHostedDependencyInstallerSubmitter(attempt: DependencyAttem
   createReadonlyPrivateRecord(path, discharge);
 }
 
+function prepareInstaller(fence:HostedActivationFence,request:HostedDependencyInstallerRequest,inputs:HostedDependencyInstallerQualifiedInputs,
+  context?:CurrentHostedDependencyOrigin,access?:symbol) {
+    const startId = randomUUID();
+    const unit = `subscription-runtime-installer-${startId}.service`;
+
+      assertOwner(fence,request,context,access);
+      const fdProfile = readHostedFdProfile();
+      if(context && !fdProfile)fail();
+      const plan = createHostedDependencyInstallerPlan(startId, inputs), profileSha256 = digest(encode(plan.profile));
+      // One manager invocation per exact private attempt, including uncertainty.
+      // A new random startId cannot resurrect a consumed or revoked attempt.
+      const attemptPath = join(hostedDependencyInstallerRoot, `attempt-${request.attempt.attemptId}.json`);
+      retainOnce(attemptPath, encode({ schemaVersion: 1, startId, unit, attempt: request.attempt }));
+      if (plan.localStage && (!plan.installKey || !plan.closureDigest)) fail();
+      const start = encode({ schemaVersion: plan.localStage ? 2 : 1, startId, unit, recipe: plan.recipe,
+        workspace: request.workspace, attempt: request.attempt, inputSha256: plan.inputSha256, profileSha256,
+        ...(plan.localStage ? { installKey: plan.installKey, closureDigest: plan.closureDigest } : {}) });
+      createReadonlyPrivateRecord(join(plan.directory, "start.json"), start);
+      // O_EXCL supplies future-start exclusion. Unlike idempotent record
+      // publication, this marker must never permit a second manager submission.
+      retainOnce(join(plan.directory, "consumed.json"), encode({ schemaVersion: 1, startId, startSha256: digest(start) }));
+      const launch = hostedFdCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
+      // Actual submitter birth occurs in the final admission fence, never from a
+      // precomputed command returned to a later caller. Its child identity is
+      // retained so scoped host termination can fence this exact future creator.
+      assertOwner(fence,request,context,access); assertHostedDependencyInstallerPlan(plan);
+      const child = fdProfile ? spawnHostedFdChild(launch.command, launch.args, { cwd: "/" }, unit, HostedFdLaunchKind.Installer) :
+        spawn(launch.command, launch.args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: "ignore" });
+      try {
+      const waited = new Promise<boolean>(resolve => {
+        let errored = false;
+        const timer = setTimeout(() => resolve(false), 21 * 60 * 1000); timer.unref();
+        child.on("error", () => { errored = true; clearTimeout(timer); resolve(false); });
+        child.on(context ? "close" : "exit", (status, signal) => { clearTimeout(timer); resolve(!errored && status === 0 && signal === null); });
+      });
+      if (!child.pid) fail();
+      const pidBirth = collectProcessBirth(String(child.pid)), group = collectProcessCgroup(String(child.pid));
+      if (group !== `0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${request.attempt.launch.unit}`) fail();
+      const creator = encode({ schemaVersion: 1, startId, startSha256: digest(start), pidBirth, controlGroup: group.slice(3) });
+      createReadonlyPrivateRecord(join(plan.directory, "creator.json"), creator);
+      return { plan, startId, start, creator, profileSha256, waited, child, command:launch.command,args:Object.freeze([...launch.args]),unit,guard: fdProfile ? hostedFdLaunch(child) : undefined };
+      } catch(error) {if(context && fdProfile)hostedFdLaunch(child).invalidate();throw error;}
+}
+
+function completeInstaller(fence:HostedActivationFence,request:HostedDependencyInstallerRequest,inputs:HostedDependencyInstallerQualifiedInputs,
+  prepared:HostedDependencyInstallerPhysicalFrame,context?:CurrentHostedDependencyOrigin,access?:symbol):HostedDependencyInstallerCompletion {
+  const {startId,unit}=prepared;
+
+      assertOwner(fence,request,context,access); assertHostedDependencyInstallerPlan(prepared.plan);
+      const completion = encode({ schemaVersion: 1, startId, startSha256: digest(prepared.start), creatorSha256: digest(prepared.creator), status: 0, creatorWaitReturned: true });
+      createReadonlyPrivateRecord(join(prepared.plan.directory, "creator-completion.json"), completion);
+      createReadonlyPrivateRecord(join(prepared.plan.directory, "revoked.json"), encode({ schemaVersion: 1, startId, completionSha256: digest(completion) }));
+      const emptySha256 = drain(prepared.plan, unit), path = join(prepared.plan.stagingDirectory, "node_modules");
+      const before = lstatSync(path, { bigint: true }); if (!before.isDirectory() || before.isSymbolicLink()) fail();
+      const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd, { bigint: true }), after = lstatSync(path, { bigint: true });
+        if (before.dev !== opened.dev || before.ino !== opened.ino || before.dev !== after.dev || before.ino !== after.ino) fail();
+        createReadonlyPrivateRecord(join(prepared.plan.directory, "terminal.json"), encode({ schemaVersion: 1, startId, emptySha256, completionSha256: digest(completion), output: { dev: String(before.dev), ino: String(before.ino) } }));
+        const facts = { lockName: inputs.lockName, startId, unit, inputSha256: prepared.plan.inputSha256,
+          profileSha256: prepared.profileSha256, completionSha256: digest(completion), output: { canonicalPath: path, dev: String(before.dev), ino: String(before.ino) } };
+        if (prepared.plan.localStage) {
+          const installKey = prepared.plan.installKey, closureDigest = prepared.plan.closureDigest;
+          if (!installKey || !closureDigest || prepared.plan.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) fail();
+          return { ...facts, recipe: HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1, installKey, closureDigest };
+        }
+        if (prepared.plan.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
+        return { ...facts, recipe: HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 };
+      } finally { closeSync(fd); }
+
+}
+export type HostedDependencyInstallerPhysicalFrame=ReturnType<typeof prepareInstaller>;
+export type HostedDependencyColdInstallerCapture=Readonly<{request:HostedDependencyInstallerRequest;inputs:HostedDependencyInstallerQualifiedInputs}>;
+/** Fixed source/input capture. Only genuine original Producing may enter; no
+ * caller package/lock/argv/Plan DTO is accepted by this selected route. */
+export async function captureOriginalHostedDependencyColdInstaller(context:CurrentHostedDependencyOrigin,access:symbol):Promise<HostedDependencyColdInstallerCapture> {
+  const before=withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
+  const captured=await readHostedDependencyKeyInputs(before.binding);
+  return withHostedActivationFence(fence=>{
+    const actual=assertOriginalHostedDependencyColdProducer(context,fence,access);
+    assertHostedDependencyKeyInputsCurrent(actual.binding,captured);
+    const owner={workspace:actual.binding.workspace,attempt:actual.attempt};
+    if(captured.recipe===HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) {
+      const inputs=qualifyHostedDependencyLocalInstallerInputs(captured.capture,readHostedDependencyInstallerProfile());
+      return {request:{...owner,recipe:HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1},inputs};
+    }
+    return {request:{...owner,lockName:captured.lockName,packageBytes:Buffer.from(captured.packageBytes),lockBytes:Buffer.from(captured.lockBytes)},
+      inputs:qualifyHostedDependencyInstallerInputs(captured.packageBytes,captured.lockBytes,captured.lockName)};
+  });
+}
+/** Synchronous fixed Plan and physical spawn. Returned Node/frame remains
+ * lexical to the original issuer; no child registration/DTO callback exists. */
+export function prepareOriginalHostedDependencyColdInstaller(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):HostedDependencyInstallerPhysicalFrame {
+  assertOriginalHostedDependencyColdProducer(context,fence,access);
+  const state=readOriginalHostedDependencyColdInstallerState(context,access),capture=state.installerCapture;
+  if(!capture || state.installerFrame)fail();
+  return prepareInstaller(fence,capture.request,capture.inputs,context,access);
+}
+export function releaseOriginalHostedDependencyColdInstaller(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):void {
+  assertOriginalHostedDependencyColdProducer(context,fence,access);
+  const state=readOriginalHostedDependencyColdInstallerState(context,access),capture=state.installerCapture,prepared=state.installerFrame;
+  if(!capture || !prepared?.guard || state.installerPhase!==HostedDependencyColdInstallerPhase.Prepared)fail();
+  const revalidate=()=>{
+    assertOwner(fence,capture.request,context,access);assertHostedDependencyInstallerPlan(prepared.plan);
+    if(readOriginalHostedDependencyColdInstallerState(context,access).installerFrame!==prepared)fail();
+    const record=(name:string)=>readHostedPrivateBytes(join(prepared.plan.directory,name),64*1024);
+    if(!record("start.json")?.equals(prepared.start) || !record("creator.json")?.equals(prepared.creator) ||
+      !record("consumed.json")?.equals(encode({schemaVersion:1,startId:prepared.startId,startSha256:digest(prepared.start)})) ||
+      record("revoked.json") || record("creator-completion.json") || !prepared.child.pid)fail();
+    const creator=decodePrivateJson(prepared.creator) as {pidBirth:string;controlGroup:string};
+    if(collectProcessBirth(String(prepared.child.pid))!==creator.pidBirth || collectProcessCgroup(String(prepared.child.pid))!==`0::${creator.controlGroup}`)fail();
+  };
+  revalidate();prepared.guard.release(fence,hostedInstallerReleaseMarker,true,revalidate);
+}
+export function completeOriginalHostedDependencyColdInstaller(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):HostedDependencyInstallerCompletion {
+  assertOriginalHostedDependencyColdProducer(context,fence,access);
+  const state=readOriginalHostedDependencyColdInstallerState(context,access),capture=state.installerCapture,prepared=state.installerFrame;
+  if(!capture || !prepared || state.installerPhase!==HostedDependencyColdInstallerPhase.Waited)fail();return completeInstaller(fence,capture.request,capture.inputs,prepared,context,access);
+}
 export class HostedDependencyInstaller {
   /** Factual completion only. Unknown start/completion/drain retains every
    * partial output and the caller's durable ExclusiveMutation ownership. */
   async install(request: HostedDependencyInstallerRequest): Promise<HostedDependencyInstallerCompletion> {
+    if(requiresCurrentHostedDependencyRootPurpose())fail();
     let inputs: HostedDependencyInstallerQualifiedInputs;
     if (request.recipe === HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) {
       if (Object.keys(request).sort().join(",") !== "attempt,recipe,workspace") fail();
@@ -171,44 +301,8 @@ export class HostedDependencyInstaller {
           !Object.values(DependencyNpmLockName).includes(request.lockName)) fail();
       inputs = qualifyHostedDependencyInstallerInputs(request.packageBytes, request.lockBytes, request.lockName);
     }
-    const startId = randomUUID();
-    const unit = `subscription-runtime-installer-${startId}.service`;
-    const prepared = withHostedActivationFence(fence => {
-      assertOwner(fence, request);
-      const plan = createHostedDependencyInstallerPlan(startId, inputs), profileSha256 = digest(encode(plan.profile));
-      // One manager invocation per exact private attempt, including uncertainty.
-      // A new random startId cannot resurrect a consumed or revoked attempt.
-      const attemptPath = join(hostedDependencyInstallerRoot, `attempt-${request.attempt.attemptId}.json`);
-      retainOnce(attemptPath, encode({ schemaVersion: 1, startId, unit, attempt: request.attempt }));
-      if (plan.localStage && (!plan.installKey || !plan.closureDigest)) fail();
-      const start = encode({ schemaVersion: plan.localStage ? 2 : 1, startId, unit, recipe: plan.recipe,
-        workspace: request.workspace, attempt: request.attempt, inputSha256: plan.inputSha256, profileSha256,
-        ...(plan.localStage ? { installKey: plan.installKey, closureDigest: plan.closureDigest } : {}) });
-      createReadonlyPrivateRecord(join(plan.directory, "start.json"), start);
-      // O_EXCL supplies future-start exclusion. Unlike idempotent record
-      // publication, this marker must never permit a second manager submission.
-      retainOnce(join(plan.directory, "consumed.json"), encode({ schemaVersion: 1, startId, startSha256: digest(start) }));
-      const fdProfile = readHostedFdProfile();
-      const launch = hostedFdCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
-      // Actual submitter birth occurs in the final admission fence, never from a
-      // precomputed command returned to a later caller. Its child identity is
-      // retained so scoped host termination can fence this exact future creator.
-      assertOwner(fence, request); assertHostedDependencyInstallerPlan(plan);
-      const child = fdProfile ? spawnHostedFdChild(launch.command, launch.args, { cwd: "/" }, unit, HostedFdLaunchKind.Installer) :
-        spawn(launch.command, launch.args, { cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: "ignore" });
-      const waited = new Promise<boolean>(resolve => {
-        let errored = false;
-        const timer = setTimeout(() => resolve(false), 21 * 60 * 1000); timer.unref();
-        child.on("error", () => { errored = true; clearTimeout(timer); resolve(false); });
-        child.on("exit", (status, signal) => { clearTimeout(timer); resolve(!errored && status === 0 && signal === null); });
-      });
-      if (!child.pid) fail();
-      const pidBirth = collectProcessBirth(String(child.pid)), group = collectProcessCgroup(String(child.pid));
-      if (group !== `0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${request.attempt.launch.unit}`) fail();
-      const creator = encode({ schemaVersion: 1, startId, startSha256: digest(start), pidBirth, controlGroup: group.slice(3) });
-      createReadonlyPrivateRecord(join(plan.directory, "creator.json"), creator);
-      return { plan, start, creator, profileSha256, waited, child, guard: fdProfile ? hostedFdLaunch(child) : undefined };
-    });
+    const prepared=withHostedActivationFence(fence=>prepareInstaller(fence,request,inputs));
+    const {startId,unit}=prepared;
     if (prepared.guard) {
       const guard = prepared.guard;
       try {
@@ -229,28 +323,6 @@ export class HostedDependencyInstaller {
       } catch { guard.invalidate(); prepared.child.kill("SIGTERM"); fail(); }
     }
     if (!await prepared.waited) fail();
-    return withHostedActivationFence<HostedDependencyInstallerCompletion>(fence => {
-      assertOwner(fence, request); assertHostedDependencyInstallerPlan(prepared.plan);
-      const completion = encode({ schemaVersion: 1, startId, startSha256: digest(prepared.start), creatorSha256: digest(prepared.creator), status: 0, creatorWaitReturned: true });
-      createReadonlyPrivateRecord(join(prepared.plan.directory, "creator-completion.json"), completion);
-      createReadonlyPrivateRecord(join(prepared.plan.directory, "revoked.json"), encode({ schemaVersion: 1, startId, completionSha256: digest(completion) }));
-      const emptySha256 = drain(prepared.plan, unit), path = join(prepared.plan.stagingDirectory, "node_modules");
-      const before = lstatSync(path, { bigint: true }); if (!before.isDirectory() || before.isSymbolicLink()) fail();
-      const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      try {
-        const opened = fstatSync(fd, { bigint: true }), after = lstatSync(path, { bigint: true });
-        if (before.dev !== opened.dev || before.ino !== opened.ino || before.dev !== after.dev || before.ino !== after.ino) fail();
-        createReadonlyPrivateRecord(join(prepared.plan.directory, "terminal.json"), encode({ schemaVersion: 1, startId, emptySha256, completionSha256: digest(completion), output: { dev: String(before.dev), ino: String(before.ino) } }));
-        const facts = { lockName: inputs.lockName, startId, unit, inputSha256: prepared.plan.inputSha256,
-          profileSha256: prepared.profileSha256, completionSha256: digest(completion), output: { canonicalPath: path, dev: String(before.dev), ino: String(before.ino) } };
-        if (prepared.plan.localStage) {
-          const installKey = prepared.plan.installKey, closureDigest = prepared.plan.closureDigest;
-          if (!installKey || !closureDigest || prepared.plan.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) fail();
-          return { ...facts, recipe: HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1, installKey, closureDigest };
-        }
-        if (prepared.plan.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
-        return { ...facts, recipe: HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 };
-      } finally { closeSync(fd); }
-    });
+    return withHostedActivationFence(fence=>completeInstaller(fence,request,inputs,prepared));
   }
 }

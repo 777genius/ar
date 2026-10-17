@@ -13,8 +13,9 @@ function withoutExecutableRule(toml: string): string {
   return toml.split("\n").filter(line => !line.startsWith(`${executable} = `)).join("\n");
 }
 
-const goldenDenyLines = ['":root" = "deny"', '":minimal" = "read"', '"/etc/subscription-runtime" = "deny"',
-  '"/etc/ssh" = "deny"', '"/etc/ssl/private" = "deny"'];
+const goldenDenyLines = ['":root" = "deny"', '":minimal" = "read"',
+  '"/var/lib/subscription-runtime-full-parent-live" = "deny"', '"/run/TEST-full-flow-outbox" = "deny"',
+  '"/etc/subscription-runtime" = "deny"', '"/etc/ssh" = "deny"', '"/etc/ssl/private" = "deny"'];
 
 function goldenProfiles(networkLines: readonly string[]): string {
   return [
