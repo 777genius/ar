@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,7 @@
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "storage-new-test-owner-private.h"
 
 /* Root-only installed backend. FDs3/4/5 are registered scratch/control/block;
  * FD6 is the authenticated executable. No payload CLI/path/cleanup endpoint.
@@ -88,9 +90,10 @@ static void private_file(int fd, dev_t dev) {
 }
 static void root_headroom(void) {
   struct statvfs v;ok(fstatvfs(CONTROL,&v));require(v.f_frsize>0 && v.f_frsize<=65536,"unsupported");
-  require(multiply(v.f_bavail,v.f_frsize)>=ROOT_FLOOR_BYTES+ROOT_PUBLICATION_BYTES,"capacity");
+  require(multiply(v.f_bavail,v.f_frsize)>=ROOT_FLOOR_BYTES+ROOT_PUBLICATION_BYTES && v.f_favail>=50000,"capacity");
 }
 static void held(void) {
+  if (test_mode) test_live();
   struct stat a, b, c; ok(fstat(fence, &a)); ok(fstatat(CONTROL, "bounded-storage.fence", &b, AT_SYMLINK_NOFOLLOW)); ok(fstat(CONTROL, &c));
   private_file(fence, control_st.st_dev);
   require(a.st_ino == fence_st.st_ino && b.st_ino == a.st_ino && b.st_dev == a.st_dev &&
@@ -134,7 +137,9 @@ static void publish(size_t old_length, size_t new_length) {
   char *expected = malloc(old_length ? old_length : 1), *next = malloc(new_length); require(expected && next, "uncertain");
   all_read(STDIN_FILENO, expected, old_length); all_read(STDIN_FILENO, next, new_length);
   size_t actual_length; char *actual = read_leaf("bounded-storage-ledger.json", &actual_length, true);
-  require(actual_length == old_length && (old_length == 0 || memcmp(actual, expected, old_length) == 0), "conflict"); free(actual); free(expected);
+  require(actual_length == old_length && (old_length == 0 || memcmp(actual, expected, old_length) == 0), "conflict");
+  if (test_mode) test_publication(actual, actual_length, next, new_length);
+  free(actual); free(expected);
   root_headroom();
   char temporary[96]; int n = snprintf(temporary, sizeof(temporary), "bounded-ledger-%ld-%" PRIu64 ".pending", (long)getpid(), ++sequence);
   require(n > 0 && (size_t)n < sizeof(temporary), "invalid");
@@ -143,11 +148,17 @@ static void publish(size_t old_length, size_t new_length) {
   int fd = openat(CONTROL, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600); ok(fd); private_file(fd, control_st.st_dev);
   all_write(fd, next, new_length); ok(fsync(fd)); close(fd); free(next); held();
   ok(renameat(CONTROL, temporary, CONTROL, "bounded-storage-ledger.json")); ok(fsync(CONTROL)); held();
-  ok(unlinkat(CONTROL, "bounded-storage.intent", 0)); ok(fsync(CONTROL)); puts("OK1"); fflush(stdout);
+  ok(unlinkat(CONTROL, "bounded-storage.intent", 0)); ok(fsync(CONTROL));
+  if (test_mode) test_after_publication();
+  puts("OK1"); fflush(stdout);
 }
 static void text_file(const char *path, char *data, size_t size) {
-  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); ok(fd); ssize_t n = read(fd, data, size - 1); require(n > 0 && (size_t)n < size - 1, "identity");
-  data[n] = '\0'; if (data[n - 1] == '\n') data[n - 1] = '\0'; close(fd);
+  require(size>1 && size<=128,"invalid");
+  int fd=open(path,O_RDONLY | O_NOFOLLOW | O_CLOEXEC);ok(fd);char bytes[129];size_t used=0;
+  while(used<size) {ssize_t n=read(fd,bytes+used,size-used);if(n<0 && errno==EINTR)continue;require(n>=0,"identity");if(!n)break;used+=(size_t)n;}
+  char extra;require(read(fd,&extra,1)==0,"identity");close(fd);
+  if(used && bytes[used-1]=='\n')used--;
+  require(used>0 && used<size && !memchr(bytes,0,used),"identity");memcpy(data,bytes,used);data[used]=0;
 }
 static void uuid_text(const unsigned char *p, char *text) {
   snprintf(text, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15]);
@@ -176,6 +187,7 @@ struct image_state {
   char generation[37], operation[37], request_digest[65], inner_uuid[37];
   uint64_t q_bytes, q_inodes, physical, backing_dev, backing_ino;
   uint64_t payload_dev, payload_ino, mount_id, namespace_ino;
+  uint64_t test_revision; char test_receipt[65];
 };
 #define STATE_MAGIC UINT64_C(0x31424e4154495645)
 static void state_name(const char *generation, char *name) { require(uuid(generation), "invalid"); snprintf(name, 64, "%s.native", generation); }
@@ -183,15 +195,16 @@ static void state_write(const struct image_state *state, bool initial) {
   held();root_headroom();char name[64], temporary[80]; state_name(state->generation, name);
   snprintf(temporary, sizeof(temporary), "%s.pending", name);
   int fd = openat(CONTROL, initial ? name : temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600); ok(fd); private_file(fd,control_st.st_dev);
-  all_write(fd, state, sizeof(*state)); ok(fsync(fd)); close(fd);
+  all_write(fd, state, test_mode ? sizeof(*state) : offsetof(struct image_state,test_revision)); ok(fsync(fd)); close(fd);
   if (!initial) { ok(renameat(CONTROL, temporary, CONTROL, name)); }
   ok(fsync(CONTROL));
 }
 static bool state_read(const char *generation, struct image_state *state) {
   char name[64]; state_name(generation, name); size_t length; char *data = read_leaf(name, &length, true);
   if (!data) { return false; }
-  require(length == sizeof(*state), "identity"); memcpy(state,data,length);free(data);
-  require(state->magic == STATE_MAGIC && state->version == 1 && memcmp(state->generation,generation,37) == 0 &&
+  require(length == (test_mode ? sizeof(*state) : offsetof(struct image_state,test_revision)), "identity");memset(state,0,sizeof(*state));memcpy(state,data,length);free(data);
+  require(memchr(state->operation,0,sizeof(state->operation)) && memchr(state->request_digest,0,sizeof(state->request_digest)) && memchr(state->inner_uuid,0,sizeof(state->inner_uuid)),"identity");
+  require(state->magic == STATE_MAGIC && state->version == (test_mode ? 2U : 1U) && memcmp(state->generation,generation,37) == 0 &&
     uuid(state->operation) && hex(state->request_digest,64) && uuid(state->inner_uuid) && state->phase >= N_INTENT && state->phase <= N_PREPARED, "identity"); return true;
 }
 static int private_dir(int parent, const char *name, bool create, dev_t device) {
@@ -256,8 +269,9 @@ static int executable(const char *path) {
   int fd=open(canonical,O_RDONLY | O_NOFOLLOW | O_CLOEXEC);free(canonical);ok(fd);struct stat s;ok(fstat(fd,&s));
   require(S_ISREG(s.st_mode) && s.st_nlink==1 && !(s.st_mode & 06000),"identity");char magic[4];require(pread(fd,magic,4,0)==4 && memcmp(magic,"\177ELF",4)==0,"identity");return fd;
 }
+static int test_format_tool(void);
 static void format(int generation,int loop,const struct image_state *state) {
-  int tool=executable("/usr/sbin/mke2fs");char path[64],count[32],tmp[64];snprintf(path,sizeof(path),"/proc/self/fd/%d",loop);
+  int tool=test_format_tool();char path[64],count[32],tmp[64];snprintf(path,sizeof(path),"/proc/self/fd/%d",loop);
   snprintf(count,sizeof(count),"%" PRIu64,state->q_inodes+1024);snprintf(tmp,sizeof(tmp),"TMPDIR=/proc/self/fd/%d",generation);
   char *const args[]={"mke2fs","-q","-t","ext4","-b","4096","-I","256","-N",count,"-m","0","-U",(char*)state->inner_uuid,
     "-O","quota,project","-E","quotatype=prjquota,nodiscard,lazy_itable_init=0,lazy_journal_init=0","-J","size=64",path,NULL};
@@ -271,14 +285,21 @@ static void format(int generation,int loop,const struct image_state *state) {
 }
 static void prepare(char **a,size_t n) {
   require(n==9 && uuid(a[1]) && uuid(a[2]) && hex(a[3],64),"invalid");held();no_intent();private_scratch_mount();phase="prepare";
-  struct image_state state={.magic=STATE_MAGIC,.version=1,.phase=N_INTENT};strcpy(state.generation,a[1]);strcpy(state.operation,a[2]);strcpy(state.request_digest,a[3]);
+  struct image_state state={.magic=STATE_MAGIC,.version=test_mode ? 2U : 1U,.phase=N_INTENT};strcpy(state.generation,a[1]);strcpy(state.operation,a[2]);strcpy(state.request_digest,a[3]);
   uint64_t project=number(a[4]);require(project>0 && project<=UINT32_MAX,"invalid");state.project=(uint32_t)project;
   state.q_bytes=number(a[5]);state.q_inodes=number(a[6]);state.physical=number(a[7]);require(number(a[8])==0,"unsupported");
   require(state.q_bytes>0 && state.q_bytes%1024==0 && state.q_inodes>8 && state.q_inodes<=0xffff0000U &&
     state.physical>state.q_bytes && state.physical%4096==0 && state.physical<=INT64_MAX,"invalid");
+  if (test_mode) {
+    test_prepare_current(a[1], a[2], a[3]);
+    require(state.project==test_authorized.project && state.q_bytes==test_authorized.q_bytes && state.q_inodes==test_authorized.q_inodes && state.physical==test_authorized.physical,"conflict");
+    state.test_revision=test_authorized.revision;strcpy(state.test_receipt,test_authorized.receipt);
+  }
+  if (!test_mode) {
   size_t ledger_length;char *ledger=read_leaf("bounded-storage-ledger.json",&ledger_length,false);
   char marker[160];int marker_length=snprintf(marker,sizeof(marker),"\"requestSha256\":\"%s\",\"revision\":1,\"phase\":\"pending\",\"facts\":null",state.request_digest);
   require(marker_length>0 && (size_t)marker_length<sizeof(marker) && memmem(ledger,ledger_length,marker,(size_t)marker_length)!=NULL,"conflict");free(ledger);
+  }
   require(access("/sys/module/quota_v2",F_OK)==0,"unsupported");text_file("/proc/sys/kernel/random/uuid",state.inner_uuid,sizeof(state.inner_uuid));require(uuid(state.inner_uuid),"identity");
   struct image_state prior;require(!state_read(state.generation,&prior),"conflict");state_write(&state,true);
   int generation=generation_dir(state.generation,true);int image=openat(generation,"backing.ext4",O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,0600);ok(image);
@@ -318,7 +339,10 @@ static void inspect(char **a,size_t n) {
   int payload=openat(fs,"payload",O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);ok(payload);facts(image,fs,payload,loop,&state,false);
   pin(payload);pin(fs);pin(loop);pin(image);close(generation);
 }
+#include "storage-new-test-owner.c"
+
 int main(int argc,char **argv) {
+  if (argc > 1 && strcmp(argv[1],"--new-test-owner-fd-session-v1")==0) return new_test_owner(argc,argv);
   require(argc==4 && strcmp(argv[1],"--registered-fd-session-v1")==0 && hex(argv[2],32) && uuid(argv[3]),"invalid");
   require(getuid()==0 && geteuid()==0 && getgid()==0 && getegid()==0,"identity");umask(077);setvbuf(stdout,NULL,_IONBF,0);setvbuf(stdin,NULL,_IONBF,0);
   pid_t parent=getppid();ok(prctl(PR_SET_PDEATHSIG,SIGKILL,0,0,0));require(getppid()==parent && parent>1,"identity");
@@ -330,6 +354,9 @@ int main(int argc,char **argv) {
   struct stat root;ok(stat("/",&root));require(root.st_dev!=scratch_st.st_dev && root.st_dev==control_st.st_dev,"identity");struct statfs fs;ok(fstatfs(SCRATCH,&fs));require(fs.f_type==EXT4_SUPER_MAGIC,"unsupported");
   char machine[64],boot[64],filesystem[37];text_file("/etc/machine-id",machine,sizeof(machine));text_file("/proc/sys/kernel/random/boot_id",boot,sizeof(boot));super_uuid(BLOCK,filesystem,false);
   require(strcmp(machine,argv[2])==0 && strcmp(filesystem,argv[3])==0 && uuid(boot),"identity");
+  test_claim.root_dev=scratch_st.st_dev;test_claim.root_ino=scratch_st.st_ino;test_claim.root_mount=test_mount_id(SCRATCH);
+  test_whole_root();
+  require(!exists(SCRATCH,TEST_CLAIM),"identity");
   require(!exists(CONTROL,"filesystem-exposure.json"),"conflict"); /* Never compete with prototype authority. */
   fence=openat(CONTROL,"bounded-storage.fence",O_RDWR | O_NOFOLLOW | O_CLOEXEC);
   if(fence<0 && errno==ENOENT){root_headroom();fence=openat(CONTROL,"bounded-storage.fence",O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,0600);

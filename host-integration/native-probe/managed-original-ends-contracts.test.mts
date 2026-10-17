@@ -72,6 +72,7 @@ test("optional deadline CLI preserves exact job identity and legacy envelope", (
   }
 });
 
+// Independent policy expectation: fixed 600s startup + 60s runtime + 10s stop.
 // Red: fixed startup or request runtime/stop stops being funded, exact equality
 // passes, or a reversed monotonic sample extends the original allowance.
 test("actual fixed job limits fund startup runtime and stop with strict original ends", () => {

@@ -17,7 +17,7 @@ import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorizati
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
-import { admitResearchProcessFactory, assertResearchCurrentAuthority, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { admitResearchProcessFactory, assertOwnedMimoWorkerConfig, assertResearchCurrentAuthority, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
 import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, recoverOwnedMimoWorkerPreservation,
   terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
 import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
@@ -855,9 +855,16 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
     const grant = JSON.parse(researchRead(join(researchJobAuthority(r.jobId), "grant.json")).toString());
     expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
-    // Registered coding uses the sealed budget and exact single-account policy.
-    expect(researchRunConfig(r)).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, executionEngine: "app-server", workerReportMode: "structured-output",
-      maxGoalTurns: 64, maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 0 });
+    const config = researchRunConfig(r);
+    expect(config).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      executionEngine: "app-server", workerReportMode: "structured-output", maxGoalTurns: 64,
+      maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 0,
+      safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
+        retryOnAccountUnavailable: false, retryOnReconnectRequired: false } });
+    // Config/grant DATA cannot mint the independently retained process factory.
+    expect(() => assertOwnedMimoWorkerConfig(undefined, config)).toThrow("hosted_mimo_activation_closed");
+    expect(host.calls.filter(call => call.command === "/usr/bin/mount" || call.command === "/usr/bin/systemd-run")).toEqual([]);
+    expect(host.authReads).toBe(0);
   });
 });
 
