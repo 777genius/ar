@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+
+const retainValidatedTarball = process.argv.length === 3 &&
+  process.argv[2] === "--retain-validated-tarball";
+if (process.argv.length > 2 && !retainValidatedTarball) {
+  throw new Error("unsupported packed-consumer argument");
+}
+let validated = false;
 
 const rootDir = new URL("..", import.meta.url).pathname;
 const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-consumer-"));
@@ -164,9 +172,17 @@ try {
     "-p",
     join(tempDir, "tsconfig.json"),
   ], { cwd: tempDir });
+  validated = true;
 } finally {
-  if (tarball) await rm(tarball, { force: true });
-  await rm(tempDir, { recursive: true, force: true });
+  if (tarball && !(retainValidatedTarball && validated)) {
+    await rm(tarball, { force: true });
+  }
+  await rm(tempDir, { recursive: true, force: true }).catch(async (error) => {
+    if (tarball && retainValidatedTarball && validated) {
+      await rm(tarball, { force: true });
+    }
+    throw error;
+  });
 }
 
 function run(command, args, options) {
@@ -176,7 +192,11 @@ function run(command, args, options) {
     shell: false,
   });
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    try {
+      if (retainValidatedTarball && tarball) rmSync(tarball, { force: true });
+    } finally {
+      process.exit(result.status ?? 1);
+    }
   }
 }
 

@@ -8,6 +8,7 @@ import type { TerminalHandoffPublicationDependencies } from "../codex-goal-termi
 import type { FileBackendCodexSafeExecutor, FileBackendCodexSafeExecutorOptions } from "../file-backend-codex-safe-executor";
 import type { FileBackendCodexWorkerResult } from "../file-backend-codex-worker";
 import type { admitHostedTestEgress } from "../hosted-test-egress-admission";
+import type { MimoSnapshotTiming } from "../owned-mimo-snapshot-git";
 
 /** Trusted runner dependencies are separate from serialized run configuration. */
 export type CodexGoalRunDeps = TerminalHandoffPublicationDependencies & {
@@ -25,6 +26,7 @@ export type CodexGoalExecutor = {
 };
 
 export type CodexGoalExecutorOptionsInput = {
+  readonly observeOwnedMimoSnapshotTiming?: (timing: MimoSnapshotTiming) => void;
   readonly config: CodexGoalRunConfig;
   readonly initialBaseCommit?: string;
   readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;

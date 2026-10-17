@@ -1,0 +1,288 @@
+/** Owned TEST source preparation and genuine registration only. Planned recipe
+ * data never grants factory/home/use, model availability or R association. */
+import assert from "node:assert/strict";
+import { DependencyCustodyEvidenceKind } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
+import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
+import { spawnSync } from "node:child_process";
+import { constants, openSync, closeSync, fstatSync, readSync, readFileSync, existsSync, lstatSync, writeFileSync } from "node:fs";
+import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
+import { dependencyToolPins, DependencyToolTransformCache, parseDependencyToolRegistration }
+  from "../../dist/core/dependency-environment/dependency-tool-profile.js";
+import { assertHostedDependencyParentRecipe } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-parent-recipe.js";
+import { assertHostedDependencyPhysicalWorkspace, hostedDependencyJobRoot, readHostedDependencyBinding }
+  from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
+import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
+import { HostedDependencyReferenceKind } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { HostedActivationPhase } from "../../dist/worker-core/index.js";
+import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
+import { hostedDependencyOwnerRoot } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { HostedInstallationActivationStore, readHostedInstallationActivation } from "../../dist/worker-codex/hosted-installation-activation.js";
+import { readHostedDependencyEstablishedReceipt } from "../../dist/worker-codex/hosted-dependency-receipts.js";
+import { assertHostedDependencyLegacyComparedReady } from "../../dist/worker-codex/hosted-dependency-legacy-comparison-record.js";
+import { DependencyInstallProofKind, DependencyReceiptState } from "../../dist/worker-core/index.js";
+import { prepareHostedReadonlyDependencyAdoption, completeHostedReadonlyDependencyAdoption }
+  from "../../dist/worker-codex/hosted-readonly-dependency-adoption.js";
+import { parseHostedReadonlyPolicy, readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
+import { HostedReadonlySupervisorHost } from "../../dist/worker-codex/hosted-readonly-supervisor-host.js";
+import { readHostedReadonlyDependencyMaterial } from "../../dist/worker-codex/hosted-readonly-dependency-records.js";
+import { readDefaultTestRequestedModel } from "./default-codex-config.ts";
+import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, runtime } from "./common.ts";
+import { observeTestNpmLockResult, type TestNpmLockObservation } from "./registration-failure-observation.js";
+import { observePinnedTestNpmFrame, observePublicTestNpmFrame, verifyPinnedTestNpmFrameSources, type TestNpmFrameObservation, type TestNpmPublicFrameObservation } from "./registration-npm-frame-observation.js";
+const testFile = "TEST-current-local.test.ts";
+function ownWorkspace(jobId: string): string {
+  assert.equal(process.platform,"linux"); assert.equal(process.getuid!(),0); assert.equal(process.geteuid!(),0);
+  assert(typeof jobId === "string" && /^TEST-os-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.exec(jobId)?.[0] === jobId);
+  const root = hostedDependencyJobRoot(jobId), workspace = root + "/workspace";
+  for (const path of [root,workspace]) {
+    const stat = lstatSync(path); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0 && stat.gid===0 && !(stat.mode & 0o077));
+  }
+  return workspace;
+}
+/** Initial fixture input writer only; no node_modules, receipt or binding is
+ * authored. Actual lock selection uses the SAME fixed installed npm CLI. */
+export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: TestNpmLockObservation, frame: TestNpmFrameObservation, publicFrame: TestNpmPublicFrameObservation) => void): void {
+  const workspace = ownWorkspace(jobId), npm = runtime + "/toolchain/lib/node_modules/npm/bin/npm-cli.js";
+  const cache = hostedDependencyJobRoot(jobId) + "/TEST-npm-input-cache"; directory(cache);
+  const userConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-user.rc", globalConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-global.rc";
+  for (const path of [userConfig,globalConfig]) writeFileSync(path,"",{flag:"wx",mode:0o600});
+  const fixedConfig = ["--userconfig=" + userConfig,"--globalconfig=" + globalConfig,"--cache=" + cache];
+  try { assert.equal(command(node,[npm,"--version",...fixedConfig]).trim(),"10.9.9"); }
+  catch { throw new Error("TEST_current_input_npm_version_failed"); }
+  for (const path of ["packages/live","packages/pack-input","packages/packed","TEST-readonly-local-custody"])
+    directory(workspace + "/" + path,0o755);
+  json(workspace + "/packages/live/package.json",{name:"test-native-live",version:"1.0.0",type:"module",exports:"./index.ts"},0o644);
+  writeFileSync(workspace + "/packages/live/index.ts","export const liveValue = 6;\n",{flag:"wx",mode:0o644});
+  json(workspace + "/packages/pack-input/package.json",{name:"test-native-packed",version:"1.0.0",type:"module",exports:"./index.ts",files:["index.ts"]},0o644);
+  writeFileSync(workspace + "/packages/pack-input/index.ts","export const packedValue = 7;\n",{flag:"wx",mode:0o644});
+  try { command(node,[npm,"pack","--ignore-scripts","--json",...fixedConfig,"--pack-destination",workspace + "/packages/packed"],30000,workspace + "/packages/pack-input"); }
+  catch { throw new Error("TEST_current_input_pack_failed"); }
+  const packed = workspace + "/packages/packed/test-native-packed-1.0.0.tgz", stat = lstatSync(packed);
+  assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid===0 && stat.nlink===1 && stat.size>0 && stat.size<=65536);
+  json(workspace + "/package.json",{name:"test-current-native-local",version:"1.0.0",private:true,dependencies:{
+    "is-number":"7.0.0",vite:dependencyToolPins.vite,vitest:dependencyToolPins.vitest,
+    "test-native-live":"file:packages/live","test-native-packed":"file:packages/packed/test-native-packed-1.0.0.tgz"}},0o644);
+  try {
+    // Documented lock-driven selection avoids npm10's known fresh optional-peer
+    // detach bug. Seed bytes are never an installed tree or completion proof.
+    const seed = readHostedPrivateBytes(runtime + "/" + testPublicLockSeedRelative, testPublicLockSeedMaxBytes);
+    assert(seed && digest(seed) === testPublicLockSeedSha256);
+    writeFileSync(workspace + "/package-lock.json", seed, { flag: "wx", mode: 0o644 });
+    verifyPinnedTestNpmFrameSources();
+    const args = [npm,"install","--loglevel=verbose","--package-lock-only","--ignore-scripts","--no-audit","--no-fund",...fixedConfig,
+      "--install-strategy=hoisted","--install-links=true","--include=dev","--include=optional","--include=peer",
+      "--strict-peer-deps=false","--legacy-peer-deps=false","--workspaces=false"];
+    const result = spawnSync(node,[...args],{cwd:workspace,env:cleanEnv,encoding:"utf8",timeout:120000,
+      maxBuffer:4*1024*1024,stdio:["ignore","pipe","pipe"]});
+    observeLock?.(observeTestNpmLockResult(result), observePinnedTestNpmFrame(result.stderr), observePublicTestNpmFrame(result.stderr));
+    assert(!result.error && result.status === 0 && result.signal === null,
+      `TEST command failed: ${node}, status=${result.status}, signal=${result.signal}`);
+  }
+  catch { throw new Error("TEST_current_input_lock_selection_failed"); }
+  assert.throws(() => lstatSync(workspace + "/node_modules"),(error:unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+  const lock = lstatSync(workspace + "/package-lock.json");
+  assert(lock.isFile() && !lock.isSymbolicLink() && lock.uid===0 && lock.nlink===1 && lock.size>0 && lock.size<=8*1024*1024);
+  // The real npm output must reconcile the COMPLETE final TEST graph. npm10
+  // retains unlinked filesystem-target metadata marked extraneous in its lock.
+  const lockPath = workspace + "/package-lock.json";
+  const fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const bytes = Buffer.alloc(lock.size); assert.equal(readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+    for (const stat of [fstatSync(fd), lstatSync(lockPath)])
+      assert(stat.isFile() && stat.uid===0 && stat.nlink===1 && stat.dev===lock.dev && stat.ino===lock.ino &&
+        stat.size===lock.size && stat.mtimeMs===lock.mtimeMs && stat.ctimeMs===lock.ctimeMs);
+    const selected: unknown = JSON.parse(bytes.toString("utf8"));
+    assert(selected !== null && typeof selected === "object" && "lockfileVersion" in selected && selected.lockfileVersion===3 && "packages" in selected);
+    const packages = selected.packages;
+    assert(packages !== null && typeof packages === "object" && "" in packages);
+    const root = packages[""];
+    assert(root !== null && typeof root === "object" && "dependencies" in root);
+    assert.deepEqual(root.dependencies,{"is-number":"7.0.0",vite:dependencyToolPins.vite,vitest:dependencyToolPins.vitest,
+      "test-native-live":"file:packages/live","test-native-packed":"file:packages/packed/test-native-packed-1.0.0.tgz"});
+    for (const [path, version] of [["node_modules/vite",dependencyToolPins.vite],["node_modules/vitest",dependencyToolPins.vitest],
+      ["node_modules/is-number","7.0.0"],["node_modules/test-native-live","1.0.0"],["node_modules/test-native-packed","1.0.0"]] as const) {
+      const entry: unknown = Reflect.get(packages,path);
+      assert(entry !== null && typeof entry === "object" && "version" in entry && entry.version===version);
+    }
+    assert(!("node_modules/@vioxen/agent-account-observability" in packages));
+    const orphan: unknown = Reflect.get(packages,"packages/agent-account-observability");
+    if (orphan !== undefined) assert.deepEqual(orphan,{name:"@vioxen/agent-account-observability",version:"0.1.0",
+      license:"UNLICENSED",engines:{node:">=20"},devDependencies:{"@types/node":"^22.20.0",typescript:"^6.0.3",vitest:"^4.1.5"},extraneous:true});
+    // No surviving link or local resolved input may require the missing donor.
+    for (const entry of Object.values(packages)) {
+      assert(entry !== null && typeof entry === "object" && !("link" in entry));
+      if ("resolved" in entry) {
+        assert(typeof entry.resolved === "string");
+        if (entry.resolved.startsWith("file:")) assert(["file:packages/live",
+          "file:packages/packed/test-native-packed-1.0.0.tgz"].includes(entry.resolved));
+      }
+    }
+    assert.notEqual(digest(bytes),testPublicLockSeedSha256);
+  } finally { closeSync(fd); }
+
+  writeFileSync(workspace + "/" + testFile,
+    "import { expect, test } from 'vitest';\nimport { liveValue } from 'test-native-live';\nimport { packedValue } from 'test-native-packed';\ntest('real live and packed inputs', () => { expect(liveValue).toBe(6); expect(packedValue).toBe(7); });\n",{flag:"wx",mode:0o644});
+  writeFileSync(workspace + "/TEST-readonly-local-custody/input.txt","TEST actual same-workspace readonly local input\n",{flag:"wx",mode:0o644});
+}
+/** The ORIGINAL grant-tools writer authenticates the actual fresh CLOSED
+ * installation, physical workspace, profile files and private backing. */
+export async function registerCurrentTools(jobId: string) {
+  const workspace = ownWorkspace(jobId), root = hostedDependencyJobRoot(jobId);
+  assert.equal(readHostedDependencyBinding(jobId),null);
+  const registration = parseDependencyToolRegistration({testFiles:[testFile],optimizerDependencies:["test-native-live"],
+    transformCache:DependencyToolTransformCache.Persisted});
+  await writeHostedTestEgressGrant({schemaVersion:1,jobId,jobRootDir:root,workspacePath:workspace,
+    profileId:CodexProviderEgressProfileId.TestNpmQualification},registration);
+  const binding = readHostedDependencyBinding(jobId); assert(binding && binding.version===2);
+  assertHostedDependencyPhysicalWorkspace(binding);
+  assert.equal(binding.workspace.canonicalPath,workspace);
+  assert.deepEqual(binding.toolProfile.testFiles,registration.testFiles);
+  assert.deepEqual(binding.toolProfile.optimizerDependencies,registration.optimizerDependencies);
+  assert.equal(binding.toolProfile.transformCache,registration.transformCache);
+  return {version:binding.version,workspace:binding.workspace,profileId:binding.toolProfile.profileId,
+    packageSha256:fileDigest(workspace + "/package.json"),lockSha256:fileDigest(workspace + "/package-lock.json"),
+    packedSha256:fileDigest(workspace + "/packages/packed/test-native-packed-1.0.0.tgz"),modelOrAccountProof:"none"} as const;
+}
+/** Closed planned CLI recipe only. The actual inventory/original producer
+ * independently validates this tuple and current account/factory/use. */
+export function currentNativeRecipe(jobId: string): readonly string[] {
+  const workspace = ownWorkspace(jobId), root = hostedDependencyJobRoot(jobId), model = readDefaultTestRequestedModel();
+  const args = [runtime + "/dist/worker-codex/codex-goal-cli.js","run","--task-id",jobId,"--job-id",jobId,
+    "--job-root",root,"--workspace",workspace,"--prompt",root + "/prompt","--accounts","TEST-account","--auth-root",root + "/auth",
+    "--codex-binary","codex","--model",model,"--effort","low","--service-tier","default","--execution-engine","app-server-goal",
+    "--model-backend","openai-chatgpt","--state-root",root + "/state","--timeout","5m","--max-goal-turns","1","--max-attempts","1",
+    "--continuation-mode","disabled","--registry-root",root + "/state/registry","--output",root + "/state/TEST-result.json","--worker-report-mode","structured-output"];
+  assertHostedDependencyParentRecipe(args,root,workspace); return Object.freeze(args);
+}
+
+/** Only an EXISTING original v3 local-reference binding can select comparison.
+ * This harness has no reference binding writer/issuer. Absence refuses before
+ * maintenance effects; the real producer captures baselines and launches its
+ * sealed reference CLI itself, never through a TEST submit callback. */
+export async function compareCurrentRegisteredLocalReference(candidateJobId: string, referenceJobId: string) {
+  const workspace = ownWorkspace(candidateJobId); ownWorkspace(referenceJobId);
+  assert.notEqual(candidateJobId,referenceJobId);
+  const selected = withHostedActivationFence(() => {
+    const candidate = readHostedDependencyBinding(candidateJobId), reference = readHostedDependencyBinding(referenceJobId);
+    assert(candidate && candidate.version===2);
+    assert(reference && reference.version===3,"TEST original v3 local reference enrollment issuer required");
+    assert.equal(reference.reference.kind,HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1);
+    assertHostedDependencyPhysicalWorkspace(candidate); assertHostedDependencyPhysicalWorkspace(reference);
+    const prior = readHostedDependencyEstablishedReceipt(candidate);
+    if (prior?.state===DependencyReceiptState.Ready) {
+      assert.equal(prior.provenance.kind,DependencyInstallProofKind.LegacyCompared,
+        "TEST completed local cold Ready is not a legacy-comparison precursor");
+    }
+    return {expectedRevision:prior?.revision ?? null};
+  });
+  const result = await new HostedInstallationActivationStore().compareLegacyDependency({candidateJobId,referenceJobId,
+    expectedRevision:selected.expectedRevision});
+  // A returned status, including AlreadyReady, never stands in for this original
+  // protected local comparison proof. Actual v2 LegacyCompared is required.
+  const actual = comparedCandidate(candidateJobId);
+  assert.equal(actual.binding.workspace.canonicalPath,workspace);
+  return {outcome:result.outcome,readyRevision:actual.ready.revision,comparisonVersion:actual.comparison.version} as const;
+}
+function comparedCandidate(candidateJobId: string) {
+  ownWorkspace(candidateJobId);
+  return withHostedActivationFence(() => {
+    const binding = readHostedDependencyBinding(candidateJobId); assert(binding && binding.version===2);
+    assertHostedDependencyPhysicalWorkspace(binding);
+    const ready = readHostedDependencyEstablishedReceipt(binding);
+    assert(ready && ready.state===DependencyReceiptState.Ready && ready.provenance.kind===DependencyInstallProofKind.LegacyCompared);
+    const comparison = assertHostedDependencyLegacyComparedReady({...ready,provenance:ready.provenance});
+    assert.equal(comparison.version,2); return {binding,ready,comparison};
+  });
+}
+/** Closed SAME-C-root policy data consumed from the owned issuer's existing
+ * protected file. This parser/config is not the review, association or permit;
+ * the original producer independently verifies the real immutable review. */
+export function prepareCurrentReadonlyFromProtectedInputs(candidateJobId: string) {
+  const actual = comparedCandidate(candidateJobId), path = actual.binding.jobRootDir + "/TEST-current-readonly-policy.json";
+  const bytes = readHostedPrivateBytes(path,16384);
+  assert(bytes,"TEST independently reviewed same-C-root R policy required");
+  const policy = parseHostedReadonlyPolicy(JSON.parse(bytes.toString("utf8")));
+  assert.equal(policy.jobRootDir,actual.binding.jobRootDir);
+  assert.equal(policy.workspacePath,actual.binding.workspace.canonicalPath);
+  assert.equal(policy.runtimeSha,actual.binding.runtimeSha);
+  assert(/^TEST-current-readonly-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.exec(policy.jobId)?.[0] === policy.jobId);
+  assert.notEqual(policy.jobId,candidateJobId);
+  assert.deepEqual([...policy.readonlyPaths].sort(),["packages/live","packages/packed","TEST-readonly-local-custody"]
+    .map(name=>actual.binding.workspace.canonicalPath + "/" + name).sort());
+  return prepareHostedReadonlyDependencyAdoption(policy);
+}
+/** After ORIGINAL real enroll/admit obtained CLOSED epoch/lease. No test writes
+ * epoch, maintenance, association, Ready or completion and no R identity DTO is
+ * accepted. The actual protected material readback joins the same C workspace. */
+export function completeCurrentReadonlyFromProtectedInputs(candidateJobId: string) {
+  const before = comparedCandidate(candidateJobId);
+  completeHostedReadonlyDependencyAdoption(candidateJobId);
+  return withHostedActivationFence(fence => {
+    const epoch = new HostedReadonlySupervisorHost().readEpoch();
+    const material = readHostedReadonlyDependencyMaterial(fence,epoch.identity).evidence;
+    assert(material.kind===DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1,"TEST legacy comparison adoption evidence required");
+    assert.equal(material.candidate.jobId,candidateJobId);
+    assert.equal(material.readonlyCustody.jobRootDir,before.binding.jobRootDir);
+    assert.equal(material.readonlyCustody.workspacePath,before.binding.workspace.canonicalPath);
+    assert.notEqual(material.readonlyCustody.jobId,candidateJobId);
+    return {candidateJobId,readonlyJobId:material.readonlyCustody.jobId,workspace:before.binding.workspace,
+      comparisonSha256:material.candidate.comparison.sha256,sourceMappingSha256:material.candidate.sourceMapping.sha256} as const;
+  });
+}
+
+import { readHostedDependencyKeyInputs, assertHostedDependencyKeyInputsCurrent, hostedDependencyObservationLimits } from "../../dist/worker-codex/hosted-dependency-materialization.js";
+import { HostedDependencyInstallerRecipe } from "../../dist/worker-codex/hosted-dependency-installer-inputs.js";
+import { dependencyLocalNpmArgv } from "../../dist/worker-core/dependency-environment/domain/dependency-local-closure.js";
+import { observeDependencyTree } from "../../dist/worker-local/dependency-environment/observe-dependency-tree.js";
+import { DependencyTreeObservationStatus } from "../../dist/worker-core/dependency-environment/domain/dependency-tree-manifest.js";
+/** Genuine ROOT TEST precursor only. No receipt/history/owner is authored. The
+ * original comparison later performs its own independent capture and install.
+ * This executes only on a fresh inspected pair before any managed activity. */
+export async function createCurrentLegacyCandidateTree(jobId:string,maximumMs:number) {
+  const workspace=ownWorkspace(jobId),binding=readHostedDependencyBinding(jobId);assert(binding && binding.version===2);
+  assert(Number.isSafeInteger(maximumMs) && maximumMs>0 && maximumMs<=120000);
+  const deadline=performance.now()+maximumMs,remaining=()=>{const ms=Math.floor(deadline-performance.now());assert(ms>0);return ms;};
+  const absent=()=>{
+    assert.equal(readHostedDependencyEstablishedReceipt(binding),null);
+    assert(!existsSync(workspace+"/node_modules"));
+    const actual=readHostedInstallationActivation();assert.equal(actual.activation.phase,HostedActivationPhase.Closed);
+    assert.equal(actual.activation.ordinaryStarts.length,0);
+    const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+    try {assert.equal(store.read(binding.workspace),null);}finally{store.close();}
+  };
+  withHostedActivationFence(absent);
+  const inputs=await readHostedDependencyKeyInputs(binding);assert.equal(inputs.recipe,HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1);
+  if(inputs.recipe!==HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1)throw new Error("TEST legacy local inputs required");
+  const source=installedArtifactDigest(),physical=directoryIdentity(workspace),npm=runtime+"/toolchain/lib/node_modules/npm/bin/npm-cli.js";
+  const userConfig=hostedDependencyJobRoot(jobId)+"/TEST-npm-user.rc",globalConfig=hostedDependencyJobRoot(jobId)+"/TEST-npm-global.rc";
+  const held=[node,npm,userConfig,globalConfig].map(path=>{const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),stat=fstatSync(fd,{bigint:true});
+    assert(stat.isFile() && stat.uid===0n && stat.nlink===1n && !(stat.mode&0o022n));return {path,fd,stat,bytes:readFileSync(fd)};});
+  let cachePin:{path:string;fd:number;dev:bigint;ino:bigint}|undefined;
+  const rejoin=()=>{assert.equal(ownWorkspace(jobId),workspace);assert.deepEqual(directoryIdentity(workspace),physical);assert.equal(installedArtifactDigest(),source);
+    assertHostedDependencyKeyInputsCurrent(binding,inputs);
+    for(const pin of held){const now=lstatSync(pin.path,{bigint:true}),fd=fstatSync(pin.fd,{bigint:true});
+      for(const current of [now,fd])for(const key of ["dev","ino","mode","size","ctimeNs","mtimeNs"] as const)assert.equal(current[key],pin.stat[key]);
+      assert(readFileSync(pin.fd).equals(pin.bytes));assert(readFileSync(pin.path).equals(pin.bytes));}
+    for(const pin of held.slice(2))assert.equal(pin.bytes.length,0);
+    if(cachePin){for(const stat of [fstatSync(cachePin.fd,{bigint:true}),lstatSync(cachePin.path,{bigint:true})]){assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid===0n && stat.gid===0n && (stat.mode&0o7777n)===0o700n);assert.equal(stat.dev,cachePin.dev);assert.equal(stat.ino,cachePin.ino);}}
+    remaining();};
+  try {
+    rejoin();withHostedActivationFence(absent);
+    const cache=hostedDependencyJobRoot(jobId)+"/TEST-legacy-birth-cache";directory(cache);
+    const cacheFd=openSync(cache,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW),cacheStat=fstatSync(cacheFd,{bigint:true});
+    cachePin={path:cache,fd:cacheFd,dev:cacheStat.dev,ino:cacheStat.ino};rejoin();
+    const args=[npm,...dependencyLocalNpmArgv(inputs.capture.closure.layout),"--userconfig="+userConfig,
+      "--globalconfig="+globalConfig,"--cache="+cache];
+    const result=spawnSync(node,args,{cwd:workspace,env:cleanEnv,encoding:"utf8",timeout:remaining(),maxBuffer:4*1024*1024,stdio:["ignore","pipe","pipe"]});
+    assert(!result.error && result.status===0 && result.signal===null);rejoin();
+    const tree=lstatSync(workspace+"/node_modules",{bigint:true});assert(tree.isDirectory() && !tree.isSymbolicLink() && tree.uid===0n);
+    const manifest=await observeDependencyTree({workspacePath:workspace,treeName:"node_modules",expectedWorkspace:binding.workspace,
+      expectedTree:{dev:String(tree.dev),ino:String(tree.ino)},limits:{...hostedDependencyObservationLimits,maxDurationMs:Math.min(remaining(),30000)}});
+    assert.equal(manifest.status,DependencyTreeObservationStatus.Complete);rejoin();
+    assert.equal(readHostedDependencyEstablishedReceipt(binding),null);
+    return Object.freeze({purpose:"ROOT_TEST_actual_legacy_candidate_birth_only",sourceSha256:source,nodeSha256:digest(held[0]!.bytes),npmSha256:digest(held[1]!.bytes),
+      workspace:physical,inputClosureSha256:inputs.capture.closureDigest,packageSha256:digest(inputs.packageBytes),lockSha256:digest(inputs.lockBytes),
+      argv:args,tree:{dev:String(tree.dev),ino:String(tree.ino)},manifest:manifest.status===DependencyTreeObservationStatus.Complete?{digest:manifest.digest,entries:manifest.entries.length}:null,receiptPublished:false});
+  } finally {if(cachePin)closeSync(cachePin.fd);for(const pin of held)closeSync(pin.fd);}
+}

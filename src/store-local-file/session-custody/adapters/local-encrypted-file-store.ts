@@ -321,3 +321,7 @@ function isMissingFileError(error: unknown): boolean {
     (error as NodeJS.ErrnoException).code === "ENOENT"
   );
 }
+
+// Actual fixed composition captures these implementations before any escape.
+Object.freeze(LocalEncryptedFileStore);
+Object.freeze(LocalEncryptedFileStore.prototype);

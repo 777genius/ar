@@ -12,11 +12,11 @@ vi.mock("../codex-goal-jobs", async original => ({
 vi.mock("../hosted-mimo-project-bridge-onboard", () => ({ onboardHostedMimoProject: state.onboard }));
 vi.mock("../hosted-mimo-project-bridge", () => ({ hostedMimoBridgeMetadataBytes: (p: string) => { const bytes = state.files.get(p); if (bytes === undefined) throw new Error("TEST mandatory file missing"); return Buffer.from(bytes); },
   assertHostedMimoProjectRouteOpen: state.route, parseHostedMimoProjectBinding: (value: unknown) => value }));
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 import { prepareHostedMimoProject, parseHostedMimoPreparationPlan } from "../hosted-mimo-project-bridge-prepare";
 const sha = "a".repeat(40), source = "/srv/reviewed-snapshots/test-source", stateRoot = "/srv/worker-state/mimo-projects/test-project/test-work", scratch = "/srv/workers/mimo-projects/test-project/test-work";
 const binding = { schemaVersion: 1, projectId: "test-project", workstreamId: "test-work", machineId: "b".repeat(32), sourceCommit: sha, sourceRef: "origin/main", stateRoot, scratchRoot: scratch, sourceWorkspacePath: scratch + "/source", registryRootDir: stateRoot + "/registry", controllerJobId: "test-controller",
-  admission: { mode: "serial-builtin", contract: { canonicalSha: sha, baseSha: sha, phaseStartSha: sha, controllerPacket: "controller.md", lanePacket: "lane.md", mandatoryDocs: ["doc.md"], mandatoryScripts: [], mandatoryFixtures: [], executionPolicy: { sandboxRoot: scratch + "/source/sandbox" } } } };
+  admission: { mode: "serial-builtin", contract: { canonicalSha: sha, baseSha: sha, phaseStartSha: sha, controllerPacket: "controller.md", lanePacket: "lane.md", mandatoryDocs: ["doc.md"], mandatoryScripts: [], mandatoryFixtures: [], requiredChecks: [{ id: "test", cwd: "sandbox", command: "npm test" }], executionPolicy: { sandboxRoot: scratch + "/source/sandbox" } } } };
 const plan = { schemaVersion: 1, binding, sourceSnapshotPath: source, repositoryKey: "runtime", repositoryUrl: "https://github.com/example/project.git", workerJobPrefix: "test-worker-", authRootDir: "/srv/worker-state/account-pools/auth", commitIdentity: { name: "iliya", email: "iliyazelenkog@gmail.com" } };
 beforeEach(() => { state.files.clear(); vi.clearAllMocks(); state.route.mockReset(); state.onboard.mockResolvedValue({ ok: true });
   state.files.set("/etc/subscription-runtime/TEST-plan.json", JSON.stringify(plan)); state.files.set("/etc/machine-id", binding.machineId);
@@ -31,6 +31,13 @@ it("prepares fresh isolated roots/controller from reviewed source without provid
   expect(state.command.mock.calls.every(([exe]) => exe === "/usr/bin/git")).toBe(true);
   expect(state.command.mock.calls.find(([, args]) => args.includes("clone"))?.[1]).toEqual(expect.arrayContaining(["clone", "--no-hardlinks", "--no-local", "--", source, binding.sourceWorkspacePath]));
   await expect(prepareHostedMimoProject("/etc/subscription-runtime/TEST-plan.json")).rejects.toThrow("mimo_project_bridge_prepare_already_exists");
+});
+it.each([["the source commit", `test "$(git rev-parse HEAD)" = ${sha}`], ["a 64-hex digest", `echo ${"f".repeat(64)} | sha256sum -c`],
+  ["another 40-hex commit", `test "$(git rev-parse HEAD)" = ${"c".repeat(40)}`], ["an uppercase digest", `echo ${"F".repeat(64)} | sha256sum -c`]])("refuses a pinned requiredChecks command with %s before any effect", async (_name, command) => {
+  const pinned = { ...plan, binding: { ...binding, admission: { ...binding.admission, contract: { ...binding.admission.contract, requiredChecks: [{ id: "test", cwd: "sandbox", command }] } } } };
+  state.files.set("/etc/subscription-runtime/TEST-plan.json", JSON.stringify(pinned));
+  await expect(prepareHostedMimoProject("/etc/subscription-runtime/TEST-plan.json")).rejects.toThrow("mimo_project_bridge_prepare_admission_pinned");
+  expect(state.files.has(stateRoot)).toBe(false); expect(state.create).not.toHaveBeenCalled(); expect(state.onboard).not.toHaveBeenCalled();
 });
 it.each(["route", "repository", "packet", "dirty", "head"])("refuses %s failure before creating any roots/controller", async fault => {
   if (fault === "route") state.route.mockImplementation(() => { throw new Error("TEST disabled route"); });

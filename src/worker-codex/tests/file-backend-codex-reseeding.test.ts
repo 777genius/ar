@@ -221,16 +221,22 @@ describe("quiescent same-worker Codex reseeding", () => {
     const f = await fixture();
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    const original = LocalEncryptedFileStore.prototype.read;
-    const hook = vi.spyOn(LocalEncryptedFileStore.prototype, "read").mockImplementationOnce(async function (this: LocalEncryptedFileStore, input) {
-      await held; return await original.call(this, input);
+    let entered!: () => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    let observedBytes: string | undefined;
+    const original = FileBackendCodexSeedWriteback.prototype.readWithProvenance;
+    const hook = vi.spyOn(FileBackendCodexSeedWriteback.prototype, "readWithProvenance").mockImplementationOnce(async function (this: FileBackendCodexSeedWriteback, input) {
+      entered(); await held; const snapshot = await original.call(this, input); observedBytes = snapshot.bytes; return snapshot;
     });
     try {
       const seeding = f.worker.seedCodexAuthJsonFile(f.source);
+      await Promise.race([reading,seeding.then(() => { throw new Error("TEST-read-not-entered"); })]);
       await expect(f.worker.run({ prompt: "Synthetic admission during seed" })).rejects.toMatchObject(busy);
       await expect(f.worker.prewarm()).rejects.toMatchObject(busy);
       await expect(f.worker.seedCodexAuthJson(s1)).rejects.toMatchObject(busy);
+      expect(f.fake.prompts).toHaveLength(0);
       release(); await seeding; hook.mockRestore();
+      expect(observedBytes).toBe(r);
       await f.worker.seedCodexAuthJsonFile(f.source);
     } finally { release(); hook.mockRestore(); await f.close(); }
   });
@@ -239,11 +245,12 @@ describe("quiescent same-worker Codex reseeding", () => {
     const f = await fixture();
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    const original = LocalEncryptedFileStore.prototype.read;
+    const original = FileBackendCodexSeedWriteback.prototype.readWithProvenance;
     let importing = false;
-    const hook = vi.spyOn(LocalEncryptedFileStore.prototype, "read").mockImplementationOnce(
-      async function (this: LocalEncryptedFileStore, input) {
-        importing = true; await held; return await original.call(this, input);
+    let observedBytes: string | undefined;
+    const hook = vi.spyOn(FileBackendCodexSeedWriteback.prototype, "readWithProvenance").mockImplementationOnce(
+      async function (this: FileBackendCodexSeedWriteback, input) {
+        importing = true; await held; const snapshot = await original.call(this, input); observedBytes = snapshot.bytes; return snapshot;
       });
     try {
       // Force an ordinary source metadata read before provider admission.
@@ -254,6 +261,7 @@ describe("quiescent same-worker Codex reseeding", () => {
       await expect(f.worker.seedCodexAuthJson(s1)).rejects.toMatchObject(busy);
       expect(f.fake.prompts).toHaveLength(0);
       release(); hook.mockRestore(); await f.held();
+      expect(observedBytes).toBe(r);
       f.peer().stdout.emit("data", JSON.stringify({ method: "error", message: "refresh_token_invalidated" }) + "\n");
       await operation;
       await writeFile(f.source, s1); await f.worker.seedCodexAuthJsonFile(f.source);

@@ -1,15 +1,15 @@
+import { inspectDependencyBootstrapMetadata } from "./dependency-bootstrap-inspection";
+import { legacyDependencyInspectionFiles } from "./dependency-inspection-files";
+import { captureLegacyDependencyWriterInput, assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import {
-  access,
   mkdir,
-  readFile,
   realpath,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { arch, platform } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { withDependencyBootstrapLock } from "./dependency-bootstrap-lock";
@@ -36,10 +36,6 @@ export type DependencyEcosystem = "node" | "python";
 
 export type DependencyPackageManagerName =
   "pnpm" | "npm" | "yarn" | "bun" | "uv";
-type NodeDependencyPackageManagerName = Exclude<
-  DependencyPackageManagerName,
-  "uv"
->;
 
 export type DependencyPackageManager = {
   readonly name: DependencyPackageManagerName;
@@ -136,7 +132,9 @@ export function dependencyPreflightDiagnosticCurrent(binding: DependencyPrefligh
 export async function runDependencyBootstrap(
   input: DependencyBootstrapInput,
 ): Promise<DependencyPreflightResult> {
+  input = captureLegacyDependencyWriterInput(input);
   const canonicalWorkspacePath = await realpath(input.workspacePath);
+  assertLegacyDependencyWriterWorkspace(input.workspacePath);
   return runDependencyBootstrapUnlocked({
     ...input,
     workspacePath: canonicalWorkspacePath,
@@ -146,6 +144,7 @@ export async function runDependencyBootstrap(
 async function runDependencyBootstrapUnlocked(
   input: DependencyBootstrapInput,
 ): Promise<DependencyPreflightResult> {
+  assertLegacyDependencyWriterWorkspace(input.workspacePath);
   const mode = input.mode ?? "preflight";
   const preflight = await inspectDependencyBootstrap(input.workspacePath, mode);
   if (mode === "off") {
@@ -179,6 +178,7 @@ async function runDependencyBootstrapUnlocked(
   }
 
   try {
+    assertLegacyDependencyWriterWorkspace(input.workspacePath);
     const install = await runPackageManagerInstall({
       workspacePath: input.workspacePath,
       packageManager: withCommand.packageManager,
@@ -249,55 +249,9 @@ export async function inspectDependencyBootstrap(
   workspacePath: string,
   mode: DependencyBootstrapMode = "preflight",
 ): Promise<DependencyPreflightResult> {
-  const dependencySafety = await inspectNodeDependencyEnvironment({
-    workspacePath,
-  });
-  if (mode === "off") {
-    return withDependencySafety(
-      baseResult(workspacePath, mode, "off"),
-      dependencySafety.unsafeDependencyRoots,
-    );
-  }
-  const packageJsonPath = join(workspacePath, "package.json");
-  if (!(await pathExists(packageJsonPath))) {
-    return withDependencySafety(
-      await inspectPythonDependencyBootstrap(workspacePath, mode),
-      dependencySafety.unsafeDependencyRoots,
-    );
-  }
-
-  const packageJson = await readPackageJson(packageJsonPath);
-  const packageManager = await detectPackageManager(workspacePath, packageJson);
-  const fingerprintInputs = await dependencyFingerprintInputs({
-    workspacePath,
-    packageJsonPath,
-    packageManager,
-  });
-  const fingerprint = hashStrings(fingerprintInputs);
-  const nodeModulesPath = join(workspacePath, "node_modules");
-  const nodeModulesExists = await pathExists(nodeModulesPath);
-  const binaryChecks = await dependencyBinaryChecks(workspacePath, packageJson);
-
-  return withDependencySafety(
-    {
-      mode,
-      workspacePath,
-      ecosystem: "node",
-      manifestPath: packageJsonPath,
-      environmentPath: nodeModulesPath,
-      environmentExists: nodeModulesExists,
-      packageJsonPath,
-      packageManager,
-      nodeModulesPath,
-      nodeModulesExists,
-      binaryChecks,
-      fingerprint,
-      fingerprintInputs,
-      status: nodeModulesExists ? "ready" : "deps_missing",
-      warnings: nodeModulesExists ? [] : ["node_modules_missing"],
-    },
-    dependencySafety.unsafeDependencyRoots,
-  );
+  assertLegacyDependencyWriterWorkspace(workspacePath);
+  const dependencySafety = await inspectNodeDependencyEnvironment({ workspacePath });
+  return inspectDependencyBootstrapMetadata(workspacePath, mode, legacyDependencyInspectionFiles, dependencySafety);
 }
 
 async function runPackageManagerInstall(input: {
@@ -331,6 +285,7 @@ async function runPackageManagerInstall(input: {
                 workspacePath: input.workspacePath,
               });
         for (const command of commands) {
+          assertLegacyDependencyWriterWorkspace(input.workspacePath);
           await runCommand(command[0] ?? "", command.slice(1), {
             cwd: input.workspacePath,
             timeoutMs: 120_000,
@@ -456,6 +411,7 @@ async function defaultRunCommand(
   args: readonly string[],
   options: { readonly cwd: string; readonly timeoutMs: number },
 ): Promise<void> {
+  assertLegacyDependencyWriterWorkspace(options.cwd);
   await execFileAsync(command, [...args], {
     cwd: options.cwd,
     timeout: options.timeoutMs,
@@ -464,113 +420,6 @@ async function defaultRunCommand(
       CI: process.env.CI ?? "1",
     },
   });
-}
-
-async function detectPackageManager(
-  workspacePath: string,
-  packageJson: Record<string, unknown>,
-): Promise<DependencyPackageManager> {
-  const packageManagerSpec =
-    typeof packageJson.packageManager === "string"
-      ? packageJson.packageManager
-      : undefined;
-  const packageManagerName = packageManagerSpec?.split("@")[0];
-  if (isNodePackageManagerName(packageManagerName)) {
-    return {
-      name: packageManagerName,
-      source: "packageManager",
-      ...(packageManagerSpec ? { versionSpec: packageManagerSpec } : {}),
-      ...(await lockfileForPackageManager(workspacePath, packageManagerName)),
-    };
-  }
-
-  for (const candidate of [
-    ["pnpm-lock.yaml", "pnpm"],
-    ["package-lock.json", "npm"],
-    ["npm-shrinkwrap.json", "npm"],
-    ["yarn.lock", "yarn"],
-    ["bun.lockb", "bun"],
-    ["bun.lock", "bun"],
-  ] as const) {
-    const lockfilePath = join(workspacePath, candidate[0]);
-    if (await pathExists(lockfilePath)) {
-      return {
-        name: candidate[1],
-        source: "lockfile",
-        lockfilePath,
-      };
-    }
-  }
-  return { name: "npm", source: "fallback" };
-}
-
-async function lockfileForPackageManager(
-  workspacePath: string,
-  name: NodeDependencyPackageManagerName,
-): Promise<Pick<DependencyPackageManager, "lockfilePath">> {
-  const lockfiles: Record<NodeDependencyPackageManagerName, readonly string[]> =
-    {
-      pnpm: ["pnpm-lock.yaml"],
-      npm: ["package-lock.json", "npm-shrinkwrap.json"],
-      yarn: ["yarn.lock"],
-      bun: ["bun.lockb", "bun.lock"],
-    };
-  for (const lockfile of lockfiles[name]) {
-    const lockfilePath = join(workspacePath, lockfile);
-    if (await pathExists(lockfilePath)) return { lockfilePath };
-  }
-  return {};
-}
-
-async function dependencyFingerprintInputs(input: {
-  readonly workspacePath: string;
-  readonly packageJsonPath: string;
-  readonly packageManager: DependencyPackageManager;
-}): Promise<readonly string[]> {
-  const inputs = [
-    `node=${process.versions.node}`,
-    `platform=${platform()}`,
-    `arch=${arch()}`,
-    `packageManager=${input.packageManager.name}`,
-    `packageManagerSource=${input.packageManager.source}`,
-    input.packageManager.versionSpec
-      ? `packageManagerSpec=${input.packageManager.versionSpec}`
-      : undefined,
-    `package.json=${await fileHash(input.packageJsonPath)}`,
-  ].filter((value): value is string => Boolean(value));
-  if (input.packageManager.lockfilePath) {
-    return [
-      ...inputs,
-      `${basename(input.packageManager.lockfilePath)}=${await fileHash(
-        input.packageManager.lockfilePath,
-      )}`,
-    ];
-  }
-  return inputs;
-}
-
-async function dependencyBinaryChecks(
-  workspacePath: string,
-  packageJson: Record<string, unknown>,
-): Promise<readonly DependencyBinaryCheck[]> {
-  const scripts =
-    typeof packageJson.scripts === "object" && packageJson.scripts !== null
-      ? (packageJson.scripts as Record<string, unknown>)
-      : {};
-  const names = new Set<string>(["tsc"]);
-  if (typeof scripts.test === "string") names.add("vitest");
-  if (typeof scripts.lint === "string") names.add("eslint");
-  const binDir = join(workspacePath, "node_modules", ".bin");
-  return Promise.all(
-    [...names].sort().map(async (name) => {
-      const path = join(binDir, name);
-      return {
-        name,
-        path,
-        exists: await pathExists(path),
-      };
-    }),
-  );
 }
 
 async function writeDependencyPreflightDiagnostic(
@@ -594,86 +443,6 @@ async function writeDependencyPreflightDiagnostic(
   return diagnosticPath;
 }
 
-async function readPackageJson(path: string): Promise<Record<string, unknown>> {
-  try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-async function fileHash(path: string): Promise<string> {
-  return createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
-}
-
-function hashStrings(values: readonly string[]): string {
-  return createHash("sha256").update(values.join("\n")).digest("hex");
-}
-
-function isNodePackageManagerName(
-  value: string | undefined,
-): value is NodeDependencyPackageManagerName {
-  return (
-    value === "pnpm" || value === "npm" || value === "yarn" || value === "bun"
-  );
-}
-
-async function inspectPythonDependencyBootstrap(
-  workspacePath: string,
-  mode: DependencyBootstrapMode,
-): Promise<DependencyPreflightResult> {
-  const pyprojectPath = join(workspacePath, "pyproject.toml");
-  const uvLockPath = join(workspacePath, "uv.lock");
-  if (!(await pathExists(pyprojectPath)) || !(await pathExists(uvLockPath))) {
-    return baseResult(workspacePath, mode, "unsupported_project");
-  }
-  const pythonVersionPath = join(workspacePath, ".python-version");
-  const environmentPath = join(workspacePath, ".venv");
-  const pythonPath = join(environmentPath, "bin", "python");
-  const environmentExists = await pathExists(pythonPath);
-  const fingerprintInputs = [
-    `platform=${platform()}`,
-    `arch=${arch()}`,
-    "packageManager=uv",
-    `pyproject.toml=${await fileHash(pyprojectPath)}`,
-    `uv.lock=${await fileHash(uvLockPath)}`,
-    ...((await pathExists(pythonVersionPath))
-      ? [`.python-version=${await fileHash(pythonVersionPath)}`]
-      : []),
-  ];
-  const binaryChecks = await Promise.all(
-    ["python", "pytest", "ruff"].map(async (name) => {
-      const path = join(environmentPath, "bin", name);
-      return { name, path, exists: await pathExists(path) };
-    }),
-  );
-  return {
-    mode,
-    workspacePath,
-    ecosystem: "python",
-    manifestPath: pyprojectPath,
-    environmentPath,
-    environmentExists,
-    packageManager: {
-      name: "uv",
-      source: "lockfile",
-      lockfilePath: uvLockPath,
-    },
-    nodeModulesPath: join(workspacePath, "node_modules"),
-    nodeModulesExists: false,
-    binaryChecks,
-    fingerprint: hashStrings(fingerprintInputs),
-    fingerprintInputs,
-    status: environmentExists ? "ready" : "deps_missing",
-    warnings: environmentExists ? [] : ["python_environment_missing"],
-  };
-}
-
 async function dependencyCachePlacementWarnings(
   workspacePath: string,
   cacheRoot: string,
@@ -693,47 +462,6 @@ async function dependencyCachePlacementWarnings(
   }
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function baseResult(
-  workspacePath: string,
-  mode: DependencyBootstrapMode,
-  status: DependencyPreflightResult["status"],
-): DependencyPreflightResult {
-  return {
-    mode,
-    workspacePath,
-    nodeModulesPath: join(workspacePath, "node_modules"),
-    nodeModulesExists: false,
-    binaryChecks: [],
-    fingerprintInputs: [],
-    status,
-    warnings: [],
-  };
-}
-
-function withDependencySafety(
-  result: DependencyPreflightResult,
-  unsafeDependencyPaths: readonly string[],
-): DependencyPreflightResult {
-  if (unsafeDependencyPaths.length === 0) return result;
-  return {
-    ...result,
-    status: "unsafe",
-    unsafeDependencyPaths,
-    warnings: [
-      ...result.warnings,
-      `dependency_environment_unsafe:${unsafeDependencyPaths.join(",")}`,
-    ],
-  };
-}
 
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

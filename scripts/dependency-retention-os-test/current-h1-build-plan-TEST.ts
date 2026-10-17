@@ -1,0 +1,23 @@
+/** Finite APT transfer planning DATA; standard APT owns dependency semantics. */
+import assert from "node:assert/strict";
+import {joinAcquiredSignedPackage,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
+export const h1BuildLimits=Object.freeze({lifetimeMs:90*60*1000,packages:1536,archiveBytes:256*1024*1024,downloadBytes:4*1024*1024*1024,rootBytes:12*1024*1024*1024,rootEntries:300000,logBytes:128*1024*1024,outputBytes:2*1024*1024*1024,memoryBytes:6*1024*1024*1024,processes:512});
+export interface H1BuildTransfer {readonly local:string;readonly package:AcquiredSignedPackage}
+export function joinH1BuildTransferPlan(uris:string,indices:readonly Buffer[]):readonly H1BuildTransfer[]{
+ assert(Buffer.byteLength(uris)<=4*1024*1024&&!uris.includes("\0"));const requests=new Map<string,{local:string;sha256:string;size:number;matched?:AcquiredSignedPackage}>();let total=0;
+ for(const line of uris.split("\n")){if(!line.startsWith("'"))continue;const m=/^'([^']+)' ([A-Za-z0-9_.+%:~-]+\.deb) ([1-9][0-9]*) SHA256:([a-f0-9]{64})$/.exec(line);assert(m,"complete SHA256 APT transfer row");assert(!m[1]!.split("/").some(p=>p===".."||p==="."),"raw path traversal");const url=new URL(m[1]!);assert(["https://archive.ubuntu.com","https://security.ubuntu.com"].includes(url.origin)&&url.pathname.startsWith("/ubuntu/pool/")&&!url.search&&!url.hash&&!url.username&&!url.password);const path=decodeURIComponent(url.pathname.slice(8)),size=Number(m[3]);assert(!path.split("/").some(p=>p===".."||p===".")&&Number.isSafeInteger(size)&&size<=h1BuildLimits.archiveBytes);assert(!requests.has(path)&&![...requests.values()].some(r=>r.local===m[2]));total+=size;assert(total<=h1BuildLimits.downloadBytes&&requests.size<h1BuildLimits.packages);requests.set(path,{local:m[2]!,size,sha256:m[4]!});}
+ assert(requests.size>0,"empty transfer plan is not a configured build root");
+ for(const bytes of indices){assert(bytes.length<=128*1024*1024);let at=0;while(at<bytes.length){const end=bytes.indexOf("\n\n",at),stop=end<0?bytes.length:end;assert(stop-at<=4*1024*1024);const raw=bytes.subarray(at,stop).toString("utf8"),file=/^Filename: (\S+)$/m.exec(raw)?.[1],request=file?requests.get(file):undefined;if(request){const name=/^Package: (\S+)$/m.exec(raw)?.[1],version=/^Version: (\S+)$/m.exec(raw)?.[1],arch=/^Architecture: (\S+)$/m.exec(raw)?.[1];assert(name&&version&&arch);const row=joinAcquiredSignedPackage(`Package: ${name}\nVersion: ${version}\nArchitecture: ${arch}\n`,raw,request);if(request.matched)assert.deepEqual(row,request.matched);request.matched=row;}at=end<0?bytes.length:end+2;}}
+ return Object.freeze([...requests.values()].map(r=>{assert(r.matched,"every transfer must join complete signed Packages");return Object.freeze({local:r.local,package:r.matched});}).sort((a,b)=>a.local.localeCompare(b.local)));
+}
+export function assertH1ConfiguredVector(status:string,plan:readonly H1BuildTransfer[]):void{
+ assert(Buffer.byteLength(status)<=4*1024*1024&&!status.includes("\0"));const rows=status.trimEnd().split("\n").map(line=>{const m=/^([a-z0-9][a-z0-9+.-]*)(?::amd64)?\t([^\t]+)\t(amd64|all)\tinstall ok installed$/.exec(line);assert(m,"every root package must be completely configured");return `${m[1]}\t${m[2]}\t${m[3]}`;}).sort();assert.equal(new Set(rows).size,rows.length);assert.deepEqual(rows,plan.map(r=>`${r.package.package}\t${r.package.version}\t${r.package.arch}`).sort(),"configured root equals complete authenticated solver vector");
+}
+
+/** One shared fixed boundary path; no random-scratch publisher/consumer drift. */
+export const h1BuildDaemonConfirmation="/scratch/daemon-offline.json";
+export function serializeH1DaemonOffline(owner:string,sourceSha:string):Buffer{assert(/^[a-f0-9-]{36}$/.test(owner)&&/^[a-f0-9]{40}$/.test(sourceSha));return Buffer.from(JSON.stringify({owner,sourceSha,networks:0})+"\n");}
+export function assertH1DaemonOffline(body:Buffer,owner:string|undefined,sourceSha:string):void{assert(body.length<=4096&&owner&&/^[a-f0-9-]{36}$/.test(owner));const row=JSON.parse(body.toString("utf8")) as Record<string,unknown>;assert.deepEqual(Object.keys(row).sort(),["networks","owner","sourceSha"]);assert.equal(row.owner,owner);assert.equal(row.sourceSha,sourceSha);assert.equal(row.networks,0);}
+
+/** Node spawnSync requires integral milliseconds, including near expiry. */
+export function h1FiniteSpawnTimeout(deadline:number,now:number,maximum=30000):number{assert(Number.isFinite(deadline)&&Number.isFinite(now)&&Number.isSafeInteger(maximum)&&maximum>0&&maximum<=2147483647&&deadline>now,"positive finite original timeout");return Math.max(1,Math.floor(Math.min(maximum,deadline-now)));}

@@ -213,7 +213,7 @@ export function hostedCodexPermissionProfilesToml(
     throw new Error("hosted_permission_private_key_path_invalid");
   }
   const privateFile = privateKeyFilePath ? resolve(privateKeyFilePath) : undefined;
-  const privateRules = [...hostedCredentialDenyDirectories, ...(privateFile &&
+  const privateRules = ["/var/lib/subscription-runtime-full-parent-live", "/run/TEST-full-flow-outbox", ...hostedCredentialDenyDirectories, ...(privateFile &&
     !hostedCredentialDenyDirectories.some(dir => privateFile === dir || privateFile.startsWith(`${dir}/`))
     ? [privateFile] : [])]
     .map(path => `${JSON.stringify(path)} = "deny"`);

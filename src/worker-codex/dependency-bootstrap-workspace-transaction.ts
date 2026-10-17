@@ -1,3 +1,4 @@
+import { captureLegacyDependencyWriterInput, assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -100,7 +101,9 @@ export async function withDependencyBootstrapWorkspaceTransaction<T>(input: {
   readonly workspacePath: string;
   readonly action: () => Promise<T>;
 }): Promise<T> {
+  input = captureLegacyDependencyWriterInput(input);
   const workspace = await resolveGitWorkspace(input.workspacePath);
+  assertLegacyDependencyWriterWorkspace(input.workspacePath);
   if (!workspace) return input.action();
 
   const backupRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-dependency-bootstrap-"));
@@ -115,11 +118,13 @@ export async function withDependencyBootstrapWorkspaceTransaction<T>(input: {
     let actionFailed = false;
     actionStarted = true;
     try {
+      assertLegacyDependencyWriterWorkspace(input.workspacePath);
       value = await input.action();
     } catch (error) {
       actionError = error;
       actionFailed = true;
     }
+    assertLegacyDependencyWriterWorkspace(input.workspacePath);
     const current = await captureAfterAction(workspace, baseline, actionError);
     // A nested workspace does not own the repository-wide index. Refuse every
     // recovery write if it drifted, including when scoped source also changed.
@@ -129,6 +134,7 @@ export async function withDependencyBootstrapWorkspaceTransaction<T>(input: {
     }
     const mutations = workspaceMutations(baseline, current);
     if (mutations.length > 0) {
+      assertLegacyDependencyWriterWorkspace(input.workspacePath);
       await rollbackWorkspace(workspace, baseline, current, actionError);
     }
     // Preserve originals on every failure, including verified best-effort restore:
@@ -190,6 +196,7 @@ async function resolveGitWorkspace(
   requestedWorkspacePath: string,
 ): Promise<GitWorkspace | undefined> {
   const workspacePath = await realpath(requestedWorkspacePath);
+  assertLegacyDependencyWriterWorkspace(requestedWorkspacePath);
   let output: Buffer;
   try {
     output = await git(workspacePath, [
@@ -732,6 +739,7 @@ async function gitPaths(
 }
 
 async function git(cwd: string, args: readonly string[]): Promise<Buffer> {
+  assertLegacyDependencyWriterWorkspace(cwd);
   const result = await execFileAsync("git", args, {
     cwd,
     encoding: "buffer",

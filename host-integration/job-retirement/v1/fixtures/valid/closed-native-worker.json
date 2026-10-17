@@ -1,0 +1,18 @@
+{
+  "schema": "subscription-runtime-closed-job",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "registryRootDir": "/srv/worker-state/jobs/example-project/main/registry",
+  "jobId": "example-project-main-job-001",
+  "role": "worker",
+  "manifestSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "terminal": {
+    "kind": "native-released",
+    "startId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+    "specSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "lastTerminalSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "bootId": "0b0a0908-0706-4504-8302-010000000000",
+  "closedAt": "2026-10-16T12:00:00.000Z"
+}

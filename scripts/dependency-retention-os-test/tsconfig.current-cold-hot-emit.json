@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.registration-emit.json",
+  "files": [
+    "./current-cold-hot-root.ts",
+    "./current-configured-auth-mount.ts",
+    "./current-real-codex-input.ts",
+    "./current-closed-entry.ts",
+    "./current-closed-entry.node-test.ts"
+  ]
+}

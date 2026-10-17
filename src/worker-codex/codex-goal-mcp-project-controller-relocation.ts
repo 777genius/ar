@@ -201,7 +201,7 @@ async function readRelocationRegistry(registryRootDir: string): Promise<CodexGoa
     if (entry.name.startsWith(".")) continue;
     if (!entry.isDirectory()) throw new Error("controller_relocation_registry_entry_unknown");
     // Unlike listJobs, malformed or unreadable registrations must fail closed.
-    const manifest = await readCodexGoalJob({ registryRootDir, jobId: entry.name });
+    const manifest = await readCodexGoalJob({ registryRootDir, jobId: entry.name, includeRetired: true });
     if (!isAbsolute(manifest.workspacePath) || !isAbsolute(manifest.jobRootDir)) {
       throw new Error("controller_relocation_registry_identity_unknown");
     }

@@ -5,9 +5,18 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { SafeExecutionRunResult } from "@vioxen/subscription-runtime/worker-core";
 import type { FileBackendCodexWorkerResult } from "./file-backend-codex-worker";
+import { gitReadBudgetBytes } from "./codex-goal-handoff-preservation-budget";
+import { WorkspaceChangedFilesWarning } from "./codex-goal-changed-files-report";
 
 const execFileAsync = promisify(execFile);
 const gitStatusTimeoutMs = 5_000;
+
+function workspaceChangedFilesWarning(error: unknown): WorkspaceChangedFilesWarning {
+  if (error === null || typeof error !== "object") return WorkspaceChangedFilesWarning.Unavailable;
+  // The size check comes first: exceeding maxBuffer also kills the child.
+  if (Object.getOwnPropertyDescriptor(error, "code")?.value === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return WorkspaceChangedFilesWarning.OutputLimit;
+  return Object.getOwnPropertyDescriptor(error, "killed")?.value === true ? WorkspaceChangedFilesWarning.Timeout : WorkspaceChangedFilesWarning.Unavailable;
+}
 
 export function changedFilesFromSafeExecutionResult(
   result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
@@ -20,7 +29,7 @@ export async function changedFilesFromWorkspace(
   selection?: HostedDependencyRootPurposeContext | boolean,
 ): Promise<{
   readonly changedFiles: readonly string[];
-  readonly warning?: string;
+  readonly warning?: WorkspaceChangedFilesWarning;
 }> {
   // The existing native host route keeps its fixed executable/environment;
   // a boolean never substitutes for the managed dependency purpose context.
@@ -48,17 +57,17 @@ export async function changedFilesFromWorkspace(
       "status",
       "--porcelain",
       "--untracked-files=all",
-    ], { timeout: gitStatusTimeoutMs, ...(trustedHost ? { env: managedDependencyGitEnvironment() } : {}) });
+    ], { timeout: gitStatusTimeoutMs, maxBuffer: gitReadBudgetBytes, ...(trustedHost ? { env: managedDependencyGitEnvironment() } : {}) });
     const changedFiles = stdout
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)
       .map((line) => statusPorcelainPath(line))
       .filter((path) => path.length > 0);
     return { changedFiles };
-  } catch {
+  } catch (error) {
     return {
       changedFiles: [],
-      warning: "workspace_changed_files_unavailable",
+      warning: workspaceChangedFilesWarning(error),
     };
   }
 }

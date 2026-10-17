@@ -1,3 +1,4 @@
+import { researchMimoTaskRecoveryOwner } from "./research-mimo-capacity-recovery";
 import { resolveCodexGoalRunInput } from "./application/codex-goal-storage-paths";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
@@ -8,6 +9,7 @@ import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapte
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
+import { OwnedMimoSnapshotGitRunner, type MimoSnapshotTiming, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "./owned-mimo-snapshot-git";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
 import { admitHostedDependencyEntry, assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction,
@@ -306,6 +308,7 @@ async function runCodexGoalAdmitted(
   });
   const observability =
     deps.observability ?? codexGoalRuntimeEventObservability(runtimeEvents);
+  const ownedSnapshotTimings: MimoSnapshotTiming[] = [];
   const workerMode = await resolveOpenWorkerLaunch({ config, dependencyToolConfig });
   await runtimeEvents.write("runner_starting", {
     jobId: config.jobId ?? config.taskId,
@@ -380,6 +383,7 @@ async function runCodexGoalAdmitted(
       ...(storageLease ? { assertStorageAdmission: () => storageLease.assertCurrent() } : {}),
       encryptionKey,
       observability,
+      observeOwnedMimoSnapshotTiming: timing => { if (ownedSnapshotTimings.length < 2) ownedSnapshotTimings.push(timing); },
       controlInbox,
       activeAttemptRegistry,
     }));
@@ -495,6 +499,14 @@ async function runCodexGoalAdmitted(
     await runtimeEvents.write("runner_disposed", {
       jobId: config.jobId ?? config.taskId,
       executionGeneration,
+      ...Object.fromEntries(ownedSnapshotTimings.flatMap(timing => {
+        const prefix = "mimo_" + timing.scope + "_";
+        return [[prefix + "outcome", timing.outcome], [prefix + "elapsedMs", timing.elapsedMs],
+          [prefix + "admissionCount", timing.admissionCount], [prefix + "admissionElapsedMs", timing.admissionElapsedMs],
+          ...Object.entries(timing).filter(([key]) => key === "admissionAuthorityElapsedMs" || key === "admissionArtifactElapsedMs" || key === "admissionExecutableElapsedMs" || key === "admissionAuthorityServiceElapsedMs" || key === "admissionAuthorityScalarWitnessElapsedMs" || key === "admissionAuthorityPairedPinElapsedMs" || key === "admissionAuthorityScalarTargetQueryElapsedMs" || key === "admissionAuthorityPairedTargetQueryElapsedMs")
+            .map(([key, value]) => [prefix + key, value]),
+          [prefix + "successfulGitCount", timing.successfulGitCount], [prefix + "successfulGitElapsedMs", timing.successfulGitElapsedMs]];
+      })),
     });
   }
 }
@@ -510,7 +522,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const researchAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   const assertProviderAdmission = input.assertStorageAdmission || researchAdmission
-    ? () => { input.assertStorageAdmission?.(); researchAdmission?.(); } : undefined;
+    ? () => { input.assertStorageAdmission?.(); return researchAdmission?.(); } : undefined;
   assertProviderAdmission?.();
   const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
     ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
@@ -521,6 +533,11 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   const ownedMimoCoding = ownedMimoWorker &&
     ownedMimoWorkerStart(input.appServerProcessFactory)?.request.hostedProfile === HostedMimoProfile.CodingV1;
   if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
+  // Signed dependency workspaces retain their independent purpose-qualified route.
+  const ownedSnapshotGit = ownedMimoWorker && !dependencyGit
+    ? new OwnedMimoSnapshotGitRunner(config.workspacePath, () => assertProviderAdmission?.(),
+        input.observeOwnedMimoSnapshotTiming) : undefined;
+  const snapshotGit = dependencyGit ?? ownedSnapshotGit;
   const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
     deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
     binding: { allocationId: config.jobId ?? config.taskId, incarnationId: randomUUID() },
@@ -548,14 +565,17 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     sourceEnv: config.sourceEnv,
   });
   return {
-    ...(dependencyGit ? {
-      snapshotter: new DefaultWorkspaceSnapshotter({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
-      workspaceAccess: new NodeSafeExecutionWorkspaceAccess({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+    ...(snapshotGit ? {
+      snapshotter: ownedSnapshotGit ? ownedMimoWorkspaceSnapshotter(ownedSnapshotGit)
+        : new DefaultWorkspaceSnapshotter({ commandRunner: snapshotGit, gitBinaryPath: "/usr/bin/git" }),
+      workspaceAccess: ownedSnapshotGit ? ownedMimoWorkspaceAccess(ownedSnapshotGit)
+        : new NodeSafeExecutionWorkspaceAccess({ commandRunner: snapshotGit, gitBinaryPath: "/usr/bin/git" }),
     } : {}),
     ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
     ...(executionLifetime ? { executionLifetime } : {}),
+    ...(ownedMimoCoding ? { mimoTaskRecoveryOwner: researchMimoTaskRecoveryOwner(input.appServerProcessFactory)! } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
     ...(!childBudget && !ownedMimoWorker && input.controlInbox ? { controlInbox: input.controlInbox } : {}),

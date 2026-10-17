@@ -28,7 +28,8 @@ import {
   buildLaunchPlan,
 } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileWorkerControlInboxStore } from "@vioxen/subscription-runtime/store-local-file";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as hostedHostPolicy from "../../provider-codex/app-server/adapters/hosted-host-policy";
 import {
   CommandPolicyRunner,
   FileBackendCodexSafeExecutor,
@@ -303,6 +304,8 @@ describe("FileBackendCodexWorker", () => {
     "fails closed when hosted scan protection is unavailable for %s",
     async (executionEngine) => {
       const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
+      // Unit admission case: macOS has no actual Linux hosted classification.
+      const hosted = vi.spyOn(hostedHostPolicy, "isHostedContainment").mockReturnValue(true);
 
       try {
         expect(() => new FileBackendCodexWorker({
@@ -316,6 +319,7 @@ describe("FileBackendCodexWorker", () => {
           },
         })).toThrow("file_backend_codex_hosted_scan_guard_engine_invalid");
       } finally {
+        hosted.mockRestore();
         await rm(rootDir, { recursive: true, force: true });
       }
     },

@@ -14,6 +14,8 @@ export enum DependencyUnverifiedReason {
   BaselineMissing = "baseline_missing",
   TreeChanged = "tree_changed",
   InputsChanged = "inputs_changed",
+  /** Voluntary attestation revocation by an authenticated explicit operator request. */
+  ExplicitOperatorReinstallation = "explicit_operator_reinstallation",
 }
 
 

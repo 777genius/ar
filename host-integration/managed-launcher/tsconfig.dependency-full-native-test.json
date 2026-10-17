@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "rewriteRelativeImportExtensions": true,
+    "noEmitOnError": true,
+    "types": [
+      "node"
+    ],
+    "allowJs": true,
+    "checkJs": false
+  },
+  "files": [
+    "./dependency-full-native-TEST.ts",
+    "./dependency-full-native-parent-TEST.ts",
+    "./dependency-full-native-TEST.node-test.ts",
+    "./launch-full-positive-TEST.mts",
+    "../host-jobs/full-positive-manager-TEST.mts",
+    "./full-positive-test-cohort.node-test.mts",
+    "./launch.mjs",
+    "./full-h1-test-cohort.node-test.mts",
+    "./launch-full-h1-TEST.mts",
+    "../host-jobs/full-h1-manager-TEST.mts",
+    "./dependency-full-h1-native-parent-TEST.ts",
+    "./dependency-full-positive-install-TEST.ts",
+    "./dependency-full-h1-install-TEST.ts",
+    "./dependency-full-h1-publication-copy-TEST.ts",
+    "./dependency-full-h1-staged-tools-TEST.node-test.ts",
+    "./dependency-full-h1-publication-copy-TEST.node-test.ts"
+  ]
+}

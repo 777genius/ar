@@ -1,0 +1,64 @@
+/** DATA composition of the exact lexical scoped selector with real temporary FD/name checks. No ROOT/native qualification. */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import * as fs from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import ts from 'typescript';
+const source=fs.readFileSync(new URL('./stage-current-positive-public.mts',import.meta.url),'utf8');
+const parsed=ts.createSourceFile('candidate.mts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+let expression:ts.Expression|undefined;
+function find(n:ts.Node){if(ts.isVariableDeclaration(n)&&n.name.getText(parsed)==='scopedGuard')expression=n.initializer;ts.forEachChild(n,find);}find(parsed);assert(expression);
+const js=ts.transpileModule('const selected='+expression.getText(parsed)+';',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+type Held={fd:number;name:string;live:boolean;parentHeld:Held|undefined;ino:number;dev:number;path:string};
+function fixture(){const dir=fs.mkdtempSync(join(tmpdir(),'c-scoped-data-')),fds:number[]=[];const rootfd=fs.openSync(dir,'r');fds.push(rootfd);const root:Held={fd:rootfd,name:'/',path:dir,live:true,parentHeld:undefined,ino:fs.fstatSync(rootfd).ino,dev:fs.fstatSync(rootfd).dev};fs.mkdirSync(join(dir,'parent'));const pfd=fs.openSync(join(dir,'parent'),'r');fds.push(pfd);const parent:Held={fd:pfd,name:'parent',path:join(dir,'parent'),live:true,parentHeld:root,ino:fs.fstatSync(pfd).ino,dev:fs.fstatSync(pfd).dev};fs.writeFileSync(join(parent.path,'leaf'),'exact bytes');const lfd=fs.openSync(join(parent.path,'leaf'),'r');fds.push(lfd);const leaf:Held={fd:lfd,name:'leaf',path:join(parent.path,'leaf'),live:true,parentHeld:parent,ino:fs.fstatSync(lfd).ino,dev:fs.fstatSync(lfd).dev};let baseCalls=0,baseHeld=false;const checks:Held[]=[];
+const check=(h:Held)=>{assert(h.live);const fd=fs.fstatSync(h.fd),named=fs.lstatSync(h.path);assert.equal(fd.dev,h.dev);assert.equal(fd.ino,h.ino);assert.equal(named.dev,h.dev);assert.equal(named.ino,h.ino);assert(!named.isSymbolicLink());checks.push(h);};
+const guard=new Function('baseGuard','check','hold','let guardCalls=0;const progress=()=>{};'+js+'return selected;')(()=>{baseCalls++;assert(!baseHeld);},check,(v:unknown)=>assert(v)) as (...h:Held[])=>void;
+return{dir,root,parent,leaf,guard,checks,check,baseCalls:()=>baseCalls,holdBase:()=>{baseHeld=true;},close(){for(const fd of fds.reverse())fs.closeSync(fd);fs.rmSync(dir,{recursive:true,force:true});}};}
+test('exact scoped selector revalidates each actual root-to-leaf chain once',()=>{const f=fixture();try{f.guard(f.leaf,f.parent);assert.deepEqual(f.checks,[f.root,f.parent,f.leaf]);assert.equal(f.baseCalls(),1);}finally{f.close();}});
+test('actual ancestor replacement refuses before selected leaf use',()=>{const f=fixture();try{fs.renameSync(f.parent.path,f.parent.path+'.old');fs.mkdirSync(f.parent.path);assert.throws(()=>f.guard(f.leaf));}finally{f.close();}});
+test('actual leaf replacement refuses even with retained original FD',()=>{const f=fixture();try{fs.renameSync(f.leaf.path,f.leaf.path+'.old');fs.writeFileSync(f.leaf.path,'exact bytes');assert.throws(()=>f.guard(f.leaf));}finally{f.close();}});
+test('actual alias substitution refuses',()=>{const f=fixture();try{fs.renameSync(f.leaf.path,f.leaf.path+'.old');fs.symlinkSync(f.leaf.path+'.old',f.leaf.path);assert.throws(()=>f.guard(f.leaf));}finally{f.close();}});
+test('released parent and cyclic chain cannot be selected',()=>{const f=fixture();try{f.parent.live=false;assert.throws(()=>f.guard(f.leaf));f.parent.live=true;f.parent.parentHeld=f.leaf;assert.throws(()=>f.guard(f.leaf));}finally{f.close();}});
+test('fresh operation-base refusal stops traversal before any FD check',()=>{const f=fixture();try{f.holdBase();assert.throws(()=>f.guard(f.leaf));assert.equal(f.checks.length,0);}finally{f.close();}});
+test('unrelated drift is deferred only until an explicit full-fence check',()=>{const f=fixture();try{const name=join(f.dir,'other');fs.writeFileSync(name,'other');const fd=fs.openSync(name,'r');try{const s=fs.fstatSync(fd),other:Held={fd,name:'other',path:name,live:true,parentHeld:f.root,ino:s.ino,dev:s.dev};fs.renameSync(name,name+'.old');fs.writeFileSync(name,'replacement');f.guard(f.leaf);assert.throws(()=>f.check(other));}finally{fs.closeSync(fd);}}finally{f.close();}});
+let baseExpression:ts.Expression|undefined;function findBase(n:ts.Node){if(ts.isVariableDeclaration(n)&&n.name.getText(parsed)==='baseGuard')baseExpression=n.initializer;ts.forEachChild(n,findBase);}findBase(parsed);assert(baseExpression);
+const baseJs=ts.transpileModule('const selected='+baseExpression.getText(parsed)+';',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+function baseFixture(){let mount='1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 1:1 / /srv/workers rw - ext4 /dev/workers rw\n',namespace='ns',now=0,cancelled=false;const intake='/srv/workers/public-intake/TEST-dependency-full-positive-scoped-20261014-r1/full-positive-installation-ptrace-v1';const ports={readFileSync(path:string){return path==='/proc/self/mountinfo'?mount:'boot';},readlinkSync(){return namespace;}};const get=new Function('fs','hold','performance','Buffer','INTAKE','boot','namespace','getCancelled','getDeadline','validateMountInfo',baseJs.replace(/\bcancelled\b/g,'getCancelled()').replace(/\bdeadline\b/g,'getDeadline()')+'return selected;');const check=get(ports,(v:unknown)=>assert(v),{now:()=>now},Buffer,intake,'boot','ns',()=>cancelled,()=>100,createCExactMountBoundaryValidator()) as ()=>void;return{check,mount:(v:string)=>{mount=v;},namespace:()=>{namespace='other';},expire:()=>{now=100;},cancel:()=>{cancelled=true;},intake};}
+test('scoped base does not enumerate unrelated mount topology; full fences own that policy',()=>{const f=baseFixture();f.check();f.mount('3 2 1:1 / '+f.intake+'/child rw - ext4 /dev/other rw\n');f.check();});
+test('fresh namespace cancellation and absolute deadline are never memoized',()=>{for(const change of ['namespace','cancel','expire'] as const){const f=baseFixture();f.check();f[change]();assert.throws(f.check);}});
+
+import {createCExactMountBoundaryValidator,INTAKE} from './stage-current-positive-public.mts';
+const mountRow=(id:number,path:string)=>`${id} 1 0:1 / ${path} rw - ext4 /dev/TEST rw\n`;
+const mountSafe=mountRow(1,'/')+mountRow(2,'/srv/workers')+mountRow(3,'/TEST-memo-counter');
+function countPureParses<T>(work:()=>T):{value:T;parses:number}{
+ const split=String.prototype.split;let parses=0;
+ String.prototype.split=function(this:string,...args:unknown[]){if(args[0]==='\n'&&String(this).includes('/TEST-memo-counter'))parses++;return Reflect.apply(split,this,args);} as typeof split;
+ try{return {value:work(),parses};}finally{String.prototype.split=split;}
+}
+test('actual closed validator reuses successful equal text only; changed unsafe or failed text revalidates',()=>{
+ const validate=createCExactMountBoundaryValidator();
+ assert.equal(countPureParses(()=>{validate(mountSafe);validate(Buffer.from(mountSafe).toString());}).parses,1);
+ for(const path of ['/srv','/srv/workers/public-intake',INTAKE,INTAKE+'/child']){
+  const denied=mountSafe+mountRow(4,path);const r=countPureParses(()=>{assert.throws(()=>validate(denied),/intake_mount_boundary/);assert.throws(()=>validate(denied),/intake_mount_boundary/);});assert.equal(r.parses,2);
+ }
+ const changed=mountSafe.replace('/TEST-memo-counter','/TEST-memo-counter-changed');assert.equal(countPureParses(()=>{validate(changed);validate(changed);}).parses,1);
+ assert.throws(()=>validate('broken\n'),/mountinfo/);assert.throws(()=>validate('x'.repeat(8*1024**2+1)),/mountinfo_bound/);validate(mountSafe);
+});
+// Exact lexical guard bodies with explicit input/check ports. The read port does a
+// real full read of an owned temporary DATA file; it is not Linux kernel proof.
+test('full guard freshly reads global topology while scoped guards freshly rejoin selected chains',()=>{
+ const selectedSource=source;
+ const ast=ts.createSourceFile('guard.mts',selectedSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),found=new Map<string,string>();
+ const visit=(n:ts.Node)=>{if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&['baseGuard','guard','scopedGuard'].includes(n.name.text)&&n.initializer)found.set(n.name.text,n.initializer.getText(ast));ts.forEachChild(n,visit);};visit(ast);assert.equal(found.size,3);
+ const dir=fs.mkdtempSync(join(tmpdir(),'TEST-mountparse-')),file=join(dir,'mountinfo');fs.writeFileSync(file,mountSafe);let reads=0,boots=0,namespaces=0,checks=0;
+ const root={name:'/',live:true,parentHeld:undefined},leaf={name:'owned',live:true,parentHeld:root};
+ const io={readFileSync:(path:string)=>{if(path==='/proc/self/mountinfo'){reads++;return fs.readFileSync(file,'utf8');}assert.equal(path,'/proc/sys/kernel/random/boot_id');boots++;return 'BOOT';},readlinkSync:(path:string)=>{assert.equal(path,'/proc/self/ns/mnt');namespaces++;return 'NS';}};
+ const memo=selectedSource.includes('const validateMountInfo=createCExactMountBoundaryValidator();')?'const validateMountInfo=createCExactMountBoundaryValidator();':'';
+ const body=`const boot='BOOT',namespace='NS',cancelled=false,deadline=Infinity,anchors=[root],sources=[],activeTarget=undefined;let guardCalls=0;const progress=()=>{};${memo}${[...found].map(([n,e])=>`const ${n}=${e};`).join('\n')}return {baseGuard,guard,scopedGuard};`;
+ const js=ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const run=new Function('fs','check','root','INTAKE','hold','createCExactMountBoundaryValidator',js)(io,()=>{checks++;},root,INTAKE,(v:unknown,w:string)=>{assert(v,w);},createCExactMountBoundaryValidator);
+ try{const count=countPureParses(()=>{run.guard();run.scopedGuard(leaf);run.baseGuard();});assert.equal(reads,1);assert.equal(boots,3);assert.equal(namespaces,3);assert.equal(checks,3);assert.equal(count.parses,1);
+ fs.writeFileSync(file,mountSafe+mountRow(4,INTAKE));assert.throws(()=>run.guard(),/intake_mount_boundary/);run.scopedGuard(leaf);assert.equal(reads,2);assert.equal(boots,5);assert.equal(namespaces,5);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

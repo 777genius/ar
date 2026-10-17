@@ -2,12 +2,16 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalProjectCreateWorktreeInput } from "./application/project-control/codex-goal-project-control-contracts";
+import type { CodexGoalJobManifestInput } from "./codex-goal-jobs";
+import { requiresStandaloneProjectWorkspace, assertStandaloneProjectWorkspace, fetchStandaloneProjectRevision } from "./project-standalone-workspace";
 import { projectControlRealPathOutsideWorkspaceScope } from "./application/project-control/codex-goal-project-workspace-scope";
 import { assertGitCurrentBranch, execGit, execGitStdout, isGitAncestor } from "./codex-goal-mcp-project-git";
 
 export async function fastForwardExistingProjectWorktree(input: {
   readonly input: CodexGoalProjectCreateWorktreeInput;
   readonly scope: ProjectAccessScope;
+  readonly manifest?: CodexGoalJobManifestInput | undefined;
+  readonly registryRootDir?: string;
   readonly afterFastForwardForTest?: () => Promise<void>;
 }): Promise<boolean> {
   const request = input.input;
@@ -45,12 +49,26 @@ export async function fastForwardExistingProjectWorktree(input: {
       "project_control_existing_worktree_real_path_outside_scope",
     );
   }
-  const [sourceCommonDir, worktreeCommonDir] = await Promise.all([
-    resolveGitCommonDir(request.expectedSourceRealPath),
-    resolveGitCommonDir(materializedRealPath),
-  ]);
-  if (sourceCommonDir !== worktreeCommonDir) {
-    throw new Error("project_control_existing_worktree_foreign_repository");
+  const standalone = requiresStandaloneProjectWorkspace({ manifest: input.manifest, target: request,
+    scope: input.scope, registryRootDir: input.registryRootDir ?? "" });
+  if (standalone) {
+    if (await realpath(request.sourceWorkspacePath) !== request.expectedSourceRealPath)
+      throw new Error("project_control_source_workspace_real_path_changed");
+    if ((await execGitStdout(["-C", request.expectedSourceRealPath, "worktree", "list", "--porcelain"]))
+        .split("\n").includes(`branch refs/heads/${request.newBranch}`))
+      throw new Error("project_control_existing_branch_materialization_failed");
+    if ((await execGitStdout(["-C", request.expectedSourceRealPath, "rev-parse", `refs/heads/${request.newBranch}`])).trim() !== request.expectedRevision)
+      throw new Error("project_control_source_workspace_revision_changed");
+    await assertStandaloneProjectWorkspace(materializedRealPath);
+    await fetchStandaloneProjectRevision(materializedRealPath, request.expectedSourceRealPath, request.expectedRevision);
+  } else {
+    const [sourceCommonDir, worktreeCommonDir] = await Promise.all([
+      resolveGitCommonDir(request.expectedSourceRealPath),
+      resolveGitCommonDir(materializedRealPath),
+    ]);
+    if (sourceCommonDir !== worktreeCommonDir) {
+      throw new Error("project_control_existing_worktree_foreign_repository");
+    }
   }
   const statusBefore = await execGitStdout([
     "-C",
@@ -131,6 +149,7 @@ export async function fastForwardExistingProjectWorktree(input: {
         "project_control_existing_worktree_fast_forward_verification_failed",
       );
     }
+    if (standalone) await execGit(["-c", "core.hooksPath=/dev/null", "-C", request.expectedSourceRealPath, "update-ref", `refs/heads/${request.newBranch}`, expectedNext, expectedNext]);
   } catch (error) {
     const rollback = await rollbackFastForwardRevision({
       workspacePath: materializedRealPath,

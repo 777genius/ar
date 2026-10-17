@@ -1,3 +1,5 @@
+import { buildTar } from "../codex-goal-handoff-untracked-tar";
+import { handoffPreservationRefusalReason } from "../codex-goal-handoff-preservation-budget";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -19,6 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   materializeDurableCodexGoalHandoffPacket,
+  durableCodexGoalHandoffPacketFiles,
 } from "../codex-goal-durable-handoff-packet";
 import {
   terminalCodexGoalHandoffResultDetails,
@@ -77,6 +80,11 @@ describe("durable terminal handoff packet", () => {
     expect(packet?.manifest.layers.index.byteLength).toBeGreaterThan(0);
     expect(packet?.manifest.layers.worktree.byteLength).toBeGreaterThan(0);
     expect(packet?.manifest.layers.headRelative?.byteLength).toBeGreaterThan(0);
+    const files = durableCodexGoalHandoffPacketFiles(packet!.manifest);
+    expect(files.map(file => file.descriptor.path)).toEqual(["status.porcelain-v2.z", "index.patch", "worktree.patch",
+      "head-relative.patch", "untracked.tar", "untracked.paths.z", "quarantine.json"]);
+    expect(files.find(file => file.descriptor.path === "untracked.tar")?.maxBytes).toBe(128 * 1024 * 1024);
+    expect(files.filter(file => file.descriptor.path !== "untracked.tar").every(file => file.maxBytes === 32 * 1024 * 1024)).toBe(true);
 
     const reconstructed = join(fixture.root, "reconstructed");
     await git(fixture.root, ["clone", "--quiet", fixture.workspace, reconstructed]);
@@ -89,6 +97,51 @@ describe("durable terminal handoff packet", () => {
     )!.path!]);
     expect(await gitText(reconstructed, ["show", ":mixed.txt"])).toBe("staged\n");
     expect(await readFile(join(reconstructed, "mixed.txt"), "utf8")).toBe("worktree\n");
+  });
+
+  it("preserves every byte of a Router-sized output above the old archive limit", async () => {
+    const fixture = await createFixture();
+    const bytes = Buffer.alloc(7_500_000).fill("TEST cache material\n");
+    for (let index = 0; index < 7; index++) await writeFile(join(fixture.workspace, `TEST-cache-${index}.bin`), bytes);
+    const packet = await capture(fixture);
+    expect(packet?.manifest.untracked.entries).toHaveLength(7);
+    expect(packet?.manifest.untracked.archive.byteLength).toBeGreaterThan(32 * 1024 * 1024);
+    for (const entry of packet!.manifest.untracked.entries) {
+      expect(entry.byteLength).toBe(bytes.length);
+      expect(entry.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    }
+    const archive = await readFile(join(packet!.packetPath, "untracked.tar"));
+    expect(createHash("sha256").update(archive).digest("hex")).toBe(packet!.manifest.untracked.archive.sha256);
+    for (let index = 0; index < 7; index++) expect(createHash("sha256").update(await readFile(join(fixture.workspace, `TEST-cache-${index}.bin`))).digest("hex"))
+      .toBe(createHash("sha256").update(bytes).digest("hex"));
+  });
+
+  it("retains all workspace bytes when the finite untracked aggregate is exceeded", async () => {
+    const fixture = await createFixture(), bytes = Buffer.alloc(8 * 1024 * 1024).fill("TEST retained cache\n");
+    for (let index = 0; index < 9; index++) await writeFile(join(fixture.workspace, `TEST-over-${index}.bin`), bytes);
+    await expect(capture(fixture)).rejects.toThrow("handoff_total_byte_limit_exceeded");
+    expect(await readDirectoryNames(fixture.durableRoot)).toEqual([]);
+    for (let index = 0; index < 9; index++) expect(createHash("sha256").update(await readFile(join(fixture.workspace, `TEST-over-${index}.bin`))).digest("hex"))
+      .toBe(createHash("sha256").update(bytes).digest("hex"));
+  });
+
+  it("refuses an archive above its finite bound before concatenating bodies", () => {
+    const bytes = Buffer.alloc(8 * 1024 * 1024);
+    expect(() => buildTar(Array.from({ length: 17 }, (_, index) => ({ path: `TEST-${index}.bin`, bytes, mode: 0o600 }))))
+      .toThrow("handoff_total_byte_limit_exceeded");
+    expect(handoffPreservationRefusalReason(new Error("dirty_terminal_handoff_unavailable:handoff_total_byte_limit_exceeded")))
+      .toBe("handoff_total_byte_limit_exceeded");
+    expect(handoffPreservationRefusalReason(new Error("handoff_total_byte_limit_exceeded:TEST-untrusted-extra"))).toBeUndefined();
+    expect(handoffPreservationRefusalReason(new Error("TEST permission refused"))).toBeUndefined();
+  });
+
+  it("classifies only exact sensitive-path preservation refusals", () => {
+    for (const code of ["handoff_sensitive_path_rejected", "dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected"]) {
+      expect(handoffPreservationRefusalReason(new Error(code))).toBe("handoff_sensitive_path_rejected");
+    }
+    expect(handoffPreservationRefusalReason(new Error("handoff_sensitive_path_rejected:TEST-private-path"))).toBeUndefined();
+    expect(handoffPreservationRefusalReason(new Error("dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected:TEST-private-path"))).toBeUndefined();
+    expect(handoffPreservationRefusalReason({ message: "handoff_sensitive_path_rejected" })).toBeUndefined();
   });
 
   it("keeps run-start base separate from a later committed HEAD and dirty layers", async () => {
@@ -499,11 +552,13 @@ async function createFixture() {
   await mkdir(workspace);
   await mkdir(durableRoot);
   await git(workspace, ["init", "--quiet", "--initial-branch=main"]);
-  await git(workspace, ["config", "user.name", "Test"]);
-  await git(workspace, ["config", "user.email", "test@example.com"]);
+  await git(workspace, ["config", "user.name", "iliya"]);
+  await git(workspace, ["config", "user.email", "iliyazelenkog@gmail.com"]);
   await writeFile(join(workspace, "mixed.txt"), "base\n");
   await writeFile(join(workspace, "tracked.txt"), "base\n");
   await git(workspace, ["add", "."]);
+  expect(await gitText(workspace, ["var", "GIT_AUTHOR_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com>/);
+  expect(await gitText(workspace, ["var", "GIT_COMMITTER_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com>/);
   await git(workspace, ["commit", "--quiet", "-m", "base"]);
   return { root, workspace, durableRoot, base: (await gitText(
     workspace, ["rev-parse", "HEAD"]

@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.current-cold-hot-emit.json",
+  "compilerOptions": { "rootDir": "../.." },
+  "files": ["./current-full-evict-restore-flow.ts"]
+}

@@ -1,3 +1,4 @@
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, readSync, rmdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -14,7 +15,7 @@ export function isHostedActivationFenceBusy(error: unknown): boolean {
 // Not a configurable policy root or a public arbitrary filesystem reader.
 const recordName = /^(?:readonly-dependency-bindings\/[0-9]{1,20}-[0-9]{1,20}\.json|readonly-dependency-starts\/[a-f0-9-]{36}\.json|dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export function isHostedActivationRecordName(name: string): boolean { return recordName.test(name); }
-export type HostedActivationFence = Readonly<{ readonly held: true }>;
+export type HostedActivationFence = Readonly<{ readonly held: true; readonly parentRecipeReader?: DependencyParentRecipeReader }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
 export function assertHostedActivationOperator(): void {
@@ -74,7 +75,7 @@ export function decodeHostedActivationBytes(bytes: Buffer): unknown {
 
 /** Same boot-specific mkdir mutex as the managed epoch. No stale lock removal,
  * second lock or missing-epoch fallback. Acquisition can precede enrollment. */
-export function withHostedActivationFence<T>(action: (fence: HostedActivationFence) => T): T {
+export function withHostedActivationFence<T>(action: (fence: HostedActivationFence) => T, parentRecipeReader?: DependencyParentRecipeReader): T {
   if (readHostedActivationBytes("readonly-epoch.lock")) throw new Error("hosted_custody_legacy_lock_recovery_required");
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(boot)) {
@@ -86,7 +87,7 @@ export function withHostedActivationFence<T>(action: (fence: HostedActivationFen
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const busy = new Error("hosted_activation_fence_busy"); acquisitionBusy.add(busy); throw busy;
   }
-  const fence = Object.freeze({ held: true as const });
+  const fence = Object.freeze({ held: true as const, ...(parentRecipeReader ? { parentRecipeReader } : {}) });
   activeFences.add(fence);
   try {
     const result = action(fence);

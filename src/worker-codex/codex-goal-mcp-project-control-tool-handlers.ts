@@ -58,6 +58,7 @@ import { createLocalProviderRuntimeRegistry } from "@vioxen/subscription-runtime
 import type { ProviderRuntimeRegistry } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexProjectAdmissionDeps,
+  codexProjectAdmissionQueryDeps,
   codexProjectControlBroker,
   loadJobLaunch,
   loadProjectControlController,
@@ -90,7 +91,9 @@ function projectControlAdminDeps() {
 }
 
 export async function projectControlAdmissionSnapshot(args: ProjectControlMcpArgs) {
-  return mcpJson(await projectControlAdmissionSnapshotView(args, projectControlAdminDeps()));
+  return mcpJson(await projectControlAdmissionSnapshotView(args, {
+    ...projectControlAdminDeps(), admissionDeps: codexProjectAdmissionQueryDeps,
+  }));
 }
 
 export async function projectControlRepairLegacyOutputDebt(
@@ -274,10 +277,11 @@ function projectControlActionDeps() {
   };
 }
 
-export async function projectControlStartStoredJob(args: ProjectControlMcpArgs) {
+export async function projectControlStartStoredJob(args: ProjectControlMcpArgs,
+  observeControlTiming?: import("./research-launch-admission-diagnostics").MimoProjectStartControlTimingObserver) {
   const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Start, args);
   if (remote !== undefined) return mcpJson(remote);
-  return mcpJson(await projectControlStartStoredJobView(args, projectControlActionDeps()));
+  return mcpJson(await projectControlStartStoredJobView(args, { ...projectControlActionDeps(), ...(observeControlTiming ? { observeControlTiming } : {}) }));
 }
 
 export async function projectControlCreateWorktree(args: ProjectControlMcpArgs) {

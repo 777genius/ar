@@ -12,7 +12,7 @@ export function claimDependencyMaintenance(store: DependencyOwnerStore, workspac
   const attempt = { operationId, epoch: (current?.epoch ?? 0) + 1, host };
   // Current custody/continuity survives maintenance; no v3 downgrade or
   // authority pointer replacement is performed by a generic state transition.
-  const next = parseDependencyOwner({ ...(current?.version === 3 ? current : { version: 2 }), workspace, revision: (current?.revision ?? 0) + 1,
+  const next = parseDependencyOwner({ ...(current?.version === 2 || current?.version === 3 ? current : { version: 2 }), workspace, revision: (current?.revision ?? 0) + 1,
     epoch: attempt.epoch, owner: { kind: DependencyOwnerKind.Maintenance, phase: DependencyOwnerPhase.ExclusiveMutation, attempt },
     ...(current?.activity === undefined ? {} : { activity: current.activity }) });
   store.compareAndSwap(workspace, current?.revision ?? null, next);

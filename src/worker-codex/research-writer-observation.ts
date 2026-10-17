@@ -1,20 +1,25 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { observeHostedOrdinaryJobWriterAuthority, hostedOrdinaryWriterAuthorityAbsent, isHostedOrdinaryRuntime } from "./hosted-ordinary-writer-authority";
-import { observeCompatibleProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthNamespacePresent, protectedCodexGoalJobBirthPublicationActive } from "./protected-job-birth";
+import { observeCompatibleProtectedCodexGoalJobBirth, protectedCodexGoalJobBirthNamespacePresent, protectedCodexGoalJobBirthPublicationActive, withProtectedCodexGoalJobBirthPublication } from "./protected-job-birth";
 import { pathToFileURL } from "node:url";
-import { researchJobRuntimeNamespaceAbsent, researchJobRuntimeProvenance } from "./research-job-runtime-provenance";
+import { researchJobRuntimeNamespaceAbsent, researchForeignWriterRuntimeProvenance } from "./research-job-runtime-provenance";
 import { assertQualifiedResearchRuntimeArtifact } from "./research-runtime-artifact";
 import { join } from "node:path";
 import type { ProjectAdmissionWriterObservation } from "@vioxen/subscription-runtime/worker-core";
-import type { CodexGoalJobManifest } from "./codex-goal-jobs";
+import { parseStoredCodexGoalJobManifest, type CodexGoalJobManifest } from "./codex-goal-jobs";
 import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
 import { assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
 import { parseResearchGrant } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
-import { researchHash, researchJson, researchRead, assertResearchDirectory } from "./research-launch-files";
-import { researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
+import { researchArtifactDigest, researchHash, researchJson, researchRead, researchPublish, researchInvalid, assertResearchDirectory } from "./research-launch-files";
+import { prepareUnsubmittedResearchStartRelease, researchProviderReservationLimit, researchProviderUnits, terminalResearchStart } from "./research-launch-lifecycle";
 import { observeResearchMimoAllocationWritableRoots } from "./research-provider-root";
+import { prepareResearchTerminalRepairRelease } from "./research-terminal-handoff-repair";
+import { prepareNativeWriterClosureRead, prepareNativeWriterClosureObservation, nativeWriterClosureReceiptMatches,
+  NativeWriterClosureKind, NativeWriterClosureIssuerContract, type NativeWriterClosureReceiptV1,
+  type NativeClosureMutationPreparation } from "./research-native-writer-closure";
+import { withResearchJobMutationAsync } from "./research-job-mutation-lock";
 
 function optionalPrivateRecord(path: string): Buffer | undefined {
   try { return researchRead(path); }
@@ -68,9 +73,11 @@ async function observeNativeResearchJobWriterAuthority(manifest: CodexGoalJobMan
       if (researchHash(grantBytes) !== spec.grantSha256 || grant.jobId !== manifest.jobId ||
           grant.jobRootDir !== manifest.jobRootDir || grant.workspacePath !== manifest.workspacePath) return { status: "unknown" };
     }
+    // Observation only: a closed or retired job is read too, effects are not.
     const assertAuthorityBytes = spec.registeredHandoff
-      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, request)
-      : spec.projectLaunchBinding ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request) : undefined;
+      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, request, assertResearchInitialRoot, true)
+      : spec.projectLaunchBinding ? await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding, request, assertResearchInitialRoot, true)
+        : undefined;
     const assertCurrent = (): boolean => sameOptionalBytes(active, optionalPrivateRecord(activePath)) &&
       sameOptionalBytes(grantBytes, optionalPrivateRecord(grantPath));
     // The installed path must match the protected first-plan profile provenance;
@@ -111,9 +118,10 @@ async function prepareNativeResearchJobWriterObservation(manifest: CodexGoalJobM
         spec.request.jobRootDir !== manifest.jobRootDir || spec.request.workspacePath !== manifest.workspacePath ||
         spec.request.promptPath !== manifest.promptPath || spec.request.modelBackend !== manifest.modelBackend ||
         researchHash(grantBytes) !== spec.grantSha256 || spec.runtimeDirectory !== installedResearchRuntimeDirectory()) return unknown;
+    // A retirement replay proves this job while its guard already closes it.
     const assertAuthorityBytes = spec.registeredHandoff
-      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request)
-      : await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding!, spec.request);
+      ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request, assertResearchInitialRoot, true)
+      : await assertResearchProjectLaunchBindingCurrent(spec.projectLaunchBinding!, spec.request, assertResearchInitialRoot, true);
     const read = async (): Promise<ProjectAdmissionWriterObservation> => {
       try {
         assertResearchInitialRoot(true);
@@ -147,20 +155,82 @@ async function observeNonNativeWriter(manifest: CodexGoalJobManifest): Promise<P
   return nativeAuthorityAbsent(manifest) && hostedOrdinaryWriterAuthorityAbsent(manifest.jobId) ? birth : { status: "unknown" };
 }
 export async function observeResearchJobWriterAuthority(manifest: CodexGoalJobManifest): Promise<ProjectAdmissionWriterObservation> {
+  const repaired = await prepareTerminalRepairWriterObservation(manifest);
+  if (repaired) return await repaired();
+  const aborted = await prepareUnsubmittedWriterObservation(manifest);
+  if (aborted) return await aborted();
+  const sealed = prepareNativeWriterClosureRead(manifest);
+  if (sealed) return await sealed();
   const original = await prepareOriginalNativeWriterObservation(manifest);
   if (original) return await original();
   const absent = nativeAuthorityAbsent(manifest);
   const native = await observeNativeResearchJobWriterAuthority(manifest);
   return native.status !== "unknown" || !absent ? native : await observeNonNativeWriter(manifest);
 }
-export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<() => Promise<ProjectAdmissionWriterObservation>> {
-  const original = await prepareOriginalNativeWriterObservation(manifest);
-  if (original) return original;
+type WriterReader = () => Promise<ProjectAdmissionWriterObservation>;
+type ForeignModulePreparer = (manifest: CodexGoalJobManifest) => Promise<unknown>;
+type WriterModuleImporter = (url: string) => Promise<Record<string, unknown>>;
+const importWriterModule: WriterModuleImporter = async url => await import(url);
+type ProducerIdentity = { runtimeDirectory: string; artifactSha256: string };
+type WriterPreparationBatch = { readonly modules: Map<string, ForeignModulePreparer>; producer?: ProducerIdentity };
+
+/** One admission preparation owns only verified module functions. Every job
+ * still prepares a separate reader and freshly checks its retained authority. */
+export function createResearchJobWriterObservationPreparer(importModule: WriterModuleImporter = importWriterModule):
+  (manifest: CodexGoalJobManifest) => Promise<WriterReader> {
+  const batch: WriterPreparationBatch = { modules: new Map() };
+  // An injected importer preserves observation testing, never durable issuance.
+  // Only this source's actual qualified original composition can mint a seal.
+  return manifest => prepareWriterObservation(manifest, importModule, batch, importModule === importWriterModule);
+}
+export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader> {
+  return prepareWriterObservation(manifest, importWriterModule);
+}
+async function prepareWriterObservation(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
+  batch?: WriterPreparationBatch, mutation = false): Promise<WriterReader> {
+  const repaired = await prepareTerminalRepairWriterObservation(manifest);
+  if (repaired) return repaired;
+  const aborted = await prepareUnsubmittedWriterObservation(manifest);
+  if (aborted) return aborted;
+  const sealed = prepareNativeWriterClosureRead(manifest);
+  if (sealed) return mutation ? nativeWriterClosureMutationFastReader(manifest.jobId, sealed) : sealed;
+  const original = await prepareOriginalWriter(manifest, importModule, batch?.modules);
+  if (original) return mutationReader(original);
   const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
-  return async () => {
+  return mutationReader(async () => {
     const observation = await native();
     return observation.status !== "unknown" || !absent ? observation : await observeNonNativeWriter(manifest);
-  };
+  });
+  function mutationReader(read: WriterReader): WriterReader {
+    if (!mutation) return read;
+    const preparation = prepareNativeWriterClosureMutation(manifest, read, batch);
+    return preparation ? nativeWriterClosureMutationReader(preparation, read) : read;
+  }
+}
+async function prepareTerminalRepairWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader | undefined> {
+  try {
+    const guard = await prepareResearchTerminalRepairRelease(manifest);
+    if (!guard) return;
+    return async () => { try { guard(); return { status: "released" }; } catch { return { status: "unknown" }; } };
+  } catch { return async () => ({ status: "unknown" }); }
+}
+
+async function prepareUnsubmittedWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader | undefined> {
+  try {
+    const read = await prepareUnsubmittedResearchStartRelease(manifest.jobId);
+    if (!read) return;
+    const terminal = terminalResearchStart(manifest.jobId);
+    const matchesManifest = (): boolean => {
+      try { return researchHash(JSON.stringify(parseStoredCodexGoalJobManifest(manifest))) === terminal.spec.registeredHandoff?.manifestSha256; }
+      catch { return false; }
+    };
+    if (!matchesManifest()) return async () => ({ status: "unknown" });
+    read();
+    return async () => {
+      try { if (!matchesManifest()) return { status: "unknown" }; read(); return { status: "released" }; }
+      catch { return { status: "unknown" }; }
+    };
+  } catch { return; } // Malformed/incomplete origins keep existing closed behavior.
 }
 
 /** Preparation is outside publication. Retained native authority is checked by
@@ -168,9 +238,12 @@ export async function prepareResearchJobWriterObservation(manifest: CodexGoalJob
  * A direct foreign observation inside publication retains unknown instead of
  * importing another module with an independent reentrancy capability. */
 export async function prepareOriginalNativeWriterObservation(manifest: CodexGoalJobManifest,
-  importModule: (url: string) => Promise<Record<string, unknown>> = async url => await import(url)):
-  Promise<(() => Promise<ProjectAdmissionWriterObservation>) | undefined> {
-  const origin = researchJobRuntimeProvenance(manifest);
+  importModule: WriterModuleImporter = importWriterModule): Promise<WriterReader | undefined> {
+  return prepareOriginalWriter(manifest, importModule);
+}
+async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
+  modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader | undefined> {
+  const origin = researchForeignWriterRuntimeProvenance(manifest);
   if (!origin || origin.runtimeDirectory === installedResearchRuntimeDirectory()) return undefined;
   const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
   if (protectedCodexGoalJobBirthPublicationActive()) return unknown;
@@ -180,11 +253,21 @@ export async function prepareOriginalNativeWriterObservation(manifest: CodexGoal
       assertQualifiedResearchRuntimeArtifact(origin.runtimeDirectory, origin.artifactSha256);
       origin.assertCurrent();
     };
-    guard();
-    const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
-    guard();
-    if (typeof module.prepareResearchJobWriterObservation !== "function") return unknown;
-    const read = await module.prepareResearchJobWriterObservation(manifest) as () => Promise<ProjectAdmissionWriterObservation>;
+    const key = JSON.stringify([origin.runtimeDirectory, origin.artifactSha256]);
+    let prepare = modules?.get(key);
+    if (!prepare) {
+      // Provenance already performed this pre-import qualification in the same
+      // synchronous path. No await or foreign code intervenes; recheck origin.
+      origin.assertCurrent();
+      const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
+      guard();
+      const candidate = module.prepareResearchJobWriterObservation;
+      if (typeof candidate !== "function") return unknown;
+      prepare = manifest => Reflect.apply(candidate, module, [manifest]) as Promise<unknown>;
+      modules?.set(key, prepare);
+    }
+    origin.assertCurrent();
+    const read = await prepare(manifest) as WriterReader;
     guard();
     if (typeof read !== "function") return unknown;
     return async () => {
@@ -192,4 +275,97 @@ export async function prepareOriginalNativeWriterObservation(manifest: CodexGoal
       catch { return { status: "unknown" }; }
     };
   } catch { return unknown; }
+}
+
+type PreparationState = { manifest: CodexGoalJobManifest; prepared: ReturnType<typeof prepareNativeWriterClosureObservation>;
+  original: WriterReader; producer: ProducerIdentity; qualify(): void };
+const preparations = new WeakMap<NativeClosureMutationPreparation, PreparationState>();
+const issuers = new WeakMap<object, PreparationState>();
+/** Only the mutation factory calls this after full original preparation. The
+ * opaque handle is not an issuer and is never passed into foreign code. */
+function prepareNativeWriterClosureMutation(manifest: CodexGoalJobManifest, original: WriterReader,
+  batch?: WriterPreparationBatch): NativeClosureMutationPreparation | undefined {
+  try {
+    if (protectedCodexGoalJobBirthPublicationActive()) return;
+    assertResearchInitialRoot(true);
+    const prepared = prepareNativeWriterClosureObservation(manifest), runtimeDirectory = installedResearchRuntimeDirectory();
+    // One producer digest per admission batch; every job still freshly
+    // qualifies the same bytes, and mid-batch byte change refuses the retained
+    // batch digest instead of re-deriving an updated seal baseline.
+    const cached = batch?.producer;
+    const producer = cached && cached.runtimeDirectory === runtimeDirectory ? cached
+      : { runtimeDirectory, artifactSha256: researchArtifactDigest(runtimeDirectory) };
+    if (batch) batch.producer = producer;
+    const qualify = (): void => { assertResearchInitialRoot(true); assertQualifiedResearchRuntimeArtifact(runtimeDirectory, producer.artifactSha256); };
+    qualify(); prepared.assertCurrent();
+    const capability = Object.freeze({}) as NativeClosureMutationPreparation;
+    preparations.set(capability, { manifest, prepared, original, producer, qualify });
+    return capability;
+  } catch { return; }
+}
+async function issue(token: object): Promise<ProjectAdmissionWriterObservation> {
+  const state = issuers.get(token);
+  if (!state || !protectedCodexGoalJobBirthPublicationActive()) return { status: "unknown" };
+  const { prepared, original } = state;
+  // No foreign function receives the private token or preparation.
+  state.qualify(); prepared.assertCurrent();
+  const observed = await original();
+  state.qualify(); prepared.assertCurrent();
+  if (observed.status !== "released" || issuers.get(token) !== state) return { status: "unknown" };
+  const receipt: NativeWriterClosureReceiptV1 = { schemaVersion: 1, kind: NativeWriterClosureKind.RegisteredCodingTerminalV1,
+    issuer: { contract: NativeWriterClosureIssuerContract.CurrentRootObservationV1, ...state.producer }, ...prepared.expected };
+  const previous = optionalPrivateRecord(prepared.path);
+  if (previous) {
+    if (!nativeWriterClosureReceiptMatches(previous, prepared.expected)) researchInvalid();
+  } else {
+    state.qualify(); prepared.assertCurrent();
+    if (issuers.get(token) !== state) researchInvalid();
+    researchPublish(prepared.path, receipt, true);
+  }
+  prepared.assertCurrent();
+  if (!nativeWriterClosureReceiptMatches(researchRead(prepared.path), prepared.expected)) researchInvalid();
+  prepared.assertCurrent();
+  return { status: "released" };
+}
+/** Called only by a mutation-factory reader inside its caller's actual
+ * publication. Reentrant ownership avoids adding another publication wait. */
+function nativeWriterClosureMutationReader(preparation: NativeClosureMutationPreparation, original: WriterReader): WriterReader {
+  const state = preparations.get(preparation);
+  if (!state || state.original !== original) return async () => ({ status: "unknown" });
+  return async () => {
+    if (!protectedCodexGoalJobBirthPublicationActive()) return await original();
+    return await withProtectedCodexGoalJobBirthPublication(async () => {
+      assertResearchInitialRoot(true);
+      let entered = false;
+      try {
+        return await withResearchJobMutationAsync(state.manifest.jobId, async () => {
+          entered = true;
+          const token = Object.freeze({}); issuers.set(token, state);
+          try {
+            // Counterevidence cannot be upgraded by a convenience fallback.
+            state.prepared.assertCurrent();
+            try { return await issue(token); }
+            catch {
+              state.prepared.assertCurrent();
+              // Optional I/O/CAS failure requires a complete independent read.
+              const fallback = await original();
+              state.prepared.assertCurrent();
+              return fallback;
+            }
+          } finally { issuers.delete(token); }
+        });
+      } catch (error) {
+        if (!entered && error instanceof Error && error.message === "hosted_research_job_mutation_busy") return await original();
+        return { status: "unknown" };
+      }
+    });
+  };
+}
+/** Mutation observations may use the existing nonwaiting native fence; generic
+ * readers never create or remove a mutex. No fallback is imported here. */
+function nativeWriterClosureMutationFastReader(jobId: string, read: WriterReader): WriterReader {
+  return async () => {
+    if (!protectedCodexGoalJobBirthPublicationActive()) return await read();
+    try { return await withResearchJobMutationAsync(jobId, read); } catch { return { status: "unknown" }; }
+  };
 }

@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/host-inventory";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -16,7 +17,10 @@ import { SystemdArrayProperty, SystemdArraySignature, type SystemdEmptyArrayFact
 export type HostedFdProcess = Readonly<{ pid: number; parentPid: number; birth: string; argv: readonly string[]; exe: string; group: string;
   net: string; user: string; mount: string; pidNamespace: string; uidMap: string; gidMap: string; status: string;
   descriptors: readonly HostedFdFact[] }>;
-export type HostedFdUnit = Readonly<{ unit: string; invocation: string; group: string; mainPid: number; root: string }>;
+import { decodeHostedFdUnitLifecycle, type HostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle";
+export { decodeHostedFdUnitLifecycle, type HostedFdUnitLifecycle } from "./hosted-fd-unit-lifecycle";
+export type HostedFdUnit = Readonly<{ unit: string; invocation: string; group: string; mainPid: number; root: string;
+  lifecycle: HostedFdUnitLifecycle }>;
 const cleanEnv = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" };
 function invalid(): never { throw new Error("hosted_fd_boundary_unresolved"); }
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -128,7 +132,7 @@ export function observeHostedFdProcess(pid: number): HostedFdProcess {
   const parentPid = Number(stat.slice(at + 2).trim().split(/\s+/)[1]);
   if (!Number.isSafeInteger(parentPid) || parentPid < 0) invalid();
   const observed = Object.freeze({ pid, parentPid, birth: `${pid}:${tick}`, argv: Object.freeze(argv), exe: readlinkSync(`/proc/${pid}/exe`),
-    group: readFileSync(`/proc/${pid}/cgroup`, "utf8").trim(), net: readlinkSync(`/proc/${pid}/ns/net`),
+    group: observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8")), net: readlinkSync(`/proc/${pid}/ns/net`),
     user: readlinkSync(`/proc/${pid}/ns/user`), mount: readlinkSync(`/proc/${pid}/ns/mnt`), pidNamespace: readlinkSync(`/proc/${pid}/ns/pid`),
     uidMap: readFileSync(`/proc/${pid}/uid_map`, "utf8").trim().replace(/\s+/g, " "),
     gidMap: readFileSync(`/proc/${pid}/gid_map`, "utf8").trim().replace(/\s+/g, " "),
@@ -143,7 +147,9 @@ export function observeHostedFdProcess(pid: number): HostedFdProcess {
 
 const unitProperties = ["Id", "InvocationID", "ControlGroup", "MainPID", "ActiveState", "FileDescriptorStoreMax",
   "NFileDescriptorStore", "TriggeredBy", "UnsetEnvironment", "PassEnvironment", "EnvironmentFiles", "ExecStart",
-  "ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "RootDirectory"] as const;
+  "ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "RootDirectory",
+  "Type", "ExitType", "RemainAfterExit", "KillMode", "SendSIGKILL", "Restart", "Delegate", "ProtectControlGroups",
+  "TimeoutStopUSec", "KillSignal", "FinalKillSignal"] as const;
 const unitArrays = [SystemdArrayProperty.ExecCondition, SystemdArrayProperty.ExecStartPre, SystemdArrayProperty.ExecStartPost,
   SystemdArrayProperty.ExecReload, SystemdArrayProperty.ExecStop, SystemdArrayProperty.ExecStopPost, SystemdArrayProperty.EnvironmentFiles] as const;
 
@@ -177,12 +183,12 @@ export function decodeHostedFdUnitFields(text: string, facts?: readonly SystemdE
 }
 
 export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[], remaining: SystemdObservationRemaining): HostedFdUnit {
-  if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
+  if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider|dependency-remove)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   const installed = readInstalledFdInventory(remaining);
   if (!installed) invalid();
   const bus = readSystemBusInfrastructureField(installed.inventory);
   if (!bus || bus.version !== 2) invalid();
-  const result = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+  const result = spawnSync("/usr/bin/systemctl", ["show", "--all", `--property=${unitProperties.join(",")}`, "--", unit],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
   observationTimeout(5000, remaining);
@@ -192,7 +198,8 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   decodeHostedFdUnitFields(result.stdout);
   const facts = observeSystemBusFdEmptyArrays(bus, unit, remaining);
   const rows = decodeHostedFdUnitFields(result.stdout, facts);
-  if (rows.size !== 19 || rows.get("Id") !== unit || !/^[a-f0-9]{32}$/.test(rows.get("InvocationID") ?? "") ||
+  const lifecycle = decodeHostedFdUnitLifecycle(rows);
+  if (rows.size !== unitProperties.length || rows.get("Id") !== unit || !/^[a-f0-9]{32}$/.test(rows.get("InvocationID") ?? "") ||
       rows.get("ActiveState") !== "active" || rows.get("FileDescriptorStoreMax") !== "0" ||
       rows.get("NFileDescriptorStore") !== "0" || rows.get("TriggeredBy") !== "" || rows.get("PassEnvironment") !== "" ||
       rows.get("EnvironmentFiles") !== "" || hostedFdUnsetEnvironment.split(" ").some(key =>
@@ -206,7 +213,7 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}` &&
       group !== `/system.slice/${unit}`) invalid();
   // Bind the policy bracket to the same launch instance, not merely its name.
-  const after = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+  const after = spawnSync("/usr/bin/systemctl", ["show", "--all", `--property=${unitProperties.join(",")}`, "--", unit],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
   observationTimeout(5000, remaining);
@@ -215,7 +222,8 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (!current || !current.inventoryBytes.equals(installed.inventoryBytes) ||
       !current.installationBytes.equals(installed.installationBytes)) invalid();
   observationTimeout(5000, remaining);
-  return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")), root: rows.get("RootDirectory")! });
+  return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")),
+    root: rows.get("RootDirectory")!, lifecycle });
 }
 
 export function collectHostedFdPeers(profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): ReadonlyMap<string, FdCollectorPeer> {
@@ -248,12 +256,14 @@ export function assertHostedFdInternals(process: HostedFdProcess, profile: FdCol
 
 export function assertHostedFdBootstrap(process: HostedFdProcess, profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): void {
   const installer = process.argv[1] === "/runtime/bootstrap.js";
+  const remover = process.argv[1]?.endsWith("/hosted-dependency-remover-bootstrap.js") === true;
   const script = profile.bootstraps.find(pin => installer ?
     pin.path.endsWith("/hosted-dependency-installer-bootstrap.js") : pin.path === process.argv[1]);
   if (process.exe !== profile.node.path || process.argv[0] !== profile.node.path ||
       !script ||
       !(process.argv.length === 2 || (process.argv.length === 3 &&
-        (process.argv[2] === "ordinary-bootstrap" || process.argv[2] === "--research-ready-v1" || process.argv[2] === "--fd-ready-v1"))) ||
+        (process.argv[2] === "ordinary-bootstrap" || process.argv[2] === "--research-ready-v1" || process.argv[2] === "--fd-ready-v1" ||
+          remover && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(process.argv[2]!)))) ||
       process.net !== readlinkSync("/proc/self/ns/net")) invalid();
   for (const pin of profile.node.elfFiles) protectedBytes(pin, false, `/proc/${process.pid}/root`, remaining);
   protectedBytes(installer ? { ...script, path: "/runtime/bootstrap.js" } : script, false, `/proc/${process.pid}/root`, remaining);

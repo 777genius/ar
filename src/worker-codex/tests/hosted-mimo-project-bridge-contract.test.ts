@@ -1,3 +1,9 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
 import { readMimoProjectIngress } from "../../hosted-native-probe/mimo-project-ingress";
 import { routeProbeIngress } from "../../hosted-native-probe/ingress";
 import { describe, expect, it } from "vitest";
@@ -82,4 +88,55 @@ describe("actual restricted ingress MiMo kind routing", () => {
     const bytes = Buffer.from(text);
     expect(() => { const mimo = readMimoProjectIngress(bytes); if (!mimo) routeProbeIngress(bytes); }).toThrow();
   });
+});
+
+it("bounds and snapshots Create ownership without changing legacy thinking normalization", () => {
+  const ownedPaths = ["src/feature/one.ts", "src/feature/nested/"];
+  const parsed = parseMimoProjectBridgeRequest({ ...base, thinking: true, ownedPaths });
+  ownedPaths.push("src/later.ts");
+  expect(parsed.ownedPaths).toEqual(["src/feature/one.ts", "src/feature/nested/"]);
+  expect(Object.isFrozen(parsed.ownedPaths)).toBe(true);
+  expect(parsed.reasoningEffort).toBe("high");
+  for (const paths of [[], ["x", "x"], ["../x"], ["/x"], ["x//y"], ["x/./y"],
+    ["x/*"], ["x/?"], ["x/[ab]"], ["x/\\y"], ["x\0y"], ["x".repeat(4097)],
+    Array.from({ length: 257 }, (_, i) => `src/${i}.ts`), Array.from({ length: 20 }, (_, i) => `${i}${"x".repeat(3000)}`)])
+    expect(() => parseMimoProjectBridgeRequest({ ...base, ownedPaths: paths })).toThrow("request_invalid");
+  const { prompt: _prompt, sourceCommit: _source, ...control } = base;
+  for (const operation of [MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop,
+    MimoProjectBridgeOperation.RepairAdmission, MimoProjectBridgeOperation.FinalizeAdmissionRepair])
+    expect(() => parseMimoProjectBridgeRequest({ ...control, operation, ownedPaths: ["src/x"] })).toThrow("request_invalid");
+});
+
+it("rejects a combined prompt and ownership request exceeding the fixed ingress budget", () => {
+  expect(() => parseMimoProjectBridgeRequest({ ...base, prompt: "x".repeat(32768),
+    ownedPaths: Array.from({ length: 12 }, (_, i) => `${i}${"x".repeat(3000)}`) })).toThrow("request_invalid");
+});
+
+it("loads the actual isolated emitted MiMo ingress without worker packages or Zod", () => {
+  const directory = mkdtempSync(join(tmpdir(), "TEST-mimo-isolated-ingress-"));
+  try {
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ type: "module" }));
+    const leaves = ["hosted-native-probe/mimo-project-ingress", "worker-codex/hosted-mimo-project-bridge-contract",
+      "worker-codex/application/project-control/worker-launch-ownership"];
+    for (const leaf of leaves) {
+      const source = readFileSync(new URL(`../../${leaf}.ts`, import.meta.url), "utf8");
+      const emitted = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+      const target = join(directory, leaf + ".js"); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, emitted);
+    }
+    const script = `
+      import { readMimoProjectIngress } from ${JSON.stringify(pathToFileURL(join(directory, leaves[0] + ".js")).href)};
+      const base = ${JSON.stringify(base)};
+      const read = value => readMimoProjectIngress(Buffer.from(JSON.stringify(value)));
+      const accepted = read({ ...base, thinking: true, ownedPaths: ["src/feature/one.ts", "src/feature/nested/"] });
+      if (accepted.reasoningEffort !== "high" || accepted.ownedPaths.length !== 2) throw new Error("isolated Create mismatch");
+      const { prompt, sourceCommit, ...control } = base;
+      for (const value of [{ ...base, ownedPaths: ["../escape"] }, { ...control, operation: "start", ownedPaths: ["src/x"] }]) {
+        let rejected = false;
+        try { read(value); } catch (error) { if (error.message !== "mimo_project_bridge_request_invalid") throw error; rejected = true; }
+        if (!rejected) throw new Error("isolated request not rejected");
+      }
+      console.log("isolated ingress PASS");
+    `;
+    expect(execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: directory, encoding: "utf8", timeout: 10000 })).toBe("isolated ingress PASS\n");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

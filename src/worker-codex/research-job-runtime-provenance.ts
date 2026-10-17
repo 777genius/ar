@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
-import { researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
+import { installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
 import { parseResearchStartSpec } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchAuthorityRoot, researchCustody, researchHash, researchRead, researchRecord } from "./research-launch-files";
@@ -25,6 +25,18 @@ export function researchJobRuntimeNamespaceAbsent(jobId: string): boolean {
 /** Exact protected execution origin supersedes birth when a later runtime
  * started a never-run job. This reader cannot authorize release or a new start. */
 export function researchJobRuntimeProvenance(manifest: CodexGoalJobManifest): ResearchJobRuntimeProvenance | undefined {
+  return readResearchJobRuntimeProvenance(manifest, false);
+}
+
+/** Writer classification only: a same-installed origin was always discarded by
+ * the caller, even when artifact qualification failed. Foreign origins retain
+ * complete qualification; this reader never supplies current writer authority. */
+export function researchForeignWriterRuntimeProvenance(manifest: CodexGoalJobManifest): ResearchJobRuntimeProvenance | undefined {
+  return readResearchJobRuntimeProvenance(manifest, true);
+}
+
+function readResearchJobRuntimeProvenance(manifest: CodexGoalJobManifest,
+  foreignWriterOnly: boolean): ResearchJobRuntimeProvenance | undefined {
   try {
     assertResearchInitialRoot(true);
     const authority = researchJobAuthority(manifest.jobId);
@@ -53,7 +65,8 @@ export function researchJobRuntimeProvenance(manifest: CodexGoalJobManifest): Re
         (!spec.registeredHandoff && !spec.projectLaunchBinding)) return undefined;
     const grantPath = join(researchJobAuthority(manifest.jobId), "grant.json"), grant = researchRead(grantPath);
     if (researchHash(grant) !== spec.grantSha256) return undefined;
-    assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256);
+    const ignoredInstalledOrigin = foreignWriterOnly && spec.runtimeDirectory === installedResearchRuntimeDirectory();
+    if (!ignoredInstalledOrigin) assertQualifiedResearchRuntimeArtifact(spec.runtimeDirectory, spec.artifactSha256);
     const assertCurrent = (): void => {
       assertResearchInitialRoot(true);
       const freshActive = activeBytes();
@@ -64,6 +77,6 @@ export function researchJobRuntimeProvenance(manifest: CodexGoalJobManifest): Re
           !researchRead(join(current.directory, "spec.json")).equals(current.bytes)) throw new Error("mimo_project_runtime_routing_invalid");
     };
     assertCurrent();
-    return Object.freeze({ runtimeDirectory: spec.runtimeDirectory, artifactSha256: spec.artifactSha256, assertCurrent });
+    return ignoredInstalledOrigin ? undefined : Object.freeze({ runtimeDirectory: spec.runtimeDirectory, artifactSha256: spec.artifactSha256, assertCurrent });
   } catch { return undefined; }
 }

@@ -1,4 +1,5 @@
-import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "./research-writer-observation";
+import { CodexGoalObservationMode } from "./application/codex-goal-registered-job-observation";
+import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation, createResearchJobWriterObservationPreparer } from "./research-writer-observation";
 import { LocalConsumedOutputLedgerMutationLock } from "../worker-local/consumed-output-ledger-local-adapter";
 import {
   AccessBoundary,
@@ -41,13 +42,16 @@ export type LoadedProjectControlController = {
   readonly scope: ProjectAccessScope;
 };
 
+/** `includeRetired` is for read-only observation only, never from tool arguments. */
 export async function loadProjectControlController(
   args: ProjectControlMcpArgs,
+  options: { readonly includeRetired?: true } = {},
 ): Promise<LoadedProjectControlController> {
   const registryRootDir = registryRootFromArgs(args);
   const controller = await readCodexGoalJob({
     registryRootDir,
     jobId: requiredRawString(args.controllerJobId, "controllerJobId"),
+    ...options,
   });
   if (controller.accessBoundary !== AccessBoundary.ProjectScopedControl) {
     throw new Error("project_control_controller_boundary_required");
@@ -68,9 +72,12 @@ export const projectControlEvidenceCustody =
 
 export const codexProjectAdmissionDeps: CodexProjectAdmissionDeps = {
   listJobs: listCodexGoalJobs,
-  readJob: readCodexGoalJob,
+  // Admission projects every registration, retired ones included; the effect
+  // on the target job is refused by its own Start or create path.
+  readJob: input => readCodexGoalJob({ ...input, includeRetired: true }),
   readWriterWritableRoots: observeResearchJobWriterAuthority,
   prepareWriterObservation: prepareResearchJobWriterObservation,
+  createWriterObservationPreparer: createResearchJobWriterObservationPreparer,
   buildOverviewItems: (inputs) => buildCodexGoalOverviewItems(inputs),
   observeManifestRuntime: async (manifest) => {
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
@@ -89,6 +96,12 @@ export const codexProjectAdmissionDeps: CodexProjectAdmissionDeps = {
     };
   },
   evidenceCustody: projectControlEvidenceCustody,
+};
+
+/** Public query composition; command/Status dependencies retain reconciliation. */
+export const codexProjectAdmissionQueryDeps: CodexProjectAdmissionDeps = {
+  ...codexProjectAdmissionDeps,
+  buildOverviewItems: inputs => buildCodexGoalOverviewItems(inputs, CodexGoalObservationMode.ReadOnly),
 };
 
 export function codexProjectControlBroker(

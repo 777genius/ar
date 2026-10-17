@@ -4,6 +4,7 @@ import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError } 
 import { AppServerOutputValidationError, AppServerOutputValidationStage, AppServerOutputValidationCode } from "./app-server/application/app-server-output-validation-error";
 import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
+import { codexStructuredOutputFailureDetails } from "./codex-structured-output-schema";
 import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
 import type { ProviderFailure, ProviderFailureCode } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
@@ -256,6 +257,7 @@ function codexFailureDetails(
   }
   const details: Record<string, string> =
     error instanceof CodexAppServerTurnError ? { ...error.details() } : {};
+  Object.assign(details, codexStructuredOutputFailureDetails(error));
   const process = processFailureLike(error);
   if (process?.exitCode !== undefined) {
     details.exitCode = String(process.exitCode);
@@ -337,4 +339,21 @@ function safeTail(value: string): string {
   // shrink an oversized secret-bearing message or change a multiline secret
   // before the store's exact-secret redactor sees it.
   return value.length > 1000 ? "[redacted:oversized-provider-detail]" : value;
+}
+
+export function codexFinishReasonForFailure(
+  code: ProviderFailure["code"],
+):
+  | "completed"
+  | "waiting_for_input"
+  | "max_turns"
+  | "cancelled"
+  | "timeout"
+  | "budget_exceeded"
+  | "provider_error" {
+  if (code === "task_cancelled") return "cancelled";
+  if (code === "task_timeout") return "timeout";
+  if (code === "goal_slice_exhausted") return "max_turns";
+  if (code === "budget_exceeded") return "budget_exceeded";
+  return "provider_error";
 }

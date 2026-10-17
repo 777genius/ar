@@ -1,10 +1,10 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { AgentRuntimeTool, DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { createFileBackendCodexWorkerRuntime } from "../file-backend-codex-runtime-factory";
-import { MemoryWorkerObservability } from "./file-backend-codex-worker-test-support";
+import { MemoryWorkerObservability, StaticRunner } from "./file-backend-codex-worker-test-support";
 import { CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { grantOwnedMimoWorkerLaunch, grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
@@ -15,6 +15,7 @@ import { admitHostedReadonlyInputs } from "../hosted-readonly-admission";
 import { buildCodexGoalExecutorOptions, runCodexGoal } from "../codex-goal-runner";
 import { assertWorkerOptions } from "../file-backend-codex-worker-options";
 import { readHostedMimoWorkerOrigin } from "../../provider-codex/hosted-mimo-worker-origin";
+import { MimoSnapshotGitFailure, type MimoSnapshotTiming } from "../owned-mimo-snapshot-git";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
@@ -59,6 +60,7 @@ describe("owned standalone MiMo worker", () => {
 
   // RED: the old closed request/egress/options boundaries refuse an independently owned MiMo worker.
   it("admits the exact Worker grant into finite real executor composition", async () => {
+    host.physicalPaths = true;
     const { spec, selected } = startMimo();
     const config = researchRunConfig(selected);
     if (config.executionEngine === undefined || config.modelBackend === undefined || config.sourceEnv === undefined) {
@@ -71,8 +73,21 @@ describe("owned standalone MiMo worker", () => {
     expect(policy.domains).toEqual(["token-plan-sgp.xiaomimimo.com"]);
     const factory = admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy });
     if (factory === undefined) throw new Error("Expected the owned MiMo worker provider factory");
+    const timings: MimoSnapshotTiming[] = [];
     const options = buildCodexGoalExecutorOptions({ config, appServerProcessFactory: factory,
-      providerEgressPolicy: policy, encryptionKey: new Uint8Array(32), stateRootDir: config.stateRootDir! });
+      providerEgressPolicy: policy, encryptionKey: new Uint8Array(32), stateRootDir: config.stateRootDir!,
+      observeOwnedMimoSnapshotTiming: timing => timings.push(timing) });
+    expect(options.snapshotter).toBeDefined();
+    expect(options.workspaceAccess).toBeDefined();
+    const cancelled = new AbortController(); cancelled.abort();
+    const firstFailure = await options.workspaceAccess!.assertGitWorkspace({ workspacePath: selected.workspacePath, abortSignal: cancelled.signal }).catch((error: unknown) => error);
+    expect(firstFailure).toBeInstanceOf(MimoSnapshotGitFailure);
+    await expect(options.snapshotter!.capture({ workspacePath: selected.workspacePath, abortSignal: cancelled.signal })).rejects.toBe(firstFailure);
+    expect(timings.map(t => [t.scope, t.outcome])).toEqual([["initial_access", "failed"], ["initial_snapshot", "failed"]]);
+    for (const timing of timings) for (const key of ["admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs", "admissionAuthorityServiceElapsedMs"] as const) {
+      expect(timing[key]).toBeTypeOf("number"); expect(timing[key]).toBeGreaterThanOrEqual(0);
+    }
+    for (const timing of timings) expect(timing.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing.admissionAuthorityElapsedMs!);
     expect(options.accounts).toHaveLength(1);
     expect(options.accounts[0]).not.toHaveProperty("codexAuthJsonPath");
     expect(options.maxAccountCycles).toBe(1);
@@ -93,7 +108,28 @@ describe("owned standalone MiMo worker", () => {
     const runtime = createFileBackendCodexWorkerRuntime({ options: { ...worker, outputSchemas: options.outputSchemas, workspacePath: selected.workspacePath },
       workerId: "TEST-mimo-worker", observability: new MemoryWorkerObservability(), redactor: new DefaultRedactor(),
       clock: { now: () => new Date(), monotonicMs: () => performance.now() } });
-    const generated = (runtime.agentDriver as unknown as { options: { mimoConfigToml: string } }).options.mimoConfigToml;
+    const credentialPath = local("/etc/subscription-runtime/secrets/shared/mimo-token-plan-api-key");
+    mkdirSync(dirname(credentialPath), { recursive: true, mode: 0o700 });
+    writeFileSync(credentialPath, "TEST-only-mimo-credential", { mode: 0o600 });
+    const abort = new AbortController();
+    let generated = "", inspected = false;
+    try {
+      const result = await runtime.agentDriver.runTask({ session: null,
+        task: { kind: "structured-prompt", prompt: "TEST inspect owned config before provider entry", outputSchemaName: "codex-worker-report" },
+        workspace: { path: selected.workspacePath }, runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }),
+        redactor: new DefaultRedactor(), abortSignal: abort.signal, onTaskStarted: () => {
+          const homeRoot = join(selected.jobRootDir, "home"), homes = readdirSync(homeRoot);
+          expect(homes).toHaveLength(1);
+          expect(homes[0]).toMatch(/^mimo-/);
+          generated = readFileSync(join(homeRoot, homes[0]!, "codex-home", "config.toml"), "utf8");
+          inspected = true;
+          abort.abort();
+          throw new Error("TEST-config-inspected-before-provider-entry");
+        } });
+      expect(inspected).toBe(true);
+      expect(abort.signal.aborted).toBe(true);
+      expect(result.status).toBe("failed");
+    } finally { if ("dispose" in runtime.agentDriver) await runtime.agentDriver.dispose(); }
     expect(generated).toContain('[permissions.hosted-project-read.filesystem]');
     expect(generated).toContain('[mcp_servers.agent_runtime_workspace]');
     expect(generated).toContain('enabled_tools = ["edit_file", "read_file", "search_files", "write_file"]');
