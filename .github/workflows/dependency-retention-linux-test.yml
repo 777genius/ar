@@ -11,6 +11,16 @@ on:
       - 'scripts/dependency-retention-os-test/reference-enrollment-assertions.ts'
       - 'scripts/dependency-retention-os-test/tsconfig.reference-enrollment-emit.json'
       - '.github/workflows/dependency-retention-linux-test.yml'
+      - 'scripts/dependency-retention-os-test/**'
+      - '.github/workflows/dependency-retention-os-test.yml'
+      - 'src/worker-codex/hosted-readonly-*.ts'
+      - 'src/worker-codex/hosted-test-egress-*.ts'
+      - 'src/worker-codex/trusted-custody-systemd-launch.ts'
+      - 'src/worker-codex/codex-goal-*.ts'
+      - 'src/provider-codex/app-server/adapters/hosted-*.ts'
+      - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
+      - 'src/provider-codex/app-server/adapters/systemd-service-arrays.ts'
+      - 'src/core/host-infrastructure/**'
 
 permissions:
   contents: read

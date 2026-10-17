@@ -2,10 +2,14 @@
 import assert from "node:assert/strict";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statfsSync } from "node:fs";
 import { runtime } from "./common.ts";
-export enum CurrentBackingGeometry { Existing = "existing", Adoptable = "current-adoptable-backing" }
+// Erasable const-object forms (strip-types compatible); the enum spelling was
+// not loadable by the strip-only runner that executes the owned OS fixture.
+export const CurrentBackingGeometry = { Existing: "existing", Adoptable: "current-adoptable-backing" } as const;
+export type CurrentBackingGeometry = typeof CurrentBackingGeometry[keyof typeof CurrentBackingGeometry];
 export const currentBackingStorage = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs";
 export const currentGeometryMarker = runtime + "/TEST-current-backing.json";
-export enum CurrentGeometryQualification { ClosedOnly = "native_current_closed_registration_on_adoptable_backing_only" }
+export const CurrentGeometryQualification = { ClosedOnly: "native_current_closed_registration_on_adoptable_backing_only" } as const;
+export type CurrentGeometryQualification = typeof CurrentGeometryQualification[keyof typeof CurrentGeometryQualification];
 export function readCurrentBackingGeometry(): CurrentBackingGeometry {
   if (!existsSync(currentGeometryMarker)) return CurrentBackingGeometry.Existing;
   const before = lstatSync(currentGeometryMarker);
