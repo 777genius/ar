@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
+import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git-hygiene";
 import { researchCustody } from "./research-launch-files";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import type { ProjectSealedSourcePort } from "./codex-goal-mcp-project-control-jobs-types";

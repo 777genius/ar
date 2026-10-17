@@ -42,13 +42,16 @@ export type LoadedProjectControlController = {
   readonly scope: ProjectAccessScope;
 };
 
+/** `includeRetired` is for read-only observation only, never from tool arguments. */
 export async function loadProjectControlController(
   args: ProjectControlMcpArgs,
+  options: { readonly includeRetired?: true } = {},
 ): Promise<LoadedProjectControlController> {
   const registryRootDir = registryRootFromArgs(args);
   const controller = await readCodexGoalJob({
     registryRootDir,
     jobId: requiredRawString(args.controllerJobId, "controllerJobId"),
+    ...options,
   });
   if (controller.accessBoundary !== AccessBoundary.ProjectScopedControl) {
     throw new Error("project_control_controller_boundary_required");
@@ -69,7 +72,9 @@ export const projectControlEvidenceCustody =
 
 export const codexProjectAdmissionDeps: CodexProjectAdmissionDeps = {
   listJobs: listCodexGoalJobs,
-  readJob: readCodexGoalJob,
+  // Admission projects every registration, retired ones included; the effect
+  // on the target job is refused by its own Start or create path.
+  readJob: input => readCodexGoalJob({ ...input, includeRetired: true }),
   readWriterWritableRoots: observeResearchJobWriterAuthority,
   prepareWriterObservation: prepareResearchJobWriterObservation,
   createWriterObservationPreparer: createResearchJobWriterObservationPreparer,

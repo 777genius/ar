@@ -100,9 +100,11 @@ async function matchingProjectControlController(input: {
   for (const summary of summaries) {
     let manifest: CodexGoalJobManifest;
     try {
+      // A retired controller's scope still denies generic tools on its paths.
       manifest = await readCodexGoalJob({
         registryRootDir: input.registryRootDir,
         jobId: summary.jobId,
+        includeRetired: true,
       });
     } catch {
       continue;

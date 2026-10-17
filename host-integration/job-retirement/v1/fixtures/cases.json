@@ -1,0 +1,306 @@
+{
+  "schema": "subscription-runtime-job-retirement-conformance",
+  "schemaVersion": 1,
+  "documents": [
+    {
+      "file": "valid/closed-mimo-controller.json",
+      "valid": true
+    },
+    {
+      "file": "valid/closed-native-worker.json",
+      "valid": true
+    },
+    {
+      "file": "valid/closed-never-started.json",
+      "valid": true
+    },
+    {
+      "file": "valid/receipt-job.json",
+      "valid": true
+    },
+    {
+      "file": "valid/receipt-workstream.json",
+      "valid": true
+    },
+    {
+      "file": "valid/retired-flat-workstream-clean.json",
+      "valid": true
+    },
+    {
+      "file": "valid/retired-mimo-controller.json",
+      "valid": true
+    },
+    {
+      "file": "valid/retired-mimo-worker.json",
+      "valid": true
+    },
+    {
+      "file": "valid/retired-project-workstream-handoff.json",
+      "valid": true
+    },
+    {
+      "file": "valid/retired-workstream.json",
+      "valid": true
+    },
+    {
+      "file": "invalid/closed-controller-outside-mimo.json",
+      "valid": false,
+      "reason": "role_terminal_mismatch"
+    },
+    {
+      "file": "invalid/controller-outside-mimo.json",
+      "valid": false,
+      "reason": "role_terminal_mismatch"
+    },
+    {
+      "file": "invalid/layout-mismatch.json",
+      "valid": false,
+      "reason": "layout_mismatch"
+    },
+    {
+      "file": "invalid/layout-unknown.json",
+      "valid": false,
+      "reason": "layout_unknown"
+    },
+    {
+      "file": "invalid/mimo-worker-deletes-workspace.json",
+      "valid": false,
+      "reason": "deletion_scope_invalid"
+    },
+    {
+      "file": "invalid/mimo-worker-workspace-elsewhere.json",
+      "valid": false,
+      "reason": "workspace_outside_scratch"
+    },
+    {
+      "file": "invalid/mimo-worker-wrong-workstream-tombstone.json",
+      "valid": false,
+      "reason": "deletion_scope_invalid"
+    },
+    {
+      "file": "invalid/project-job-deletes-workstream.json",
+      "valid": false,
+      "reason": "deletion_scope_invalid"
+    },
+    {
+      "file": "invalid/receipt-layout-mismatch.json",
+      "valid": false,
+      "reason": "layout_mismatch"
+    },
+    {
+      "file": "invalid/schema-closed-without-boot.json",
+      "valid": false,
+      "reason": "schema"
+    },
+    {
+      "file": "invalid/schema-dot-segment.json",
+      "valid": false,
+      "reason": "schema"
+    },
+    {
+      "file": "invalid/schema-negative-device.json",
+      "valid": false,
+      "reason": "schema"
+    },
+    {
+      "file": "invalid/schema-space-in-path.json",
+      "valid": false,
+      "reason": "schema"
+    },
+    {
+      "file": "invalid/schema-unknown-field.json",
+      "valid": false,
+      "reason": "schema"
+    },
+    {
+      "file": "invalid/schema-wrong-version.json",
+      "valid": false,
+      "reason": "schema"
+    },
+    {
+      "file": "invalid/worker-with-controller-terminal.json",
+      "valid": false,
+      "reason": "role_terminal_mismatch"
+    },
+    {
+      "file": "invalid/workspace-outside-scratch.json",
+      "valid": false,
+      "reason": "workspace_outside_scratch"
+    },
+    {
+      "file": "invalid/workspace-sibling-prefix.json",
+      "valid": false,
+      "reason": "workspace_outside_scratch"
+    },
+    {
+      "file": "invalid/workstream-duplicate-job.json",
+      "valid": false,
+      "reason": "duplicate_job"
+    },
+    {
+      "file": "invalid/workstream-layout-mismatch.json",
+      "valid": false,
+      "reason": "layout_mismatch"
+    },
+    {
+      "file": "invalid/workstream-scratch-root.json",
+      "valid": false,
+      "reason": "workspace_outside_scratch"
+    },
+    {
+      "file": "invalid/workstream-source-path.json",
+      "valid": false,
+      "reason": "source_path_invalid"
+    },
+    {
+      "file": "invalid/workstream-two-controllers.json",
+      "valid": false,
+      "reason": "role_terminal_mismatch"
+    }
+  ],
+  "deletion": [
+    {
+      "name": "exact directory",
+      "file": "valid/retired-project-workstream-handoff.json",
+      "observed": {
+        "kind": "directory",
+        "device": 2049,
+        "inode": 131074
+      },
+      "verdict": "deletable"
+    },
+    {
+      "name": "replaced directory",
+      "file": "valid/retired-project-workstream-handoff.json",
+      "observed": {
+        "kind": "directory",
+        "device": 2049,
+        "inode": 131075
+      },
+      "verdict": "identity_mismatch"
+    },
+    {
+      "name": "other filesystem",
+      "file": "valid/retired-flat-workstream-clean.json",
+      "observed": {
+        "kind": "directory",
+        "device": 2050,
+        "inode": 524290
+      },
+      "verdict": "identity_mismatch"
+    },
+    {
+      "name": "already deleted",
+      "file": "valid/retired-flat-workstream-clean.json",
+      "observed": {
+        "kind": "absent"
+      },
+      "verdict": "absent"
+    },
+    {
+      "name": "symlink at the path",
+      "file": "valid/retired-project-workstream-handoff.json",
+      "observed": {
+        "kind": "symlink",
+        "device": 2049,
+        "inode": 131074
+      },
+      "verdict": "not_directory"
+    },
+    {
+      "name": "MiMo job tombstone never deletes its own workspace",
+      "file": "valid/retired-mimo-worker.json",
+      "observed": {
+        "kind": "directory",
+        "device": 66306,
+        "inode": 393218
+      },
+      "verdict": "not_deletable"
+    },
+    {
+      "name": "exact workstream scratch root",
+      "file": "valid/retired-workstream.json",
+      "observed": {
+        "kind": "directory",
+        "device": 66306,
+        "inode": 131074
+      },
+      "verdict": "deletable"
+    },
+    {
+      "name": "replaced workstream scratch root",
+      "file": "valid/retired-workstream.json",
+      "observed": {
+        "kind": "directory",
+        "device": 66306,
+        "inode": 999999
+      },
+      "verdict": "identity_mismatch"
+    }
+  ],
+  "locations": [
+    {
+      "file": "valid/closed-native-worker.json",
+      "path": "/srv/worker-state/jobs/example-project/main/registry/example-project-main-job-001/terminal.json",
+      "matches": true
+    },
+    {
+      "file": "valid/closed-native-worker.json",
+      "path": "/srv/worker-state/jobs/example-project/main/registry/example-project-main-job-001/retired.json",
+      "matches": false
+    },
+    {
+      "file": "valid/retired-mimo-worker.json",
+      "path": "/srv/worker-state/mimo-projects/example-project/main/registry/example-project-main-job-001/retired.json",
+      "matches": true
+    },
+    {
+      "file": "valid/retired-mimo-worker.json",
+      "path": "/srv/worker-state/mimo-projects/example-project/main/registry/another-job/retired.json",
+      "matches": false
+    },
+    {
+      "file": "valid/retired-workstream.json",
+      "path": "/srv/worker-state/mimo-projects/example-project/main/retired.json",
+      "matches": true
+    },
+    {
+      "file": "valid/retired-workstream.json",
+      "path": "/srv/worker-state/mimo-projects/example-project/main/registry/retired.json",
+      "matches": false
+    },
+    {
+      "file": "valid/receipt-job.json",
+      "path": "/srv/worker-state/jobs/example-project/main/job-retirements/1111111111111111111111111111111111111111111111111111111111111111.json",
+      "matches": true
+    }
+  ],
+  "workstreamCoverage": [
+    {
+      "name": "every listed job tombstone matches",
+      "workstream": "valid/retired-workstream.json",
+      "tombstones": {
+        "example-project-main-job-001": "valid/retired-mimo-worker.json",
+        "example-project-main-controller": "valid/retired-mimo-controller.json"
+      },
+      "covers": true
+    },
+    {
+      "name": "a listed tombstone was replaced",
+      "workstream": "valid/retired-workstream.json",
+      "tombstones": {
+        "example-project-main-job-001": "valid/retired-project-workstream-handoff.json",
+        "example-project-main-controller": "valid/retired-mimo-controller.json"
+      },
+      "covers": false
+    },
+    {
+      "name": "a listed tombstone is missing",
+      "workstream": "valid/retired-workstream.json",
+      "tombstones": {
+        "example-project-main-job-001": "valid/retired-mimo-worker.json"
+      },
+      "covers": false
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "schema": "subscription-runtime-job-retirement-layouts",
+  "schemaVersion": 1,
+  "layouts": [
+    {
+      "id": "project-workstream",
+      "unit": "job",
+      "registryPattern": "^/srv/worker-state/jobs/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/registry$",
+      "groups": [
+        "projectId",
+        "workstreamId"
+      ],
+      "stateDir": "/srv/worker-state/jobs/{projectId}/{workstreamId}",
+      "scratchRoot": "/srv/workers/jobs/{projectId}/{workstreamId}"
+    },
+    {
+      "id": "flat-workstream",
+      "unit": "job",
+      "registryPattern": "^/srv/worker-state/jobs/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/registry$",
+      "groups": [
+        "workstreamId"
+      ],
+      "stateDir": "/srv/worker-state/jobs/{workstreamId}",
+      "scratchRoot": "/srv/workers/jobs/{workstreamId}"
+    },
+    {
+      "id": "mimo-workstream",
+      "unit": "workstream",
+      "registryPattern": "^/srv/worker-state/mimo-projects/([a-z0-9][a-z0-9._-]{0,127})/([a-z0-9][a-z0-9._-]{0,127})/registry$",
+      "groups": [
+        "projectId",
+        "workstreamId"
+      ],
+      "stateDir": "/srv/worker-state/mimo-projects/{projectId}/{workstreamId}",
+      "scratchRoot": "/srv/workers/mimo-projects/{projectId}/{workstreamId}"
+    }
+  ],
+  "jobIdPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+  "records": {
+    "manifest": "{registryRootDir}/{jobId}/job.json",
+    "closed": "{registryRootDir}/{jobId}/terminal.json",
+    "retired": "{registryRootDir}/{jobId}/retired.json",
+    "workstreamTombstone": "{stateDir}/retired.json",
+    "receipt": "{stateDir}/job-retirements/{planSha256}.json",
+    "runnerEvents": "{jobRootDir}/{taskId}.events.jsonl",
+    "runnerDisposedEvent": "runner_disposed",
+    "mimoSource": "{scratchRoot}/source",
+    "mimoWorkspace": "{scratchRoot}/workspaces/{jobId}"
+  },
+  "referenceCensus": {
+    "bindings": "/etc/subscription-runtime/mimo-projects/*/*.json",
+    "registries": [
+      "/srv/worker-state/jobs/*/registry",
+      "/srv/worker-state/jobs/*/*/registry",
+      "/srv/worker-state/mimo-projects/*/*/registry"
+    ],
+    "snapshots": "/srv/workers/mimo-project-snapshots/*/*"
+  }
+}

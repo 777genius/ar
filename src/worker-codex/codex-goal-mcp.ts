@@ -103,6 +103,7 @@ function registerCodexGoalJobResource(server: McpServer, input: Parameters<typeo
       const manifest = await readCodexGoalJob({
         registryRootDir,
         jobId: String(jobId),
+        includeRetired: true,
       });
       return {
         contents: [{

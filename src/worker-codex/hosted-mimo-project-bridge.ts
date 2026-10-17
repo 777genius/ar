@@ -13,6 +13,9 @@ import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import { readCodexGoalJob } from "./codex-goal-jobs";
 import { protectedCodexGoalJobRuntimeProvenance } from "./protected-job-birth";
 import type { MimoAdmissionRepairPlan } from "./hosted-mimo-project-bridge-contract";
+import { retiredWorkstreamBridgeAnswer } from "./job-retirement/job-retirement-records";
+import { measureMimoProjectStartControlTiming, MimoProjectStartControlTimingScope,
+  type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 
 type AdmissionRepairIdentity = Readonly<{ schemaVersion: 1; machineId: string; projectId: string; workstreamId: string; jobId: string }>;
 type PreviousAdmissionDeniedStart = Readonly<{ ownerSha256: string; requestSha256: string; resultSha256: string }>;
@@ -123,9 +126,11 @@ export function assertHostedMimoProjectRouteOpen(binding: HostedMimoProjectBindi
       !binding.routingEnabled || existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.route-disabled`) ||
       existsSync(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.route-disabled`))
     throw new Error("mimo_project_bridge_route_closed");
-  const yaml = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.yml`).toString("utf8");
-  // Read only the fixed scalar routing contract, not arbitrary YAML features.
-  // The reviewed Ansible template emits these scalars as plain/JSON strings.
+  assertHostedMimoWorkstreamDeclaration(binding, hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/projects/${binding.projectId}.d/${binding.workstreamId}.yml`).toString("utf8"));
+}
+/** Reads only the fixed scalar routing contract, not arbitrary YAML features.
+ * The reviewed Ansible template and the attachment renderer emit these scalars as plain/JSON strings. */
+export function assertHostedMimoWorkstreamDeclaration(binding: Pick<HostedMimoProjectBinding, "projectId" | "workstreamId">, yaml: string): void {
   for (const [key, expected] of Object.entries({ project_id: binding.projectId, workstream_id: binding.workstreamId,
     state_root: `/srv/worker-state/jobs/${binding.projectId}/${binding.workstreamId}`, scratch_root: `/srv/workers/jobs/${binding.projectId}/${binding.workstreamId}`, routing_enabled: true })) {
     const lines = yaml.split("\n").filter(line => line.startsWith(key + ":"));
@@ -151,13 +156,17 @@ function unwrap(value: { content: readonly { type: string; text?: string }[] }):
   if (!text) throw new Error("mimo_project_bridge_response_invalid");
   return JSON.parse(text);
 }
-export async function handleHostedMimoProjectBridge(value: unknown): Promise<unknown> {
+export async function handleHostedMimoProjectBridge(value: unknown, observeControlTiming?: MimoProjectStartControlTimingObserver): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
   assertResearchInitialRoot(true); assertResearchSharedHost();
   if (readFileSync("/etc/machine-id", "utf8").trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   const bytes = hostedMimoBridgeMetadataBytes(`/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`), binding = parseHostedMimoProjectBinding(JSON.parse(bytes.toString("utf8")), request);
+  const retired = retiredWorkstreamBridgeAnswer(binding.stateRoot, request.jobId,
+    request.operation === MimoProjectBridgeOperation.Status || request.operation === MimoProjectBridgeOperation.Stop);
+  if (retired) return retired;
   const { projectControlRefillWorkerFromSealedSource, projectControlStartStoredJob, projectControlStopStoredJob,
-    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await hostedMimoProjectRuntime(binding, request);
+    loadProjectControlController, loadJobLaunch, collectRegisteredCodexGoalJobStatus } = await measureMimoProjectStartControlTiming(
+      MimoProjectStartControlTimingScope.RuntimeSelectionAndImport, () => hostedMimoProjectRuntime(binding, request), observeControlTiming);
   const args: ProjectControlMcpArgs = { registryRootDir: binding.registryRootDir, controllerJobId: binding.controllerJobId, jobId: request.jobId };
   const controller = await loadProjectControlController(args);
   if (controller.scope.projectId !== request.projectId ||
@@ -222,7 +231,7 @@ export async function handleHostedMimoProjectBridge(value: unknown): Promise<unk
     throw new Error("mimo_project_bridge_attempt_invalid");
   if (request.operation === MimoProjectBridgeOperation.Start) {
     assertHostedMimoProjectRouteOpen(binding);
-    return unwrap(await projectControlStartStoredJob({ ...args, confirmStart: true }));
+    return unwrap(await projectControlStartStoredJob({ ...args, confirmStart: true }, observeControlTiming));
   }
   if (request.operation === MimoProjectBridgeOperation.Stop) return unwrap(await projectControlStopStoredJob({ ...args, confirmStop: true }));
   return { ok: true, projectId: request.projectId, workstreamId: request.workstreamId, jobId: request.jobId,

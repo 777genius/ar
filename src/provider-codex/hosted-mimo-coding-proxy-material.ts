@@ -38,6 +38,12 @@ export type HostedMimoCodingProxyMaterial = Readonly<{
 import { registerHostedMimoCodingBootstrap } from "./hosted-mimo-coding-bootstrap-registry";
 const consumedStarts = new Set<string>();
 
+/** Codex retries a dropped stream inside the turn, resending recorded history without rerunning tools.
+ * Request retries stay off so the transport 5xx retry is not nested inside the stream retry loop.
+ * Upstream non-2xx (including capacity 429, proxied as 502) is retried by the stream loop too. */
+const codingStreamMaxRetries = 8;
+const codingStreamIdleTimeoutMs = 600000;
+
 /** Fixed public configuration, never supplied by a caller or read from project
  * files. Native activation/network qualification remain separately closed. */
 function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string, gitReadPaths: readonly string[], requestTimeoutMs: number): string {
@@ -55,8 +61,8 @@ function codingConfig(origin: HostedMimoCodingWorkerOrigin, baseUrl: string, git
     `set = { PATH = ${JSON.stringify(`${dirname(process.execPath)}:/usr/bin:/bin`)}, HOME = ${JSON.stringify(hostedMimoCodingGuestHome)}, CI = "1", TMPDIR = "/tmp", CODEX_HOME = ${JSON.stringify(hostedMimoCodingGuestCodexHome)} }`,
     codexModelBackendModelProvidersConfigToml({ backend: CodexModelBackend.XiaomiMimoTokenPlan, baseUrl,
       envKeyName: codexMimoApiKeyEnvVarDefault }),
-    "request_max_retries = 0", "stream_max_retries = 0", "supports_websockets = false",
-    `stream_idle_timeout_ms = ${requestTimeoutMs}`,
+    "request_max_retries = 0", `stream_max_retries = ${codingStreamMaxRetries}`, "supports_websockets = false",
+    `stream_idle_timeout_ms = ${Math.min(codingStreamIdleTimeoutMs, requestTimeoutMs)}`,
     codexProviderEgressConfigToml(policy, { namedPermissions: true }),
     hostedCodexPermissionProfilesToml(policy, [process.execPath, origin.codexBinaryPath, ...gitReadPaths]),
   ].join("\n") + "\n";

@@ -117,7 +117,7 @@ it("observes only initial access/snapshot while separating real Git from unchang
   await linked();
   const observations: MimoSnapshotTiming[] = [], guard = vi.fn(() => {
     const until = performance.now() + 1; while (performance.now() < until) { /* TEST admission cost */ }
-    return { admissionAuthorityElapsedMs: 0.4, admissionArtifactElapsedMs: 0.3, admissionExecutableElapsedMs: 0.1, admissionAuthorityServiceElapsedMs: 0.2, admissionAuthorityScalarWitnessElapsedMs: 0.15, admissionAuthorityPairedPinElapsedMs: 0.05 };
+    return { admissionAuthorityElapsedMs: 0.4, admissionArtifactElapsedMs: 0.3, admissionExecutableElapsedMs: 0.1, admissionAuthorityServiceElapsedMs: 0.2, admissionAuthorityScalarWitnessElapsedMs: 0.15, admissionAuthorityPairedPinElapsedMs: 0.05, admissionAuthorityScalarTargetQueryElapsedMs: 0.1, admissionAuthorityPairedTargetQueryElapsedMs: 0.03 };
   });
   const runner = new OwnedMimoSnapshotGitRunner(workspace, guard, timing => observations.push(timing));
   const access = ownedMimoWorkspaceAccess(runner), snapshot = ownedMimoWorkspaceSnapshotter(runner);
@@ -137,9 +137,11 @@ it("observes only initial access/snapshot while separating real Git from unchang
     expect(timing.admissionAuthorityServiceElapsedMs).toBeCloseTo(timing.admissionCount * 0.2);
     expect(timing.admissionAuthorityScalarWitnessElapsedMs).toBeCloseTo(timing.admissionCount * 0.15);
     expect(timing.admissionAuthorityPairedPinElapsedMs).toBeCloseTo(timing.admissionCount * 0.05);
+    expect(timing.admissionAuthorityScalarTargetQueryElapsedMs).toBeCloseTo(timing.admissionCount * 0.1);
+    expect(timing.admissionAuthorityPairedTargetQueryElapsedMs).toBeCloseTo(timing.admissionCount * 0.03);
     // Inclusive service time is already inside authority, not an extra outer phase.
     expect(timing.admissionAuthorityServiceElapsedMs).toBeLessThanOrEqual(timing.admissionAuthorityElapsedMs!);
-    expect(Object.keys(timing).sort()).toEqual(["scope", "outcome", "elapsedMs", "admissionCount", "admissionElapsedMs", "successfulGitCount", "successfulGitElapsedMs", "admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs", "admissionAuthorityServiceElapsedMs", "admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs"].sort());
+    expect(Object.keys(timing).sort()).toEqual(["scope", "outcome", "elapsedMs", "admissionCount", "admissionElapsedMs", "successfulGitCount", "successfulGitElapsedMs", "admissionAuthorityElapsedMs", "admissionArtifactElapsedMs", "admissionExecutableElapsedMs", "admissionAuthorityServiceElapsedMs", "admissionAuthorityScalarWitnessElapsedMs", "admissionAuthorityPairedPinElapsedMs", "admissionAuthorityScalarTargetQueryElapsedMs", "admissionAuthorityPairedTargetQueryElapsedMs"].sort());
   }
   expect(JSON.stringify(observations)).not.toContain(workspace);
   await access.assertGitWorkspace({ workspacePath: workspace }); await snapshot.capture({ workspacePath: workspace });
@@ -186,6 +188,36 @@ it("omits each incomplete or hostile witness metric independently without changi
       expect(calls).toBe(2); expect(seen[0]).not.toHaveProperty(key);
       expect(seen[0]?.[other]).toBeCloseTo(0.4);
       expect(seen[0]?.admissionAuthorityElapsedMs).toBe(2);
+    }
+  }
+  expect(invoked).toBe(0);
+});
+
+it("omits incomplete query children independently and requires their matching whole witness", async () => {
+  const keys = ["admissionAuthorityScalarTargetQueryElapsedMs", "admissionAuthorityPairedTargetQueryElapsedMs"] as const;
+  let invoked = 0;
+  for (const key of keys) {
+    const parent = key === keys[0] ? "admissionAuthorityScalarWitnessElapsedMs" : "admissionAuthorityPairedPinElapsedMs";
+    const other = key === keys[0] ? keys[1] : keys[0];
+    const valid = { admissionAuthorityElapsedMs: 1, admissionArtifactElapsedMs: 0, admissionExecutableElapsedMs: 0,
+      admissionAuthorityScalarWitnessElapsedMs: 0.2, admissionAuthorityPairedPinElapsedMs: 0.2, [other]: 0.1 };
+    const getter = { ...valid }; Object.defineProperty(getter, key, { get: () => { invoked++; throw Error("TEST private query"); } });
+    const proxy = new Proxy({ ...valid, [key]: 0.1 }, { getOwnPropertyDescriptor: () => { invoked++; throw Error("TEST proxy"); } });
+    const parentGetter = { ...valid, [key]: 0.1 }; Object.defineProperty(parentGetter, parent, { get: () => { invoked++; throw Error("TEST parent"); } });
+    const bad = [valid, getter, proxy, parentGetter, ...[NaN, -1, Infinity, 0.3].map(v => ({ ...valid, [key]: v })),
+      { ...valid, [key]: 0.1, [parent]: undefined }, { ...valid, [key]: 0.1, [parent]: NaN }];
+    for (const second of bad) {
+      const seen: MimoSnapshotTiming[] = []; let calls = 0;
+      const runner = new OwnedMimoSnapshotGitRunner(workspace, () => {
+        const until = performance.now() + 2; while (performance.now() < until) { /* TEST guard */ }
+        return ++calls === 1 ? { ...valid, [key]: 0.1 } : second;
+      }, timing => seen.push(timing));
+      await expect(runner.observeInitial(MimoSnapshotTimingScope.InitialAccess, async () => {
+        runner.assertHealthy(); runner.assertHealthy(); return 7;
+      })).resolves.toBe(7);
+      expect(calls).toBe(2); expect(seen[0]).not.toHaveProperty(key);
+      if (second !== proxy) { expect(seen[0]?.[other]).toBeCloseTo(0.2); expect(seen[0]?.admissionAuthorityElapsedMs).toBe(2); }
+      else expect(seen[0]).not.toHaveProperty("admissionAuthorityElapsedMs");
     }
   }
   expect(invoked).toBe(0);

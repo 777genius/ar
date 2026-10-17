@@ -9,6 +9,7 @@ import { researchCustody, researchPath, researchRecord, researchRead, researchHa
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation } from "./hosted-mimo-project-bridge-contract";
 import { assertHostedMimoProjectRouteOpen, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, captureHeldMimoPreparationFence, type HeldMimoPreparationFence } from "./hosted-mimo-project-bridge";
 import { onboardHostedMimoProject } from "./hosted-mimo-project-bridge-onboard";
+import { hasPinnedRequiredCheck, hostedMimoCommitIdentity } from "./hosted-mimo-project-admission";
 import { workerLaunchAdmissionSchema } from "./application/project-control/worker-launch-spec";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -28,7 +29,7 @@ export function parseHostedMimoPreparationPlan(value: unknown) {
   if (row.schemaVersion !== 1 || typeof row.repositoryKey !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(row.repositoryKey) ||
       typeof row.repositoryUrl !== "string" || !/^(?:https:\/\/github\.com\/|git@github\.com:)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(row.repositoryUrl) ||
       typeof row.workerJobPrefix !== "string" || !/^[a-z0-9][a-z0-9._-]{0,80}-$/.test(row.workerJobPrefix) ||
-      identity.name !== "iliya" || identity.email !== "iliyazelenkog@gmail.com") throw new Error("mimo_project_bridge_prepare_plan_invalid");
+      identity.name !== hostedMimoCommitIdentity.name || identity.email !== hostedMimoCommitIdentity.email) throw new Error("mimo_project_bridge_prepare_plan_invalid");
   const raw = row.binding as Record<string, unknown>;
   const request = parseMimoProjectBridgeRequest({ kind: "MimoProject", schemaVersion: 1, operation: MimoProjectBridgeOperation.Status,
     jobId: "preparation-validation", machineId: raw?.machineId, projectId: raw?.projectId, workstreamId: raw?.workstreamId });
@@ -42,7 +43,7 @@ export function parseHostedMimoPreparationPlan(value: unknown) {
     workerJobPrefix: row.workerJobPrefix, commitIdentity: { name: identity.name, email: identity.email } };
 }
 function scalar(raw: string): unknown { try { return raw.startsWith('"') ? JSON.parse(raw) : raw; } catch { throw new Error("mimo_project_bridge_repository_invalid"); } }
-function configuredRepository(yaml: string, key: string): Record<string, unknown> {
+export function configuredRepository(yaml: string, key: string): Record<string, unknown> {
   const lines = yaml.split("\n"), start = lines.findIndex(line => line === "repositories:");
   if (start < 0 || lines.filter(line => line === "repositories:").length !== 1) throw new Error("mimo_project_bridge_repository_invalid");
   let selected = false, matches = 0; const result: Record<string, unknown> = {};
@@ -84,6 +85,8 @@ export async function prepareHostedMimoProject(inputPath: string): Promise<unkno
   if (git(["remote", "get-url", "origin"]) !== plan.repositoryUrl || git(["rev-parse", "--verify", b.sourceRef + "^{commit}"]) !== b.sourceCommit ||
       git(["rev-parse", "HEAD"]) !== b.sourceCommit || git(["status", "--porcelain"]) !== "") throw new Error("mimo_project_bridge_snapshot_invalid");
   const admission = workerLaunchAdmissionSchema.parse(b.admission), contract = admission.contract;
+  // A pinned check would block every later advance of this line; builtin admission never runs the command, so the pin protects nothing.
+  if (hasPinnedRequiredCheck(contract.requiredChecks)) throw new Error("mimo_project_bridge_prepare_admission_pinned");
   if ([contract.canonicalSha, contract.baseSha, contract.phaseStartSha].some(sha => sha !== undefined && sha !== b.sourceCommit))
     throw new Error("mimo_project_bridge_admission_source_mismatch");
   for (const path of [contract.controllerPacket, contract.lanePacket, ...contract.mandatoryDocs, ...contract.mandatoryScripts, ...contract.mandatoryFixtures])
@@ -219,7 +222,7 @@ export async function resumeHostedMimoProjectPreparation(inputPath: string, asse
           git(["rev-parse", "--verify", b.sourceRef + "^{commit}"]) !== b.sourceCommit || git(["status", "--porcelain"]) !== "") refused();
       assertPreparationSandbox(workspace, relative(b.sourceWorkspacePath, admission.contract.executionPolicy.sandboxRoot));
     }
-    // Reuse the existing validated scratch policy and its actual 5 GiB free floor;
+    // Reuse the existing validated scratch policy and its configured free floor;
     // no retained-after-build or later-install budget is added here.
     if (!resolveHostScratchTempRoot(controllerRoot)) refused();
     assertProducerClosed();

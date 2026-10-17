@@ -1,4 +1,4 @@
-import { handoffPreservationBudget } from "./codex-goal-handoff-preservation-budget";
+import { handoffPreservationBudget, gitReadBudgetBytes } from "./codex-goal-handoff-preservation-budget";
 import { buildTar, tarPathFields } from "./codex-goal-handoff-untracked-tar";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -41,7 +41,6 @@ import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose,
   HostedDependencyRootDescriptorRecipe, openCurrentHostedDependencyRootDescriptor } from "./hosted-dependency-root-purpose";
 
 const execFileAsync = promisify(execFile);
-const maxGitBytes = 32 * 1024 * 1024;
 const maxFileBytes = handoffPreservationBudget.sourceFileBytes;
 const maxTotalBytes = handoffPreservationBudget.untrackedBytes;
 const captureAttempts = 2;
@@ -643,7 +642,7 @@ async function publishPacket(input: {
 }): Promise<MaterializedDurableCodexGoalHandoffPacket> {
   let packetBytes = 0;
   for (const file of input.captured.files) {
-    const maximum = file.path === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes;
+    const maximum = file.path === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : gitReadBudgetBytes;
     if (file.bytes.length > maximum) throw new Error("handoff_file_byte_limit_exceeded");
     packetBytes += file.bytes.length;
     if (packetBytes > handoffPreservationBudget.packetBytes) throw new Error("handoff_total_byte_limit_exceeded");
@@ -734,7 +733,7 @@ function publishProtectedPacket(context: HostedDependencyRootPurposeContext, inp
       "untracked.tar", "untracked.paths.z", "quarantine.json", "manifest.json"]);
     const paths = new Set<string>(); let total = 0;
     for (const file of input.captured.files) {
-      if (!allowed.has(file.path) || paths.has(file.path) || file.bytes.length > (file.path === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes)) throw new Error("handoff_packet_verification_failed");
+      if (!allowed.has(file.path) || paths.has(file.path) || file.bytes.length > (file.path === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : gitReadBudgetBytes)) throw new Error("handoff_packet_verification_failed");
       paths.add(file.path); total += file.bytes.length;
     }
     if (paths.size < 7 || !paths.has("manifest.json") || total > handoffPreservationBudget.packetBytes) throw new Error("handoff_total_byte_limit_exceeded");
@@ -751,7 +750,7 @@ function publishProtectedPacket(context: HostedDependencyRootPurposeContext, inp
         const before = syncFs.fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.nlink !== 1n || before.uid !== 0n || before.gid !== 0n ||
             (before.mode & 0o7777n) !== 0o600n || before.dev.toString() !== scope.durableHandoffRoot.dev ||
-            before.size > BigInt(path.endsWith("/untracked.tar") ? handoffPreservationBudget.packetFileBytes : maxGitBytes)) throw new Error("handoff_packet_verification_failed");
+            before.size > BigInt(path.endsWith("/untracked.tar") ? handoffPreservationBudget.packetFileBytes : gitReadBudgetBytes)) throw new Error("handoff_packet_verification_failed");
         assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
         const bytes = Buffer.alloc(Number(before.size)); let offset = 0;
         while (offset < bytes.length) {
@@ -880,7 +879,7 @@ export function durableCodexGoalHandoffPacketFiles(manifest: DurableCodexGoalHan
     manifest.quarantine.manifest,
   ];
   return descriptors.map(descriptor => ({ descriptor, maxBytes:
-    assertSafeHandoffRelativePath(descriptor.path) === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : maxGitBytes }));
+    assertSafeHandoffRelativePath(descriptor.path) === "untracked.tar" ? handoffPreservationBudget.packetFileBytes : gitReadBudgetBytes }));
 }
 
 async function verifyPublishedPacket(path: string, files: readonly PacketFile[]): Promise<void> {
@@ -957,14 +956,14 @@ function nullPaths(bytes: Buffer): string[] {
 
 async function gitBuffer(cwd: string, args: readonly string[], managedContext?: HostedDependencyRootPurposeContext): Promise<Buffer> {
   const context = resolveManagedDependencyGitContext(cwd, managedContext);
-  if (context !== undefined) return (await runManagedDependencyGitBuffer(context, args, { maxBufferBytes: maxGitBytes })).stdout;
+  if (context !== undefined) return (await runManagedDependencyGitBuffer(context, args, { maxBufferBytes: gitReadBudgetBytes })).stdout;
   const { stdout } = await execFileAsync("git", withLiteralGitPathspecs([
     "--no-replace-objects", "-c", "core.quotepath=false", "-c", "core.fileMode=true", ...args,
   ]), {
     cwd,
     encoding: "buffer",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    maxBuffer: maxGitBytes,
+    maxBuffer: gitReadBudgetBytes,
     timeout: 15_000,
   });
   return stdout;

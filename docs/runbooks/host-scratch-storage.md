@@ -19,16 +19,28 @@ other write permission enables the policy. The scratch root must be an actual
 mountpoint with the configured UUID and filesystem root `/`. Provision the
 root-owned `runtime-tmp` and `runtime-caches` parent directories on that
 filesystem with mode `0711`. Admission rejects a missing or replaced mount
-and less than 5 GiB available on either root or scratch.
+and less free space than the floor on either root or scratch.
 
 ```json
 {
   "schemaVersion": 1,
   "root": "/srv/workers",
   "uuid": "REPLACE-WITH-ACTUAL-FILESYSTEM-UUID",
-  "legacyTemps": {}
+  "legacyTemps": {},
+  "capacity": { "minimumFreeBytes": 53687091200 }
 }
 ```
+
+The free-space floor is 5 GiB without a `capacity` section. With
+`"capacity": {}` it is 50 GiB; `minimumFreeBytes` sets it explicitly, in
+bytes, and must be an integer of at least 5 GiB. Any other key or value is
+refused as `Invalid scratch capacity policy`. The capacity diagnostics report
+the actual available and required bytes. Add the section to a host only once
+both `/` and the scratch root have at least 100 GiB free: below the floor,
+every new bind or source preparation fails, so enabling it on a full disk
+stops all launches that need one. The floor does not yet include a job's
+declared disk peak: no launch-time input carries it today (the attachment
+card's `diskPeak` is reviewed by hand before each Start).
 
 Existing nonempty directories are never hidden. Before rollout, an operator
 may inventory exact existing temp/cache directories into `legacyTemps`, keyed
@@ -83,7 +95,7 @@ New binds are not in host mountinfo. A source is in use if any `/proc/*/mountinf
 alive. GC and diagnostics must scan all `/proc/*/mountinfo`, never only the host table, and must not delete
 scratch source data on the evidence of the host table alone. Release host binds of terminal jobs only.
 
-Preparation runs on every session materialize and every run start (resume). The 5 GiB free-space check on
+Preparation runs on every session materialize and every run start (resume). The free-space check on
 `/` and the scratch root applies only when a new bind or source must be created; a resume whose binds are
 already in place does not fail on low disk.
 

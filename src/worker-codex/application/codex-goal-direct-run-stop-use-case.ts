@@ -2,6 +2,8 @@ import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   buildCodexGoalNoTmuxCommand,
   reconcileCodexGoalRuntimeResult,
+  CodexGoalChangedFilesUnavailableError,
+  changedFilesUnavailableReconciliation,
   type CodexGoalLaunchInput,
   type CodexGoalStatus,
 } from "../codex-goal-ops";
@@ -68,6 +70,10 @@ export async function stopDirectCodexGoalRun<TBrief extends DirectCodexGoalStopB
     preservePatch: true,
     silentStale: input.brief.silentStale,
     heartbeatOnlyNoOutput: input.brief.heartbeatOnlyNoOutput,
+  }).catch((error: unknown) => {
+    // Nothing is running any more: an unlistable workspace skips the reconcile instead of failing the stop.
+    if (error instanceof CodexGoalChangedFilesUnavailableError) return changedFilesUnavailableReconciliation;
+    throw error;
   });
   return {
     ok: true,

@@ -157,6 +157,39 @@ function publishedInputs(current: ReturnType<typeof researchCurrentStart>) {
   }
   return rows;
 }
+/** Ordinary closure facts only. Historical controller policy is deliberately
+ * absent: a sealed terminal writer is independent of a later caller's rights. */
+export function prepareRegisteredCodingTerminalObservation(manifest: CodexGoalJobManifest) {
+  assertResearchInitialRoot(true);
+  const current = terminalResearchStart(manifest.jobId), { spec } = current, binding = spec.registeredHandoff;
+  if (!binding || spec.projectLaunchBinding || spec.request.hostedProfile !== HostedMimoProfile.CodingV1 ||
+      spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+      digest(parseStoredCodexGoalJobManifest(manifest)) !== binding.manifestSha256) researchInvalid();
+  const root = researchJobAuthority(manifest.jobId);
+  const absent = [join(root, "active.json"), join(root, intentName), join(root, stoppedIntentName),
+    join(current.directory, receiptName), join(current.directory, stoppedReceiptName), join(current.directory, "unsubmitted-abort.json")];
+  const retained = retainedInputs(current);
+  const published = publishedInputs(current);
+  const terminalPath = join(root, "last-terminal.json"), closingPath = join(current.directory, "closing.json");
+  const terminal = researchRead(terminalPath), closing = researchRead(closingPath);
+  if (!isDeepStrictEqual(researchJson(closing), { schemaVersion: 1, specSha256: researchHash(current.bytes) })) researchInvalid();
+  const assertCurrent = (): void => {
+    assertResearchInitialRoot(true);
+    if (absent.some(path => optionalTerminalRepairBytes(path) !== undefined) ||
+        !researchRead(terminalPath).equals(terminal) || !researchRead(closingPath).equals(closing) ||
+        !terminalResearchStart(manifest.jobId).bytes.equals(current.bytes)) researchInvalid();
+    retained.assertCurrent();
+    if (!isDeepStrictEqual(publishedInputs(current), published)) researchInvalid();
+    retained.assertCurrent();
+    if (absent.some(path => optionalTerminalRepairBytes(path) !== undefined) ||
+        !researchRead(terminalPath).equals(terminal) || !researchRead(closingPath).equals(closing)) researchInvalid();
+  };
+  assertCurrent();
+  return { current, inputs: retained.rows, starts: retained.starts,
+    providerUnits: researchProviderUnits(current.directory).sort(),
+    providerFiles: readdirSync(join(current.directory, "providers")).sort(), published,
+    terminalSlotSha256: researchHash(terminal), closingSha256: researchHash(closing), assertCurrent };
+}
 export async function prepareResearchTerminalHandoffRepair(current: ReturnType<typeof researchCurrentStart>, historicalScope: unknown) {
   assertResearchInitialRoot(true);
   const { spec } = current, binding = spec.registeredHandoff;

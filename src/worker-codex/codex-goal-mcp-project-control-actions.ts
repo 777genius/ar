@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { measureMimoProjectStartControlTiming, MimoProjectStartControlTimingScope,
+  type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 import {
   ProjectAdmissionWorkerRole,
   type ProjectAccessScope,
@@ -6,6 +8,7 @@ import {
   type ProjectControlBroker,
 } from "@vioxen/subscription-runtime/worker-core";
 import { assertLocalControllerMaintenanceFenceOpen, withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
+import { assertCodexGoalJobNotRetired } from "./job-retirement/job-retirement-records";
 import { withCurrentControllerLaunchPolicy } from "./codex-goal-mcp-project-controller-launch-policy";
 import { hostedStoredProjectStartPlan } from "./hosted-foreground-result";
 import { resolveStoredProjectStartPlan, type StoredProjectStartPlan } from "./stored-start-planning";
@@ -119,6 +122,7 @@ type LoadedCodexGoalJobLaunch = {
   readonly launch: CodexGoalLaunchInput;
 };
 export type CodexGoalMcpProjectControlActionsDeps = {
+  readonly observeControlTiming?: MimoProjectStartControlTimingObserver;
   readonly loadProjectControlController: (
     args: ProjectControlMcpArgs,
   ) => Promise<LoadedProjectControlController>;
@@ -151,11 +155,11 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
   });
   if (promptFailure) return promptFailure;
   const reviewedOutputId = stringValue(args.reviewedOutputId);
-  const loaded = await loadProjectPreStartObservation(
+  const loaded = await measureMimoProjectStartControlTiming(MimoProjectStartControlTimingScope.PreBrokerObservation, () => loadProjectPreStartObservation(
     manifest,
     reviewedOutputId,
     controller.registryRootDir,
-  );
+  ), deps.observeControlTiming);
   const { status, decision: continuationDecision } = loaded;
   if (storedPlan) assertStoredStartObservation(storedPlan, controller.controller, loaded.manifest, loaded.launch,
     continuationDecision, status.resultExists);
@@ -249,11 +253,11 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
     requestedWorkspacePath: loaded.manifest.workspacePath,
     owner: `project-start:${controller.controller.jobId}:${loaded.manifest.jobId}`,
     effect: async (workspace) => {
-      const lockedObservation = await observeProjectPreStartContinuation({
+      const lockedObservation = await measureMimoProjectStartControlTiming(MimoProjectStartControlTimingScope.PreBrokerObservation, () => observeProjectPreStartContinuation({
         manifest: loaded.manifest,
         launch: loaded.launch,
         ...(reviewedOutputId ? { reviewedOutputId } : {}),
-      });
+      }), deps.observeControlTiming);
       const { status: lockedStatus, decision: lockedContinuationDecision } =
         lockedObservation;
       if (
@@ -565,11 +569,11 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
       let result;
       try {
         // Capture after bootstrap and supervisor reap, whose effects are intentional.
-        const publicationBaseline = await observeProjectPreStartContinuation({
+        const publicationBaseline = await measureMimoProjectStartControlTiming(MimoProjectStartControlTimingScope.PreBrokerObservation, () => observeProjectPreStartContinuation({
           manifest: loaded.manifest,
           launch: loaded.launch,
           ...(reviewedOutputId ? { reviewedOutputId } : {}),
-        });
+        }), deps.observeControlTiming);
         const broker = deps.codexProjectControlBroker({
           registryRootDir: controller.registryRootDir,
           controller: currentController,
@@ -657,11 +661,14 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           rejectedUncapturedTerminalHandoffRecovery: terminalRecovery?.reviewDisposition === "rejected_uncaptured"
             ? { patchSha256: terminalRecovery.patchSha256 } : undefined,
         });
-        result = await withCurrentControllerScopeActivity({ controllerJobRootDir: controller.controller.jobRootDir,
+        // The revalidation observation inside broker.startWorker belongs only to
+        // this inclusive scope, never to the three disjoint pre-broker reads.
+        result = await measureMimoProjectStartControlTiming(MimoProjectStartControlTimingScope.BrokerStart, () => withCurrentControllerScopeActivity({ controllerJobRootDir: controller.controller.jobRootDir,
           owner: `project-start:${controller.controller.jobId}:${loaded.manifest.jobId}`,
           expectedScope: controller.scope,
           loadCurrentScope: async () => (await deps.loadProjectControlController(args)).scope,
-          effect: async () => await broker.startWorker({
+          // Under the controller activity lease no retirement can close the job.
+          effect: async () => { assertCodexGoalJobNotRetired(controller.registryRootDir, loaded.manifest.jobId); return await broker.startWorker({
               jobId: loaded.manifest.jobId,
               registryRoot: controller.registryRootDir,
               workspacePath: loaded.manifest.workspacePath,
@@ -681,8 +688,8 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
                         controlledRuntimeInPlaceContinuation.ownedPaths,
                     }
                 : {}),
-            }),
-        });
+            }); },
+        }), deps.observeControlTiming);
       } catch (error) {
         let leafHeld = false;
         try { leafHeld = workspace.lease.workspacePath === workspace.canonicalWorkspacePath; }

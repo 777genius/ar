@@ -277,10 +277,11 @@ function projectControlActionDeps() {
   };
 }
 
-export async function projectControlStartStoredJob(args: ProjectControlMcpArgs) {
+export async function projectControlStartStoredJob(args: ProjectControlMcpArgs,
+  observeControlTiming?: import("./research-launch-admission-diagnostics").MimoProjectStartControlTimingObserver) {
   const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Start, args);
   if (remote !== undefined) return mcpJson(remote);
-  return mcpJson(await projectControlStartStoredJobView(args, projectControlActionDeps()));
+  return mcpJson(await projectControlStartStoredJobView(args, { ...projectControlActionDeps(), ...(observeControlTiming ? { observeControlTiming } : {}) }));
 }
 
 export async function projectControlCreateWorktree(args: ProjectControlMcpArgs) {

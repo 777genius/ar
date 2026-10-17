@@ -17,7 +17,7 @@ import { authorizeResearchProjectLaunch, consumeResearchProjectLaunchAuthorizati
 import { authorizeRegisteredResearchHandoff, consumeRegisteredResearchHandoffAuthorization, RegisteredResearchSinkPreparationUnresolved, RegisteredResearchHandoffUnsupportedSink } from "../research-registered-handoff";
 import { revokeProjectResearchLaunch, grantOwnedMimoWorkerLaunch, grantRegisteredResearchLaunch, startRegisteredResearchLaunch, startResearchLaunch, revokeResearchLaunch, revokeRegisteredResearchLaunch } from "../research-launch-owner";
 import { observeResearchJobWriterAuthority, prepareResearchJobWriterObservation } from "../research-writer-observation";
-import { admitResearchProcessFactory, assertResearchCurrentAuthority, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
+import { admitResearchProcessFactory, assertResearchCurrentAuthority, bindProjectResearchRuntime, captureResearchRuntime, bindRegisteredResearchRuntime, installedResearchRuntimeDirectory, researchCurrentStart, researchJobAuthority, researchTerminalHandoffGuard } from "../research-launch-admission";
 import { abortUnsubmittedRegisteredResearchLaunch, cancelResearchLaunch, cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, recoverOwnedMimoWorkerPreservation,
   terminalResearchStart, type UnsubmittedResearchStartSubmitterProof } from "../research-launch-lifecycle";
 import { researchArtifactDigest, researchDirectoryIdentity, researchHash, researchRead, researchPublish } from "../research-launch-files";
@@ -27,6 +27,7 @@ import { reserveCodexProjectAccount, assertCodexProjectReservedLaunchAuthority }
 import { loadJobLaunch } from "../codex-goal-mcp-project-control-deps";
 import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest } from "../research-launch-contract";
 import { readCodexGoalJob, codexGoalJobManifestPath, CodexGoalAccountSelectionMode } from "../codex-goal-jobs";
+import { registeredNativeWriterClosureTests } from "./research-native-writer-closure-test-support";
 import { registeredTerminalRepairTests, registeredStoppedBeforeProviderTests } from "./research-terminal-handoff-repair-test-support";
 import { parseCodexGoalProjectAccessScope } from "../codex-goal-access-plan";
 
@@ -560,13 +561,13 @@ describe("registered durable handoff authorization (NEW TEST source fixtures onl
       clock.mockRestore(); host.findmntHook = undefined;
       expect([shows() - before, mounts() - beforeMounts]).toEqual([2, 10]);
       expect(timing).toMatchObject({ admissionAuthorityElapsedMs: 10, admissionAuthorityServiceElapsedMs: 0,
-        admissionAuthorityScalarWitnessElapsedMs: 6, admissionAuthorityPairedPinElapsedMs: 4 });
+        admissionAuthorityScalarWitnessElapsedMs: 6, admissionAuthorityPairedPinElapsedMs: 4, admissionAuthorityScalarTargetQueryElapsedMs: 6, admissionAuthorityPairedTargetQueryElapsedMs: 4 });
       const nextMounts = mounts(); captured.assertCurrent(); expect(mounts() - nextMounts).toBe(10);
       const inertShows = shows(), inertMounts = mounts(); captured.assertInertAuthorityCurrent();
       expect([shows() - inertShows, mounts() - inertMounts]).toEqual([0, 10]);
       const authorityShows = shows(), authorityMounts = mounts(); captured.assertAuthorityCurrent();
       expect([shows() - authorityShows, mounts() - authorityMounts]).toEqual([1, 20]);
-      const observers = { scalarWitness: () => { throw Error("TEST observer"); }, pairedPin: () => { throw Error("TEST observer"); } };
+      const observers = { scalarWitness: () => { throw Error("TEST observer"); }, pairedPin: () => { throw Error("TEST observer"); }, scalarTargetQuery: () => { throw Error("TEST observer"); }, pairedTargetQuery: () => { throw Error("TEST observer"); } };
       expect(() => assertResearchCurrentAuthority(started.jobId, current, undefined, false, observers)).not.toThrow();
       mutateReceipt(); expect(() => captured.assertAuthorityCurrent()).toThrow();
       expect(researchCurrentStart(started.jobId).spec.startId).toBe(started.startId);
@@ -862,13 +863,14 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
 
 /** Real registered authorization, native allocation, root plan and lifetime
  * witness. Only the shared TEST fixture substitutes Host process/kernel IO. */
-async function registeredCodingAllocation(beforeProvider = false) {
+async function registeredCodingAllocation(beforeProvider = false, holdHelper = false, configureScope?: () => void) {
   state.mimo = true; host.physicalPaths = true;
   registry = state.registry = join(host.root, "project/registry"); sink = join(registry, "durable-handoffs");
   mkdirSync(registry, { recursive: true, mode: 0o700 });
   await initializeRegisteredFixture();
-  if (beforeProvider) state.scope = parseCodexGoalProjectAccessScope(state.scope);
-  for (const path of researchMimoCodingBootstrapPaths("/TEST-artifact")) {
+  if (beforeProvider) state.scope = parseCodexGoalProjectAccessScope(state.scope); configureScope?.();
+  for (const path of researchMimoCodingBootstrapPaths(installedResearchRuntimeDirectory())) {
+    if (holdHelper && path === join(installedResearchRuntimeDirectory(), "package.json") && existsSync(local(path))) continue;
     mkdirSync(local(dirname(path)), { recursive: true, mode: 0o700 });
     writeFileSync(local(path), path.endsWith("package.json") ? '{"type":"module"}' : "export {};", { mode: 0o644 });
   }
@@ -884,14 +886,12 @@ async function registeredCodingAllocation(beforeProvider = false) {
   const helper = admitResearchProcessFactory(current.spec.request)({ command: current.spec.request.codexBinaryPath,
     args: ["app-server"], cwd: current.spec.request.workspacePath, env: { HOME: dirname(home), CODEX_HOME: home } });
   const provider = readdirSync(local(join(current.directory, "providers")))[0]!.slice(0, -5);
-  const plan = prepareResearchProviderRoot(current.spec, provider, home);
-  bindResearchMimoWritableFootprint(plan);
+  if (!holdHelper) bindResearchMimoWritableFootprint(prepareResearchProviderRoot(current.spec, provider, home));
   for (const stream of [helper.stdin, helper.stdout, helper.stderr]) {
     if (!(stream instanceof PassThrough)) throw new Error("Expected disposable TEST provider stream");
-    stream.destroy();
+    if (!holdHelper) stream.destroy();
   }
-  return { ...started, ...current, provider,
-    manifest: await readCodexGoalJob({ registryRootDir: registry, jobId: started.jobId }) };
+  return { ...started, ...current, provider, helper, home, manifest: await readCodexGoalJob({ registryRootDir: registry, jobId: started.jobId }) };
 }
 
 describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census", () => {
@@ -965,7 +965,6 @@ describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census
   });
 });
 
-
 describe("qualified preservation recovery (explicit offline Linux Host fixture)", () => {
   const platform = process.platform;
   beforeEach(() => {
@@ -975,6 +974,7 @@ describe("qualified preservation recovery (explicit offline Linux Host fixture)"
     });
   });
   afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  registeredNativeWriterClosureTests({ allocation: async configureScope => { const value = await registeredCodingAllocation(false, true, configureScope); if (!("helper" in value)) throw Error("Expected TEST provider"); return value; }, authorizeCurrentCaller: authorize, scope: () => state.scope!, setScope: scope => { state.scope = scope; } });
   registeredTerminalRepairTests({ candidate: (dirty, status) => registeredMimoCandidate(dirty, true, status), scope: () => state.scope!,
     setScope: scope => { state.scope = scope; }, registry: () => registry, allocation: () => registeredCodingAllocation() });
   registeredStoppedBeforeProviderTests({ start: () => registeredCodingAllocation(true), scope: () => state.scope!, setScope: scope => { state.scope = scope; } });

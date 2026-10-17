@@ -2,10 +2,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
 import { researchInvalid } from "../research-launch-files";
 
-const adapter = vi.hoisted(() => ({ reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn() }));
+const adapter = vi.hoisted(() => ({ listPending: vi.fn(), reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn() }));
 vi.mock("../hosted-mimo-interrupted-create-reconciliation", () => adapter);
+vi.mock("../hosted-mimo-pending-finalization", () => ({ listHostedMimoPendingFinalization: adapter.listPending }));
 vi.mock("../hosted-mimo-project-bridge-advance", () => ({ advanceHostedMimoProjectSource: adapter.advanceHostedMimoProjectSource }));
-vi.mock("../hosted-mimo-project-bridge-prepare", () => ({ resumeHostedMimoProjectPreparation: adapter.resumeHostedMimoProjectPreparation }));
+vi.mock("../hosted-mimo-project-bridge-prepare", async original => ({ ...await original<object>(), resumeHostedMimoProjectPreparation: adapter.resumeHostedMimoProjectPreparation }));
 const originalArgv = process.argv, originalExitCode = process.exitCode;
 beforeEach(() => {
   vi.resetModules();
@@ -79,3 +80,36 @@ it.each([["--advance-source"], ["--advance-source", "--dry-run"], ["--advance-so
     expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"mimo_project_bridge_request_invalid"}\n');
     expect(process.exitCode).toBe(1);
   });
+it("routes --render-attachment to the pure renderer and exits 1 on an invalid card", async () => {
+  process.argv = ["node", "/TEST/bridge-cli", "--render-attachment", "/TEST/missing-card.json"];
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"error":"mimo_project_bridge_render_card_invalid"'));
+  expect(process.exitCode).toBe(1);
+});
+it("prints the rendered files for a valid card and nothing for argument shapes it does not accept", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os"), { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "TEST-render-"));
+  try {
+    const path = join(dir, "card.json");
+    writeFileSync(path, JSON.stringify({ projectId: "test-project", repositoryUrl: "https://github.com/example/test-repo.git", branch: "main", commit: "a".repeat(40), sandboxSubdir: "sandbox",
+      ownedPaths: ["src/"], taskTimeoutMs: 14400000, appServerStartupTimeoutMs: 330000, operationTimeoutMs: 900000, diskPeak: { scratch: 1, durable: 1 },
+      host: { alias: "test-host", machineId: "b".repeat(32), socketDir: "/private/tmp/x", authRootDir: "/srv/auth", codexBinaryPath: "/opt/codex" } }));
+    process.argv = ["node", "/TEST/bridge-cli", "--render-attachment", path];
+    await import("../hosted-mimo-project-bridge-cli");
+    expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"ok":true'));
+    expect(process.exitCode).toBeUndefined();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+it.each([["--render-attachment"], ["--render-attachment", "/TEST/a.json", "extra"]])("refuses the malformed render command line %j", async (...args) => {
+  process.argv = ["node", "/TEST/bridge-cli", ...args];
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"mimo_project_bridge_request_invalid"}\n');
+  expect(process.exitCode).toBe(1);
+});
+it("routes --list-pending-finalization to the read-only listing and accepts no further arguments", async () => {
+  process.argv = ["node", "/TEST/bridge-cli", "--list-pending-finalization"];
+  adapter.listPending.mockReturnValueOnce({ ok: true, pending: [], uncertain: 0 });
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(adapter.listPending).toHaveBeenCalledOnce();
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":true,"pending":[],"uncertain":0}\n');
+});

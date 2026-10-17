@@ -236,6 +236,16 @@ export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha25
     ...properties.map(p => `--property=${p}`), "--", process.execPath,
     join(spec.runtimeDirectory, "host-integration", "research-runtime-launch.mjs"), request.jobId, spec.startId] };
 }
+/** Provider unit memory limits per hosted profile. CodingV1 runs builds and test runners inside the sandbox,
+ * so it gets headroom; every other profile keeps the smaller limits. Swap stays disabled, so MemoryHigh sits close
+ * to MemoryMax to keep throttling of a runaway allocation short. */
+const providerMemoryLimits = {
+  coding: { high: "7680M", max: "8G" },
+  research: { high: "2G", max: "4G" },
+} as const;
+/** Keep the unit alive when the kernel kills one process in its cgroup; the command fails with exit 137
+ * and the model sees it. systemd's default (stop) would end the whole job. */
+const providerOomPolicy = "OOMPolicy=continue";
 /** Trusted assembly needs PID1 cold-root witnesses. The fixed root transition
  * drops every capability before tini and any provider or workspace code. */
 export const researchProviderAssemblyCapabilityBoundingSet = "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE";
@@ -245,11 +255,12 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const home = researchPath(selectedCodexHome);
   if (!rootPlan) researchInvalid();
+  const memory = request.hostedProfile === HostedMimoProfile.CodingV1 ? providerMemoryLimits.coding : providerMemoryLimits.research;
   const seal = researchProviderRootSeal(rootPlan, spec, unit, home);
   // No filesystem-namespace property belongs here: PID1 must exec the finite
   // early-private adapter before copying or protecting the captured root.
   const properties = [...hostedFdSystemdProperties, "Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
-    `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", request.hostedProfile === HostedMimoProfile.CodingV1 ? "MemoryHigh=4G" : "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
+    `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", `MemoryHigh=${memory.high}`, `MemoryMax=${memory.max}`, providerOomPolicy, "TasksMax=512",
     `TimeoutStartSec=${researchProviderSetupAllowanceMs(request) / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",

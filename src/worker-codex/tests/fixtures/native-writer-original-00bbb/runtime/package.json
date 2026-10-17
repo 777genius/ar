@@ -1,0 +1,241 @@
+{
+  "name": "@vioxen/subscription-runtime",
+  "version": "0.1.0-main.40",
+  "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vioxen/subscription-runtime.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "default": "./dist/core/index.js"
+    },
+    "./agent-task": {
+      "types": "./dist/agent-task/index.d.ts",
+      "import": "./dist/agent-task/index.js",
+      "default": "./dist/agent-task/index.js"
+    },
+    "./agent-runtime-task": {
+      "types": "./dist/agent-runtime-task/index.d.ts",
+      "import": "./dist/agent-runtime-task/index.js",
+      "default": "./dist/agent-runtime-task/index.js"
+    },
+    "./agent-runtime-task-runner": {
+      "types": "./dist/agent-runtime-task-runner/index.d.ts",
+      "import": "./dist/agent-runtime-task-runner/index.js",
+      "default": "./dist/agent-runtime-task-runner/index.js"
+    },
+    "./account-diagnostics": {
+      "types": "./dist/account-diagnostics/index.d.ts",
+      "import": "./dist/account-diagnostics/index.js",
+      "default": "./dist/account-diagnostics/index.js"
+    },
+    "./provider-codex": {
+      "types": "./dist/provider-codex/index.d.ts",
+      "import": "./dist/provider-codex/index.js",
+      "default": "./dist/provider-codex/index.js"
+    },
+    "./openai-compatible-codex": {
+      "types": "./dist/openai-compatible-codex/index.d.ts",
+      "import": "./dist/openai-compatible-codex/index.js",
+      "default": "./dist/openai-compatible-codex/index.js"
+    },
+    "./provider-claude": {
+      "types": "./dist/provider-claude/index.d.ts",
+      "import": "./dist/provider-claude/index.js",
+      "default": "./dist/provider-claude/index.js"
+    },
+    "./worker-core": {
+      "types": "./dist/worker-core/index.d.ts",
+      "import": "./dist/worker-core/index.js",
+      "default": "./dist/worker-core/index.js"
+    },
+    "./worker-codex": {
+      "types": "./dist/worker-codex/index.d.ts",
+      "import": "./dist/worker-codex/index.js",
+      "default": "./dist/worker-codex/index.js"
+    },
+    "./worker-claude": {
+      "types": "./dist/worker-claude/index.d.ts",
+      "import": "./dist/worker-claude/index.js",
+      "default": "./dist/worker-claude/index.js"
+    },
+    "./worker-local": {
+      "types": "./dist/worker-local/index.d.ts",
+      "import": "./dist/worker-local/index.js",
+      "default": "./dist/worker-local/index.js"
+    },
+    "./queue-core": {
+      "types": "./dist/queue-core/index.d.ts",
+      "import": "./dist/queue-core/index.js",
+      "default": "./dist/queue-core/index.js"
+    },
+    "./queue-bullmq": {
+      "types": "./dist/queue-bullmq/index.d.ts",
+      "import": "./dist/queue-bullmq/index.js",
+      "default": "./dist/queue-bullmq/index.js"
+    },
+    "./store-local-file": {
+      "types": "./dist/store-local-file/index.d.ts",
+      "import": "./dist/store-local-file/index.js",
+      "default": "./dist/store-local-file/index.js"
+    },
+    "./store-github-actions-secret": {
+      "types": "./dist/store-github-actions-secret/index.d.ts",
+      "import": "./dist/store-github-actions-secret/index.js",
+      "default": "./dist/store-github-actions-secret/index.js"
+    },
+    "./runner-github-action": {
+      "types": "./dist/runner-github-action/index.d.ts",
+      "import": "./dist/runner-github-action/index.js",
+      "default": "./dist/runner-github-action/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "default": "./dist/testing/index.js"
+    },
+    "./testing/contracts": {
+      "types": "./dist/testing/contracts.d.ts",
+      "import": "./dist/testing/contracts.js",
+      "default": "./dist/testing/contracts.js"
+    },
+    "./testing/fakes": {
+      "types": "./dist/testing/fakes.d.ts",
+      "import": "./dist/testing/fakes.js",
+      "default": "./dist/testing/fakes.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "subscription-runtime-codex-goal": "dist/worker-codex/codex-goal-cli.js",
+    "subscription-runtime-codex-goal-mcp": "dist/worker-codex/codex-goal-mcp.js",
+    "subscription-runtime-openai-codex-bridge": "dist/openai-compatible-codex/cli.js",
+    "subscription-runtime-agent-task": "dist/agent-task/cli.js",
+    "subscription-runtime-agent-runtime-task": "dist/agent-runtime-task/cli.js",
+    "subscription-runtime-account-status": "dist/worker-local/account-diagnostics-cli.js",
+    "subscription-runtime-run-agent-task": "dist/worker-local/agent-task-runner-cli.js",
+    "subscription-runtime-run-agent-runtime-task": "dist/worker-local/agent-runtime-task-runner-cli.js"
+  },
+  "files": [
+    "dist",
+    "host-integration",
+    "scripts/ops/host-job-transport.mjs",
+    "scripts/ops/host-job-lock.mjs",
+    "README.md",
+    "docs",
+    "LICENSE"
+  ],
+  "bundledDependencies": [
+    "@anthropic-ai/claude-agent-sdk",
+    "@anthropic-ai/sdk",
+    "@modelcontextprotocol/sdk",
+    "@types/node",
+    "@vioxen/agent-account-observability",
+    "ajv",
+    "libsodium-wrappers",
+    "undici",
+    "zod"
+  ],
+  "scripts": {
+    "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean:dist && npm run build:packages && npm run build:managed-pressure-guard && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs && npm run build:host-inventory-codec",
+    "build:managed-pressure-guard": "node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.pressure-guard.json",
+    "build:agent-runtime-task-artifact": "node scripts/build-agent-runtime-task-artifact.mjs",
+    "build:packages": "npm run --prefix packages/agent-account-observability build",
+    "prepack": "npm run build",
+    "typecheck": "npm run typecheck:agent-runtime-task-artifact-pack && npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages && npm run typecheck:host-transport && tsc --noEmit -p host-integration/managed-launcher/tsconfig.lifetime-pin.json",
+    "typecheck:agent-runtime-task-artifact-pack": "tsc -p scripts/tsconfig.agent-runtime-task-artifact-pack.json",
+    "typecheck:host-transport": "tsc --noEmit -p scripts/ops/tests/tsconfig.json",
+    "typecheck:native-probe": "node node_modules/typescript/bin/tsc --noEmit --skipLibCheck false -p host-integration/native-probe/tsconfig.json",
+    "typecheck:native-probe:root-source": "node host-integration/native-probe/root-source-check.mts",
+    "test:native-probe": "node host-integration/native-probe/run-contracts.mts",
+    "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
+    "test": "npm run test:before-unit && npm run test:unit && npm run test:after-unit",
+    "test:before-unit": "npm run test:agent-runtime-task-artifact-pack && npm run build && npm run test:global-scan-guard && npm run test:host-storage",
+    "test:unit": "vitest run",
+    "test:after-unit": "npm run test:packages && npm run check:publish-preflight && npm run test:host-transport",
+    "test:agent-runtime-task-artifact-pack": "node --test scripts/build-agent-runtime-task-artifact-pack.test.mts",
+    "test:host-transport": "node --experimental-test-module-mocks scripts/ops/tests/host-job-transport-regression.mts && node scripts/ops/tests/host-job-operator-exit-regression.mts && node scripts/ops/tests/host-job-replay-regression.mts",
+    "test:global-scan-guard": "node --test host-integration/global-scan-guard/global-scan-guard.node-test.mjs",
+    "test:host-storage": "tsc -p host-integration/managed-launcher/tsconfig.lifetime-pin.json --noEmit false && node --test host-integration/custody-canary/run.node-test.mjs host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs host-integration/managed-launcher/install.node-test.mjs host-integration/managed-launcher/install-policy.node-test.mjs host-integration/managed-launcher/launch.node-test.mjs host-integration/managed-launcher/layout.node-test.mjs host-integration/managed-launcher/storage-pressure-guard.node-test.mjs dist/host-storage-tests/managed-launcher/lifetime-pin.node-test.mjs",
+    "test:packages": "npm run --prefix packages/agent-account-observability test",
+    "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
+    "test:crash-lane": "node scripts/crash-lane-runner.mts",
+    "test:ci-tools": "node --test scripts/tests/crash-lane-runner.test.mts scripts/ci-pr-cleanup/contract.test.mts && npm run build:ci-proof-reuse && node --test .tmp-ci-proof-reuse/contract.test.mjs .tmp-ci-proof-reuse/github.test.mjs .tmp-ci-proof-reuse/workflow.test.mjs",
+    "build:ci-proof-reuse": "node -e \"require('node:fs').rmSync('.tmp-ci-proof-reuse',{recursive:true,force:true})\" && tsc -p scripts/ci-proof-reuse/tsconfig.build.json",
+    "typecheck:ci-tools": "tsc --noEmit -p scripts/tsconfig.crash-lane.json && tsc --noEmit -p scripts/ci-pr-cleanup/tsconfig.json && tsc --noEmit -p scripts/ci-proof-reuse/tsconfig.json",
+    "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
+    "e2e:live-workers:dist": "node scripts/e2e-live-workers/run.mjs",
+    "e2e:live-agent-runtime-task": "npm run build && node scripts/e2e-live-workers/agent-runtime-task-module.mjs --allow-live",
+    "e2e:live-agent-runtime-goal": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live",
+    "e2e:live-agent-runtime-goal:codex": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=codex",
+    "e2e:live-agent-runtime-goal:claude": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=claude",
+    "eval:logical-thread-continuation:live": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live",
+    "eval:logical-thread-continuation:live:codex": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=codex",
+    "eval:logical-thread-continuation:live:claude": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=claude",
+    "e2e:live-codex-bounded-workspace": "npm run build && node scripts/e2e-live-workers/codex-bounded-workspace.mjs --allow-live",
+    "ops:codex-account-quota": "node scripts/ops/codex-account-quota-table.mjs",
+    "ops:codex-limit-alarm": "node scripts/ops/codex-limit-alarm.mjs",
+    "ops:codex-limit-alarm:test": "node scripts/ops/codex-limit-alarm-self-test.mjs",
+    "ops:codex-limit-alarm:install": "node scripts/ops/install-codex-limit-alarm.mjs",
+    "ops:codex-limit-alarm:uninstall": "node scripts/ops/install-codex-limit-alarm.mjs --uninstall",
+    "ops:sync-codex-auth": "node scripts/ops/sync-codex-auth-to-host.mjs",
+    "smoke:worker-claude": "npm run build && node scripts/smoke-claude-worker.mjs",
+    "smoke:worker-claude-thread": "npm run build && CLAUDE_WORKER_SMOKE_MODE=thread node scripts/smoke-claude-worker.mjs",
+    "check:boundaries": "node scripts/check-boundaries.mjs && node scripts/check-boundaries-self-test.mjs && npm run check:architecture-guardrails",
+    "check:diff": "node scripts/check-git-diff.mjs",
+    "check:dist-policy": "node scripts/check-dist-policy.mjs && node scripts/check-dist-policy-self-test.mjs",
+    "check:dist": "node scripts/check-dist.mjs",
+    "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
+    "check:agent-runtime-task-artifact": "node scripts/check-agent-runtime-task-artifact.mjs",
+    "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
+    "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
+    "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer && npm run check:agent-runtime-task-artifact",
+    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs && node scripts/check-managed-launch-boundary-self-test.mjs && node scripts/check-managed-launch-boundary.mjs",
+    "build:host-inventory-codec": "tsc -p tsconfig.host-inventory-codec.json && tsc -p scripts/tsconfig.host-inventory-codec-pack.json && node dist/host-inventory-codec-pack/package-host-inventory-codec.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.237",
+    "@anthropic-ai/sdk": "0.110.0",
+    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@types/node": "^22.20.0",
+    "ajv": "8.20.0",
+    "libsodium-wrappers": "^0.8.4",
+    "zod": "^4.4.3",
+    "undici": "7.30.0"
+  },
+  "peerDependencies": {
+    "vitest": "^4.1.5"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

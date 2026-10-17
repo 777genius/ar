@@ -24,7 +24,7 @@ describe("startup diagnostic privacy", () => {
   it.each([
     ["Unsafe scratch directory: ", D.ScratchDirectoryUnsafe],
     ["Unsafe scratch source permissions: ", D.ScratchSourceUnsafe],
-    ["Scratch launch requires at least 5 GiB available on ", D.ScratchSpace],
+    ["Scratch launch requires at least ", D.ScratchSpace],
   ] as const)("reduces dynamic %s messages to a static enum", (prefix, diagnostic) => {
     const error = Object.assign(new Error(prefix + sensitive, { cause: sensitive }), { stderr: sensitive, env: sensitive });
     expect(normalizeResearchLaunchFailure(error)).toEqual({ legacyCode: "unclassified", cause: C.None, diagnostic });

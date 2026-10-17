@@ -1,4 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
+import { observeJobRetirement } from "../../job-retirement/job-retirement-records";
 import { join, resolve } from "node:path";
 import {
   ProjectAdmissionWorkerRole,
@@ -429,6 +430,10 @@ async function projectionRuntimeObservation(
   if (!observeRuntime) {
     throw new Error("project_control_projection_runtime_unproven");
   }
+  // A retired job holds no writer and its workspace may be gone: report its records.
+  if (observeJobRetirement(input.registryRootDir, manifest.jobId)) {
+    return { workspaceDirty: false, workerAlive: false, resultExists: false };
+  }
   return await observeRuntime(manifest);
 }
 
@@ -632,6 +637,8 @@ async function debtFromOverviewItem(input: {
       evidence: [stringValue(item.safeMessage) ?? "job overview unavailable"],
     }];
   }
+  // The reviewed retirement plan accounted for this output; its workspace may be gone.
+  if (item.retired === true) return [];
   const debt: ProjectDebtItem[] = [];
   const workerAlive = item.workerAlive === true;
   const resolvedWorkspacePath = workspacePath

@@ -140,3 +140,28 @@ it("keeps independent scalar cold reads and refuses their raw row drift", () => 
   expect(() => researchDurableDirectory(paths[0]!, false)).toThrow();
   expect(cold).toHaveBeenCalledTimes(2);
 });
+
+it("observes only query phases while preserving witness results and exact refusal under observer/clock faults", () => {
+  const inputs = paths.map(path => ({ path, privateLeaf: false }));
+  const scalar = researchDurableDirectory(paths[0]!, false), pair = researchDurableDirectories(inputs);
+  let tick = 0; const samples: number[] = [], observe = (elapsed: number) => { samples.push(elapsed); };
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => tick);
+  host.findmntHook = () => { tick += 3; }; host.calls.length = 0;
+  expect(researchDurableDirectory(paths[0]!, false, observe)).toEqual(scalar);
+  expect(researchDurableDirectories(inputs, observe)).toEqual(pair);
+  expect(samples).toEqual([3, 6]); expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(3);
+  const throwing = () => { throw Error("TEST private observer"); };
+  expect(researchDurableDirectory(paths[0]!, false, throwing)).toEqual(scalar);
+  expect(researchDurableDirectories(inputs, throwing)).toEqual(pair);
+  const original = Error("TEST exact query refusal"); host.findmntHook = () => { throw original; };
+  for (const read of [() => researchDurableDirectory(paths[0]!, false, throwing), () => researchDurableDirectories(inputs, throwing)]) {
+    let caught: unknown; try { read(); } catch (error) { caught = error; } expect(caught).toBe(original);
+  }
+  host.findmntHook = undefined; samples.length = 0;
+  for (const invalidClock of [() => NaN, () => { throw Error("TEST private clock"); }]) {
+    clock.mockImplementation(invalidClock);
+    expect(researchDurableDirectory(paths[0]!, false, observe)).toEqual(scalar);
+    expect(researchDurableDirectories(inputs, observe)).toEqual(pair);
+  }
+  expect(samples).toEqual([]); clock.mockRestore();
+});

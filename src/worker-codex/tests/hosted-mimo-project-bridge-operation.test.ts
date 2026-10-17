@@ -32,15 +32,17 @@ vi.mock("../application/project-control/codex-goal-project-pre-start-binding", (
 vi.mock("../hosted-mimo-publication-busy-rearm", async original => ({ ...await original<object>(),
   capturePublicationBusyStartRearm: state.busyCapture, assertPublicationBusyStartRearmCurrent: state.busyCurrent }));
 import { trustedMimoProjectOperationLaunch } from "../trusted-custody-systemd-launch";
-import { researchHash } from "../research-launch-files";
+import { researchHash, researchInvalid } from "../research-launch-files";
+import { isPrelaunchStartFailureResult } from "../hosted-mimo-publication-busy-rearm";
 // Keep unrelated recipes' provider/install graphs outside this unit boundary;
 // the new closed recipe and its input validation remain real.
 vi.mock("../hosted-readonly-inputs", () => ({ readHostedPrivateBytes: vi.fn() }));
 vi.mock("../research-launch-contract", () => ({ parseResearchStartSpec: vi.fn(), researchProviderSetupTimeoutMs: 1000, researchProviderSetupAllowanceMs: vi.fn() }));
 vi.mock("../research-provider-root", () => ({ assertResearchProviderRoot: vi.fn(), researchProviderProtectedPaths: vi.fn(), ResearchRootMountAccess: {} }));
 vi.mock("../hosted-dependency-installer-recipe", () => ({ hostedDependencyInstallerProperties: vi.fn(), hostedDependencyInstallerBootstrapCommand: vi.fn() }));
-import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, assertHostedMimoRecoveryOperationsSettled } from "../hosted-mimo-project-bridge-operation";
+import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, assertHostedMimoRecoveryOperationsSettled, operationFailure } from "../hosted-mimo-project-bridge-operation";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
+import { MimoProjectStartControlTimingScope as TimingScope, type MimoProjectStartControlTimingObserver } from "../research-launch-admission-diagnostics";
 const request = { kind: "MimoProject", schemaVersion: 1, machineId: "a".repeat(32), projectId: "test-project", workstreamId: "test-stream", operation: MimoProjectBridgeOperation.Create, jobId: "test-job", prompt: "TEST private prompt", sourceCommit: "b".repeat(40) } as const;
 const prefix = "/srv/worker-state/mimo-projects/test-project/test-stream/mimo-bridge-operations/test-job.create";
 const entry = "/opt/subscription-runtime/releases/" + "f".repeat(40) + "/dist/worker-codex/hosted-mimo-project-bridge-cli.js";
@@ -157,6 +159,37 @@ it("publishes a precise failed status without changing retained unknown Start or
     expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(submitted);
     expect(state.handler).toHaveBeenCalledOnce();
   } finally { process.argv[1] = previous!; }
+});
+it.each(["success", "inner-refusal", "thrown", "clock-fault"])("keeps owned Start timing inside publication and round-trips %s without a second handler call", async scenario => {
+  await submitHostedMimoProjectBridge(request);
+  state.files.set(prefix + ".result.json", '{"ok":true,"result":{"ok":true}}\n');
+  const start = control(MimoProjectBridgeOperation.Start), base = prefix.replace(".create", ".start");
+  await submitHostedMimoProjectBridge(start);
+  const owner = JSON.parse(state.files.get(base + ".owner.json")!), previous = process.argv[1]; process.argv[1] = entry;
+  const clock = vi.spyOn(process, "uptime").mockReturnValue(1);
+  if (scenario === "clock-fault") clock.mockImplementation(() => { throw new Error("TEST clock fault"); });
+  const success = { ok: true, mode: "project_control_start", result: { status: "applied", resourceId: "TEST original native attempt" } };
+  const refusal = { ok: false, error: "TEST_refusal" };
+  state.handler.mockImplementation(async (_request: unknown, observe?: MimoProjectStartControlTimingObserver) => {
+    expect(state.files.has(base + ".result.json")).toBe(false);
+    expect(observe).toBeTypeOf("function");
+    observe?.(TimingScope.RuntimeSelectionAndImport, 10);
+    for (let i = 0; i < 3; i++) observe?.(TimingScope.PreBrokerObservation, 1);
+    observe?.(TimingScope.BrokerStart, 20);
+    if (scenario === "thrown") throw new Error("project_control_source_invalid: TEST private failure");
+    return scenario === "inner-refusal" ? refusal : success;
+  });
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    expect(await executeHostedMimoProjectBridgeOperation(base + ".request.json")).toBe(!["inner-refusal", "thrown"].includes(scenario));
+    const retained = state.files.get(base + ".result.json")!, result = JSON.parse(retained);
+    if (scenario === "success") expect(result.result.controlTiming).toMatchObject({ kind: "owned-start", preBrokerObservationElapsedMs: 3, brokerStartElapsedMs: 20, unattributedElapsedMsAtReceipt: 967 });
+    else if (scenario === "thrown") expect(retained).toBe('{"ok":false,"error":"project_control_source_invalid"}\n');
+    else expect(result).toEqual({ ok: true, result: scenario === "inner-refusal" ? refusal : success });
+    state.command.mockReturnValue("LoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=");
+    expect(await submitHostedMimoProjectBridge(start)).toMatchObject({ state: "settled", result });
+    expect(state.files.get(base + ".result.json")).toBe(retained); expect(state.handler).toHaveBeenCalledOnce();
+  } finally { clock.mockRestore(); process.argv[1] = previous!; }
 });
 it("settles an oversized Status projection as a bounded response error", async () => {
   // Legal backslash-heavy filenames fit Git's 1MiB stdout limit but their
@@ -629,4 +662,81 @@ it("lets an owned unit wait for a maintenance fence inside its runtime limit", a
     // 900 s operation timeout: a quarter is above the 120 s cap, so the cap applies.
     expect(state.fenceOptions).toEqual([{ fenceWaitMs: 120000 }]);
   } finally { process.argv[1] = previous!; }
+});
+
+function thrown(effect: () => void): unknown { try { effect(); } catch (error) { return error; } throw new Error("TEST expected a throw"); }
+beforeEach(() => { vi.spyOn(process.stdout, "write").mockReturnValue(true); });
+const finalizing = [MimoProjectBridgeOperation.Status, MimoProjectBridgeOperation.Stop] as const;
+const nonFinalizing = [MimoProjectBridgeOperation.Create, MimoProjectBridgeOperation.Start, MimoProjectBridgeOperation.RepairAdmission, MimoProjectBridgeOperation.FinalizeAdmissionRepair, undefined] as const;
+it.each(finalizing)("names the exact closed cause of a %s failure", operation => {
+  expect(operationFailure(new Error("dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected"), operation))
+    .toEqual({ ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: "handoff_sensitive_path_rejected" });
+  expect(operationFailure(new Error("dirty_terminal_handoff_unavailable:unknown"), operation)).toMatchObject({ cause: "unknown" });
+  expect(operationFailure(new Error("hosted_mimo_worker_changed_files_unavailable:workspace_changed_files_output_limit"), operation))
+    .toEqual({ ok: false, error: "hosted_mimo_worker_changed_files_unavailable", cause: "workspace_changed_files_output_limit" });
+  expect(operationFailure(thrown(() => researchInvalid("file-deadline")), operation))
+    .toEqual({ ok: false, error: "hosted_research_launch_denied", cause: "file-deadline" });
+  // Another immutable release has another Error class; only the message and the closed cause count.
+  class OtherReleaseError extends Error { override name = "OtherReleaseError"; }
+  expect(operationFailure(new OtherReleaseError("dirty_terminal_handoff_unavailable:handoff_file_byte_limit_exceeded"), operation)).toMatchObject({ cause: "handoff_file_byte_limit_exceeded" });
+  expect(operationFailure(Object.assign(new Error("hosted_research_launch_denied"), { cause: "host-command-timeout" }), operation)).toMatchObject({ cause: "host-command-timeout" });
+});
+it.each(finalizing)("never turns a path or free text into a %s cause", operation => {
+  for (const message of ["dirty_terminal_handoff_unavailable:handoff_raw_secret_rejected:/srv/TEST/private", "dirty_terminal_handoff_unavailable:/srv/TEST/private",
+    "dirty_terminal_handoff_unavailable:handoff_TEST Private", "dirty_terminal_handoff_unavailable:HANDOFF_x", "dirty_terminal_handoff_unavailable:handoff_" + "a".repeat(81),
+    "dirty_terminal_handoff_unavailable:handoff_x\n/srv/TEST/private", "hosted_mimo_worker_changed_files_unavailable:/srv/TEST/private",
+    "hosted_mimo_worker_changed_files_unavailable:workspace_changed_files_other", "TEST private dirty_terminal_handoff_unavailable:handoff_x"]) {
+    const failure = operationFailure(new Error(message), operation);
+    expect(failure.cause, message).toBeUndefined();
+    expect(JSON.stringify(failure)).not.toContain("TEST");
+    expect(JSON.stringify(failure)).not.toContain("/srv");
+  }
+  expect(operationFailure(Object.assign(new Error("hosted_research_launch_denied"), { cause: "/srv/TEST/private" }), operation)).toEqual({ ok: false, error: "hosted_research_launch_denied" });
+  expect(operationFailure(Object.assign(new Error("hosted_research_launch_denied"), { cause: new Error("TEST private") }), operation)).toEqual({ ok: false, error: "hosted_research_launch_denied" });
+  expect(operationFailure(new Error("TEST private unknown"), operation)).toEqual({ ok: false, error: "mimo_project_bridge_operation_failed" });
+});
+it.each(nonFinalizing)("keeps the exact error,ok envelope for %s", operation => {
+  for (const error of [new Error("dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected"), new Error("hosted_mimo_worker_changed_files_unavailable:workspace_changed_files_timeout"),
+    thrown(() => researchInvalid("file-deadline")), new Error("TEST private unknown")]) {
+    const failure = operationFailure(error, operation);
+    expect(Object.keys(failure).sort().join()).toBe("error,ok");
+  }
+  // A Start rearm still recognizes the generic failure as a pre-launch failure.
+  expect(isPrelaunchStartFailureResult(operationFailure(new Error("TEST private unknown"), operation))).toBe(true);
+});
+it("retains a Status cause in the result and journal, and recovery still accepts the settled failure", async () => {
+  const status = control(MimoProjectBridgeOperation.Status), statusPrefix = prefix.replace(".create", ".status");
+  await submitHostedMimoProjectBridge(status);
+  const owner = JSON.parse(state.files.get(statusPrefix + ".owner.json")!);
+  const journal = vi.spyOn(process.stdout, "write").mockReturnValue(true), previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockRejectedValue(new Error("dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected"));
+    await expect(executeHostedMimoProjectBridgeOperation(statusPrefix + ".request.json")).resolves.toBe(false);
+    const retained = { ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: "handoff_sensitive_path_rejected" };
+    expect(JSON.parse(state.files.get(statusPrefix + ".result.json")!)).toEqual(retained);
+    expect(journal).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ operation: "status", ...retained }) + "\n");
+    state.command.mockImplementation((_command: string, args: string[]) => args[0] === "list-jobs" ? "" : `Id=${owner.unit}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\n`);
+    const b = { stateRoot: "/srv/worker-state/mimo-projects/test-project/test-stream", projectId: request.projectId, workstreamId: request.workstreamId, machineId: request.machineId };
+    await expect(assertHostedMimoRecoveryOperationsSettled(b)).resolves.toBeUndefined();
+    // The next Status carries the prior failure, with its cause, as evidence.
+    expect(await submitHostedMimoProjectBridge(status)).toMatchObject({ worker: retained });
+  } finally { journal.mockRestore(); process.argv[1] = previous!; }
+});
+it("keeps the exact Start envelope and journals no error text", async () => {
+  await submitHostedMimoProjectBridge(request);
+  state.files.set(prefix + ".result.json", '{"ok":true,"result":{"ok":true}}\n');
+  const start = control(MimoProjectBridgeOperation.Start), base = prefix.replace(".create", ".start");
+  await submitHostedMimoProjectBridge(start);
+  const owner = JSON.parse(state.files.get(base + ".owner.json")!);
+  const journal = vi.spyOn(process.stdout, "write").mockReturnValue(true), previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + owner.description);
+    state.handler.mockRejectedValue(new Error("dirty_terminal_handoff_unavailable:handoff_sensitive_path_rejected /srv/TEST/private"));
+    await expect(executeHostedMimoProjectBridgeOperation(base + ".request.json")).resolves.toBe(false);
+    const retained = JSON.parse(state.files.get(base + ".result.json")!);
+    expect(retained).toEqual({ ok: false, error: "mimo_project_bridge_operation_failed" });
+    expect(isPrelaunchStartFailureResult(retained)).toBe(true);
+    expect(journal).toHaveBeenCalledExactlyOnceWith('{"operation":"start","ok":false,"error":"mimo_project_bridge_operation_failed"}\n');
+  } finally { journal.mockRestore(); process.argv[1] = previous!; }
 });

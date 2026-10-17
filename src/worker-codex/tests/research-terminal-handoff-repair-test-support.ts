@@ -18,6 +18,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { writeCodexGoalStoppedProgress } from "../application/codex-goal-lifecycle-markers";
 export { registeredStoppedBeforeProviderTests } from "./research-stopped-before-provider-test-support";
+import { registeredChangedFilesTests } from "./research-mimo-changed-files-test-support";
 
 /** Runs inside the existing registered suite's genuinely constructed native
  * fixture. Only kernel PID disappearance is an explicit offline Host port. */
@@ -27,6 +28,7 @@ export function registeredTerminalRepairTests(input: {
   allocation(): Promise<ReturnType<typeof researchCurrentStart> & { jobId: string; startId: string;
     specSha256: string; unit: string; manifest: CodexGoalJobManifest }>;
 }): void {
+  registeredChangedFilesTests({ candidate: input.candidate });
   // Inherits this suite's existing offline Linux/root and full-digest fixture.
   describe("current installed writer origin classification (offline Host fixture)", () => {
     it.each([false, true])("does not qualify ignored current origin; artifact failure=%s retains the same allocated fallback", async invalidArtifact => {

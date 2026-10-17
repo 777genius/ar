@@ -7,7 +7,7 @@ import type { CodexGoalJobManifestInput } from "../../codex-goal-jobs";
 import { projectControlWorkspaceLockRoot, type ProjectControlWorkspaceLease } from "../../codex-goal-project-workspace-lock";
 import { protectedCodexGoalJobBirthPreparationCurrent, type ProtectedCodexGoalJobBirthPreparation } from "../../protected-job-birth";
 import { assertGitWorkspaceRawPatchIdentitySupported, captureGitWorkspaceChangedFiles, captureGitWorkspacePatch, type WorkspacePatchGitReadRecipe } from "../../codex-goal-runtime-result-io";
-import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "../../managed-dependency-git";
+import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "../../managed-dependency-git-hygiene";
 import { assertResearchDirectory, researchCustody, researchDirectoryIdentity } from "../../research-launch-files";
 import { ExecFileProjectControlGitAdapter } from "./adapters/host-command-adapters";
 import type { CodexGoalProjectCreateWorktreeInput } from "./codex-goal-project-control-contracts";

@@ -1,3 +1,4 @@
+import { workspaceChangedFilesCount, workspaceChangedFilesCountText } from "../codex-goal-changed-files-report";
 import { join } from "node:path";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
@@ -243,7 +244,7 @@ export function buildCodexGoalDecision(input: {
       code: "workspace_state",
       workspacePath: input.launch.config.workspacePath,
       workspaceDirty: input.status.workspaceDirty,
-      changedFilesCount: (input.status.changedFiles ?? []).length,
+      changedFilesCount: workspaceChangedFilesCount(input.status),
     },
     {
       code: "progress_state",
@@ -728,7 +729,7 @@ export function buildCodexGoalHandoff(input: {
     `- resultReason: ${input.status.resultReason ?? ""}`,
     `- handoffArtifactError: ${input.brief.handoffArtifactError ?? ""}`,
     `- workspaceDirty: ${String(input.status.workspaceDirty)}`,
-    `- changedFiles: ${(input.status.changedFiles ?? []).length}`,
+    `- changedFiles: ${workspaceChangedFilesCountText(input.status)}`,
     `- silentStale: ${String(input.brief.silentStale)}`,
     `- lastProgressAt: ${String(input.brief.lastProgressAt ?? "")}`,
     `- progressStatus: ${String(input.brief.progressStatus ?? "")}`,

@@ -229,11 +229,14 @@ describe("external owned MiMo result publication", () => {
     });
     afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   it.each([
-    [8 * 1024 * 1024 + 1, "handoff_file_byte_limit_exceeded", "hosted_mimo_worker_preservation_budget_exceeded"],
-    [64, "handoff_raw_secret_rejected", "hosted_mimo_worker_preservation_privacy_refused"],
-  ] as const)("authenticates refusal %s without releasing or fabricating a result", async (size, reason, code) => {
+    [8 * 1024 * 1024 + 1, "handoff_file_byte_limit_exceeded", "hosted_mimo_worker_preservation_budget_exceeded", "TEST-too-large.bin"],
+    [64, "handoff_raw_secret_rejected", "hosted_mimo_worker_preservation_privacy_refused", "TEST-too-large.bin"],
+    [64, "handoff_sensitive_path_rejected", "hosted_mimo_worker_preservation_privacy_refused", "TEST-generated/.env.example"],
+    [64, "handoff_sensitive_path_rejected", "hosted_mimo_worker_preservation_privacy_refused", "TEST-generated/.npmrc"],
+  ] as const)("authenticates refusal %s without releasing or fabricating a result", async (size, reason, code, relativePath) => {
     const current = start(true); await initializeReportWorkspace(current);
-    const path = join(current.selected.workspacePath, "TEST-too-large.bin"), bytes = Buffer.alloc(size);
+    const path = join(current.selected.workspacePath, relativePath), bytes = Buffer.alloc(size);
+    fs.mkdirSync(dirname(path), { recursive: true });
     fs.writeFileSync(path, bytes);
     const external = join(current.selected.jobRootDir, "TEST-dependency-target"), dependency = join(current.selected.workspacePath, "node_modules");
     fs.mkdirSync(external, { mode: 0o700 });
@@ -241,7 +244,7 @@ describe("external owned MiMo result publication", () => {
     fs.symlinkSync(external, dependency, "dir");
     const dependencyIdentity = fs.lstatSync(dependency);
     current.lease.stage({ status: "partial", provider: "codex", runId: current.jobId, taskId: current.selected.taskId,
-      changedFiles: ["TEST-too-large.bin"] });
+      changedFiles: [relativePath] });
     const originalCandidate = researchRead(join(current.directory, "mimo-candidate.json"));
     const originalActive = researchRead(join(researchJobAuthority(current.jobId), "active.json"));
     enterResearchOperatorScope(current.unit);

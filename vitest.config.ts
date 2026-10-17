@@ -1,4 +1,5 @@
 import { configDefaults, defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
 import { DurationBalancedSequencer } from "./src/testing/tests/unit-test-sequencer.js";
 
@@ -56,6 +57,9 @@ export default defineConfig({
     testTimeout: 60_000,
   },
   resolve: {
-    alias,
+    alias: [{
+      find: /^file:\/\/\/opt\/subscription-runtime\/releases\/a{40}\/dist\/worker-codex\/research-writer-observation\.js$/,
+      replacement: fileURLToPath(new URL("./src/worker-codex/tests/fixtures/native-writer-original-00bbb/runtime/dist/worker-codex/research-writer-observation.js", import.meta.url)),
+    }, ...Object.entries(alias).map(([find, replacement]) => ({ find, replacement }))],
   },
 });

@@ -25,6 +25,7 @@ import {
 } from "../application/project-control/codex-goal-project-terminal-handoff-recovery";
 import { localReviewedWorkerOutputDeps } from "../reviewed-worker-output";
 import { projectControlStartStoredJobView } from "../codex-goal-mcp-project-control-actions";
+import { MimoProjectStartControlTimingScope } from "../research-launch-admission-diagnostics";
 import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
 import {
@@ -270,10 +271,12 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     });
 
     let startCalled = false;
+    const observedScopes: MimoProjectStartControlTimingScope[] = [];
     const started = await projectControlStartStoredJobView(
       fixture.startArgs,
       {
         ...fixture.deps(async () => {}),
+        observeControlTiming: (scope, elapsedMs) => { expect(elapsedMs).toBeGreaterThanOrEqual(0); observedScopes.push(scope); },
         codexProjectControlBroker: (input) => ({
           startWorker: async () => {
             startCalled = true;
@@ -301,6 +304,10 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     );
     expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
     expect(startCalled).toBe(true);
+    expect(observedScopes).toEqual([
+      MimoProjectStartControlTimingScope.PreBrokerObservation, MimoProjectStartControlTimingScope.PreBrokerObservation,
+      MimoProjectStartControlTimingScope.PreBrokerObservation, MimoProjectStartControlTimingScope.BrokerStart,
+    ]);
   });
 
   it("uses controller custody roots for a legacy producer without project scope", async () => {

@@ -241,6 +241,12 @@ it("refuses hand-pinned checks until the plan carries a reviewed template", asyn
   expect(JSON.parse(bindingBytes(f).toString()).admission).toEqual(admission);
 });
 
+it("refuses an explicit template that pins the new commit again", async () => {
+  const f = await fixture(), before = bindingBytes(f);
+  const admission = { mode: "serial-builtin", contract: contractFor(f, f.B, `test "$(git rev-parse HEAD)" = ${f.B}`) };
+  await expect(advance(f, planFor(f, { admission }))).rejects.toThrow("mimo_project_bridge_advance_admission_pinned"); untouched(f, before);
+});
+
 it.each([
   ["a mandatory doc that is not in the snapshot", (c: ReturnType<typeof contractFor>) => ({ ...c, mandatoryDocs: ["README.md", "missing.md"] })],
   ["a check directory that is a file", (c: ReturnType<typeof contractFor>) => ({ ...c, requiredChecks: [{ id: "test", cwd: "README.md", command: "true" }] })],
@@ -269,6 +275,13 @@ it("allows an advance while only the route-disabled markers close the route, nev
   await expect(advance(f, planFor(f))).rejects.toThrow("mimo_project_bridge_advance_recovery_pending"); untouched(f, before);
   fs.unlinkSync(physical(f.state + "/.controller-recovery.json"));
   await expect(advance(f, planFor(f))).resolves.toMatchObject({ ok: true }); expect(git(f.source, "rev-parse", "HEAD")).toBe(f.B);
+});
+
+it("never advances a workstream that is being or was retired", async () => {
+  const f = await fixture(), marker = `/etc/subscription-runtime/projects/${f.project}.route-disabled`;
+  file(f.state + "/.job-retirement.json", JSON.stringify({ schemaVersion: 1, planSha256: "a".repeat(64) }) + "\n"); file(marker, "TEST disabled\n");
+  const before = bindingBytes(f);
+  await expect(advance(f, planFor(f))).rejects.toThrow("mimo_project_bridge_advance_retirement_pending"); untouched(f, before);
 });
 
 it.each([

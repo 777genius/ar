@@ -3,10 +3,14 @@ import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSy
   fsyncSync, fstatSync, linkSync, unlinkSync, constants } from "node:fs";
 import { join, dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
-import { researchCustody, researchHash, researchRecord, researchPublish } from "./research-launch-files";
+import { researchCustody, researchHash, researchRecord, researchPublish, isResearchDenialObservation, type ResearchDenialObservation } from "./research-launch-files";
+import { WorkspaceChangedFilesWarning } from "./codex-goal-changed-files-report";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
+import { retiredWorkstreamBridgeAnswer } from "./job-retirement/job-retirement-records";
+import { beginMimoProjectStartControlTiming, createMimoProjectStartControlTiming, mimoProjectStartControlReceipt,
+  MimoProjectStartControlTimingScope, type MimoProjectStartControlTimingObserver } from "./research-launch-admission-diagnostics";
 import { readdirSync } from "node:fs";
 import { InterruptedProjectCreateErrorCode, InterruptedProjectCreateDisposition, InterruptedProjectCreateTermination,
   type InterruptedProjectCreateOutcome } from "@vioxen/subscription-runtime/worker-core";
@@ -56,7 +60,7 @@ export function operationErrorCode(error: unknown): string {
   const typedCode: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
   if (typeof typedCode === "string" && approvedErrorCodes.has(typedCode)) return typedCode;
   const code = error.message.split(/[:;]/, 1)[0]!;
-  if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_)[a-z0-9_]{1,100}$/.test(code)) return code;
+  if (approvedErrorCodes.has(code) || /^(?:mimo_project_bridge_|project_control_|hosted_research_|codex_goal_|owned_mimo_|mimo_admission_repair_|project_mimo_worker_|hosted_mimo_|codex_project_|hosted_stored_project_|job_retirement_)[a-z0-9_]{1,100}$/.test(code)) return code;
   switch (typedCode) {
     case "ENOENT": return "mimo_project_bridge_fs_not_found";
     case "EACCES": return "mimo_project_bridge_fs_access_denied";
@@ -66,6 +70,32 @@ export function operationErrorCode(error: unknown): string {
   if (error instanceof TypeError) return "mimo_project_bridge_type_error";
   if (error instanceof SyntaxError) return "mimo_project_bridge_parse_error";
   return "mimo_project_bridge_operation_failed";
+}
+/** Closed vocabulary of a Status or Stop failure cause; each member comes from its single owner. */
+export type HostedMimoOperationCause = ResearchDenialObservation | WorkspaceChangedFilesWarning | `handoff_${string}` | "unknown";
+export type HostedMimoOperationFailure = Readonly<{ ok: false; error: string; cause?: HostedMimoOperationCause }>;
+// Exact messages only. The suffixes are closed vocabularies produced by the
+// terminal handoff normalizer and the workspace change reader, never free text.
+const handoffCauseSource = "handoff_[a-z0-9_]{1,80}|unknown";
+const handoffUnavailable = new RegExp(`^dirty_terminal_handoff_unavailable:(${handoffCauseSource})$`);
+const changedFilesWarnings = Object.values(WorkspaceChangedFilesWarning);
+/** The closed cause vocabulary as a guard, for readers that must not copy anything else. */
+export function isHostedMimoOperationCause(value: unknown): value is HostedMimoOperationCause {
+  return typeof value === "string" && (new RegExp(`^(?:${handoffCauseSource})$`).test(value) || changedFilesWarnings.some(warning => warning === value) || isResearchDenialObservation(value));
+}
+const changedFilesUnavailable = new RegExp(`^hosted_mimo_worker_changed_files_unavailable:(${changedFilesWarnings.join("|")})$`);
+/** The failure envelope of an operation. Only Status and Stop, which finalize a worker, add a closed `cause`;
+ * the other operations keep the exact `{ ok, error }` shape that rearm and retirement compare. */
+export function operationFailure(error: unknown, operation?: MimoProjectBridgeOperation): HostedMimoOperationFailure {
+  const code = operationErrorCode(error);
+  if (operation !== MimoProjectBridgeOperation.Status && operation !== MimoProjectBridgeOperation.Stop || !(error instanceof Error)) return { ok: false, error: code };
+  const handoff = handoffUnavailable.exec(error.message);
+  if (handoff) return { ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: handoff[1] as `handoff_${string}` | "unknown" };
+  const changed = changedFilesWarnings.find(warning => changedFilesUnavailable.exec(error.message)?.[1] === warning);
+  if (changed) return { ok: false, error: code, cause: changed };
+  // The originating release may carry another Error class; only the exact code and a closed observation count.
+  if (error.message === "hosted_research_launch_denied" && isResearchDenialObservation(error.cause)) return { ok: false, error: code, cause: error.cause };
+  return { ok: false, error: code };
 }
 function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));
@@ -198,6 +228,9 @@ function observation(request: MimoProjectBridgeRequest): Record<string, unknown>
 }
 /** Read-only operation state for maintenance that must not race bridge operations. */
 export const observeHostedMimoProjectOperation = observation;
+/** Read-only: the exact retained owner's unit is cold (zero PID, empty control
+ * group, no queued job), the same proof controller recovery requires. */
+export const hostedMimoProjectOperationCold = (request: MimoProjectBridgeRequest): boolean => recoverableStatus(request, "controller-recovery");
 /** Status may reconcile an existing publication, but never submits a provider.
  * Recover only after the exact prior observer cannot execute any further work. */
 function recoverableStatus(request: MimoProjectBridgeRequest, mode?: "controller-recovery"): boolean {
@@ -222,8 +255,14 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
     `/etc/subscription-runtime/mimo-projects/${request.projectId}/${request.workstreamId}.json`).toString()), request);
   if (hostedMimoBridgeMetadataBytes("/etc/machine-id").toString().trim() !== request.machineId) throw new Error("mimo_project_bridge_machine_mismatch");
   researchCustody(binding.stateRoot, true);
+  // A retired workstream answers from its tombstones, without a lease, an owned
+  // unit or a routed runtime, and therefore without opening any workspace.
+  const retired = retiredWorkstreamBridgeAnswer(binding.stateRoot, request.jobId, isStatusOrStop(request));
+  if (retired) return retired;
   return withHostedMimoWorkstreamActivity(binding.stateRoot, () => submitHostedMimoProjectBridgeUnfenced(value));
 }
+const isStatusOrStop = (request: MimoProjectBridgeRequest): boolean =>
+  request.operation === MimoProjectBridgeOperation.Status || request.operation === MimoProjectBridgeOperation.Stop;
 async function submitHostedMimoProjectBridgeUnfenced(value: unknown): Promise<unknown> {
   const request = parseMimoProjectBridgeRequest(value);
   assertResearchInitialRoot(true); assertResearchSharedHost();
@@ -375,9 +414,14 @@ export async function executeHostedMimoProjectBridgeOperation(requestPath: strin
   // The request and owner are already persisted, so a source advance must delay
   // this unit instead of leaving the operation without a published result.
   const fenceWaitMs = Math.min(ownedUnitFenceWaitMs, Math.floor(binding.operationTimeoutMs / 4));
-  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => executeHostedMimoProjectBridgeOperationUnfenced(requestPath), { fenceWaitMs });
+  const timing = request.operation === MimoProjectBridgeOperation.Start ? createMimoProjectStartControlTiming() : undefined;
+  const acquired = beginMimoProjectStartControlTiming(MimoProjectStartControlTimingScope.WorkstreamFenceAcquire, timing?.observe);
+  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => {
+    acquired(); return executeHostedMimoProjectBridgeOperationUnfenced(requestPath, timing);
+  }, { fenceWaitMs });
 }
-async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: string): Promise<boolean> {
+async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: string,
+  timing?: Readonly<{ observe: MimoProjectStartControlTimingObserver; snapshot: ReturnType<typeof createMimoProjectStartControlTiming>["snapshot"] }>): Promise<boolean> {
   assertResearchInitialRoot(true); assertResearchSharedHost();
   const request = parseMimoProjectBridgeRequest(JSON.parse(hostedMimoBridgeMetadataBytes(requestPath).toString())), current = owner(request);
   if (current.requestPath !== requestPath || current.value.entry !== realpathSync(process.argv[1]!) || current.value.node !== realpathSync(process.execPath))
@@ -396,17 +440,23 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
         await assertPublicationBusyStartRearmCurrent(request, proof);
       }
     }
-    result = { ok: true, result: await handleHostedMimoProjectBridge(request) };
+    result = { ok: true, result: await handleHostedMimoProjectBridge(request, timing?.observe) };
     serialized = JSON.stringify(result) + "\n";
     if (Buffer.byteLength(serialized) > 1048576) throw new Error("mimo_project_bridge_response_invalid");
+    serialized = mimoProjectStartControlReceipt(serialized, timing);
   }
   catch (error) {
-    result = { ok: false, error: operationErrorCode(error) };
+    result = operationFailure(error, request.operation);
     serialized = JSON.stringify(result) + "\n";
   }
   // Publication failures remain uncertain; never replace them with a failure
   // envelope or replay a handler whose effects may already have happened.
   publishHostedMimoProjectOperationResult(current, serialized, () => {});
+  // The owned unit's journal carries the closed fields of a failure and no error text. It is
+  // written only once the result is durable, and a diagnostic failure cannot replace that result.
+  const settled = result as { ok: boolean; error?: string; cause?: string };
+  if (!settled.ok) try { process.stdout.write(JSON.stringify({ operation: request.operation, ok: false, error: settled.error,
+    ...(settled.cause === undefined ? {} : { cause: settled.cause }) }) + "\n"); } catch { /* Diagnostics never replace the published result. */ }
   const outcome = result as { ok: boolean; result?: { ok?: boolean } };
   return outcome.ok && outcome.result?.ok !== false;
 }

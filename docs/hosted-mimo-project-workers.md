@@ -29,9 +29,11 @@ This registered CodingV1 route is separate from global hosted activation. It doe
 
 Fresh registered MiMo workers use the source-owned CodingV1 profile with exactly 64 goal turns. The independently authenticated origin and sealed process factory enable native shell, unified execution and code editing in the admitted workspace, so the worker can run project builds and tests. Managed public Internet access remains separate from filesystem and credential containment: host-private, loopback, link-local and metadata destinations are denied. The raw shared credential remains in the host-owned proxy, outside the provider process and workspace. Arbitrary MCP servers, apps, hooks, memory, delegation, recursive children and interactive input remain disabled. A caller-selected profile or tool flag does not authorize execution.
 
-Each worker has one account cycle, one attempt, no reconnect/prewarm/continuation, and a finite task deadline. The registry owns the canonical durable handoff sink; callers cannot choose an external sink. Completion reconciles the same runtime/provider attempt and publishes the structured outcome plus the existing handoff artifacts. A partial or failed result remains partial or failed.
+Each worker has one account cycle, one attempt, no account reconnect/prewarm/continuation (in-turn stream retries inside Codex, described below, are separate), and a finite task deadline. The registry owns the canonical durable handoff sink; callers cannot choose an external sink. Completion reconciles the same runtime/provider attempt and publishes the structured outcome plus the existing handoff artifacts. A partial or failed result remains partial or failed.
 
 Use the existing project status and stop tools for the same registered job. A submission timeout is uncertain: reconcile its retained attempt before retrying. Never replace its job ID, remove its ownership records or launch an unmanaged replacement to work around uncertainty.
+
+Dropped streams are retried inside the turn. The generated Codex configuration sets `stream_max_retries = 8` (Codex backs off 200 ms doubling, about 50 seconds in total per sampling request) and `stream_idle_timeout_ms` at the smaller of 10 minutes and the request budget. When the MiMo stream breaks mid-response, Codex rebuilds the request from its recorded history and attaches the outputs of tool calls that already ran, so tools are not executed again. Status may show `Reconnecting... n/8` warnings for a job that then finishes normally. `request_max_retries` stays 0 so the transport 5xx retry is not nested in the stream loop. A capacity 429 is proxied as 502 and is retried by the same loop: the refusal now arrives after about a minute and 9 requests, with the same classification as before. The idle timeout and the client reconnect grace are both 10 minutes on purpose; a retry that hangs ends at whichever fires first, and a single message that takes longer than the idle timeout to generate will hit it, because the proxy holds message text frames until the item closes. The job still has exactly one attempt: a turn that exhausts the stream retries fails and is continued as a new job from the preserved patch, never replayed. Each retry re-sends the prompt and history (extra input tokens) and uses one of the 256 proxy requests of the Start. Any failed request still invalidates the capacity-recovery proof, which fails closed. After a reconnect, any turn-scoped activity (tool items, deltas, token usage, diff or plan updates) clears the reconnect grace timer, so long tool-only work no longer ends in `codex_app_server_reconnect_timeout`.
 
 ### Shared current runtime and retained attempts
 
@@ -116,9 +118,63 @@ Preparation validates enabled routing and proof before creating fresh protected 
 
 Finally install the matching MCP runtime and add the credential-free local transport route described in [MiMo project client transport](mimo-project-client-transport.md). The helper does not enable a global MCP server or distribute host authentication.
 
+### Rendering an attachment from a card
+
+`--render-attachment` turns a short project card into the files an operator otherwise writes by hand. It is read-only and unprivileged: it reads the card (a regular file of at most 64 KiB), prints JSON on stdout and touches nothing else. The privileged surface is unchanged; the operator reviews the output, installs the files and runs the existing `--prepare-project` and `--configure-route`.
+
+```sh
+node <runtime>/dist/worker-codex/hosted-mimo-project-bridge-cli.js --render-attachment card.json
+```
+
+The card is a closed JSON object. Optional fields are `workstreamId` (default `main`), `packet` (`AGENTS.md` or `README.md`, default `AGENTS.md`) and `jobIdPrefix`; everything else is required:
+
+```json
+{
+  "projectId": "my-project",
+  "repositoryUrl": "https://github.com/example/my-repo.git", "branch": "main",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "sandboxSubdir": "sandbox",
+  "ownedPaths": ["src/", "docs/", "README.md"],
+  "taskTimeoutMs": 14400000, "appServerStartupTimeoutMs": 330000, "operationTimeoutMs": 900000,
+  "diskPeak": { "scratch": 21474836480, "durable": 2147483648 },
+  "host": { "alias": "worker-host", "machineId": "00000000000000000000000000000000", "socketDir": "/private/tmp/subscription-runtime-ssh",
+    "authRootDir": "/srv/worker-state/account-pools/auth", "codexBinaryPath": "/opt/subscription-runtime/codex/bin/codex" }
+}
+```
+
+`ownedPaths` and the `host` constants are required because a pure renderer cannot list tracked entries or read the host: take `ownedPaths` from `git ls-tree --name-only <commit>` (directories with a trailing slash, no globs) and the host values from the current inventory. The three timeouts have no default on purpose. `taskTimeoutMs` is the deadline of a whole task, so take it from the runbook value (14400000, four hours, for long tasks) or from the existing binding of a comparable line, never a guess. `diskPeak` is in bytes, covers clone, dependency install and build artifacts on scratch (`scratch`) and handoff, logs and receipts on durable state (`durable`), and is mandatory for every new project card.
+
+Output (`ok: true`): `workstreamYaml` (to install at its `path`), `preparationPlan` (the `--prepare-project` plan, using the [generic admission template](#generic-admission-template)), `localRoute` (a complete route file, the input of `--configure-route`), `snapshot` (the path and the commands to stage and install the reviewed snapshot), `nextCommands` (no-clobber install commands with modes, then the existing commands), `diskPeak` (the declared peak with the rule-B check to run by hand before each Start; no `capacity.json` is rendered) and `derivedDefaults`, which lists every value the renderer chose instead of the card. Review that list: it holds the workstream and repository key, the controller job ID, the job ID prefix (`<project>-<workstream>-job-`), the fixed commit identity and the fixed `service_tier: "default"` and `heavy_lock_path` values the platform-infra workstream contract requires (`heavy_lock_path` is inert for the runtime; its removal is owned by platform-infra). The output is checked with the parsers that preparation, the bridge route check and the local client use, and with the platform-infra id and URL patterns (ids without dots or underscores, `https://github.com/<owner>/<repo>.git`). An invalid card prints `ok: false`, `error: mimo_project_bridge_render_card_invalid` and an `issues` list, and exits 1.
+
+The project-level declaration `/etc/subscription-runtime/projects/<project>.yml` and any project route policy stay with platform-infra and are not rendered. The snapshot and install commands are operator guidance and run as written only after review.
+
+### Generic admission template
+
+This is the single owner of the reusable admission template; runbooks and skills link here instead of copying it. The executable owner is `genericMimoAdmission` in `src/worker-codex/hosted-mimo-project-admission.ts`, and a test fails if the JSON below differs from its output. Never copy an admission from an older binding: it may carry task-specific packets, a lane or a pinned check.
+
+```json
+{
+  "mode": "serial-builtin",
+  "contract": {
+    "kind": "worker-launch", "format": 1,
+    "canonicalSha": "<sourceCommit>", "baseSha": "<sourceCommit>", "phaseStartSha": "<sourceCommit>",
+    "packetRevision": "generic-r1",
+    "controllerPacket": "AGENTS.md", "lanePacket": "AGENTS.md",
+    "phaseId": "phase-01", "laneId": "generic", "inputPatchHash": null,
+    "reviewKind": "implementation",
+    "ownedPaths": ["<tracked top-level directories with a trailing slash, and tracked top-level files>"],
+    "mandatoryDocs": ["AGENTS.md"], "mandatoryScripts": [], "mandatoryFixtures": [],
+    "requiredChecks": [{ "id": "tree", "cwd": "<tracked sandbox directory>", "command": "git status --short" }],
+    "executionPolicy": { "mode": "sandbox-only", "sandboxRoot": "<scratchRoot>/source/<tracked sandbox directory>", "forbiddenRealProjects": ["/srv/workers/jobs"] }
+  }
+}
+```
+
+Rules: use `README.md` instead of `AGENTS.md` only when the repository has no tracked `AGENTS.md`, and the packet must be tracked at `sourceCommit`. The commit fields are the only source-dependent values and `--advance-source` rewrites them. No `requiredChecks` command may contain a commit SHA or a digest. The refusal looks for any run of 40 or more hex characters in any case, so it also catches an unrelated 40-hex literal (a rare false positive; rewrite the command without the literal). Builtin launch admission only checks that each check's `cwd` is a directory in the workspace and never runs the command, so a pinned command protects nothing and only blocks later advances; `--prepare-project` refuses it (`mimo_project_bridge_prepare_admission_pinned`), and `--advance-source` refuses it, both in the current binding and in a template carried by the plan (`mimo_project_bridge_advance_admission_pinned`). Put no task, train or lane names in the packets or `laneId`; task instructions go into the Create prompt.
+
 ## Advancing the source of an enrolled workstream
 
-A binding pins one exact source commit, and Create refuses any other. Bindings are never edited by hand. Until a runtime release containing `--advance-source` is installed on the host, a new commit needs a new workstream. Reuse one workstream per project and branch line: when the same branch has a newer reviewed commit, move the existing binding forward instead of preparing a new workstream. Use a new workstream for another branch or repository, a force-pushed branch (the move is forward-only), a wider ownership scope, or review/remediation work whose admission differs; the admission template (packets, review kind, lane, phase, checks) is fixed per binding and Create can only narrow `ownedPaths`. A reusable line uses a generic admission: `AGENTS.md` (or `README.md`) as both packets, `reviewKind: implementation`, one fixed lane/phase/packet revision, broad `ownedPaths` and SHA-free `requiredChecks`; task instructions go into the prompt.
+A binding pins one exact source commit, and Create refuses any other. Bindings are never edited by hand. Until a runtime release containing `--advance-source` is installed on the host, a new commit needs a new workstream. Reuse one workstream per project and branch line: when the same branch has a newer reviewed commit, move the existing binding forward instead of preparing a new workstream. Use a new workstream for another branch or repository, a force-pushed branch (the move is forward-only), a wider ownership scope, or review/remediation work whose admission differs; the admission template (packets, review kind, lane, phase, checks) is fixed per binding and Create can only narrow `ownedPaths`. A reusable line uses the [generic admission template](#generic-admission-template): `AGENTS.md` (or `README.md`) as both packets, `reviewKind: implementation`, one fixed lane/phase/packet revision, broad `ownedPaths` and SHA-free `requiredChecks`; task instructions go into the prompt.
 
 Refresh the reviewed snapshot first. The root operator never talks to the network and never runs Git inside a repository it does not own:
 
@@ -141,7 +197,7 @@ The binding directory `/etc/subscription-runtime/mimo-projects/<project>/` must 
 }
 ```
 
-Without `admission`, the new template is the current one with its `canonicalSha`, `baseSha` and `phaseStartSha` set to the new commit. If a `requiredChecks` command contains the old commit or any 64-hex digest, the plan must carry an explicit reviewed `admission` instead (`mimo_project_bridge_advance_admission_pinned`). Review the dry run, then apply it:
+Without `admission`, the new template is the current one with its `canonicalSha`, `baseSha` and `phaseStartSha` set to the new commit. If a `requiredChecks` command contains a commit SHA or digest (see the [generic admission template](#generic-admission-template)), the plan must carry an explicit reviewed `admission` instead, and that template must itself be SHA-free (`mimo_project_bridge_advance_admission_pinned`). Review the dry run, then apply it:
 
 ```sh
 node /opt/subscription-runtime/mimo-project-bridge-current/dist/worker-codex/hosted-mimo-project-bridge-cli.js --advance-source --dry-run /etc/subscription-runtime/mimo-advance/<plan>.json
@@ -153,6 +209,21 @@ The dry run changes nothing and prints the state, the would-be binding digest an
 Under the workstream maintenance fence the operation fetches the new objects from the snapshot into the source checkout by ref name into a loose temporary ref, moves `refs/remotes/<sourceRef>` with a compare-and-swap, checks out the new commit detached, runs the same sealed-source check Create uses, replaces the binding (same key set, new `sourceCommit` and admission) and writes `<stateRoot>/source-advances/<old>..<new>.json`. It never runs `pack-refs`, `gc`, `repack` or `prune`, never touches job worktrees, `refs/heads/*`, the controller, the workstream YAML or other workstreams, and uses no network. An agent that polls Status often can keep a unit running at every check, so the advance may end with `mimo_project_bridge_advance_busy`; quiesce the line first with the project or workstream `.route-disabled` marker, which the advance tolerates, and retry. Bridge Create/Start/Status/Stop may report `controller_maintenance_fence_active` while the fence is held, which is a few seconds for a normal fetch and bounded by the Git timeouts (5 minutes for the fetch and 5 for the checkout) on a very large one; retry with backoff, nothing is persisted. Create with a superseded `sourceCommit` is refused with `mimo_project_bridge_source_mismatch` before its job ID is consumed, so pass agents the new commit from the receipt. Workers and checks must diff against the job's recorded `baseSha`, never `origin/<branch>`, because the source's remote-tracking ref moves.
 
 If the process dies, or fails with an ordinary error after the first change to the source checkout (the fetch), its maintenance fence stays and keeps ingress and owned units closed (Create also fails closed through the sealed-source check while source, ref and binding disagree). A replay that finds the source already moved keeps the fence on any failure as well. The command line process exits after the error, so the fence it leaves is a dead one that the next advance recovers by itself. Replay the exact same plan; this is the only recovery and it needs no file edits, because the advance is forward-only and completes from every state after the fetch (fetched, ref moved, checked out, binding replaced, receipt missing), which the kill-and-replay test covers step by step: every step is additive or a compare-and-swap, an existing source Git lock is preserved and the fence stays closed (`mimo_project_bridge_advance_source_locked`); an operator must establish its real owner and inspect it before any separate recovery, and replaying after completion reports `alreadyAdvanced`. A different plan is refused while source, ref and binding disagree. An interrupted checkout that leaves the source tree modified is refused (`mimo_project_bridge_advance_source_dirty`) for inspection instead of being reset. To recover, inspect `git -C <source> status` as the root operator, bring the tree back to a clean checkout of the old or the new commit by hand without touching job worktrees or branches, then replay the same plan. Refusals that happen before the first change (a dirty tree while HEAD and the ref are still at the old commit, a diverged ref, a running unit, a failed check) release the fence at once.
+
+## Resources
+
+The provider unit of a CodingV1 job has `MemoryHigh=7680M` and `MemoryMax=8G`; every other profile keeps `MemoryHigh=2G` and `MemoryMax=4G`.
+Swap is disabled, `CPUQuota` is 200% and `TasksMax` is 512. The limit is shared by the provider runtime, Codex and every command the model runs.
+Above `MemoryHigh` every process in the unit, Codex included, is throttled. A command that suddenly slows down sharply is near the limit: stop it instead of waiting.
+The unit sets `OOMPolicy=continue`: at `MemoryMax` the kernel kills the largest process in the unit, which is not necessarily the command that crossed the limit.
+Usually that is the heavy command, and it ends with exit 137 (usual, not guaranteed) that the model sees; the job keeps running.
+If the killed process is Codex or the runtime itself, the job still fails.
+Run heavy commands (type checks, builds, test runners) one at a time and split large inputs into batches.
+`NODE_OPTIONS=--max-old-space-size=3072` limits Node tools only, not native binaries such as the TypeScript 7 `tsc`; type check one package at a time.
+There is no per-project or per-line memory budget yet.
+
+For operators: a job can use 8G in the provider unit plus 6G in the outer unit, and there is no per-host limit on parallel jobs.
+Check `MemAvailable` before starting another job.
 
 ## Operator troubleshooting
 
@@ -180,9 +251,39 @@ returns `cleanWorkspace: true` for a clean workspace without requiring a handoff
 The project adapter exposes `cleanWorkspace: "true"`; verify exact start/spec in `last-terminal.json` and absent `active.json`.
 Keep the retained failure evidence; cancellation does not fabricate a candidate or successful result.
 
+A failed Status or Stop result adds one `cause` from a closed vocabulary; for a handoff refusal the `error` changes as well:
+- `error: mimo_project_bridge_handoff_unavailable` with `cause: handoff_<code>` when the terminal handoff export refuses
+  (for example `handoff_sensitive_path_rejected`); the code is the normalized one and never carries a path;
+- `hosted_research_launch_denied` with the denial observation (`artifact-deadline`, `file-deadline`, `host-command-timeout`
+  or `host-command-failed`) when the originating release recorded one;
+- `hosted_mimo_worker_changed_files_unavailable` with `workspace_changed_files_output_limit`, `workspace_changed_files_timeout`
+  or `workspace_changed_files_unavailable`.
+
+Any other failure keeps the code it already had (a generic one or an approved specific one such as `hosted_mimo_worker_preservation_privacy_refused`) and gets no `cause`. The cause is read from the failure itself, so it also appears for jobs
+that run on an older release, but only when that release raised one of these exact messages. The Start, Create and repair
+results keep exactly `error` and `ok`. The owned unit journal gets one JSON line with `operation`, `ok`, `error` and `cause`
+only; error text and paths are never written.
+
+`changedFiles` in a MiMo result, in the candidate and publication and in the Status workspace fields is a sample, not the full list: sorted paths, at most 2,000 and 256 KiB serialized, never empty while the list is readable. Exact counts (MCP `changedFileCount`/`dirtyFileCount`, the brief, the overview and the decision text) use `changedFilesCount` when present. One case has no paths: a `git status` listing over the 32 MiB Git read budget is reported as `workspaceDirty: true`, an empty `changedFiles`, no `changedFilesCount` and the `workspace_changed_files_output_limit` warning. The counters are then absent (unknown, never 0) and the brief text says `changed files unknown (listing over budget)`. Consumers decide from `workspaceDirty` and the warning, not from the list length, and a runtime result reconcile refuses it with `codex_goal_reconcile_changed_files_unavailable:workspace_changed_files_output_limit` instead of recording an empty workspace. A force stop or a direct-run stop that has already stopped the worker returns `resultReconciliation: { status: "skipped", reason: "changed_files_unavailable" }` instead of failing. When the sample is shorter than the real list, the result carries `details.changedFilesCount` with the exact number and the evidence `changed_files_truncated` (Status reports `changedFilesCount` next to `changedFiles`). The publication states its own count; it does not inherit the candidate's. The complete list is the preserved workspace and the handoff packet. A changed-files scan that fails fails finalization with `hosted_mimo_worker_changed_files_unavailable:<warning>`, where the warning is `workspace_changed_files_output_limit`, `workspace_changed_files_timeout` or `workspace_changed_files_unavailable`.
+
+### Listing jobs that wait for finalization
+
+`hosted-mimo-project-bridge-cli --list-pending-finalization` (root, initial host namespaces, no further arguments) prints one JSON line `{ ok, pending, uncertain }`. It is read-only: it takes no lock, writes nothing and never calls Status. It is the single source of the selection rule that a finalization timer applies.
+
+A job is listed when its current start has `mimo-candidate.json`, has no `mimo-publication.json` (`observeMimoCandidateAwaitingPublication`, filesystem only, checked first so a finished job never reaches systemd), its runtime unit and every provider unit are inactive (`observePendingMimoFinalization` in the lifecycle module owns this rule), and bridge ingress would schedule a Status for it. The listing therefore leaves a job out when:
+- any of Create, Start, Status, Stop, RepairAdmission or FinalizeAdmissionRepair is running (`operation_busy`);
+- an unresolved RepairAdmission or FinalizeAdmissionRepair exists, cold or not (`repair_unresolved`), because ingress returns without scheduling;
+- another unresolved operation has a unit that is not cold (`operation_busy`);
+- the workstream has a controller recovery (`recovery_pending`), a retirement guard (`retirement_pending`) or a maintenance fence (`maintenance_fence_active`), checked before any job of it is examined;
+- a binding, a custody check or a record cannot be read (`record_unreadable`). One broken workstream or stray file never stops the listing.
+
+`uncertain` is a list of `{ reason, projectId?, workstreamId?, jobId? }` with those closed reasons; the timer should treat each as "try later". A job whose owner is written but whose unit is not yet scheduled is a known window: ingress handles that concurrency itself.
+
+Each `pending` row has only closed fields: `projectId`, `workstreamId`, `jobId`, `startId`, `candidateSha256`, `jobRelease` (the 40-hex release the job was started on, from its start spec) and, when a Status result exists, the last failure `error`, its closed `cause` (see above) and `statusRelease` (the installed release that ran that Status). Finalization of an existing job runs on its `jobRelease`, whatever bridge is installed now, so a deterministic refusal on the same `candidateSha256` and `jobRelease` repeats and a timer should not retry it; a new `statusRelease` alone changes nothing. Paths and error text are never copied.
+
 A bootstrap exit 70 before any provider can be a scratch admission failure.
 Read only the [finite startup diagnostics](../src/worker-codex/research-launch-diagnostics.ts), including the volume role and available/required bytes.
-Reserve the 5 GiB floor plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.
+Reserve the [scratch free-space floor](runbooks/host-scratch-storage.md#host-policy) (5 GiB unless the host configures `capacity`) plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.
 Preserve the exact job/start/spec identity on failure or timeout; improved capacity does not authorize replay of an immutable Start.
 
 For fresh enrollment, preload the reviewed source through the [protected snapshot preparation contract](#preparing-an-existing-project-without-launching-work).
@@ -205,6 +306,14 @@ A partial transition remains closed. Reconcile or resume the same exact plan; do
 If creation was interrupted after the new job root appeared but before canonical manifest publication, exact-plan replay returns `mimo_project_bridge_recovery_reconciliation_required`. Keep the guard and old controller; further reconciliation requires operator review. Recovery never adopts that existing root or publishes an uncertified replacement manifest.
 
 Preparation requires the owner identity exactly `iliya` / `iliyazelenkog@gmail.com`. Before privileged Git inspection it validates the complete local `.git` metadata tree, rejects linked/external Git stores and executable transport/include/filter configuration, and uses inert Git environment/flags that disable fsmonitor, hooks and inherited configuration. The source sandbox must be an actual directory represented by tracked files, and must still exist after clone; an empty or ignored-only directory is refused.
+
+## Retiring a finished workstream
+
+A finished workstream keeps its source and worktrees on scratch. Never delete them, the binding, the YAML or the state
+root by hand: Status and Stop open the workspace and fail without it. Close the route, then retire the whole workstream
+with the reviewed-plan operator command `--retire` described in the [job retirement runbook](runbooks/job-retirement.md).
+It proves every job terminal, tears down their research pins and writes tombstones; afterwards Status and Stop of its jobs
+answer `retired` from the tombstones, and the host retention tool deletes the scratch root.
 
 ## Availability across projects
 
