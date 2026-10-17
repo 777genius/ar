@@ -85,10 +85,10 @@ jobs:
       # registry egress can be intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run build
       - run: npm run typecheck
       - run: npm run typecheck:ci-tools
       - run: npm run test:ci-tools
-      - run: npm run build
       - run: npm run check:dist
       - run: npm run check:boundaries
 
@@ -105,8 +105,8 @@ jobs:
     steps:
       - &unit_test_checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Fetch pinned legacy ledger fixture
-        run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
+      - name: Fetch scrubbed public legacy ledger fixture
+        run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
       - &unit_test_node_prerequisite
         name: Install Node.js Linux runtime prerequisite
         if: runner.os == 'Linux'
