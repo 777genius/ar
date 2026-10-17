@@ -171,28 +171,30 @@ type WriterReader = () => Promise<ProjectAdmissionWriterObservation>;
 type ForeignModulePreparer = (manifest: CodexGoalJobManifest) => Promise<unknown>;
 type WriterModuleImporter = (url: string) => Promise<Record<string, unknown>>;
 const importWriterModule: WriterModuleImporter = async url => await import(url);
+type ProducerIdentity = { runtimeDirectory: string; artifactSha256: string };
+type WriterPreparationBatch = { readonly modules: Map<string, ForeignModulePreparer>; producer?: ProducerIdentity };
 
 /** One admission preparation owns only verified module functions. Every job
  * still prepares a separate reader and freshly checks its retained authority. */
 export function createResearchJobWriterObservationPreparer(importModule: WriterModuleImporter = importWriterModule):
   (manifest: CodexGoalJobManifest) => Promise<WriterReader> {
-  const modules = new Map<string, ForeignModulePreparer>();
+  const batch: WriterPreparationBatch = { modules: new Map() };
   // An injected importer preserves observation testing, never durable issuance.
   // Only this source's actual qualified original composition can mint a seal.
-  return manifest => prepareWriterObservation(manifest, importModule, modules, importModule === importWriterModule);
+  return manifest => prepareWriterObservation(manifest, importModule, batch, importModule === importWriterModule);
 }
 export async function prepareResearchJobWriterObservation(manifest: CodexGoalJobManifest): Promise<WriterReader> {
   return prepareWriterObservation(manifest, importWriterModule);
 }
 async function prepareWriterObservation(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
-  modules?: Map<string, ForeignModulePreparer>, mutation = false): Promise<WriterReader> {
+  batch?: WriterPreparationBatch, mutation = false): Promise<WriterReader> {
   const repaired = await prepareTerminalRepairWriterObservation(manifest);
   if (repaired) return repaired;
   const aborted = await prepareUnsubmittedWriterObservation(manifest);
   if (aborted) return aborted;
   const sealed = prepareNativeWriterClosureRead(manifest);
   if (sealed) return mutation ? nativeWriterClosureMutationFastReader(manifest.jobId, sealed) : sealed;
-  const original = await prepareOriginalWriter(manifest, importModule, modules);
+  const original = await prepareOriginalWriter(manifest, importModule, batch?.modules);
   if (original) return mutationReader(original);
   const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
   return mutationReader(async () => {
@@ -201,7 +203,7 @@ async function prepareWriterObservation(manifest: CodexGoalJobManifest, importMo
   });
   function mutationReader(read: WriterReader): WriterReader {
     if (!mutation) return read;
-    const preparation = prepareNativeWriterClosureMutation(manifest, read);
+    const preparation = prepareNativeWriterClosureMutation(manifest, read, batch);
     return preparation ? nativeWriterClosureMutationReader(preparation, read) : read;
   }
 }
@@ -276,21 +278,28 @@ async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModul
 }
 
 type PreparationState = { manifest: CodexGoalJobManifest; prepared: ReturnType<typeof prepareNativeWriterClosureObservation>;
-  original: WriterReader; producer: { runtimeDirectory: string; artifactSha256: string }; qualify(): void };
+  original: WriterReader; producer: ProducerIdentity; qualify(): void };
 const preparations = new WeakMap<NativeClosureMutationPreparation, PreparationState>();
 const issuers = new WeakMap<object, PreparationState>();
 /** Only the mutation factory calls this after full original preparation. The
  * opaque handle is not an issuer and is never passed into foreign code. */
-function prepareNativeWriterClosureMutation(manifest: CodexGoalJobManifest, original: WriterReader): NativeClosureMutationPreparation | undefined {
+function prepareNativeWriterClosureMutation(manifest: CodexGoalJobManifest, original: WriterReader,
+  batch?: WriterPreparationBatch): NativeClosureMutationPreparation | undefined {
   try {
     if (protectedCodexGoalJobBirthPublicationActive()) return;
     assertResearchInitialRoot(true);
     const prepared = prepareNativeWriterClosureObservation(manifest), runtimeDirectory = installedResearchRuntimeDirectory();
-    const artifactSha256 = researchArtifactDigest(runtimeDirectory);
-    const qualify = (): void => { assertResearchInitialRoot(true); assertQualifiedResearchRuntimeArtifact(runtimeDirectory, artifactSha256); };
+    // One producer digest per admission batch; every job still freshly
+    // qualifies the same bytes, and mid-batch byte change refuses the retained
+    // batch digest instead of re-deriving an updated seal baseline.
+    const cached = batch?.producer;
+    const producer = cached && cached.runtimeDirectory === runtimeDirectory ? cached
+      : { runtimeDirectory, artifactSha256: researchArtifactDigest(runtimeDirectory) };
+    if (batch) batch.producer = producer;
+    const qualify = (): void => { assertResearchInitialRoot(true); assertQualifiedResearchRuntimeArtifact(runtimeDirectory, producer.artifactSha256); };
     qualify(); prepared.assertCurrent();
     const capability = Object.freeze({}) as NativeClosureMutationPreparation;
-    preparations.set(capability, { manifest, prepared, original, producer: { runtimeDirectory, artifactSha256 }, qualify });
+    preparations.set(capability, { manifest, prepared, original, producer, qualify });
     return capability;
   } catch { return; }
 }
