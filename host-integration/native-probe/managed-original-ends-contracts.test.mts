@@ -77,6 +77,8 @@ test("optional deadline CLI preserves exact job identity and legacy envelope", (
 // passes, or a reversed monotonic sample extends the original allowance.
 test("actual fixed job limits fund startup runtime and stop with strict original ends", () => {
   const reservation = launcher.originalJobReservation(job);
+  // Independent contract values: fixed managed startup 600s + request runtime 60s
+  // = 660s work; + request stop 10s = 670s cleanup. Not derived from the launcher.
   assert.deepEqual(reservation, { workNs: 660_000_000_000n, cleanupNs: 670_000_000_000n });
   const anchor = 1_000_000_000n, now = anchor + 1n;
   const fit = launcher.parseOriginalEnds(transport(now + 660_000_000_001n, now + 670_000_000_001n), namespace);

@@ -1,4 +1,5 @@
 import { trustedOrdinaryQualificationWorkerLaunch, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
+import { hostedFundedInstallationVersions } from "../core/host-infrastructure/host-installation-successor";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -83,7 +84,7 @@ function readInput(): { input: Input; bytes: Buffer; clock: QualificationClock }
   const input = data as unknown as Input;
   const fundedBytes = qualificationRead(qualificationRoot + "/funded-operation.json", 65536, true);
   const funded = qualificationJson(fundedBytes) as Record<string, unknown>;
-  if (!funded || typeof funded !== "object" || funded.schemaVersion !== 2 ||
+  if (!funded || typeof funded !== "object" || !hostedFundedInstallationVersions.includes(funded.schemaVersion as number) ||
       Object.keys(input.operation).some(key => funded[key] !== input.operation[key as keyof Input["operation"]])) qualificationHeld();
   const operation = Object.freeze({ ...input.operation, operationSha256: qualificationSha(fundedBytes) });
   const clock = new QualificationClock(operation, { issuedEpochMs: funded.issuedEpochMs as number, issuedMonotonicNs: funded.issuedMonotonicNs as string });

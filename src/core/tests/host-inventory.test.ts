@@ -77,4 +77,10 @@ describe("ordinary installation fixed inventory DATA codec", () => {
     expect(decodeHostedInventoryBytes(bytes({ schemaVersion: 4, fixture: true }))).toEqual({ schemaVersion: 4, fixture: true });
     expect(() => parseHostedInventoryV5({ ...original, ignoredAuthority: true })).toThrow();
   });
+  it("keeps V5 strictly closed: memory topology is never an inventory field (it belongs to the retention operation record)", () => {
+    const topology = { schemaVersion: 1, mountPoint: "/sys/fs/cgroup", cgroupNamespace: { dev: "4", ino: "4026531835" }, hierarchyRoot: { dev: "1", ino: "1" } };
+    expect(() => parseHostedInventoryV5({ ...fixture(2), memoryTopology: topology })).toThrow("hosted_inventory_invalid");
+    expect(() => decodeHostedInventoryBytes(bytes({ ...fixture(2), memoryTopology: topology }))).toThrow("hosted_inventory_invalid");
+    expect(parseHostedInventoryV5(fixture(2)).schemaVersion).toBe(5);
+  });
 });

@@ -17,12 +17,19 @@ const DIRTY_OUTPUT_TERMINAL_STATUSES = new Set([
 ]);
 
 const CLEAN_NO_OUTPUT_TERMINAL_STATUS = "failed_no_output";
+const RETAINED_NONQUALIFIED_TERMINAL_STATUS = "retained_nonqualified";
 
 export async function stoppedWorkspaceTerminalConsumption(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
   readonly workerAlive: boolean;
   readonly workerExplicitlyStopped: boolean;
+  /**
+   * retained_nonqualified consumes a stopped workspace only after the caller
+   * re-verified the exact retained originals (receipt, manifest, original
+   * lifecycle state and workspace inventory) against the present disk.
+   */
+  readonly retainedNonqualifiedVerified?: boolean;
   readonly workspaceDirty: boolean | undefined;
   readonly workspacePath: string | undefined;
   readonly resolvedWorkspacePath: string | undefined;
@@ -44,6 +51,9 @@ export async function stoppedWorkspaceTerminalConsumption(input: {
     record?.jobId !== input.jobId ||
     record?.structurallyValid !== true ||
     !DIRTY_OUTPUT_TERMINAL_STATUSES.has(record.status) &&
+    !(record.status === RETAINED_NONQUALIFIED_TERMINAL_STATUS &&
+      record.valid === true &&
+      input.retainedNonqualifiedVerified === true) &&
     !(record.status === CLEAN_NO_OUTPUT_TERMINAL_STATUS &&
       record.valid === true &&
       input.workspaceDirty === false &&

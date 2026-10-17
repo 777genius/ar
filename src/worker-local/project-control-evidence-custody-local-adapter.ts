@@ -12,6 +12,7 @@ import type {
   ProjectControlCustodyBootstrapCertification,
   ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
+import { proveLeafAbsentUnderHeldParent } from "./project-control-evidence-custody-absence";
 import { materializeApprovedProjectControlCustody } from
   "./project-control-evidence-custody-materialization";
 import { assertExpectedReadPath, assertExpectedReadDirectory, openAbsoluteDirectoryNoSymlinks,
@@ -82,9 +83,21 @@ export class LocalProjectControlEvidenceCustody implements
         sha256: hash.digest("hex"),
         length,
         bytes: Buffer.concat(chunks, length),
+        mode: before.mode & 0o777,
       };
     } finally {
       await closeHeldLexicalFile(held);
+    }
+  }
+
+  /** Absent only if one held canonical parent proves it (see proveLeafAbsentUnderHeldParent); otherwise refuses. */
+  async readOptionalImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile | undefined> {
+    try { return await this.readImmutableFile(path, maxBytes); }
+    catch (error) {
+      if (deepCode(error) !== "ENOENT") throw error;
+      await proveLeafAbsentUnderHeldParent(resolve(path), openAbsoluteDirectoryNoSymlinks, error,
+        async (lexical) => await this.crashHook?.("after_immutable_read_before_lexical_reopen", lexical));
+      return undefined;
     }
   }
 
@@ -533,7 +546,7 @@ async function closeHeldLexicalDirectory(held: HeldLexicalDirectory): Promise<vo
   await held.handle.close().finally(async () => await held.parent?.close());
 }
 
-async function openAbsoluteFileNoSymlinks(path: string, expected?: EvidenceReadDirectoryIdentity) {
+export async function openAbsoluteFileNoSymlinks(path: string, expected?: EvidenceReadDirectoryIdentity) {
   const lexical = resolve(path);
   const parent = await openAbsoluteDirectoryNoSymlinks(dirname(lexical), expected);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -555,13 +568,13 @@ async function openAbsoluteFileNoSymlinks(path: string, expected?: EvidenceReadD
   }
 }
 
-type HeldLexicalFile = Awaited<ReturnType<typeof openAbsoluteFileNoSymlinks>>;
+export type HeldLexicalFile = Awaited<ReturnType<typeof openAbsoluteFileNoSymlinks>>;
 
-async function closeHeldLexicalFile(held: HeldLexicalFile): Promise<void> {
+export async function closeHeldLexicalFile(held: HeldLexicalFile): Promise<void> {
   await held.handle.close().finally(async () => await held.parent.close());
 }
 
-async function assertHeldLexicalFile(
+export async function assertHeldLexicalFile(
   held: HeldLexicalFile,
   identity: Awaited<ReturnType<FileHandle["stat"]>>,
   errorCode: string,

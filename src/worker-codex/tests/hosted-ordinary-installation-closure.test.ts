@@ -37,7 +37,8 @@ function fixture() {
     "managed-launcher/hosted-host-policy.mjs", helper];
   const required = ["dist/worker-codex/hosted-ordinary-installation-qualification.js",
     "dist/worker-codex/hosted-ordinary-installation-qualification-guest.js", "dist/worker-codex/hosted-installation-activation.js",
-    "dist/worker-codex/hosted-ordinary-installation-census.js", "dist/core/host-infrastructure/host-inventory.js",
+    "dist/worker-codex/hosted-ordinary-installation-census.js", "dist/worker-codex/hosted-ordinary-installation-history.js",
+    "dist/core/host-infrastructure/host-inventory.js", "dist/core/host-infrastructure/host-installation-successor.js",
     "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
     ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-unit-lifecycle", "hosted-fd-unit-policy", "hosted-fd-prelude", "hosted-process-activation",
       "hosted-process-descriptors", "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",

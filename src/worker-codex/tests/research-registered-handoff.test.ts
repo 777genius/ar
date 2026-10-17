@@ -848,23 +848,32 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
       reservedLaunch: (await reserved()).reservedLaunch })).rejects.toThrow("hosted_research_registered_execution_unsupported");
     expect(existsSync(local(join(researchJobAuthority(r.jobId), "grant.json")))).toBe(false);
   });
-  it("seals CodingV1/64 in its grant and derives the registered coding run config", async () => {
+  it("seals CodingV1/64 in its grant and maps it to the fixed run configuration", async () => {
     state.mimo = true; await initializeRegisteredFixture();
     const r = await grantAndRequest();
     expect(r).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, maxGoalTurns: 64 });
     const grant = JSON.parse(researchRead(join(researchJobAuthority(r.jobId), "grant.json")).toString());
     expect(grant.hostedProfile).toBe(HostedMimoProfile.CodingV1);
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
+    // Configuration mapping only, not an admission proof. CodingV1/64 is the live registered project-worker policy
+    // (project-mimo-worker-launch.ts requests it; research-registered-execution.ts accepts only it for MiMo), and
+    // researchRunConfig has no activation gate, so the sealed request maps to its fixed run config here. Authority
+    // still comes only from the grant, credential proxy and sealed root, none of which this config mints. The rejected
+    // budgets are bound by the sibling test.
     const config = researchRunConfig(r);
     expect(config).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
       executionEngine: "app-server", workerReportMode: "structured-output", maxGoalTurns: 64,
       maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 0,
+      accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
       safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
         retryOnAccountUnavailable: false, retryOnReconnectRequired: false } });
     // Config/grant DATA cannot mint the independently retained process factory.
     expect(() => assertOwnedMimoWorkerConfig(undefined, config)).toThrow("hosted_mimo_activation_closed");
     expect(host.calls.filter(call => call.command === "/usr/bin/mount" || call.command === "/usr/bin/systemd-run")).toEqual([]);
     expect(host.authReads).toBe(0);
+    // 64 is selected by the CodingV1 profile, not by the MiMo backend: the Worker profile keeps its own fixed budget.
+    expect(researchRunConfig(selected())).toMatchObject({ modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, maxGoalTurns: 8 });
+    expect(researchRunConfig(selected())).not.toHaveProperty("hostedProfile");
   });
 });
 
