@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { CAPTURE_STEP, HELPER_STEP } from './protocol.mts';
@@ -91,7 +91,11 @@ test('default CI runs the compiled proof helper, prepared before any capture or 
 test('every Node 26 job installs the Linux libatomic prerequisite before setup-node', () => {
   const prerequisite = 'name: Install Node.js Linux runtime prerequisite';
   const first = (...positions: number[]): number => positions.filter(position => position >= 0).sort((a, b) => a - b)[0] ?? -1;
-  for (const [file, jobsWithNode] of [['ci.yml', 7], ['publish.yml', 2], ['publish-registry-contract.yml', 1]] as const) {
+  // The public source mirror deliberately has no package-publishing workflows.
+  for (const file of ['publish.yml', 'publish-registry-contract.yml']) {
+    assert.equal(existsSync(resolve('.github/workflows', file)), false, `${file} is excluded from the public mirror`);
+  }
+  for (const [file, jobsWithNode] of [['ci.yml', 8]] as const) {
     const text = readFileSync(resolve('.github/workflows', file), 'utf8');
     let checked = 0;
     for (const block of text.split(/^(?=  [a-z][a-z0-9-]*:\n)/m)) {
@@ -103,7 +107,8 @@ test('every Node 26 job installs the Linux libatomic prerequisite before setup-n
     }
     assert.equal(checked, jobsWithNode, `${file} Node jobs`);
     // Definitions only: an alias reuses the anchored step, including its condition.
-    assert.equal(text.match(/^ +if: runner\.os == 'Linux'$/gm)?.length ?? 0,
+    assert.equal(text.split('\n').filter((line, index, lines) =>
+      line.trim().replace(/^- /, '') === prerequisite && lines[index + 1]?.trim() === "if: runner.os == 'Linux'").length,
       text.match(new RegExp(`^ +- (?:${prerequisite}|&unit_test_node_prerequisite)$`, 'gm'))?.length ?? 0, `${file} limits every prerequisite step to Linux`);
     assert.ok(text.includes('sudo apt-get install -y --no-install-recommends libatomic1'), `${file} installs libatomic1 with apt`);
     assert.ok(text.includes('::error::libatomic.so.1 is missing and this Linux runner has no apt-get'), `${file} fails visibly without apt`);

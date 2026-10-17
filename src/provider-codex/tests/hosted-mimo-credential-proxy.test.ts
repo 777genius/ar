@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { codexDriverFailure } from "../codex-driver-failure";
 import { createServer } from "node:http";
 import { Agent } from "undici";
 import { startMimoCredentialProxy, type MimoCredentialProxyLimits } from "../hosted-mimo-credential-proxy";
@@ -89,7 +91,9 @@ it.each([302, 401, 429, 500, 502, 503])("never retries or forwards upstream erro
   capability = f.proxy.capability;
   try {
     const response = await f.post(); expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed", upstream_status: status } });
+    expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed", upstream_status: status,
+      details: { reason: "upstream_http_error", phase: "upstream_response", upstream_status: status,
+        request_number: 1, elapsed_ms: expect.any(Number) } } });
     expect(transport).toHaveBeenCalledOnce(); expect(response.headers.get("location")).toBeNull();
     expect(response.headers.get("x-secret")).toBeNull(); expect(response.headers.get("retry-after")).toBeNull();
     expect(f.proxy.upstreamFailureObservation()).toEqual({ count: 1, lastStatus: status });
@@ -100,12 +104,20 @@ it.each([302, 401, 429, 500, 502, 503])("never retries or forwards upstream erro
 });
 
 it("does not invent an upstream failure status for transport, empty body, or unsupported content", async () => {
-  for (const transport of [async () => { throw Error(key); }, async () => new Response(null),
-    async () => new Response(key, { headers: { "content-type": "text/plain" } }), async () => Response.error()]) {
+  const cases = [
+    { transport: async () => { throw Error(key); }, reason: "upstream_transport_error" },
+    { transport: async () => new Response(null), reason: "upstream_body_missing" },
+    { transport: async () => new Response(key, { headers: { "content-type": "text/plain" } }), reason: "upstream_content_type_invalid" },
+    { transport: async () => Response.error(), reason: "upstream_response_invalid" },
+  ];
+  for (const { transport, reason } of cases) {
     const fetchUpstream = vi.fn<typeof fetch>(transport), f = await fixture(fetchUpstream);
     try {
       const response = await f.post(); expect(response.status).toBe(502);
-      expect(await response.json()).toEqual({ error: { code: "proxy_upstream_failed" } });
+      const body = await response.json();
+      expect(body).toMatchObject({ error: { code: "proxy_upstream_failed", details: { reason, request_number: 1 } } });
+      expect(body.error).not.toHaveProperty("upstream_status");
+      expect(JSON.stringify(body)).not.toContain(key);
       expect(f.proxy.upstreamFailureObservation()?.lastStatus).toBeUndefined();
       expect(fetchUpstream).toHaveBeenCalledOnce();
     } finally { await f.proxy.close(); }
@@ -140,7 +152,12 @@ it("deadline aborts active requests without hidden retry", async () => {
     init!.signal!.addEventListener("abort", () => reject(new Error(key)), { once: true });
   }));
   const f = await fixture(transport, { requestTimeoutMs: 40 });
-  try { const response = await f.post(); expect(response.status).toBe(503); expect(await response.text()).not.toContain(key); expect(transport).toHaveBeenCalledOnce(); }
+  try {
+    const response = await f.post(); expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error.details).toMatchObject({ reason: "request_timeout", phase: "upstream_request" });
+    expect(JSON.stringify(body)).not.toContain(key); expect(transport).toHaveBeenCalledOnce();
+  }
   finally { await f.proxy.close(); }
 });
 
@@ -153,6 +170,9 @@ it("caps successful upstream response bytes and cancels the body", async () => {
   try {
     await expect(f.post().then(response => response.text())).rejects.toThrow();
     expect(cancelled).toHaveBeenCalledOnce(); expect(transport).toHaveBeenCalledOnce();
+    expect(f.proxy.latestFailure()).toMatchObject({ reason: "upstream_stream_error", phase: "response_stream",
+      upstream_status: 200, request_number: 1, validation_code: "response_limit" });
+    expect(JSON.stringify(f.proxy.latestFailure())).not.toContain(key);
   } finally { await f.proxy.close(); }
 });
 
@@ -169,6 +189,7 @@ it("a disconnected streaming client aborts the upstream request", async () => {
   try {
     const response = await f.post(); await response.body!.cancel();
     await vi.waitFor(() => expect(signal!.aborted).toBe(true));
+    await vi.waitFor(() => expect(f.proxy.latestFailure()?.reason).toBe("client_disconnected"));
     expect(transport).toHaveBeenCalledOnce();
   } finally { await f.proxy.close(); }
 });
@@ -605,5 +626,41 @@ it.each(["budget", "owner"] as const)("retains request termination before %s abo
     expect(f.proxy.upstreamFailureObservation()).toEqual({ requestFailureCount: 1,
       lastFailureKind: kind === "budget" ? "request_budget_expired" : "owner_revoked" });
     expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it("retains only a closed network cause through the real proxy HTTP boundary", async () => {
+  const transport = vi.fn<typeof fetch>(async () => {
+    throw new TypeError(key, { cause: Object.assign(Error(key), { code: "ENOTFOUND", hostname: key }) });
+  });
+  const f = await fixture(transport);
+  try {
+    const response = await f.post(), body = await response.json();
+    expect(response.status).toBe(502);
+    expect(body.error.details).toEqual({ reason: "upstream_transport_error", phase: "upstream_request",
+      transport_code: "ENOTFOUND", request_number: 1, elapsed_ms: expect.any(Number) });
+    expect(f.proxy.latestFailure()).toEqual(body.error.details);
+    expect(JSON.stringify(body)).not.toContain(key);
+    const observation = f.proxy.latestFailure();
+    const context = { error: Error("TEST-turn-failed"), evidenceError: Error("TEST-turn-failed"),
+      redactor: new DefaultRedactor(), startedAt: Date.now(), proxyFailure: observation };
+    const result = codexDriverFailure(context);
+    expect(result.failure.details).toMatchObject({ mimoProxyReason: "upstream_transport_error",
+      mimoProxyPhase: "upstream_request", mimoTransportCode: "ENOTFOUND", mimoProxyRequestNumber: "1" });
+    expect(codexDriverFailure({ ...context, priorProxyFailure: observation }).failure.details).not.toHaveProperty("mimoProxyReason");
+    expect(transport).toHaveBeenCalledOnce();
+  } finally { await f.proxy.close(); }
+});
+
+it("does not evaluate arbitrary cause/code accessors or expose unknown error values", async () => {
+  let reads = 0;
+  const error = Object.defineProperties(Error(key), {
+    code: { get() { reads++; return key; } }, cause: { get() { reads++; return key; } },
+  });
+  const f = await fixture(async () => { throw error; });
+  try {
+    const body = await (await f.post()).json();
+    expect(body.error.details.transport_code).toBe("unknown");
+    expect(reads).toBe(0); expect(JSON.stringify(body)).not.toContain(key);
   } finally { await f.proxy.close(); }
 });

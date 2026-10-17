@@ -1,3 +1,6 @@
+import { originalHostedProjectControlLockLifecycle, assertOriginalHostedProjectControlRegistryBudgetCurrent,
+  originalHostedProjectControlAllocationPathPresent, holdOriginalHostedProjectControlAllocationError } from "./hosted-project-control-native-allocation.js";
+import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { withProtectedCodexGoalJobBirthPublication } from "./protected-job-birth";
 import { dirname, join, resolve } from "node:path";
@@ -7,7 +10,7 @@ import type {
   WorkspaceLockPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import { SafeExecutionError } from "@vioxen/subscription-runtime/worker-core";
-import { LocalWorkspaceIntegrationLock } from "@vioxen/subscription-runtime/worker-local";
+import { LocalWorkspaceIntegrationLock, LocalProjectControlEvidenceCustody } from "@vioxen/subscription-runtime/worker-local";
 import { projectControlCanonicalWorkspacePath } from "./application/project-control/codex-goal-project-workspace-scope";
 
 export type ProjectControlWorkspaceLease = {
@@ -23,15 +26,72 @@ export type ProjectControlWorkspaceLease = {
   }) => Promise<T>;
 };
 
+/** Original custody stays held after either failure. A release refusal must
+ * preserve an earlier effect error, including a thrown undefined value. */
+async function withOriginalLockFailureCustody<T>(
+  original: boolean,
+  effect: () => Promise<T>,
+  release: () => void | Promise<void>,
+): Promise<T> {
+  let failed = false;
+  try { return await effect(); }
+  catch (error) {
+    failed = true;
+    if (original) holdOriginalHostedProjectControlAllocationError();
+    throw error;
+  } finally {
+    try { await release(); }
+    catch (error) {
+      if (!original) throw error;
+      holdOriginalHostedProjectControlAllocationError();
+      if (!failed) throw error;
+    }
+  }
+}
+
+const localLockRoots = new WeakMap<WorkspaceLockPort, string>();
+const currentLeases = new WeakMap<ProjectControlWorkspaceLease, Readonly<{
+  registryLockRoot: string; assertCurrent(): Promise<void>;
+}>>();
+
+/** Reader validation only. Structural copies and closed/handoff leases are not
+ * current; a persisted exact local owner record must still match the live token. */
+export async function assertProjectControlWorkspaceLeaseCurrent(
+  lease: ProjectControlWorkspaceLease, registryRootDir: string,
+): Promise<void> {
+  const current = currentLeases.get(lease);
+  if (!current || current.registryLockRoot !== projectControlWorkspaceLockRoot(registryRootDir))
+    throw new Error("project_control_workspace_lease_not_held");
+  await current.assertCurrent();
+  const token = lease.lease;
+  const key = createHash("sha256").update(lease.canonicalWorkspacePath).digest("hex");
+  const path = join(current.registryLockRoot, "workspace-locks", key, "lock.json");
+  const record = await new LocalProjectControlEvidenceCustody().readImmutableFile(path, 64 * 1024);
+  const lock = JSON.parse(Buffer.from(record.bytes).toString("utf8")) as Record<string, unknown>;
+  if (lock.taskId !== token.lockId || lock.ownerId !== token.owner ||
+      lock.workspacePath !== lease.canonicalWorkspacePath || lock.ownerPid !== process.pid)
+    throw new Error("project_control_workspace_lease_not_held");
+  await current.assertCurrent();
+  if (lease.lease !== token) throw new Error("project_control_workspace_lease_not_held");
+}
+
 export function projectControlWorkspaceLocks(
   registryRootDir: string,
   assertPublicationCurrent?: (paths: readonly string[]) => void,
 ): WorkspaceLockPort {
-  return new LocalWorkspaceIntegrationLock({
+  const directoryLifecycle = originalHostedProjectControlLockLifecycle(registryRootDir);
+  const consumingVeto = directoryLifecycle ? (paths: readonly string[]) => {
+    try { assertPublicationCurrent?.(paths); assertOriginalHostedProjectControlRegistryBudgetCurrent(registryRootDir); }
+    catch (error) { directoryLifecycle.hold(); throw error; }
+  } : assertPublicationCurrent;
+  const locks = new LocalWorkspaceIntegrationLock({
     rootDir: projectControlWorkspaceLockRoot(registryRootDir),
     staleLockMs: 30 * 60_000,
-    ...(assertPublicationCurrent ? { assertPublicationCurrent } : {}),
+    ...(consumingVeto ? { assertPublicationCurrent: consumingVeto } : {}),
+    ...(directoryLifecycle ? { directoryLifecycle } : {}),
   });
+  localLockRoots.set(locks, projectControlWorkspaceLockRoot(registryRootDir));
+  return locks;
 }
 
 export function projectControlWorkspaceLockRoot(
@@ -70,7 +130,7 @@ export async function withProjectAdmissionPublicationLock<T>(input: {
       if (performance.now() >= deadline) throw error;
     }
   }
-  try {
+  return withOriginalLockFailureCustody(originalHostedProjectControlAllocationPathPresent(registryPath), async () => {
     if (await realpath(resolve(input.registryRootDir)) !== registryPath ||
       lock.workspacePath !== registryPath) {
       throw new Error("project_control_registry_real_path_changed");
@@ -78,9 +138,7 @@ export async function withProjectAdmissionPublicationLock<T>(input: {
     // Raw first effects share this owner-private try-lock through the final
     // census and existing claim publication, including every awaited read.
     return await withProtectedCodexGoalJobBirthPublication(input.effect);
-  } finally {
-    await locks.release(lock);
-  }
+  }, () => locks.release(lock));
 }
 
 export async function withValidatedProjectWorkspaceLock<T>(input: {
@@ -113,7 +171,7 @@ export async function withValidatedProjectWorkspaceLock<T>(input: {
       input.scope,
     );
     if (
-      !lock || lock.workspacePath !== canonicalWorkspacePath ||
+      closed || !lock || lock.workspacePath !== canonicalWorkspacePath ||
       reboundWorkspacePath !== canonicalWorkspacePath
     ) {
       throw new Error("project_control_workspace_real_path_changed");
@@ -147,11 +205,14 @@ export async function withValidatedProjectWorkspaceLock<T>(input: {
       } finally { publicationActive = false; }
     },
   };
-  try {
+  const registryLockRoot = localLockRoots.get(input.locks);
+  if (registryLockRoot) currentLeases.set(workspace, { registryLockRoot, assertCurrent: assertCanonicalBinding });
+  return withOriginalLockFailureCustody(originalHostedProjectControlAllocationPathPresent(canonicalWorkspacePath), async () => {
     await assertCanonicalBinding();
     return await input.effect(workspace);
-  } finally {
+  }, async () => {
+    currentLeases.delete(workspace);
     closed = true;
     if (lock) await input.locks.release(lock);
-  }
+  });
 }

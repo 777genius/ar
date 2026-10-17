@@ -1,4 +1,6 @@
-import { parseScopedReceipt, type ScopedTerminationReceipt } from "./scoped-termination";
+export { parseHostedInstallation, type HostedInstallation } from "../../../core/host-infrastructure/hosted-installation";
+import { assertOrdinaryReaderFinalSuccessor } from "./ordinary-reader-final-successor";
+import { parseScopedReceipt, parseScopedProviderOnlyReceipt, parseScopedOrdinaryReaderFinalReceipt, type ScopedOrdinaryReaderFinalReceipt, type ScopedTerminationReceipt, type ScopedProviderOnlyReceipt } from "./scoped-termination";
 /** Closed scheduling records, not proof of host authority. Adapters must bind
  * inspected bytes and independent creator/queue/descendant observations under
  * the common host mutex before publishing these transitions. */
@@ -12,11 +14,6 @@ export enum HostedActivationPhase {
   LeavingExclusive = "LEAVING_EXCLUSIVE",
 }
 export enum HostedOriginKind { Ordinary = "ordinary" }
-export type HostedInstallation = {
-  readonly schemaVersion: 1; readonly installationId: string; readonly hostId: string;
-  readonly runtimeDirectory: string; readonly runtimeSha: string;
-  readonly runtimeManifestSha256: string; readonly inventorySha256: string;
-};
 export type HostedOrdinaryBirth = {
   readonly schemaVersion: 1; readonly installationId: string; readonly jobId: string;
   readonly jobRootDir: string; readonly workspacePath: string; readonly origin: HostedOriginKind.Ordinary;
@@ -68,13 +65,6 @@ function job(input: Record<string, unknown>): void {
 }
 function unique(rows: readonly Record<string, unknown>[], keys: readonly string[]): void {
   for (const key of keys) if (new Set(rows.map(row => row[key])).size !== rows.length) invalid();
-}
-export function parseHostedInstallation(value: unknown): HostedInstallation {
-  const input = record(value, "schemaVersion,installationId,hostId,runtimeDirectory,runtimeSha,runtimeManifestSha256,inventorySha256");
-  base(input);
-  if (!id(input.hostId) || !path(input.runtimeDirectory) || typeof input.runtimeSha !== "string" ||
-      !/^[a-f0-9]{40}$/.test(input.runtimeSha) || !digest(input.runtimeManifestSha256) || !digest(input.inventorySha256)) invalid();
-  return Object.freeze({ ...input }) as HostedInstallation;
 }
 export function parseHostedOrdinaryBirth(value: unknown): HostedOrdinaryBirth {
   const input = record(value, "schemaVersion,installationId,jobId,jobRootDir,workspacePath,origin");
@@ -128,15 +118,34 @@ export function parseHostedActivation(value: unknown): HostedActivation {
 /** Structural publication guard only. Positive OS evidence remains mandatory.
  * Each mutation advances exactly once; crash recovery may publish only that
  * retained immediate successor, never reconstruct or discard reservations. */
-export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt): void {
+export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt | ScopedProviderOnlyReceipt | ScopedOrdinaryReaderFinalReceipt): void {
   const prior = parseHostedActivation(before), next = parseHostedActivation(after);
   if (prior.installationId !== next.installationId || prior.hostId !== next.hostId ||
       next.generation !== prior.generation + 1 ||
       (prior.exclusiveEnrollmentSha256 !== null && prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256)) invalid();
-  const receipt = evidence ? parseScopedReceipt(evidence) : null;
+  if (evidence!==undefined && (!evidence || evidence.schemaVersion!==1 && evidence.schemaVersion!==2 && evidence.schemaVersion!==3)) invalid();
+  const providerReceipt=evidence?.schemaVersion===2 ? parseScopedProviderOnlyReceipt(evidence):null;
+  const finalReaderReceipt=evidence?.schemaVersion===3 ? parseScopedOrdinaryReaderFinalReceipt(evidence):null;
+  if (finalReaderReceipt) assertOrdinaryReaderFinalSuccessor(prior,next,finalReaderReceipt);
+  const receipt = evidence?.schemaVersion===1 ? parseScopedReceipt(evidence) : null;
+  if (providerReceipt) {
+    const identity=providerReceipt.identity,parent=prior.ordinaryStarts.find(row=>row.startId===providerReceipt.parent.startId);
+    const provider=prior.ordinaryStarts.find(row=>row.startId===providerReceipt.provider.startId);
+    const nextProvider=next.ordinaryStarts.find(row=>row.startId===providerReceipt.provider.startId);
+    const exact=(row:HostedOrdinaryReservation|undefined,facts:ScopedProviderOnlyReceipt["parent"])=>row &&
+      row.unit===facts.unit && row.creatorId===facts.creatorId && row.originSha256===facts.originSha256 && row.generation===facts.generation;
+    if (prior.phase!==HostedActivationPhase.Ordinary || next.phase!==HostedActivationPhase.Ordinary ||
+        identity.installationId!==prior.installationId || identity.hostId!==prior.hostId || identity.bootId!==prior.bootId || identity.supervisorId!==prior.supervisorId ||
+        providerReceipt.publicationGeneration!==next.generation || !exact(parent,providerReceipt.parent) || !exact(provider,providerReceipt.provider) ||
+        parent!.state!==HostedCustodyReservationState.Reserved || provider!.state!==HostedCustodyReservationState.Reserved ||
+        nextProvider?.state!==HostedCustodyReservationState.Terminal ||
+        next.ordinaryStarts.length!==prior.ordinaryStarts.length || next.ordinaryOriginsSha256!==prior.ordinaryOriginsSha256) invalid();
+  }
   if (receipt && (receipt.operation.identity.installationId !== prior.installationId || receipt.operation.identity.hostId !== prior.hostId ||
       receipt.operation.identity.bootId !== prior.bootId || receipt.operation.identity.supervisorId !== prior.supervisorId)) invalid();
-  const authorized = new Map(receipt?.operation.members.map(m => [m.startId, m]) ?? []);
+  const authorized = new Map<string,{unit:string;reservationGeneration:number}>(receipt?.operation.members.map(m => [m.startId, m]) ?? []);
+  if (providerReceipt) authorized.set(providerReceipt.provider.startId,{unit:providerReceipt.provider.unit,reservationGeneration:providerReceipt.provider.generation});
+  if (finalReaderReceipt) authorized.set(finalReaderReceipt.reader.startId,{unit:finalReaderReceipt.reader.unit,reservationGeneration:finalReaderReceipt.reader.generation});
   const phaseChanged = prior.phase !== next.phase;
   const edges: Record<HostedActivationPhase, readonly HostedActivationPhase[]> = {
     CLOSED: [HostedActivationPhase.Ordinary, HostedActivationPhase.EnteringExclusive],

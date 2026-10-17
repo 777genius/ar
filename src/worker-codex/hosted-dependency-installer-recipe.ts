@@ -278,7 +278,7 @@ export function hostedDependencyInstallerProperties(plan: HostedDependencyInstal
     "Environment=PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/home/installer",
     "UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES OPENSSL_CONF OPENSSL_MODULES NODE_V8_COVERAGE",
     "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "RestrictSUIDSGID=yes", "MountAPIVFS=no",
-    "InaccessiblePaths=-/proc -/sys -/run", "RuntimeMaxSec=20min", "TimeoutStopSec=30s", "TasksMax=256", "LimitCORE=0",
+    "InaccessiblePaths=-/proc -/sys -/run -/srv/workers/public-intake -/var/lib/subscription-runtime-full-parent-live", "RuntimeMaxSec=20min", "TimeoutStopSec=30s", "TasksMax=256", "LimitCORE=0",
     `RootDirectory=${plan.rootDirectory}`, `BindReadOnlyPaths=${plan.profile.nodePath}:${plan.profile.nodePath}:norbind ${plan.profile.privilegeDropper.path}:${plan.profile.privilegeDropper.path}:norbind ${plan.profile.npmRootPath}:${plan.profile.npmRootPath}:norbind /etc/ssl/certs:/etc/ssl/certs:norbind`,
     ...libraries(plan.profile).map(l => `BindReadOnlyPaths=${l.path}:${l.path}:norbind`),
     ...(plan.localStage ? [

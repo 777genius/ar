@@ -1,5 +1,5 @@
 import { ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
-import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind, type HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
+import { spawnHostedFdProcess, readHostedFdProcessBirth, invalidateHostedFdProcess, HostedFdLaunchKind, type HostedFdOriginalSpawnCustody } from "./hosted-fd-child";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { Writable, PassThrough, type Readable } from "node:stream";
@@ -11,6 +11,9 @@ import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-p
 import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-provider-launch";
 import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
+import { hostedFdNamespacePrefix, hostedFdNamespaceStage, assertHostedFdNamespaceAncestry } from "./hosted-fd-namespace-stages";
+import { retainOriginalFullSetupIntent, type OriginalFullSetup } from "./hosted-full-setup-channel";
+import { readHostedFdUnitPolicy, assertHostedFdUnitPolicy, sameHostedFdUnitLifecycle, type HostedFdUnitPolicy } from "./hosted-fd-unit-policy";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
@@ -22,7 +25,25 @@ const cleanupUnits = new WeakMap<object, string>();
 export enum HostedForegroundArtifactKind { Stdout = "hosted_foreground_stdout", Stderr = "hosted_foreground_stderr" }
 export type HostedForegroundResult = Readonly<{ exitCode: number; unit: string; startId: string;
   artifacts: readonly Readonly<{ kind: HostedForegroundArtifactKind; path: string; dev: string; ino: string; byteLength: number; sha256: string }>[] }>;
-const foregroundResults = new WeakSet<object>();
+export type HostedForegroundLaunchObservation = Readonly<{unit:string;startId:string;proxyPid:number;proxyBirth:string;invocationId:string;closeStatus:number}>;
+// Existing result association retains only actual fixed-launch observations.
+// These are factual inputs; kernel/current creator/drain checks grant authority.
+const foregroundResults = new WeakMap<object,Readonly<{launch:HostedFdLaunch;observation:HostedForegroundLaunchObservation}>>();
+export type HostedRemoverActorObservation = Readonly<{ unit: HostedFdUnit; actor: HostedFdProcess; proxy: HostedFdProcess }>;
+export type HostedRemoverCloseResult = Readonly<{ unit: string; invocationId: string; actorBirth: string; proxyBirth: string;
+  exitCode: number | null; signal: NodeJS.Signals | null }>;
+const removerCloses = new WeakMap<object, HostedFdLaunch>();
+/** A close result is produced only by the exact physical child retained here.
+ * It supplies creator discharge facts; it never declares the unit terminal. */
+export function assertHostedRemoverCloseResultForChild(result: HostedRemoverCloseResult, child: ChildProcess): void {
+  if (removerCloses.get(result) !== launches.get(child) || !removerCloses.has(result)) invalid();
+}
+export function readHostedForegroundLaunchObservation(result:HostedForegroundResult):HostedForegroundLaunchObservation {
+  const observed=foregroundResults.get(result); if (!observed) invalid(); return observed.observation;
+}
+export function assertHostedForegroundResultForChild(result:HostedForegroundResult,child:ChildProcess):void {
+  const observed=foregroundResults.get(result); if (!observed || launches.get(child)!==observed.launch) invalid();
+}
 export function assertHostedForegroundResult(result: HostedForegroundResult): void {
   if (!foregroundResults.has(result)) invalid();
 }
@@ -33,89 +54,99 @@ const socket = (fd: HostedFdFact): string => {
   return match[1]!;
 };
 type Proof = Readonly<{ unit: HostedFdUnit; proxy: HostedFdProcess; bootstrap: HostedFdProcess; endpoints: readonly string[] }>;
+function serviceRecipe(profile:FdCollectorProfile,command:string,args:readonly string[]) {
+  if(command===hostedDependencySystemdRunExecutable){const at=args.indexOf("--"),roots=args.filter(arg=>arg.startsWith("--property=RootDirectory="));
+    if(at<0 || roots.length>1)invalid();return {argv:Object.freeze(args.slice(at+1)),root:roots[0]?.slice("--property=RootDirectory=".length)??"",job:undefined};}
+  const request=JSON.parse(args[2]!) as {jobId:string;payload:string[]};
+  if(args[0]!=="/opt/subscription-runtime/managed-launcher/launch.mjs" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId))invalid();
+  return {argv:Object.freeze([...hostedFdNamespacePrefix,profile.node.path,"/opt/subscription-runtime/managed-launcher/payload-guard.mjs","--job-id",request.jobId,"--",...request.payload]),root:"",job:request.jobId};
+}
 
 /** Owns the real streams from this exact fixed spawn. No serialized object can
  * reconstruct the launch, endpoint ownership or a successful release. */
 export class HostedFdLaunch {
-  private readonly input: Writable;
-  private readonly output: NodeJS.ReadableStream | null;
-  private readonly errorOutput: NodeJS.ReadableStream | null;
-  private readonly started = process.hrtime.bigint();
-  private readonly proxyBirth: string;
-  private readonly profile: FdCollectorProfile;
-  private readonly originalParentSockets: ReadonlySet<string>;
-  private readonly serviceArgv: readonly string[];
-  private readonly managedJobId: string | undefined;
-  private readonly root: string;
-  private proof: Proof | undefined;
-  private released = false;
-  private invalidated = false;
-  private ready = false;
-  private closed = false;
-  private outputFailed = false;
-  private exitStatus = 70;
-  private signalTerminated = true;
-  private pending = Buffer.alloc(0);
-  private readonly filtered = new PassThrough();
-  private readonly logs: readonly { path: string; fd: number; dev: number; ino: number }[];
+  readonly #physicalChild: ChildProcess;
+  #providerGate:Writable|undefined;
+  readonly #input: Writable;
+  readonly #output: NodeJS.ReadableStream | null;
+  readonly #errorOutput: NodeJS.ReadableStream | null;
+  readonly #started:bigint;
+  readonly #fullSetup:OriginalFullSetup|undefined;
+  #fullSetupBorn=false;
+  readonly #proxyBirth: string;
+  readonly #profile: FdCollectorProfile;
+  readonly #originalParentSockets: ReadonlySet<string>;
+  readonly #serviceArgv: readonly string[];
+  readonly #managedJobId: string | undefined;
+  readonly #root: string;
+  readonly #originalUnitPolicy: HostedFdUnitPolicy;
+  #proof: Proof | undefined;
+  #released = false;
+  #invalidated = false;
+  #ready = false;
+  #closed = false;
+  #outputFailed = false;
+  #exitStatus = 70;
+  #signalTerminated = true;
+  #closeExitCode: number | null = null;
+  #closeSignal: NodeJS.Signals | null = null;
+  #pending = Buffer.alloc(0);
+  readonly #filtered = new PassThrough();
+  readonly #logs: readonly { path: string; fd: number; dev: number; ino: number }[];
   readonly outputPaths: readonly string[];
 
   private constructor(readonly child: ChildProcess, readonly unit: string, readonly kind: HostedFdLaunchKind,
-    profile: FdCollectorProfile, before: readonly HostedFdFact[], command: string, args: readonly string[]) {
+    profile: FdCollectorProfile, before: readonly HostedFdFact[], command: string, args: readonly string[], started:bigint, fullSetup:OriginalFullSetup|undefined, originalUnitPolicy:HostedFdUnitPolicy) {
+    this.#started=started;this.#fullSetup=fullSetup;this.#originalUnitPolicy=originalUnitPolicy;
+    this.#physicalChild = child;
     if (!child.pid || !child.stdin) invalid();
-    this.profile = profile; this.input = child.stdin; this.output = child.stdout; this.errorOutput = child.stderr;
-    this.proxyBirth = observeHostedFdProcess(child.pid).birth;
-    if (command === hostedDependencySystemdRunExecutable) {
-      const at = args.indexOf("--"); if (at < 0) invalid(); this.serviceArgv = Object.freeze(args.slice(at + 1));
-      const roots = args.filter(arg => arg.startsWith("--property=RootDirectory="));
-      if (roots.length > 1) invalid(); this.root = roots[0]?.slice("--property=RootDirectory=".length) ?? "";
-    } else {
-      const request = JSON.parse(args[2]!) as { jobId: string; payload: string[] };
-      if (args[0] !== "/opt/subscription-runtime/managed-launcher/launch.mjs" ||
-          !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(request.jobId)) invalid();
-      this.managedJobId = request.jobId;
-      this.root = "";
-      this.serviceArgv = Object.freeze(["/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
-        "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--",
-        profile.node.path, "/opt/subscription-runtime/managed-launcher/payload-guard.mjs", "--job-id", request.jobId, "--", ...request.payload]);
-    }
-    this.originalParentSockets = new Set(before.filter(fd => fd.socket).map(socket));
+    this.#profile = profile; this.#input = child.stdin; this.#output = child.stdout; this.#errorOutput = child.stderr;
+    this.#proxyBirth = readHostedFdProcessBirth(child, unit, kind, command, args);
+    const recipe=serviceRecipe(profile,command,args);this.#serviceArgv=recipe.argv;this.#root=recipe.root;this.#managedJobId=recipe.job;
+    this.#originalParentSockets = new Set(before.filter(fd => fd.socket).map(socket));
     const logs: { path: string; fd: number; dev: number; ino: number }[] = [];
-    try { if (kind === HostedFdLaunchKind.Foreground) for (const name of ["stdout", "stderr"]) logs.push(this.createLog(name)); }
+    try { if (kind === HostedFdLaunchKind.Foreground) for (const name of ["stdout", "stderr"]) logs.push(this.#createLog(name)); }
     catch (error) { for (const log of logs) closeSync(log.fd); throw error; }
-    this.logs = logs;
-    this.outputPaths = Object.freeze(this.logs.map(log => log.path));
+    this.#logs = logs;
+    this.outputPaths = Object.freeze(this.#logs.map(log => log.path));
     child.once("error", () => this.invalidate());
-    child.once("exit", () => { if (!this.released) this.invalidate(); });
-    child.once("close", (code, signal) => { this.closed = true; this.signalTerminated = signal !== null;
-      this.exitStatus = signal === null ? code ?? 70 : 70; this.closeStreams(); });
-    this.input.on("error", () => this.invalidate());
+    child.once("exit", () => { if (!this.#released) this.invalidate(); });
+    child.once("close", (code, signal) => { this.#closed = true; this.#signalTerminated = signal !== null;
+      this.#closeExitCode = code; this.#closeSignal = signal;
+      this.#exitStatus = signal === null ? code ?? 70 : 70; this.#closeStreams(); });
+    this.#input.on("error", () => this.invalidate());
     if (kind !== HostedFdLaunchKind.Installer) {
-      if (!this.output || !this.errorOutput) invalid();
-      this.output.on("data", (chunk: Buffer) => this.onOutput(Buffer.from(chunk)));
-      this.output.once("end", () => this.filtered.end());
-      this.errorOutput.on("data", (chunk: Buffer) => {
-        if (kind === HostedFdLaunchKind.Foreground) this.writeLog(1, Buffer.from(chunk));
+      if (!this.#output || !this.#errorOutput) invalid();
+      this.#output.on("data", (chunk: Buffer) => this.#onOutput(Buffer.from(chunk)));
+      this.#output.once("end", () => this.#filtered.end());
+      this.#errorOutput.on("data", (chunk: Buffer) => {
+        if (kind === HostedFdLaunchKind.Foreground) this.#writeLog(1, Buffer.from(chunk));
       });
-      this.output.on("error", () => this.invalidate());
-      this.errorOutput.on("error", () => this.invalidate());
+      this.#output.on("error", () => this.invalidate());
+      this.#errorOutput.on("error", () => this.invalidate());
     }
     if (kind === HostedFdLaunchKind.Provider) {
       // Preserve the actual ChildProcess pid/events/kill identity. Public stdin
       // waits behind a genuine Writable; the private spawn stream stays retained.
       const gate = new Writable({ highWaterMark: profile.limits.maxBufferedInputBytes,
         write: (chunk, _encoding, done) => {
-          if (this.invalidated) { done(new Error("hosted_fd_launch_invalidated")); return; }
+          if (this.#invalidated) { done(new Error("hosted_fd_launch_invalidated")); return; }
           if (chunk.length > profile.limits.maxBufferedInputBytes ||
               gate.writableLength > profile.limits.maxBufferedInputBytes) {
             this.invalidate(); done(new Error("hosted_fd_input_overflow")); return;
           }
-          this.waitReleased().then(() => this.input.write(chunk, done), error => done(error as Error));
+          this.#waitReleased().then(() => this.#input.write(chunk, done), error => done(error as Error));
         },
-        final: done => this.waitReleased().then(() => this.input.end(done), error => done(error as Error)),
+        final: done => this.#waitReleased().then(() => this.#input.end(done), error => done(error as Error)),
         destroy: (error, done) => {
-          if (!this.released || error || !gate.writableFinished) this.invalidate();
-          this.input.destroy(error ?? undefined); done(error);
+          // Node destroys child.stdin inside its native exit handler, before
+          // emitting close/raw EOF. release(frame, true) may have completed only
+          // the private input, leaving this public gate unused. Final success
+          // still requires close and both raw EOFs in assertOriginalZeroWaitClosed.
+          const completedPrivateInput = this.#released && this.#input.writableFinished &&
+            this.#physicalChild.exitCode === 0 && this.#physicalChild.signalCode === null;
+          if (error || !this.#released || (!gate.writableFinished && !completedPrivateInput)) this.invalidate();
+          this.#input.destroy(error ?? undefined); done(error);
         } });
       // highWaterMark only signals backpressure: callers may keep writing while
       // the first callback waits. Bound every public enqueue, including end's
@@ -142,12 +173,12 @@ export class HostedFdLaunch {
         return done ? finish(done) : finish();
       }) as typeof gate.end;
       Object.defineProperty(child, "stdin", { configurable: true, enumerable: true, value: gate });
-      Object.defineProperty(child, "stdout", { configurable: true, enumerable: true, value: this.filtered });
-      gate.on("error", () => this.invalidate());
+      Object.defineProperty(child, "stdout", { configurable: true, enumerable: true, value: this.#filtered });
+      this.#providerGate = gate; gate.on("error", () => this.invalidate());
     }
   }
 
-  private createLog(name: string) {
+  #createLog(name: string) {
     const directory = "/var/lib/subscription-runtime-host-policy/foreground-output";
     try { mkdirSync(directory, { mode: 0o700 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
@@ -159,9 +190,9 @@ export class HostedFdLaunch {
     if (!stat.isFile() || stat.uid !== 0 || stat.nlink !== 1 || (stat.mode & 0o077)) { closeSync(fd); invalid(); }
     return { path, fd, dev: stat.dev, ino: stat.ino };
   }
-  private writeLog(index: number, bytes: Buffer): void {
-    const log = this.logs[index];
-    if (!log || this.invalidated) return;
+  #writeLog(index: number, bytes: Buffer): void {
+    const log = this.#logs[index];
+    if (!log || this.#invalidated) return;
     try {
     const fd = fstatSync(log.fd), entry = lstatSync(log.path);
     if (!fd.isFile() || fd.nlink !== 1 || fd.uid !== 0 || (fd.mode & 0o077) ||
@@ -176,58 +207,74 @@ export class HostedFdLaunch {
     }
     } catch { this.invalidate(); this.child.kill("SIGTERM"); }
   }
-  private onOutput(chunk: Buffer): void {
-    if (this.invalidated) return;
-    if (!this.ready) {
-      this.pending = Buffer.concat([this.pending, chunk]);
-      if (this.pending.length > this.profile.limits.maxBufferedInputBytes) { this.invalidate(); return; }
-      const at = this.pending.indexOf(10);
+  #onOutput(chunk: Buffer): void {
+    if (this.#invalidated) return;
+    if (!this.#ready) {
+      this.#pending = Buffer.concat([this.#pending, chunk]);
+      if (this.#pending.length > this.#profile.limits.maxBufferedInputBytes) { this.invalidate(); return; }
+      const at = this.#pending.indexOf(10);
       if (at < 0) return;
-      if (this.pending.subarray(0, at + 1).toString("ascii") !== hostedFdReadyMarker) { this.invalidate(); return; }
-      this.ready = true; chunk = this.pending.subarray(at + 1); this.pending = Buffer.alloc(0);
+      if (this.#pending.subarray(0, at + 1).toString("ascii") !== hostedFdReadyMarker) { this.invalidate(); return; }
+      this.#ready = true; chunk = this.#pending.subarray(at + 1); this.#pending = Buffer.alloc(0);
     }
     if (chunk.length) {
-      if (!this.released) { this.invalidate(); return; }
-      if (this.kind === HostedFdLaunchKind.Foreground) this.writeLog(0, chunk);
-      else if (!this.filtered.write(chunk)) {
-        this.output?.pause(); this.filtered.once("drain", () => this.output?.resume());
+      if (!this.#released) { this.invalidate(); return; }
+      if (this.kind === HostedFdLaunchKind.Foreground) this.#writeLog(0, chunk);
+      else if (!this.#filtered.write(chunk)) {
+        this.#output?.pause(); this.#filtered.once("drain", () => this.#output?.resume());
       }
     }
   }
   invalidate(): void {
     invalidateHostedFdProcess(this.child);
     revokeHostedToolFilesForChild(this.child);
-    this.outputFailed = true;
-    this.closeStreams();
+    this.#outputFailed = true;
+    this.#closeStreams();
   }
-  private closeStreams(): void {
-    if (this.invalidated) return;
-    this.invalidated = true;
-    for (const log of this.logs) {
-      try { fsyncSync(log.fd); } catch { this.outputFailed = true; }
-      try { closeSync(log.fd); } catch { this.outputFailed = true; }
+  #closeStreams(): void {
+    if (this.#invalidated) return;
+    this.#invalidated = true;
+    if (this.kind === HostedFdLaunchKind.Provider) { this.#providerGate?.destroy(); this.#input.destroy(); }
+    for (const log of this.#logs) {
+      try { fsyncSync(log.fd); } catch { this.#outputFailed = true; }
+      try { closeSync(log.fd); } catch { this.#outputFailed = true; }
     }
   }
-  private remaining(): number {
-    const elapsed = Number((process.hrtime.bigint() - this.started) / 1_000_000n);
-    if (this.invalidated || this.child.exitCode !== null || this.child.signalCode !== null ||
-        this.input.destroyed || elapsed >= this.profile.limits.setupTimeoutMs) invalid();
-    return this.profile.limits.setupTimeoutMs - elapsed;
+  #remaining(): number {
+    const elapsed = Number((process.hrtime.bigint() - this.#started) / 1_000_000n);
+    if (this.#invalidated || this.child.exitCode !== null || this.child.signalCode !== null ||
+        this.#input.destroyed || elapsed >= this.#profile.limits.setupTimeoutMs) invalid();
+    return this.#profile.limits.setupTimeoutMs - elapsed;
   }
-  remainingSetupMs(): number { return this.remaining(); }
+  remainingSetupMs(): number { return this.#remaining(); }
+  removerActorObservation(): HostedRemoverActorObservation {
+    if (this.kind !== HostedFdLaunchKind.Remover || !this.#proof || this.#released) invalid();
+    const actual = this.#collect(), previous = this.#proof;
+    if (actual.bootstrap.birth !== previous.bootstrap.birth || actual.proxy.birth !== previous.proxy.birth ||
+        JSON.stringify(actual.unit) !== JSON.stringify(previous.unit) || actual.endpoints.join(",") !== previous.endpoints.join(",")) invalid();
+    this.#proof = actual;
+    return Object.freeze({ unit: actual.unit, actor: actual.bootstrap, proxy: actual.proxy });
+  }
+  removerCloseResult(): HostedRemoverCloseResult {
+    if (this.kind !== HostedFdLaunchKind.Remover || !this.#closed || !this.#released || this.#outputFailed || !this.#proof ||
+        launches.get(this.#physicalChild) !== this || this.#proof.proxy.birth !== this.#proxyBirth) invalid();
+    const result = Object.freeze({ unit: this.unit, invocationId: this.#proof.unit.invocation, actorBirth: this.#proof.bootstrap.birth,
+      proxyBirth: this.#proxyBirth, exitCode: this.#closeExitCode, signal: this.#closeSignal });
+    removerCloses.set(result, this); return result;
+  }
   /** Production wait supplier must retain actual close and raw EOF, not just
    * exit/Stop or serialized kernel metadata. Works for the retained provider. */
   assertOriginalZeroWaitClosed(): void {
-    if (!this.closed || !this.released || this.outputFailed || this.signalTerminated || this.exitStatus !== 0 ||
-        !this.input.writableFinished || !this.output || !this.errorOutput ||
-        !(this.output as Readable).readableEnded || !(this.errorOutput as Readable).readableEnded) invalid();
+    if (!this.#closed || !this.#released || this.#outputFailed || this.#signalTerminated || this.#exitStatus !== 0 ||
+        !this.#input.writableFinished || !this.#output || !this.#errorOutput ||
+        !(this.#output as Readable).readableEnded || !(this.#errorOutput as Readable).readableEnded) invalid();
   }
   /** Called after the real --wait proxy closes all streams, and only after the
    * owner has separately proved its exact unit/cgroup terminal under its fence. */
   foregroundResult(): HostedForegroundResult {
-    if (this.kind !== HostedFdLaunchKind.Foreground || !this.closed || !this.released || this.outputFailed ||
-        this.signalTerminated || !Number.isInteger(this.exitStatus) || this.exitStatus < 0 || this.exitStatus > 255) invalid();
-    const artifacts = this.logs.map((log, index) => {
+    if (this.kind !== HostedFdLaunchKind.Foreground || !this.#closed || !this.#released || this.#outputFailed ||
+        this.#signalTerminated || !Number.isInteger(this.#exitStatus) || this.#exitStatus < 0 || this.#exitStatus > 255) invalid();
+    const artifacts = this.#logs.map((log, index) => {
       const fd = openSync(log.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const before = fstatSync(fd), entry = lstatSync(log.path);
@@ -242,50 +289,80 @@ export class HostedFdLaunch {
           sha256: createHash("sha256").update(bytes).digest("hex") });
       } finally { closeSync(fd); }
     });
-    const result = Object.freeze({ exitCode: this.exitStatus, unit: this.unit,
+    const result = Object.freeze({ exitCode: this.#exitStatus, unit: this.unit,
       startId: this.unit.replace(/^subscription-runtime-(?:outer|ordinary)-/, "").replace(/\.service$/, ""), artifacts: Object.freeze(artifacts) });
-    foregroundResults.add(result); return result;
+    if (!this.#proof || launches.get(this.#physicalChild)!==this || this.#proof.proxy.birth!==this.#proxyBirth) invalid();
+    foregroundResults.set(result,Object.freeze({launch:this,observation:Object.freeze({unit:result.unit,startId:result.startId,proxyPid:this.#proof.proxy.pid,
+      proxyBirth:this.#proxyBirth,invocationId:this.#proof.unit.invocation,closeStatus:this.#exitStatus})})); return result;
   }
-  private async waitReleased(): Promise<void> {
-    while (!this.released) { this.remaining(); await new Promise(resolve => setTimeout(resolve, 10)); }
-    if (this.invalidated) invalid();
+  /** Actual retained-launch facts; worker authority rechecks before physical IO. */
+  #assertProviderInputReceiver(): void {
+    if (launches.get(this.#physicalChild) !== this || this.child !== this.#physicalChild) invalid();
+  }
+  providerInputByteLimit(): number {
+    this.#assertProviderInputReceiver();
+    if (this.kind !== HostedFdLaunchKind.Provider || this.#invalidated) invalid();
+    return this.#profile.limits.maxBufferedInputBytes;
+  }
+  awaitReleasedProviderInput(): Promise<void> {
+    this.#assertProviderInputReceiver();
+    if (this.kind !== HostedFdLaunchKind.Provider) invalid(); return this.#waitReleased();
+  }
+  writeReleasedProviderInput(chunk?: string | Uint8Array): Promise<void> {
+    this.#assertProviderInputReceiver();
+    if (this.kind !== HostedFdLaunchKind.Provider || this.#invalidated || !this.#released || this.#closed || this.#input.destroyed) invalid();
+    if (chunk !== undefined && (typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength) > this.#profile.limits.maxBufferedInputBytes) invalid();
+    return new Promise((resolve,reject) => {
+      if (chunk === undefined) { this.#input.end(() => resolve()); return; }
+      this.#input.write(chunk,error => { if (error) reject(error); else resolve(); });
+    });
+  }
+  async #waitReleased(): Promise<void> {
+    while (!this.#released) { this.#remaining(); await new Promise(resolve => setTimeout(resolve, 10)); }
+    if (this.#invalidated) invalid();
   }
   async observe(): Promise<void> {
     while (true) {
-      this.remaining();
+      this.#remaining();
       try {
-        if (this.kind !== HostedFdLaunchKind.Installer && !this.ready) invalid();
-        this.proof = this.collect(); return;
+        if (this.kind !== HostedFdLaunchKind.Installer && !this.#ready) invalid();
+        this.#proof = this.#collect();
+        if(this.#fullSetup && !this.#fullSetupBorn){this.#fullSetup.born(this.#physicalChild,this.#proof,()=>this.#remaining());this.#fullSetupBorn=true;}
+        return;
       } catch {
-        this.remaining(); await new Promise(resolve => setTimeout(resolve, 20));
+        this.#remaining(); await new Promise(resolve => setTimeout(resolve, 20));
       }
     }
   }
-  private collect(): Proof {
-    this.remaining();
+  #collect(): Proof {
+    this.#remaining();
     // This closure measures this actual spawn's original monotonic allowance;
     // it is not a caller timeout, admission token or new budget per child query.
-    const remaining = () => this.remaining();
+    const remaining = () => this.#remaining();
     const profile = readHostedFdProfile(remaining);
-    if (!profile || JSON.stringify(profile) !== JSON.stringify(this.profile) || !this.child.pid) invalid();
-    const unit = observeHostedFdUnit(this.unit, this.serviceArgv, remaining), proxy = observeHostedFdProcess(this.child.pid);
-    if (unit.root !== this.root) invalid();
-    if (proxy.birth !== this.proxyBirth || proxy.net !== observeHostedFdProcess(process.pid).net) invalid();
+    if (!profile || JSON.stringify(profile) !== JSON.stringify(this.#profile) || !this.child.pid) invalid();
+    const unit = observeHostedFdUnit(this.unit, this.#serviceArgv, remaining), proxy = observeHostedFdProcess(this.child.pid);
+    assertHostedFdUnitPolicy(this.#originalUnitPolicy,unit.lifecycle);
+    if (this.#proof && !sameHostedFdUnitLifecycle(this.#proof.unit.lifecycle,unit.lifecycle)) invalid();
+    if (unit.root !== this.#root) invalid();
+    if (proxy.birth !== this.#proxyBirth || proxy.net !== observeHostedFdProcess(process.pid).net) invalid();
     if (proxy.exe !== profile.node.path && !profile.wrappers.some(pin => pin.path === proxy.exe)) invalid();
     const candidates = hostedFdGroupPids(unit.group).map(observeHostedFdProcess);
-    const targetNames = ["hosted-readonly-runtime-bootstrap.js", "hosted-readonly-host-launch-cli.js", "hosted-app-server-launcher.js"];
+    const targetNames = this.kind === HostedFdLaunchKind.Remover ? ["hosted-dependency-remover-bootstrap.js"] :
+      ["hosted-readonly-runtime-bootstrap.js", "hosted-readonly-host-launch-cli.js", "hosted-app-server-launcher.js"];
     const bootstraps = candidates.filter(p => p.exe === profile.node.path &&
-      (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || p.argv[1] === "/runtime/bootstrap.js"));
+      (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || this.kind !== HostedFdLaunchKind.Remover && p.argv[1] === "/runtime/bootstrap.js"));
     if (bootstraps.length !== 1 || !candidates.some(p => p.pid === unit.mainPid)) invalid();
+    assertHostedFdNamespaceAncestry(this.#serviceArgv,candidates,unit.mainPid);
     for (const p of candidates) {
       if (p.group !== `0::${unit.group}`) invalid();
       if (p !== bootstraps[0]) {
         if (profile.wrappers.some(pin => pin.path === p.exe)) {
-          const at = this.serviceArgv.indexOf(p.exe);
-          if (at < 0 || JSON.stringify(p.argv) !== JSON.stringify(this.serviceArgv.slice(at))) invalid();
+          const at = this.#serviceArgv[0]==="/usr/bin/unshare" ? hostedFdNamespaceStage(this.#serviceArgv,p) : this.#serviceArgv.indexOf(p.exe);
+          if (at < 0 || JSON.stringify(p.argv) !== JSON.stringify(this.#serviceArgv.slice(at))) invalid();
         } else {
-          if (!this.managedJobId) invalid(); assertHostedFdManagedGuard(p, profile, this.managedJobId, remaining);
-          assertHostedFdConfinement(p, this.serviceArgv, unit.root);
+          if (!this.#managedJobId) invalid(); assertHostedFdManagedGuard(p, profile, this.#managedJobId, remaining);
+          assertHostedFdConfinement(p, this.#serviceArgv, unit.root);
         }
       }
       let cursor = p, depth = 0;
@@ -296,13 +373,13 @@ export class HostedFdLaunch {
     }
     const bootstrap = bootstraps[0]!;
     assertHostedFdBootstrap(bootstrap, profile, remaining);
-    assertHostedFdConfinement(bootstrap, this.serviceArgv, unit.root);
+    assertHostedFdConfinement(bootstrap, this.#serviceArgv, unit.root);
     const peers = collectHostedFdPeers(profile, remaining), parent = hostedFdTable(process.pid), endpoints: string[] = [];
     for (const n of this.kind === HostedFdLaunchKind.Installer ? [0] : [0, 1, 2]) {
       const b = bootstrap.descriptors.find(fd => fd.fd === n), transferred = proxy.descriptors.find(fd => fd.fd === n);
       if (!b || !transferred || socket(b) !== socket(transferred)) invalid();
       const remote = socket(b), local = knownFdCollectorPeer(peers, remote);
-      if (!local || knownFdCollectorPeer(peers, local) !== remote || this.originalParentSockets.has(local) ||
+      if (!local || knownFdCollectorPeer(peers, local) !== remote || this.#originalParentSockets.has(local) ||
           parent.filter(fd => fd.socket && socket(fd) === local).length !== 1) invalid();
       endpoints.push(local, remote);
     }
@@ -311,8 +388,8 @@ export class HostedFdLaunch {
       const fd = bootstrap.descriptors.find(fd => fd.fd === n);
       return !fd || !fd.character || fd.rdev !== "259" || (fd.flags & 3) !== 1;
     })) invalid();
-    const after = observeHostedFdProcess(bootstrap.pid), nextUnit = observeHostedFdUnit(this.unit, this.serviceArgv, remaining);
-    assertHostedFdConfinement(after, this.serviceArgv, nextUnit.root);
+    const after = observeHostedFdProcess(bootstrap.pid), nextUnit = observeHostedFdUnit(this.unit, this.#serviceArgv, remaining);
+    assertHostedFdConfinement(after, this.#serviceArgv, nextUnit.root);
     if (after.birth !== bootstrap.birth || after.exe !== bootstrap.exe || after.group !== bootstrap.group ||
         after.net !== bootstrap.net || JSON.stringify(after.argv) !== JSON.stringify(bootstrap.argv) ||
         after.user !== bootstrap.user || after.mount !== bootstrap.mount || after.pidNamespace !== bootstrap.pidNamespace ||
@@ -324,10 +401,11 @@ export class HostedFdLaunch {
   /** Called only by the existing authority owner's final synchronous fence. */
   release(fence: HostedActivationFence, frame: string | Buffer, end: boolean, revalidateOwner: () => void): void {
     assertHostedActivationFence(fence);
-    if (this.released || !this.proof) invalid();
-    const current = this.collect(), old = this.proof;
+    if (this.#released || !this.#proof) invalid();
+    const current = this.#collect(), old = this.#proof;
     if (current.unit.invocation !== old.unit.invocation || current.unit.group !== old.unit.group ||
         current.unit.mainPid !== old.unit.mainPid || current.unit.root !== old.unit.root ||
+        !sameHostedFdUnitLifecycle(current.unit.lifecycle,old.unit.lifecycle) ||
         current.bootstrap.birth !== old.bootstrap.birth || current.proxy.birth !== old.proxy.birth ||
         current.bootstrap.exe !== old.bootstrap.exe || current.bootstrap.group !== old.bootstrap.group ||
         current.bootstrap.net !== old.bootstrap.net || current.bootstrap.user !== old.bootstrap.user ||
@@ -353,25 +431,48 @@ export class HostedFdLaunch {
       assertHostedOrdinaryProviderRelease(this.child, fence, current.bootstrap.pid);
       revalidateOwner();
     }
-    this.remaining();
-    this.input.write(frame);
-    this.released = true;
-    if (end) this.input.end();
+    if (this.kind === HostedFdLaunchKind.Remover && (!end ||
+        !Buffer.from(frame).equals(Buffer.from("subscription-runtime-remover-fd-release-v1\n")))) invalid();
+    this.#remaining();
+    this.#fullSetup?.revalidate(()=>this.#remaining());
+    revalidateOwner();this.#remaining();
+    this.#input.write(frame);
+    this.#released = true;
+    if (end) this.#input.end();
   }
 
   static spawn(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
     unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess {
-    if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
+    if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider|dependency-remove)-[a-f0-9-]{36}\.service$/.test(unit) ||
+        (kind === HostedFdLaunchKind.Remover) !== /^subscription-runtime-dependency-remove-/.test(unit)) invalid();
     const profile = readHostedFdProfile();
     if (!profile || (command !== profile.node.path && command !== hostedDependencySystemdRunExecutable)) invalid();
     if (command === profile.node.path && !profile.bootstraps.some(pin => pin.path === args[0] &&
         pin.path === "/opt/subscription-runtime/managed-launcher/launch.mjs")) invalid();
+    args=Object.freeze([...args]);
+    // Manager arguments are retained before the HOST intent or physical submit.
+    // A protected managed launcher selects these fixed properties internally;
+    // its exact entrypoint/request is already retained by this constructor.
+    let policyArgs=args;
+    if(command===profile.node.path){
+      const request=JSON.parse(args[2]!) as {operation:unknown;limits?:{stopSeconds:unknown}};
+      if(args[1]!==request.operation || !["provider","job"].includes(String(request.operation)))invalid();
+      const stop=request.operation==="job"?request.limits?.stopSeconds:30;
+      if(!Number.isSafeInteger(stop) || Number(stop)<1)invalid();
+      policyArgs=Object.freeze(["--service-type=exec","--property=KillMode=control-group","--property=SendSIGKILL=yes",
+        "--property=Delegate=no","--property=Restart=no","--property=ProtectControlGroups=yes",
+        "--property=TimeoutStopSec="+String(stop),"--"]);
+    }
+    const originalUnitPolicy=readHostedFdUnitPolicy(policyArgs);
     const before = hostedFdTable(process.pid);
+    const started=process.hrtime.bigint(),remaining=()=>{const value=profile.limits.setupTimeoutMs-Number((process.hrtime.bigint()-started)/1000000n);if(value<1)invalid();return value;};
+    const recipe=serviceRecipe(profile,command,args);
+    const fullSetup=recipe.argv[0]==="/usr/bin/unshare" || recipe.argv[0]===profile.node.path && ["hosted-readonly-host-launch-cli.js","hosted-readonly-runtime-bootstrap.js"].some(name=>recipe.argv[1]?.endsWith("/"+name)) ? retainOriginalFullSetupIntent(unit,command,args,recipe.argv,observeHostedFdProcess(process.pid),kind,remaining) : undefined;
     const child = spawnHostedFdProcess(command, args, options, unit, kind, original);
     child.once("error", () => {}); // A synchronous setup failure must not leave an unhandled spawn error.
     try {
-      const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args);
-      launches.set(child, launch); cleanupUnits.set(child, unit); return child;
+      const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args,started,fullSetup,originalUnitPolicy);
+      launches.set(child, launch); cleanupUnits.set(child, unit); Object.freeze(launch); return child;
     } catch (error) {
       invalidateHostedFdProcess(child);
       if (!original) { child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGTERM"); }
@@ -384,7 +485,7 @@ export class HostedFdLaunch {
 
 /** Only this fixed three-channel constructor can register a launch. */
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
-  unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground): ChildProcessWithoutNullStreams;
+  unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground | HostedFdLaunchKind.Remover): ChildProcessWithoutNullStreams;
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
   unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess;
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
@@ -406,3 +507,7 @@ export function hostedFdInvocationUnit(args: readonly string[]): string {
   if (units.length !== 1) invalid();
   return units[0]!.slice("--unit=".length);
 }
+
+// Fixed dispatch cannot leak a privately retained child through an override.
+Object.freeze(HostedFdLaunch.prototype);
+Object.freeze(HostedFdLaunch);

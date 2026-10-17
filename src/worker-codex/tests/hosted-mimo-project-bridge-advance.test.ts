@@ -177,6 +177,18 @@ it("replays the same plan as an already advanced no-op and refuses to move again
   expect(bindingBytes(f)).toEqual(after);
 });
 
+it.each(["working bytes", "HEAD", "remote ref"])("replay refuses changed actual source %s despite a matching historical receipt", async changed => {
+  const f = await fixture(), plan = planFor(f);
+  await advance(f, plan); const after = bindingBytes(f);
+  const receiptPath = physical(`${f.state}/source-advances/${f.A}..${f.B}.json`), receipt = fs.readFileSync(receiptPath);
+  if (changed === "working bytes") file(f.source + "/README.md", "TEST unrelated subsequent edit\n");
+  else if (changed === "HEAD") git(f.source, "checkout", "--detach", f.A);
+  else git(f.source, "update-ref", "refs/remotes/origin/main", f.A);
+  await expect(advance(f, plan)).rejects.toThrow("mimo_project_bridge_source_mismatch");
+  await expect(advance(f, plan, { ...fast, dryRun: true })).rejects.toThrow("mimo_project_bridge_source_mismatch");
+  expect(bindingBytes(f)).toEqual(after); expect(fs.readFileSync(receiptPath)).toEqual(receipt);
+});
+
 it("dry-run writes nothing and reports the binding digest that the real run produces", async () => {
   const f = await fixture(), before = bindingBytes(f), plan = planFor(f);
   const preview = await advance(f, plan, { ...fast, dryRun: true }) as { state: string; blockers: unknown[]; newBindingSha256: string };
@@ -447,12 +459,22 @@ it("refuses a different plan while source, ref and binding disagree", async () =
   expect(git(f.source, "rev-parse", "refs/remotes/origin/main")).toBe(f.B);
 });
 
-it("removes a stale source lock left by a killed Git only under the fence", async () => {
-  const f = await fixture();
-  file(f.source + "/.git/index.lock", ""); file(f.source + "/.git/refs/remotes/origin/main.lock", "");
-  await expect(advance(f, planFor(f))).resolves.toMatchObject({ ok: true });
-  expect(exists(f.source + "/.git/index.lock")).toBe(false); expect(git(f.source, "rev-parse", "HEAD")).toBe(f.B);
-});
+it.each(["index.lock", "HEAD.lock", "packed-refs.lock", "refs/remotes/origin/main.lock", "refs/mimo-advance/incoming.lock"])(
+  "preserves an unknown source Git lock %s and keeps the maintenance fence closed", async name => {
+    const f = await fixture(), plan = planFor(f), before = bindingBytes(f), lock = f.source + "/.git/" + name;
+    const bytes = "TEST independent Git writer lock\n";
+    file(lock, bytes); const original = fs.lstatSync(physical(lock), { bigint: true });
+    await expect(advance(f, plan)).rejects.toThrow("mimo_project_bridge_advance_source_locked");
+    const retained = fs.lstatSync(physical(lock), { bigint: true });
+    expect([retained.dev, retained.ino, retained.mode, retained.size, retained.mtimeNs, retained.ctimeNs])
+      .toEqual([original.dev, original.ino, original.mode, original.size, original.mtimeNs, original.ctimeNs]);
+    expect(fs.readFileSync(physical(lock), "utf8")).toBe(bytes);
+    expect(bindingBytes(f)).toEqual(before);
+    expect(git(f.source, "rev-parse", "HEAD")).toBe(f.A);
+    expect(git(f.source, "rev-parse", "refs/remotes/origin/main")).toBe(f.A);
+    expect(exists(f.state + "/.controller-maintenance-fence.json")).toBe(true);
+    expect(exists(`${f.state}/source-advances/${f.A}..${f.B}.json`)).toBe(false);
+  });
 
 it("rechecks the operations under the fence: a Create persisted just before it blocks the advance", async () => {
   const f = await fixture(), before = bindingBytes(f); let observations = 0;

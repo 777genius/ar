@@ -57,7 +57,7 @@ const emptyArrays = [SystemdArrayProperty.ExecStartPre, SystemdArrayProperty.Exe
 function show(name: "dbus.service" | "dbus.socket", properties: string, remaining: SystemdObservationRemaining): Record<string, string> {
   const result: Record<string, string> = {};
   const expected = properties.split(","), unresolved = name === "dbus.service" ? emptyArrays : [];
-  for (const line of command("/usr/bin/systemctl", ["show", `--property=${properties}`, "--", name], remaining).split("\n")) {
+  for (const line of command("/usr/bin/systemctl", ["show", "--all", `--property=${properties}`, "--", name], remaining).split("\n")) {
     const at = line.indexOf("="), key = line.slice(0, at);
     if (at < 1 || key in result || !expected.includes(key)) invalid();
     result[key] = line.slice(at + 1);
@@ -119,6 +119,19 @@ export function observeSystemBusFdEmptyArrays(input: SystemBusInfrastructure, un
   try { return observeInfrastructure(input, systemdObservationBudget(remaining), unit); }
   catch { invalid(); }
 }
+/** The legacy root row supplies no membership authority; the unified row must
+ * identify this exact bus group. Check every row without trimming its bytes. */
+function matchesSystemBusCgroup(text: string): boolean {
+  const rows = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+  if (rows.length > 2) return false;
+  let unified = 0, legacy = 0;
+  for (const row of rows) {
+    if (row === `0::${SYSTEM_BUS_CONTROL_GROUP}`) unified++;
+    else if (row === "1:name=systemd:/") legacy++;
+    else return false;
+  }
+  return unified === 1 && legacy <= 1;
+}
 function observeInfrastructure(input: SystemBusInfrastructure, remaining: SystemdObservationRemaining,
   managedUnit?: string): readonly SystemdEmptyArrayFact[] {
   remaining();
@@ -163,7 +176,7 @@ function observeInfrastructure(input: SystemBusInfrastructure, remaining: System
   const pid = service.MainPID!, initialBirth = birth(pid, remaining);
   const verifyProcess = () => {
     if (birth(pid, remaining) !== initialBirth || readlinkSync(`/proc/${pid}/exe`) !== SYSTEM_BUS_EXECUTABLE ||
-        boundedProc(`/proc/${pid}/cgroup`, remaining, 4096).trim() !== `0::${SYSTEM_BUS_CONTROL_GROUP}` ||
+        !matchesSystemBusCgroup(boundedProc(`/proc/${pid}/cgroup`, remaining, 4096)) ||
         boundedProc(`/proc/${pid}/cmdline`, remaining, 8192) !== [SYSTEM_BUS_EXECUTABLE, ...SYSTEM_BUS_ARGUMENTS, ""].join("\0") ||
         boundedProc(`/sys/fs/cgroup${SYSTEM_BUS_CONTROL_GROUP}/cgroup.procs`, remaining, 4096).trim() !== pid) invalid();
     processClosure(pid, descriptor.elfClosure, remaining);

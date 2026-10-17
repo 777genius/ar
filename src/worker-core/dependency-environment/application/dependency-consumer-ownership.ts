@@ -18,7 +18,7 @@ export function claimDependencyConsumer(store: DependencyOwnerStore, workspace: 
   // A custody launch cannot create/migrate its own authority. Only the actual
   // stored idle v3 pointer selected by trusted B/D composition can enter.
   if (isDependencyCustodyLaunch(launch) !== (current?.version === 3)) fail(Failure.Unsupported);
-  const next = parseDependencyOwner({ ...(current?.version === 3 ? current : { version: 2 }), workspace, revision: (current?.revision ?? 0) + 1,
+  const next = parseDependencyOwner({ ...((current?.version === 2 || current?.version === 3) ? current : { version: 2 }), workspace, revision: (current?.revision ?? 0) + 1,
     epoch, owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.ExclusiveMutation, attempt },
     ...(current?.activity === undefined ? {} : { activity: current.activity }) });
   store.compareAndSwap(workspace, current?.revision ?? null, next);

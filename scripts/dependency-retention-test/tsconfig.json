@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["./*.ts"]
+  "include": ["./*.ts", "./require-explicit-preservation-root-result.mts"]
 }

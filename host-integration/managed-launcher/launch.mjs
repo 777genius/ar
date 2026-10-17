@@ -1,5 +1,5 @@
 #!/usr/bin/node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { constants, lstatSync, openSync, fstatSync, readFileSync, readSync, closeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { access, open, readFile, writeFile, statfs, stat, lstat, realpath } from 'node:fs/promises';
@@ -13,8 +13,29 @@ import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
 import { hasHostedActivationOrigin, HostedActivationMode, readHostedActivationMode } from './hosted-host-policy.mjs';
 
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
+export const managedSystemdRunExecutable = '/usr/bin/systemd-run';
+const nativeInvocations = new WeakMap();
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
+// Provider COMMAND operands are constructed by this adapter. Stock252 may
+// omit the unsupported veto only after a complete literal-operand proof.
+function providerLiteralArgumentOptions(operands) {
+  const inspect = args => spawnSync('/usr/bin/systemd-run', args, {
+    encoding: 'utf8', timeout: 2000, maxBuffer: 32768, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SYSTEMD_COLORS: '0' },
+  });
+  const help = inspect(['--expand-environment=no', '--help']);
+  if (!help.error && help.signal === null && help.status === 0 && help.stderr === '' && help.stdout.includes('--expand-environment='))
+    return ['--expand-environment=no'];
+  if (help.error || help.signal !== null || help.status !== 1 || help.stdout !== '' ||
+      help.stderr !== "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n") denied();
+  const version = inspect(['--version']);
+  if (version.error || version.signal !== null || version.status !== 0 || version.stderr !== '' ||
+      !/^systemd 252(?: \([A-Za-z0-9.+~:_-]{1,80}\))?$/.test(version.stdout.split('\n')[0] ?? '')) denied();
+  if (!operands.length || operands.some(value => typeof value !== 'string' || value.length < 1 || value.length > 4096 || /[$\0\r\n]/.test(value))) denied();
+  return [];
+}
+
 function governedFdProfile(request) {
   if (readHostedActivationMode() === HostedActivationMode.Disabled && !hasHostedActivationOrigin() &&
       request.readonlyPaths === undefined) return false;
@@ -114,7 +135,7 @@ function assertMemoryAdmission(request, memoryInfo) {
 }
 
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
-export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
+export const managedBootstrap = Object.freeze([UNSHARE_PATH, '--mount', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '--', UNSHARE_PATH, '--user', '--map-user=65532', '--map-group=65532', '--keep-caps', '--', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--']);
 
 // The request contains identity and payload data, never systemd options.
 export function parseInvocation(request) {
@@ -170,22 +191,53 @@ async function captureProviderStorage(request, policy, trust) {
   if (governedFdProfile(request)) denied();
   // The helper is fixed beside the already trusted ORIGINAL bootstrap. An old
   // context-absent SDK keeps its existing installed-launcher path unchanged.
-  const helper = `${dirname(request.payload[1])}/original-provider-storage-context.js`;
+  const helper = dirname(request.payload[1]) + '/original-provider-storage-context.js';
   if (helper === policy.storageRoot || helper.startsWith(policy.storageRoot + '/')) denied();
   await trust(helper);
   const { captureOriginalProviderStorage } = await import(pathToFileURL(helper).href);
   return captureOriginalProviderStorage(policy.storageRoot, request.storageContext);
 }
 
-export function managedLauncherInvocation(request) {
+/** Closed composition option; never selected from request JSON. */
+export const ManagedLauncherProfile = Object.freeze({ Standard: 'standard', FixedFullPositiveTest: 'fixed_full_positive_test', FixedFullH1Test: 'fixed_full_h1_test' });
+export const fullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261014-r1';
+// Retired FULL identity remains a refusal; it cannot enter Standard or be replayed.
+const retiredFullPositiveTestJob = 'TEST-dependency-full-positive-scoped-20261010-r1';
+export const legacyFullTestJob = 'TEST-dependency-full-native-20261007-r1';
+export const fullPositiveTestRoot = '/opt/subscription-runtime-full-positive-TEST';
+export const fullPositiveTestEntry = fullPositiveTestRoot + '/managed-launcher/launch-full-positive-TEST.mjs';
+export const fullH1TestJob = 'TEST-dependency-full-h1-signed-distro-20261016-r1';
+export const fullH1TestRoot = '/opt/subscription-runtime-full-h1-TEST';
+export const fullH1TestEntry = fullH1TestRoot + '/managed-launcher/launch-full-h1-TEST.mjs';
+export function assertManagedLauncherProfile(profile, jobId) {
+  if (profile === ManagedLauncherProfile.Standard) {
+    if (jobId === fullPositiveTestJob || jobId === fullH1TestJob || jobId === legacyFullTestJob || jobId === retiredFullPositiveTestJob) denied();
+  } else if (profile === ManagedLauncherProfile.FixedFullPositiveTest) {
+    if (jobId !== fullPositiveTestJob) denied();
+  } else if (profile !== ManagedLauncherProfile.FixedFullH1Test || jobId !== fullH1TestJob) denied();
+}
+export function managedLauncherInvocation(request, profile = ManagedLauncherProfile.Standard) {
   parseInvocation(request);
-  return { command: process.execPath, args: [MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
+  assertManagedLauncherProfile(profile, request.jobId);
+  if (profile !== ManagedLauncherProfile.Standard && request.operation !== "job") denied();
+  return { command: process.execPath, args: [profile === ManagedLauncherProfile.FixedFullPositiveTest ? fullPositiveTestEntry : profile === ManagedLauncherProfile.FixedFullH1Test ? fullH1TestEntry : MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
 }
 
 export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath,
   guardPath = PAYLOAD_GUARD_PATH, launcherPath = MANAGED_LAUNCHER_PATH,
   executable = path => access(path, constants.X_OK), storagePin, memoryInfo = readMemoryInfo } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
+  if (request.jobId === legacyFullTestJob || request.jobId === retiredFullPositiveTestJob) denied();
+  if (request.jobId === fullPositiveTestJob || request.jobId === fullH1TestJob) {
+    const h1 = request.jobId === fullH1TestJob;
+    if (process.argv[1] !== (h1 ? fullH1TestEntry : fullPositiveTestEntry)) denied();
+    // Fixed protected FULL branch. The original manager's exclusive ledger is
+    // already present; the helper retains the reviewed complete source closure.
+    const original = await import('./dependency-full-native-TEST.mjs');
+    const native = h1 ? original.fullH1NativeArguments(request) : original.fullNativeArguments(request);
+    const invocation = Object.freeze({ command: managedSystemdRunExecutable, args: native.args });
+    nativeInvocations.set(invocation, native.custody); return invocation;
+  }
   const confinementExecutables = [launcherPath, guardPath, UNSHARE_PATH, SETPRIV_PATH, TINI_PATH,
     ...(storagePin ? ['/usr/bin/mount', '/usr/sbin/blkid'] : [])];
   for (const path of [nodePath, ...trusted, ...confinementExecutables]) await trust(path);
@@ -210,7 +262,6 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   for (const path of [nodePath, guardPath, launcherPath, ...trusted]) {
     if (path === policy.storageRoot || path.startsWith(policy.storageRoot + '/')) denied();
   }
-  assertMemoryAdmission(request, memoryInfo);
   const providerStorage = await captureProviderStorage(request, policy, trust);
   try {
     const providerPayload = providerStorage ? [...payload, '--provider-storage-v1',
@@ -241,20 +292,22 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
         `OpenFile=/proc/${process.pid}/fd/${storagePin.activation.fd}:storage-activation:read-only`,
         `InaccessiblePaths=${storagePin.binding.directory}`] : []),
     ];
-    return { command: '/usr/bin/systemd-run', ...(providerStorage ? { providerStorage } : {}), args: [
+    assertMemoryAdmission(request, memoryInfo);
+    const operands = [...(storagePin ? [nodePath, guardPath,
+        '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
+          generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
+        '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
+      '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...providerPayload];
+    return { command: managedSystemdRunExecutable, ...(providerStorage ? { providerStorage } : {}), args: [
       ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}${storagePin ? ':storage:' + storagePin.binding.invocationId : ''}`] : ['--quiet', '--wait', '--pipe', '--collect']),
-      `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
+      `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', ...(operation === 'provider' ? providerLiteralArgumentOptions(operands) : ['--expand-environment=no']),
       `--setenv=HOME=${policy.home}`,
       ...Object.entries(scratchEnv).map(([key, value]) => `--setenv=${key}=${value}`),
       ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
       `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
       '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
       `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
-      ...properties.map(property => `--property=${property}`), '--', ...(storagePin ? [nodePath, guardPath,
-        '--acquire-storage-pin', JSON.stringify({ schemaVersion: 1, invocationId: storagePin.binding.invocationId,
-          generation: storagePin.binding.generation, unit, fingerprint: request.fingerprint, witness: storagePin.pin.witness }),
-        '--node', nodePath] : [...managedBootstrap, nodePath, guardPath]),
-      '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...providerPayload,
+      ...properties.map(property => `--property=${property}`), '--', ...operands,
     ] };
   } catch (error) { providerStorage?.close(); throw error; }
 }
@@ -588,7 +641,7 @@ export async function runStorageIssuer(envelopePath, { capabilityPath = MANAGED_
   }
 }
 
-async function main() {
+export async function runManagedLauncherMain() {
   const args = process.argv.slice(2);
   if (args[0] === 'storage-issuer') {
     if (args.length !== 2) denied();
@@ -598,25 +651,35 @@ async function main() {
     args.length === 4 ? readlinkSync('/proc/self/ns/time') : undefined);
   const anchor = process.hrtime.bigint();
   const invocation = await buildSystemdInvocation(request);
-  if (ends) await admitOriginalManagerExecutable(invocation.command);
-  const reservation = ends ? originalJobReservation(request) : null;
-  const command = invocation.command, childArgs = [...invocation.args], options = { stdio: 'inherit' };
-  // Every real asynchronous admission has completed. No await, callback or
-  // renewed timeout lies between this original monotonic sample and birth.
-  if (ends) assertOriginalReservation(ends, reservation, anchor, process.hrtime.bigint());
+  const nativeCustody = nativeInvocations.get(invocation); nativeInvocations.delete(invocation);
   let child;
-  try { invocation.providerStorage?.revalidate(); child = spawn(command, childArgs, options); }
+  try {
+    if (ends) await admitOriginalManagerExecutable(invocation.command);
+    const reservation = ends ? originalJobReservation(request) : null;
+    const command = invocation.command, childArgs = [...invocation.args], options = { stdio: 'inherit' };
+    nativeCustody?.beforeSubmit();
+    invocation.providerStorage?.revalidate();
+    // Every real asynchronous admission and native custody check has completed.
+    // The original monotonic veto remains immediately before actual birth.
+    if (ends) assertOriginalReservation(ends, reservation, anchor, process.hrtime.bigint());
+    child = spawn(command, childArgs, options);
+  } catch (error) { nativeCustody?.close(); throw error; }
   finally { invocation.providerStorage?.close(); }
   const handlers = new Map(['SIGINT', 'SIGTERM', 'SIGHUP'].map(signal => [signal, () => child.kill(signal)]));
   for (const [signal, handler] of handlers) process.on(signal, handler);
-  child.on('error', () => { process.exitCode = 70; });
+  child.on('error', () => { nativeCustody?.close(); process.exitCode = 70; });
   child.on('exit', (code, signal) => {
     for (const [name, handler] of handlers) process.removeListener(name, handler);
+    if (nativeCustody) {
+      try { if (code !== 0 || signal) denied(); nativeCustody.afterSubmit(); }
+      catch { code = 70; }
+      finally { nativeCustody.close(); }
+    }
     if (signal) process.kill(process.pid, signal);
     else process.exitCode = code ?? 70;
   });
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) main().catch(error => {
+if (process.argv[1] === fileURLToPath(import.meta.url)) runManagedLauncherMain().catch(error => {
   console.error(error.message);
   process.exitCode = 70;
 });

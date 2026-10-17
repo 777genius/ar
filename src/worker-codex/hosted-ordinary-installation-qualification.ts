@@ -205,6 +205,11 @@ export class QualificationChild {
     }
     qualificationHeld();
   }
+  assertLiveOriginal(): void {
+    if (this.closed || this.failed || !this.original) qualificationHeld();
+    this.association();
+    if (collectUnitShow(this.unit).MainPID === "0") qualificationHeld();
+  }
   private association(): void {
     const original = this.original; if (!original) qualificationHeld();
     if (readFileSync("/etc/machine-id", "utf8").trim() !== original.hostId || collectBootId() !== original.bootId) qualificationHeld();
@@ -281,7 +286,7 @@ export function qualificationCandidate(candidate: OrdinaryLauncherCandidate, pre
   for (const required of ["dist/worker-codex/hosted-ordinary-installation-qualification.js", "dist/worker-codex/hosted-ordinary-installation-qualification-guest.js",
     "dist/worker-codex/hosted-installation-activation.js", "dist/worker-codex/hosted-ordinary-installation-census.js",
     "dist/core/host-infrastructure/host-inventory.js", "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
-    ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-prelude", "hosted-process-activation", "hosted-process-descriptors",
+    ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-unit-lifecycle", "hosted-fd-unit-policy", "hosted-fd-prelude", "hosted-process-activation", "hosted-process-descriptors",
       "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
       "system-bus-infrastructure", "systemd-service-arrays"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
     ...fixedCopiedCohort.map(path => "host-integration/" + path)]) if (!seen.has(required)) qualificationHeld();

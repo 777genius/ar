@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readdir, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +17,25 @@ const trustedDependencyProviderLauncher = 'src/provider-codex/app-server/adapter
 // Additional code or imports in the leaf fail closed; consumers remain scanned.
 const trustedDependencyCommandLeaf = 'src/provider-codex/app-server/adapters/hosted-dependency-systemd-command.ts';
 const trustedDependencyCommandDeclaration = 'export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";\n';
+// Finite reviewed SOURCE100 administrative installation and its native TEST.
+// The producer accepts only private original birth/source custody; the TEST
+// submits one fixed forgery-negative unit. Neither is a provider/job launch API.
+// Every byte edit requires fresh review and an explicit seal update. Exact
+// physical paths below confer no directory, basename or general TEST exemption.
+const trustedAdministrativeLaunchSources = new Map([
+  // Reviewed fixed first-Positive ROOT installer transport; edits fail closed.
+  ['scripts/dependency-retention-os-test/bootstrap-current-positive-public.mts',
+    { bytes: 14433, sha256: '0bff8e35e19c7dc17d6e32ac766078e13931c2a1295bfd87c4320232ea3b194c' }],
+  // Reviewed fixed original H1 Prepare/Finalize ROOT transport; exact bytes only.
+  ['scripts/dependency-retention-os-test/bootstrap-current-h1-public.mts',
+    { bytes: 23588, sha256: 'fe5c7fd975bbfbf3854e7a3556b143ad932c5843af28c9b3d346c866ac2b116d' }],
+  ['scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts',
+    { bytes: 22046, sha256: '803cc575ff7c535505ea4b831d80947930e8ceb68e889cbeaa0f52f7f0caaa11' }],
+  ['scripts/dependency-retention-os-test/current-administrative-installation.ts',
+    { bytes: 38483, sha256: '1022a93b997fac577abca55ff0866eeaef3121499e35ddf56f13b4816ae101e2' }],
+  ['scripts/dependency-retention-os-test/administrative-installation-native-TEST.ts',
+    { bytes: 15647, sha256: 'bd97904cbda131955d7c15ce7f181c283c581d050596f946e853eaad22ae5888' }],
+]);
 const excludedDirectories = new Set(['node_modules', 'dist', '.git', 'docs', 'tests', '__tests__', 'fixtures', '__fixtures__', 'coverage']);
 const sourceExtension = /\.(?:[cm]?[jt]sx?|sh|bash|py)$/;
 const testFile = /(?:\.test\.|\.spec\.|\.node-test\.|-self-test\.)/;
@@ -107,12 +127,21 @@ export async function checkManagedLaunchBoundary(root = repositoryRoot) {
         if (name === launcher || name === trustedCustodyLauncher || name === trustedDependencyProviderLauncher || name === trustedLinkedNativeTestOperator ||
             name === 'scripts/check-managed-launch-boundary.mjs') continue;
         scanned++;
-        const source = await readFile(path, 'utf8');
+        const bytes = await readFile(path), source = bytes.toString('utf8');
+        const rawLaunches = findRawLaunches(source, name);
+        // Actual joined path avoids POSIX backslash-name aliases in normalized display names.
+        const trustedSource = [...trustedAdministrativeLaunchSources]
+          .find(([sourcePath]) => path === join(root, sourcePath))?.[1];
+        if (trustedSource) {
+          if (bytes.length !== trustedSource.bytes ||
+              createHash('sha256').update(bytes).digest('hex') !== trustedSource.sha256) violations.push(`${name}:1`);
+          continue;
+        }
         if (name === trustedDependencyCommandLeaf) {
           if (source !== trustedDependencyCommandDeclaration) violations.push(`${name}:1`);
           continue;
         }
-        for (const line of findRawLaunches(source, name)) violations.push(`${name}:${line}`);
+        for (const line of rawLaunches) violations.push(`${name}:${line}`);
       }
     }
   }

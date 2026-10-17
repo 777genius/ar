@@ -9,6 +9,8 @@ import { researchRead, researchPublish } from "../research-launch-files";
 import { prepareResearchJobWriterObservation } from "../research-writer-observation";
 import { codexGoalJobManifestPath, readCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import * as materialization from "../codex-goal-terminal-handoff-materialization";
+import * as handoffArtifacts from "../codex-goal-handoff-artifacts";
+import * as capacityRecovery from "../research-mimo-capacity-recovery";
 import * as admission from "../research-launch-admission";
 import * as runtimeArtifact from "../research-runtime-artifact";
 import { researchArtifactDigest } from "../research-launch-files";
@@ -104,6 +106,7 @@ export function registeredTerminalRepairTests(input: {
   describe("authenticated stopped progress after terminal publication", () => {
     it.each(["partial", "failed"] as const)("seals supported Stop bytes without rewriting its %s result", async status => {
       const { current, historical, progress } = await stoppedPublication(status);
+      const settleCapacity = vi.spyOn(capacityRecovery, "settleResearchMimoCapacityRecovery");
       const paths = ["spec.json", "binding.json", "mimo-candidate.json", "mimo-publication.json"]
         .map(name => join(current.directory, name));
       paths.push(join(current.spec.request.jobRootDir, current.spec.request.taskId + ".latest-result.json"), progress);
@@ -112,6 +115,7 @@ export function registeredTerminalRepairTests(input: {
       expect(await repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).toMatchObject({ status });
       expect(paths.map(path => researchRead(path, !path.endsWith(".progress.json") && !path.endsWith(".latest-result.json")))).toEqual(before);
       expect(host.calls.slice(calls).some(call => ["stop", "kill"].includes(call.args[0] ?? ""))).toBe(false);
+      expect(settleCapacity).not.toHaveBeenCalled();
       const receipt = join(current.directory, "terminal-handoff-repair.json"), receiptBytes = researchRead(receipt);
       const reader = await prepareResearchJobWriterObservation(manifest); expect(await reader()).toEqual({ status: "released" });
       expect(await repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).toMatchObject({ status });
@@ -141,6 +145,7 @@ export function registeredTerminalRepairTests(input: {
   describe("authenticated account-tail terminal repair", () => {
     it("preserves partial packet without Stop, keeps old binding, and exposes only its authenticated release", async () => {
       const { current, historical } = await cold(), original = researchRead(join(current.directory, "spec.json"));
+      const settleCapacity = vi.spyOn(capacityRecovery, "settleResearchMimoCapacityRecovery");
       const producer = join(host.root, "TEST-qualified-current-producer");
       fs.cpSync(local("/TEST-artifact"), producer, { recursive: true });
       vi.spyOn(admission, "installedResearchRuntimeDirectory").mockReturnValue(producer);
@@ -153,6 +158,7 @@ export function registeredTerminalRepairTests(input: {
       const calls = host.calls.length;
       expect(await repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).toMatchObject({ status: "partial" });
       expect(host.calls.slice(calls).some(call => ["stop", "kill"].includes(call.args[0] ?? ""))).toBe(false);
+      expect(settleCapacity).not.toHaveBeenCalled();
       expect(researchRead(join(current.directory, "spec.json"))).toEqual(original);
       const reader = await prepareResearchJobWriterObservation(manifest);
       expect(await reader()).toEqual({ status: "released" });
@@ -186,6 +192,36 @@ export function registeredTerminalRepairTests(input: {
       const grant = JSON.parse(researchRead(grantPath).toString()); researchPublish(grantPath,
         { ...grant, grantId: "33333333-3333-4333-8333-333333333333" });
       expect(await reader()).toEqual({ status: "unknown" });
+    });
+    it.each(["budget", "privacy"] as const)("retains original bytes and writer authority on a real %s refusal", async fault => {
+      const { current, historical } = await cold();
+      const workspace = current.spec.request.workspacePath, source = join(workspace, "TEST-retained-output.txt");
+      const bytes = fault === "budget" ? Buffer.alloc(8 * 1024 * 1024 + 1).fill("TEST retained output\n")
+        : Buffer.from("-----BEGIN PRIVATE KEY-----\nTEST-synthetic-only\n-----END PRIVATE KEY-----\n");
+      fs.writeFileSync(source, bytes);
+      // Real packet privacy detection still runs. The optional hash-only fallback
+      // uses git cat-file spawn, intercepted as inert provider spawn by this Host
+      // fixture. Its absence is explicitly allowed and grants no release proof.
+      if (fault === "privacy") vi.spyOn(handoffArtifacts, "captureCodexGoalContinuationWorkspaceFingerprint").mockResolvedValue(null);
+      const active = researchRead(join(researchJobAuthority(current.jobId), "active.json"));
+      const candidate = researchRead(join(current.directory, "mimo-candidate.json"));
+      const settleCapacity = vi.spyOn(capacityRecovery, "settleResearchMimoCapacityRecovery");
+      await expect(repairOwnedMimoWorkerTerminalHandoff(identity(current), historical)).rejects.toThrow(fault === "budget"
+        ? "hosted_mimo_worker_preservation_budget_exceeded" : "hosted_mimo_worker_preservation_privacy_refused");
+      expect(fs.readFileSync(source)).toEqual(bytes);
+      expect(researchRead(join(researchJobAuthority(current.jobId), "active.json"))).toEqual(active);
+      expect(researchRead(join(current.directory, "mimo-candidate.json"))).toEqual(candidate);
+      expect(fs.existsSync(local(join(current.directory, "mimo-publication.json")))).toBe(false);
+      expect(fs.existsSync(local(join(current.directory, "terminal-handoff-repair.json")))).toBe(false);
+      expect(settleCapacity).not.toHaveBeenCalled();
+      const names = fs.readdirSync(local(current.directory)).filter(name => name.startsWith("preservation-refusal."));
+      expect(names).toHaveLength(1);
+      const refusal = JSON.parse(researchRead(join(current.directory, names[0]!)).toString());
+      expect(refusal).toMatchObject({ reason: fault === "budget" ? "handoff_file_byte_limit_exceeded" : "handoff_raw_secret_rejected",
+        processTerminal: true, preservationComplete: false, writerReleased: false });
+      expect(JSON.stringify(refusal)).not.toContain("TEST-synthetic-only");
+      const manifest = await readCodexGoalJob({ registryRootDir: input.registry(), jobId: current.jobId });
+      expect(await (await prepareResearchJobWriterObservation(manifest))()).toEqual({ status: "unknown" });
     });
     it.each(["historical", "revoked", "receipt", "live", "queued"] as const)("refuses %s before publication/release", async fault => {
       const { current, historical } = await cold();

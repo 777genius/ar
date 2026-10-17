@@ -10,6 +10,7 @@ import { readHostedMimoCodingWorkerOrigin, assertHostedMimoCodingWorkerOriginCur
   type HostedMimoCodingWorkerOrigin } from "./hosted-mimo-worker-origin";
 import { captureHostedMimoCodingProxyCredential } from "./hosted-mimo-credential-source";
 import { MimoProxyFailureKind, startMimoCredentialProxy, type MimoCredentialProxy } from "./hosted-mimo-credential-proxy";
+import type { MimoProxyFailure } from "./mimo-proxy-failure";
 import { codexMimoApiKeyEnvVarDefault, CodexModelBackend, codexModelBackendModelProvidersConfigToml } from "./codex-model-backend";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, codexProviderEgressConfigToml } from "./codex-provider-egress-policy";
 import { hostedCodexPermissionProfilesToml } from "./hosted-codex-permissions";
@@ -32,6 +33,7 @@ export type HostedMimoCodingProxyMaterial = Readonly<{
   assertCurrent(): void;
   revoke(): void;
   close(): Promise<void>;
+  latestFailure(): MimoProxyFailure | undefined;
 }>;
 import { registerHostedMimoCodingBootstrap } from "./hosted-mimo-coding-bootstrap-registry";
 const consumedStarts = new Set<string>();
@@ -149,6 +151,7 @@ export async function createHostedMimoCodingProxyMaterial(input: {
   let ownerTimer: ReturnType<typeof setInterval> | undefined;
   const abort = () => proxy.revoke();
   const material: HostedMimoCodingProxyMaterial = Object.freeze({ origin, capability: proxy.capability,
+    latestFailure: () => proxy.latestFailure(),
     upstreamFailureObservation: () => proxy.upstreamFailureObservation(),
     capacityRecoveryProof: () => proxy.capacityRecoveryProof(),
     assertCurrent() { if (closed) throw new Error("hosted_mimo_coding_proxy_closed"); assertCurrent(); },
@@ -188,6 +191,7 @@ export class HostedMimoCodingProxyOwner {
   private material: HostedMimoCodingProxyMaterial | undefined;
   private disposed = false;
   get retained(): boolean { return this.material !== undefined; }
+  get latestFailure(): MimoProxyFailure | undefined { return this.material?.latestFailure(); }
   capacityRecoveryProof(): ReturnType<MimoCredentialProxy["capacityRecoveryProof"]> {
     return this.material?.capacityRecoveryProof();
   }

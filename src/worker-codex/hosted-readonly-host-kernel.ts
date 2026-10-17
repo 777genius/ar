@@ -1,3 +1,7 @@
+import { assertConfiguredAuthAttachmentPhysical } from "../provider-codex/app-server/adapters/hosted-configured-auth-attachment";
+import { readHostedOrdinaryReaderParentCompletion } from "./hosted-ordinary-reader-parent-completion";
+import { assertHostedOrdinaryProviderFailureCreator } from "./hosted-ordinary-provider-failure-recovery";
+import { assertHostedManagedProviderFailureCreator } from "./hosted-managed-provider-failure-recovery";
 import { parseHostedReadonlyHostInventory, type HostedReadonlyHostInventory as LegacyHostedReadonlyHostInventory } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedForegroundRequestDescriptors, type HostedForegroundRequest } from "./hosted-foreground-request-custody";
 import { verifyOrdinaryInstallationInventory } from "./hosted-ordinary-installation-census";
@@ -80,6 +84,7 @@ export class HostedReadonlyHostKernel {
   verifyExclusiveInventory(fence?: HostedActivationFence, cleanup = false): void {
     const inventory = readHostedReadonlyHostInventory();
     this.session();
+    for (const creator of inventory.ordinaryCreators) if("authAttachment" in creator && creator.authAttachment) assertConfiguredAuthAttachmentPhysical(creator.authAttachment);
     if (inventory.collectorProfile) verifyPinnedFdCollectorProfile(inventory.collectorProfile);
     if (inventory.systemBusInfrastructure) verifySystemBusInfrastructure(inventory.systemBusInfrastructure);
     if (inventory.schemaVersion === 5) {
@@ -212,12 +217,17 @@ export class HostedReadonlyHostKernel {
   /** A same-boot reservation needs the trusted --wait completion receipt. PID
    * absence or a killed proxy is deliberately insufficient. Failed/ambiguous
    * starts stay held; this adapter does not fabricate a terminal receipt. */
-  fenceCreator(reservation: HostedCustodyReservation, recordedBootId: string): void {
+  fenceCreator(reservation: HostedCustodyReservation, recordedBootId: string, recoveryFence?: HostedActivationFence): void {
     if (recordedBootId !== this.session().bootId) return;
     const bytes = readHostedPrivateBytes(completionPath(reservation), 4096);
-    if (!bytes || !bytes.equals(completionBytes(reservation, 0))) {
+    if (bytes?.equals(completionBytes(reservation, 0))) return;
+    // Outer remains status0-only. A token-less legacy call still fails closed;
+    // only the trusted recovery owner can pass its already-held genuine fence.
+    assertUnitReservation(reservation);
+    if (!recoveryFence || reservation.unit !== `subscription-runtime-hosted-${reservation.startId}.service`) {
       throw new Error("hosted_custody_creator_not_fenced");
     }
+    assertHostedManagedProviderFailureCreator(recoveryFence,reservation.startId);
   }
   drainQueuedStart(reservation: HostedCustodyReservation): void {
     assertUnitReservation(reservation);
@@ -260,11 +270,17 @@ export class HostedReadonlyHostKernel {
     }
     if (failed) throw new Error("hosted_custody_stop_incomplete");
   }
-  fenceOrdinaryCreator(reservation: HostedOrdinaryReservation, recordedBoot: string, startSha256: string): void {
+  fenceOrdinaryCreator(reservation: HostedOrdinaryReservation, recordedBoot: string, startSha256: string, fence?: HostedActivationFence): void {
     assertOrdinaryReservation(reservation);
     if (recordedBoot !== this.operatorSession().bootId) return;
     const bytes = readHostedPrivateBytes(ordinaryCompletionPath(reservation.startId), 4096);
     if (!bytes || !bytes.equals(ordinaryCompletionBytes(reservation.startId, startSha256))) {
+      if (!bytes && fence && reservation.unit === `subscription-runtime-hosted-${reservation.startId}.service`) {
+        assertHostedOrdinaryProviderFailureCreator(fence,reservation.startId,startSha256); return;
+      }
+      if (!bytes && fence && reservation.unit===`subscription-runtime-ordinary-${reservation.startId}.service`) {
+        readHostedOrdinaryReaderParentCompletion(fence,reservation.startId,startSha256);return;
+      }
       throw new Error("hosted_custody_creator_not_fenced");
     }
   }

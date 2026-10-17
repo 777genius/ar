@@ -139,6 +139,27 @@ it("does not invoke a code accessor while retaining a failed operation", async (
   } finally { process.argv[1] = previous!; }
 });
 function control(operation: MimoProjectBridgeOperation) { const { prompt: _prompt, sourceCommit: _commit, ...identity } = request; return { ...identity, operation }; }
+it("publishes a precise failed status without changing retained unknown Start or launching recovery", async () => {
+  await submitHostedMimoProjectBridge(request);
+  state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } }));
+  const startPath = prefix.replace(".create", ".start") + ".result.json";
+  const originalStart = JSON.stringify({ ok: false, error: "project_control_submission_outcome_unknown" });
+  state.files.set(startPath, originalStart);
+  await submitHostedMimoProjectBridge(control(MimoProjectBridgeOperation.Status));
+  const statusPrefix = prefix.replace(".create", ".status");
+  const statusOwner = JSON.parse(state.files.get(statusPrefix + ".owner.json")!);
+  const previous = process.argv[1]; process.argv[1] = entry;
+  try {
+    state.command.mockReturnValue("MainPID=" + process.pid + "\nDescription=" + statusOwner.description);
+    state.handler.mockRejectedValue(new Error("mimo_project_runtime_routing_invalid: TEST private origin detail"));
+    const submitted = state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run").length;
+    await expect(executeHostedMimoProjectBridgeOperation(statusPrefix + ".request.json")).resolves.toBe(false);
+    expect(JSON.parse(state.files.get(statusPrefix + ".result.json")!)).toEqual({ ok: false, error: "mimo_project_runtime_routing_invalid" });
+    expect(state.files.get(startPath)).toBe(originalStart);
+    expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(submitted);
+    expect(state.handler).toHaveBeenCalledOnce();
+  } finally { process.argv[1] = previous!; }
+});
 it.each(["success", "inner-refusal", "thrown", "clock-fault"])("keeps owned Start timing inside publication and round-trips %s without a second handler call", async scenario => {
   await submitHostedMimoProjectBridge(request);
   state.files.set(prefix + ".result.json", '{"ok":true,"result":{"ok":true}}\n');

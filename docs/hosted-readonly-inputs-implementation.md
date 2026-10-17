@@ -1351,3 +1351,25 @@ ORDINARY and the current exact grant digest. Managed identity takes priority;
 stop publishes CLOSED while fenced, requests OS stops after unlocking, retains
 reservations and cannot assert terminal custody or reopen admission. No new
 public composition or arbitrary mount option is introduced by this repair.
+
+### R Ready publication after preserving Maintenance
+
+The protected Ready gate authenticates the current private Maintenance idle
+before selecting an old R Consumer. A preserving Maintenance operation advances
+the owner epoch, so that original R attempt is intentionally stale against the
+current owner. The Maintenance reader joins the exact released owner and fenced
+original operation to the original R SourceClosed and freshly rereads creator,
+provider and installer discharge, baseline actors and native census. The release
+preflight also requires current v3 baseline continuity, the original custody
+binding, exact workspace/material/binding and unchanged protected records. It
+accepts only unrevoked Closed/Ready epochs with null or Terminal outer runtime
+and all provider reservations Terminal. It performs no owner or custody write;
+neither a null owner nor a Terminal status independently authorizes publication.
+
+Native qualification remains unproven for the causal R1 SourceClosed -> preserving
+Maintenance -> Closed-to-Ready -> R2 route. Required genuine Root controls are
+changed or foreign Maintenance idle, live provider descendants, and queued starts;
+each must refuse before Ready/R2 publication and preserve the current owner epoch
+and original custody. Existing pure owner-contract coverage supplies no physical
+Ready authority. This source repair adds no synthetic positive guard fixture and
+does not establish the separate ColdV2-to-Maintenance-to-first-R scenario.

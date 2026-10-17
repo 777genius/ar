@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true, "noEmit": true, "types": ["node"]
+  },
+  "include": ["./directory-ofd-kernel-contract.test.mts", "./run-directory-ofd-ci.mts"]
+}

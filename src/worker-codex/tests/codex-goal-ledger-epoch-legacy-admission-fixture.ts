@@ -12,7 +12,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 
 const execFileAsync = promisify(execFile);
-const D0A_COMMIT = "d0a6885ddac5d90d765819359cfce05b756b7a54";
+const D0A_COMMIT = "7d6d19a096f2cd0e3772f8369e6e09034c8b4280";
 const D0A_BUILDER_SHA256 =
   "858be0c57bace3f1cc0e262357c78ccc0bd96b33031dbb437583e2afd849109e";
 const D0A_COMPILED_BUILDER_SHA256 =

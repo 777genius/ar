@@ -2,6 +2,7 @@ import { assertHostedOrdinaryMaterializedHome } from "./app-server/adapters/host
 import type {
   RedactorPort,
   SessionArtifact,
+  SessionExecutionUse,
 } from "@vioxen/subscription-runtime/core";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -50,6 +51,7 @@ export type CodexSessionPrewarmResult = {
 export type CodexSessionMaterializer = {
   readonly mode: "ephemeral" | "worker-cache";
   materialize(input: {
+    readonly sessionExecutionUse?: SessionExecutionUse;
     readonly session: SessionArtifact;
     readonly redactor: RedactorPort;
   }): Promise<CodexMaterializedSession>;
