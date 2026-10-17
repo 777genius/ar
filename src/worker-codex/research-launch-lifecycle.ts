@@ -391,14 +391,16 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
 }
 
 function inactiveResearchUnit(unit: string, description?: string): boolean {
-  const lines = researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager", "--property=Id,LoadState,ActiveState,MainPID,Description"]);
+  // The queued-job field is the same manager fact `list-jobs` reported per unit,
+  // read in this one show snapshot alongside the state fields.
+  const lines = researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager", "--property=Id,LoadState,ActiveState,MainPID,Description,Job"]);
   const fields = Object.fromEntries(lines.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
   if (fields.Id !== unit || (description !== undefined && fields.LoadState !== "not-found" && fields.Description !== description)) researchInvalid();
   const inactive = (fields.Id === unit || fields.LoadState === "not-found") && fields.MainPID === "0" &&
     ["inactive", "failed"].includes(fields.ActiveState ?? "");
   if (!inactive) return false;
-  const jobs = researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]);
-  return !jobs.trim().split("\n").some(line => line.trim().split(/\s+/)[1] === unit);
+  if (!Object.hasOwn(fields, "Job")) researchInvalid();
+  return fields.Job === "" || fields.Job === "no";
 }
 /** Read-only and filesystem-only: the current start of a job whose MiMo candidate has no publication yet. It is the
  * cheap first stage of the pending-finalization rule, so callers can drop finished jobs before asking systemd. */

@@ -16,6 +16,7 @@ import { buildRuntimeResultEnvelope, type ProjectAccessScope } from "@vioxen/sub
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import { researchCurrentStart, researchJobAuthority } from "../research-launch-admission";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
+import * as researchLaunchHost from "../research-launch-host";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { runResearchProviderService } from "../research-provider-service";
 import { finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
@@ -110,6 +111,22 @@ export function registeredNativeWriterClosureTests(input: { allocation(configure
       expect(qualification).not.toHaveBeenCalled(); expect(researchRead(current.leaf)).toEqual(receipt);
       const grant = join(researchJobAuthority(current.jobId), "grant.json"); researchPublish(grant, {});
       expect(await next()).toEqual({ status: "unknown" });
+    });
+    it("witnesses the queued-job fact in the unit state snapshot without a list-jobs command", async () => {
+      const current = await terminal();
+      const command = vi.spyOn(researchLaunchHost, "researchCommand");
+      command.mockClear();
+      const read = await createResearchJobWriterObservationPreparer()(current.manifest);
+      expect(await withProtectedCodexGoalJobBirthPublication(read)).toEqual({ status: "released" });
+      const calls = command.mock.calls.filter(call => call[0] === "/usr/bin/systemctl") as [string, string[]][];
+      // Every unit state check reads its queued-job fact from the same show
+      // snapshot that carries the unit's state fields. Either a separate
+      // list-jobs manager command per check or a state show that omits the Job
+      // field changes this witnessed pair.
+      expect(calls.filter(([, args]) => args[0] === "list-jobs")).toHaveLength(0);
+      const shows = calls.filter(([, args]) => args[0] === "show");
+      expect(shows.length).toBeGreaterThan(0);
+      expect(shows.some(([, args]) => args.some(arg => arg.endsWith(",Job")))).toBe(true);
     });
     it("hoists one producer digest per preparation batch and still qualifies every job afresh", async () => {
       const current = await terminal(), runtimeDirectory = admission.installedResearchRuntimeDirectory();
