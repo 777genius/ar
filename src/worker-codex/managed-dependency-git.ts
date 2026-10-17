@@ -1,3 +1,4 @@
+import { gitReadBudgetBytes } from "./codex-goal-handoff-preservation-budget";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { execFile } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
@@ -260,7 +261,7 @@ export async function runManagedDependencyGitBuffer(context: HostedDependencyRoo
   }
   const end = args.indexOf("--");
   if (end >= 0) for (const path of args.slice(end + 1)) if (path !== "/dev/null") scopedPath(scope, path);
-  const timeout = options.timeoutMs ?? 15_000, maximum = options.maxBufferBytes ?? 32 * 1024 * 1024;
+  const timeout = options.timeoutMs ?? 15_000, maximum = options.maxBufferBytes ?? gitReadBudgetBytes;
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 15_000 || !Number.isSafeInteger(maximum) || maximum < 1 || maximum > 64 * 1024 * 1024) throw new Error("dependency_host_git_budget_invalid");
   const submit = async (fixedArgs: readonly string[]): Promise<{ stdout: Buffer; stderr: Buffer }> => {
       const operation = withHostedActivationFence(fence => {

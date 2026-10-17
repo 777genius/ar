@@ -1,3 +1,5 @@
+import { gitReadBudgetBytes } from "./codex-goal-handoff-preservation-budget";
+import { WorkspaceChangedFilesWarning, boundedChangedFiles } from "./codex-goal-changed-files-report";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, open, readFile, stat } from "node:fs/promises";
@@ -156,7 +158,10 @@ function isMissingFileError(error: unknown): boolean {
 export type CodexGoalWorkspaceStatus = {
   readonly exists?: boolean;
   readonly dirty?: boolean;
+  /** At most a bounded sample (see boundedChangedFiles); statuses are returned through size-limited responses. */
   readonly changedFiles?: readonly string[];
+  /** The exact number of changed paths, present only when `changedFiles` is a truncated sample. */
+  readonly changedFilesCount?: number;
   readonly warning?: string;
 };
 
@@ -171,19 +176,23 @@ export async function gitWorkspaceStatus(
       "status",
       "--porcelain",
       "--untracked-files=all",
-    ], { timeout: gitStatusTimeoutMs });
-    const changedFiles = stdout
+    ], { timeout: gitStatusTimeoutMs, maxBuffer: gitReadBudgetBytes });
+    const reported = boundedChangedFiles(stdout
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)
       .map((line) => statusPorcelainPath(line))
-      .filter((path) => path.length > 0)
-      .sort((left, right) => left.localeCompare(right));
+      .filter((path) => path.length > 0));
     return {
       exists: true,
-      dirty: changedFiles.length > 0,
-      changedFiles,
+      dirty: reported.count > 0,
+      changedFiles: reported.changedFiles,
+      ...(reported.truncated ? { changedFilesCount: reported.count } : {}),
     };
-  } catch {
+  } catch (error) {
+    // Output beyond the Git read budget proves a dirty workspace; it must not read as clean.
+    if (Object.getOwnPropertyDescriptor(error ?? {}, "code")?.value === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      return { exists: true, dirty: true, changedFiles: [], warning: WorkspaceChangedFilesWarning.OutputLimit };
+    }
     let exists = false;
     try {
       await access(path, constants.F_OK);

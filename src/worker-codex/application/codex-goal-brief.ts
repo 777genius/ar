@@ -93,7 +93,7 @@ export async function buildCodexGoalBrief(input: {
     progressStale,
     silentStale,
     heartbeatOnlyNoOutput,
-    changedFilesCount: (input.status.changedFiles ?? []).length,
+    changedFilesCount: input.status.changedFilesCount ?? (input.status.changedFiles ?? []).length,
     ...(input.status.progressStatus === undefined
       ? {}
       : { progressStatus: input.status.progressStatus }),

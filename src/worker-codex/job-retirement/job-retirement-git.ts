@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "../managed-dependency-git-hygiene";
 import { researchCustody } from "../research-launch-files";
+import { gitReadBudgetBytes } from "../codex-goal-handoff-preservation-budget";
 import { JobRetirementRefusal, JobRetirementRefused, refuseRetirement } from "./job-retirement-contract";
 
-const gitTimeoutMs = 120_000, gitMaxBytes = 32 * 1024 * 1024;
+const gitTimeoutMs = 120_000, gitMaxBytes = gitReadBudgetBytes;
 /** Root reads of foreign repositories: no hooks, fsmonitor, system or global
  * config, attributes file, transport, submodule recursion, pager, replace
  * objects or optional locks. Only `inspectRetirementRepository` may run it on a

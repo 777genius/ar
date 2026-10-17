@@ -1,3 +1,4 @@
+import { boundedChangedFiles, boundedChangedFilesNotes } from "./codex-goal-changed-files-report";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 export { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
@@ -141,6 +142,7 @@ export type CodexGoalStatus = {
   readonly workspaceExists?: boolean;
   readonly workspaceDirty?: boolean;
   readonly changedFiles?: readonly string[];
+  readonly changedFilesCount?: number;
   readonly logPath?: string;
   readonly logExists?: boolean;
   readonly logUpdatedAt?: string;
@@ -526,6 +528,7 @@ export async function collectCodexGoalStatus(
     ...(workspace.changedFiles === undefined
       ? {}
       : { changedFiles: workspace.changedFiles }),
+    ...(workspace.changedFilesCount === undefined ? {} : { changedFilesCount: workspace.changedFilesCount }),
     ...(log === undefined ? {} : { logPath: log }),
     ...(logStatus.exists === undefined ? {} : { logExists: logStatus.exists }),
     ...(logStatus.updatedAt === undefined
@@ -753,6 +756,8 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     reason,
     changedFilesCount: changedFiles.length,
   });
+  // The recorded result is read back through a size limit: it keeps a bounded sample.
+  const reportedChanged = boundedChangedFiles(exactChangedFiles), reportedNotes = boundedChangedFilesNotes(reportedChanged);
   const result = await createCodexGoalResultRecorder({ outputPath,
     terminalCheckpointJobRootDir: input.config.jobRootDir }).record({
     status: runtimeStatus,
@@ -761,9 +766,10 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     taskId: input.config.taskId,
     classification,
     reason,
-    changedFiles: exactChangedFiles,
+    changedFiles: reportedChanged.changedFiles,
     evidence: [
       "supervisor_reconciled_result",
+      ...reportedNotes.evidence,
       ...(status.resultExists === false ? ["latest_result_missing"] : []),
       ...(nonStrictExistingResult
         ? [`latest_result_non_strict:${status.resultStatus ?? "unknown"}`]
@@ -789,6 +795,7 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     ...(artifacts.length === 0 ? {} : { artifacts }),
     details: {
       source: "codex_goal_runtime_result_reconcile",
+      ...reportedNotes.details,
       ...(baseCommit === undefined ? {} : { baseCommit }),
       ...terminalCodexGoalHandoffResultDetails(handoff),
     },

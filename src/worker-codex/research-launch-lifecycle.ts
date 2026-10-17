@@ -13,6 +13,7 @@ import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoff
 import { materializeReconciledTerminalCodexGoalHandoff, TerminalHandoffCaptureMode } from "./codex-goal-terminal-handoff-materialization";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { changedFilesFromWorkspace } from "./codex-goal-workspace-changes";
+import { boundedChangedFiles, boundedChangedFilesNotes, changedFilesTruncatedEvidence, type WorkspaceChangedFilesWarning } from "./codex-goal-changed-files-report";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { buildRuntimeResultEnvelope, type RuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 import { readResearchMimoCandidate, assertResearchMimoResultDirectories, publishResearchMimoJobArtifact } from "./research-mimo-worker-result";
@@ -249,6 +250,10 @@ export async function releaseStoppedOwnedMimoWorkerBeforeProvider(expected: Regi
     return await releaseResearchStoppedBeforeProvider(current, historicalScope);
   });
 }
+/** The scan failing says nothing about launch admission; name it, with its closed warning, instead of the generic denial. */
+function assertWorkspaceChangesAvailable(warning: WorkspaceChangedFilesWarning | undefined): void {
+  if (warning !== undefined) throw new Error(`hosted_mimo_worker_changed_files_unavailable:${warning}`);
+}
 async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, specSha256: string,
   originAuthority?: PreservationOriginAuthority, terminalRepair?: Awaited<ReturnType<typeof prepareResearchTerminalHandoffRepair>>
 ): Promise<{ jobId: string; startId: string; status: RuntimeResultEnvelope["status"] }> {
@@ -303,7 +308,7 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
   if (!existsSync(publicationPath)) {
     if (released) researchInvalid();
     const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
-    if (workspace.warning !== undefined) researchInvalid();
+    assertWorkspaceChangesAvailable(workspace.warning);
     let reconciled: Awaited<ReturnType<typeof materializeReconciledTerminalCodexGoalHandoff>>;
     try {
       reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
@@ -327,9 +332,13 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       throw new MimoPreservationRefused(reason); // No result/publication or reservation release on refusal.
     }
     await guard();
-    const result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reconciled.changedPaths,
-      artifacts: reconciled.artifacts, evidence: candidate.evidence.filter(value => value !== "patch_preserve_unavailable"),
-      details: { ...candidate.details, ...terminalCodexGoalHandoffResultDetails(reconciled.handoff) }, updatedAt: new Date(candidate.updatedAt!) });
+    // The publication is read back through the same 1 MiB limit as the candidate: it keeps a bounded sample.
+    const reported = boundedChangedFiles(reconciled.changedPaths), notes = boundedChangedFilesNotes(reported);
+    // The candidate's own count and marker describe its list; the publication states its own.
+    const { changedFilesCount: _candidateCount, ...candidateDetails } = candidate.details ?? {};
+    const result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reported.changedFiles,
+      artifacts: reconciled.artifacts, evidence: [...candidate.evidence.filter(value => value !== "patch_preserve_unavailable" && value !== changedFilesTruncatedEvidence), ...notes.evidence],
+      details: { ...candidateDetails, ...terminalCodexGoalHandoffResultDetails(reconciled.handoff), ...notes.details }, updatedAt: new Date(candidate.updatedAt!) });
     const publish = async (): Promise<void> => {
       await guard();
       researchPublish(publicationPath, { schemaVersion: 1, specSha256, candidateSha256: researchHash(candidateBytes), result }, true);
@@ -599,7 +608,7 @@ async function cancelRegisteredResearchLaunchUnlocked(expected: RegisteredResear
   const guard = researchCancellationHandoffGuard(jobId, current.spec.startId);
   await guard();
   const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
-  if (workspace.warning !== undefined) researchInvalid();
+  assertWorkspaceChangesAvailable(workspace.warning);
   const preserved = await materializeReconciledTerminalCodexGoalHandoff({
     config: current.spec.request, changedFiles: workspace.changedFiles,
     publicationAuthority: { assertPublicationAuthorized: guard, captureMode: TerminalHandoffCaptureMode.PreserveWorkspace,

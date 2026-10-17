@@ -264,6 +264,8 @@ that run on an older release, but only when that release raised one of these exa
 results keep exactly `error` and `ok`. The owned unit journal gets one JSON line with `operation`, `ok`, `error` and `cause`
 only; error text and paths are never written.
 
+`changedFiles` in a MiMo result, in the candidate and publication and in the Status workspace fields is a sample, not the full list: sorted paths, at most 2,000 and 256 KiB serialized, never empty for a dirty workspace. When the sample is shorter than the real list, the result carries `details.changedFilesCount` with the exact number and the evidence `changed_files_truncated` (Status reports `changedFilesCount` next to `changedFiles`). The publication states its own count; it does not inherit the candidate's. The complete list is the preserved workspace and the handoff packet. A changed-files scan that fails fails finalization with `hosted_mimo_worker_changed_files_unavailable:<warning>`, where the warning is `workspace_changed_files_output_limit`, `workspace_changed_files_timeout` or `workspace_changed_files_unavailable`.
+
 A bootstrap exit 70 before any provider can be a scratch admission failure.
 Read only the [finite startup diagnostics](../src/worker-codex/research-launch-diagnostics.ts), including the volume role and available/required bytes.
 Reserve the [scratch free-space floor](runbooks/host-scratch-storage.md#host-policy) (5 GiB unless the host configures `capacity`) plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.

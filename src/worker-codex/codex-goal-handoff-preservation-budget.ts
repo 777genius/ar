@@ -1,3 +1,5 @@
+/** Upper bound for the output of one Git read (status, diff, ls-files); one owner for the handoff packet and the changed-files scan. */
+export const gitReadBudgetBytes = 32 * 1024 * 1024;
 /** Finite preservation bounds, separate from the unchanged Git read budget. */
 export const handoffPreservationBudget = Object.freeze({
   sourceFileBytes: 8 * 1024 * 1024,
