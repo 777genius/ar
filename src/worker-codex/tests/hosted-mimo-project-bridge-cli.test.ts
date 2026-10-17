@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
 import { researchInvalid } from "../research-launch-files";
 
-const adapter = vi.hoisted(() => ({ reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn() }));
+const adapter = vi.hoisted(() => ({ listPending: vi.fn(), reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn() }));
 vi.mock("../hosted-mimo-interrupted-create-reconciliation", () => adapter);
+vi.mock("../hosted-mimo-pending-finalization", () => ({ listHostedMimoPendingFinalization: adapter.listPending }));
 vi.mock("../hosted-mimo-project-bridge-advance", () => ({ advanceHostedMimoProjectSource: adapter.advanceHostedMimoProjectSource }));
 vi.mock("../hosted-mimo-project-bridge-prepare", async original => ({ ...await original<object>(), resumeHostedMimoProjectPreparation: adapter.resumeHostedMimoProjectPreparation }));
 const originalArgv = process.argv, originalExitCode = process.exitCode;
@@ -104,4 +105,11 @@ it.each([["--render-attachment"], ["--render-attachment", "/TEST/a.json", "extra
   await import("../hosted-mimo-project-bridge-cli");
   expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"mimo_project_bridge_request_invalid"}\n');
   expect(process.exitCode).toBe(1);
+});
+it("routes --list-pending-finalization to the read-only listing and accepts no further arguments", async () => {
+  process.argv = ["node", "/TEST/bridge-cli", "--list-pending-finalization"];
+  adapter.listPending.mockReturnValueOnce({ ok: true, pending: [], uncertain: 0 });
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(adapter.listPending).toHaveBeenCalledOnce();
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":true,"pending":[],"uncertain":0}\n');
 });

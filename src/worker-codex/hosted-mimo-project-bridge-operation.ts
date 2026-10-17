@@ -75,8 +75,13 @@ export type HostedMimoOperationCause = ResearchDenialObservation | WorkspaceChan
 export type HostedMimoOperationFailure = Readonly<{ ok: false; error: string; cause?: HostedMimoOperationCause }>;
 // Exact messages only. The suffixes are closed vocabularies produced by the
 // terminal handoff normalizer and the workspace change reader, never free text.
-const handoffUnavailable = /^dirty_terminal_handoff_unavailable:(handoff_[a-z0-9_]{1,80}|unknown)$/;
+const handoffCauseSource = "handoff_[a-z0-9_]{1,80}|unknown";
+const handoffUnavailable = new RegExp(`^dirty_terminal_handoff_unavailable:(${handoffCauseSource})$`);
 const changedFilesWarnings = Object.values(WorkspaceChangedFilesWarning);
+/** The closed cause vocabulary as a guard, for readers that must not copy anything else. */
+export function isHostedMimoOperationCause(value: unknown): value is HostedMimoOperationCause {
+  return typeof value === "string" && (new RegExp(`^(?:${handoffCauseSource})$`).test(value) || changedFilesWarnings.some(warning => warning === value) || isResearchDenialObservation(value));
+}
 const changedFilesUnavailable = new RegExp(`^hosted_mimo_worker_changed_files_unavailable:(${changedFilesWarnings.join("|")})$`);
 /** The failure envelope of an operation. Only Status and Stop, which finalize a worker, add a closed `cause`;
  * the other operations keep the exact `{ ok, error }` shape that rearm and retirement compare. */

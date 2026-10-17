@@ -383,6 +383,29 @@ function inactiveResearchUnit(unit: string, description?: string): boolean {
   const jobs = researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]);
   return !jobs.trim().split("\n").some(line => line.trim().split(/\s+/)[1] === unit);
 }
+/** Read-only and filesystem-only: the current start of a job whose MiMo candidate has no publication yet. It is the
+ * cheap first stage of the pending-finalization rule, so callers can drop finished jobs before asking systemd. */
+export function observeMimoCandidateAwaitingPublication(jobId: string): { readonly directory: string; readonly spec: ReturnType<typeof researchCurrentStart>["spec"]; readonly bytes: Buffer } | undefined {
+  let current: ReturnType<typeof researchCurrentStart>;
+  try { current = researchCurrentStart(jobId); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  if (!existsSync(join(current.directory, "mimo-candidate.json")) || existsSync(join(current.directory, "mimo-publication.json"))) return undefined;
+  return current;
+}
+/** Read-only: a job whose finished MiMo candidate waits for finalization. The candidate exists, nothing is published,
+ * and the runtime and every provider unit are inactive, so a Status can finalize it now. Nothing is written, locked or
+ * reconciled. The single owner of this selection rule; `runtimeDirectory` is the release the job was started on and
+ * therefore the release its finalization runs on. */
+export function observePendingMimoFinalization(jobId: string): { readonly startId: string; readonly candidateSha256: string; readonly runtimeDirectory: string } | undefined {
+  const current = observeMimoCandidateAwaitingPublication(jobId);
+  if (!current) return undefined;
+  if (!inactiveResearchUnit(current.spec.unit, researchDescription(jobId, researchHash(current.bytes)))) return undefined;
+  let providers: string[] = [];
+  try { providers = researchProviderUnits(current.directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  for (const unit of providers) if (researchProviderLifecycle(current.directory, unit)) return undefined;
+  return { startId: current.spec.startId, candidateSha256: researchHash(researchRead(join(current.directory, "mimo-candidate.json"))), runtimeDirectory: current.spec.runtimeDirectory };
+}
 function validateRuntimeLifecycle(jobId: string) {
   const current = researchCurrentStart(jobId);
   if (inactiveResearchUnit(current.spec.unit, researchDescription(jobId, researchHash(current.bytes)))) return { ...current, active: false };

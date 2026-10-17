@@ -30,6 +30,10 @@ try {
     const mode = process.argv.length === 5 ? process.argv[3] : undefined;
     process.stdout.write(JSON.stringify(await retireHostedJobs(process.argv[process.argv.length - 1]!,
       { dryRun: mode === "--dry-run", cancel: mode === "--cancel" })) + "\n");
+  } else if (process.argv[2] === "--list-pending-finalization" && process.argv.length === 3) {
+    // Read-only: no plan, no lock and no Status call.
+    const { listHostedMimoPendingFinalization } = await import("./hosted-mimo-pending-finalization");
+    process.stdout.write(JSON.stringify(listHostedMimoPendingFinalization()) + "\n");
   } else if (process.argv[2] === "--onboard" && process.argv.length === 4) {
     process.stdout.write(JSON.stringify(await onboardHostedMimoProject(process.argv[3]!)) + "\n");
   } else if (process.argv[2] === "--execute-owned" && process.argv.length === 4) {
