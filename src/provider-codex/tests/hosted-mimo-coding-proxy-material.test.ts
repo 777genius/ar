@@ -131,6 +131,7 @@ it("keeps a real proxy stream failure observable through its owner after closure
     expect(owner.latestFailure).toMatchObject({ reason: "upstream_stream_error", phase: "response_stream", upstream_status: 200,
       validation_code: "response_json_invalid" });
     const retained = owner.latestFailure;
+    expect(owner.capacityRecoveryProof()).toBeUndefined();
     await owner.close();
     expect(owner.latestFailure).toBe(retained);
     expect(JSON.stringify(retained)).not.toContain("TEST-real-key");
