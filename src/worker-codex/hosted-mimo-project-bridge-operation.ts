@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSy
   fsyncSync, fstatSync, linkSync, unlinkSync, constants } from "node:fs";
 import { join, dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
-import { researchCustody, researchHash, researchRecord, researchPublish } from "./research-launch-files";
+import { researchCustody, researchHash, researchRecord, researchPublish, isResearchDenialObservation } from "./research-launch-files";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
@@ -68,6 +68,24 @@ export function operationErrorCode(error: unknown): string {
   if (error instanceof TypeError) return "mimo_project_bridge_type_error";
   if (error instanceof SyntaxError) return "mimo_project_bridge_parse_error";
   return "mimo_project_bridge_operation_failed";
+}
+export type HostedMimoOperationFailure = Readonly<{ ok: false; error: string; cause?: string }>;
+// Exact messages only. The suffixes are closed vocabularies produced by the
+// terminal handoff normalizer and the workspace change reader, never free text.
+const handoffUnavailable = /^dirty_terminal_handoff_unavailable:(handoff_[a-z0-9_]{1,80}|unknown)$/;
+const changedFilesUnavailable = /^hosted_mimo_worker_changed_files_unavailable:(workspace_changed_files_(?:output_limit|timeout|unavailable))$/;
+/** The failure envelope of an operation. Only Status and Stop, which finalize a worker, add a closed `cause`;
+ * the other operations keep the exact `{ ok, error }` shape that rearm and retirement compare. */
+export function operationFailure(error: unknown, operation?: MimoProjectBridgeOperation): HostedMimoOperationFailure {
+  const code = operationErrorCode(error);
+  if (operation !== MimoProjectBridgeOperation.Status && operation !== MimoProjectBridgeOperation.Stop || !(error instanceof Error)) return { ok: false, error: code };
+  const handoff = handoffUnavailable.exec(error.message);
+  if (handoff) return { ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: handoff[1]! };
+  const changed = changedFilesUnavailable.exec(error.message);
+  if (changed) return { ok: false, error: code, cause: changed[1]! };
+  // The originating release may carry another Error class; only the exact code and a closed observation count.
+  if (error.message === "hosted_research_launch_denied" && isResearchDenialObservation(error.cause)) return { ok: false, error: code, cause: error.cause };
+  return { ok: false, error: code };
 }
 function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));
@@ -418,12 +436,17 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
     serialized = mimoProjectStartControlReceipt(serialized, timing);
   }
   catch (error) {
-    result = { ok: false, error: operationErrorCode(error) };
+    result = operationFailure(error, request.operation);
     serialized = JSON.stringify(result) + "\n";
   }
   // Publication failures remain uncertain; never replace them with a failure
   // envelope or replay a handler whose effects may already have happened.
   publishHostedMimoProjectOperationResult(current, serialized, () => {});
+  // The owned unit's journal carries the closed fields of a failure and no error text. It is
+  // written only once the result is durable, and a diagnostic failure cannot replace that result.
+  const settled = result as { ok: boolean; error?: string; cause?: string };
+  if (!settled.ok) try { process.stdout.write(JSON.stringify({ operation: request.operation, ok: false, error: settled.error,
+    ...(settled.cause === undefined ? {} : { cause: settled.cause }) }) + "\n"); } catch { /* Diagnostics never replace the published result. */ }
   const outcome = result as { ok: boolean; result?: { ok?: boolean } };
   return outcome.ok && outcome.result?.ok !== false;
 }

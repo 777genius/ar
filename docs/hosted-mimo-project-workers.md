@@ -251,6 +251,19 @@ returns `cleanWorkspace: true` for a clean workspace without requiring a handoff
 The project adapter exposes `cleanWorkspace: "true"`; verify exact start/spec in `last-terminal.json` and absent `active.json`.
 Keep the retained failure evidence; cancellation does not fabricate a candidate or successful result.
 
+A failed Status or Stop result adds one `cause` from a closed vocabulary; for a handoff refusal the `error` changes as well:
+- `error: mimo_project_bridge_handoff_unavailable` with `cause: handoff_<code>` when the terminal handoff export refuses
+  (for example `handoff_sensitive_path_rejected`); the code is the normalized one and never carries a path;
+- `hosted_research_launch_denied` with the denial observation (`artifact-deadline`, `file-deadline`, `host-command-timeout`
+  or `host-command-failed`) when the originating release recorded one;
+- `hosted_mimo_worker_changed_files_unavailable` with `workspace_changed_files_output_limit`, `workspace_changed_files_timeout`
+  or `workspace_changed_files_unavailable`.
+
+Any other failure keeps the code it already had (a generic one or an approved specific one such as `hosted_mimo_worker_preservation_privacy_refused`) and gets no `cause`. The cause is read from the failure itself, so it also appears for jobs
+that run on an older release, but only when that release raised one of these exact messages. The Start, Create and repair
+results keep exactly `error` and `ok`. The owned unit journal gets one JSON line with `operation`, `ok`, `error` and `cause`
+only; error text and paths are never written.
+
 A bootstrap exit 70 before any provider can be a scratch admission failure.
 Read only the [finite startup diagnostics](../src/worker-codex/research-launch-diagnostics.ts), including the volume role and available/required bytes.
 Reserve the [scratch free-space floor](runbooks/host-scratch-storage.md#host-policy) (5 GiB unless the host configures `capacity`) plus expected workspace/materialization cost, and recheck actual capacity immediately before Start.

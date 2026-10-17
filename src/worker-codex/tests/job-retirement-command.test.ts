@@ -381,6 +381,16 @@ it("dry run reports every job and changes nothing", async () => {
   for (const jobId of f.jobs) expect(exists(`${f.registry}/${jobId}/terminal.json`)).toBe(false);
 });
 
+it("treats a settled Status or Stop failure that carries a cause like any other settled operation", async () => {
+  const f = workstream(), job = worker(f, "a", { native: true });
+  const failure = { ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: "handoff_sensitive_path_rejected" };
+  operation(f, job.jobId, "status", { state: "settled", result: failure });
+  operation(f, job.jobId, "stop", { state: "settled", result: failure });
+  const report = await retire(plan(f), { dryRun: true }) as { ready: boolean; jobs: { jobId: string; blocker?: string }[] };
+  expect(report).toMatchObject({ ok: true, dryRun: true, ready: true });
+  expect(report.jobs.find(row => row.jobId === job.jobId)?.blocker).toBeUndefined();
+});
+
 /** A shared project registry: one job is retired, the controller and other jobs stay. */
 function projectRegistry() {
   const project = "proj" + ++counter, stream = "main", state = `/srv/worker-state/jobs/${project}/${stream}`, registry = state + "/registry";
