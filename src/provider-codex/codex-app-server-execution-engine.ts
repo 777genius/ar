@@ -25,7 +25,7 @@ import type {
   CodexServiceTier,
 } from "./codex-json-execution-engine";
 import { prepareCodexOutputSchemaPlan } from "./codex-json-execution-engine";
-import type { CodexStructuredOutputSchemaPlan } from "./codex-structured-output-schema";
+import { normalizeCodexStructuredOutput, type CodexStructuredOutputSchemaPlan } from "./codex-structured-output-schema";
 import { InMemoryManagedRunStore } from "./codex-app-server-managed-run-store";
 import type {
   CodexAppServerChildProcess,
@@ -56,6 +56,7 @@ import {
   assertPositiveInteger,
   isAbortLikeError,
   isCodexAppServerBudgetExceededError,
+  parseStructuredOutput,
 } from "./app-server/domain/app-server-errors";
 import {
   appServerFallbackIsSafe,
@@ -94,6 +95,7 @@ export type {
 };
 export type { CodexAppServerExecutionEngineOptions };
 export type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
+export type { AppServerCompletedGoalOutputValidator } from "./app-server/application/app-server-validated-goal-completion";
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
@@ -228,6 +230,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       readonly previousCheckpoint?: string;
     },
   ): Promise<CodexLogicalThreadExecutionResult> {
+    if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     return await runCodexAppServerLogicalThreadWithSlot(input, {
       goalMode: this.options.goalMode ?? false,
@@ -264,6 +267,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
+    if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
     try {
@@ -358,6 +362,10 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }
   private async runViaAppServer(input: CodexExecutionInput,
     schemaPlan: CodexStructuredOutputSchemaPlan | undefined, returned: AppServerReturnedEvidence): Promise<CodexExecutionResult> {
+    const validator = this.options.completedGoalOutputValidator;
+    if (validator !== undefined && schemaPlan === undefined) {
+      throw new Error("codex_goal_output_validator_requires_schema");
+    }
     this.options.childBudget?.remainingMs();
     const slot = await this.slotPool.ensureSlot(input);
     this.executionLifetime?.assertActive(input.abortSignal);
@@ -392,6 +400,14 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ? await slot.goalRunner.runGoal({
           ...common,
           redactor: input.redactor,
+          ...(validator === undefined ? {} : {
+            validateCompletedOutput: async (outputText: string, context: { runId: string; turnNumber: number }) => {
+              const normalized = normalizeCodexStructuredOutput(schemaPlan!, parseStructuredOutput(outputText));
+              if (await validator(normalized, context) !== true) {
+                throw new Error("codex_goal_completed_output_rejected");
+              }
+            },
+          }),
           maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
           goalContinuePrompt:
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,

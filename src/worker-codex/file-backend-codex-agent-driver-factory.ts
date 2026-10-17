@@ -264,6 +264,7 @@ export function createFixedCodexAgentDriver(input: {
             : options.cleanThreadPrewarm ?? true,
           goalMode: executionEngine === "app-server-goal",
           ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
+          ...(options.completedGoalOutputValidator ? { completedGoalOutputValidator: options.completedGoalOutputValidator } : {}),
           ...(options.maxGoalTurns === undefined
             ? {}
             : { maxGoalTurns: options.maxGoalTurns }),
