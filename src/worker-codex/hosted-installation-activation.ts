@@ -54,6 +54,7 @@ import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host"
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
 import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
+import { assertInstallationSelectionTransition } from "./hosted-installation-selection-transition";
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
  * caller records and stop requests never substitute for those proofs. */
@@ -139,6 +140,7 @@ export class HostedInstallationActivationStore {
     const prior = this.readCommitted(fence);
     assertHostedActivationSuccessor(prior,next,authority ? OriginalHostedOrdinaryProviderTerminal.hasBrand(authority) ?
       readOriginalHostedOrdinaryProviderTerminal(authority,fence) : scopedOrdinaryAuthority(authority) : undefined);
+    assertInstallationSelectionTransition(prior, next); // a selection change is re-validated here, also when recovering
     this.#persist(fence,next,recovering,authority!==undefined);
   }
 

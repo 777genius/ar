@@ -83,6 +83,17 @@ See `docs/runtime-ddd-feature-architecture.md` for the balanced strict DDD,
 Clean Architecture and feature-slice rules for complex runtime features such as
 project-scoped control and policy-controlled integration rights.
 
+### Retained nonqualified attempt disposition
+
+Project Control also exposes a narrow root-admin adapter that retains custody of a
+stopped original attempt whose terminal result is absent or genuinely failed, as a
+dedicated `retained_nonqualified` terminal disposition with an immutable receipt.
+It claims no approval, stop, result, output or qualification and authorizes no
+replay; admission honors it only while the exact retained originals are unchanged.
+See [retained-nonqualified-attempt.md](retained-nonqualified-attempt.md). It adds no
+module boundary, SPI, graph node or runtime routing; the shared part is a small
+receipt validator next to the terminal-output contract.
+
 ### Approved output archive disposition
 
 Project Control exposes a narrow root-admin adapter for recoverable archival of an obsolete approved output through its existing terminal ledger and evidence custody. Original approval and source remain intact; archived does not mean integrated or rejected. See [the owning operation documentation](published-output-reconciliation.md#retain-an-obsolete-approved-output). No new module boundary, shared contract, graph node, schema migration or runtime routing is introduced.

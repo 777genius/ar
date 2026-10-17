@@ -65,6 +65,10 @@ No installed runtime is changed by this delivery. Deploy separately with retaine
 custom patch inventory, exact artifact qualification and rollback pins. Merging
 and synthetic TEST evidence alone do not establish that a live incident cleared.
 
+For a stopped attempt with no approved output (absent or failed terminal result),
+see [retained-nonqualified-attempt.md](retained-nonqualified-attempt.md); it is a
+separate operation and leaves the archive guards below unchanged.
+
 ## Retain an obsolete approved output
 
 `codex_goal_project_archive_reviewed_output` is a bounded root-admin adapter in

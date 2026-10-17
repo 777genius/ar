@@ -615,7 +615,11 @@ Reference: `agent-teams-ai/get-modular` at
 document SHA-256
 `ea54578ebe69fc410bf973b6112dcefc4ad7c163e563e0ee307cd7b5f8b8723d`.
 The local copy is evidence, not an independent source of authority. No upstream
-path or accepting ADR identity is inferred from the copy.
+path or accepting ADR identity is inferred from the copy. This is a historical
+checkpoint: the current reference (`4728b276b87378ca9d72a7be2b89a5fd49b97eea`,
+complete SHA-256 `859fbca1e8a0c61b6ae873bea0057735a55b80230100e6e73a74de22e123165a`)
+and the deltas since `6b31f20f` and `d6127e2d` are recorded in
+`retained-nonqualified-attempt.md`.
 
 Searched tracked docs, source, scripts and package metadata for Get Modular,
 Assembly, consumer-module/adoption references and the supplied pins. No existing

@@ -23,6 +23,7 @@ const installationCases = new Set([
 ]);
 const expectedFiles = new Set([
   resolve('src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts'),
+  resolve('src/worker-codex/tests/codex-goal-mcp-project-retained-nonqualified.test.ts'),
   resolve('src/worker-codex/tests/hosted-readonly-custody-record-once.test.ts'),
   resolve('src/worker-codex/tests/codex-goal-sdk-standalone-workspace.test.ts'),
   installationFile,

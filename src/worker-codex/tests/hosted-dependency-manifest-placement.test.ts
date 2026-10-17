@@ -71,6 +71,8 @@ vi.mock("../hosted-readonly-host-kernel", () => ({ readHostedReadonlyHostInvento
   } }));
 vi.mock("../../provider-codex/app-server/adapters/hosted-process-activation", () => ({
   assertHostedActivationOperator() {}, assertHostedActivationFence(fence: unknown) { if (fence !== fixture.fence) throw new Error("TEST unheld fence"); },
+  // These fixtures install the ORIGINAL fixed records (no successor selection), which is what the real resolver returns for them.
+  selectedHostedInstallationRecordName: (name: string) => name,
 }));
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");

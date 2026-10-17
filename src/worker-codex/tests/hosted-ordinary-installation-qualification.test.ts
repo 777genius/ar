@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertQualifiedPairForPublication, QualificationChild, QualificationClock, type QualifiedOrdinaryLauncherPair } from "../hosted-ordinary-installation-qualification";
+import { admitQualificationSourceFiles, assertQualifiedPairForPublication, qualificationRequiredArtifacts, qualificationSha, QualificationChild, QualificationClock,
+  type QualifiedOrdinaryLauncherPair } from "../hosted-ordinary-installation-qualification";
 import type { OrdinaryInstallationOperation } from "../hosted-ordinary-installation-owned";
 
 // Isolate private result membership from Linux funding admission. No positive
@@ -13,6 +14,30 @@ const operation = (): OrdinaryInstallationOperation => Object.freeze({ operation
   operationSha256: "a".repeat(64), workEndEpochMs: Date.now() + 10000, cleanupEndEpochMs: Date.now() + 20000 });
 const issued = () => ({ issuedEpochMs: Date.now(), issuedMonotonicNs: String(process.hrtime.bigint()) });
 afterEach(() => { vi.restoreAllMocks(); });
+// BINDING tests for the finite closed-source manifest (real `admitQualificationSourceFiles` loop, digest and required list). Only the
+// file reader is an in-memory stand-in: root ownership and TOCTOU checks of `qualificationRead` are NOT exercised here. The required
+// surface is derived from the producer list, never copied, so a module added to it is covered automatically.
+describe("ordinary qualification finite source manifest", () => {
+  const bytesOf = (path: string) => Buffer.from("built:" + path);
+  const packet = (omit?: string) => ({ schemaVersion: 1, files: qualificationRequiredArtifacts.filter(path => path !== omit)
+    .map(path => ({ path, sha256: qualificationSha(bytesOf(path)) })) });
+  const admit = (parsed: unknown, read: (path: string) => Buffer = bytesOf) => admitQualificationSourceFiles(parsed, read);
+  const historyBuilt = "dist/worker-codex/hosted-ordinary-installation-history.js";
+  it("admits a valid packet that lists the exact history and successor built paths with matching digests", () => {
+    expect(qualificationRequiredArtifacts).toEqual(expect.arrayContaining([historyBuilt, "dist/core/host-infrastructure/host-installation-successor.js"]));
+    expect(() => admit(packet())).not.toThrow();
+  });
+  it.each(qualificationRequiredArtifacts.map(path => [path]))("refuses a packet missing only required %s", path => {
+    expect(() => admit(packet(path))).toThrow("ordinary_launcher_qualification_held");
+  });
+  it("refuses wrong history bytes through the existing digest validation", () => {
+    expect(() => admit(packet(), path => path === historyBuilt ? Buffer.from("tampered") : bytesOf(path))).toThrow("ordinary_launcher_qualification_held");
+  });
+  it("refuses a duplicated path in an otherwise valid packet", () => {
+    const valid = packet();
+    expect(() => admit({ ...valid, files: [...valid.files, valid.files[0]] })).toThrow("ordinary_launcher_qualification_held");
+  });
+});
 describe("ordinary qualification private membership and original deadlines", () => {
   // A public DTO constructor or receipt re-import would make these cases green.
   it.each([Object.freeze({ kind: "ordinary_launcher_pair" }), JSON.parse('{"kind":"ordinary_launcher_pair"}'),
