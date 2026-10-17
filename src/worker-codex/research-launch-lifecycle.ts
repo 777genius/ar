@@ -1,5 +1,5 @@
 import { settleResearchMimoCapacityRecovery } from "./research-mimo-capacity-recovery";
-import { handoffPreservationBudget, handoffPreservationRefusalReason, type HandoffPreservationRefusalReason } from "./codex-goal-handoff-preservation-budget";
+import { handoffPreservationBudget, handoffPreservationRefusalReason, MimoPreservationRefused, type HandoffPreservationRefusalReason } from "./codex-goal-handoff-preservation-budget";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -330,6 +330,9 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       assertQualifiedResearchRuntimeArtifact(current.spec.runtimeDirectory, current.spec.artifactSha256);
       await guard(); assertQualifiedResearchRuntimeArtifact(producer, producerSha);
       if (!previous) researchPublish(path, refusal, true);
+      // A terminal repair stays fail-closed on refusal: original bytes and writer
+      // authority remain the record, so no result publishes and nothing releases.
+      if (terminalRepair) throw new MimoPreservationRefused(reason);
       // Terminal refusal: the receipt is the output proof and the workspace stays the copy of record,
       // so a result publishes without a packet and the reservation still releases below, last.
       outcome = { refused: { reason, receiptSha256: researchHash(researchRead(path)) } };
