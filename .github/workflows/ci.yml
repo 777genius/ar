@@ -88,7 +88,8 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm run typecheck:ci-tools
-      - run: npm run test:ci-tools
+      # test:ci-tools asserts the public mirror's workflow shape (it requires
+      # publish workflows to be absent); that suite runs in the public repo.
       - run: npm run check:dist
       - run: npm run check:boundaries
 
