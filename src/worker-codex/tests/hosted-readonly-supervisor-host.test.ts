@@ -1,7 +1,7 @@
 import * as readonlyKernel from "../hosted-readonly-host-kernel";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { HostedCustodyPhase, HostedCustodyRequirement, HostedCustodyReservationState,
   parseHostedCustodyEpoch, type HostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
