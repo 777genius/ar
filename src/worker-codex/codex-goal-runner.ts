@@ -446,7 +446,14 @@ async function runCodexGoalAdmitted(
       ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
-    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); return result; }
+    if (ownedMimoLifecycle) {
+      // Deferred result publication may lag (or never run); the progress file
+      // must still show the terminal state instead of a stale "running".
+      await progressHeartbeat.stop();
+      await progressHeartbeat.write(progressFromResult(result));
+      ownedMimoLifecycle.stage(resultInput);
+      return result;
+    }
     await resultRecorder.record(resultInput);
     await progressHeartbeat.write(progressFromResult(result));
     await runtimeEvents.write("executor_finished", {
@@ -466,7 +473,15 @@ async function runCodexGoalAdmitted(
       ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
-    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); throw error; }
+    if (ownedMimoLifecycle) {
+      await progressHeartbeat.stop();
+      await progressHeartbeat.write({
+        status: "failed",
+        reason: failure.reason,
+      });
+      ownedMimoLifecycle.stage(resultInput);
+      throw error;
+    }
     await resultRecorder.record(resultInput);
     await progressHeartbeat.write({
       status: "failed",

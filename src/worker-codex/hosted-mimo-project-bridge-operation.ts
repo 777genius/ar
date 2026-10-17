@@ -97,6 +97,19 @@ export function operationFailure(error: unknown, operation?: MimoProjectBridgeOp
   if (error.message === "hosted_research_launch_denied" && isResearchDenialObservation(error.cause)) return { ok: false, error: code, cause: error.cause };
   return { ok: false, error: code };
 }
+/** Root-cause diagnostics go to the journal as one bounded stderr line; the
+ * published envelope keeps its exact `{ ok, error }` shape and never carries text.
+ * Only closed fields cross the boundary: the free-text message may carry private
+ * causes (paths, provider payloads) and is never written. */
+export function logHostedMimoOperationFailure(error: unknown, code: string): void {
+  try {
+    const rawName = error instanceof Error ? error.name : typeof error;
+    const name = /^[A-Za-z][A-Za-z0-9_]{0,59}$/.test(rawName) ? rawName : "unknown";
+    process.stderr.write(`mimo_project_bridge_failure code=${code} name=${name}\n`);
+  } catch {
+    // Diagnostics must never affect the operation outcome.
+  }
+}
 function canonical(request: MimoProjectBridgeRequest): string {
   return JSON.stringify(Object.fromEntries(Object.entries(request).sort(([a], [b]) => a.localeCompare(b))));
 }
@@ -259,7 +272,19 @@ export async function submitHostedMimoProjectBridge(value: unknown): Promise<unk
   // unit or a routed runtime, and therefore without opening any workspace.
   const retired = retiredWorkstreamBridgeAnswer(binding.stateRoot, request.jobId, isStatusOrStop(request));
   if (retired) return retired;
-  return withHostedMimoWorkstreamActivity(binding.stateRoot, () => submitHostedMimoProjectBridgeUnfenced(value));
+  return withHostedMimoWorkstreamActivity(binding.stateRoot, async () => {
+    try {
+      return await submitHostedMimoProjectBridgeUnfenced(value);
+    } catch (error) {
+      // Only "pending" refusals are thrown before any file is written, so a
+      // single bounded retry closes a transient overlap without replaying
+      // anything. Every other refusal may already reflect effects and stands.
+      const code = operationErrorCode(error);
+      if (code !== "mimo_project_bridge_creation_pending" && code !== "mimo_project_bridge_control_pending") throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return await submitHostedMimoProjectBridgeUnfenced(value);
+    }
+  });
 }
 const isStatusOrStop = (request: MimoProjectBridgeRequest): boolean =>
   request.operation === MimoProjectBridgeOperation.Status || request.operation === MimoProjectBridgeOperation.Stop;
@@ -447,13 +472,15 @@ async function executeHostedMimoProjectBridgeOperationUnfenced(requestPath: stri
   }
   catch (error) {
     result = operationFailure(error, request.operation);
+    logHostedMimoOperationFailure(error, (result as { error: string }).error!);
     serialized = JSON.stringify(result) + "\n";
   }
   // Publication failures remain uncertain; never replace them with a failure
   // envelope or replay a handler whose effects may already have happened.
   publishHostedMimoProjectOperationResult(current, serialized, () => {});
-  // The owned unit's journal carries the closed fields of a failure and no error text. It is
-  // written only once the result is durable, and a diagnostic failure cannot replace that result.
+  // The owned unit's journal stdout line carries the closed fields of a failure and no error
+  // text; the bounded root-cause diagnostic is a separate stderr line. The stdout line is
+  // written only once the result is durable, and a diagnostic failure cannot replace it.
   const settled = result as { ok: boolean; error?: string; cause?: string };
   if (!settled.ok) try { process.stdout.write(JSON.stringify({ operation: request.operation, ok: false, error: settled.error,
     ...(settled.cause === undefined ? {} : { cause: settled.cause }) }) + "\n"); } catch { /* Diagnostics never replace the published result. */ }

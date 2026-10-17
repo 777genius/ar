@@ -134,6 +134,17 @@ export function classifyCodexRuntimeFailure(message: string): string {
   if (normalized.includes("codex_app_server_goal_max_turns_exceeded")) {
     return "goal_slice_exhausted";
   }
+  // Credential-proxy upstream failures carry the upstream status. Quota (429)
+  // is already matched above; 401/403 mean the account credentials are dead.
+  const proxyUpstreamStatus = codexProxyUpstreamStatus(normalized);
+  if (proxyUpstreamStatus !== undefined) {
+    return proxyUpstreamStatus === 401 || proxyUpstreamStatus === 403
+      ? "provider_session_invalid"
+      : "needs_reconnect";
+  }
+  if (isCodexNetworkTransportFailure(normalized)) {
+    return "needs_reconnect";
+  }
   if (
     isCodexInvalidatedAuthFailure(normalized) ||
     isCodexInvalidAuthJsonFailure(normalized)
@@ -164,6 +175,33 @@ function isCodexBudgetExceededFailure(normalizedMessage: string): boolean {
     normalizedMessage.includes("sessionbudgetexceeded") ||
     normalizedMessage.includes("session_budget_exceeded") ||
     normalizedMessage.includes("session budget exceeded")
+  );
+}
+
+function codexProxyUpstreamStatus(
+  normalizedMessage: string,
+): number | undefined {
+  if (!normalizedMessage.includes("proxy_upstream_failed")) return undefined;
+  const match = /upstream_status"?\s*:\s*(\d{3})/.exec(normalizedMessage);
+  // No upstream status means the proxy itself failed to reach upstream.
+  return match ? Number(match[1]) : 503;
+}
+
+function isCodexNetworkTransportFailure(
+  normalizedMessage: string,
+): boolean {
+  return (
+    normalizedMessage.includes("waiting for network") ||
+    normalizedMessage.includes("reconnecting") ||
+    normalizedMessage.includes("econnreset") ||
+    normalizedMessage.includes("econnrefused") ||
+    normalizedMessage.includes("etimedout") ||
+    normalizedMessage.includes("eai_again") ||
+    normalizedMessage.includes("socket hang up") ||
+    normalizedMessage.includes("other side closed") ||
+    normalizedMessage.includes("fetch failed") ||
+    normalizedMessage.includes("network error") ||
+    normalizedMessage.includes("und_err")
   );
 }
 
@@ -232,7 +270,7 @@ function isCodexQuotaOrRateLimitFailure(normalizedMessage: string): boolean {
     /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
       normalizedMessage,
     ) ||
-    /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(
+    /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?:[_ -]?(?:reached|exceeded))?|limit reached)\b/.test(
       normalizedMessage,
     ) ||
     /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(

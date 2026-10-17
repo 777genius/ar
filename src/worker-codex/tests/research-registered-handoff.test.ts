@@ -863,7 +863,7 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
     const config = researchRunConfig(r);
     expect(config).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
       executionEngine: "app-server", workerReportMode: "structured-output", maxGoalTurns: 64,
-      maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 0,
+      maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 3,
       accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
       safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled", retryOnCapacity: false,
         retryOnAccountUnavailable: false, retryOnReconnectRequired: false } });
