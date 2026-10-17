@@ -31,6 +31,14 @@ const genericFixtures: readonly (readonly [string, string])[] = [
   [
     "packages/contexts/agent-execution/tests/features/contained-agent-turn/docker-native-start-diagnostic.test.ts",
     "5954485c8e6787b67061721c6b0128b3bb51cb825860ff0cfb05857ec311e233"
+  ],
+  [
+    "src/provider-codex/tests/codex-session-materializer.test.ts",
+    "b2cee877c7c98888c220a5c6d5c356568708870d7bc5a2181de6d9b36ded6c84"
+  ],
+  [
+    "src/provider-codex/tests/codex-session-materializer.test.ts",
+    "fb63872586eea8086d4136ee772120fbda3dc651ad073703631a8ec3b02ca2d7"
   ]
 ];
 
