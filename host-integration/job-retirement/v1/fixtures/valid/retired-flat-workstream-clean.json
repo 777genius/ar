@@ -1,0 +1,31 @@
+{
+  "schema": "subscription-runtime-retired-job",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "layout": "flat-workstream",
+  "registryRootDir": "/srv/worker-state/jobs/review-router/registry",
+  "jobId": "review-router-job-7",
+  "role": "worker",
+  "manifestSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "closedSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "terminal": {
+    "kind": "runner-disposed",
+    "eventsPath": "/srv/worker-state/jobs/review-router/jobs/review-router-job-7/review-router-job-7.events.jsonl",
+    "lastEventSha256": "4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "output": {
+    "kind": "clean",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "workspace": {
+    "path": "/srv/workers/jobs/review-router/worktrees/review-router-job-7",
+    "device": 2049,
+    "inode": 524290
+  },
+  "deletion": {
+    "scope": "workspace"
+  },
+  "pins": [],
+  "retiredAt": "2026-10-16T12:00:01.000Z"
+}

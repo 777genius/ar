@@ -1,4 +1,5 @@
 import { isProjectMimoWorkerLaunch } from "./project-mimo-worker-launch";
+import { jobRetirementAnswer, observeJobRetirement } from "./job-retirement/job-retirement-records";
 import { codexGoalProgressPath } from "./codex-goal-runner";
 import {
   buildCodexGoalStopTmuxCommand,
@@ -18,7 +19,7 @@ import { codexGoalStateRootDir } from "./application/codex-goal-worker-control";
 import { codexGoalStatusInputFromLaunch as statusInput } from
   "./codex-goal-mcp-status-input";
 import { requiredRawString } from "./codex-goal-mcp-values";
-import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
+import { registryRootFromArgs, type ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import { releaseCodexProjectAccount } from
   "./application/project-control/codex-goal-project-account-reservation";
 import { decideCodexGoalProjectStop } from
@@ -36,11 +37,13 @@ export async function projectControlStopStoredJobView(
   args: ProjectControlMcpArgs,
   deps: CodexGoalMcpProjectControlActionsDeps,
 ): Promise<JsonObject> {
+  const jobId = requiredRawString(args.jobId, "jobId");
+  // Stop of a retired job is a read: its records answer, before the controller
+  // (which a retired MiMo workstream closes too) or the workspace is opened.
+  const retirement = observeJobRetirement(registryRootFromArgs(args), jobId);
+  if (retirement) return { ok: true, mode: "project_control_stop", controllerJobId: args.controllerJobId, jobId, ...jobRetirementAnswer(retirement) };
   const controller = await deps.loadProjectControlController(args);
-  const loaded = await deps.loadJobLaunch({
-    registryRootDir: controller.registryRootDir,
-    jobId: requiredRawString(args.jobId, "jobId"),
-  });
+  const loaded = await deps.loadJobLaunch({ registryRootDir: controller.registryRootDir, jobId });
   const status = await collectCodexGoalStatus(statusInput(loaded.launch));
   const accounts = await listCodexGoalAccountStatuses({
     authRootDir: loaded.launch.config.authRootDir,

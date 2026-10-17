@@ -96,6 +96,29 @@ test("invalid mount and independent volume pressure reject before mutation", asy
   assert.ok(resolveHostScratchTempRoot("/jobs/a", atFloor.host));
 });
 
+// An opted-in host raises the floor; a host without the section keeps 5 GiB.
+test("capacity section sets the free-space floor and rejects invalid floors", async () => {
+  const tenGiB = () => ({ bavail: 10 * 1024 ** 3, bsize: 1 });
+  const legacy = fixture(); legacy.host.statfs = tenGiB;
+  assert.ok(resolveHostScratchTempRoot("/jobs/a", legacy.host));
+  const opted = fixture(); opted.host.statfs = tenGiB;
+  opted.setConfig({ schemaVersion: 1, root, uuid, capacity: {} });
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, opted.host), (error: unknown) => {
+    assert.ok(error instanceof Error); assert.match(error.message, /at least 50 GiB available on \//);
+    assert.deepEqual(normalizeResearchMaterialFailure(error).scratchCapacity,
+      { volumeRole: ScratchCapacityVolumeRole.RootControl, availableBytes: 10 * 1024 ** 3, requiredBytes: 50 * 1024 ** 3 });
+    return true;
+  });
+  assert.deepEqual(opted.mutations, []);
+  const explicit = fixture(); explicit.host.statfs = tenGiB;
+  explicit.setConfig({ schemaVersion: 1, root, uuid, capacity: { minimumFreeBytes: 8 * 1024 ** 3 } });
+  assert.ok(resolveHostScratchTempRoot("/jobs/a", explicit.host));
+  for (const capacity of [{ minimumFreeBytes: 4 * 1024 ** 3 }, { minimumFreeBytes: 1.5 }, { minimumFreeBytes: "50GiB" }, { floor: 1 }, [], null]) {
+    const invalid = fixture(); invalid.setConfig({ schemaVersion: 1, root, uuid, capacity });
+    assert.throws(() => resolveHostScratchTempRoot("/jobs/a", invalid.host), /Invalid scratch capacity policy/);
+  }
+});
+
 // Regression: concurrent jobs share mutable temp, or provider logical paths change.
 test("distinct jobs bind distinct sources while retaining logical tmp targets", async () => {
   const f = fixture();

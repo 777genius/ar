@@ -1,3 +1,4 @@
+import { WorkspaceChangedFilesWarning, boundedChangedFiles, boundedChangedFilesNotes } from "./codex-goal-changed-files-report";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import type { CodexGoalAvailabilityFailure } from "./application/codex-goal-availability-failure";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
@@ -144,6 +145,7 @@ export type CodexGoalStatus = {
   readonly workspaceExists?: boolean;
   readonly workspaceDirty?: boolean;
   readonly changedFiles?: readonly string[];
+  readonly changedFilesCount?: number;
   readonly logPath?: string;
   readonly logExists?: boolean;
   readonly logUpdatedAt?: string;
@@ -531,6 +533,7 @@ export async function collectCodexGoalStatus(
     ...(workspace.changedFiles === undefined
       ? {}
       : { changedFiles: workspace.changedFiles }),
+    ...(workspace.changedFilesCount === undefined ? {} : { changedFilesCount: workspace.changedFilesCount }),
     ...(log === undefined ? {} : { logPath: log }),
     ...(logStatus.exists === undefined ? {} : { logExists: logStatus.exists }),
     ...(logStatus.updatedAt === undefined
@@ -648,6 +651,16 @@ export async function collectCodexGoalStatus(
   };
 }
 
+/** The workspace is dirty but its paths cannot be listed; callers that already acted (a stop) report a skipped reconcile. */
+export class CodexGoalChangedFilesUnavailableError extends Error {
+  constructor(readonly warning: WorkspaceChangedFilesWarning) {
+    super(`codex_goal_reconcile_changed_files_unavailable:${warning}`);
+    this.name = "CodexGoalChangedFilesUnavailableError";
+  }
+}
+/** The skipped marker a stop returns instead of failing after the worker has already stopped. */
+export const changedFilesUnavailableReconciliation = Object.freeze({ status: "skipped", reason: "changed_files_unavailable" });
+
 export async function reconcileCodexGoalRuntimeResult(
   input: CodexGoalRuntimeResultReconcileInput,
 ): Promise<CodexGoalRuntimeResultReconcileResult> {
@@ -681,6 +694,11 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     };
   }
 
+  // A listing over the Git read budget is dirty but has no paths: there is nothing to preserve from, and
+  // an empty list must not read as a clean workspace below.
+  if (status.warnings.includes(WorkspaceChangedFilesWarning.OutputLimit)) {
+    throw new CodexGoalChangedFilesUnavailableError(WorkspaceChangedFilesWarning.OutputLimit);
+  }
   const changedFiles = status.changedFiles ?? [];
   if (input.forceWrite && existingStrictResult?.status === "done") {
     return await refreshCompletedCodexGoalResultArtifacts({
@@ -758,6 +776,8 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     reason,
     changedFilesCount: changedFiles.length,
   });
+  // The recorded result is read back through a size limit: it keeps a bounded sample.
+  const reportedChanged = boundedChangedFiles(exactChangedFiles), reportedNotes = boundedChangedFilesNotes(reportedChanged);
   const result = await createCodexGoalResultRecorder({ outputPath,
     terminalCheckpointJobRootDir: input.config.jobRootDir }).record({
     status: runtimeStatus,
@@ -766,9 +786,10 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     taskId: input.config.taskId,
     classification,
     reason,
-    changedFiles: exactChangedFiles,
+    changedFiles: reportedChanged.changedFiles,
     evidence: [
       "supervisor_reconciled_result",
+      ...reportedNotes.evidence,
       ...(status.resultExists === false ? ["latest_result_missing"] : []),
       ...(nonStrictExistingResult
         ? [`latest_result_non_strict:${status.resultStatus ?? "unknown"}`]
@@ -794,6 +815,7 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     ...(artifacts.length === 0 ? {} : { artifacts }),
     details: {
       source: "codex_goal_runtime_result_reconcile",
+      ...reportedNotes.details,
       ...(baseCommit === undefined ? {} : { baseCommit }),
       ...terminalCodexGoalHandoffResultDetails(handoff),
     },

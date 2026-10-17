@@ -16,6 +16,7 @@ import { readHostedMimoProjectOperationOwner, publishHostedMimoProjectOperationR
 import { assertProtectedCodexGoalJobBirthUnpublished, withProtectedCodexGoalJobBirthPublication } from "./protected-job-birth";
 import { researchJobRuntimeNamespaceAbsent } from "./research-job-runtime-provenance";
 import { hostedOrdinaryWriterAuthorityAbsent } from "./hosted-ordinary-writer-authority";
+import { assertNoWorkstreamRetirement } from "./job-retirement/job-retirement-records";
 import { parseWorkerLaunchSpec, parseWorkerLaunchState } from "./application/project-control/worker-launch-spec";
 import { workerLaunchSpecHasOwnershipBoundWorkKey } from "./application/project-control/codex-goal-project-builtin-pre-start-admission";
 
@@ -159,6 +160,7 @@ export async function reconcileHostedMimoInterruptedCreate(planPath: string): Pr
   const preserved = partials(jobRoot, workspace, binding.sourceCommit, plan.jobId), paths = settlementPaths(current);
   const assertBase = () => {
     assertResearchInitialRoot(true); assertResearchSharedHost();
+    assertNoWorkstreamRetirement(stateRoot, "mimo_project_bridge_retirement_pending");
     requireFact(privateBytes(planPath, 65536).equals(planBytes) && privateBytes(bindingPath, 65536).equals(bindingBytes) &&
       privateBytes(current.ownerPath, 65536).equals(current.ownerBytes) && privateBytes(requestPath, 65536).equals(current.requestBytes) &&
       privateBytes(attemptPath, 4096).equals(attemptBytes));

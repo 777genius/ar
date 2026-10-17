@@ -1,0 +1,16 @@
+{
+  "schema": "subscription-runtime-closed-job",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "registryRootDir": "/srv/worker-state/mimo-projects/example-project/main/registry",
+  "jobId": "example-project-main-job-002",
+  "role": "worker",
+  "manifestSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "terminal": {
+    "kind": "never-started",
+    "birth": "released"
+  },
+  "bootId": "0b0a0908-0706-4504-8302-010000000000",
+  "closedAt": "2026-10-16T12:00:00.000Z"
+}

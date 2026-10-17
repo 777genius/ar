@@ -18,9 +18,9 @@ const authorizations = new WeakMap<ResearchProjectLaunchAuthorization, {
 }>();
 const digest = (value: unknown): string => researchHash(JSON.stringify(value));
 async function currentProjectLaunch(binding: Pick<ResearchProjectLaunchBinding, "registryRootDir" | "controllerJobId" | "registeredExecution">,
-  request: ResearchOperatorRequest, preStart = false) {
+  request: ResearchOperatorRequest, preStart = false, readRetired?: true) {
   return await researchProjectLaunchInputs({ registryRootDir: binding.registryRootDir,
-    controllerJobId: binding.controllerJobId, request, preStart,
+    controllerJobId: binding.controllerJobId, request, preStart, ...(readRetired ? { readRetired } : {}),
     ...(binding.registeredExecution ? { execution: binding.registeredExecution } : {}),
     bindSupportedRequest: ({ manifest, launch }, controller) => {
       assertMimoProjectResearchExecutionSupported({ registryRootDir: binding.registryRootDir,
@@ -55,10 +55,11 @@ export async function authorizeResearchProjectLaunch(input: {
     return authorization;
   } });
 }
+/** `readRetired` is for the read-only writer observation only. */
 export async function assertResearchProjectLaunchBindingCurrent(binding: ResearchProjectLaunchBinding,
-  request: ResearchOperatorRequest, assertRoot: () => void = assertResearchInitialRoot): Promise<() => void> {
+  request: ResearchOperatorRequest, assertRoot: () => void = assertResearchInitialRoot, readRetired?: true): Promise<() => void> {
   assertRoot();
-  const current = await currentProjectLaunch(binding, request);
+  const current = await currentProjectLaunch(binding, request, false, readRetired);
   if (digest(current.binding) !== digest(binding)) researchInvalid();
   assertRoot();
   current.assertAuthorityBytes();

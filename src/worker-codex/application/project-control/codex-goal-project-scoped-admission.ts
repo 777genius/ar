@@ -12,6 +12,7 @@ import {
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
 import { historicalDebtIsPhysicallyUnrelated } from "./codex-goal-project-historical-debt-scope";
+import { observeJobRetirement } from "../../job-retirement/job-retirement-records";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from "../../codex-goal-jobs";
 import { optionalRealPathForAdmission, prospectiveAdmissionResourcePath, prospectiveAdmissionResourceBacking } from "./codex-goal-project-admission-paths";
 import {
@@ -46,6 +47,11 @@ export type CodexProjectScopedAdmissionInput = {
 };
 
 const MAX_BACKLOG_PREVIEW = 3;
+/** A closed or retired job is proven terminal by its records, and its pins and
+ * workspace may already be gone: it holds no writer. Doubt stays unknown. */
+function retirementReleased(registryRootDir: string, jobId: string): boolean {
+  try { return observeJobRetirement(registryRootDir, jobId) !== undefined; } catch { return false; }
+}
 
 export async function prepareCodexProjectScopedAdmission(
   input: CodexProjectScopedAdmissionInput,
@@ -112,6 +118,7 @@ export async function prepareCodexProjectScopedAdmission(
       try {
         const current = await input.deps.readJob({ registryRootDir: input.registryRootDir, jobId: entry.jobId });
         if (!isDeepStrictEqual(current, entry.manifest)) return false;
+        if (retirementReleased(input.registryRootDir, entry.jobId)) return entry.authority === "released";
         const observed = await input.deps.readWriterWritableRoots(current);
         return observed.status === entry.authority && (observed.status === "released" ||
           observed.status === "allocated" && isDeepStrictEqual(observed.roots, entry.writableRoots));
@@ -241,6 +248,10 @@ async function collectWriterCensus(
         });
         continue;
       }
+    }
+    if (manifest && retirementReleased(input.registryRootDir, summary.jobId)) {
+      entries.push({ manifest, jobId: summary.jobId, workspacePath: summary.workspacePath, authority: "released" });
+      continue;
     }
     const canonicalWorkspacePath = await optionalRealPathForAdmission(
       summary.workspacePath,

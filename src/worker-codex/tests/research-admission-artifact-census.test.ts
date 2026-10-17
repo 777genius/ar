@@ -1,4 +1,4 @@
-import { host, local, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
+import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -11,6 +11,9 @@ import { prepareOriginalNativeWriterObservation } from "../research-writer-obser
 import * as writers from "../research-writer-observation";
 import * as provenance from "../research-job-runtime-provenance";
 import * as files from "../research-launch-files";
+import { parseResearchOperatorRequest, parseResearchStartSpec } from "../research-launch-contract";
+import { researchJobAuthority } from "../research-launch-admission";
+import { assertQualifiedResearchRuntimeArtifact } from "../research-runtime-artifact";
 
 const nativeFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 beforeEach(() => setupResearchFixture({ allocationParent: nativeFs.realpathSync(tmpdir()) }));
@@ -42,6 +45,8 @@ describe("inert original-runtime admission preparation census", () => {
     const current = vi.fn();
     vi.spyOn(provenance, "researchForeignWriterRuntimeProvenance").mockImplementation(manifest => {
       const index = Number(manifest.jobId.at(-1)) % 2;
+      // Match the source resolver contract: provenance is already qualified.
+      assertQualifiedResearchRuntimeArtifact(originals[index]!, digests[index]!);
       return { runtimeDirectory: originals[index]!, artifactSha256: digests[index]!, assertCurrent: current };
     });
     const traversals = [0, 0], readdir = fs.readdirSync;
@@ -73,10 +78,10 @@ describe("inert original-runtime admission preparation census", () => {
       }, { createWriterObservationPreparer: begin }) });
     await gate.prepare!({ operation: ProjectOperation.CreateJob });
     expect(prepared.size).toBe(3); expect(readers.size).toBe(3);
-    expect(traversals).toEqual([4, 3]); expect(imports).toHaveBeenCalledTimes(2);
+    expect(traversals).toEqual([5, 3]); expect(imports).toHaveBeenCalledTimes(2);
     expect(begin).toHaveBeenCalledTimes(1);
     for (const manifest of jobs) expect(await prepared.get(manifest.jobId)!()).toEqual({ status: "released" });
-    expect(traversals).toEqual([8, 5]);
+    expect(traversals).toEqual([9, 5]);
     // A retained reader is not an authority cache: changed executable bytes
     // refuse before calling the old terminal reader again.
     const read = vi.mocked(readers.get(jobs[0]!.jobId)!);
@@ -90,6 +95,49 @@ describe("inert original-runtime admission preparation census", () => {
     expect(readers.size).toBe(3);
   });
 
+  it("qualifies actual protected foreign provenance before its first import and on a warm preparation", async () => {
+    const platform = process.platform; Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      const directory = "/opt/subscription-runtime/releases/" + "e".repeat(40);
+      for (const name of ["dist", "host-integration", "node_modules"]) fs.mkdirSync(join(directory, name), { recursive: true, mode: 0o700 });
+      const executable = join(directory, "dist/TEST.js");
+      fs.writeFileSync(join(directory, "package.json"), '{"type":"module"}', { mode: 0o600 });
+      fs.writeFileSync(executable, "TEST original", { mode: 0o600 });
+      const selected = parseResearchOperatorRequest({ ...request(), durableHandoffRootDir: "/TEST-project/registry/durable-handoffs" });
+      const startId = "11111111-1111-1111-1111-111111111111", authority = researchJobAuthority(selected.jobId);
+      const startDirectory = join(authority, "starts", startId), grant = Buffer.from("TEST opaque retained grant bytes");
+      const hash = "a".repeat(64);
+      const spec = parseResearchStartSpec({ schemaVersion: 1, startId, runtimeDirectory: directory,
+        artifactSha256: files.researchArtifactDigest(directory), grantSha256: files.researchHash(grant), request: selected,
+        requestSha256: hash, nodeSha256: hash, codexSha256: hash, unit: `subscription-runtime-research-${startId}.service`,
+        jobDirectory: { path: selected.jobRootDir, device: 1, inode: 1 }, workspaceDirectory: { path: selected.workspacePath, device: 1, inode: 2 },
+        registeredHandoff: { registryRootDir: "/TEST-project/registry", controllerJobId: "TEST-controller", manifestSha256: hash,
+          scopeSha256: hash, receiptSha256: hash, requestSha256: files.researchHash(JSON.stringify(selected)),
+          durableDirectory: { path: selected.durableHandoffRootDir, device: 1, inode: 3, mountId: 1,
+            mountDevice: "0:1", mountRoot: "/", mountPoint: "/", filesystemUuid: "a".repeat(8) } } });
+      fs.mkdirSync(startDirectory, { recursive: true, mode: 0o700 });
+      const bytes = JSON.stringify(spec);
+      fs.writeFileSync(join(authority, "grant.json"), grant, { mode: 0o600 });
+      fs.writeFileSync(join(startDirectory, "spec.json"), bytes, { mode: 0o600 });
+      const slot = JSON.stringify({ schemaVersion: 1, startId, specSha256: files.researchHash(bytes) });
+      fs.writeFileSync(join(authority, "active.json"), slot, { mode: 0o600 });
+      const manifest: CodexGoalJobManifest = { ...selected, createdAt: "2026-10-14T00:00:00Z", updatedAt: "2026-10-14T00:00:00Z" };
+      const reader = vi.fn(async () => ({ status: "released" as const })), nativePrepare = vi.fn(async () => reader);
+      const load = vi.fn(async () => ({ prepareResearchJobWriterObservation: nativePrepare }));
+      const prepare = writers.createResearchJobWriterObservationPreparer(load);
+      // No provenance/qualifier substitution: only the old module reader is a fixture.
+      const cold = await prepare(manifest); expect(await cold()).toEqual({ status: "released" });
+      expect(load).toHaveBeenCalledTimes(1);
+      fs.writeFileSync(executable, "TEST changed", { mode: 0o600 });
+      const warm = await prepare(manifest); expect(await warm()).toEqual({ status: "unknown" });
+      expect(nativePrepare).toHaveBeenCalledTimes(1); expect(load).toHaveBeenCalledTimes(1);
+      expect(await cold()).toEqual({ status: "unknown" });
+      fs.writeFileSync(executable, "TEST original", { mode: 0o600 });
+      fs.writeFileSync(join(authority, "active.json"), slot + " ", { mode: 0o600 });
+      expect(await cold()).toEqual({ status: "unknown" });
+    } finally { Object.defineProperty(process, "platform", { value: platform }); }
+  });
+
   function foreignFixture() {
     const directory = "/opt/subscription-runtime/releases/" + "f".repeat(40);
     for (const name of ["dist", "host-integration", "node_modules"]) fs.mkdirSync(join(directory, name), { recursive: true, mode: 0o700 });
@@ -97,9 +145,10 @@ describe("inert original-runtime admission preparation census", () => {
     const file = join(directory, "dist/TEST.js"); fs.writeFileSync(file, "TEST initial", { mode: 0o600 });
     let artifactSha256 = files.researchArtifactDigest(directory);
     const current = vi.fn();
-    vi.spyOn(provenance, "researchForeignWriterRuntimeProvenance").mockImplementation(() => ({
-      runtimeDirectory: directory, artifactSha256, assertCurrent: current,
-    }));
+    vi.spyOn(provenance, "researchForeignWriterRuntimeProvenance").mockImplementation(() => {
+      assertQualifiedResearchRuntimeArtifact(directory, artifactSha256);
+      return { runtimeDirectory: directory, artifactSha256, assertCurrent: current };
+    });
     const manifest = (index: number): CodexGoalJobManifest => ({ schemaVersion: 1, jobId: "TEST-bound-" + index,
       taskId: "TEST-bound-" + index, jobRootDir: "/TEST-project/jobs/TEST-bound-" + index,
       workspacePath: "/TEST-project/workspaces/TEST-bound-" + index, promptPath: "/TEST-project/jobs/TEST-bound-" + index + "/prompt.md",

@@ -1,0 +1,47 @@
+{
+  "schema": "subscription-runtime-retired-job",
+  "schemaVersion": 1,
+  "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "runtimeRelease": "/opt/subscription-runtime/releases/ffffffffffffffffffffffffffffffffffffffff",
+  "layout": "project-workstream",
+  "registryRootDir": "/srv/worker-state/jobs/example-project/main/registry",
+  "jobId": "example-project-main-job-001",
+  "role": "worker",
+  "manifestSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "closedSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "terminal": {
+    "kind": "native-released",
+    "startId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+    "specSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "lastTerminalSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "output": {
+    "kind": "handoff",
+    "packetPath": "/srv/worker-state/jobs/example-project/main/registry/durable-handoffs/example-project-main-job-001.7777777777777777777777777777777777777777777777777777777777777777.packet",
+    "manifestSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+    "head": "9999999999999999999999999999999999999999"
+  },
+  "workspace": {
+    "path": "/srv/workers/jobs/example-project/mainline/ws",
+    "device": 2049,
+    "inode": 131074
+  },
+  "deletion": {
+    "scope": "workspace"
+  },
+  "pins": [
+    {
+      "path": "/run/user/subscription-runtime-research-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/starts/0f0e0d0c-0b0a-4908-8706-050403020100/pins/job",
+      "action": "unmounted"
+    },
+    {
+      "path": "/run/user/subscription-runtime-research-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/starts/0f0e0d0c-0b0a-4908-8706-050403020100/pins/workspace",
+      "action": "unmounted"
+    },
+    {
+      "path": "/run/user/subscription-runtime-research-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/starts/0f0e0d0c-0b0a-4908-8706-050403020100/pins/durable-handoff",
+      "action": "unmounted"
+    }
+  ],
+  "retiredAt": "2026-10-16T12:00:01.000Z"
+}
