@@ -1,5 +1,5 @@
 import { settleResearchMimoCapacityRecovery } from "./research-mimo-capacity-recovery";
-import { handoffPreservationBudget, handoffPreservationRefusalReason, MimoPreservationRefused } from "./codex-goal-handoff-preservation-budget";
+import { handoffPreservationBudget, handoffPreservationRefusalReason, MimoPreservationRefused, type HandoffPreservationRefusalReason } from "./codex-goal-handoff-preservation-budget";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -309,10 +309,11 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
     if (released) researchInvalid();
     const workspace = await changedFilesFromWorkspace(current.spec.request.workspacePath, true);
     assertWorkspaceChangesAvailable(workspace.warning);
-    let reconciled: Awaited<ReturnType<typeof materializeReconciledTerminalCodexGoalHandoff>>;
+    let outcome: { readonly reconciled: Awaited<ReturnType<typeof materializeReconciledTerminalCodexGoalHandoff>> }
+      | { readonly refused: Readonly<{ reason: HandoffPreservationRefusalReason; receiptSha256: string }> };
     try {
-      reconciled = await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
-        publicationAuthority: { assertPublicationAuthorized: guard, captureMode: TerminalHandoffCaptureMode.PreserveWorkspace } });
+      outcome = { reconciled: await materializeReconciledTerminalCodexGoalHandoff({ config: current.spec.request, changedFiles: workspace.changedFiles,
+        publicationAuthority: { assertPublicationAuthorized: guard, captureMode: TerminalHandoffCaptureMode.PreserveWorkspace } }) };
     } catch (error) {
       const reason = handoffPreservationRefusalReason(error);
       if (reason === undefined) throw error;
@@ -329,16 +330,32 @@ async function finalizeOwnedMimoWorkerUnlocked(jobId: string, startId: string, s
       assertQualifiedResearchRuntimeArtifact(current.spec.runtimeDirectory, current.spec.artifactSha256);
       await guard(); assertQualifiedResearchRuntimeArtifact(producer, producerSha);
       if (!previous) researchPublish(path, refusal, true);
-      throw new MimoPreservationRefused(reason); // No result/publication or reservation release on refusal.
+      // A terminal repair stays fail-closed on refusal: original bytes and writer
+      // authority remain the record, so no result publishes and nothing releases.
+      if (terminalRepair) throw new MimoPreservationRefused(reason);
+      // Terminal refusal: the receipt is the output proof and the workspace stays the copy of record,
+      // so a result publishes without a packet and the reservation still releases below, last.
+      outcome = { refused: { reason, receiptSha256: researchHash(researchRead(path)) } };
     }
     await guard();
-    // The publication is read back through the same 1 MiB limit as the candidate: it keeps a bounded sample.
-    const reported = boundedChangedFiles(reconciled.changedPaths), notes = boundedChangedFilesNotes(reported);
     // The candidate's own count and marker describe its list; the publication states its own.
     const { changedFilesCount: _candidateCount, ...candidateDetails } = candidate.details ?? {};
-    const result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reported.changedFiles,
-      artifacts: reconciled.artifacts, evidence: [...candidate.evidence.filter(value => value !== "patch_preserve_unavailable" && value !== changedFilesTruncatedEvidence), ...notes.evidence],
-      details: { ...candidateDetails, ...terminalCodexGoalHandoffResultDetails(reconciled.handoff), ...notes.details }, updatedAt: new Date(candidate.updatedAt!) });
+    let result: RuntimeResultEnvelope;
+    if ("reconciled" in outcome) {
+      // The publication is read back through the same 1 MiB limit as the candidate: it keeps a bounded sample.
+      const reported = boundedChangedFiles(outcome.reconciled.changedPaths), notes = boundedChangedFilesNotes(reported);
+      result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: reported.changedFiles,
+        artifacts: outcome.reconciled.artifacts, evidence: [...candidate.evidence.filter(value => value !== "patch_preserve_unavailable" && value !== changedFilesTruncatedEvidence), ...notes.evidence],
+        details: { ...candidateDetails, ...terminalCodexGoalHandoffResultDetails(outcome.reconciled.handoff), ...notes.details }, updatedAt: new Date(candidate.updatedAt!) });
+    } else {
+      // Changed paths are never exported on refusal: only their count, which is not the refused metadata.
+      result = buildRuntimeResultEnvelope({ ...candidate, changedFiles: [], artifacts: [],
+        evidence: [...candidate.evidence.filter(value => value !== "patch_preserve_unavailable" && value !== changedFilesTruncatedEvidence),
+          `handoff_preservation_refused:${outcome.refused.reason}`],
+        details: { ...candidateDetails, changedFilesCount: String(workspace.changedFiles.length),
+          preservationRefusalReason: outcome.refused.reason, preservationRefusalReceiptSha256: outcome.refused.receiptSha256,
+          preservationRefusalWorkspaceRetained: "true" }, updatedAt: new Date(candidate.updatedAt!) });
+    }
     const publish = async (): Promise<void> => {
       await guard();
       researchPublish(publicationPath, { schemaVersion: 1, specSha256, candidateSha256: researchHash(candidateBytes), result }, true);

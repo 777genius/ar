@@ -306,6 +306,20 @@ it("requires the published handoff to match the workspace exactly", async () => 
   expect(read(`${f.registry}/${job.jobId}/retired.json`).output).toEqual({ kind: "handoff", manifestSha256: packet.manifestSha256, packetPath: packet.packetPath, head: f.head });
 });
 
+it("keeps a terminal preservation refusal unretired: its receipt is no output packet", async () => {
+  const f = workstream(), job = worker(f, "a", { native: true });
+  file(job.workspace + "/app/new.txt", "TEST refused export\n", 0o644);
+  const start = fs.readdirSync(physical(authority(job.jobId) + "/starts"))[0];
+  file(`${authority(job.jobId)}/starts/${start}/preservation-refusal.` + "0".repeat(64) + ".json",
+    JSON.stringify({ schemaVersion: 1, jobId: job.jobId, reason: "handoff_raw_secret_rejected", preservationComplete: false, writerReleased: false }) + "\n", 0o600);
+  const before = [...mounts.keys()];
+  await expect(retire(plan(f, { [job.jobId]: { kind: "handoff", manifestSha256: "0".repeat(64) } }))).rejects.toThrow("job_retirement_handoff_missing");
+  expect([...mounts.keys()]).toEqual(before);
+  expect(fs.readFileSync(physical(job.workspace + "/app/new.txt"), "utf8")).toBe("TEST refused export\n");
+  expect(exists(`${f.registry}/${job.jobId}/retired.json`)).toBe(false);
+  expect(exists(f.state + "/retired.json")).toBe(false);
+});
+
 it("publishes records atomically and finishes from a crash with the same plan", async () => {
   const f = workstream(), first = worker(f, "a", { native: true }), second = worker(f, "b");
   const path = plan(f);

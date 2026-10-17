@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InterruptedProjectCreateErrorCode } from "@vioxen/subscription-runtime/worker-core";
 import { researchInvalid } from "../research-launch-files";
 
-const adapter = vi.hoisted(() => ({ listPending: vi.fn(), reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn() }));
+const adapter = vi.hoisted(() => ({ listPending: vi.fn(), reconcileHostedMimoInterruptedCreate: vi.fn(), resumeHostedMimoProjectPreparation: vi.fn(), advanceHostedMimoProjectSource: vi.fn(), recoverHostedMimoFinalization: vi.fn() }));
 vi.mock("../hosted-mimo-interrupted-create-reconciliation", () => adapter);
+vi.mock("../hosted-mimo-finalization-recovery", () => adapter);
 vi.mock("../hosted-mimo-pending-finalization", () => ({ listHostedMimoPendingFinalization: adapter.listPending }));
 vi.mock("../hosted-mimo-project-bridge-advance", () => ({ advanceHostedMimoProjectSource: adapter.advanceHostedMimoProjectSource }));
 vi.mock("../hosted-mimo-project-bridge-prepare", async original => ({ ...await original<object>(), resumeHostedMimoProjectPreparation: adapter.resumeHostedMimoProjectPreparation }));
@@ -113,3 +114,23 @@ it("routes --list-pending-finalization to the read-only listing and accepts no f
   expect(adapter.listPending).toHaveBeenCalledOnce();
   expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":true,"pending":[],"uncertain":0}\n');
 });
+
+it.each([
+  [["--recover-finalization", "/TEST/plan.json"], { dryRun: false }],
+  [["--recover-finalization", "--dry-run", "/TEST/plan.json"], { dryRun: true }],
+])("routes %j to the finalization recovery with only the dry-run choice", async (args, options) => {
+  process.argv = ["node", "/TEST/bridge-cli", ...args];
+  adapter.recoverHostedMimoFinalization.mockResolvedValueOnce({ ok: true, action: "preserve", status: "recovered" });
+  await import("../hosted-mimo-project-bridge-cli");
+  expect(adapter.recoverHostedMimoFinalization).toHaveBeenCalledExactlyOnceWith("/TEST/plan.json", options);
+  expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":true,"action":"preserve","status":"recovered"}\n');
+});
+it.each([["--recover-finalization"], ["--recover-finalization", "--dry-run"], ["--recover-finalization", "--discard", "/TEST/plan.json"],
+  ["--recover-finalization", "/TEST/plan.json", "extra"]])(
+  "refuses the malformed finalization recovery command line %j", async (...args) => {
+    process.argv = ["node", "/TEST/bridge-cli", ...args];
+    await import("../hosted-mimo-project-bridge-cli");
+    expect(adapter.recoverHostedMimoFinalization).not.toHaveBeenCalled();
+    expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"mimo_project_bridge_request_invalid"}\n');
+    expect(process.exitCode).toBe(1);
+  });
