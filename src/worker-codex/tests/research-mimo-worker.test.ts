@@ -33,11 +33,11 @@ function startMimo() {
 }
 
 describe("owned standalone MiMo worker", () => {
-  // RED: positive-only goal validation rejects the admitted worker's zero retries before egress admission.
-  it("passes zero reconnect retries through the real goal entry into owned egress admission", async () => {
+  // RED: positive-only goal validation rejects the admitted worker's bounded retries before egress admission.
+  it("passes bounded reconnect retries through the real goal entry into owned egress admission", async () => {
     const { selected } = startMimo();
     const config = researchRunConfig(selected);
-    expect(config.maxReconnectRetriesPerAccount).toBe(0);
+    expect(config.maxReconnectRetriesPerAccount).toBe(3);
     let admitted = false;
     await expect(runCodexGoal(config, { admitProviderEgress: async input => {
       const policy = await admitHostedTestEgress(input);

@@ -198,7 +198,7 @@ export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRu
   return { ...request, accounts: request.accounts.map(name => ({ name })),
     executionEngine: request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? "app-server" : "app-server-goal", modelBackend: request.modelBackend ?? CodexModelBackend.OpenAiChatGpt,
     ...(request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? { workerReportMode: "structured-output", maxGoalTurns: request.hostedProfile === HostedMimoProfile.CodingV1 ? request.maxGoalTurns ?? 64 : 8,
-      maxReconnectRetriesPerAccount: 0, safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" as const,
+      maxReconnectRetriesPerAccount: 3, safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" as const,
         retryOnCapacity: false, retryOnAccountUnavailable: false, retryOnReconnectRequired: false } } : {}),
     stateRootDir: join(request.jobRootDir, "state"), runtimeHomeRootDir: join(request.jobRootDir, "home"),
     accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Unrestricted,

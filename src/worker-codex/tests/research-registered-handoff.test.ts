@@ -857,7 +857,7 @@ describe.skipIf(process.platform !== "linux")("fresh registered fixed coding pol
     expect(grant.registeredHandoff.requestSha256).toBe(researchHashRequest(r));
     // Registered coding uses the sealed budget and exact single-account policy.
     expect(researchRunConfig(r)).toMatchObject({ hostedProfile: HostedMimoProfile.CodingV1, executionEngine: "app-server", workerReportMode: "structured-output",
-      maxGoalTurns: 64, maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 0 });
+      maxGoalTurns: 64, maxAccountCycles: 1, prewarmOnStart: false, maxReconnectRetriesPerAccount: 3 });
   });
 });
 

@@ -1,5 +1,5 @@
 import { onboardHostedMimoProject } from "./hosted-mimo-project-bridge-onboard";
-import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, operationErrorCode } from "./hosted-mimo-project-bridge-operation";
+import { submitHostedMimoProjectBridge, executeHostedMimoProjectBridgeOperation, operationErrorCode, logHostedMimoOperationFailure } from "./hosted-mimo-project-bridge-operation";
 const chunks: Buffer[] = [];
 let size = 0;
 try {
@@ -55,6 +55,7 @@ try {
   }
 } catch (error) {
   const message = operationErrorCode(error);
+  logHostedMimoOperationFailure(error, message);
   // A retirement refusal names the job it is about; the job ID pattern keeps it bounded.
   const jobId: unknown = message.startsWith("job_retirement_") && error instanceof Error ? Object.getOwnPropertyDescriptor(error, "jobId")?.value : undefined;
   process.stdout.write(JSON.stringify({ ok: false, error: message,
