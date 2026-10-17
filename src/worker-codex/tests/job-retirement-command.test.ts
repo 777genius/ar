@@ -386,8 +386,10 @@ it("dry run reports every job and changes nothing", async () => {
   const f = workstream(), done = worker(f, "a", { native: true }), dirty = worker(f, "b");
   file(dirty.workspace + "/app/new.txt", "TEST change\n", 0o644);
   const before = [...mounts.keys()];
-  const report = await retire(plan(f), { dryRun: true }) as { ready: boolean; jobs: { jobId: string; blocker?: string; terminal?: string }[] };
+  const report = await retire(plan(f), { dryRun: true }) as { ready: boolean; unitBlocker?: string; jobs: { jobId: string; blocker?: string; terminal?: string }[] };
   expect(report).toMatchObject({ ok: true, dryRun: true, ready: false });
+  // The dirty job is planned into the unit: its refusal must not be masked as a foreign workspace claim.
+  expect(report.unitBlocker).toBeUndefined();
   expect(report.jobs).toEqual(expect.arrayContaining([expect.objectContaining({ jobId: done.jobId, terminal: "native-released" }),
     expect.objectContaining({ jobId: dirty.jobId, blocker: "workspace_dirty" })]));
   expect([...mounts.keys()]).toEqual(before);
