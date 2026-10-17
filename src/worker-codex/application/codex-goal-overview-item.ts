@@ -1,3 +1,4 @@
+import { workspaceChangedFilesCount } from "../codex-goal-changed-files-report";
 import { collectRegisteredCodexGoalJobStatus, CodexGoalObservationMode } from "./codex-goal-registered-job-observation";
 import { jobRetirementAnswer, observeJobRetirement } from "../job-retirement/job-retirement-records";
 import {
@@ -116,7 +117,7 @@ export async function buildCodexGoalOverviewItem(
       progressPid: status.progressPid,
       progressProcessAlive: status.progressProcessAlive,
       workspaceDirty: status.workspaceDirty,
-      changedFilesCount: (status.changedFiles ?? []).length,
+      changedFilesCount: workspaceChangedFilesCount(status),
       changedFiles: status.changedFiles ?? [],
       lastProgressAt: brief.lastProgressAt,
       lastProgressAgeMs: brief.lastProgressAgeMs,

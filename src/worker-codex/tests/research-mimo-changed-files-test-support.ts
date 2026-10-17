@@ -6,7 +6,8 @@ import { researchCurrentStart, researchJobAuthority } from "../research-launch-a
 import { finalizeOwnedMimoWorker } from "../research-launch-lifecycle";
 import * as workspaceChanges from "../codex-goal-workspace-changes";
 import * as changedFilesReport from "../codex-goal-changed-files-report";
-import { researchRead } from "../research-launch-files";
+import { researchRead, researchPublish } from "../research-launch-files";
+import { buildRuntimeResultEnvelope } from "@vioxen/subscription-runtime/worker-core";
 
 /** Runs inside the registered suite's native fixture, with a real Git workspace and the real status reader. */
 export function registeredChangedFilesTests(input: {
@@ -20,6 +21,19 @@ export function registeredChangedFilesTests(input: {
       await expect(finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256)).rejects.toThrow(new Error(`hosted_mimo_worker_changed_files_unavailable:${warning}`));
       expect(existsSync(local(join(current.directory, "mimo-publication.json")))).toBe(false);
       expect(existsSync(local(join(researchJobAuthority(current.jobId), "active.json")))).toBe(true);
+    });
+
+    // The candidate describes its own list; the publication states the count and marker of the list it carries.
+    it("does not carry a stale count or truncation marker from the candidate into a complete publication", async () => {
+      const current = await input.candidate(true), candidatePath = join(current.directory, "mimo-candidate.json");
+      const stored = JSON.parse(researchRead(candidatePath).toString());
+      researchPublish(candidatePath, { ...stored, result: buildRuntimeResultEnvelope({ ...stored.result, updatedAt: new Date(stored.result.updatedAt),
+        evidence: [...stored.result.evidence, changedFilesReport.changedFilesTruncatedEvidence], details: { ...stored.result.details, changedFilesCount: "99999" } }) });
+      expect(await finalizeOwnedMimoWorker(current.jobId, current.startId, current.specSha256)).toMatchObject({ status: "partial" });
+      const result = JSON.parse(researchRead(join(current.directory, "mimo-publication.json")).toString()).result;
+      expect(result.changedFiles).toEqual(["proof.txt"]);
+      expect(result.evidence).not.toContain(changedFilesReport.changedFilesTruncatedEvidence);
+      expect(result.details?.changedFilesCount).toBeUndefined();
     });
 
     // Regression: a status listing above 1 MiB failed the scan, and a full path list above 1 MiB made the

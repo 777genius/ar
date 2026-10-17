@@ -1,4 +1,4 @@
-import { boundedChangedFiles, boundedChangedFilesNotes } from "./codex-goal-changed-files-report";
+import { WorkspaceChangedFilesWarning, boundedChangedFiles, boundedChangedFilesNotes } from "./codex-goal-changed-files-report";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
 export { CodexGoalNativeLifecycle, recommendCodexGoalAction, type CodexGoalRecommendedAction } from "./application/codex-goal-action-policy";
@@ -646,6 +646,16 @@ export async function collectCodexGoalStatus(
   };
 }
 
+/** The workspace is dirty but its paths cannot be listed; callers that already acted (a stop) report a skipped reconcile. */
+export class CodexGoalChangedFilesUnavailableError extends Error {
+  constructor(readonly warning: WorkspaceChangedFilesWarning) {
+    super(`codex_goal_reconcile_changed_files_unavailable:${warning}`);
+    this.name = "CodexGoalChangedFilesUnavailableError";
+  }
+}
+/** The skipped marker a stop returns instead of failing after the worker has already stopped. */
+export const changedFilesUnavailableReconciliation = Object.freeze({ status: "skipped", reason: "changed_files_unavailable" });
+
 export async function reconcileCodexGoalRuntimeResult(
   input: CodexGoalRuntimeResultReconcileInput,
 ): Promise<CodexGoalRuntimeResultReconcileResult> {
@@ -679,6 +689,11 @@ async function reconcileCodexGoalRuntimeResultAdmitted(
     };
   }
 
+  // A listing over the Git read budget is dirty but has no paths: there is nothing to preserve from, and
+  // an empty list must not read as a clean workspace below.
+  if (status.warnings.includes(WorkspaceChangedFilesWarning.OutputLimit)) {
+    throw new CodexGoalChangedFilesUnavailableError(WorkspaceChangedFilesWarning.OutputLimit);
+  }
   const changedFiles = status.changedFiles ?? [];
   if (input.forceWrite && existingStrictResult?.status === "done") {
     return await refreshCompletedCodexGoalResultArtifacts({

@@ -1,3 +1,4 @@
+import { optionalCount, workspaceChangedFilesCount } from "./codex-goal-changed-files-report";
 import type { CodexGoalObservationContext } from "./application/codex-goal-observation-context";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -183,7 +184,7 @@ export class CodexRunObservationAdapter implements RunObservationPort {
       path: paths.workspacePath,
       key: workspaceKey,
       ...(status.workspaceExists === undefined ? {} : { exists: status.workspaceExists }),
-      changedFilesCount: changedFiles.length,
+      ...optionalCount("changedFilesCount", workspaceChangedFilesCount(status)),
       ...(status.workspaceDirty === undefined ? {} : { dirty: status.workspaceDirty }),
       ...(request.includeChangedFiles ? { changedFiles } : {}),
     };

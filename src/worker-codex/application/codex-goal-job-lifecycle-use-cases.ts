@@ -11,6 +11,8 @@ import {
   listCodexGoalAccountStatuses,
   prepareCodexGoalLaunchPaths,
   reconcileCodexGoalRuntimeResult,
+  CodexGoalChangedFilesUnavailableError,
+  changedFilesUnavailableReconciliation,
   resolveCodexGoalWorkerLiveness,
   startCodexGoalTmux,
   stopCodexGoalTmux,
@@ -442,7 +444,7 @@ export async function stopStoredJobLifecycle(
         preservePatch: true,
         silentStale: brief.silentStale,
         heartbeatOnlyNoOutput: brief.heartbeatOnlyNoOutput,
-      });
+      }).catch(skippedWhenChangedFilesUnavailable);
   return {
     ok: true,
     mode: "stop",
@@ -850,4 +852,10 @@ function preservationFailureResult(
     safeMessage:
       "Worker remains alive because durable handoff preservation failed.",
   };
+}
+
+/** The worker has already stopped and the stop event is written: an unlistable workspace skips the reconcile, it does not fail the stop. */
+function skippedWhenChangedFilesUnavailable(error: unknown): typeof changedFilesUnavailableReconciliation {
+  if (error instanceof CodexGoalChangedFilesUnavailableError) return changedFilesUnavailableReconciliation;
+  throw error;
 }

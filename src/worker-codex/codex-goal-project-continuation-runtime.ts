@@ -1,3 +1,4 @@
+import { workspaceChangedFilesCount } from "./codex-goal-changed-files-report";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -380,7 +381,7 @@ async function isRecoverableAdmittedInputPatchProviderFailure(input: {
       parsed.changedFiles.length === 0 ||
       !stringArray(parsed.evidence) ||
       !stringArray(parsed.blockers) ||
-      !samePaths(parsed.changedFiles, status.changedFiles ?? []) ||
+      !sameChangedFiles(parsed, status) ||
       !isRecord(parsed.details)
     ) {
       return false;
@@ -443,7 +444,7 @@ async function isRecoverableAdmittedInputPatchLegacyPrewarmFailure(input: {
         parsed.evidence,
         parsed.blockers,
       ) ||
-      !samePaths(parsed.changedFiles, status.changedFiles ?? []) ||
+      !sameChangedFiles(parsed, status) ||
       !isRecord(parsed.details) ||
       typeof parsed.details.baseCommit !== "string" ||
       !/^[a-f0-9]{40}$/i.test(parsed.details.baseCommit)
@@ -500,7 +501,7 @@ async function isRecoverableAdmittedInputPatchPrewarmFailure(input: {
       !stringArray(parsed.blockers) ||
       parsed.blockers.length !== 1 ||
       parsed.blockers[0] !== PREWARM_FAILED_REASON ||
-      !samePaths(parsed.changedFiles, status.changedFiles ?? []) ||
+      !sameChangedFiles(parsed, status) ||
       !isRecord(parsed.details)
     ) {
       return false;
@@ -568,6 +569,17 @@ function stringArray(value: unknown): value is readonly string[] {
     Array.isArray(value) &&
     value.every((item): item is string => typeof item === "string")
   );
+}
+
+/** A truncated sample matches only when the exact counts match as well, so a difference beyond the cut is not missed. */
+export function sameChangedFiles(
+  parsed: Readonly<Record<string, unknown>>,
+  status: { readonly changedFiles?: readonly string[]; readonly changedFilesCount?: number; readonly warnings?: readonly string[] },
+): boolean {
+  if (!stringArray(parsed.changedFiles)) return false;
+  const details = isRecord(parsed.details) ? parsed.details : {}, recorded = details.changedFilesCount;
+  const recordedCount = typeof recorded === "string" && /^[0-9]+$/.test(recorded) ? Number(recorded) : parsed.changedFiles.length;
+  return samePaths(parsed.changedFiles, status.changedFiles ?? []) && recordedCount === workspaceChangedFilesCount(status);
 }
 
 function samePaths(

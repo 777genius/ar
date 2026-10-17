@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, writeFileSync, renameSync, realpathSync, lstatSy
   fsyncSync, fstatSync, linkSync, unlinkSync, constants } from "node:fs";
 import { join, dirname } from "node:path";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand } from "./research-launch-host";
-import { researchCustody, researchHash, researchRecord, researchPublish, isResearchDenialObservation } from "./research-launch-files";
+import { researchCustody, researchHash, researchRecord, researchPublish, isResearchDenialObservation, type ResearchDenialObservation } from "./research-launch-files";
+import { WorkspaceChangedFilesWarning } from "./codex-goal-changed-files-report";
 import { parseMimoProjectBridgeRequest, MimoProjectBridgeOperation, type MimoProjectBridgeRequest } from "./hosted-mimo-project-bridge-contract";
 import { handleHostedMimoProjectBridge, hostedMimoBridgeMetadataBytes, parseHostedMimoProjectBinding, assertHostedMimoAdmissionRepairStartRearm } from "./hosted-mimo-project-bridge";
 import { withHostedMimoWorkstreamActivity } from "./hosted-mimo-project-workstream-fence";
@@ -69,20 +70,23 @@ export function operationErrorCode(error: unknown): string {
   if (error instanceof SyntaxError) return "mimo_project_bridge_parse_error";
   return "mimo_project_bridge_operation_failed";
 }
-export type HostedMimoOperationFailure = Readonly<{ ok: false; error: string; cause?: string }>;
+/** Closed vocabulary of a Status or Stop failure cause; each member comes from its single owner. */
+export type HostedMimoOperationCause = ResearchDenialObservation | WorkspaceChangedFilesWarning | `handoff_${string}` | "unknown";
+export type HostedMimoOperationFailure = Readonly<{ ok: false; error: string; cause?: HostedMimoOperationCause }>;
 // Exact messages only. The suffixes are closed vocabularies produced by the
 // terminal handoff normalizer and the workspace change reader, never free text.
 const handoffUnavailable = /^dirty_terminal_handoff_unavailable:(handoff_[a-z0-9_]{1,80}|unknown)$/;
-const changedFilesUnavailable = /^hosted_mimo_worker_changed_files_unavailable:(workspace_changed_files_(?:output_limit|timeout|unavailable))$/;
+const changedFilesWarnings = Object.values(WorkspaceChangedFilesWarning);
+const changedFilesUnavailable = new RegExp(`^hosted_mimo_worker_changed_files_unavailable:(${changedFilesWarnings.join("|")})$`);
 /** The failure envelope of an operation. Only Status and Stop, which finalize a worker, add a closed `cause`;
  * the other operations keep the exact `{ ok, error }` shape that rearm and retirement compare. */
 export function operationFailure(error: unknown, operation?: MimoProjectBridgeOperation): HostedMimoOperationFailure {
   const code = operationErrorCode(error);
   if (operation !== MimoProjectBridgeOperation.Status && operation !== MimoProjectBridgeOperation.Stop || !(error instanceof Error)) return { ok: false, error: code };
   const handoff = handoffUnavailable.exec(error.message);
-  if (handoff) return { ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: handoff[1]! };
-  const changed = changedFilesUnavailable.exec(error.message);
-  if (changed) return { ok: false, error: code, cause: changed[1]! };
+  if (handoff) return { ok: false, error: "mimo_project_bridge_handoff_unavailable", cause: handoff[1] as `handoff_${string}` | "unknown" };
+  const changed = changedFilesWarnings.find(warning => changedFilesUnavailable.exec(error.message)?.[1] === warning);
+  if (changed) return { ok: false, error: code, cause: changed };
   // The originating release may carry another Error class; only the exact code and a closed observation count.
   if (error.message === "hosted_research_launch_denied" && isResearchDenialObservation(error.cause)) return { ok: false, error: code, cause: error.cause };
   return { ok: false, error: code };

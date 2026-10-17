@@ -27,3 +27,17 @@ export function boundedChangedFiles(files: readonly string[]): ReportedChangedFi
 export function boundedChangedFilesNotes(reported: ReportedChangedFiles): Readonly<{ details: Readonly<Record<string, string>>; evidence: readonly string[] }> {
   return reported.truncated ? { details: { changedFilesCount: String(reported.count) }, evidence: [changedFilesTruncatedEvidence] } : { details: {}, evidence: [] };
 }
+/** The exact number of changed paths of a workspace status: the explicit count when the list is a sample, else
+ * its length. Undefined means unknown: a listing over the Git read budget is dirty but has no paths and no count. */
+export function workspaceChangedFilesCount(status: Readonly<{ changedFiles?: readonly string[] | undefined; changedFilesCount?: number | undefined; warnings?: readonly string[] | undefined }>): number | undefined {
+  if (status.warnings?.includes(WorkspaceChangedFilesWarning.OutputLimit)) return undefined;
+  return status.changedFilesCount ?? status.changedFiles?.length ?? 0;
+}
+/** Text form of the count for human-facing summaries. */
+export function workspaceChangedFilesCountText(status: Parameters<typeof workspaceChangedFilesCount>[0]): string {
+  return String(workspaceChangedFilesCount(status) ?? "unknown (listing over budget)");
+}
+/** Spread helper that omits an unknown count instead of reporting it as zero. */
+export function optionalCount<K extends string>(key: K, count: number | undefined): Partial<Record<K, number>> {
+  return count === undefined ? {} : { [key]: count } as Record<K, number>;
+}
