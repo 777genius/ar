@@ -176,7 +176,15 @@ async function liveActivityLeaseCount(root: string): Promise<number> {
   let live = 0;
   for (const entry of entries) {
     const path = join(directory, entry);
-    const owner: unknown = JSON.parse(await readFile(path, "utf8"));
+    let owner: unknown;
+    try {
+      owner = JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+      // A concurrent release unlinks the lease after this listing; a vanished
+      // lease is not live and must not fail the caller.
+      if (isNodeError(error, "ENOENT")) continue;
+      throw error;
+    }
     if (!isRecord(owner) || typeof owner.pid !== "number" ||
       typeof owner.processStartIdentity !== "string"
     ) {
