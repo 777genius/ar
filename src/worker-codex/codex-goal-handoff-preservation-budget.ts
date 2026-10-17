@@ -12,6 +12,10 @@ export enum HandoffPreservationRefusalReason {
   Total = "handoff_total_byte_limit_exceeded",
   Privacy = "handoff_raw_secret_rejected",
   SensitivePath = "handoff_sensitive_path_rejected",
+  ChangedFiles = "handoff_changed_file_limit_exceeded",
+  PatchBytes = "handoff_patch_byte_limit_exceeded",
+  SpecialFile = "handoff_special_file_rejected",
+  MetadataSecret = "handoff_raw_secret_metadata_rejected",
 }
 /** Only exact normalized materializer refusals qualify; paths/causes are never copied. */
 export function handoffPreservationRefusalReason(error: unknown): HandoffPreservationRefusalReason | undefined {
@@ -21,7 +25,8 @@ export function handoffPreservationRefusalReason(error: unknown): HandoffPreserv
 }
 export class MimoPreservationRefused extends Error {
   constructor(reason: HandoffPreservationRefusalReason) {
-    super(reason === HandoffPreservationRefusalReason.Privacy || reason === HandoffPreservationRefusalReason.SensitivePath
+    super(reason === HandoffPreservationRefusalReason.Privacy || reason === HandoffPreservationRefusalReason.SensitivePath ||
+      reason === HandoffPreservationRefusalReason.MetadataSecret
       ? "hosted_mimo_worker_preservation_privacy_refused" : "hosted_mimo_worker_preservation_budget_exceeded");
   }
 }

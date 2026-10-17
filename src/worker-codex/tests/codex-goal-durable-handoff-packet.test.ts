@@ -144,6 +144,19 @@ describe("durable terminal handoff packet", () => {
     expect(handoffPreservationRefusalReason({ message: "handoff_sensitive_path_rejected" })).toBeUndefined();
   });
 
+  it("classifies every deterministic content refusal code exactly", () => {
+    for (const code of ["handoff_changed_file_limit_exceeded", "handoff_patch_byte_limit_exceeded",
+      "handoff_special_file_rejected", "handoff_raw_secret_metadata_rejected"]) {
+      for (const message of [code, `dirty_terminal_handoff_unavailable:${code}`]) {
+        expect(handoffPreservationRefusalReason(new Error(message))).toBe(code);
+      }
+    }
+    for (const message of ["handoff_raw_secret_metadata_rejected:branch", "handoff_raw_secret_metadata_rejected:untracked_path",
+      "dirty_terminal_handoff_unavailable:handoff_raw_secret_metadata_rejected:branch", "handoff_artifact_materialization_failed"]) {
+      expect(handoffPreservationRefusalReason(new Error(message))).toBeUndefined();
+    }
+  });
+
   it("keeps run-start base separate from a later committed HEAD and dirty layers", async () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.workspace, "tracked.txt"), "committed B\n");

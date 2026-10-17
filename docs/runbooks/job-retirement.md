@@ -127,7 +127,10 @@ every job:
   worktree patches, untracked files), or the workspace is clean; and no commit
   reachable from HEAD or `feat/<jobId>` (for a standalone clone: from any
   local branch) is missing from every remote-tracking ref (handoff packets
-  carry no commits);
+  carry no commits). A terminal preservation refusal is no output proof: its
+  result carries `details.preservationRefusal` and the authenticated receipt
+  in the start directory, never a packet, so retirement refuses the job
+  (`handoff_missing`) and the workspace stays until the owner decides;
 - each research pin is unmounted already or mounts exactly the directory its
   spec bound there;
 - every record the plan will write is valid as its readers will read it
