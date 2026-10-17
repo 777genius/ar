@@ -24,6 +24,7 @@ import { withResearchJobMutationAsync } from "../research-job-mutation-lock";
 import { createResearchJobWriterObservationPreparer, prepareResearchJobWriterObservation, observeResearchJobWriterAuthority } from "../research-writer-observation";
 import * as provenance from "../research-job-runtime-provenance";
 import { researchArtifactDigest } from "../research-launch-files";
+import * as researchLaunchFiles from "../research-launch-files";
 import * as runtimeArtifact from "../research-runtime-artifact";
 import { host, local, enterResearchOperatorScope } from "./research-launch-fixture";
 import { providerProxy, providerStreams } from "./research-provider-service-fixture";
@@ -109,6 +110,35 @@ export function registeredNativeWriterClosureTests(input: { allocation(configure
       expect(qualification).not.toHaveBeenCalled(); expect(researchRead(current.leaf)).toEqual(receipt);
       const grant = join(researchJobAuthority(current.jobId), "grant.json"); researchPublish(grant, {});
       expect(await next()).toEqual({ status: "unknown" });
+    });
+    it("hoists one producer digest per preparation batch and still qualifies every job afresh", async () => {
+      const current = await terminal(), runtimeDirectory = admission.installedResearchRuntimeDirectory();
+      const effectiveDigest = researchLaunchFiles.researchArtifactDigest;
+      const digest = vi.spyOn(researchLaunchFiles, "researchArtifactDigest").mockImplementation(effectiveDigest);
+      const qualification = vi.mocked(runtimeArtifact.assertQualifiedResearchRuntimeArtifact);
+      const effectiveQualify = qualification.getMockImplementation()!;
+      qualification.mockImplementation((directory, artifactSha256) => effectiveQualify(directory, artifactSha256));
+      digest.mockClear(); qualification.mockClear();
+      const derivations = () => digest.mock.calls.filter(call => call[0] === runtimeDirectory).length;
+      const batch = createResearchJobWriterObservationPreparer();
+      const first = await batch(current.manifest);
+      const firstDigests = derivations(), firstQualifications = qualification.mock.calls.length;
+      const second = await batch(current.manifest);
+      const sharedDigests = derivations() - firstDigests, sharedQualifications = qualification.mock.calls.length - firstQualifications;
+      // One producer digest derivation is shared per batch, and only within a
+      // batch; every job still freshly qualifies the retained digest. Both a
+      // per-job re-derivation and a dropped per-job qualification change this
+      // one-derivation difference.
+      expect(firstDigests - sharedDigests).toBe(1);
+      expect(sharedQualifications).toBeGreaterThan(0);
+      const next = createResearchJobWriterObservationPreparer(), third = await next(current.manifest);
+      expect(derivations()).toBe(firstDigests + sharedDigests + sharedDigests + 1);
+      expect(qualification.mock.calls.length).toBeGreaterThan(firstQualifications + sharedQualifications);
+      for (const read of [first, second, third])
+        expect(await withProtectedCodexGoalJobBirthPublication(read)).toEqual({ status: "released" });
+      const issuer = JSON.parse(researchRead(current.leaf).toString()).issuer;
+      expect(issuer.runtimeDirectory).toBe(runtimeDirectory);
+      expect(issuer.artifactSha256).toBe(effectiveDigest(runtimeDirectory));
     });
     it("never waits for or removes a busy native mutex, and readonly calls never acquire it", async () => {
       const current = await terminal(), read = await createResearchJobWriterObservationPreparer()(current.manifest);
