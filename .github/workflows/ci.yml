@@ -191,9 +191,12 @@ jobs:
               # Every shard needs dist fixtures and the full default test
               # selection. A single isolated fork bounds peak memory: on the
               # shared ARC pod the merged public source graph OOM-killed one of
-              # two forks mid-shard and wedged pool teardown.
+              # two forks mid-shard and wedged pool teardown. One fork can also
+              # outgrow the V8 default ~2 GiB heap while every test still
+              # passes; the fork then dies as "Worker exited unexpectedly" and
+              # fails the run. The pod allows 8 GiB, so cap the heap at 4 GiB.
               npm run build
-              npm run test:unit -- --shard="$CI_TEST_TARGET" --maxWorkers=1
+              NODE_OPTIONS="--max-old-space-size=4096" npm run test:unit -- --shard="$CI_TEST_TARGET" --maxWorkers=1
               ;;
             ancillary)
               npm run test:before-unit
