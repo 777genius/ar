@@ -1,0 +1,28 @@
+name: Readonly fixture tests
+
+on:
+  push:
+    branches: [fix/dependency-readonly-fixture-setup]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readonly-fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Fetch locked TEST dependencies
+        run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Run both readonly scheduling and admission fixtures
+        run: node node_modules/vitest/vitest.mjs run src/worker-codex/tests/hosted-readonly-runner.test.ts src/worker-codex/tests/hosted-readonly-supervisor-host.test.ts
