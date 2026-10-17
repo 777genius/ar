@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, readlink } from "node:fs/promises";
+import { opendir, readdir, readFile, readlink } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { performance } from "node:perf_hooks";
 
 export type LegacyAttemptProcessEvidence = {
   readonly schemaVersion: 1;
@@ -17,7 +18,10 @@ export type LegacyAttemptProcessEvidence = {
 };
 
 const MAX_PROCESS_COUNT = 65_536;
-const MAX_FD_COUNT_PER_PROCESS = 4_096;
+// Bound the whole observation, rather than rejecting an unrelated process
+// solely because its descriptor table exceeds a small per-process limit.
+const MAX_TOTAL_FD_COUNT = 262_144;
+const MAX_INVENTORY_DURATION_MS = 30_000;
 const MAX_CMDLINE_BYTES = 1024 * 1024;
 
 export function assertLegacyAttemptProcessEvidence(
@@ -47,6 +51,8 @@ export async function captureLegacyAttemptProcessEvidence(input: {
   readonly now?: () => Date;
   readonly procRoot?: string;
 }): Promise<LegacyAttemptProcessEvidence> {
+  const fdBudget = { remaining: MAX_TOTAL_FD_COUNT,
+    deadline: performance.now() + MAX_INVENTORY_DURATION_MS };
   const procRoot = resolve(input.procRoot ?? "/proc");
   const custodyPaths = [...new Set(input.custodyPaths.map((path) => resolve(path)))]
     .sort();
@@ -66,12 +72,15 @@ export async function captureLegacyAttemptProcessEvidence(input: {
     const pid = Number(entry);
     if (pid === (input.selfPid ?? process.pid)) continue;
     try {
+      if (performance.now() > fdBudget.deadline) {
+        throw new Error("legacy_attempt_quarantine_process_inventory_timeout");
+      }
       const before = await processStartTime(procRoot, pid);
       const [cmdline, cwd] = await Promise.all([
         readFile(`${procRoot}/${pid}/cmdline`),
         readlink(`${procRoot}/${pid}/cwd`),
       ]);
-      const fdTargets = await processFileDescriptorTargets(procRoot, pid);
+      const fdTargets = await processFileDescriptorTargets(procRoot, pid, fdBudget);
       if (cmdline.length > MAX_CMDLINE_BYTES) {
         throw new Error("legacy_attempt_quarantine_process_cmdline_too_large");
       }
@@ -109,12 +118,16 @@ export async function captureLegacyAttemptProcessEvidence(input: {
       );
     }
   }
+  const inventorySha256 = createHash("sha256")
+    .update(inventory.sort().join("\n")).digest("hex");
+  if (performance.now() > fdBudget.deadline) {
+    throw new Error("legacy_attempt_quarantine_process_inventory_timeout");
+  }
   return {
     schemaVersion: 1,
     observedAt: (input.now?.() ?? new Date()).toISOString(),
     inspectedPidCount,
-    inventorySha256: createHash("sha256")
-      .update(inventory.sort().join("\n")).digest("hex"),
+    inventorySha256,
     custodyPaths,
     blockers,
   };
@@ -123,14 +136,20 @@ export async function captureLegacyAttemptProcessEvidence(input: {
 async function processFileDescriptorTargets(
   procRoot: string,
   pid: number,
+  budget: { remaining: number; readonly deadline: number },
 ): Promise<readonly string[]> {
   const root = `${procRoot}/${pid}/fd`;
   const targets: string[] = [];
-  const names = (await readdir(root)).sort();
-  if (names.length > MAX_FD_COUNT_PER_PROCESS) {
-    throw new Error("legacy_attempt_quarantine_process_fd_inventory_too_large");
-  }
-  for (const name of names) {
+  // Stream every descriptor, including unrelated ones: cwd/argv alone do
+  // not prove that a process holds no open custody file. No truncation.
+  for await (const entry of await opendir(root)) {
+    if (performance.now() > budget.deadline) {
+      throw new Error("legacy_attempt_quarantine_process_inventory_timeout");
+    }
+    if (--budget.remaining < 0) {
+      throw new Error("legacy_attempt_quarantine_process_fd_inventory_too_large");
+    }
+    const name = entry.name;
     if (!/^\d+$/.test(name)) {
       throw new Error("legacy_attempt_quarantine_process_fd_invalid");
     }
@@ -144,6 +163,9 @@ async function processFileDescriptorTargets(
       if (isNodeError(error, "ENOENT")) continue;
       throw error;
     }
+  }
+  if (performance.now() > budget.deadline) {
+    throw new Error("legacy_attempt_quarantine_process_inventory_timeout");
   }
   return [...new Set(targets)].sort();
 }
