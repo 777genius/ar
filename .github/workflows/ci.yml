@@ -188,10 +188,12 @@ jobs:
           export HOME="$subscription_test_home"
           case "$CI_TEST_TARGET" in
             1/4|2/4|3/4|4/4)
-              # Every shard needs dist fixtures; retain the configured two
-              # isolated forks and the full default test selection.
+              # Every shard needs dist fixtures and the full default test
+              # selection. A single isolated fork bounds peak memory: on the
+              # shared ARC pod the merged public source graph OOM-killed one of
+              # two forks mid-shard and wedged pool teardown.
               npm run build
-              npm run test:unit -- --shard="$CI_TEST_TARGET"
+              npm run test:unit -- --shard="$CI_TEST_TARGET" --maxWorkers=1
               ;;
             ancillary)
               npm run test:before-unit
