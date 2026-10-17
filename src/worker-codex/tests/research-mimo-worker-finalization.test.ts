@@ -229,11 +229,11 @@ describe("external owned MiMo result publication", () => {
     });
     afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   it.each([
-    [8 * 1024 * 1024 + 1, "handoff_file_byte_limit_exceeded", "hosted_mimo_worker_preservation_budget_exceeded", "TEST-too-large.bin"],
-    [64, "handoff_raw_secret_rejected", "hosted_mimo_worker_preservation_privacy_refused", "TEST-too-large.bin"],
-    [64, "handoff_sensitive_path_rejected", "hosted_mimo_worker_preservation_privacy_refused", "TEST-generated/.env.example"],
-    [64, "handoff_sensitive_path_rejected", "hosted_mimo_worker_preservation_privacy_refused", "TEST-generated/.npmrc"],
-  ] as const)("authenticates refusal %s without releasing or fabricating a result", async (size, reason, code, relativePath) => {
+    [8 * 1024 * 1024 + 1, "handoff_file_byte_limit_exceeded", "TEST-too-large.bin"],
+    [64, "handoff_raw_secret_rejected", "TEST-too-large.bin"],
+    [64, "handoff_sensitive_path_rejected", "TEST-generated/.env.example"],
+    [64, "handoff_sensitive_path_rejected", "TEST-generated/.npmrc"],
+  ] as const)("authenticates terminal refusal %s without exporting paths or freeing the workspace", async (size, reason, relativePath) => {
     const current = start(true); await initializeReportWorkspace(current);
     const path = join(current.selected.workspacePath, relativePath), bytes = Buffer.alloc(size);
     fs.mkdirSync(dirname(path), { recursive: true });
@@ -246,29 +246,40 @@ describe("external owned MiMo result publication", () => {
     current.lease.stage({ status: "partial", provider: "codex", runId: current.jobId, taskId: current.selected.taskId,
       changedFiles: [relativePath] });
     const originalCandidate = researchRead(join(current.directory, "mimo-candidate.json"));
-    const originalActive = researchRead(join(researchJobAuthority(current.jobId), "active.json"));
     enterResearchOperatorScope(current.unit);
     vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, sha) => {
       expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(sha);
     });
-    await expect(finalize(current)).rejects.toThrow(code);
+    expect((await finalize(current)).status).toBe("partial");
     const name = fs.readdirSync(current.directory).find(name => name.startsWith("preservation-refusal."));
     if (!name) throw new Error("Missing authenticated TEST refusal");
     const retained = researchRead(join(current.directory, name));
     expect(JSON.parse(retained.toString())).toMatchObject({ jobId: current.jobId, startId: current.startId,
       specSha256: current.specSha256, candidateSha256: researchHash(originalCandidate),
       reason, processTerminal: true, preservationComplete: false, writerReleased: false });
+    // The result is published without a packet: the receipt is the proof and only the count, never the refused paths.
+    const publication = researchRead(join(current.directory, "mimo-publication.json"));
+    const result: RuntimeResultEnvelope = JSON.parse(publication.toString()).result;
+    expect(result.status).toBe("partial");
+    expect(result.changedFiles).toEqual([]);
+    expect(result.artifacts ?? []).toEqual([]);
+    expect(result.evidence).toContain(`handoff_preservation_refused:${reason}`);
+    expect(result.details).toMatchObject({ preservationRefusalReason: reason,
+      preservationRefusalReceiptSha256: researchHash(retained), preservationRefusalWorkspaceRetained: "true" });
+    expect(result.details?.changedFilesCount).toMatch(/^[1-9][0-9]*$/);
+    for (const refusedPath of ["TEST-too-large.bin", ".env.example", ".npmrc"]) expect(publication.toString()).not.toContain(refusedPath);
+    expect(JSON.parse(fs.readFileSync(codexGoalOutputPath(current.config), "utf8"))).toMatchObject({ status: "partial" });
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("partial");
     expect(fs.readFileSync(path).equals(bytes)).toBe(true);
     expect(fs.lstatSync(dependency).ino).toBe(dependencyIdentity.ino);
     expect(fs.readlinkSync(dependency)).toBe(external);
     expect(fs.readFileSync(join(external, "TEST-original.txt"), "utf8")).toBe("TEST preserved dependency bytes\n");
-    expect(researchRead(join(researchJobAuthority(current.jobId), "active.json"))).toEqual(originalActive);
     expect(researchRead(join(current.directory, "mimo-candidate.json"))).toEqual(originalCandidate);
-    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
-    expect(fs.existsSync(join(current.directory, "mimo-publication.json"))).toBe(false);
-    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "last-terminal.json"))).toBe(false);
-    await expect(finalize(current)).rejects.toThrow(code);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(false);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "last-terminal.json"))).toBe(true);
+    expect((await finalize(current)).status).toBe("partial");
     expect(researchRead(join(current.directory, name))).toEqual(retained);
+    expect(researchRead(join(current.directory, "mimo-publication.json"))).toEqual(publication);
   });
 
   it("refuses candidate drift at the budget-error boundary without minting a refusal", async () => {
@@ -279,6 +290,7 @@ describe("external owned MiMo result publication", () => {
     });
     await expect(finalize(current)).rejects.toThrow("hosted_research_launch_denied");
     expect(fs.readdirSync(current.directory).some(name => name.startsWith("preservation-refusal."))).toBe(false);
+    expect(fs.existsSync(join(current.directory, "mimo-publication.json"))).toBe(false);
     expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(true);
     expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
   });

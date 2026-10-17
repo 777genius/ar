@@ -172,13 +172,14 @@ type ForeignModulePreparer = (manifest: CodexGoalJobManifest) => Promise<unknown
 type WriterModuleImporter = (url: string) => Promise<Record<string, unknown>>;
 const importWriterModule: WriterModuleImporter = async url => await import(url);
 type ProducerIdentity = { runtimeDirectory: string; artifactSha256: string };
-type WriterPreparationBatch = { readonly modules: Map<string, ForeignModulePreparer>; producer?: ProducerIdentity };
+type WriterPreparationBatch = { readonly modules: Map<string, ForeignModulePreparer>;
+  readonly imports: Map<string, Promise<Record<string, unknown>>>; producer?: ProducerIdentity };
 
 /** One admission preparation owns only verified module functions. Every job
  * still prepares a separate reader and freshly checks its retained authority. */
 export function createResearchJobWriterObservationPreparer(importModule: WriterModuleImporter = importWriterModule):
   (manifest: CodexGoalJobManifest) => Promise<WriterReader> {
-  const batch: WriterPreparationBatch = { modules: new Map() };
+  const batch: WriterPreparationBatch = { modules: new Map(), imports: new Map() };
   // An injected importer preserves observation testing, never durable issuance.
   // Only this source's actual qualified original composition can mint a seal.
   return manifest => prepareWriterObservation(manifest, importModule, batch, importModule === importWriterModule);
@@ -194,7 +195,7 @@ async function prepareWriterObservation(manifest: CodexGoalJobManifest, importMo
   if (aborted) return aborted;
   const sealed = prepareNativeWriterClosureRead(manifest);
   if (sealed) return mutation ? nativeWriterClosureMutationFastReader(manifest.jobId, sealed) : sealed;
-  const original = await prepareOriginalWriter(manifest, importModule, batch?.modules);
+  const original = await prepareOriginalWriter(manifest, importModule, batch);
   if (original) return mutationReader(original);
   const absent = nativeAuthorityAbsent(manifest), native = await prepareNativeResearchJobWriterObservation(manifest);
   return mutationReader(async () => {
@@ -242,7 +243,7 @@ export async function prepareOriginalNativeWriterObservation(manifest: CodexGoal
   return prepareOriginalWriter(manifest, importModule);
 }
 async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModule: WriterModuleImporter,
-  modules?: Map<string, ForeignModulePreparer>): Promise<WriterReader | undefined> {
+  batch?: WriterPreparationBatch): Promise<WriterReader | undefined> {
   const origin = researchForeignWriterRuntimeProvenance(manifest);
   if (!origin || origin.runtimeDirectory === installedResearchRuntimeDirectory()) return undefined;
   const unknown = async (): Promise<ProjectAdmissionWriterObservation> => ({ status: "unknown" });
@@ -254,17 +255,27 @@ async function prepareOriginalWriter(manifest: CodexGoalJobManifest, importModul
       origin.assertCurrent();
     };
     const key = JSON.stringify([origin.runtimeDirectory, origin.artifactSha256]);
-    let prepare = modules?.get(key);
+    let prepare = batch?.modules.get(key);
     if (!prepare) {
       // Provenance already performed this pre-import qualification in the same
       // synchronous path. No await or foreign code intervenes; recheck origin.
       origin.assertCurrent();
-      const module = await importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
+      // Concurrent jobs in one batch share this import; a failed import is not
+      // retained so each job keeps its own refusal path.
+      let importing = batch?.imports.get(key);
+      if (!importing) {
+        importing = importModule(pathToFileURL(join(origin.runtimeDirectory, "dist/worker-codex/research-writer-observation.js")).href);
+        if (batch) {
+          batch.imports.set(key, importing);
+          void importing.catch(() => { batch.imports.delete(key); });
+        }
+      }
+      const module = await importing;
       guard();
       const candidate = module.prepareResearchJobWriterObservation;
       if (typeof candidate !== "function") return unknown;
       prepare = manifest => Reflect.apply(candidate, module, [manifest]) as Promise<unknown>;
-      modules?.set(key, prepare);
+      batch?.modules.set(key, prepare);
     }
     origin.assertCurrent();
     const read = await prepare(manifest) as WriterReader;

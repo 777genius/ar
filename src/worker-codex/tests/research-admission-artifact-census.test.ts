@@ -95,6 +95,42 @@ describe("inert original-runtime admission preparation census", () => {
     expect(readers.size).toBe(3);
   });
 
+  it("starts every registry job's preparation before earlier ones resolve", async () => {
+    const registryRootDir = "/TEST-project/registry";
+    const jobs: CodexGoalJobManifest[] = [0, 1, 2].map(index => {
+      const jobId = "TEST-order-" + index, jobRootDir = "/TEST-project/jobs/" + jobId;
+      const manifest: CodexGoalJobManifest = { schemaVersion: 1, jobId, taskId: jobId, jobRootDir,
+        createdAt: "2026-10-14T00:00:00.000Z", updatedAt: "2026-10-14T00:00:00.000Z",
+        workspacePath: jobRootDir + "/workspace", promptPath: jobRootDir + "/prompt.md", accounts: ["TEST-a"] };
+      fs.mkdirSync(join(registryRootDir, jobId), { recursive: true, mode: 0o700 });
+      fs.mkdirSync(manifest.workspacePath, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(join(registryRootDir, jobId, "job.json"), JSON.stringify(manifest), { mode: 0o600 });
+      return manifest;
+    });
+    const events: string[] = [], pending: Array<() => void> = [];
+    const releaseAll = () => { for (const release of pending.splice(0)) release(); };
+    const instrumented = (manifest: CodexGoalJobManifest) => {
+      events.push("start:" + manifest.jobId);
+      releaseAll();
+      return new Promise<() => Promise<import("@vioxen/subscription-runtime/worker-core").ProjectAdmissionWriterObservation>>(resolve => {
+        pending.push(() => { events.push("released:" + manifest.jobId); resolve(async () => ({ status: "released" as const })); });
+        setImmediate(releaseAll);
+      });
+    };
+    const gate = codexProjectAdmissionGate({ registryRootDir, controllerJobId: "TEST-controller",
+      scope: { projectId: "TEST-order", jobIdPrefixes: ["TEST-"] }, deps: {
+        listJobs: listCodexGoalJobs,
+        readJob: async ({ jobId }: { jobId: string }) => jobs.find(job => job.jobId === jobId)!,
+        buildOverviewItems: async () => [],
+        prepareWriterObservation: instrumented,
+        createWriterObservationPreparer: () => instrumented,
+      } });
+    await gate.prepare!({ operation: ProjectOperation.CreateJob });
+    for (const job of jobs) expect(events).toContain("start:" + job.jobId);
+    // Preparations overlap: the next job starts before the previous one resolves.
+    expect(events.lastIndexOf("start:" + jobs[1]!.jobId)).toBeLessThan(events.lastIndexOf("released:" + jobs[0]!.jobId));
+  });
+
   it("qualifies actual protected foreign provenance before its first import and on a warm preparation", async () => {
     const platform = process.platform; Object.defineProperty(process, "platform", { value: "linux" });
     try {

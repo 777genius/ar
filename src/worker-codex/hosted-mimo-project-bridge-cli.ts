@@ -21,6 +21,11 @@ try {
   } else if (process.argv[2] === "--reconcile-interrupted-create" && process.argv.length === 4) {
     const { reconcileHostedMimoInterruptedCreate } = await import("./hosted-mimo-interrupted-create-reconciliation");
     process.stdout.write(JSON.stringify(await reconcileHostedMimoInterruptedCreate(process.argv[3]!)) + "\n");
+  } else if (process.argv[2] === "--recover-finalization" && (process.argv.length === 4 && !process.argv[3]!.startsWith("--") ||
+      process.argv.length === 5 && process.argv[3] === "--dry-run")) {
+    const { recoverHostedMimoFinalization } = await import("./hosted-mimo-finalization-recovery");
+    process.stdout.write(JSON.stringify(await recoverHostedMimoFinalization(process.argv[process.argv.length - 1]!,
+      { dryRun: process.argv.length === 5 })) + "\n");
   } else if (process.argv[2] === "--recover-controller" && process.argv.length === 4) {
     const { recoverHostedMimoController } = await import("./hosted-mimo-project-controller-recovery");
     process.stdout.write(JSON.stringify(await recoverHostedMimoController(process.argv[3]!)) + "\n");
