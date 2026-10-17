@@ -7,6 +7,7 @@ import { ensureHostedDependencyDirectory } from "./hosted-dependency-receipts";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { readHostedInstallationActivation, readHostedOrdinaryBirth, readRetainedOrdinaryBirth } from "./hosted-installation-origin-facts";
 export { readHostedInstallationActivation, readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
+export { assertInspectedInstallation } from "./hosted-installation-physical-facts";
 import { readHostedOrdinaryForegroundResultOwner } from "./hosted-ordinary-foreground-result-facts";
 import { ChildProcess } from "node:child_process";
 import { withHostedActivationFence } from "./hosted-dependency-activation";

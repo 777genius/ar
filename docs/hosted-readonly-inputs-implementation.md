@@ -171,8 +171,11 @@ from hosted workers by existing `InaccessiblePaths`:
   retained evidence; a policy's digest alone does not supply that approval.
 - `codex-readonly-stages/<SHA256(runtimeDirectory)>.json`: closed record with
   `schemaVersion: 1`, `runtimeDirectory`, `runtimeSha`, `runtimeManifestSha256`.
-  The stage curator supplies it only after verifying the immutable deployed
-  stage and its manifest. Runtime derives its directory from its own module URL,
+  `runtimeManifestSha256` is the SHA-256 of the exact bytes of the admitted
+  `ordinary-qualification-source.json` (equal to the qualification candidate's
+  `sourceScopeSha256`). `hosted-runtime-stage-curator.ts` writes it create-once
+  after re-deriving that manifest (see `docs/hosted-runtime-issuers.md`).
+  Runtime derives its directory from its own module URL,
   never from job configuration or environment. A copied policy cannot create
   this independent qualification receipt.
 - `codex-readonly/<SHA256(jobId)>.json`: the decision's unchanged closed policy,
