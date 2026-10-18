@@ -186,6 +186,25 @@ describe("external owned MiMo result publication", () => {
     expect(host.units.get(current.unit)?.active).toBe(false);
   });
 
+  // RED: the runner wrote its terminal failure outcome before outside service reconciliation.
+  it("lands a thrown owned run on the outcome-free stopped marker until the outside owner finalizes", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    await expect(runCodexGoal(current.config, { createExecutor: () => ({ run: async () => {
+      throw new Error("synthetic owned executor failure");
+    }, dispose: async () => {} }) })).rejects.toThrow("synthetic owned executor failure");
+    const progress = JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8"));
+    expect(progress).toMatchObject({ status: "stopped" });
+    expect(progress).not.toHaveProperty("reason");
+    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
+    expect(record(current, "mimo-candidate").result).toMatchObject({ status: "failed", reason: "runner_exception" });
+    enterResearchOperatorScope(current.unit);
+    expect((await finalize(current)).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalOutputPath(current.config), "utf8")).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("failed");
+    expect(host.units.get(current.unit)?.active).toBe(false);
+  });
+
   // RED: cancel releases the active candidate before its dirty output is preserved.
   it("retains a cancelled pending candidate, then finalizes its real dirty artifact", async () => {
     const current = start(true), command = promisify(execFile);

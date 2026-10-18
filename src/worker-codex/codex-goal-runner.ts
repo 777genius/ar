@@ -476,11 +476,11 @@ async function runCodexGoalAdmitted(
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
     if (ownedMimoLifecycle) {
+      // The failure outcome is deferred exactly like the success outcome above:
+      // "stopped" is the only marker the run loop may land on, and the staged
+      // candidate carries the failure to the outside owner's finalization.
       await progressHeartbeat.stop();
-      await progressHeartbeat.write({
-        status: "failed",
-        reason: failure.reason,
-      });
+      await progressHeartbeat.write({ status: "stopped" });
       ownedMimoLifecycle.stage(resultInput);
       throw error;
     }
