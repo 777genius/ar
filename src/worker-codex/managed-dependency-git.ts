@@ -3,16 +3,20 @@ import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapte
 import { execFile } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedDependencyRootPurpose, captureCurrentHostedDependencyRootPurpose,
   assertCurrentHostedDependencyRootPurpose, type HostedDependencyRootPurposeContext,
-  isHostedDependencySignedTaskId, requiresCurrentHostedDependencyRootPurpose,
+  isHostedDependencySignedTaskId,
   type HostedDependencyManagedGitScope } from "./hosted-dependency-root-purpose";
 import { readHostedDependencyPrivateScratchOperations, type HostedDependencyPrivateScratch, readManagedDependencyPrivateIndex } from "./hosted-dependency-private-scratch";
 import { parsePatchCoverage } from "./git-patch-content-coverage";
 import { promisify } from "node:util";
 import type { SafeExecutionCommandRunner } from "@vioxen/subscription-runtime/worker-core";
 import { managedDependencyGitEnvironment as cleanEnvironment, managedDependencyGitFlags } from "./managed-dependency-git-hygiene";
+import { HostedDependencyGitRoute, readHostedDependencyGitRoute } from "./hosted-dependency-git-route";
+import { assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
+import { readHostedDependencyRootGitConfigPin } from "./hosted-dependency-current-facts";
+import { DependencyOwnerPhase, sameDependencyAttempt, sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 export { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git-hygiene";
 const execute = promisify(execFile);
 
@@ -24,6 +28,8 @@ export class ManagedDependencyGitRunner implements SafeExecutionCommandRunner {
   async run(input: Parameters<SafeExecutionCommandRunner["run"]>[0]) {
     if (!isHostedDependencyWorkspace(input.cwd) || input.command !== "/usr/bin/git") throw new Error("dependency_host_git_unsupported");
     if (classifyManagedDependencyGitArgs(input.args) === ManagedDependencyGitOperation.PrivateIndex) throw new Error("dependency_host_git_private_index_required");
+    const legacy = await runLegacyHostedDependencyGit(input.cwd, input.args, input);
+    if (legacy) return { stdout: legacy.stdout.toString("utf8"), stderr: legacy.stderr.toString("utf8") };
     const context = this.#context ?? captureManagedDependencyGitContext(input.cwd);
     if (context === undefined) throw new Error("dependency_host_git_unsupported");
     assertManagedDependencyGitContext(context, input.cwd); this.#context = context;
@@ -39,6 +45,13 @@ export class ManagedDependencyGitRunner implements SafeExecutionCommandRunner {
 export async function isLinkedGitWorktree(workspacePath: string): Promise<boolean> {
   // A protected repository has a fixed standalone .git directory. A denial
   // must never fall through to an unqualified PATH or repository-discovery read.
+  const args = ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"];
+  const legacy = await runLegacyHostedDependencyGit(workspacePath, args, { timeoutMs: 5_000 });
+  if (legacy) {
+    const paths = legacy.stdout.toString("utf8").trim().split(/\r?\n/), expected = join(workspacePath, ".git");
+    if (paths.length !== 2 || paths.some(path => path !== expected)) throw new Error("dependency_host_git_repository_indirection");
+    return false;
+  }
   const context = captureManagedDependencyGitContext(workspacePath);
   if (context !== undefined) {
     const { stdout } = await runManagedDependencyGitBuffer(context, ["rev-parse",
@@ -176,8 +189,9 @@ export function resolveManagedDependencyGitContext(workspacePath: string | undef
 export function captureManagedDependencyGitContext(workspacePath?: string): HostedDependencyRootPurposeContext | undefined {
   // Actual C/R origin is classified before any request-path fallback. Aliases
   // and omitted contexts cannot select legacy IO in a protected outer process.
-  const required = requiresCurrentHostedDependencyRootPurpose();
-  if (!required && (workspacePath === undefined || !isHostedDependencyWorkspace(workspacePath))) return undefined;
+  const route = readHostedDependencyGitRoute(workspacePath);
+  if (route.kind === HostedDependencyGitRoute.LegacyOrdinaryV1) throw new Error("dependency_host_git_legacy_context_unsupported");
+  if (route.kind === HostedDependencyGitRoute.Unmanaged) return undefined;
   const context = captureCurrentHostedDependencyRootPurpose(HostedDependencyRootPurpose.ManagedGitReadV1);
   assertManagedDependencyGitContext(context, workspacePath);
   return context;
@@ -185,7 +199,10 @@ export function captureManagedDependencyGitContext(workspacePath?: string): Host
 /** Recheck a previously ordinary route before legacy IO or callbacks. This
  * routing fact grants no purpose and cannot switch a started legacy operation. */
 export function assertUnmanagedDependencyGitRoute(): void {
-  if (requiresCurrentHostedDependencyRootPurpose()) throw new Error("dependency_host_git_purpose_required");
+  if (readHostedDependencyGitRoute().kind !== HostedDependencyGitRoute.Unmanaged) throw new Error("dependency_host_git_purpose_required");
+}
+export function requiresManagedDependencyGitRunner(workspacePath: string): boolean {
+  return readHostedDependencyGitRoute(workspacePath).kind !== HostedDependencyGitRoute.Unmanaged;
 }
 export function assertManagedDependencyGitContext(context: HostedDependencyRootPurposeContext, workspacePath?: string): HostedDependencyManagedGitScope {
   return withHostedActivationFence(fence => {
@@ -206,7 +223,7 @@ function scopedPath(scope: HostedDependencyManagedGitScope, path: string): strin
 export function assertManagedDependencyGitAuthoredPath(context: HostedDependencyRootPurposeContext, path: string): string {
   return scopedPath(assertManagedDependencyGitContext(context), path);
 }
-function repositoryObjects(scope: HostedDependencyManagedGitScope): string {
+function repositoryObjects(scope: Pick<HostedDependencyManagedGitScope, "workspace">): string {
   const git = join(scope.workspace.canonicalPath, ".git");
   const directory = lstatSync(git);
   if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== 0 || (directory.mode & 0o022) || realpathSync(git) !== git) throw new Error("dependency_host_git_repository_indirection");
@@ -223,6 +240,79 @@ function repositoryObjects(scope: HostedDependencyManagedGitScope): string {
     throw new Error("dependency_host_git_repository_indirection");
   }
   return path;
+}
+
+/** Explicit v1 read producer. Generic context/private-index/handoff callers
+ * stay closed; the factual route cannot mint a v2 root-purpose context. */
+export async function runLegacyHostedDependencyGit(workspacePath: string, args: readonly string[], options: {
+  readonly timeoutMs?: number; readonly maxBufferBytes?: number; readonly abortSignal?: AbortSignal;
+  readonly gitBinaryPath?: string;
+} = {}): Promise<{ stdout: Buffer; stderr: Buffer } | undefined> {
+  const route = readHostedDependencyGitRoute(workspacePath);
+  if (route.kind !== HostedDependencyGitRoute.LegacyOrdinaryV1) return undefined;
+  if (options.gitBinaryPath !== undefined && options.gitBinaryPath !== "/usr/bin/git") throw new Error("dependency_host_git_unsupported");
+  const kind = classifyManagedDependencyGitArgs(args);
+  if (![ManagedDependencyGitOperation.RepositoryIdentity, ManagedDependencyGitOperation.AuthoredStatus,
+      ManagedDependencyGitOperation.AuthoredDiff].includes(kind)) throw new Error("dependency_host_git_legacy_operation_unsupported");
+  const timeout = options.timeoutMs ?? 15_000, maximum = options.maxBufferBytes ?? gitReadBudgetBytes;
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 15_000 || !Number.isSafeInteger(maximum) || maximum < 1 || maximum > 64 * 1024 * 1024) throw new Error("dependency_host_git_budget_invalid");
+  const authenticate = (fence: HostedActivationFence) => {
+    const actual = assertCurrentHostedDependencyAttempt(route.context, fence, DependencyOwnerPhase.Running);
+    if (actual.facts.kind !== CurrentHostedDependencyOriginKind.Ordinary || actual.binding.version !== 1 ||
+        JSON.stringify(actual.binding) !== JSON.stringify(route.binding) || !sameDependencyAttempt(actual.attempt, route.attempt) ||
+        actual.binding.workspace.canonicalPath !== workspacePath) throw new Error("dependency_host_git_unsupported");
+  };
+  const config = withHostedActivationFence(fence => { authenticate(fence); return readHostedDependencyRootGitConfigPin(workspacePath); });
+  const submit = async (fixedArgs: readonly string[]) => {
+    const operation = withHostedActivationFence(fence => {
+      authenticate(fence);
+      if (!sameDependencyProtectedReference(readHostedDependencyRootGitConfigPin(workspacePath).reference, config.reference)) throw new Error("dependency_host_git_unsupported");
+      repositoryObjects(route.binding);
+      const pending = execute("/usr/bin/git", ["--git-dir=" + join(workspacePath, ".git"), "--work-tree=" + workspacePath,
+        "--no-replace-objects", ...managedDependencyGitFlags, "-c", "core.quotepath=false", "-c", "core.fileMode=true", ...fixedArgs],
+      { cwd: workspacePath, env: cleanEnvironment(), encoding: "buffer", timeout, maxBuffer: maximum,
+        ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }) });
+      let stderrBytes = 0, stderrLimit = false;
+      pending.child.stderr?.on("data", (chunk: Buffer) => {
+        stderrBytes += chunk.length;
+        if (stderrBytes > 64 * 1024 && !stderrLimit) { stderrLimit = true; pending.child.kill(); }
+      });
+      return { pending, exceeded: () => stderrLimit };
+    });
+    try {
+      const result = await operation.pending;
+      if (operation.exceeded()) throw new Error("dependency_host_git_output_limit_exceeded");
+      if (operation.pending.child.exitCode === null || operation.pending.child.signalCode !== null) throw new Error("dependency_host_git_child_held");
+      return result;
+    } finally {
+      withHostedActivationFence(fence => {
+        authenticate(fence);
+        if (!sameDependencyProtectedReference(readHostedDependencyRootGitConfigPin(workspacePath).reference, config.reference)) throw new Error("dependency_host_git_unsupported");
+      });
+    }
+  };
+  if (kind !== ManagedDependencyGitOperation.RepositoryIdentity) {
+    // Inspect only bounded names before any diff could read generated bytes.
+    for (const [query, tree] of [[ ["ls-files", "--stage", "-z", "--", "."], false ],
+      [ ["ls-tree", "-r", "-z", "HEAD", "--", "."], true ]] as const) {
+      const bytes = (await submit(query)).stdout, text = bytes.toString("utf8"), rows = text.split("\0").filter(Boolean);
+      if (!Buffer.from(text).equals(bytes) || rows.length > 100_000) throw new Error("dependency_host_git_membership_invalid");
+      for (const row of rows) {
+        const match = (tree ? /^([0-7]{6}) (blob|tree|commit) ([a-f0-9]{40}(?:[a-f0-9]{24})?)\t([\s\S]+)$/ :
+          /^([0-7]{6}) ([a-f0-9]{40}(?:[a-f0-9]{24})?) ([0-3])\t([\s\S]+)$/).exec(row);
+        if (!match || match[1] === "160000" || !authoredPath(match[4]!) || !tree && match[3] !== "0") throw new Error("dependency_host_git_generated_membership");
+      }
+    }
+  }
+  const fixedArgs = [...args];
+  if (kind !== ManagedDependencyGitOperation.RepositoryIdentity) {
+    const split = fixedArgs.indexOf("--"), paths = split < 0 ? [] : fixedArgs.splice(split + 1);
+    if (split < 0) fixedArgs.push("--");
+    fixedArgs.push(...(paths.length ? paths : ["."]).map(path => `:(top,literal)${path}`),
+      ":(top,exclude,glob)**/node_modules/**", ":(top,exclude,glob)**/node_modules", ":(top,exclude,literal)node_modules");
+    if (kind === ManagedDependencyGitOperation.AuthoredDiff) fixedArgs.splice(1, 0, "--no-textconv");
+  }
+  return submit(fixedArgs);
 }
 const membership = new WeakMap<HostedDependencyRootPurposeContext, Set<string>>();
 function recordMembership(context: HostedDependencyRootPurposeContext, scope: HostedDependencyManagedGitScope, output: Buffer, tree: boolean): void {

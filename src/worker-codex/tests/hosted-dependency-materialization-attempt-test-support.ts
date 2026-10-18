@@ -21,6 +21,12 @@ import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfil
 import * as receipts from "../hosted-dependency-receipts";
 import * as manifestPlacement from "../hosted-dependency-manifest-placement";
 import { qualifyHostedDependencyToolClosure } from "../hosted-dependency-tool-profile";
+import { captureManagedDependencyGitContext, assertUnmanagedDependencyGitRoute, requiresManagedDependencyGitRunner,
+  ManagedDependencyGitRunner, isLinkedGitWorktree } from "../managed-dependency-git";
+import { LocalGitRevisionReader, readLocalGitHeadCommit } from "../codex-goal-git-revision";
+import { changedFilesFromWorkspace } from "../codex-goal-workspace-changes";
+import { withHandoffWorktreeIndex } from "../codex-goal-handoff-worktree-index";
+import { DefaultWorkspaceSnapshotter } from "../../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import type { HostedOrdinaryStart, HostedOrdinaryReservation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
 
 function profile(): HostedDependencyInstallerProfile {
@@ -42,7 +48,8 @@ function profile(): HostedDependencyInstallerProfile {
 export function registerMaterializationAttemptTest(input: {
   prepared: () => { binding: HostedDependencyBinding; retained: { start: HostedOrdinaryStart; reservation: HostedOrdinaryReservation } };
   local: (path: string) => string;
-  fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string> };
+  fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string>;
+    legacyGitReads: number; afterLegacyGitRead: (() => void) | undefined };
 }): void {
   describe.skipIf(process.platform !== "linux")("materialization attempt after async input capture", () => {
     it.each(["success", "origin_drift", "close_failure"] as const)("five concurrent same-key claims retain descriptor and publication boundaries (%s)", async disposition => {
@@ -65,6 +72,23 @@ export function registerMaterializationAttemptTest(input: {
       writeFileSync(input.local(join(path,"package.json")),packageBytes,{mode:0o600});
       writeFileSync(input.local(join(path,"package-lock.json")),lockBytes,{mode:0o600});
       const sentinelPath=input.local(join(path,"TEST-concurrent-source"));writeFileSync(sentinelPath,"preserved original source\n",{mode:0o600});
+      // Actual Git repository and child reads; only the existing TEST transport
+      // maps its protected workspace to these private temporary files.
+      const realChild = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const gitSetup = (args: readonly string[]) => {
+        const result = realChild.spawnSync("/usr/bin/git", args, { cwd: input.local(path), encoding: "utf8", timeout: 5000,
+          env: { PATH: "/nonexistent", HOME: "/", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_AUTHOR_NAME:"iliya",GIT_AUTHOR_EMAIL:"iliyazelenkog@gmail.com",
+            GIT_COMMITTER_NAME:"iliya",GIT_COMMITTER_EMAIL:"iliyazelenkog@gmail.com" } });
+        expect(result.status).toBe(0); return result.stdout.trim();
+      };
+      writeFileSync(input.local(path+"/.gitignore"),"node_modules/\n",{mode:0o600});
+      gitSetup(["init", "--initial-branch=main"]);
+      gitSetup(["add", "--", "package.json", "package-lock.json", "dirty-source", "TEST-concurrent-source", ".gitignore"]);
+      expect(gitSetup(["var","GIT_AUTHOR_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com> /);
+      expect(gitSetup(["var","GIT_COMMITTER_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com> /);
+      gitSetup(["commit", "-m", "test: initialize disposable Git baseline"]);
+      const originalHead = gitSetup(["rev-parse", "HEAD"]);
       const absencePath=`/var/lib/subscription-runtime-host-policy/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`;
       mkdirSync(input.local(dirname(absencePath)),{recursive:true,mode:0o700});
       const absenceBytes=Buffer.from(JSON.stringify({version:1,workspace:binding.workspace,coverageRevision:receipts.dependencyCoverageRevision(binding)})+"\n");
@@ -206,6 +230,40 @@ export function registerMaterializationAttemptTest(input: {
         await expect(qualifyHostedDependencyToolClosure(binding,attempt)).resolves.toBeUndefined();
         withOwners(store=>markDependencyConsumerRunning(store,binding.workspace,attempt));
         await expect(qualifyHostedDependencyToolClosure(binding,attempt)).rejects.toMatchObject({reason:DependencyAdmissionFailure.Unsupported});
+        expect(requiresManagedDependencyGitRunner(path)).toBe(true);
+        expect(() => captureManagedDependencyGitContext(path)).toThrow("dependency_host_git_legacy_context_unsupported");
+        expect(() => assertUnmanagedDependencyGitRoute()).toThrow();
+        await expect(readLocalGitHeadCommit(path)).resolves.toBe(originalHead);
+        await expect(isLinkedGitWorktree(path)).resolves.toBe(false);
+        const runner = new ManagedDependencyGitRunner();
+        await expect(runner.run({command:"/usr/bin/git",cwd:path,args:["rev-parse","HEAD^{tree}"]}))
+          .resolves.toMatchObject({stdout:expect.stringMatching(/^[a-f0-9]{40,64}\n$/)});
+        await expect(runner.run({command:"/usr/bin/git",cwd:path,args:["diff","--relative","--stat","--no-ext-diff","--","."]}))
+          .resolves.toMatchObject({stdout:""});
+        const snapshotter = new DefaultWorkspaceSnapshotter({commandRunner:runner,gitBinaryPath:"/usr/bin/git"});
+        await expect(snapshotter.capture({workspacePath:path,includeDiff:true}))
+          .resolves.toMatchObject({mode:"git",workspacePath:path,dirty:false,changedFiles:[],fingerprint:expect.any(String)});
+        await expect(changedFilesFromWorkspace(path)).resolves.toEqual({changedFiles:[]});
+        const reads = input.fixture.legacyGitReads, initialize = vi.fn(async()=>{}), operation = vi.fn(async()=>{});
+        await expect(withHandoffWorktreeIndex({initialize,operation})).rejects.toThrow();
+        await expect(readLocalGitHeadCommit(path+"/../workspace")).rejects.toThrow();
+        await expect(new LocalGitRevisionReader({gitBinaryPath:"/tmp/TEST-untrusted-git"}).readHeadCommit({workspacePath:path})).rejects.toThrow();
+        expect(input.fixture.legacyGitReads).toBe(reads); expect(initialize).not.toHaveBeenCalled();expect(operation).not.toHaveBeenCalled();
+        const bindingPath=input.local("/var/lib/subscription-runtime-host-policy/"+workspace.hostedDependencyBindingName(binding.jobId));
+        const bindingBytes=readFileSync(bindingPath);
+        writeFileSync(bindingPath,JSON.stringify({...binding,runtimeSha:"b".repeat(40)})+"\n");
+        try { await expect(readLocalGitHeadCommit(path)).rejects.toThrow(); }
+        finally { writeFileSync(bindingPath,bindingBytes); }
+        expect(input.fixture.legacyGitReads).toBe(reads);
+        // A real query may finish, but changed actual kernel origin facts must
+        // prevent its bytes from being published as a successful observation.
+        const boot = input.fixture.boot;
+        input.fixture.afterLegacyGitRead = () => { input.fixture.boot="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"; };
+        try { await expect(readLocalGitHeadCommit(path)).rejects.toThrow(); }
+        finally { input.fixture.afterLegacyGitRead=undefined;input.fixture.boot=boot; }
+        expect(input.fixture.legacyGitReads).toBe(reads+1);
+        expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.Running,attempt});
+        expect(receipts.readHostedDependencyReceipt(binding)).toEqual(ready);
         return attempt;
       };
       input.fixture.captureAncestry=true;

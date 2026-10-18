@@ -5,9 +5,8 @@ import { recordRawGoalStateOrigin } from "./application/project-control/codex-go
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
 import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
-import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
-import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
+import { ManagedDependencyGitRunner, isLinkedGitWorktree, requiresManagedDependencyGitRunner } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { OwnedMimoSnapshotGitRunner, type MimoSnapshotTiming, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "./owned-mimo-snapshot-git";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
@@ -541,7 +540,7 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   if (config.sessionHomeProfile?.kind === CodexSessionHomeProfileKind.OneShot) {
     throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.OneShotDisposal);
   }
-  const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
+  const dependencyGit = requiresManagedDependencyGitRunner(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const researchAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   const assertProviderAdmission = input.assertStorageAdmission || researchAdmission

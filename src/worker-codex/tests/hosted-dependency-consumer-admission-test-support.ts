@@ -39,7 +39,7 @@ import { withHandoffLiveIndexSnapshot, withHandoffWorktreeIndex } from "../codex
 /** Uses the ordinary suite's real private FS and retained origin composition.
  * Synthetic kernel facts do not certify the production mount/capability fence. */
 export function registerDependencyConsumerAdmissionTests(input: {
-  fixture: { root: string; boot: string; manifestMountInfo: string; runtimeUnit: string; group: string; jobs: string; captureAncestry: boolean; captureDirectories: Map<number, string>; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
+  fixture: { root: string; boot: string; manifestMountInfo: string; runtimeUnit: string; group: string; jobs: string; captureAncestry: boolean; captureDirectories: Map<number, string>; legacyGitReads: number; afterLegacyGitRead: (() => void) | undefined; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
   stageName: string; runtimeDirectory: string; local: (path: string) => string;
   put: (name: string, value: unknown) => void; read: (name: string) => any;
 }): void {
