@@ -859,7 +859,7 @@ function createCodexGoalProgressHeartbeat(input: {
     CodexGoalProgressSnapshot,
     "schemaVersion" | "taskId" | "updatedAt" | "pid"
   >) => {
-    writes = writes.then(async () => {
+    const attempt = writes.then(async () => {
       if (stopped && patch.status === "running") return;
       await writeCodexGoalProgress(input.progressPath, {
         schemaVersion: 1,
@@ -869,7 +869,10 @@ function createCodexGoalProgressHeartbeat(input: {
         ...patch,
       });
     });
-    return writes;
+    // A rejected write must not poison the queue: the terminal marker is still
+    // attempted after an earlier failure, while the caller observes its own write.
+    writes = attempt.catch(() => {});
+    return attempt;
   };
   return {
     async write(patch: Omit<
