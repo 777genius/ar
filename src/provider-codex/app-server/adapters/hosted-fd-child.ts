@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 export enum HostedFdLaunchKind { Foreground = "foreground", Provider = "provider", Installer = "installer", Remover = "remover" }
 /** Negative original-clock veto and immediate actual-handle custody only.
  * Neither callback supplies spawn, FD admission or a successful release. */
@@ -23,8 +23,24 @@ export function spawnHostedFdProcess(command: string, args: readonly string[], o
   unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess {
   if (original && (kind === HostedFdLaunchKind.Installer || typeof original.assertOriginalWork !== "function" || typeof original.retainOriginalChild !== "function")) fail();
   original?.assertOriginalWork();
-  const child = spawn(command, args, { ...options, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-    stdio: kind === HostedFdLaunchKind.Installer ? ["pipe", "ignore", "ignore"] : ["pipe", "pipe", "pipe"] });
+  let sink: number | undefined;
+  let child: ChildProcess;
+  try {
+    if (kind === HostedFdLaunchKind.Installer) {
+      // libuv opens ignored stdout/stderr O_RDWR. The installed FD contract
+      // requires a write-only null sink, forwarded unchanged by systemd --pipe.
+      const parent = lstatSync("/dev"), before = lstatSync("/dev/null");
+      if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== 0 || (parent.mode & 0o022) ||
+          !before.isCharacterDevice() || before.isSymbolicLink() || before.rdev !== 259 || before.uid !== 0 || before.nlink !== 1) fail();
+      sink = openSync("/dev/null", constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      for (const current of [fstatSync(sink), lstatSync("/dev/null")]) {
+        if (!current.isCharacterDevice() || current.rdev !== 259 || current.dev !== before.dev || current.ino !== before.ino ||
+            current.uid !== before.uid || current.gid !== before.gid || current.mode !== before.mode || current.nlink !== 1) fail();
+      }
+    }
+    child = spawn(command, args, { ...options, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+      stdio: sink === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", sink, sink] });
+  } finally { if (sink !== undefined) closeSync(sink); }
   child.once("error", () => invalidateHostedFdProcess(child));
   child.once("close", () => invalidateHostedFdProcess(child));
   try {
