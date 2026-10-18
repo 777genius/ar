@@ -70,7 +70,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   evidence.kernelGatePhase = "actual_system_bus_infrastructure";
   const systemBusInfrastructure = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);
-  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
     directory(policy + "/" + name);
   const results = evidence.results as unknown[];
   evidence.kernel = command("/usr/bin/uname", ["--release"]).trim();
@@ -371,7 +371,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   assert.equal(process.argv[2], "qualify"); assertReadonlyHostOperator();
   const systemBusInfrastructure = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);
-  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-services"])
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-services"])
     directory(policy + "/" + name);
   const capacity = statfsSync(readonlyStorage, { bigint: true }), storage = directoryIdentity(readonlyStorage);
   assert.notEqual(storage.dev, String(lstatSync("/").dev));

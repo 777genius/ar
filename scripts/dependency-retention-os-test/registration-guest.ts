@@ -66,7 +66,7 @@ async function register(): Promise<void> {
   evidence.phase = RegistrationPhase.Bus;
   const bus = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);
-  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
     directory(policy + "/" + name);
   const namespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
   evidence.namespaces = { ...namespaces, cgroup: readlinkSync("/proc/self/ns/cgroup") };
