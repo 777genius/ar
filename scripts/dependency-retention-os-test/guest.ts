@@ -1,3 +1,4 @@
+import { observeOwnedSyntheticInstallerFailure } from "./owned-installer-diagnostic.ts";
 import { qualifyIoUringEffects } from "./io-uring.ts";
 import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
 import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
@@ -1325,7 +1326,12 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
     });
     return [{ startId: row.startId, reservationState: row.state, startSha256: digest(bytes), completionPresent: completion !== null,
       completionSha256: completion ? digest(completion) : null, showStatus: shown.status, showFailed: !!shown.error, states: fields,
-      journalStatus: journal.status, journalFailed: !!journal.error, journalDiagnostic: runtimeDiagnostic(journal.stdout ?? ""), foregroundLogs }];
+      journalStatus: journal.status, journalFailed: !!journal.error, journalDiagnostic: runtimeDiagnostic(journal.stdout ?? ""), foregroundLogs,
+      ...(trustedSyntheticInputs && row.unit === `subscription-runtime-ordinary-${row.startId}.service` ? {
+        installerObservation: observeOwnedSyntheticInstallerFailure({ startId: row.startId, unit: row.unit,
+          installationId: installation.installationId, bootId: activation.bootId, runtimeSha: installation.runtimeSha,
+          grantSha256: start.grantSha256, workspacePath: workspace,
+          workspaceDev: String(lstatSync(workspace).dev), workspaceIno: String(lstatSync(workspace).ino) }) } : {}) }];
   });
   observation.starts = rows;
   const files = [root + "/state/registry/" + jobId + "/job.json", root + "/" + jobId + ".latest-result.json", root + "/" + jobId + ".log"];

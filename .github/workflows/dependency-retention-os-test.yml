@@ -51,7 +51,7 @@ jobs:
       - name: Test closed control diagnostic protocol
         run: |
           TEST_NODE="$(readlink -f "$(command -v node)")"
-          "$TEST_NODE" --experimental-strip-types --test "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/io-uring.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/transient-start-diagnostic.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/copied-launcher-closure.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/scenario-selection.test.ts"
+          "$TEST_NODE" --experimental-strip-types --test "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/io-uring.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/transient-start-diagnostic.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/owned-installer-diagnostic.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/copied-launcher-closure.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/scenario-selection.test.ts"
       - name: Emit finite TEST catalog before composition, copy and digest
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.catalog-emit.json
       - name: Run one fresh owned OS qualification

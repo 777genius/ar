@@ -56,7 +56,7 @@ export function runtimeDiagnostic(text: string) {
     "hosted_custody_runtime_bootstrap_denied", "hosted_custody_kernel_evidence_invalid", "hosted_readonly_policy_invalid",
     "hosted_activation_evidence_invalid", "hosted_activation_authority_required", "system_bus_infrastructure_invalid", "system_bus_infrastructure_unqualified", "hosted_process_admission_required",
     "hosted_process_activation_invalid", "dependency_cleanup_unresolved", "dependency_profile_unsupported", "dependency_environment_busy",
-    "dependency_needs_install", "dependency_tree_unsafe", "hosted_fd_profile_invalid", "hosted_fd_boundary_unresolved",
+    "dependency_needs_install", "dependency_tree_unsafe", "dependency_installer_unresolved", "hosted_fd_profile_invalid", "hosted_fd_boundary_unresolved",
     "hosted_fd_launch_invalidated", "hosted_fd_input_overflow", "TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
     "hosted_readonly_operator_action_failed", "hosted_readonly_host_operator_required", "hosted_readonly_authority_invalid",
     "hosted_readonly_managed_grant_required", "hosted_readonly_independent_review_required", "hosted_readonly_verified_stage_required",
