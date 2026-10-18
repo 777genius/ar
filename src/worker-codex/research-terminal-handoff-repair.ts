@@ -62,7 +62,7 @@ function assertColdOwners(rows: readonly { unit: string; owner: ColdOwner; descr
   const blocks = researchCommand("/usr/bin/systemctl", ["show", ...rows.map(row => row.unit), "--no-pager",
     "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,InvocationID,Description,FragmentPath,DropInPaths,KillMode,Job"])
     .trim().split("\n\n").map(block => Object.fromEntries(block.split("\n").map(line => {
-      const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)];
+      const i = line.indexOf("="); if (i < 1) researchInvalid(); return [line.slice(0, i), line.slice(i + 1)];
     })) as Record<string, string>);
   const snapshot = new Map<string, Record<string, string>>();
   for (const block of blocks) {
