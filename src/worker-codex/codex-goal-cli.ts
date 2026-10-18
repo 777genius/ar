@@ -85,6 +85,7 @@ import {
 import {
   projectControlGenericScopeDenial,
   projectControlGenericToolDenial,
+  registeredBrokeredProjectLaunchAllowed,
 } from "./project-control-scope-guard";
 import {
   runProjectControlOperationFile,
@@ -512,6 +513,16 @@ export async function upsertRunCommandManifest(command: RunCommand) {
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {
   const jobId = command.config.jobId ?? command.config.taskId;
+  if (
+    command.registryRootDir !== undefined &&
+    await registeredBrokeredProjectLaunchAllowed({
+      registryRootDir: command.registryRootDir,
+      jobId,
+      config: command.config,
+    })
+  ) {
+    return;
+  }
   const denial = command.registryRootDir === undefined
     ? projectControlGenericToolDenial({
         accessBoundary: command.config.accessBoundary,
