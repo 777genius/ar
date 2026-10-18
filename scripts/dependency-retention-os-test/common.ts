@@ -108,7 +108,9 @@ export function directoryIdentity(path: string) {
   const stat = lstatSync(path, { bigint: true }); assert(stat.isDirectory() && !stat.isSymbolicLink());
   return { canonicalPath: path, dev: String(stat.dev), ino: String(stat.ino) };
 }
-export function installedArtifactDigest(): string {
+// Existing current/registration callers retain the full inventory; CLOSED
+// dependency/readonly guests select their actual composed scenario explicitly.
+export function installedArtifactDigest(scenario: OwnedOsScenario = OwnedOsScenario.CurrentDependency): string {
   const entries: unknown[] = []; let count = 0, size = 0; const deadline = Date.now() + 30000;
   function walk(path: string): void {
     assert(++count <= 200000 && Date.now() < deadline);
@@ -127,7 +129,8 @@ export function installedArtifactDigest(): string {
     }
   }
   for (const name of ["dist", "packages", "node_modules", "scripts", "package.json", "toolchain"]) walk(runtime + "/" + name);
-  for (const relative of currentBackingRuntimeModules) walk(runtime + "/" + relative);
+  if (scenario === OwnedOsScenario.CurrentDependency)
+    for (const relative of currentBackingRuntimeModules) walk(runtime + "/" + relative);
   return digest(JSON.stringify(entries));
 }
 

@@ -77,7 +77,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   evidence.namespaces = { ...guestNamespaces, cgroup: readlinkSync("/proc/self/ns/cgroup") };
   evidence.uidMap = readFileSync("/proc/self/uid_map", "utf8").trim();
   evidence.bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  evidence.runtimeManifestSha256 = installedArtifactDigest();
+  evidence.runtimeManifestSha256 = installedArtifactDigest(process.env.TEST_OS_SCENARIO as OwnedOsScenario);
   const actualPackage = lstatSync(runtime + "/package.json");
   assert(actualPackage.isFile() && !actualPackage.isSymbolicLink() && actualPackage.uid === 0 && actualPackage.nlink === 1 && !(actualPackage.mode & 0o022));
   evidence.installedRuntimeRootPackage = { path: runtime + "/package.json", sha256: fileDigest(runtime + "/package.json"),
@@ -378,7 +378,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   evidence.readonlyStorage = { ...storage, availableBytes: String(capacity.bavail * capacity.bsize), availableInodes: String(capacity.ffree),
     mountNamespace: readlinkSync("/proc/self/ns/mnt"), mountInfoSha256: digest(boundedProc("/proc/self/mountinfo", 1024 * 1024)) };
   const namespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
-  evidence.runtimeManifestSha256 = installedArtifactDigest();
+  evidence.runtimeManifestSha256 = installedArtifactDigest(OwnedOsScenario.Readonly);
   evidence.installedRuntimeRootPackage = { path: runtime + "/package.json", sha256: fileDigest(runtime + "/package.json"),
     bytes: lstatSync(runtime + "/package.json").size, source: "actual copied runtime-root artifact, no substitute metadata" };
   const jobId = "TEST-readonly-" + randomUUID(), root = readonlyStorage + "/jobs/" + jobId, workspace = root + "/workspace";
