@@ -34,6 +34,12 @@ type FileIdentity = Pick<Stats, "dev" | "ino" | "uid" | "gid" | "mode" | "nlink"
 export function sameSyntheticDiagnosticFile(before: FileIdentity, current: FileIdentity): boolean {
   return (["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeMs", "ctimeMs"] as const).every(key => before[key] === current[key]);
 }
+// Exact source-defined failures only: hosted-dependency-entry-effects.ts:10 and
+// hosted-current-dependency-origin.ts:108. Their length is not cause evidence.
+const closedOriginFailures = [
+  "hosted_current_dependency_origin_unresolved",
+  "hosted_dependency_current_origin_unresolved",
+] as const;
 /** Only an already-proved synthetic fresh fixture may export this bounded text.
  * Failure is preserved; this observation never alters a launch or authority. */
 export function syntheticCliStderrDiagnostic(bytes: Uint8Array, sample: TransientStartSample, trustedSyntheticInputs: boolean, sourceSha: string) {
@@ -43,6 +49,8 @@ export function syntheticCliStderrDiagnostic(bytes: Uint8Array, sample: Transien
       sample.fullBytes !== bytes.length || sample.initialBytes !== bytes.length || sample.currentBytes !== bytes.length ||
       bytes[bytes.length - 1] !== 10 || bytes.some((byte, index) => byte < 32 && !(byte === 10 && index === bytes.length - 1) || byte > 126)) return refused;
   let text = Buffer.from(bytes).toString("ascii").slice(0, -1);
+  const closedReason = closedOriginFailures.find(reason => text === reason);
+  if (closedReason) return { purpose, state: "captured" as const, closedReason };
   text = text.replace(/\/(?:[^\s'"<>]+)/g, "<path>")
     .replaceAll("TEST-NOT-A-CREDENTIAL", "<test-placeholder>").replaceAll(sourceSha, "<source-sha>")
     .replace(/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}/gi, "<test-id>");

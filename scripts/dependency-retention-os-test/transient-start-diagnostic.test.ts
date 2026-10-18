@@ -140,6 +140,31 @@ test("synthetic text requires exact fixture inputs and refuses live or changed p
   }
 });
 
+test("synthetic capture exports only exact source-defined origin failures past the text entropy filter", () => {
+  const purpose = "TEST_synthetic_fresh_cli_redacted_text_only", sha = "a".repeat(40);
+  const observe = (text: string, trusted = true, change = {}, sourceSha = sha) => {
+    const bytes = Buffer.from(text);
+    return syntheticCliStderrDiagnostic(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length, ...change }, trusted, sourceSha);
+  };
+  for (const reason of ["hosted_current_dependency_origin_unresolved", "hosted_dependency_current_origin_unresolved"]) {
+    const text = reason + "\n";
+    assert.equal(Buffer.byteLength(text), 44);
+    assert.deepEqual(observe(text), { purpose, state: "captured", closedReason: reason });
+    for (const changed of ["prefix " + text, text.slice(0, -1) + " suffix\n", text.slice(0, -1), text + "\n",
+      "Bearer PRIVATE_CANARY " + text, reason + "=PRIVATE_CANARY\n"]) {
+      assert.deepEqual(observe(changed), { purpose, state: "unavailable" });
+    }
+    assert.deepEqual(observe(text, false), { purpose, state: "unavailable" });
+    assert.deepEqual(observe(text, true, { offset: 1 }), { purpose, state: "unavailable" });
+    assert.deepEqual(observe(text, true, { currentBytes: 45 }), { purpose, state: "unavailable" });
+    assert.deepEqual(observe(text, true, {}, "invalid"), { purpose, state: "unavailable" });
+  }
+  for (const text of ["unknown_private_failure_".padEnd(43, "x") + "\n", "b".repeat(43) + "\n",
+    "token=PRIVATE_CANARY\n", "aB9_".repeat(16) + "\n"]) {
+    assert.deepEqual(observe(text), { purpose, state: "unavailable" });
+  }
+});
+
 test("bounded synthetic text redacts identities, rejects unsafe samples and retains no secret canary", () => {
   const sha = "a".repeat(40), uuid = "11111111-2222-3333-4444-555555555555";
   const observe = (text: string, trusted = true, change = {}) => {
