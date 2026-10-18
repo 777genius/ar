@@ -117,11 +117,18 @@ function captureQualificationData(value:unknown):unknown {
  */
 export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt, coldHandoff?: HostedDependencyColdHandoff, capturedOrigin?: CurrentHostedDependencyOrigin): Promise<HostedDependencyQualifiedToolEntry | undefined> {
   const context = capturedOrigin ?? withHostedActivationFence(fence => readCurrentHostedDependencyOrigin(fence));
+  const authenticate = (fence: HostedActivationFence) => {
+    const actual = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    // Legacy ordinary v1 has no tool capability or once-entry admission. Its
+    // no-profile return still requires the actual current origin and owner.
+    return actual.facts.kind === CurrentHostedDependencyOriginKind.Ordinary && actual.binding.version === 1 ? actual :
+      assertCurrentHostedDependencyExecutionAdmission(context,fence);
+  };
   // Actual origin first; caller binding/profile fields never select physical IO.
-  const original=withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
+  const original=withHostedActivationFence(authenticate);
   if(!encode(captureQualificationData(binding)).equals(encode(original.binding)) ||
     !encode(captureQualificationData(attempt)).equals(encode(original.attempt)))fail(DependencyAdmissionFailure.StaleAttempt);
-  withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
+  withHostedActivationFence(authenticate);
   binding=original.binding;attempt=original.attempt;
   const profile=hostedDependencyToolProfile(binding);if(!profile)return;
   const assertExclusive = () => withHostedActivationFence(fence => {

@@ -20,6 +20,7 @@ import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
 import * as receipts from "../hosted-dependency-receipts";
 import * as manifestPlacement from "../hosted-dependency-manifest-placement";
+import { qualifyHostedDependencyToolClosure } from "../hosted-dependency-tool-profile";
 import type { HostedOrdinaryStart, HostedOrdinaryReservation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
 
 function profile(): HostedDependencyInstallerProfile {
@@ -191,7 +192,20 @@ export function registerMaterializationAttemptTest(input: {
           installationId:binding.installationId,bootId:p.retained.start.bootId,runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,
           startId:p.retained.reservation.startId,unit:p.retained.reservation.unit},randomUUID()));
         await materializeHostedDependencyAbsence(binding,attempt);
+        const ready=receipts.readHostedDependencyReceipt(binding),exclusive=readOwner();
+        expect(ready?.state).toBe(DependencyReceiptState.Ready);
+        expect(exclusive?.owner?.phase).toBe(DependencyOwnerPhase.ExclusiveMutation);
+        const foreignGrant=binding.grantDigest==="a".repeat(64)?"b".repeat(64):"a".repeat(64);
+        await expect(qualifyHostedDependencyToolClosure({...binding,grantDigest:foreignGrant},attempt))
+          .rejects.toMatchObject({reason:DependencyAdmissionFailure.StaleAttempt});
+        await expect(qualifyHostedDependencyToolClosure(binding,{...attempt,attemptId:randomUUID()}))
+          .rejects.toMatchObject({reason:DependencyAdmissionFailure.StaleAttempt});
+        expect(readOwner()).toEqual(exclusive);expect(receipts.readHostedDependencyReceipt(binding)).toEqual(ready);
+        // Real legacy v1 cold admission has no N3 capability. It must finish
+        // the authenticated no-profile qualifier before the Running transition.
+        await expect(qualifyHostedDependencyToolClosure(binding,attempt)).resolves.toBeUndefined();
         withOwners(store=>markDependencyConsumerRunning(store,binding.workspace,attempt));
+        await expect(qualifyHostedDependencyToolClosure(binding,attempt)).rejects.toMatchObject({reason:DependencyAdmissionFailure.Unsupported});
         return attempt;
       };
       input.fixture.captureAncestry=true;
