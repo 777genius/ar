@@ -281,7 +281,10 @@ function codexProjectControlPorts(
     if (!input.startManifest && input.scope.preStartAdmission?.required) {
       throw new Error("project_control_start_manifest_required");
     }
-    return launch;
+    // The child re-derives launch authority through the registry-root scope
+    // guard seam; without it the receipt is never consulted and the run is
+    // denied project_control_broker_required.
+    return { ...launch, registryRootDir: input.registryRootDir };
   };
   return {
     authority: authorityStore,
