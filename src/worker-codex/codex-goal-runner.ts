@@ -450,9 +450,13 @@ async function runCodexGoalAdmitted(
       // Terminal outcomes publish only through the outside owner's finalization,
       // but the run loop's end must land here: a lingering "running" progress
       // over a dead run is a state mismatch the observation layer refuses to act
-      // on. "stopped" is the outcome-free terminal marker.
-      await progressHeartbeat.stop();
-      await progressHeartbeat.write({ status: "stopped" });
+      // on. "stopped" is the outcome-free terminal marker. The marker is
+      // diagnostics and must never replace the staged result: a poisoned
+      // progress chain (one rejected fs write) would otherwise lose the run.
+      try {
+        await progressHeartbeat.stop();
+        await progressHeartbeat.write({ status: "stopped" });
+      } catch { /* Best-effort terminal marker. */ }
       ownedMimoLifecycle.stage(resultInput);
       return result;
     }
@@ -476,11 +480,13 @@ async function runCodexGoalAdmitted(
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
     if (ownedMimoLifecycle) {
-      await progressHeartbeat.stop();
-      await progressHeartbeat.write({
-        status: "failed",
-        reason: failure.reason,
-      });
+      try {
+        await progressHeartbeat.stop();
+        await progressHeartbeat.write({
+          status: "failed",
+          reason: failure.reason,
+        });
+      } catch { /* Best-effort terminal marker; the staged failure stands. */ }
       ownedMimoLifecycle.stage(resultInput);
       throw error;
     }
@@ -496,7 +502,7 @@ async function runCodexGoalAdmitted(
     });
     throw error;
   } finally {
-    await progressHeartbeat.stop();
+    try { await progressHeartbeat.stop(); } catch { /* Diagnostics flush never replaces the result. */ }
     await interruptMonitor.stop();
     try {
       await executor.dispose();

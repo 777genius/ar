@@ -134,22 +134,28 @@ export function classifyCodexRuntimeFailure(message: string): string {
   if (normalized.includes("codex_app_server_goal_max_turns_exceeded")) {
     return "goal_slice_exhausted";
   }
-  // Credential-proxy upstream failures carry the upstream status. Quota (429)
-  // is already matched above; 401/403 mean the account credentials are dead.
-  const proxyUpstreamStatus = codexProxyUpstreamStatus(normalized);
-  if (proxyUpstreamStatus !== undefined) {
-    return proxyUpstreamStatus === 401 || proxyUpstreamStatus === 403
-      ? "provider_session_invalid"
-      : "needs_reconnect";
-  }
-  if (isCodexNetworkTransportFailure(normalized)) {
-    return "needs_reconnect";
-  }
+  // Auth failures take precedence over proxy status and transport fragments:
+  // a dead credential that also mentions reconnecting must stay a session
+  // failure.
   if (
     isCodexInvalidatedAuthFailure(normalized) ||
     isCodexInvalidAuthJsonFailure(normalized)
   ) {
     return "provider_session_invalid";
+  }
+  // Credential-proxy upstream failures carry the upstream status. Quota (429)
+  // is already matched above; 401/403 mean the account credentials are dead.
+  const proxyUpstreamStatus = codexProxyUpstreamStatus(normalized);
+  if (proxyUpstreamStatus === 401 || proxyUpstreamStatus === 403) {
+    return "provider_session_invalid";
+  }
+  // Only transient upstream failures reconnect: 5xx, or no status at all (the
+  // proxy itself could not reach upstream). Other 4xx are permanent refusals
+  // and fall through to the generic classes below.
+  if (proxyUpstreamStatus !== undefined
+    ? proxyUpstreamStatus >= 500
+    : isCodexNetworkTransportFailure(normalized)) {
+    return "needs_reconnect";
   }
   if (
     normalized.includes("unauthorized") ||
