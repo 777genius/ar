@@ -186,6 +186,31 @@ describe("external owned MiMo result publication", () => {
     expect(host.units.get(current.unit)?.active).toBe(false);
   });
 
+  // RED: a poisoned progress chain must never replace the staged owned result.
+  it("stages and returns the owned result even when the terminal progress write fails", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    const progressPath = codexGoalProgressPath(current.config);
+    const result = await runCodexGoal(current.config, { createExecutor: () => ({ run: async () => {
+      // Every later progress write rejects on EISDIR, including the flush in finally.
+      fs.rmSync(progressPath);
+      fs.mkdirSync(progressPath);
+      return completedResult(current);
+    }, dispose: async () => {} }) });
+    expect(result.status).toBe("completed");
+    expect(record(current, "mimo-candidate").result.status).toBe("done");
+  });
+
+  // RED: the owned failure branch stages its failure and lands a terminal marker.
+  it("writes a terminal failed marker and stages the owned failure before rethrowing", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    await expect(runCodexGoal(current.config, { createExecutor: () => ({
+      run: async () => { throw new Error("TEST runner exploded"); }, dispose: async () => {} }) })).rejects.toThrow("TEST runner exploded");
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("failed");
+    expect(record(current, "mimo-candidate").result.status).toBe("failed");
+  });
+
   // RED: cancel releases the active candidate before its dirty output is preserved.
   it("retains a cancelled pending candidate, then finalizes its real dirty artifact", async () => {
     const current = start(true), command = promisify(execFile);

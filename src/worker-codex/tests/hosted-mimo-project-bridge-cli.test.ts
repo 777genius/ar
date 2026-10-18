@@ -25,7 +25,11 @@ async function failure(error: unknown, expected: string): Promise<void> {
   await import("../hosted-mimo-project-bridge-cli");
   expect(adapter.reconcileHostedMimoInterruptedCreate).toHaveBeenCalledExactlyOnceWith("/TEST/plan.json");
   expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ ok: false, error: expected }) + "\n");
-  expect(process.stderr.write).not.toHaveBeenCalled();
+  // The journal diagnostic carries closed fields only; the exact match also
+  // proves no private cause text reached stderr.
+  const rawName = error instanceof Error ? error.name : typeof error;
+  const name = /^[A-Za-z][A-Za-z0-9_]{0,59}$/.test(rawName) ? rawName : "unknown";
+  expect(process.stderr.write).toHaveBeenCalledExactlyOnceWith(`mimo_project_bridge_failure code=${expected} name=${name}\n`);
   expect(process.exitCode).toBe(1);
 }
 it("retains the domain reconciliation refusal at the actual CLI boundary", async () => {
