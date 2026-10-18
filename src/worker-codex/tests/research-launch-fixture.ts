@@ -314,7 +314,7 @@ vi.mock("node:child_process", async original => {
     const unit = args[1]!, service = fixture.units.get(unit);
     if (args[0] === "show") {
       if (fixture.showFailures.has(unit)) return { status: 1, stdout: "" };
-      return { status: 0, stdout: service && (service.active || service.state) ? `Id=${unit}\nLoadState=loaded\nMainPID=${service.pending ? 0 : service.pid}\nControlGroup=${service.pending ? "" : "/system.slice/" + unit}\nInvocationID=${service.pending ? "" : service.invocation}\nDescription=${service.description}\nActiveState=${service.state ?? (service.pending ? "activating" : "active")}\nSubState=${service.pending ? "start" : "running"}\nTransient=yes\nFragmentPath=/run/systemd/transient/${unit}\nDropInPaths=${service.dropIns ?? ""}\nKillMode=control-group\n` : `Id=${unit}\nLoadState=not-found\nMainPID=0\nActiveState=inactive\n` };
+      return { status: 0, stdout: service && (service.active || service.state) ? `Id=${unit}\nLoadState=loaded\nMainPID=${service.pending ? 0 : service.pid}\nControlGroup=${service.pending ? "" : "/system.slice/" + unit}\nInvocationID=${service.pending ? "" : service.invocation}\nDescription=${service.description}\nActiveState=${service.state ?? (service.pending ? "activating" : "active")}\nSubState=${service.pending ? "start" : "running"}\nTransient=yes\nFragmentPath=/run/systemd/transient/${unit}\nDropInPaths=${service.dropIns ?? ""}\nKillMode=control-group\nJob=${fixture.jobs.has(unit) ? "1" : ""}\n` : `Id=${unit}\nLoadState=not-found\nMainPID=0\nActiveState=inactive\nJob=${fixture.jobs.has(unit) ? "1" : ""}\n` };
     }
     if (args[0] === "stop") {
       const selected = args.at(-1)!;
