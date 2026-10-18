@@ -157,9 +157,12 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   try {
   const readonlySources = currentSources(before, receipt);
   const deadline = performance.now() + hostedDependencyObservationLimits.maxDurationMs;
+  assertExclusive();
   const placement = await openHostedDependencyManifestPlacement();
   let manifest: Uint8Array;
-  try { assertExclusive(); manifest = await placement.get(receipt.manifestDigest); assertExclusive(); }
+  // Placement holds private FDs while reading immutable bytes. Reauthenticate
+  // only after its awaited close restores the strict origin descriptor boundary.
+  try { manifest = await placement.get(receipt.manifestDigest); }
   finally { await placement.close(); assertExclusive(); }
   const observationInput = { workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: { ...hostedDependencyObservationLimits, maxDurationMs: Math.floor(deadline - performance.now()) },

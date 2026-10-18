@@ -19,6 +19,7 @@ import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
 import * as receipts from "../hosted-dependency-receipts";
+import * as manifestPlacement from "../hosted-dependency-manifest-placement";
 import type { HostedOrdinaryStart, HostedOrdinaryReservation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
 
 function profile(): HostedDependencyInstallerProfile {
@@ -43,7 +44,7 @@ export function registerMaterializationAttemptTest(input: {
   fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string> };
 }): void {
   describe.skipIf(process.platform !== "linux")("materialization attempt after async input capture", () => {
-    it("five concurrent same-key owner claims finish one real cold materialization and return four Busy", async () => {
+    it.each(["success", "origin_drift", "close_failure"] as const)("five concurrent same-key claims retain descriptor and publication boundaries (%s)", async disposition => {
       // Real shared-core owner CAS plus original generic materializer. Core
       // Running is owner state, not permission for public/current task execution.
       // Only the installer boundary/profile and OS facts are synthetic; genuine
@@ -126,6 +127,30 @@ export function registerMaterializationAttemptTest(input: {
         expect(realFs.readlinkSync(`/proc/self/fd/${fd}`).startsWith(input.local("/var/lib/subscription-runtime-host-policy/TEST-concurrent-installer-output")+"/")).toBe(true);
         const stat=realFs.fstatSync(fd);realFs.fchownSync(fd,stat.uid,stat.gid);
       });
+      // The outer proc projection normally hides runner handles. Expose the
+      // actual placement directory FDs to the real original-origin census so a
+      // census before awaited close reproduces the native inherited-handle RED.
+      const manifestPrefix=input.local("/mnt/TEST-private-manifests"),fixtureReaddir=projectedFs.readdirSync;
+      const manifestDescriptors=()=>realFs.readdirSync("/proc/self/fd").filter(name=>{
+        try {const stat=realFs.fstatSync(Number(name)),target=realFs.readlinkSync(`/proc/self/fd/${name}`);
+          return stat.isDirectory() && (target.startsWith(manifestPrefix+"/") || target===manifestPrefix);}
+        catch(error){if(["EBADF","ENOENT"].includes((error as NodeJS.ErrnoException).code??""))return false;throw error;}
+      });
+      const census=vi.spyOn(projectedFs,"readdirSync").mockImplementation(((path,options)=>{
+        const entries:unknown=Reflect.apply(fixtureReaddir,projectedFs,[path,options]);
+        return path==="/proc/self/fd" ? [...new Set([...(entries as string[]),...manifestDescriptors()])] : entries;
+      }) as typeof fixtureReaddir);
+      const realPlacementOpen=manifestPlacement.openHostedDependencyManifestPlacement;
+      let placementOpened=0,placementClosed=0;
+      vi.spyOn(manifestPlacement,"openHostedDependencyManifestPlacement").mockImplementation(async()=>{
+        const store=await realPlacementOpen();placementOpened++;
+        expect(manifestDescriptors().length).toBeGreaterThanOrEqual(4);
+        return {...store,async put(bytes){const digest=await store.put(bytes);
+          if(disposition==="origin_drift")input.fixture.boot="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+          return digest;},async close(){await store.close();placementClosed++;
+            expect(manifestDescriptors()).toEqual([]);if(disposition==="close_failure")throw new Error("TEST manifest close failed");}};
+      });
+      const publications=vi.spyOn(receipts,"publishHostedDependencyReceipt");
       let enterInstaller!:()=>void,finishInstaller!:()=>void;
       let installerPhase:"not_entered"|"recipe"|"workspace"|"package"|"lock"|"waiting"|"output"="not_entered";
       const entered=new Promise<void>(resolve=>{enterInstaller=resolve;}),finish=new Promise<void>(resolve=>{finishInstaller=resolve;});
@@ -205,8 +230,17 @@ export function registerMaterializationAttemptTest(input: {
         const installing=receipts.readHostedDependencyReceipt(binding);expect(installing?.state).toBe(DependencyReceiptState.Installing);
         expect(existsSync(input.local(join(path,"node_modules")))).toBe(false);
         finishInstaller();const results=await completed;
-        expect(results.filter(row=>row.status==="fulfilled")).toHaveLength(1);
-        expect(results.filter(row=>row.status==="rejected")).toHaveLength(4);expect(install).toHaveBeenCalledTimes(1);
+        expect(results.filter(row=>row.status==="fulfilled")).toHaveLength(disposition==="success"?1:0);
+        expect(results.filter(row=>row.status==="rejected")).toHaveLength(disposition==="success"?4:5);expect(install).toHaveBeenCalledTimes(1);
+        expect(placementOpened).toBe(1);expect(placementClosed).toBe(1);expect(manifestDescriptors()).toEqual([]);
+        if(disposition!=="success"){
+          expect(receipts.readHostedDependencyReceipt(binding)).toEqual(installing);
+          expect(publications.mock.calls.some(call=>call[2].state===DependencyReceiptState.Ready)).toBe(false);
+          expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.ExclusiveMutation});
+          expect(readFileSync(input.local(join(path,"node_modules/module.js")),"utf8")).toBe("module.exports = 'one install';\n");
+          expect(readFileSync(sentinelPath,"utf8")).toBe("preserved original source\n");expect(readFileSync(input.local(absencePath))).toEqual(absenceBytes);
+          return;
+        }
         const ready=receipts.readHostedDependencyReceipt(binding);expect(ready?.state).toBe(DependencyReceiptState.Ready);
         if(ready?.state!==DependencyReceiptState.Ready || installing?.state!==DependencyReceiptState.Installing)throw new Error("TEST production Ready was not published");
         expect(ready.installKey).toBe(installing.requestedKey);expect(ready.generation).toBe(installing.generation);
@@ -219,7 +253,7 @@ export function registerMaterializationAttemptTest(input: {
         // Subsequent assertion/materialization failures need the same finite
         // phase facts, while Vitest retains the original exception as primary.
         console.error("TEST_CONCURRENT_ADMISSION_FACTS "+JSON.stringify(diagnostic()));throw error;
-      } finally {finishInstaller();await completed;asyncNamed.mockRestore();asyncOpened.mockRestore();closed.mockRestore();renamed.mockRestore();named.mockRestore();opened.mockRestore();transport.captureDirectories.clear();input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
+      } finally {finishInstaller();await completed;census.mockRestore();asyncNamed.mockRestore();asyncOpened.mockRestore();closed.mockRestore();renamed.mockRestore();named.mockRestore();opened.mockRestore();transport.captureDirectories.clear();input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
     });
     it("rejects a replaced same-launch owner before Installing publication or installer launch", async () => {
       // Red if the final current-owner join accepts only launch identity: a
