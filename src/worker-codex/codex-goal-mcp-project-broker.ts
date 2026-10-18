@@ -1,4 +1,5 @@
 import { readPlannedProjectAdoptionProof } from "./application/project-control/codex-goal-project-adoption-target";
+import { writeBrokeredLaunchReceipt } from "./application/project-control/codex-goal-brokered-launch-receipt";
 import { isProjectMimoWorkerLaunch, launchProjectMimoWorker, stopProjectMimoWorker } from "./project-mimo-worker-launch";
 import { recordProtectedCodexGoalJobFirstEffect, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
 import { fastForwardExistingProjectWorktree } from "./project-worktree-fast-forward";
@@ -512,6 +513,22 @@ function codexProjectControlPorts(
                 controllerJobId: input.controller.jobId, reservedLaunch: input.startLaunch! });
               return { args: [], preview: `MiMo worker ${launched.jobId} (${launched.startId})`,
                 launchState: CodexGoalLaunchState.Scheduled };
+            }
+            // The spawned CLI child re-derives authority from this brokered
+            // issuance; the env marker alone never authorizes it.
+            if (startLaunch.config.projectAccessScope) {
+              await writeBrokeredLaunchReceipt({
+                jobId: startLaunch.config.jobId ?? startLaunch.config.taskId,
+                taskId: startLaunch.config.taskId,
+                jobRootDir: startLaunch.config.jobRootDir,
+                promptPath: startLaunch.config.promptPath,
+                workspacePath: startLaunch.config.workspacePath,
+                ...(startLaunch.config.accessBoundary === undefined
+                  ? {}
+                  : { accessBoundary: startLaunch.config.accessBoundary }),
+                projectAccessScope: startLaunch.config.projectAccessScope,
+                controllerJobId: input.controller.jobId,
+              });
             }
             const outerStatus = await routeHostedGoalLaunch(startLaunch);
             // Undefined is the router's explicit no-submission/local outcome.
