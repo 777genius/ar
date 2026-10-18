@@ -165,6 +165,25 @@ test("synthetic capture exports only exact source-defined origin failures past t
   }
 });
 
+test("synthetic capture retains only a closed origin diagnostic behind unchanged stable provenance", () => {
+  const diagnostic = { reason: "hosted_dependency_current_origin_unresolved", locations: [
+    { module: "hosted-current-dependency-origin", format: "js", line: 160, column: 9 },
+  ] };
+  const observe = (value: unknown, trusted = true, change = {}) => {
+    const bytes = Buffer.from(JSON.stringify(value) + "\n");
+    return syntheticCliStderrDiagnostic(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length, ...change }, trusted, "a".repeat(40));
+  };
+  assert.deepEqual(observe(diagnostic), { purpose: "TEST_synthetic_fresh_cli_redacted_text_only", state: "captured",
+    closedReason: diagnostic.reason, locations: diagnostic.locations });
+  for (const value of [{ ...diagnostic, private: "PRIVATE_CANARY" }, { ...diagnostic, reason: "PRIVATE_CANARY" },
+    { ...diagnostic, locations: [{ ...diagnostic.locations[0], module: "/PRIVATE_CANARY" }] },
+    { ...diagnostic, locations: [{ ...diagnostic.locations[0], line: 1000000 }] }]) {
+    assert.deepEqual(observe(value), { purpose: "TEST_synthetic_fresh_cli_redacted_text_only", state: "unavailable" });
+  }
+  assert.equal(observe(diagnostic, false).state, "unavailable");
+  assert.equal(observe(diagnostic, true, { currentBytes: 1 }).state, "unavailable");
+});
+
 test("bounded synthetic text redacts identities, rejects unsafe samples and retains no secret canary", () => {
   const sha = "a".repeat(40), uuid = "11111111-2222-3333-4444-555555555555";
   const observe = (text: string, trusted = true, change = {}) => {

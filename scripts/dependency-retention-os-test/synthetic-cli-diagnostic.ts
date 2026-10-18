@@ -1,5 +1,6 @@
 import type { Stats } from "node:fs";
 import type { TransientStartSample } from "./transient-start-diagnostic.ts";
+import { CodexGoalOriginReason, decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-goal-origin-diagnostic.js";
 const runtime = "/opt/subscription-runtime-dependency-os-TEST";
 const policy = "/var/lib/subscription-runtime-host-policy";
 export const syntheticProviderSha256 = "43baba6382bbeb22c3fd253563dbf0005f3bc7bfbf02049b98c5c9251bc8df02";
@@ -37,8 +38,8 @@ export function sameSyntheticDiagnosticFile(before: FileIdentity, current: FileI
 // Exact source-defined failures only: hosted-dependency-entry-effects.ts:10 and
 // hosted-current-dependency-origin.ts:108. Their length is not cause evidence.
 const closedOriginFailures = [
-  "hosted_current_dependency_origin_unresolved",
-  "hosted_dependency_current_origin_unresolved",
+  CodexGoalOriginReason.Execution,
+  CodexGoalOriginReason.Current,
 ] as const;
 /** Only an already-proved synthetic fresh fixture may export this bounded text.
  * Failure is preserved; this observation never alters a launch or authority. */
@@ -49,6 +50,9 @@ export function syntheticCliStderrDiagnostic(bytes: Uint8Array, sample: Transien
       sample.fullBytes !== bytes.length || sample.initialBytes !== bytes.length || sample.currentBytes !== bytes.length ||
       bytes[bytes.length - 1] !== 10 || bytes.some((byte, index) => byte < 32 && !(byte === 10 && index === bytes.length - 1) || byte > 126)) return refused;
   let text = Buffer.from(bytes).toString("ascii").slice(0, -1);
+  const diagnostic = decodeCodexGoalOriginDiagnostic(text);
+  if (diagnostic) return { purpose, state: "captured" as const, closedReason: diagnostic.reason, locations: diagnostic.locations };
+  if (text.trimStart().startsWith("{")) return refused;
   const closedReason = closedOriginFailures.find(reason => text === reason);
   if (closedReason) return { purpose, state: "captured" as const, closedReason };
   text = text.replace(/\/(?:[^\s'"<>]+)/g, "<path>")
