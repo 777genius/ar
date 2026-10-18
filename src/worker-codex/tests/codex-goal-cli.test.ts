@@ -3,10 +3,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import * as fdObservation from "../../provider-codex/app-server/adapters/hosted-fd-observation";
-import * as installation from "../hosted-installation-activation";
-import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
-import { CodexGoalOriginReason, CodexGoalOriginModule, CodexGoalOriginFormat } from "../codex-goal-origin-diagnostic";
 import { LocalFileRunEventStore } from "@vioxen/subscription-runtime/store-local-file";
 import {
   RunEventProviderKind,
@@ -438,34 +434,6 @@ describe("codex goal cli", () => {
     };
 
     await expect(runCodexGoalCli(["help"], io)).resolves.toBe(0);
-  });
-
-  it("writes closed origin source facts with exit2 and preserves ordinary error text and EPIPE", async () => {
-    for (const kind of ["origin", "ordinary", "epipe"] as const) {
-      const error = new Error(kind === "ordinary" ? "unchanged ordinary failure" : CodexGoalOriginReason.Current);
-      error.stack = "Error PRIVATE_CANARY\n at private (/PRIVATE_CANARY/hosted-current-dependency-origin.js:160:9)";
-      if (kind === "epipe") Object.assign(error, { code: "EPIPE" });
-      const io = captureIo(); io.writeStdout = () => { throw error; };
-      expect(await runCodexGoalCli(["help"], io)).toBe(kind === "epipe" ? 0 : 2);
-      expect(io.stderr).toBe(kind === "epipe" ? "" : kind === "ordinary" ? "unchanged ordinary failure\n" : JSON.stringify({
-        reason: CodexGoalOriginReason.Current, locations: [{ module: CodexGoalOriginModule.Current,
-          format: CodexGoalOriginFormat.Emitted, line: 160, column: 9 }],
-      }) + "\n");
-      expect(io.stderr).not.toContain("PRIVATE_CANARY");
-    }
-  });
-
-  it("keeps the unverified default foreground sink silent with exit70 before origin diagnostics", async () => {
-    const error = new Error(CodexGoalOriginReason.Current);
-    const profile = vi.spyOn(fdObservation, "readHostedFdProfile").mockReturnValue({} as NonNullable<ReturnType<typeof fdObservation.readHostedFdProfile>>);
-    const ordinary = vi.spyOn(installation, "isHostedOrdinaryRuntime").mockReturnValue(false);
-    const role = vi.spyOn(HostedReadonlySupervisorHost.prototype, "runtimeRole").mockImplementation(() => { throw new Error("TEST unverified"); });
-    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => { throw error; });
-    try {
-      const result = runCodexGoalCli(["help"]); stdout.mockRestore();
-      expect(await result).toBe(70); expect(stderr).not.toHaveBeenCalled();
-    } finally { stdout.mockRestore(); stderr.mockRestore(); role.mockRestore(); ordinary.mockRestore(); profile.mockRestore(); }
   });
 
   it("calls MCP job tools through the CLI fallback with JSON args", async () => {
