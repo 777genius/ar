@@ -4,7 +4,7 @@ import { compileIoUringFixture } from "./io-uring.ts";
 /** Signed Ubuntu indexes and downloaded .deb extraction only. No dpkg install,
  * maintainer script, chroot command, or outer apt state mutation is permitted. */
 import assert from "node:assert/strict";
-import { CurrentBackingGeometry, currentBackingStorage, currentGeometryMarker } from "./current-backing-geometry.js";
+import { CurrentBackingGeometry, currentBackingStorage, currentGeometryMarker } from "./current-backing-geometry.ts";
 import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
@@ -14,6 +14,11 @@ import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
 import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, currentBackingRuntimeModules, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
+
+export const copiedReadonlyLauncherPaths = [
+  "managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs",
+  "host-jobs/storage-policy.mjs", "managed-launcher/hosted-host-policy.mjs", "managed-launcher/storage-pressure-guard.mjs",
+] as const;
 
 export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
   scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing): void {
@@ -179,8 +184,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
   if (scenario === OwnedOsScenario.Readonly || geometry === CurrentBackingGeometry.Adoptable) {
     // Real reviewed launcher artifacts and their finite static import closure.
     // These bytes are never replaced by a TEST launcher or generated alias.
-    for (const path of ["managed-launcher/launch.mjs", "managed-launcher/hosted-host-policy.mjs", "managed-launcher/payload-guard.mjs",
-      "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs"]) {
+    for (const path of copiedReadonlyLauncherPaths) {
       directory(root + "/opt/subscription-runtime/" + dirname(path), 0o755);
       cpSync(source + "/host-integration/" + path, root + "/opt/subscription-runtime/" + path, { dereference: false });
       command("/usr/bin/chown", ["0:0", root + "/opt/subscription-runtime/" + path]);
@@ -231,7 +235,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
     writeFileSync(units + "/TEST-retention-bus-diagnostic.target", "[Unit]\nDescription=Unqualified TEST daemon stderr observation\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n", { flag: "wx", mode: 0o644 });
   } else {
   writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=dbus.service TEST-retention-supervisor.service\nAfter=dbus.service TEST-retention-supervisor.service\n", { mode: 0o644 });
-  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nSystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS\nSystemCallArchitectures=native\nNoNewPrivileges=yes\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
+  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nSystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS\nSystemCallArchitectures=native\nNoNewPrivileges=yes\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
   }
   if (scenario !== OwnedOsMode.BusDiagnostic) directory(root + "/tmp", 0o1777);
   if (geometry === CurrentBackingGeometry.Adoptable) {

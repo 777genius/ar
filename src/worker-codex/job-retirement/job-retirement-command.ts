@@ -139,9 +139,11 @@ function assertJobUnit(evaluation: Evaluation, context: Context, plan: JobRetire
   assertNoForeignReferences(workspace.identity.path);
 }
 /** The MiMo unit is its scratch root; only its own binding and registry's jobs may claim paths in it. */
-function assertWorkstreamUnit(facts: MimoWorkstreamFacts, evaluations: readonly Evaluation[], context: Context): void {
+/** `entries` is every planned job, evaluated or refused alike: a planned manifest
+ * is never a foreign claimant, so a per-job refusal cannot surface as workspace_shared. */
+function assertWorkstreamUnit(facts: MimoWorkstreamFacts, entries: readonly RetirementJobEntry[], context: Context): void {
   assertNoOtherJobClaims(facts.binding.scratchRoot, new Set([context.target.mimo!.bindingPath,
-    ...evaluations.map(evaluation => jobRetirementRecordPaths(context.target.registryRootDir, evaluation.entry.jobId).manifest)]));
+    ...entries.map(entry => jobRetirementRecordPaths(context.target.registryRootDir, entry.jobId).manifest)]));
   assertNoForeignReferences(facts.binding.scratchRoot);
 }
 
@@ -259,7 +261,7 @@ export async function retireHostedJobs(planPath: string, options: JobRetirementO
     const unit = loadRetirementUnit(plan, target), evaluations: Evaluation[] = [];
     if (target.mimo) workstreamGuard(target.mimo.binding.stateRoot, planSha256);
     for (const entry of unit.jobs) evaluations.push(await evaluateJob(entry, context));
-    if (unit.mimo) assertWorkstreamUnit(unit.mimo, evaluations, context);
+    if (unit.mimo) assertWorkstreamUnit(unit.mimo, unit.jobs, context);
     else for (const evaluation of evaluations) assertJobUnit(evaluation, context, plan);
     assertDraftsValid(evaluations, unit.mimo, context);
     receiptDirectory(target.layout.stateDir);
@@ -318,7 +320,7 @@ async function dryRun(plan: JobRetirementPlan, context: Context) {
         jobs.push({ jobId: entry.jobId, role: entry.role, manifestSha256: entry.manifestSha256, blocker: reason });
       }
     }
-    if (unit.mimo) assertWorkstreamUnit(unit.mimo, evaluations, context);
+    if (unit.mimo) assertWorkstreamUnit(unit.mimo, unit.jobs, context);
     if (evaluations.length === unit.jobs.length) assertDraftsValid(evaluations, unit.mimo, context);
   } catch (error) {
     const reason = refusalOf(error);

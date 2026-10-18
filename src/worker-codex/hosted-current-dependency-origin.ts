@@ -85,7 +85,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFi
 import { dirname } from "node:path";
 import { DependencyGenerationContinuityKind, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, sameDependencyProtectedReference, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
-import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedOrdinaryProcessOrigin, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedOrdinaryProcessOrigin, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, selectedHostedInstallationRecordName, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { type HostedRetainedToolFiles } from "../provider-codex/app-server/adapters/hosted-retained-tool-files";
 import { observeHostedFdProcess } from "../provider-codex/app-server/adapters/hosted-fd-observation";
@@ -131,7 +131,10 @@ let currentEntryOrigin:CurrentHostedDependencyOrigin|undefined;
 function selectedFile(path:string,maximum:number,privateFile=true) {
   return readOriginalHostedDependencyPinnedRecord(rootInternalAccess,path,maximum,privateFile);
 }
-function fixed(name: string, maximum = 65536) { return selectedFile(`${root}/${name}`,maximum); }
+function fixed(name: string, maximum = 65536) {
+  // The installation and inventory are the SELECTED records (original fixed files, or the versioned successor copies).
+  return selectedFile(`${root}/${name === "host-installation.json" || name === "readonly-inventory.json" ? selectedHostedInstallationRecordName(name) : name}`,maximum);
+}
 function material(expected: DependencyProtectedReference, path: string, maximum = 262144, privateFile = true) {
   return readOriginalHostedDependencyMaterialRecord(rootInternalAccess,expected,path,maximum,privateFile);
 }

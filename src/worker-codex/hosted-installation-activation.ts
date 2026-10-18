@@ -7,6 +7,7 @@ import { ensureHostedDependencyDirectory } from "./hosted-dependency-receipts";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { readHostedInstallationActivation, readHostedOrdinaryBirth, readRetainedOrdinaryBirth } from "./hosted-installation-origin-facts";
 export { readHostedInstallationActivation, readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
+export { assertInspectedInstallation } from "./hosted-installation-physical-facts";
 import { readHostedOrdinaryForegroundResultOwner } from "./hosted-ordinary-foreground-result-facts";
 import { ChildProcess } from "node:child_process";
 import { withHostedActivationFence } from "./hosted-dependency-activation";
@@ -54,6 +55,7 @@ import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host"
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
 import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
+import { assertInstallationSelectionTransition } from "./hosted-installation-selection-transition";
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
  * caller records and stop requests never substitute for those proofs. */
@@ -139,6 +141,7 @@ export class HostedInstallationActivationStore {
     const prior = this.readCommitted(fence);
     assertHostedActivationSuccessor(prior,next,authority ? OriginalHostedOrdinaryProviderTerminal.hasBrand(authority) ?
       readOriginalHostedOrdinaryProviderTerminal(authority,fence) : scopedOrdinaryAuthority(authority) : undefined);
+    assertInstallationSelectionTransition(prior, next); // a selection change is re-validated here, also when recovering
     this.#persist(fence,next,recovering,authority!==undefined);
   }
 

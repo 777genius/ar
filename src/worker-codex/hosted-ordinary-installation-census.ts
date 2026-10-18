@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { HostedInventoryCategory, parseHostedOrdinaryOwnedIdentity, parseHostedInventoryV5, type HostedInventoryV5, type HostedInventoryUnit, type HostedInventoryCgroup, type HostedInventoryActivator } from "../core/host-infrastructure/host-inventory";
 import { assertHostedActivationFence, readHostedActivationBytes, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { HostedCustodyReservationState } from "@vioxen/subscription-runtime/worker-core";
+import { admittingSupervisorGeneration, type HostedSuccessorRequest } from "../core/host-infrastructure/host-installation-successor";
+import { resolveOrdinaryCensusHistory } from "./hosted-ordinary-installation-history";
 import { collectBootId, collectCgroupProcesses, collectProcessBirth, collectProcessCgroup } from "./hosted-readonly-linux-collector";
 import { ordinaryInstallationSupervisorMembers } from "./hosted-ordinary-installation-owned";
 import { readTrustedFragment } from "./hosted-readonly-host-kernel";
@@ -125,31 +128,38 @@ function walkGroups(units: readonly HostedInventoryUnit[], inventory: Pick<Hoste
   walk("", null); return groups;
 }
 /** Protected Store rows select exact owned groups. An attachment never creates
- * a reservation. Unbound rows are allowed only while physically not submitted. */
-function reservedGroups(fence: HostedActivationFence, inventory: HostedInventoryV5) {
+ * a reservation. Unbound rows are allowed only while physically not submitted.
+ * Generation semantics are explicit (`hosted-ordinary-installation-history.ts`): an ACTIVE start belongs to the supervisor the
+ * committed activation names; a TERMINAL start keeps the supervisor generation that admitted it (its start record, its attachment
+ * windows) and is never relabelled to the inventory under census. With `successor` the inventory is a CANDIDATE not yet selected
+ * and the committed activation is authenticated as the pinned predecessor view. */
+function reservedGroups(fence: HostedActivationFence, inventory: HostedInventoryV5, successor?: HostedSuccessorRequest) {
   assertHostedActivationFence(fence);
-  const bytes = readHostedActivationBytes("host-activation.json");
-  if (!bytes) return [];
-  const activation = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-  if (activation.hostId !== inventory.hostId || activation.bootId !== inventory.bootId || activation.supervisorId !== inventory.supervisor.birth || !Array.isArray(activation.ordinaryStarts) || activation.ordinaryStarts.length > 256) denied();
-  return activation.ordinaryStarts.map((r: Record<string, unknown>) => {
+  const history = resolveOrdinaryCensusHistory(inventory, successor);
+  if (!history) return [];
+  const { activation } = history;
+  return (activation.ordinaryStarts as Record<string, unknown>[]).map((r: Record<string, unknown>) => {
     if (typeof r.startId !== "string" || !/^[a-f0-9-]{36}$/.test(r.startId) || typeof r.unit !== "string" ||
         ![`subscription-runtime-ordinary-${r.startId}.service`, `subscription-runtime-hosted-${r.startId}.service`].includes(r.unit)) denied();
     const startBytes = readHostedActivationBytes(`ordinary-starts/${r.startId}.json`);
     if (!startBytes) denied();
     const start = JSON.parse(startBytes.toString("utf8")) as Record<string, unknown>, attachmentBytes = readHostedActivationBytes(`ordinary-starts/${r.startId}.identity.json`);
-    if (start.installationId !== activation.installationId || start.unit !== r.unit || start.bootId !== inventory.bootId || start.supervisorId !== inventory.supervisor.birth) denied();
+    if (start.installationId !== activation.installationId || start.unit !== r.unit) denied();
+    const born = admittingSupervisorGeneration({ generations: history.generations, subject: history.subject, candidateCensus: history.candidateCensus,
+      bootId: inventory.bootId, activationGeneration: activation.generation as number, terminal: r.state === HostedCustodyReservationState.Terminal,
+      rowGeneration: r.generation, start: { supervisorId: start.supervisorId, bootId: start.bootId, activationGeneration: start.activationGeneration } });
     const attachment = attachmentBytes ? parseHostedOrdinaryOwnedIdentity(JSON.parse(attachmentBytes.toString("utf8"))) : null;
     if (attachment && (attachmentBytes!.length > 4096 || attachment.installationId !== activation.installationId || attachment.startId !== r.startId || attachment.unit !== r.unit ||
-        attachment.startSha256 !== hash(startBytes) || attachment.creatorBirth !== start.creatorPidBirth || attachment.bootId !== inventory.bootId || attachment.supervisorBirth !== inventory.supervisor.birth || attachment.controlGroup !== start.controlGroup ||
-        attachment.workEndEpochMs !== inventory.supervisor.workEndEpochMs || attachment.cleanupEndEpochMs !== inventory.supervisor.cleanupEndEpochMs)) denied();
+        attachment.startSha256 !== hash(startBytes) || attachment.creatorBirth !== start.creatorPidBirth || attachment.bootId !== born.bootId || attachment.supervisorBirth !== born.birth || attachment.controlGroup !== start.controlGroup ||
+        attachment.workEndEpochMs !== born.workEndEpochMs || attachment.cleanupEndEpochMs !== born.cleanupEndEpochMs)) denied();
     return { row: r, start, attachment };
   });
 }
-export function verifyOrdinaryInstallationInventory(original: HostedInventoryV5, fence: HostedActivationFence, cleanup = false): void {
+/** `successor`: verify `original` as the CANDIDATE census of the funded installation successor, under the held fence and BEFORE its selection. */
+export function verifyOrdinaryInstallationInventory(original: HostedInventoryV5, fence: HostedActivationFence, cleanup = false, successor?: HostedSuccessorRequest): void {
   const inventory = original;
   assertHostedActivationFence(fence); remaining(inventory, cleanup);
-  const owned = reservedGroups(fence, original), before = managerSnapshot(inventory, cleanup);
+  const owned = reservedGroups(fence, original, successor), before = managerSnapshot(inventory, cleanup);
   const expectedNames = new Set([...inventory.units.flatMap(u => [u.name, ...u.aliases]), ...inventory.activators.flatMap(a => [a.name, ...a.aliases]), ...owned.map(o => o.row.unit as string)]);
   for (const line of lines(before.units)) if (!expectedNames.has(line.trim().split(/\s+/)[0]!)) denied();
   for (const line of lines(before.enabled)) if (!expectedNames.has(line.trim().split(/\s+/)[0]!)) denied();

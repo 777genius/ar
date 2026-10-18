@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { HostedActivationPhase, HostedCustodyPhase, HostedCustodyReservationState, parseHostedActivation, parseHostedInstallation, parseHostedCustodyEpoch,
   parseHostedOrdinaryBirth, parseHostedOrdinaryOrigins, type HostedInstallation, type HostedActivation, type HostedOrdinaryBirth, type HostedOrdinaryReservation, type HostedOrdinaryOrigins } from "@vioxen/subscription-runtime/worker-core";
-import { readHostedActivationBytes, decodeHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readHostedActivationBytes, decodeHostedActivationBytes, resolveSelectedInstallationRecord } from "../provider-codex/app-server/adapters/hosted-process-activation";
 function required(name:string):Buffer {const bytes=readHostedActivationBytes(name);if (!bytes) throw new Error("hosted_activation_authority_required");return bytes;}
 const digest=(bytes:Buffer)=>createHash("sha256").update(bytes).digest("hex");
 function invalid():never {throw new Error("hosted_activation_evidence_invalid");}
@@ -13,8 +13,10 @@ export function readHostedInstallationActivation(): {
   if (readHostedActivationBytes("host-activation.next") || readHostedActivationBytes("ordinary-origins.next")) {
     throw new Error("hosted_activation_publication_recovery_required");
   }
-  const installation = parseHostedInstallation(decodeHostedActivationBytes(required("host-installation.json")));
-  const activation = parseHostedActivation(decodeHostedActivationBytes(required("host-activation.json")));
+  const activationBytes = required("host-activation.json"); // ONE snapshot (a10 F5): the selected installation resolves FROM these bytes, never from a second read
+  const installation = parseHostedInstallation(decodeHostedActivationBytes(resolveSelectedInstallationRecord("host-installation.json",
+    name => name === "host-activation.json" ? activationBytes : readHostedActivationBytes(name)).bytes ?? required("host-installation.json")));
+  const activation = parseHostedActivation(decodeHostedActivationBytes(activationBytes));
   if (installation.installationId !== activation.installationId || installation.hostId !== activation.hostId) invalid();
   // The durable exclusive reference cannot disappear with mutable egress grants.
   const enrollment = readHostedActivationBytes("readonly-enrollment.json");
@@ -35,6 +37,7 @@ export function readHostedInstallationActivation(): {
         Object.keys(birth.identity).some(key => birth.identity[key as keyof typeof birth.identity] !==
           epoch.identity[key as keyof typeof epoch.identity])) invalid();
   } else if (epochBytes) invalid();
+  if (!readHostedActivationBytes("host-activation.json")?.equals(activationBytes)) invalid(); // a publication that landed mid-read refuses (retry); it is never merged into a mixed answer
   return { installation, activation };
 }
 

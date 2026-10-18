@@ -5,6 +5,7 @@ import { inspectVisibleScratchMount } from "../host-scratch-mount";
 
 type Handle = { bytes: Buffer; offset: number; directory: boolean; fresh: boolean };
 const native = vi.hoisted(() => ({
+  snapshotDirectory: "/NEWTEST-observation-snapshot",
   handles: new Map<number, Handle>(), nextFd: 100, targetOpens: 0, mountReads: 0, namespaceReads: 0,
   before: "", after: "", namespace: "mnt:[NEWTEST-original]", afterNamespace: "mnt:[NEWTEST-original]",
   heldMountId: 30, freshMountId: 30, freshInode: 50, descriptorInode: 50,
@@ -23,7 +24,7 @@ vi.mock("node:fs", async original => ({
       assert.ok(directory?.directory);
       const id = directory.fresh ? native.freshMountId : native.heldMountId;
       handle = { bytes: Buffer.from(`mnt_id:\t${id}\n`), offset: 0, directory: false, fresh: false };
-    } else if (path === "/tmp") {
+    } else if (path === native.snapshotDirectory) {
       assert.ok((flags & 0x410000) === 0x410000);
       assert.ok(flags & constants.O_NOFOLLOW); assert.ok(flags & constants.O_EXCL); assert.equal(mode, 0o600);
       if (native.anonymousError) throw native.anonymousError;
@@ -73,6 +74,7 @@ const row = (id: number, point: string, root = "/") => `${id} 1 8:1 ${root} ${po
 const selected = row(30, target, "/runtime-tmp/NEWTEST-source");
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => {
+  vi.stubEnv("TMPDIR", native.snapshotDirectory);
   Object.defineProperty(process, "platform", { ...platform, value: "linux" });
   native.handles.clear(); native.nextFd = 100; native.targetOpens = 0; native.mountReads = 0; native.namespaceReads = 0;
   native.before = selected + "\n"; native.after = native.before;
@@ -81,7 +83,7 @@ beforeEach(() => {
   native.inputs.length = 0; native.queryError = native.anonymousError = undefined; native.afterQuery = undefined;
   native.query = { filesystems: [{ id: 30, target, uuid, fsroot: "/runtime-tmp/NEWTEST-source" }] };
 });
-afterEach(() => { Object.defineProperty(process, "platform", platform); assert.equal(native.handles.size, 0); });
+afterEach(() => { vi.unstubAllEnvs(); Object.defineProperty(process, "platform", platform); assert.equal(native.handles.size, 0); });
 
 // Old RED: external libmount input grows with unrelated rows rather than the FD witness.
 test("large NEWTEST topology sends only the original FD-selected row to libmount", () => {

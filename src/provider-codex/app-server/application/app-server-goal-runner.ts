@@ -43,6 +43,7 @@ import {
   managedRunFailureFromError,
 } from "./app-server-managed-run-mapper";
 import { AppServerTurnCheckpointError, type AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
+import { completeValidatedNativeGoal, type AppServerGoalTurnOutputValidator } from "./app-server-validated-goal-completion";
 
 export class AppServerGoalRunner {
   constructor(
@@ -69,6 +70,7 @@ export class AppServerGoalRunner {
     readonly abortSignal: AbortSignal;
     readonly maxGoalTurns: number;
     readonly goalContinuePrompt: string;
+    readonly validateCompletedOutput?: AppServerGoalTurnOutputValidator;
   }): Promise<AppServerRunResult> {
     const usageLease = this.options.client.acquireExecution();
     try {
@@ -279,6 +281,8 @@ export class AppServerGoalRunner {
     readonly runId: string;
     readonly threadId: string;
     readonly firstPrompt: string;
+    readonly goalObjective?: string;
+    readonly validateCompletedOutput?: AppServerGoalTurnOutputValidator;
     readonly workspacePath: string;
     readonly model: string;
     readonly reasoningEffort: CodexReasoningEffort;
@@ -355,7 +359,7 @@ export class AppServerGoalRunner {
           }
         }
 
-        const goal = await this.options.client.getGoal({
+        let goal = await this.options.client.getGoal({
           threadId: input.threadId,
           timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
           abortSignal: input.abortSignal,
@@ -381,6 +385,15 @@ export class AppServerGoalRunner {
           untrustedUsageSinceGoal = false;
         }
         // Ordinary goals linearize at the delivered terminal GoalAPI response.
+        if (input.validateCompletedOutput !== undefined) {
+          goal = await completeValidatedNativeGoal({
+            client: this.options.client, goal, threadId: input.threadId,
+            objective: input.goalObjective ?? input.firstPrompt,
+            runId: input.runId, turnNumber, outputText,
+            timeoutMs: controlRequestTimeoutMs(input.timeoutMs), abortSignal: input.abortSignal,
+            validate: input.validateCompletedOutput,
+          });
+        }
         // Bounded goals must also pass their original continuation fence.
         const bounded = this.options.client.executionLifetime || this.options.client.childBudget;
         if (bounded || goal.status !== "complete") this.options.client.assertExecutionActive(input.abortSignal);

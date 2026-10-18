@@ -1,3 +1,9 @@
+import {
+  RETAINED_NONQUALIFIED_STATUS,
+  retainedNonqualifiedRetentionProblems,
+  type RetainedNonqualifiedRetention,
+} from "./retained-nonqualified-attempt";
+
 export const TERMINAL_OUTPUT_STATUSES = [
   "integrated",
   "rejected",
@@ -6,6 +12,7 @@ export const TERMINAL_OUTPUT_STATUSES = [
   "archived",
   "failed_no_output",
   "reviewed_no_change",
+  RETAINED_NONQUALIFIED_STATUS,
 ] as const;
 
 export type TerminalOutputStatus = typeof TERMINAL_OUTPUT_STATUSES[number];
@@ -39,6 +46,8 @@ export type TerminalOutputDecision = {
     readonly path: string;
     readonly sha256: string;
   };
+  /** Only valid with status retained_nonqualified; see retained-nonqualified-attempt. */
+  readonly retention?: RetainedNonqualifiedRetention;
   readonly note: string;
   readonly backup: TerminalOutputBackup;
 };
@@ -76,6 +85,7 @@ export function assertTerminalOutputDecision(
   ) {
     throw new Error("terminal_output_failed_no_output_evidence_required");
   }
+  assertRetainedNonqualifiedDecision(decision);
   if (
     decision.preexistingWorkspacePatch &&
     (
@@ -86,4 +96,30 @@ export function assertTerminalOutputDecision(
     throw new Error("terminal_output_preexisting_patch_evidence_invalid");
   }
   return decision;
+}
+
+/**
+ * retained_nonqualified is a custody-only disposition: it needs the bound
+ * receipt and a complete backup, and it must not carry any claim that other
+ * statuses make (commit, failure/no-output evidence, publication, attempt).
+ * Every other status must not carry a retention block, so a forged field can
+ * never turn an ordinary record into this disposition.
+ */
+function assertRetainedNonqualifiedDecision(decision: TerminalOutputDecision): void {
+  if (decision.status !== RETAINED_NONQUALIFIED_STATUS) {
+    if (decision.retention !== undefined) throw new Error("terminal_output_retention_forbidden");
+    return;
+  }
+  const retention: unknown = decision.retention;
+  if (retainedNonqualifiedRetentionProblems(retention).length > 0 ||
+      !decision.archivePath || !decision.backup.patchPath || !decision.backup.numstatPath ||
+      !decision.backup.untrackedArchivePath ||
+      !(retention as RetainedNonqualifiedRetention).receiptPath.startsWith(`${decision.archivePath}/`)) {
+    throw new Error("terminal_output_retained_nonqualified_retention_required");
+  }
+  if (decision.commitSha !== undefined || decision.failure !== undefined || decision.output !== undefined ||
+      decision.preexistingWorkspacePatch !== undefined || decision.publicationIncorporation !== undefined ||
+      decision.attemptId !== undefined) {
+    throw new Error("terminal_output_retained_nonqualified_claims_forbidden");
+  }
 }

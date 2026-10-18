@@ -1,13 +1,12 @@
 import { assertConfiguredAuthAttachmentPhysical } from "../provider-codex/app-server/adapters/hosted-configured-auth-attachment";
 import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-interval";
-import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
+import { decodeHostedInventoryBytes } from "../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HostedInstallation, HostedActivation } from "@vioxen/subscription-runtime/worker-core";
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
-import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
-import { readonlySupervisorRoot } from "./hosted-readonly-custody";
+import { readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 function digest(bytes:Buffer):string {return createHash("sha256").update(bytes).digest("hex");}
 function invalid():never {throw new Error("hosted_activation_evidence_invalid");}
 // Fixed physical/read-only installation facts. No store, origin map, child,
@@ -25,7 +24,7 @@ export function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion
   }
   const stage = readOriginalHostedDependencyBackingStage();
   if (stage.runtimeDirectory !== runtimeDirectory) invalid();
-  const inventoryBytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
+  const inventoryBytes = readHostedActivationBytes("readonly-inventory.json"); // the SELECTED inventory (original or successor)
   if (!inventoryBytes) invalid();
   decodeHostedInventoryBytes(inventoryBytes);
   return { hostId: inventory.hostId, runtimeDirectory, runtimeSha: stage.runtimeSha,

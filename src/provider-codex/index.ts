@@ -36,7 +36,7 @@ export { assertHostedProcessDescriptors } from "./app-server/adapters/hosted-pro
 export { verifySystemBusInfrastructure } from "./app-server/adapters/system-bus-infrastructure";
 export { verifyPinnedFdCollectorProfile } from "./app-server/adapters/hosted-fd-observation";
 export { withHostedActivationFence, assertHostedActivationFence, assertHostedActivationOperator,
-  readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission,
+  readHostedActivationBytes, selectedHostedInstallationRecordName, decodeHostedActivationBytes, requiresHostedProcessAdmission,
   assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter, retainHostedScopedActorChain, observeHostedScopedActorChildren } from "./app-server/adapters/hosted-process-activation";
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
 

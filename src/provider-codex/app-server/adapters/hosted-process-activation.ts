@@ -8,6 +8,7 @@ import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-or
 import { hostedFdLaunch } from "./hosted-fd-launch";
 import type { ChildProcess } from "node:child_process";
 import { decodeHostedInventoryBytes, parseHostedOrdinaryOwnedIdentity, parseHostedInventoryV5, type HostedInventoryV5 } from "../../../core/host-infrastructure/host-inventory";
+import { hostedSelectedFileName, hostedSelectionRecordName, parseHostedInstallationSelection, type HostedSelectedRecordName } from "../../../core/host-infrastructure/host-installation-successor";
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
@@ -35,6 +36,7 @@ import { assertHostedActivationFence as assertCommonHostedActivationFence, asser
 export { assertHostedActivationOperator, decodeHostedActivationBytes,
   isHostedActivationFenceBusy, readHostedActivationBytes, withHostedActivationFence } from "./hosted-activation-fence";
 export type { HostedActivationFence } from "./hosted-activation-fence";
+export { resolveSelectedInstallationRecord, selectedHostedInstallationRecordName } from "./hosted-activation-fence";
 
 // Private fixed completed-removal composition; deliberately not provider-index API.
 // This REPLACES ordinary finally/rmdir, never nests inside that lifecycle.
@@ -150,7 +152,10 @@ function collectHostedOrdinaryProcessFacts(fence: HostedActivationFence) {
     if (readHostedActivationBytes(pending)) invalid();
   }
   const installation = requiredWire("host-installation.json", installationKeys).value;
-  const activation = requiredWire("host-activation.json", activationKeys).value;
+  const activationBytes = readHostedActivationBytes("host-activation.json");
+  const selecting = !!activationBytes && "installationSelectionSha256" in (decodeHostedActivationBytes(activationBytes) as Wire);
+  const activation = requiredWire("host-activation.json", activationKeys + (selecting ? ",installationSelectionSha256" : "")).value;
+  if (selecting) digestValue(activation.installationSelectionSha256);
   if (installation.schemaVersion !== 1 || activation.schemaVersion !== 1 || activation.phase !== "ORDINARY") invalid();
   str(installation.installationId); str(installation.hostId); canonical(installation.runtimeDirectory);
   str(installation.runtimeSha, /^[a-f0-9]{40}$/); digestValue(installation.runtimeManifestSha256); digestValue(installation.inventorySha256);

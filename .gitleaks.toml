@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic synthetic idempotency keys used only by unit tests"
+paths = [
+  '''src/worker-codex/tests/codex-goal-project-controlled-runtime-interruption-continuation\.test\.ts''',
+  '''src/worker-codex/tests/codex-goal-mcp-project-control-guidance\.test\.ts''',
+]
+regexes = [
+  '''idempotencyKey:\s*"(?:idempotency-1|guidance-urgent-[^"]+)"''',
+]
