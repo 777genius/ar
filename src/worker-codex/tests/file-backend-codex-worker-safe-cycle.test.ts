@@ -295,22 +295,15 @@ describe("CommandPolicyRunner", () => {
 
   it("survives transient proxy and transport failures through the same-account reconnect repair", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-safe-reconnect-transient-"));
-    const workspacePath = await gitWorkspace(
-      "codex-safe-reconnect-transient-workspace-",
-    );
+    const workspacePath = await gitWorkspace("codex-safe-reconnect-transient-workspace-");
     const clock = {
       now: () => new Date("2026-05-31T00:05:00.000Z"),
       monotonicMs: () => performance.now(),
     };
-    const transientProxy =
-      'codex_app_server_error: proxy_upstream_failed {"upstream_status":503}';
+    const transientProxy = 'codex_app_server_error: proxy_upstream_failed {"upstream_status":503}';
     const appServers = [
       new FakeAppServerFactory({
-        emitTopLevelErrorsOnTurns: [
-          transientProxy,
-          "codex_app_server_error: waiting for network to become reachable",
-          null,
-        ],
+        emitTopLevelErrorsOnTurns: [transientProxy, "codex_app_server_error: waiting for network to become reachable", null],
       }),
       new FakeAppServerFactory(),
     ];
@@ -325,15 +318,8 @@ describe("CommandPolicyRunner", () => {
           codexBinaryPath: "codex",
           encryptionKey: new Uint8Array(32).fill(index + 67),
           appServerProcessFactory: appServer.create,
-          runner: new StaticRunner({
-            exitCode: index === 0 ? 1 : 0,
-            stdout: "",
-            stderr: index === 0 ? transientProxy : "",
-          }),
-          capacityPolicy: {
-            reconnectCooldownMs: 10,
-            maxReconnectRetriesPerAccount: 1,
-          },
+          runner: new StaticRunner({ exitCode: index === 0 ? 1 : 0, stdout: "", stderr: index === 0 ? transientProxy : "" }),
+          capacityPolicy: { reconnectCooldownMs: 10, maxReconnectRetriesPerAccount: 1 },
           clock,
         },
       })),
@@ -356,9 +342,7 @@ describe("CommandPolicyRunner", () => {
       expect(result.attempts).toHaveLength(2);
       expect(result.attempts[0]?.failureReason).toBe("reconnect_required");
       expect(appServers[0]!.prompts).toHaveLength(3);
-      expect(appServers[0]!.prompts[1]).toBe(
-        "Implement the transient proxy task.",
-      );
+      expect(appServers[0]!.prompts[1]).toBe("Implement the transient proxy task.");
       expect(appServers[0]!.prompts[2]).toContain("Continue the same task");
       expect(appServers[1]!.prompts).toEqual([]);
     } finally {
