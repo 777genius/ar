@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, lstatSync, openSync, readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,9 @@ import { DependencyManifestStorageFailure as BlobFailure, LocalDependencyManifes
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", blocked: false, mountAlias: "", fence: Object.freeze({ held: true as const }), inventory: {} as unknown }));
 const policyRoot = "/var/lib/subscription-runtime-host-policy", scratch = "/mnt/TEST-private-scratch";
 function local(path: string): string {
+  // CI runs with TMPDIR on the private scratch tmpfs, so the fixture root is
+  // real state inside the scratch policy prefix: never remap it a second time.
+  if (fixture.root && (path === fixture.root || path.startsWith(fixture.root + "/"))) return path;
   if (path === scratch || path.startsWith(scratch + "/")) return join(fixture.root, "scratch", path.slice(scratch.length));
   if (path === policyRoot || path.startsWith(policyRoot + "/")) return join(fixture.root, "policy", path.slice(policyRoot.length));
   const volatile = "/run/user/0/subscription-runtime-host-policy";
@@ -96,7 +99,10 @@ async function issued() { await configure(); issue(fixture.fence, installation()
 type Store = Awaited<ReturnType<typeof open>>;
 let store: Store | undefined;
 beforeEach(async () => {
-  fixture.root = await realpath(await mkdtemp(join(tmpdir(), "manifest-placement-TEST-"))); fixture.blocked = false; fixture.mountAlias = "";
+  // The mocked realpath maps through the policy scratch root and would remap
+  // the fixture root itself; canonicalize it with the real filesystem module.
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  fixture.root = await actual.realpath(await actual.mkdtemp(join(tmpdir(), "manifest-placement-TEST-"))); fixture.blocked = false; fixture.mountAlias = "";
   for (const dir of ["policy", "scratch", "volatile", "volatile/codex-readonly-stages"]) await mkdir(join(fixture.root, dir), { mode: 0o700 });
   const jobRoot = policyRoot + "/dependency-test-jobs/jobs/TEST-placement", workspace = jobRoot + "/workspace";
   const launch = { command: process.execPath, args: [runtimeDirectory + "/dist/worker-codex/codex-goal-cli.js", "run"], cwd: workspace };
