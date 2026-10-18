@@ -38,8 +38,10 @@ function assertColdOwner(unit: string, owner: { process: ResearchProcessIdentity
       p.controlGroup !== researchControlGroup(unit) || s.controlGroup !== p.controlGroup || !/^[a-f0-9]{64}$/.test(s.fragmentSha256)) researchInvalid();
   try { lstatSync(`/proc/${p.pid}`); researchInvalid(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  // The queued-job field is the same manager fact `list-jobs` reported per unit,
+  // read in this one show snapshot alongside the unit's own state fields.
   const fields = Object.fromEntries(researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager",
-    "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,InvocationID,Description,FragmentPath,DropInPaths,KillMode"])
+    "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,InvocationID,Description,FragmentPath,DropInPaths,KillMode,Job"])
     .trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
   if (fields.Id !== unit || fields.MainPID !== "0" || !["inactive", "failed"].includes(fields.ActiveState ?? "") ||
       !["loaded", "not-found"].includes(fields.LoadState ?? "")) researchInvalid();
@@ -55,8 +57,7 @@ function assertColdOwner(unit: string, owner: { process: ResearchProcessIdentity
     const rows = readFileSync(join(group, "cgroup.events"), "utf8").split("\n").filter(row => /^populated\s/.test(row));
     if (rows.length !== 1 || rows[0] !== "populated 0") researchInvalid();
   }
-  if (researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]).trim().split("\n")
-    .some(row => row.trim().split(/\s+/)[1] === unit)) researchInvalid();
+  if (!Object.hasOwn(fields, "Job") || (fields.Job !== "" && fields.Job !== "no")) researchInvalid();
 }
 function retainedInputs(current: ReturnType<typeof researchCurrentStart>, candidate = true) {
   const { spec, directory } = current, root = researchJobAuthority(spec.request.jobId);
