@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
+import { classifyOwnedProxyStderr, classifyTransientStartFailure, ownedProxyOptionNames, ownedProxyPropertyNames } from "./transient-start-diagnostic.ts";
 const sample = (text: string) => {
   const bytes = Buffer.from(text);
   return classifyTransientStartFailure(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
@@ -57,4 +57,49 @@ test("exact socket-operation text yields a category without errno or raw body", 
   assert(!JSON.stringify(facts).includes("Socket operation on non-socket"));
   for (const near of [text.replace("non-socket", "non-socket."), text.replace("Socket", "socket"),
     text.replace("non-socket", "non-socket 88"), text.slice(0, -1)]) assert.equal(sample(near).message, "unknown");
+});
+
+test("owned proxy diagnostics distinguish argv and connection prefixes without publishing values", () => {
+  const cases = [
+    ["Failed to parse service property: PRIVATE_CANARY", "failed_to_parse"],
+    ["Unknown assignment: PRIVATE_CANARY", "unknown_assignment"],
+    ["Failed to set unit properties: PRIVATE_CANARY", "failed_to_set_unit_properties"],
+    ["Failed to create bus connection: PRIVATE_CANARY", "failed_to_create_bus_connection"],
+    ["Failed to connect to system scope bus via local transport: PRIVATE_CANARY", "failed_to_connect"],
+    ["Failed to find executable /PRIVATE_CANARY", "failed_to_find_executable"],
+    ["Failed to execute /PRIVATE_CANARY", "failed_to_execute"],
+    ["Failed to start transient service unit: PRIVATE_CANARY", "failed_to_start_transient_service_unit"],
+    ["/usr/bin/systemd-run: unrecognized option '--PRIVATE_CANARY'", "unrecognized_option"],
+    ["systemd-run: invalid option -- PRIVATE_CANARY", "invalid_option"],
+  ];
+  for (const [text, prefix] of cases) {
+    const bytes = Buffer.from(text + "\n");
+    const facts = classifyOwnedProxyStderr(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
+    assert.deepEqual(facts, { state: "complete", prefix, optionPresenceBits: 0, propertyPresenceBits: 0 });
+    assert(!JSON.stringify(facts).includes("PRIVATE_CANARY"));
+  }
+});
+
+test("owned proxy exports only exact fixed recipe option and property bits", () => {
+  const text = "Failed to parse --property=UnsetEnvironment=PRIVATE_CANARY --collect --collect-extra PrivateUnsetEnvironment=PRIVATE_CANARY\n";
+  const bytes = Buffer.from(text), context = { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length };
+  const facts = classifyOwnedProxyStderr(bytes, context);
+  assert.equal(facts.optionPresenceBits, 2 ** ownedProxyOptionNames.indexOf("--property") + 2 ** ownedProxyOptionNames.indexOf("--collect"));
+  assert.equal(facts.propertyPresenceBits, 2 ** ownedProxyPropertyNames.indexOf("UnsetEnvironment"));
+  assert.deepEqual(Object.keys(facts).sort(), ["state", "prefix", "optionPresenceBits", "propertyPresenceBits"].sort());
+  assert(!JSON.stringify(facts).includes("PRIVATE_CANARY"));
+  for (const input of ["Unknown assignmentSecret\n", "Failed to parser PRIVATE_CANARY\n", "private/--collect-extra UnsetEnvironmentSuffix\n"]) {
+    const value = Buffer.from(input);
+    assert.deepEqual(classifyOwnedProxyStderr(value, { fullBytes: value.length, offset: 0, initialBytes: value.length, currentBytes: value.length }),
+      { state: "complete", prefix: "unknown", optionPresenceBits: 0, propertyPresenceBits: 0 });
+  }
+  for (const input of [text.slice(0, -1), text + "PRIVATE_CANARY\n", text.replace("PRIVATE_CANARY", "\u0000PRIVATE_CANARY"),
+    text.replace("PRIVATE_CANARY", "ÁPRIVATE_CANARY"), "x".repeat(4097)]) {
+    const value = Buffer.from(input);
+    const rejected = classifyOwnedProxyStderr(value, { fullBytes: value.length, offset: 0, initialBytes: value.length, currentBytes: value.length });
+    assert.equal(rejected.prefix, "unknown"); assert.equal(rejected.optionPresenceBits, 0); assert.equal(rejected.propertyPresenceBits, 0);
+    assert.notEqual(rejected.state, "complete");
+  }
+  const changing = classifyOwnedProxyStderr(bytes, { ...context, currentBytes: bytes.length + 1 });
+  assert.deepEqual(changing, { state: "partial", prefix: "unknown", optionPresenceBits: 0, propertyPresenceBits: 0 });
 });

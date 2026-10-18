@@ -1,5 +1,5 @@
 import { qualifyIoUringEffects } from "./io-uring.ts";
-import { classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
+import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -1283,11 +1283,11 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
           const opened = fstatSync(fd); assert.equal(opened.dev, before.dev); assert.equal(opened.ino, before.ino);
           const tail = Buffer.alloc(Math.min(opened.size, 32768)); const count = readSync(fd, tail, 0, tail.length, Math.max(0, opened.size - tail.length));
           const current = lstatSync(path); assert.equal(current.dev, before.dev); assert.equal(current.ino, before.ino);
+          const sample = { fullBytes: opened.size, offset: Math.max(0, opened.size - tail.length), initialBytes: before.size, currentBytes: current.size };
           return { slot, present: true, bytes: opened.size, dev: String(opened.dev), ino: String(opened.ino),
             diagnostic: runtimeDiagnostic(tail.subarray(0, count).toString("utf8")),
-            ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), {
-              fullBytes: opened.size, offset: Math.max(0, opened.size - tail.length), initialBytes: before.size, currentBytes: current.size,
-            }) } : {}) };
+            ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), sample),
+              proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample) } : {}) };
         } finally { closeSync(fd); }
       } catch (error) { return { slot, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
     });
