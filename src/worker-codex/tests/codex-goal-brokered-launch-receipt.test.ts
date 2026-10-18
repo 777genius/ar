@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -9,7 +9,10 @@ import {
   type CodexGoalCliIo,
 } from "../codex-goal-cli";
 import { projectControlChildScope } from "../codex-goal-mcp-project-scope";
-import { writeBrokeredLaunchReceipt } from "../application/project-control/codex-goal-brokered-launch-receipt";
+import {
+  brokeredLaunchReceiptPath,
+  writeBrokeredLaunchReceipt,
+} from "../application/project-control/codex-goal-brokered-launch-receipt";
 
 const hostPolicyFixture = vi.hoisted(() => ({ root: "" }));
 // Substitute only an absent policy parent; keep real ancestor custody checks.
@@ -147,8 +150,34 @@ describe("codex goal cli brokered project launch receipt", () => {
       expect(exitCode).not.toBe(0);
       expect(io.stderr).not.toContain("project_control_broker_required");
 
+      // Single-use: the admitted run consumed the receipt, so replaying the
+      // identical raw run is denied again.
+      const replayIo = captureIo();
+      const replayExitCode = await runCodexGoalCli(workerRunArgs(childScope), replayIo);
+      expect(replayExitCode).toBe(2);
+      expect(replayIo.stderr).toContain("project_control_broker_required");
+
+      // A relaunch re-issues the receipt and is admitted again.
+      await issueReceipt(controllerJobId);
+      const relaunchIo = captureIo();
+      const relaunchExitCode = await runCodexGoalCli(workerRunArgs(childScope), relaunchIo);
+      expect(relaunchExitCode).not.toBe(0);
+      expect(relaunchIo.stderr).not.toContain("project_control_broker_required");
+
+      // A receipt issued outside the freshness window is raw.
+      await issueReceipt(controllerJobId);
+      const receiptPath = brokeredLaunchReceiptPath(childJobRoot);
+      const staleReceipt = JSON.parse(await readFile(receiptPath, "utf8"));
+      staleReceipt.issuedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      await writeFile(receiptPath, `${JSON.stringify(staleReceipt)}\n`);
+      const staleIo = captureIo();
+      const staleExitCode = await runCodexGoalCli(workerRunArgs(childScope), staleIo);
+      expect(staleExitCode).toBe(2);
+      expect(staleIo.stderr).toContain("project_control_broker_required");
+
       // A scope that differs from the registered manifest is raw, even though
       // the manifest exists, the receipt is current and the controller adopts.
+      await issueReceipt(controllerJobId);
       const tamperedIo = captureIo();
       const tamperedExitCode = await runCodexGoalCli(
         workerRunArgs({ ...childScope, readRoots: [join(root, "elsewhere")] }),
@@ -156,6 +185,46 @@ describe("codex goal cli brokered project launch receipt", () => {
       );
       expect(tamperedExitCode).toBe(2);
       expect(tamperedIo.stderr).toContain("project_control_broker_required");
+
+      // A newer overlapping controller must not shadow the receipt's controller.
+      const overlappingJobId = "infinity-context-aaa-overlapping-controller";
+      const overlappingCommand = parseCodexGoalCliArgs(
+        [
+          "run",
+          "--job-root",
+          join(root, "jobs", overlappingJobId),
+          "--auth-root",
+          join(root, "auth"),
+          "--workspace",
+          sourceWorkspace,
+          "--prompt",
+          join(root, "jobs", overlappingJobId, "prompt.md"),
+          "--task-id",
+          overlappingJobId,
+          "--job-id",
+          overlappingJobId,
+          "--accounts",
+          "account-a",
+          "--registry-root",
+          registryRoot,
+          "--access-boundary",
+          "project_scoped_control",
+          "--project-access-scope-json",
+          JSON.stringify(projectAccessScope),
+          "--network-access",
+          "restricted",
+          "--no-require-git-workspace",
+        ],
+        fakeIo(),
+      );
+      expect(overlappingCommand.kind).toBe("run");
+      if (overlappingCommand.kind !== "run") return;
+      await upsertRunCommandManifest(overlappingCommand);
+      await issueReceipt(controllerJobId);
+      const overlapIo = captureIo();
+      const overlapExitCode = await runCodexGoalCli(workerRunArgs(childScope), overlapIo);
+      expect(overlapExitCode).not.toBe(0);
+      expect(overlapIo.stderr).not.toContain("project_control_broker_required");
 
       // A receipt issued by another controller binding is raw.
       await issueReceipt("infinity-context-other-controller-v1");
@@ -174,7 +243,7 @@ describe("codex goal cli brokered project launch receipt", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
 });
 
