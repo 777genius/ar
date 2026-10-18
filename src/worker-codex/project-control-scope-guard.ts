@@ -1,4 +1,6 @@
+import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   AccessBoundary,
   type ProjectAccessScope,
@@ -9,6 +11,11 @@ import {
   type CodexGoalJobManifest,
 } from "./codex-goal-jobs";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
+import {
+  BROKERED_LAUNCH_RECEIPT_MAX_AGE_MS,
+  consumeBrokeredLaunchReceipt,
+  readBrokeredLaunchReceipt,
+} from "./application/project-control/codex-goal-brokered-launch-receipt";
 
 export type ProjectControlGenericDenial = Readonly<{
   ok: false;
@@ -80,10 +87,105 @@ export async function projectControlGenericScopeDenial(input: {
   };
 }
 
+/** A registered brokered launch executes exactly the identity that brokered
+ * project-control tooling stored for this job and issued a launch receipt for,
+ * adopted by a live controller scope. The receipt is the broker's own artifact
+ * and is single-use: admission consumes it. Registration alone is
+ * caller-serviceable and never authorizes. A raw CLI run has no brokered
+ * issuance and stays denied. */
+export async function registeredBrokeredProjectLaunchAllowed(input: {
+  readonly registryRootDir: string;
+  readonly jobId: string;
+  readonly config: Pick<
+    CodexGoalRunConfig,
+    "taskId" | "jobRootDir" | "workspacePath" | "promptPath" | "accessBoundary" | "projectAccessScope"
+  >;
+}): Promise<boolean> {
+  const scope = input.config.projectAccessScope;
+  if (!scope) return false;
+  let manifest: CodexGoalJobManifest;
+  try {
+    // Read-only projection: a retired job is never launchable here.
+    manifest = await readCodexGoalJob({
+      registryRootDir: input.registryRootDir,
+      jobId: input.jobId,
+    });
+  } catch {
+    return false;
+  }
+  const receipt = await readBrokeredLaunchReceipt(manifest.jobRootDir);
+  if (
+    !receipt ||
+    receipt.jobId !== input.jobId ||
+    receipt.taskId !== input.config.taskId ||
+    receipt.jobRootDir !== input.config.jobRootDir ||
+    receipt.promptPath !== input.config.promptPath ||
+    receipt.accessBoundary !== input.config.accessBoundary ||
+    !sameScope(receipt.projectAccessScope, scope) ||
+    !(await sameWorkspacePath(receipt.workspacePath, input.config.workspacePath))
+  ) {
+    return false;
+  }
+  const issuedAtMs = Date.parse(receipt.issuedAt);
+  if (
+    !Number.isFinite(issuedAtMs) ||
+    issuedAtMs > Date.now() + 60_000 ||
+    Date.now() - issuedAtMs > BROKERED_LAUNCH_RECEIPT_MAX_AGE_MS
+  ) {
+    return false;
+  }
+  if (
+    manifest.taskId !== input.config.taskId ||
+    manifest.jobRootDir !== input.config.jobRootDir ||
+    manifest.promptPath !== input.config.promptPath ||
+    manifest.accessBoundary !== input.config.accessBoundary ||
+    !sameScope(manifest.projectAccessScope, scope) ||
+    !(await sameWorkspacePath(manifest.workspacePath, input.config.workspacePath))
+  ) {
+    return false;
+  }
+  const controller = await matchingProjectControlController({
+    registryRootDir: input.registryRootDir,
+    jobId: input.jobId,
+    workspacePath: input.config.workspacePath,
+    excludeJobId: input.jobId,
+    expectedJobId: receipt.controllerJobId,
+  });
+  if (
+    controller === undefined ||
+    controller.projectId !== scope.projectId ||
+    controller.jobId !== receipt.controllerJobId
+  ) {
+    return false;
+  }
+  return consumeBrokeredLaunchReceipt(manifest.jobRootDir);
+}
+
+async function sameWorkspacePath(a: string, b: string): Promise<boolean> {
+  if (a === b) return true;
+  try {
+    return (await realpath(a)) === (await realpath(b));
+  } catch {
+    return false;
+  }
+}
+
+function sameScope(
+  a: ProjectAccessScope | undefined,
+  b: ProjectAccessScope | undefined,
+): boolean {
+  return isDeepStrictEqual(
+    JSON.parse(JSON.stringify(a ?? null)),
+    JSON.parse(JSON.stringify(b ?? null)),
+  );
+}
+
 async function matchingProjectControlController(input: {
   readonly registryRootDir: string;
   readonly jobId: string;
   readonly workspacePath?: string | undefined;
+  readonly excludeJobId?: string | undefined;
+  readonly expectedJobId?: string | undefined;
 }): Promise<
   | {
       readonly jobId: string;
@@ -98,6 +200,10 @@ async function matchingProjectControlController(input: {
     return undefined;
   }
   for (const summary of summaries) {
+    if (summary.jobId === input.excludeJobId) continue;
+    if (input.expectedJobId !== undefined && summary.jobId !== input.expectedJobId) {
+      continue;
+    }
     let manifest: CodexGoalJobManifest;
     try {
       // A retired controller's scope still denies generic tools on its paths.

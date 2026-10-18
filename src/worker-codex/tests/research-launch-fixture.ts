@@ -311,10 +311,13 @@ vi.mock("node:child_process", async original => {
       return { status: 0, stdout: "" };
     }
     if (command !== "/usr/bin/systemctl") throw new Error("unexpected TEST process effect");
-    const unit = args[1]!, service = fixture.units.get(unit);
     if (args[0] === "show") {
-      if (fixture.showFailures.has(unit)) return { status: 1, stdout: "" };
-      return { status: 0, stdout: service && (service.active || service.state) ? `Id=${unit}\nLoadState=loaded\nMainPID=${service.pending ? 0 : service.pid}\nControlGroup=${service.pending ? "" : "/system.slice/" + unit}\nInvocationID=${service.pending ? "" : service.invocation}\nDescription=${service.description}\nActiveState=${service.state ?? (service.pending ? "activating" : "active")}\nSubState=${service.pending ? "start" : "running"}\nTransient=yes\nFragmentPath=/run/systemd/transient/${unit}\nDropInPaths=${service.dropIns ?? ""}\nKillMode=control-group\nJob=${fixture.jobs.has(unit) ? "1" : ""}\n` : `Id=${unit}\nLoadState=not-found\nMainPID=0\nActiveState=inactive\nJob=${fixture.jobs.has(unit) ? "1" : ""}\n` };
+      // One show request may carry several units; the manager answers with one
+      // property block per requested unit, blocks separated by a blank line.
+      const requested = args.slice(1).filter(arg => !arg.startsWith("-"));
+      if (requested.some(name => fixture.showFailures.has(name))) return { status: 1, stdout: "" };
+      return { status: 0, stdout: requested.map(unit => { const service = fixture.units.get(unit);
+        return service && (service.active || service.state) ? `Id=${unit}\nLoadState=loaded\nMainPID=${service.pending ? 0 : service.pid}\nControlGroup=${service.pending ? "" : "/system.slice/" + unit}\nInvocationID=${service.pending ? "" : service.invocation}\nDescription=${service.description}\nActiveState=${service.state ?? (service.pending ? "activating" : "active")}\nSubState=${service.pending ? "start" : "running"}\nTransient=yes\nFragmentPath=/run/systemd/transient/${unit}\nDropInPaths=${service.dropIns ?? ""}\nKillMode=control-group\nJob=${fixture.jobs.has(unit) ? "1" : ""}\n` : `Id=${unit}\nLoadState=not-found\nMainPID=0\nActiveState=inactive\nJob=${fixture.jobs.has(unit) ? "1" : ""}\n`; }).join("\n") };
     }
     if (args[0] === "stop") {
       const selected = args.at(-1)!;

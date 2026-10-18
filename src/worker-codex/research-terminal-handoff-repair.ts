@@ -26,9 +26,10 @@ const stoppedIntentName = "stopped-before-provider-release-intent.json", stopped
 function optionalTerminalRepairBytes(path: string, privateFile = true): Buffer | undefined {
   try { return researchRead(path, privateFile); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
+type ColdOwner = { process: ResearchProcessIdentity; service: ResearchServiceIdentity };
 /** Physical closure is required in addition to the root-private original owner.
  * A reused PID is uncertainty too; neither expiry nor unit absence releases it. */
-function assertColdOwner(unit: string, owner: { process: ResearchProcessIdentity; service: ResearchServiceIdentity }, description: string): void {
+function assertColdOwner(unit: string, owner: ColdOwner, description: string, fields: Record<string, string>): void {
   const p = owner.process, s = owner.service, host = researchProcessIdentity();
   parseResearchInitialHostContext({ bootId: p.bootId, machineId: p.machineId, namespaces: p.namespaces });
   if (!Number.isSafeInteger(p.pid) || p.pid < 1 || typeof p.birthTicks !== "string" || !/^[1-9][0-9]*$/.test(p.birthTicks) ||
@@ -38,11 +39,6 @@ function assertColdOwner(unit: string, owner: { process: ResearchProcessIdentity
       p.controlGroup !== researchControlGroup(unit) || s.controlGroup !== p.controlGroup || !/^[a-f0-9]{64}$/.test(s.fragmentSha256)) researchInvalid();
   try { lstatSync(`/proc/${p.pid}`); researchInvalid(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  // The queued-job field is the same manager fact `list-jobs` reported per unit,
-  // read in this one show snapshot alongside the unit's own state fields.
-  const fields = Object.fromEntries(researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager",
-    "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,InvocationID,Description,FragmentPath,DropInPaths,KillMode,Job"])
-    .trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
   if (fields.Id !== unit || fields.MainPID !== "0" || !["inactive", "failed"].includes(fields.ActiveState ?? "") ||
       !["loaded", "not-found"].includes(fields.LoadState ?? "")) researchInvalid();
   if (fields.LoadState === "loaded" && (fields.Description !== description || fields.InvocationID !== s.invocationId ||
@@ -58,6 +54,27 @@ function assertColdOwner(unit: string, owner: { process: ResearchProcessIdentity
     if (rows.length !== 1 || rows[0] !== "populated 0") researchInvalid();
   }
   if (!Object.hasOwn(fields, "Job") || (fields.Job !== "" && fields.Job !== "no")) researchInvalid();
+}
+/** One show snapshot covers the whole cold-owner group: the same per-unit facts
+ * and checks as one spawn per unit, read from a single manager request. The
+ * queued-job field is the same manager fact `list-jobs` reported per unit. */
+function assertColdOwners(rows: readonly { unit: string; owner: ColdOwner; description: string }[]): void {
+  const blocks = researchCommand("/usr/bin/systemctl", ["show", ...rows.map(row => row.unit), "--no-pager",
+    "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,InvocationID,Description,FragmentPath,DropInPaths,KillMode,Job"])
+    .trim().split("\n\n").map(block => Object.fromEntries(block.split("\n").map(line => {
+      const i = line.indexOf("="); if (i < 1) researchInvalid(); return [line.slice(0, i), line.slice(i + 1)];
+    })) as Record<string, string>);
+  const snapshot = new Map<string, Record<string, string>>();
+  for (const block of blocks) {
+    if (typeof block.Id !== "string" || snapshot.has(block.Id)) researchInvalid();
+    snapshot.set(block.Id, block);
+  }
+  if (snapshot.size !== rows.length) researchInvalid();
+  for (const row of rows) {
+    const facts = snapshot.get(row.unit);
+    if (!facts) researchInvalid();
+    assertColdOwner(row.unit, row.owner, row.description, facts);
+  }
 }
 function retainedInputs(current: ReturnType<typeof researchCurrentStart>, candidate = true) {
   const { spec, directory } = current, root = researchJobAuthority(spec.request.jobId);
@@ -90,15 +107,17 @@ function retainedInputs(current: ReturnType<typeof researchCurrentStart>, candid
     if (candidate) { assertResearchMimoResultDirectories(current); readResearchMimoCandidate(current); }
     const owner = readResearchStartBinding(directory);
     if (owner.specSha256 !== researchHash(current.bytes)) researchInvalid();
-    assertColdOwner(spec.unit, owner, researchDescription(spec.request.jobId, owner.specSha256));
+    const cold: { unit: string; owner: ColdOwner; description: string }[] =
+      [{ unit: spec.unit, owner, description: researchDescription(spec.request.jobId, owner.specSha256) }];
     for (const unit of units) {
       const reservation = readResearchProviderReservation(directory, unit);
       const provider = researchRecord(researchJson(researchRead(join(directory, "providers", unit + ".owner.json"))), "schemaVersion,process,service");
       if (provider.schemaVersion !== 1 || reservation.specSha256 !== owner.specSha256) researchInvalid();
       researchRecord(provider.process, "pid,birthTicks,bootId,machineId,controlGroup,namespaces");
       researchRecord(provider.service, "unit,mainPid,controlGroup,invocationId,description,fragmentSha256");
-      assertColdOwner(unit, provider as unknown as { process: ResearchProcessIdentity; service: ResearchServiceIdentity }, reservation.description);
+      cold.push({ unit, owner: provider as unknown as ColdOwner, description: reservation.description });
     }
+    assertColdOwners(cold);
   };
   assertCurrent(); return { rows, starts, assertCurrent };
 }
