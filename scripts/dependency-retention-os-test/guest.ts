@@ -1,3 +1,4 @@
+import { prepareFreshDependencyManifestPolicy, qualifyFreshDependencyManifestPlacement } from "./manifest-placement.ts";
 import { observeOwnedSyntheticInstallerFailure } from "./owned-installer-diagnostic.ts";
 import { qualifyIoUringEffects } from "./io-uring.ts";
 import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
@@ -165,6 +166,8 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
     throw error;
   }
+  evidence.kernelGatePhase = "fresh_manifest_storage_configuration";
+  evidence.manifestStorageConfiguration = prepareFreshDependencyManifestPolicy();
   evidence.kernelGatePhase = "cold_installation";
   const store = new HostedInstallationActivationStore();
   try { store.install(); }
@@ -173,6 +176,8 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
     throw error;
   }
+  evidence.kernelGatePhase = "fresh_manifest_placement_readback";
+  evidence.manifestStoragePlacement = await qualifyFreshDependencyManifestPlacement();
   results.push({ scenario: "unchanged_cold_host_installation", result: "qualified_actual_finite_inventory", controlGroup });
   evidence.kernelGatePhase = "research_shared_host_early_denial";
   assertResearchInitialRoot(true);
