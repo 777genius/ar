@@ -22,7 +22,8 @@ vi.mock("../hosted-readonly-host-kernel",()=>({readHostedReadonlyHostInventory:(
   HostedReadonlyHostKernel:class {operatorSession(){return {hostId:"a".repeat(32),bootId:"11111111-1111-1111-1111-111111111111",supervisorId:"100:200"};}
     verifyExclusiveInventory(){} verifyDescriptorBoundary(){}}}));
 vi.mock("../../provider-codex/app-server/adapters/hosted-process-activation",()=>({
-  assertHostedActivationFence:(value:unknown)=>{if(value!==state.fence)throw new Error("TEST unheld fence");},assertHostedActivationOperator(){}}));
+  assertHostedActivationFence:(value:unknown)=>{if(value!==state.fence)throw new Error("TEST unheld fence");},assertHostedActivationOperator(){},
+  selectedHostedInstallationRecordName:(name:string)=>name}));
 const root="/var/lib/subscription-runtime-host-policy",job=root+"/dependency-test-jobs/jobs/TEST-parent";
 const runtime=fileURLToPath(new URL("../../../",import.meta.url)).replace(/\/$/,"");
 const hash=(bytes:Buffer)=>createHash("sha256").update(bytes).digest("hex"),encode=(value:unknown)=>Buffer.from(JSON.stringify(value)+"\n");

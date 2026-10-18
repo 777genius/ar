@@ -42,8 +42,10 @@ function fixture() {
     "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
     ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-unit-lifecycle", "hosted-fd-unit-policy", "hosted-fd-prelude", "hosted-process-activation",
       "hosted-process-descriptors", "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
-      "system-bus-infrastructure", "systemd-service-arrays"]
+      "system-bus-infrastructure", "systemd-service-arrays", "elf-closure"]
       .map(name => `dist/provider-codex/app-server/adapters/${name}.js`),
+    ...["hosted-ordinary-installation-source-scope", "hosted-runtime-stage-curator", "hosted-fd-collector-profile-issuer", "hosted-runtime-issuer-cli"]
+      .map(name => `dist/worker-codex/${name}.js`),
     ...copied.map(path => "host-integration/" + path)];
   const bytes = (path: string) => Buffer.from("owned candidate " + path + "\n");
   for (const path of required) put(artifact + "/" + path, bytes(path));

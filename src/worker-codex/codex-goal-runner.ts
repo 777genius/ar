@@ -450,9 +450,13 @@ async function runCodexGoalAdmitted(
       // Terminal outcomes publish only through the outside owner's finalization,
       // but the run loop's end must land here: a lingering "running" progress
       // over a dead run is a state mismatch the observation layer refuses to act
-      // on. "stopped" is the outcome-free terminal marker.
-      await progressHeartbeat.stop();
-      await progressHeartbeat.write({ status: "stopped" });
+      // on. "stopped" is the outcome-free terminal marker. The marker is
+      // diagnostics and must never replace the staged result: a poisoned
+      // progress chain (one rejected fs write) would otherwise lose the run.
+      try {
+        await progressHeartbeat.stop();
+        await progressHeartbeat.write({ status: "stopped" });
+      } catch { /* Best-effort terminal marker. */ }
       ownedMimoLifecycle.stage(resultInput);
       return result;
     }
@@ -479,8 +483,10 @@ async function runCodexGoalAdmitted(
       // The failure outcome is deferred exactly like the success outcome above:
       // "stopped" is the only marker the run loop may land on, and the staged
       // candidate carries the failure to the outside owner's finalization.
-      await progressHeartbeat.stop();
-      await progressHeartbeat.write({ status: "stopped" });
+      try {
+        await progressHeartbeat.stop();
+        await progressHeartbeat.write({ status: "stopped" });
+      } catch { /* Best-effort terminal marker; the staged failure stands. */ }
       ownedMimoLifecycle.stage(resultInput);
       throw error;
     }
@@ -496,7 +502,7 @@ async function runCodexGoalAdmitted(
     });
     throw error;
   } finally {
-    await progressHeartbeat.stop();
+    try { await progressHeartbeat.stop(); } catch { /* Diagnostics flush never replaces the result. */ }
     await interruptMonitor.stop();
     try {
       await executor.dispose();
@@ -853,7 +859,7 @@ function createCodexGoalProgressHeartbeat(input: {
     CodexGoalProgressSnapshot,
     "schemaVersion" | "taskId" | "updatedAt" | "pid"
   >) => {
-    writes = writes.then(async () => {
+    const attempt = writes.then(async () => {
       if (stopped && patch.status === "running") return;
       await writeCodexGoalProgress(input.progressPath, {
         schemaVersion: 1,
@@ -863,7 +869,10 @@ function createCodexGoalProgressHeartbeat(input: {
         ...patch,
       });
     });
-    return writes;
+    // A rejected write must not poison the queue: the terminal marker is still
+    // attempted after an earlier failure, while the caller observes its own write.
+    writes = attempt.catch(() => {});
+    return attempt;
   };
   return {
     async write(patch: Omit<
