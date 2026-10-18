@@ -1,5 +1,6 @@
 import { qualifyIoUringEffects } from "./io-uring.ts";
 import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
+import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -218,7 +219,8 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     evidence.kernelGatePhase = mode + "_real_cli";
     const foreground = await runHostedRuntimeForeground(node, args, workspace, env), cliStatus = hostedForegroundExitCode(foreground);
     if (cliStatus !== 0) {
-      try { evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus); }
+      try { evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus,
+        mode === "fresh" && verifyFreshSyntheticDiagnosticInputs(jobId, root, workspace, node, args, env)); }
       catch { evidence.cliFailureObservation = { purpose: "TEST_owned_cli_failure_only", status: cliStatus, unavailable: true }; }
     }
     assert.equal(cliStatus, 0, `actual ${mode} CLI failed`);
@@ -1247,7 +1249,34 @@ function boundedProc(path: string, max: number): string {
   finally { closeSync(fd); }
 }
 
-function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number) {
+function verifyFreshSyntheticDiagnosticInputs(jobId: string, root: string, workspace: string, command: string,
+  args: readonly string[], env: Readonly<Record<string, string | undefined>>): boolean {
+  try {
+    if (process.env.TEST_OS_SCENARIO !== OwnedOsScenario.Dependency || !/^TEST-os-[a-f0-9-]{36}$/.test(jobId) ||
+        root !== policy + "/dependency-test-jobs/jobs/" + jobId || workspace !== root + "/workspace") return false;
+    const read = (path: string, max: number): Buffer => {
+      for (let parent = dirname(path);; parent = dirname(parent)) {
+        const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022));
+        assert.equal(realpathSync(parent), parent); if (parent === "/") break;
+      }
+      const before = lstatSync(path); assert(before.isFile() && !before.isSymbolicLink() && before.uid === 0 && before.nlink === 1 &&
+        !(before.mode & 0o022) && before.size > 0 && before.size <= max);
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        assert(sameSyntheticDiagnosticFile(before, fstatSync(fd)));
+        const bytes = Buffer.alloc(max + 1); let length = 0;
+        while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+        assert.equal(length, before.size);
+        assert(sameSyntheticDiagnosticFile(before, fstatSync(fd)) && sameSyntheticDiagnosticFile(before, lstatSync(path)));
+        return bytes.subarray(0, length);
+      } finally { closeSync(fd); }
+    };
+    return verifiedSyntheticCliInputs({ scenario: process.env.TEST_OS_SCENARIO, phase: "fresh_real_cli", entry: process.argv[1], command,
+      jobId, root, workspace, args, env, providerSha256: digest(read(runtime + "/codex/bin/provider.ts", 32768)),
+      prompt: read(root + "/prompt", 4096), auth: read(root + "/auth/TEST-account/auth.json", 4096) });
+  } catch { return false; }
+}
+function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number, trustedSyntheticInputs = false) {
   const observation: Record<string, unknown> = { purpose: "TEST_owned_cli_failure_only", status };
   const { installation, activation } = readHostedInstallationActivation();
   assert(activation.ordinaryStarts.length <= 32);
@@ -1284,10 +1313,13 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
           const tail = Buffer.alloc(Math.min(opened.size, 32768)); const count = readSync(fd, tail, 0, tail.length, Math.max(0, opened.size - tail.length));
           const current = lstatSync(path); assert.equal(current.dev, before.dev); assert.equal(current.ino, before.ino);
           const sample = { fullBytes: opened.size, offset: Math.max(0, opened.size - tail.length), initialBytes: before.size, currentBytes: current.size };
+          const stable = sameSyntheticDiagnosticFile(before, opened) && sameSyntheticDiagnosticFile(before, current) && sameSyntheticDiagnosticFile(before, fstatSync(fd));
           return { slot, present: true, bytes: opened.size, dev: String(opened.dev), ino: String(opened.ino),
             diagnostic: runtimeDiagnostic(tail.subarray(0, count).toString("utf8")),
             ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), sample),
-              proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample) } : {}) };
+              proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample),
+              ...(trustedSyntheticInputs ? { syntheticStderrDiagnostic: syntheticCliStderrDiagnostic(tail.subarray(0, count), sample,
+                stable, process.env.TEST_SOURCE_SHA ?? "") } : {}) } : {}) };
         } finally { closeSync(fd); }
       } catch (error) { return { slot, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
     });

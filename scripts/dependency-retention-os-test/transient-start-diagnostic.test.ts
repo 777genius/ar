@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { classifyOwnedProxyStderr, classifyTransientStartFailure, ownedProxyOptionNames, ownedProxyPropertyNames } from "./transient-start-diagnostic.ts";
+import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, syntheticProviderSha256, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
+import { cleanEnv } from "./common.ts";
 const sample = (text: string) => {
   const bytes = Buffer.from(text);
   return classifyTransientStartFailure(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
@@ -129,4 +133,60 @@ test("upstream templates identify previously unknown 104-byte lines and option c
     assert.equal(observe(line).templateId, "unknown");
   }
   for (const forbidden of ["PRIVATE_CANARY", "broker:", "unit:", "/PRIVATE", "hidden detail"]) assert(!JSON.stringify(facts).includes(forbidden));
+});
+
+test("synthetic text requires exact fixture inputs and refuses live or changed provenance", () => {
+  const runtime = "/opt/subscription-runtime-dependency-os-TEST", jobId = "TEST-os-11111111-2222-3333-4444-555555555555";
+  const root = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/" + jobId, workspace = root + "/workspace";
+  const args = [runtime + "/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", jobId, "--job-id", jobId,
+    "--job-root", root, "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
+    "--codex-binary", runtime + "/codex/bin/provider.ts", "--model", "TEST-synthetic-model", "--effort", "low", "--timeout", "5m",
+    "--max-goal-turns", "1", "--max-attempts", "1", "--continuation-mode", "disabled", "--registry-root", root + "/state/registry",
+    "--output", root + "/state/TEST-result.json", "--worker-report-mode", "structured-output"];
+  const valid = { scenario: "dependency", phase: "fresh_real_cli", entry: runtime + "/scripts/dependency-retention-os-test/guest.ts",
+    command: runtime + "/toolchain/bin/node", jobId, root, workspace, args,
+    env: { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+    providerSha256: createHash("sha256").update(readFileSync(new URL("./provider.ts", import.meta.url))).digest("hex"),
+    prompt: Buffer.from("Execute the fixed dependency-reading TEST probe. This is a synthetic provider protocol fixture.\n"),
+    auth: Buffer.from(JSON.stringify({ auth_mode: "chatgpt", tokens: { refresh_token: "TEST-NOT-A-CREDENTIAL" }, last_refresh: "2026-10-18T00:00:00.000Z" }) + "\n") };
+  assert(verifiedSyntheticCliInputs(valid));
+  assert.equal(valid.providerSha256, syntheticProviderSha256);
+  const sample = Buffer.from("Unclassified fixture failure\n"), context = { fullBytes: sample.length, offset: 0, initialBytes: sample.length, currentBytes: sample.length };
+  assert.equal(syntheticCliStderrDiagnostic(sample, context, verifiedSyntheticCliInputs(valid), "a".repeat(40)).state, "captured");
+  for (const patch of [{ scenario: "current-dependency" }, { phase: "hot_real_cli" }, { entry: "/private/other.ts" },
+    { providerSha256: "0".repeat(64) }, { root: "/real/job" }, { command: "/usr/bin/node" }, { prompt: Buffer.from("user data") },
+    { env: { ...valid.env, OPENAI_API_KEY: "PRIVATE_CANARY" } }, { args: args.map(value => value === "TEST-account" ? "real-account" : value) },
+    { args: args.map(value => value === "TEST-synthetic-model" ? "gpt-6.1-sol" : value) },
+    { auth: Buffer.from(valid.auth.toString().replace("TEST-NOT-A-CREDENTIAL", "PRIVATE_CANARY")) },
+    { auth: Buffer.from(valid.auth.toString().replace('"auth_mode":', '"private":"PRIVATE_CANARY","auth_mode":')) },
+    { auth: Buffer.from(valid.auth.toString().replace('"auth_mode":', '"auth_mode":"PRIVATE_CANARY","auth_mode":')) }]) {
+    const verified = verifiedSyntheticCliInputs({ ...valid, ...patch }); assert.equal(verified, false);
+    assert.equal(syntheticCliStderrDiagnostic(sample, context, verified, "a".repeat(40)).state, "unavailable");
+  }
+});
+
+test("bounded synthetic text redacts identities, rejects unsafe samples and retains no secret canary", () => {
+  const sha = "a".repeat(40), uuid = "11111111-2222-3333-4444-555555555555";
+  const observe = (text: string, trusted = true, change = {}) => {
+    const bytes = Buffer.from(text);
+    return syntheticCliStderrDiagnostic(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length, ...change }, trusted, sha);
+  };
+  const result = observe(`Unclassified /var/lib/TEST-${uuid}/PRIVATE_CANARY failed for unit TEST-${uuid} at ${sha} TEST-NOT-A-CREDENTIAL\n`);
+  assert.equal(result.state, "captured");
+  assert('redactedText' in result && result.redactedText.includes("Unclassified <path> failed"));
+  for (const value of [uuid, sha, "PRIVATE_CANARY", "TEST-NOT-A-CREDENTIAL", "/var/lib"]) assert(!JSON.stringify(result).includes(value));
+  for (const text of ["Authorization: Bearer PRIVATE_CANARY\n", "refresh_token=PRIVATE_CANARY\n", "token=PRIVATE_CANARY\n",
+    "password=PRIVATE_CANARY\n", "api_key=PRIVATE_CANARY\n", "sk-PRIVATE_CANARY\n", "ghs_PRIVATE_CANARY\n",
+    "-----BEGIN PRIVATE KEY-----\n", "b".repeat(64) + "\n", "aB9_".repeat(16) + "\n", "eyJPRIVATE_CANARY.payload.signature\n",
+    "text without newline", "one\ntwo\n", "nonascii Á\n", "control\u0000\n", "x".repeat(4096) + "\n"]) {
+    const refused = observe(text); assert.equal(refused.state, "unavailable"); assert(!('redactedText' in refused));
+    assert(!JSON.stringify(refused).includes("PRIVATE_CANARY"));
+  }
+  assert.equal(observe("plain error\n", false).state, "unavailable");
+  assert.equal(observe("plain error\n", true, { currentBytes: 999 }).state, "unavailable");
+  assert.equal(observe("plain error\n", true, { offset: 1 }).state, "unavailable");
+  const before = { dev: 1, ino: 2, uid: 0, gid: 0, mode: 0o100600, nlink: 1, size: 104, mtimeMs: 10, ctimeMs: 20 };
+  assert(sameSyntheticDiagnosticFile(before, { ...before }));
+  for (const change of [{ ino: 3 }, { mode: 0o100644 }, { nlink: 2 }, { size: 105 }, { mtimeMs: 11 }, { ctimeMs: 21 }, { uid: 1 }])
+    assert.equal(sameSyntheticDiagnosticFile(before, { ...before, ...change }), false);
 });
