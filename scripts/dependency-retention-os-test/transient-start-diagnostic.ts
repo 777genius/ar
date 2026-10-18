@@ -1,3 +1,4 @@
+import { ownedProxyMessageTemplateId, type OwnedProxyMessageTemplateId } from "./owned-proxy-message-catalog.ts";
 // TEST-only message facts. These classes never establish an observed D-Bus errno
 // or authorize a retry, reservation release, property change or launch.
 export const TransientStartMessage = {
@@ -80,11 +81,12 @@ export const ownedProxyPropertyNames = Object.freeze([
 ] as const);
 export interface OwnedProxyStderrFacts {
   state: TransientStartFacts["state"]; prefix: OwnedProxyMessagePrefix;
+  templateId: OwnedProxyMessageTemplateId;
   optionPresenceBits: number; propertyPresenceBits: number;
 }
 export function classifyOwnedProxyStderr(bytes: Uint8Array, sample: TransientStartSample): OwnedProxyStderrFacts {
   const shape = classifyTransientStartFailure(bytes, sample);
-  const unknown: OwnedProxyStderrFacts = { state: shape.state, prefix: OwnedProxyMessagePrefix.Unknown,
+  const unknown: OwnedProxyStderrFacts = { state: shape.state, prefix: OwnedProxyMessagePrefix.Unknown, templateId: "unknown",
     optionPresenceBits: 0, propertyPresenceBits: 0 };
   if (shape.state === "oversize" || shape.state === "partial" || !shape.ascii || shape.lineCount !== 1 ||
       bytes[bytes.length - 1] !== 10 || sample.offset !== 0 || sample.fullBytes !== bytes.length ||
@@ -111,5 +113,6 @@ export function classifyOwnedProxyStderr(bytes: Uint8Array, sample: TransientSta
     return value | (new RegExp(`(?:^|[^A-Za-z0-9_-])${escaped}(?=$|[^A-Za-z0-9_-])`).test(line) ? 2 ** index : 0);
   }, 0);
   return { state: "complete", prefix: matched?.[1] ?? OwnedProxyMessagePrefix.Unknown,
+    templateId: ownedProxyMessageTemplateId(line.slice(0, -1)),
     optionPresenceBits: bits(ownedProxyOptionNames), propertyPresenceBits: bits(ownedProxyPropertyNames) };
 }

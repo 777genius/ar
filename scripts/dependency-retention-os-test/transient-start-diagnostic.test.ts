@@ -75,7 +75,8 @@ test("owned proxy diagnostics distinguish argv and connection prefixes without p
   for (const [text, prefix] of cases) {
     const bytes = Buffer.from(text + "\n");
     const facts = classifyOwnedProxyStderr(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
-    assert.deepEqual(facts, { state: "complete", prefix, optionPresenceBits: 0, propertyPresenceBits: 0 });
+    assert.equal(facts.state, "complete"); assert.equal(facts.prefix, prefix);
+    assert.equal(facts.optionPresenceBits, 0); assert.equal(facts.propertyPresenceBits, 0);
     assert(!JSON.stringify(facts).includes("PRIVATE_CANARY"));
   }
 });
@@ -86,20 +87,46 @@ test("owned proxy exports only exact fixed recipe option and property bits", () 
   const facts = classifyOwnedProxyStderr(bytes, context);
   assert.equal(facts.optionPresenceBits, 2 ** ownedProxyOptionNames.indexOf("--property") + 2 ** ownedProxyOptionNames.indexOf("--collect"));
   assert.equal(facts.propertyPresenceBits, 2 ** ownedProxyPropertyNames.indexOf("UnsetEnvironment"));
-  assert.deepEqual(Object.keys(facts).sort(), ["state", "prefix", "optionPresenceBits", "propertyPresenceBits"].sort());
+  assert.deepEqual(Object.keys(facts).sort(), ["state", "prefix", "templateId", "optionPresenceBits", "propertyPresenceBits"].sort());
   assert(!JSON.stringify(facts).includes("PRIVATE_CANARY"));
   for (const input of ["Unknown assignmentSecret\n", "Failed to parser PRIVATE_CANARY\n", "private/--collect-extra UnsetEnvironmentSuffix\n"]) {
     const value = Buffer.from(input);
     assert.deepEqual(classifyOwnedProxyStderr(value, { fullBytes: value.length, offset: 0, initialBytes: value.length, currentBytes: value.length }),
-      { state: "complete", prefix: "unknown", optionPresenceBits: 0, propertyPresenceBits: 0 });
+      { state: "complete", prefix: "unknown", templateId: "unknown", optionPresenceBits: 0, propertyPresenceBits: 0 });
   }
   for (const input of [text.slice(0, -1), text + "PRIVATE_CANARY\n", text.replace("PRIVATE_CANARY", "\u0000PRIVATE_CANARY"),
     text.replace("PRIVATE_CANARY", "ÁPRIVATE_CANARY"), "x".repeat(4097)]) {
     const value = Buffer.from(input);
     const rejected = classifyOwnedProxyStderr(value, { fullBytes: value.length, offset: 0, initialBytes: value.length, currentBytes: value.length });
-    assert.equal(rejected.prefix, "unknown"); assert.equal(rejected.optionPresenceBits, 0); assert.equal(rejected.propertyPresenceBits, 0);
+    assert.equal(rejected.prefix, "unknown"); assert.equal(rejected.templateId, "unknown");
+    assert.equal(rejected.optionPresenceBits, 0); assert.equal(rejected.propertyPresenceBits, 0);
     assert.notEqual(rejected.state, "complete");
   }
   const changing = classifyOwnedProxyStderr(bytes, { ...context, currentBytes: bytes.length + 1 });
-  assert.deepEqual(changing, { state: "partial", prefix: "unknown", optionPresenceBits: 0, propertyPresenceBits: 0 });
+  assert.deepEqual(changing, { state: "partial", prefix: "unknown", templateId: "unknown", optionPresenceBits: 0, propertyPresenceBits: 0 });
+});
+
+test("upstream templates identify previously unknown 104-byte lines and option conflicts with no raw captures", { timeout: 1000 }, () => {
+  const prefix = "Can't determine if bus connection is direct or to broker: ";
+  const text = prefix + "PRIVATE_CANARY".padEnd(104 - prefix.length - 1, "x") + "\n";
+  assert.equal(Buffer.byteLength(text), 104);
+  const observe = (line: string) => {
+    const bytes = Buffer.from(line);
+    return classifyOwnedProxyStderr(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
+  };
+  const facts = observe(text);
+  assert.deepEqual(facts, { state: "complete", prefix: "unknown", templateId: "run_bus_connection_kind", optionPresenceBits: 0, propertyPresenceBits: 0 });
+  assert.equal(observe("--wait may not be combined with --scope.\n").templateId, "run_wait_scope");
+  assert.equal(observe("If --shell is used, no command line is expected.\n").templateId, "run_shell_command_conflict");
+  assert.equal(observe("Failed to query unit state: Unit PRIVATE_CANARY not loaded.\n").templateId, "run_query_unit_state");
+  assert.equal(observe("Failed to find executable /PRIVATE_CANARY: hidden detail\n").templateId, "run_find_executable");
+  assert.equal(observe("Invalid syntax: PRIVATE_CANARY\n").templateId, "property_invalid_syntax");
+  assert.equal(observe("Not an assignment: PRIVATE_CANARY\n").templateId, "property_not_assignment");
+  assert.equal(observe("Invalid UUID size, 16 != 17.\n").templateId, "run_uuid_size");
+  for (const line of [text.slice(0, -1), text + "private\n", text.replace("PRIVATE", "\u001bPRIVATE"),
+    "x" + text, "--wait may not be combined with --scope. extra\n", "Invalid UUID size, PRIVATE_CANARY != 17.\n",
+    "Unique name " + " has unexpected format.".repeat(150) + "PRIVATE_CANARY\n"]) {
+    assert.equal(observe(line).templateId, "unknown");
+  }
+  for (const forbidden of ["PRIVATE_CANARY", "broker:", "unit:", "/PRIVATE", "hidden detail"]) assert(!JSON.stringify(facts).includes(forbidden));
 });
