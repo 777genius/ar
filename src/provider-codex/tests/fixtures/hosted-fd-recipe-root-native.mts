@@ -152,7 +152,10 @@ if (process.argv[2] === "--diagnostic-case") {
   stage = "setup_observe"; process.stdout.write(checkedMaps(command("/usr/sbin/chroot", [outer, process.execPath, self, "--observe"], "chroot_observe")));
   process.stdout.write("TEST owned RootDirectory image projection accepted\n");
 } else if (process.argv[2] === "--observe") {
-  stage = "observe_runtime"; directory(root); runtime(root); directory(root + "/proc");
+  stage = "observe_runtime"; directory(root);
+  // unshare --mount --propagation=private needs a mount-point root (EINVAL otherwise).
+  command("/usr/bin/mount", ["--bind", root, root], "mount_bind");
+  runtime(root); directory(root + "/proc");
   const argv = [...hostedFdNamespacePrefix, process.execPath, "-e", "process.stdout.write('TEST-ready\\n');process.stdin.resume()"];
   stage = "observe_pins"; const pins = ["/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini", "/usr/bin/systemd-run"].map(path => ({ path,
     sha256: createHash("sha256").update(readFileSync(path)).digest("hex"), elfFiles: [] }));
