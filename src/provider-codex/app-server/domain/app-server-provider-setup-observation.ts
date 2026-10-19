@@ -1,3 +1,4 @@
+import { formatNamespaceFailure } from "./app-server-namespace-failure";
 import { validatedObserverFailure, type AppServerObserverFailure } from "./app-server-observer-failure";
 /** Closed observations of a failed setup, never release or retry authority. */
 export enum AppServerProviderSetupStage { WaitingReady = "waiting_ready", Observing = "observing", FinalRelease = "final_release" }
@@ -98,9 +99,9 @@ export function appServerProviderSetupFailureCause(child: object): Error | undef
   if (!fact) return undefined;
   const message = `app_server_setup stage=${fact.stage} checkpoint=${fact.checkpoint} code=${fact.code} ready=${Number(fact.ready)} released=${Number(fact.released)} elapsed_ms_capped=${fact.elapsedMsCapped} limit_ms=${fact.limitMs}` +
     (fact.collectAttempts === undefined ? "" : ` attempts=${fact.collectAttempts} first_collect_ms=${fact.firstCollectElapsedMsCapped} checkpoint_entry_ms=${fact.checkpointEntryElapsedMsCapped} budget_expired=${Number(fact.budgetExpired)}`) +
-    (fact.observer ? ` observer=${fact.observer.point} observer_code=${fact.observer.code} errno=${fact.observer.errno} observer_ms_capped=${fact.observer.elapsedMsCapped}` : "") +
+    (fact.observer ? ` observer=${fact.observer.point} observer_code=${fact.observer.code} errno=${fact.observer.errno} observer_ms_capped=${fact.observer.elapsedMsCapped}${fact.observer.namespace ? ` ns=${formatNamespaceFailure(fact.observer.namespace)}` : ""}` : "") +
     // Positional closed samples: checkpoint, code, first rejection/entry ms, observer point/code/errno/ms, count.
-    (fact.rejections ? fact.rejections.map((row, index) => ` rejection${index + 1}=${row.checkpoint},${row.code},${row.elapsedMsCapped},${row.checkpointEntryElapsedMsCapped},${row.observer.point},${row.observer.code},${row.observer.errno},${row.observer.elapsedMsCapped},${row.count}`).join("") + ` omitted_rejections=${fact.omittedRejections}` : "");
+    (fact.rejections ? fact.rejections.map((row, index) => ` rejection${index + 1}=${row.checkpoint},${row.code},${row.elapsedMsCapped},${row.checkpointEntryElapsedMsCapped},${row.observer.point},${row.observer.code},${row.observer.errno},${row.observer.elapsedMsCapped},${row.count}${row.observer.namespace ? `~${formatNamespaceFailure(row.observer.namespace)}` : ""}`).join("") + ` omitted_rejections=${fact.omittedRejections}` : "");
   const cause = new Error(message); causes.set(cause, message); return cause;
 }
 /** Only a genuine snapshot, via one own data cause. No message/getter parsing. */

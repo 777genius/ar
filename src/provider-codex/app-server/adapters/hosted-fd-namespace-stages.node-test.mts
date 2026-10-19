@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {hostedFdNamespacePrefix,hostedFdNamespaceStage,assertHostedFdNamespaceAncestry,type HostedFdNamespaceProcess} from "./hosted-fd-namespace-stages.ts";
+import {hostedFdNamespacePrefix,hostedFdNamespaceStage,assertHostedFdNamespaceAncestry,type HostedFdNamespaceProcess} from "../../../../dist/provider-codex/app-server/adapters/hosted-fd-namespace-stages.js";
 
 // These exercise factual recipe validation only. No supplied facts can enter
 // the original child or original parent WeakMaps or become a custody grant.

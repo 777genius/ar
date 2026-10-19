@@ -4,6 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { FdCollectorRenderer, parseFdCollectorProfile, parseFdCollectorRows } from "../../core/host-infrastructure/fd-collector-profile";
 import * as childTransport from "../app-server/adapters/hosted-fd-child";
 import * as observation from "../app-server/adapters/hosted-fd-observation";
+import * as namespaces from "../app-server/adapters/hosted-fd-namespace-stages";
+import { AppServerNamespaceArgKind } from "../app-server/domain/app-server-namespace-failure";
 import type { HostedActivationFence } from "../app-server/adapters/hosted-process-activation";
 import { hostedFdLaunch, hostedFdReadyMarker, HostedFdLaunchKind, spawnHostedFdChild } from "../app-server/adapters/hosted-fd-launch";
 import { AppServerProviderSetupStage as SetupStage, AppServerProviderSetupCheckpoint as Checkpoint,
@@ -150,6 +152,28 @@ it("preserves the first three distinct ready collector failures when a later pro
     expect(fact.omittedRejections).toBeGreaterThanOrEqual(2); // Repeated fourth kind counts observations, not unique kinds.
     expect(JSON.stringify(fact)).not.toContain("canary");
     test.guard.invalidate();
+  } finally { await test.cleanup(); }
+});
+
+it("distinguishes different closed namespace shapes within the bounded ready-collector history", async () => {
+  const test = await fixture();
+  try {
+    let calls = 0;
+    vi.spyOn(namespaces, "assertHostedFdNamespaceAncestry").mockImplementation(() => {
+      const argv = [...namespaces.hostedFdNamespacePrefix, "/TEST/node", "/TEST/bootstrap.js"];
+      const observed = [...argv]; observed[1] = ++calls < 3 ? "--user" : "TEST-private-canary";
+      if (calls === 3) test.guard.invalidate(); // End this owned test without changing any production deadline.
+      namespaces.hostedFdNamespaceStage(argv, { exe: "/usr/bin/unshare", argv: observed });
+    });
+    let failure: unknown;
+    try { await test.guard.observe(); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe("hosted_fd_boundary_unresolved");
+    const fact = test.guard.providerSetupFailureFact(SetupStage.Observing, failure)!;
+    expect(fact.rejections).toHaveLength(2);
+    expect(fact.rejections?.map(row => row.count)).toEqual([2, 1]);
+    expect(fact.rejections?.map(row => row.observer.namespace?.actor.argKind)).toEqual([AppServerNamespaceArgKind.KnownLiteral, AppServerNamespaceArgKind.Other]);
+    expect(fact.rejections?.every(row => row.checkpoint === Checkpoint.Namespace)).toBe(true);
+    expect(JSON.stringify(fact)).not.toContain("canary");
   } finally { await test.cleanup(); }
 });
 

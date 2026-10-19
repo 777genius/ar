@@ -509,7 +509,8 @@ export class HostedFdLaunch {
   #recordRejection(): void {
     const observer = this.#lastRejectedObserver!;
     const index = this.#rejections.findIndex(row => row.checkpoint === this.#lastRejectedCheckpoint && row.code === this.#lastRejectedCode &&
-      row.observer.point === observer.point && row.observer.code === observer.code && row.observer.errno === observer.errno);
+      row.observer.point === observer.point && row.observer.code === observer.code && row.observer.errno === observer.errno &&
+      JSON.stringify(row.observer.namespace) === JSON.stringify(observer.namespace));
     if (index >= 0) { const row = this.#rejections[index]!; this.#rejections[index] = Object.freeze({ ...row, count: Math.min(65535, row.count + 1) }); }
     else if (this.#rejections.length < 3) this.#rejections.push(Object.freeze({ checkpoint: this.#lastRejectedCheckpoint, code: this.#lastRejectedCode,
       elapsedMsCapped: this.#elapsed(), checkpointEntryElapsedMsCapped: this.#lastRejectedEntryElapsed, observer, count: 1 }));

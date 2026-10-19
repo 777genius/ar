@@ -1,6 +1,7 @@
+import { validatedNamespaceFailure, type AppServerNamespaceFailure } from "./app-server-namespace-failure";
 /** Source-owned failure locations only. None of these observations admit work. */
 export enum AppServerObserverPoint {
-  Native = "native", UnitInventory = "unit_inventory", UnitQuery = "unit_query", UnitDecode = "unit_decode",
+  Namespace = "namespace", Native = "native", UnitInventory = "unit_inventory", UnitQuery = "unit_query", UnitDecode = "unit_decode",
   UnitArrays = "unit_arrays", UnitLifecycle = "unit_lifecycle", UnitGuards = "unit_guards", UnitRequery = "unit_requery", UnitRejoin = "unit_rejoin",
   BusInitial = "bus_initial", BusPins = "bus_pins", BusService = "bus_service", BusSocket = "bus_socket", BusProcess = "bus_process",
   BusEndpoint = "bus_endpoint", BusListener = "bus_listener", BusManager = "bus_manager", BusArrays = "bus_arrays", BusManagedArrays = "bus_managed_arrays",
@@ -11,7 +12,7 @@ export enum AppServerObserverCode { Unknown = "unknown", Boundary = "fd_boundary
 export enum AppServerObserverErrno { None = "none", Unknown = "unknown", ENOENT = "ENOENT", ESRCH = "ESRCH", EACCES = "EACCES",
   EPERM = "EPERM", EIO = "EIO", ENOTDIR = "ENOTDIR", EBADF = "EBADF", ETIMEDOUT = "ETIMEDOUT", ENOBUFS = "ENOBUFS" }
 export interface AppServerObserverFailure { readonly point: AppServerObserverPoint; readonly code: AppServerObserverCode;
-  readonly errno: AppServerObserverErrno; readonly elapsedMsCapped: number; }
+  readonly errno: AppServerObserverErrno; readonly elapsedMsCapped: number; readonly namespace?: AppServerNamespaceFailure; }
 const failures = new WeakMap<object, AppServerObserverFailure>();
 /** Reads own data fields once; no stack, message accessor, cause or raw value survives. */
 export function closedObserverFailure(error: unknown, point: AppServerObserverPoint, elapsedMsCapped: number): AppServerObserverFailure {
@@ -38,7 +39,9 @@ export function validatedObserverFailure(value: unknown): AppServerObserverFailu
     if (!Object.values(AppServerObserverPoint).includes(point) || !Object.values(AppServerObserverCode).includes(code) ||
         !Object.values(AppServerObserverErrno).includes(errno) || typeof elapsedMsCapped !== "number" ||
         !Number.isSafeInteger(elapsedMsCapped) || elapsedMsCapped < 0 || elapsedMsCapped > 60000) return undefined;
-    return Object.freeze({ point, code, errno, elapsedMsCapped });
+    const namespace = fields.namespace?.value === undefined ? undefined : validatedNamespaceFailure(fields.namespace.value);
+    if (fields.namespace?.value !== undefined && (!namespace || point !== AppServerObserverPoint.Namespace)) return undefined;
+    return Object.freeze({ point, code, errno, elapsedMsCapped, ...(namespace ? { namespace } : {}) });
   } catch { return undefined; }
 }
 export function retainObserverFailure(error: unknown, point: AppServerObserverPoint, elapsedMsCapped: number, wrapped?: object): void {
@@ -47,4 +50,11 @@ export function retainObserverFailure(error: unknown, point: AppServerObserverPo
     if (typeof error === "object" && error !== null && !failures.has(error)) failures.set(error, fact);
     if (wrapped) failures.set(wrapped, fact);
   } catch { /* Diagnostic collection must not change the original rejection. */ }
+}
+
+export function retainNamespaceObserverFailure(error: object, namespace: AppServerNamespaceFailure): void {
+  try {
+    const selected = validatedNamespaceFailure(namespace);
+    if (selected && !failures.has(error)) failures.set(error, Object.freeze({ ...closedObserverFailure(error, AppServerObserverPoint.Namespace, 0), namespace: selected }));
+  } catch { /* Shape collection never replaces the existing rejection. */ }
 }
