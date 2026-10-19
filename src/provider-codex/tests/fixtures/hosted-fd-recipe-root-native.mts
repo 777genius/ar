@@ -123,7 +123,7 @@ if (process.argv[2] === "--diagnostic-case") {
     process.stdout.write("TEST finite root closure complete\n");
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 } else if (!process.argv[2]) {
-  const available = process.platform === "linux" && process.getuid?.() === 0 && ["/usr/bin/unshare", "/usr/bin/tini", "/usr/bin/mount", "/usr/sbin/chroot"].every(existsSync);
+  const available = process.platform === "linux" && process.getuid?.() === 0 && ["/usr/bin/unshare", "/usr/bin/tini", "/usr/bin/mount", "/usr/sbin/chroot", "/bin/bash", "/bin/sh"].every(existsSync);
   const probe = available ? spawnSync("/usr/bin/unshare", ["--mount", "--propagation=private", "--", "/usr/bin/true"], { env: { PATH: "/usr/bin:/bin", LANG: "C" }, encoding: "utf8", timeout: 5000 }) : undefined;
   if (!available || probe?.status !== 0) { process.stdout.write("TEST root namespace capability unavailable\n"); process.exitCode = 77; }
   else {
@@ -140,7 +140,11 @@ if (process.argv[2] === "--diagnostic-case") {
   }
 } else if (process.argv[2] === "--setup") {
   stage = "setup_runtime";
-  const outer = process.argv[3]!; directory(outer); runtime(outer);
+  const outer = process.argv[3]!; directory(outer);
+  // unshare --propagation=private changes "/" and EINVALs unless the chroot
+  // root is a mount root, so outer must be a mount point before runtime binds.
+  command("/usr/bin/mount", ["--bind", outer, outer], "mount_bind");
+  runtime(outer);
   stage = "setup_proc"; directory(outer + "/proc"); command("/usr/bin/mount", ["-t", "proc", "proc", outer + "/proc"], "mount_proc");
   stage = "setup_leaves";
   for (const relative of leaves) bind(repo + "/dist/" + relative, outer + repo + "/dist/" + relative, false);
@@ -153,15 +157,30 @@ if (process.argv[2] === "--diagnostic-case") {
   process.stdout.write("TEST owned RootDirectory image projection accepted\n");
 } else if (process.argv[2] === "--observe") {
   stage = "observe_runtime"; directory(root);
-  // unshare --mount --propagation=private needs a mount-point root (EINVAL otherwise).
+  // The owned image must be a mount root so the entry can move that mount;
+  // runtime binds attach below it and travel with the moved subtree.
   command("/usr/bin/mount", ["--bind", root, root], "mount_bind");
   runtime(root); directory(root + "/proc");
+  // mount(8) resolves its userspace mount table at /run/mount/utab from inside
+  // the chroot and fails the entry move with rc=16 when the directory is absent.
+  directory("/run/mount");
   const argv = [...hostedFdNamespacePrefix, process.execPath, "-e", "process.stdout.write('TEST-ready\\n');process.stdin.resume()"];
   stage = "observe_pins"; const pins = ["/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini", "/usr/bin/systemd-run"].map(path => ({ path,
     sha256: createHash("sha256").update(readFileSync(path)).digest("hex"), elfFiles: [] }));
   async function withChild(negative: boolean, action: (rows: readonly HostedFdProcess[], pid: number) => void): Promise<void> {
     stage = negative ? "negative_ready" : "positive_ready";
-    const child = spawn("/usr/sbin/chroot", [root, ...argv], { env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: "pipe" });
+    // The kernel denies CLONE_NEWUSER to chrooted processes (create_user_ns ->
+    // current_chrooted), and current_chrooted only passes when the image mount
+    // is the deepest mount on the namespace root dentry. mount(8) canonicalizes
+    // the /proc/<pid>/root magic link to "/" before mount(2), which would move
+    // the image onto this wrapper's fs root instead; --no-canonicalize keeps the
+    // magic link so the kernel resolves it to the unchrooted setup process's fs
+    // root (the namespace root). exec through the /bin->/usr/bin alias bind with
+    // a canonical argv[0] keeps the raw exe spelling non-canonical.
+    const alias = "/bin" + argv[0]!.slice("/usr/bin".length);
+    const entry = 'cd "$1" || exit 9\n/usr/bin/mount --no-canonicalize --move . "/proc/$2/root" || exit 10\nalias="$3"\nshift 3\nexec /usr/sbin/chroot . /bin/bash -c \'exec -a "$1" "$2" "${@:3}"\' TEST-chain "$1" "$alias" "${@:2}"';
+    const child = spawn("/bin/bash", ["-c", entry, "TEST-entry", root, String(process.ppid), alias, ...argv],
+      { env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: "pipe" });
     let ready = false, stderr = "", stderrBytes = 0;
     child.stderr.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes <= 4096) stderr += chunk.toString("utf8"); else stderr = ""; });
     const closed = once(child, "close"); const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
@@ -186,11 +205,16 @@ if (process.argv[2] === "--diagnostic-case") {
   }
   const deadline = Date.now() + 10000, remaining = () => { const left = deadline - Date.now(); assert.ok(left > 0); return left; };
   await withChild(false, (rows, pid) => {
-    stage = "positive_main"; const main = rows.find(row => row.pid === pid)!; assert.equal(main.exe, root + "/usr/bin/unshare");
+    stage = "positive_main"; const main = rows.find(row => row.pid === pid)!;
+    // Raw exe spelling is not canonical under the /bin->/usr/bin alias bind;
+    // the projection normalizes it to pin.path. This measured non-canonical
+    // spelling is what makes line "positive_namespace" meaningful after
+    // projection, and keeps the raw ancestry rejection below exercised.
+    assert.equal(main.exe, "/bin/unshare");
     assert.throws(() => assertHostedFdNamespaceAncestry(argv, rows, pid), /hosted_fd_namespace_stage_unresolved/);
     stage = "positive_image"; const images = readHostedFdRecipeImages(rows, pins, root, remaining);
     stage = "positive_namespace"; assertHostedFdNamespaceAncestry(argv, images.processes, pid);
-    stage = "positive_revalidate"; images.revalidate(); stage = "positive_raw_rejoin"; assert.equal(main.exe, root + "/usr/bin/unshare");
+    stage = "positive_revalidate"; images.revalidate(); stage = "positive_raw_rejoin"; assert.equal(main.exe, "/bin/unshare");
     stage = "positive_maps"; const expected = JSON.parse(readFileSync("/TEST-node-map-input.json", "utf8")) as string[], leaf = rows.find(row => row.argv[0] === process.execPath)!;
     const observed = maps(leaf.pid), libraries = expected.filter(path => path !== process.execPath);
     process.stdout.write("TEST-node-maps " + JSON.stringify({ schemaVersion: 1, exactNode: observed.includes(process.execPath), aliasNode: observed.includes(root + process.execPath),
@@ -198,6 +222,12 @@ if (process.argv[2] === "--diagnostic-case") {
       otherFiles: observed.filter(path => !expected.includes(path) && !expected.some(source => path === root + source)).length }) + "\n");
   });
   stage = "foreign_bind"; const foreign = "/TEST-identical-unshare"; writeFileSync(foreign, readFileSync("/usr/bin/unshare"), { flag: "wx", mode: 0o755 });
+  // The positive child moved the whole image subtree into its private mount
+  // namespace, taking the runtime binds with it. Rebuild the image mount root
+  // and runtime binds so the foreign bind attaches inside the new /usr bind
+  // and travels with the negative child's moved subtree.
+  command("/usr/bin/mount", ["--bind", root, root], "mount_bind");
+  runtime(root);
   bind(foreign, root + "/usr/bin/unshare", false);
   // A new owned child inherits this mount. Changing the observer's private
   // mount tree cannot retroactively alter the first child's private mount tree.
