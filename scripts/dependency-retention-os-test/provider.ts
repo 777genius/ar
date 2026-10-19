@@ -236,7 +236,7 @@ assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/hom
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
-// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-86 probe sites).
+// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups, 85-93/100-108 per-path enclosure denial, 94 .git write).
 let probeFailureCode = 80;
 function probe(): boolean {
   probeFailureCode = 80;
@@ -275,14 +275,22 @@ function probe(): boolean {
   probeFailureCode = 83;
   const require = createRequire(workspace + "/package.json");
   assert.equal((require("is-number") as (value: unknown) => boolean)(42), true);
-  probeFailureCode = 85;
-  for (const path of [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
+  // Per-path codes name the site through the closed exit channel alone:
+  // 85+i = path index i did not throw (readable/visible), 100+i = path index i
+  // threw an unexpected errno class, 94 = .git/config write was permitted.
+  const denyPaths = [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
     workspace.slice(0, -"/workspace".length) + "/state-sentinel", workspace.slice(0, -"/workspace".length) + "/output-sentinel",
     workspace.slice(0, -"/workspace".length) + "/encryption-key.hex",
     "/var/lib/subscription-runtime-host-policy/privileged-sibling-sentinel", "/root", "/home/runner",
-    "/run/dbus/system_bus_socket", "/run/systemd/private"])
-    assert.throws(() => readFileSync(path), (e: unknown) => ["ENOENT", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
-  probeFailureCode = 86;
+    "/run/dbus/system_bus_socket", "/run/systemd/private"];
+  for (const [index, path] of denyPaths.entries()) {
+    let thrown: unknown, threw = false;
+    try { readFileSync(path); } catch (error) { threw = true; thrown = error; }
+    probeFailureCode = (threw ? 100 : 85) + index;
+    assert.ok(threw, "TEST enclosure denial required");
+    assert.equal(["ENOENT", "EACCES"].includes((thrown as NodeJS.ErrnoException).code ?? ""), true);
+  }
+  probeFailureCode = 94;
   assert.throws(() => { const fd = openSync(workspace + "/.git/config", "a"); closeSync(fd); },
     (e: unknown) => ["EROFS", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
   probeFailureCode = 84;
