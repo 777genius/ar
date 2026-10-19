@@ -26,6 +26,7 @@ import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-fra
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 import { assertHostedBaselineIdentity, isHostedContainment } from "./hosted-host-policy";
+import { AppServerProviderSetupStage, retainAppServerProviderSetupFailure } from "../domain/app-server-provider-setup-observation";
 
 const hostedSandboxKind = "hosted-codex-job";
 const managedLauncherNodePath = process.execPath;
@@ -263,9 +264,14 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
     const guard = hostedFdLaunch(child);
-    void guard.observe().then(() => retryHostedFenceAcquisition(() =>
-      finalRelease(child, (fence, revalidate) => guard.release(fence, invocation.stdinBootstrap!, false, revalidate)), guard.remainingSetupMs()))
-      .catch(() => { guard.invalidate(); invalidateHostedOrdinaryWait(child); signalCodexAppServerChildGroup(child, "SIGTERM"); });
+    let setupStage = AppServerProviderSetupStage.Observing;
+    void guard.observe().then(() => {
+      setupStage = AppServerProviderSetupStage.FinalRelease;
+      return retryHostedFenceAcquisition(() => finalRelease(child,
+        (fence, revalidate) => guard.release(fence, invocation.stdinBootstrap!, false, revalidate)), guard.remainingSetupMs()); })
+      .catch(error => {
+        try { retainAppServerProviderSetupFailure(child, guard.providerSetupFailureFact(setupStage, error)); } catch { /* Diagnostic only. */ }
+        guard.invalidate(); invalidateHostedOrdinaryWait(child); signalCodexAppServerChildGroup(child, "SIGTERM"); });
     return child;
   }
   const child = spawn(invocation.command, invocation.args, {

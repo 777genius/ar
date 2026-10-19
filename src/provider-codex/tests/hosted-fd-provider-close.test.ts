@@ -6,6 +6,8 @@ import * as childTransport from "../app-server/adapters/hosted-fd-child";
 import * as observation from "../app-server/adapters/hosted-fd-observation";
 import type { HostedActivationFence } from "../app-server/adapters/hosted-process-activation";
 import { hostedFdLaunch, hostedFdReadyMarker, HostedFdLaunchKind, spawnHostedFdChild } from "../app-server/adapters/hosted-fd-launch";
+import { AppServerProviderSetupStage as SetupStage, AppServerProviderSetupCheckpoint as Checkpoint,
+  AppServerProviderSetupCode as SetupCode } from "../app-server/domain/app-server-provider-setup-observation";
 
 vi.mock("../app-server/adapters/hosted-process-activation", () => ({
   assertHostedActivationFence: vi.fn(), assertHostedOrdinaryProviderRelease: vi.fn(),
@@ -19,7 +21,7 @@ const unit = "subscription-runtime-hosted-01234567-89ab-cdef-0123-456789abcdef.s
 const file = (path: string) => ({ path, sha256: "a".repeat(64) });
 const executable = (path: string) => ({ ...file(path), elfFiles: [file(path), file("/TEST/loader")] });
 
-async function fixture(exitCode = 0, holdAfterInput = false) {
+async function fixture(exitCode = 0, holdAfterInput = false, setupTimeoutMs = 5000) {
   // Real subprocess, private pipes, public gate and native exit/close/EOF.
   // Only external host observations, transport and release authority are fixtures;
   // this test proves stream lifecycle behavior, not Native qualification.
@@ -41,7 +43,7 @@ async function fixture(exitCode = 0, holdAfterInput = false) {
     wrappers: ["setpriv", "systemd-run", "tini", "unshare"].map(name => executable(`/usr/bin/${name}`)),
     bootstraps: ["hosted-app-server-launcher", "hosted-dependency-installer-bootstrap",
       "hosted-readonly-host-launch-cli", "hosted-readonly-runtime-bootstrap"].map(name => file(`/TEST-runtime/${name}.js`)),
-    limits: { setupTimeoutMs: 5000, collectorTimeoutMs: 500, maxOutputBytes: 4096, maxRows: 32,
+    limits: { setupTimeoutMs, collectorTimeoutMs: 100, maxOutputBytes: 4096, maxRows: 32,
       maxBufferedInputBytes: 4096, maxEventPoll: 2, maxEventFd: 2, maxPipeEndpoints: 8, maxDevNullReserves: 2 },
   });
   const descriptor = (fd: number, inode: number): observation.HostedFdFact => ({
@@ -70,10 +72,11 @@ async function fixture(exitCode = 0, holdAfterInput = false) {
     [0, 1, 2].flatMap(fd => [`0 0 * ${100 + fd} * ${200 + fd}`, `0 0 * ${200 + fd} * ${100 + fd}`]).join("\n"), 32));
   const child: ChildProcessWithoutNullStreams = spawnHostedFdChild("/usr/bin/systemd-run",
     ["--unit=" + unit, "--", process.execPath], {}, unit, HostedFdLaunchKind.Provider);
-  await ready;
   const guard = hostedFdLaunch(child);
+  const initialFact = guard.providerSetupFailureFact(SetupStage.Observing, new Error("hosted_fd_boundary_unresolved"));
+  await ready;
   await guard.observe();
-  return { child, guard, closed, revoke,
+  return { child, guard, closed, revoke, initialFact,
     release: (end: boolean) => guard.release({} as HostedActivationFence, "TEST-public-frame\n", end, () => {}),
     cleanup: async () => { if (peer.exitCode === null && peer.signalCode === null) peer.kill("SIGTERM"); await closed; } };
 }
@@ -88,6 +91,42 @@ it("accepts native zero close and raw EOF after private input completion with an
     expect(test.child.stdin.destroyed).toBe(true);
     expect(() => test.guard.assertOriginalZeroWaitClosed()).not.toThrow();
     expect(test.revoke).not.toHaveBeenCalled();
+  } finally { await test.cleanup(); }
+});
+
+it("retains the last actual collector rejection before deadline teardown instead of its generic terminal error", async () => {
+  const test = await fixture(0, false, 1500);
+  try {
+    expect(test.initialFact).toMatchObject({ stage: SetupStage.WaitingReady, checkpoint: Checkpoint.None, ready: false, released: false });
+    const denied = vi.spyOn(observation, "assertHostedFdConfinement").mockImplementation(() => {
+      throw new Error("TEST-private-target-and-auth-canary");
+    });
+    let failure: unknown;
+    try { await test.guard.observe(); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe("hosted_fd_boundary_unresolved");
+    expect(denied.mock.calls.length).toBeGreaterThan(1);
+    const fact = test.guard.providerSetupFailureFact(SetupStage.Observing, failure);
+    expect(fact).toMatchObject({ stage: SetupStage.Observing, checkpoint: Checkpoint.Confinement,
+      code: SetupCode.Unknown, ready: true, released: false, limitMs: 1500 });
+    expect(fact!.elapsedMsCapped).toBeGreaterThanOrEqual(1500);
+    expect(JSON.stringify(fact)).not.toContain("canary");
+    test.guard.invalidate();
+    expect(() => test.guard.assertOriginalZeroWaitClosed()).toThrow("hosted_fd_boundary_unresolved");
+  } finally { await test.cleanup(); }
+});
+
+it("reports a failed final collection and a pre-release refusal without reusing a successful checkpoint", async () => {
+  const test = await fixture();
+  try {
+    expect(test.guard.providerSetupFailureFact(SetupStage.FinalRelease, new Error("hosted_activation_evidence_invalid")))
+      .toMatchObject({ stage: SetupStage.FinalRelease, checkpoint: Checkpoint.PreRelease, code: SetupCode.Activation, released: false });
+    vi.spyOn(observation, "assertHostedFdBootstrap").mockImplementation(() => { throw new Error("hosted_fd_boundary_unresolved"); });
+    let failure: unknown;
+    try { test.release(false); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe("hosted_fd_boundary_unresolved");
+    expect(test.guard.providerSetupFailureFact(SetupStage.FinalRelease, failure))
+      .toMatchObject({ stage: SetupStage.FinalRelease, checkpoint: Checkpoint.Bootstrap, code: SetupCode.Boundary, ready: true, released: false });
+    test.guard.invalidate();
   } finally { await test.cleanup(); }
 });
 
