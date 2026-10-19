@@ -60,15 +60,41 @@ it.each([false, true])("authenticates the same physical pinned image before proj
   expect(() => assertHostedFdNamespaceAncestry(argv, images.processes, 902)).not.toThrow();
   images.revalidate(); expect(state.fds.size).toBe(0);
 });
-it("keeps foreign root, prefix and basename spellings untrusted", () => {
-  for (const exe of ["/TEST-other-root" + canonical, root + "-foreign" + canonical, "unshare", "/foreign/unshare"]) {
-    state.exe = exe; const raw = { ...observed, exe };
+it("authenticates physical image with exact recipe argv independently of observer-visible exe spelling", () => {
+  state.exe = "/run/systemd/unit-root/usr/bin/unshare"; const raw = { ...observed, exe: state.exe };
+  const images = readHostedFdRecipeImages([raw], pins(), root, () => 1000);
+  expect(images.processes[0]!.exe).toBe(canonical); expect(raw.exe).toBe(state.exe);
+  expect(() => assertHostedFdNamespaceAncestry(argv, images.processes, 902)).not.toThrow();
+  images.revalidate(); expect(state.fds.size).toBe(0);
+  state.exe = "/run/systemd/TEST-changed-view/usr/bin/unshare";
+  expect(() => images.revalidate()).toThrow("hosted_fd_namespace_stage_unresolved");
+});
+it("keeps every unknown argv executable raw and the strict namespace recipe closed", () => {
+  for (const first of ["unshare", "/foreign/unshare", canonical + "-near", "", "/usr/bin/setpriv"]) {
+    const raw = { ...observed, argv: [first, ...argv.slice(1)] };
+    fs.writeFileSync(state.paths.get("/proc/902/cmdline")!, [...raw.argv, ""].join("\0"));
+    if (first === "/usr/bin/setpriv") { // A different trusted image still cannot authenticate this actual unshare inode.
+      state.paths.set(first, copy); state.paths.set("/proc/902/root" + first, copy);
+      const other = [{ ...pins()[0]!, path: first }];
+      expect(() => readHostedFdRecipeImages([raw], other, root, () => 1000)).toThrow();
+      continue;
+    }
     const images = readHostedFdRecipeImages([raw], pins(), root, () => 1000);
-    expect(images.processes[0]!.exe).toBe(exe);
+    expect(images.processes[0]!.exe).toBe(raw.exe);
     expect(() => assertHostedFdNamespaceAncestry(argv, images.processes, 902)).toThrow("hosted_fd_namespace_stage_unresolved");
   }
 });
-it("rejects byte-identical foreign image and observed-root view inodes", () => {
+it("requires the entire exact namespace recipe after physical candidate authentication", () => {
+  state.exe = "/run/systemd/unit-root/usr/bin/unshare";
+  const changed = [...argv]; changed[1] = "--TEST-wrong-namespace";
+  const raw = { ...observed, exe: state.exe, argv: changed };
+  fs.writeFileSync(state.paths.get("/proc/902/cmdline")!, [...changed, ""].join("\0"));
+  const images = readHostedFdRecipeImages([raw], pins(), root, () => 1000);
+  expect(images.processes[0]!.exe).toBe(canonical);
+  expect(() => assertHostedFdNamespaceAncestry(argv, images.processes, 902)).toThrow("hosted_fd_namespace_stage_unresolved");
+});
+it("rejects byte-identical foreign image and observed-root view inodes for an observer-only alias", () => {
+  state.exe = "/run/systemd/unit-root/usr/bin/unshare"; observed = { ...observed, exe: state.exe };
   expect(fs.readFileSync(source).equals(fs.readFileSync(copy))).toBe(true);
   expect(fs.statSync(source).ino).not.toBe(fs.statSync(copy).ino);
   for (const path of ["/proc/902/exe", "/proc/902/root" + canonical]) {
@@ -79,7 +105,7 @@ it("rejects byte-identical foreign image and observed-root view inodes", () => {
   state.paths.set("/proc/902/root", directory);
   expect(() => readHostedFdRecipeImages([observed], pins(), root, () => 1000)).toThrow();
 });
-it("rejects symlink source/view and deleted source names without leaking held descriptors", () => {
+it("rejects symlink source/view and raw exe spelling drift without leaking held descriptors", () => {
   const link = join(directory, "alias"); fs.symlinkSync(source, link);
   const selected = pins();
   for (const path of [canonical, "/proc/902/root" + canonical]) {

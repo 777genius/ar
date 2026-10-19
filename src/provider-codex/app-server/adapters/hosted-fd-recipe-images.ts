@@ -81,7 +81,10 @@ export function readHostedFdRecipeImages(processes: readonly HostedFdProcess[], 
     }
   }
   const projected = processes.map(process => {
-    const selected = pins.filter(pin => wrappers.includes(pin.path) && (process.exe === pin.path || process.exe === root + pin.path));
+    // argv[0] selects a fixed image to authenticate; it never authorizes the
+    // projection. Observer-visible /proc exe spelling may reflect a private
+    // mount alias. Only the physical source/image/root-view proof below does.
+    const selected = pins.filter(pin => wrappers.includes(pin.path) && process.argv[0] === pin.path);
     if (!selected.length) return process;
     point = Point.ImageAlias;
     if (selected.length !== 1 || !/^[a-f0-9]{64}$/.test(selected[0]!.sha256)) denied();
