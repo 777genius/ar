@@ -3,6 +3,7 @@ import { observeOwnedSyntheticInstallerFailure } from "./owned-installer-diagnos
 import { qualifyIoUringEffects } from "./io-uring.ts";
 import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
 import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
+import { observeSyntheticResultFile, syntheticStructuredFailure } from "./synthetic-result-diagnostic.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -1322,6 +1323,8 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
           const stable = sameSyntheticDiagnosticFile(before, opened) && sameSyntheticDiagnosticFile(before, current) && sameSyntheticDiagnosticFile(before, fstatSync(fd));
           return { slot, present: true, bytes: opened.size, dev: String(opened.dev), ino: String(opened.ino),
             diagnostic: runtimeDiagnostic(tail.subarray(0, count).toString("utf8")),
+            ...(slot === 0 && trustedSyntheticInputs && row.unit === `subscription-runtime-ordinary-${row.startId}.service` ? { syntheticStructuredFailure: syntheticStructuredFailure(tail.subarray(0, count), sample,
+              stable, process.env.TEST_SOURCE_SHA ?? "", { jobId, workspace }, "safe_execution_stdout") } : {}),
             ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), sample),
               proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample),
               ...(trustedSyntheticInputs ? { syntheticStderrDiagnostic: syntheticCliStderrDiagnostic(tail.subarray(0, count), sample,
@@ -1339,6 +1342,7 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
           workspaceDev: String(lstatSync(workspace).dev), workspaceIno: String(lstatSync(workspace).ino) }) } : {}) }];
   });
   observation.starts = rows;
+  if (trustedSyntheticInputs) observation.structuredResult = observeSyntheticResultFile({ jobId, workspace }, true, process.env.TEST_SOURCE_SHA ?? "");
   const files = [root + "/state/registry/" + jobId + "/job.json", root + "/" + jobId + ".latest-result.json", root + "/" + jobId + ".log"];
   observation.jobOutputs = files.map((path, index) => {
     try { const stat = lstatSync(path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1);

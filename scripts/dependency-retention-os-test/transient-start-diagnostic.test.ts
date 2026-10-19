@@ -1,14 +1,105 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import fs, { readFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { classifyOwnedProxyStderr, classifyTransientStartFailure, ownedProxyOptionNames, ownedProxyPropertyNames } from "./transient-start-diagnostic.ts";
 import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, syntheticProviderSha256, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
 import { cleanEnv } from "./common.ts";
+import { observeSyntheticResultFile, syntheticStructuredFailure, type SyntheticResultSource } from "./synthetic-result-diagnostic.ts";
+import { buildRuntimeResultEnvelope } from "../../dist/worker-core/runtime-result.js";
+import { SafeExecutionRunner } from "../../dist/worker-core/safe-execution/application/safe-execution-runner.js";
+import { SafeExecutionError } from "../../dist/worker-core/safe-execution/domain/safe-execution-policy.js";
+import { InMemoryAttemptJournal } from "../../dist/worker-core/safe-execution/adapters/in-memory-attempt-journal.js";
+import { InMemoryWorkspaceLockStore } from "../../dist/worker-core/safe-execution/adapters/in-memory-workspace-lock-store.js";
 const sample = (text: string) => {
   const bytes = Buffer.from(text);
   return classifyTransientStartFailure(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
 };
+const syntheticIdentity = { jobId: "TEST-os-11111111-2222-4333-8444-555555555555",
+  workspace: "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/TEST-os-11111111-2222-4333-8444-555555555555/workspace" };
+function resultSample(value: unknown, source: SyntheticResultSource = "safe_execution_stdout", trusted = true, change = {}) {
+  const bytes = Buffer.from(JSON.stringify(value, null, 2) + "\n");
+  return syntheticStructuredFailure(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length, ...change },
+    trusted, "a".repeat(40), syntheticIdentity, source);
+}
+const failedRun = () => ({ status: "failed", reason: "unknown_error", safeMessage: "Bearer PRIVATE_CANARY", error: {code:"safe_execution_workspace_not_git",path:"/PRIVATE_CANARY"},
+  task: { taskId: syntheticIdentity.jobId, workspacePath: syntheticIdentity.workspace, status:"failed", lastFailureReason:"unknown_error", attempts:[] }, attempts:[] });
+const failedResult = () => buildRuntimeResultEnvelope({ status:"failed",provider:"codex",runId:syntheticIdentity.jobId,taskId:syntheticIdentity.jobId,
+  reason:"runner_exception",changedFiles:[],evidence:["PRIVATE_CANARY"],blockers:["Bearer PRIVATE_CANARY"] });
+test("structured observer consumes the actual failStartedTask producer before any provider attempt", async () => {
+  let providerCalls=0;
+  const runner=new SafeExecutionRunner({ journal:new InMemoryAttemptJournal(),lockStore:new InMemoryWorkspaceLockStore(),
+    runtime:{createOwnerId:()=>"TEST-only-owner",currentPid:()=>undefined},
+    workspaceAccess:{canonicalizePath:async({path})=>path,assertGitWorkspace:async()=>{throw new SafeExecutionError("safe_execution_workspace_not_git","PRIVATE_CANARY");}} });
+  const produced=await runner.run({taskId:syntheticIdentity.jobId,workspace:{mode:"existing_locked",path:syntheticIdentity.workspace,requireGitWorkspace:true},
+    provider:"codex",effectMode:"read_only",job:{},originalPrompt:"TEST-only",pool:{run:async()=>{providerCalls++;return{};}}});
+  assert.equal(providerCalls,0);assert.equal(produced.status,"failed");assert.equal(produced.attempts.length,0);
+  const captured=resultSample(produced);assert.equal(captured.state,"captured");
+  if(captured.state!=="captured")throw new Error("TEST real producer rejected");
+  assert.equal(captured.attemptCount,0);assert(captured.root.codes.includes("safe_execution_workspace_not_git"));
+  assert(captured.task?.codes.includes("safe_execution_workspace_not_git"));assert(!JSON.stringify(captured).includes("PRIVATE_CANARY"));
+});
+test("structured synthetic failures select closed codes from genuine zero/one-attempt result shapes only", () => {
+  const output = resultSample(failedRun());
+  assert.deepEqual(output, { purpose:"TEST_synthetic_structured_failure_only",state:"captured",source:"safe_execution_stdout",
+    root:{status:"failed",reason:"unknown_error",codes:["safe_execution_workspace_not_git"]},
+    task:{status:"failed",reason:"unknown_error",codes:[]},attemptCount:0,attempts:[] });
+  const attempt = {taskId:syntheticIdentity.jobId,attemptNumber:1,status:"failed",failureReason:"account_unavailable",
+    failureDetails:{subscriptionWorkerCode:"subscription_worker_account_unavailable",rawCause:"Bearer PRIVATE_CANARY"},accountId:"PRIVATE_CANARY"};
+  const one = {...failedRun(),attempts:[attempt],task:{...failedRun().task,attempts:[attempt]}};
+  const observed = resultSample(one); assert.equal(observed.state,"captured");
+  if(observed.state!=="captured")throw new Error("TEST structured capture unavailable");
+  assert.equal(observed.attemptCount,1);assert.deepEqual(observed.attempts,[{status:"failed",reason:"account_unavailable",codes:["subscription_worker_account_unavailable"]}]);
+  const diagnostic={reason:"hosted_dependency_current_origin_unresolved",locations:[{module:"hosted-current-dependency-origin",format:"js",line:95,column:28}]};
+  const envelope=resultSample({...failedResult(),details:{errorCode:"subscription_worker_start_failed",rawCause:JSON.stringify(diagnostic)}},"runtime_result_file");
+  assert.equal(envelope.state,"captured");if(envelope.state!=="captured")throw new Error("TEST envelope capture unavailable");
+  assert.deepEqual(envelope.originDiagnostic,diagnostic);
+  for(const value of [output,observed,envelope])for(const secret of ["PRIVATE_CANARY","Bearer",syntheticIdentity.jobId,"/var/lib"])
+    assert(!JSON.stringify(value).includes(secret));
+});
+test("structured synthetic failures refuse changed, partial, malformed, foreign and excessive input", () => {
+  const base=failedRun();
+  for(const value of [{...base,status:"PRIVATE_CANARY"},{...base,status:"running"},{...base,task:undefined},{...base,task:{...base.task,taskId:"PRIVATE_CANARY"}},
+    {...base,task:{...base.task,workspacePath:"/PRIVATE_CANARY"}},{...base,attempts:[{},{}]},
+    {...base,attempts:[{}],task:{...base.task,attempts:[{}]}},{...base,attempts:[{}]},
+    {...base,taskId:"PRIVATE_CANARY"}])assert.equal(resultSample(value).state,"unavailable");
+  for(const change of [{offset:1},{currentBytes:1},{initialBytes:1},{fullBytes:1}])assert.equal(resultSample(base,"safe_execution_stdout",true,change).state,"unavailable");
+  assert.equal(resultSample(base,"safe_execution_stdout",false).state,"unavailable");
+  for(const patch of [{runId:"PRIVATE_CANARY"},{taskId:"PRIVATE_CANARY"},{provider:"PRIVATE_CANARY"},{schemaVersion:2}])
+    assert.equal(resultSample({...failedResult(),...patch},"runtime_result_file").state,"unavailable");
+  const unknown=resultSample({...base,reason:"PRIVATE_CANARY",error:{code:"PRIVATE_CANARY"}});
+  assert.equal(unknown.state,"captured");assert(!JSON.stringify(unknown).includes("PRIVATE_CANARY"));
+  for(const bytes of [Buffer.from("{"),Buffer.alloc(32769,32),Buffer.from([0xff])])
+    assert.equal(syntheticStructuredFailure(bytes,{fullBytes:bytes.length,offset:0,initialBytes:bytes.length,currentBytes:bytes.length},true,"a".repeat(40),syntheticIdentity,"safe_execution_stdout").state,"unavailable");
+});
+test("exact synthetic result file uses a held real FD and refuses replacements, rewrites and nonprivate leaves", t => {
+  const real={...fs}, temporary=real.mkdtempSync(join(tmpdir(),"TEST-synthetic-result-")), logical=syntheticIdentity.workspace.slice(0,-"/workspace".length);
+  const local=(path:unknown)=>typeof path==="string"&&path.startsWith(logical)?temporary+path.slice(logical.length):path;
+  const root=temporary+"/state",file=root+"/TEST-result.json", bytes=Buffer.from(JSON.stringify({...failedResult(),private:"PRIVATE_CANARY_A"}));
+  real.mkdirSync(root,{mode:0o700});let fault="",changed=false;const held=new Set<number>();
+  t.mock.method(fs,"lstatSync",((path:fs.PathLike,options?:unknown)=>{
+    const stat=Reflect.apply(real.lstatSync,real,[local(path),options]) as fs.Stats|fs.BigIntStats;
+    return Object.assign(stat,{uid:typeof stat.uid==="bigint"?0n:0,gid:typeof stat.gid==="bigint"?0n:0});
+  }) as typeof fs.lstatSync);
+  t.mock.method(fs,"fstatSync",((fd:number)=>Object.assign(real.fstatSync(fd),{uid:0,gid:0})) as typeof fs.fstatSync);
+  t.mock.method(fs,"openSync",((path:fs.PathLike,flags:number)=>{const fd=real.openSync(local(path) as fs.PathLike,flags);held.add(fd);return fd;}) as typeof fs.openSync);
+  t.mock.method(fs,"closeSync",((fd:number)=>{held.delete(fd);return real.closeSync(fd);}) as typeof fs.closeSync);
+  t.mock.method(fs,"readSync",((...args:Parameters<typeof fs.readSync>)=>{
+    const count=Reflect.apply(real.readSync,real,args) as number;
+    if(count>0&&!changed&&fault){changed=true;
+      if(fault==="replace"){real.writeFileSync(file+".next",bytes,{mode:0o600});real.renameSync(file+".next",file);}
+      if(fault==="rewrite"){real.writeFileSync(file,Buffer.from(bytes.toString().replace("CANARY_A","CANARY_B")));const s=real.statSync(file);real.utimesSync(file,s.atime,new Date(s.mtimeMs+1000));}
+    }return count;
+  }) as typeof fs.readSync);syncBuiltinESMExports();
+  try {for(const selected of ["", "replace", "rewrite", "mode"]){
+    real.writeFileSync(file,bytes,{mode:0o600});real.chmodSync(file,selected==="mode"?0o644:0o600);fault=selected;changed=false;
+    const result=observeSyntheticResultFile(syntheticIdentity,true,"a".repeat(40));
+    assert.equal(result.state,selected?"unavailable":"captured");assert.equal(held.size,0);assert(!JSON.stringify(result).includes("PRIVATE_CANARY"));
+  }}finally{t.mock.restoreAll();syncBuiltinESMExports();real.rmSync(temporary,{recursive:true,force:true});}
+});
 test("complete fixed messages produce closed factual classes only", () => {
   const cases = [
     ["Client not member of any unit.", "client_outside_unit"], ["Invalid unit name or type.", "invalid_unit"],

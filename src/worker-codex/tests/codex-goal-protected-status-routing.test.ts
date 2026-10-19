@@ -22,7 +22,7 @@ describe("protected status source-read routing", () => {
     for (const marker of [undefined, "0", "1"]) {
       vi.stubEnv("SUBSCRIPTION_RUNTIME_SANDBOX_KIND", marker);
       // A path and marker are request data. No fake admitted private context is constructed.
-      await expect(gitWorkspaceStatus(workspace)).rejects.toThrow("hosted_dependency_current_origin_unresolved");
+      await expect(gitWorkspaceStatus(workspace)).rejects.toThrow("dependency_host_git_unsupported");
       expect(io.calls).toBe(0);
     }
   });
