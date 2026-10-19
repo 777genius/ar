@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +116,35 @@ it.skipIf(process.platform !== "linux").each(["closed", "replaced", "long-number
     } finally { closeSync(fd); rmSync(root, { recursive: true, force: true }); }
   },
 );
+
+it.skipIf(process.platform !== "linux").each([
+  [".terminal-checkpoint-admission/writers/01234567-89ab-4cde-8fab-0123456789ab", "checkpoint_writer"],
+  [".terminal-checkpoint-admission-other/writers/01234567-89ab-4cde-8fab-0123456789ab", "unknown"],
+  [".terminal-checkpoint-admission/writers-extra/01234567-89ab-4cde-8fab-0123456789ab", "unknown"],
+  [".terminal-checkpoint-admission/writers/01234567-89ab-4cde-8fab-0123456789ab.json", "unknown"],
+  [".terminal-checkpoint-admission/writers/01234567-89AB-4CDE-8FAB-0123456789AB", "unknown"],
+  [".terminal-checkpoint-admission/writers/01234567-89ab-4cde-8fab-0123456789ab-secret=TEST-PRIVATE-CANARY", "unknown"],
+  [".terminal-checkpoint-admission/mutex/owner", "checkpoint_mutex_owner"],
+  [".terminal-checkpoint-admission-other/mutex/owner", "unknown"],
+  [".terminal-checkpoint-admission/mutex-other/owner", "unknown"],
+  [".terminal-checkpoint-admission/mutex/owner-secret=TEST-PRIVATE-CANARY", "unknown"],
+] as const)("reports only a closed lexical role for actual writer-shaped FD %s", (relative, role) => {
+  const root = mkdtempSync(join(tmpdir(), "TEST-private-writer-canary-"));
+  const target = join(root, relative); mkdirSync(join(target, ".."), { recursive: true });
+  writeFileSync(target, "TEST-PRIVATE-CONTENT-CANARY");
+  const fd = openSync(target, constants.O_WRONLY);
+  try {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", factProbe, "stable"], {
+      encoding: "utf8", stdio: ["pipe", "pipe", "pipe", fd],
+    });
+    expect(result.status).toBe(70);
+    expect(JSON.parse(result.stdout)).toEqual({ message: "hosted_custody_inherited_handle_denied",
+      cause: `hosted_fd_fact fd=3 type=file access=write role=${role}` });
+    expect(result.stdout).not.toContain(root); expect(result.stdout).not.toContain("01234567");
+    expect(result.stdout).not.toContain("CANARY"); expect(result.stdout).not.toContain("secret");
+    expect(readFileSync(target, "utf8")).toBe("TEST-PRIVATE-CONTENT-CANARY");
+  } finally { closeSync(fd); rmSync(root, { recursive: true, force: true }); }
+});
 
 it.each(["readonly", "opath", "directory", "state-journal", "alias"] as const)(
   "a copied retained scope cannot exempt an actual %s FD", kind => {

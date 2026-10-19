@@ -61,7 +61,8 @@ export function assertHostedFdPreludeDescriptors(): void {
 
 enum DescriptorKind { File = "file", Directory = "directory" }
 enum DescriptorAccess { Read = "read", Write = "write", ReadWrite = "readwrite", Path = "path", Unknown = "unknown" }
-enum DescriptorRole { Event = "event", Progress = "progress", Temp = "temp", Unknown = "unknown" }
+enum DescriptorRole { Event = "event", Progress = "progress", Temp = "temp", CheckpointWriter = "checkpoint_writer",
+  CheckpointMutexOwner = "checkpoint_mutex_owner", Unknown = "unknown" }
 
 function sameDescriptor(before: Stats, after: Stats): boolean {
   return before.dev === after.dev && before.ino === after.ino && before.mode === after.mode && before.rdev === after.rdev;
@@ -92,6 +93,8 @@ function access(value: number): DescriptorAccess {
 function role(target: string, kind: DescriptorKind): DescriptorRole {
   if (kind !== DescriptorKind.File) return DescriptorRole.Unknown;
   // Lexical categories only; a matching name establishes no ownership or trust.
+  if (/\/\.terminal-checkpoint-admission\/writers\/[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(target)) return DescriptorRole.CheckpointWriter;
+  if (/\/\.terminal-checkpoint-admission\/mutex\/owner$/.test(target)) return DescriptorRole.CheckpointMutexOwner;
   const name = target.slice(target.lastIndexOf("/") + 1);
   if (/^[^/\n]{1,200}\.events\.jsonl$/.test(name)) return DescriptorRole.Event;
   if (/^[^/\n]{1,200}\.progress\.json$/.test(name)) return DescriptorRole.Progress;
