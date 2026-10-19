@@ -11,6 +11,7 @@ import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-p
 import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-provider-launch";
 import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
+import { readHostedFdRecipeImages } from "./hosted-fd-recipe-images";
 import { hostedFdNamespacePrefix, hostedFdNamespaceStage, assertHostedFdNamespaceAncestry } from "./hosted-fd-namespace-stages";
 import { retainOriginalFullSetupIntent, type OriginalFullSetup } from "./hosted-full-setup-channel";
 import { readHostedFdUnitPolicy, assertHostedFdUnitPolicy, sameHostedFdUnitLifecycle, type HostedFdUnitPolicy } from "./hosted-fd-unit-policy";
@@ -387,12 +388,16 @@ export class HostedFdLaunch {
       (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || this.kind !== HostedFdLaunchKind.Remover && p.argv[1] === "/runtime/bootstrap.js"));
     if (bootstraps.length !== 1 || !candidates.some(p => p.pid === unit.mainPid)) invalid();
     this.#markCheckpoint(SetupCheckpoint.Namespace);
-    assertHostedFdNamespaceAncestry(this.#serviceArgv,candidates,unit.mainPid);
-    for (const p of candidates) {
+    const recipeImages = this.kind === HostedFdLaunchKind.Provider && unit.root !== "" && this.#serviceArgv[0] === "/usr/bin/unshare" ?
+      readHostedFdRecipeImages(candidates, profile.wrappers, unit.root, remaining) : undefined;
+    const recipeProcesses = recipeImages?.processes ?? candidates;
+    assertHostedFdNamespaceAncestry(this.#serviceArgv,recipeProcesses,unit.mainPid);
+    for (const [index, p] of candidates.entries()) {
+      const recipeProcess = recipeProcesses[index]!;
       if (p.group !== `0::${unit.group}`) invalid();
       if (p !== bootstraps[0]) {
-        if (profile.wrappers.some(pin => pin.path === p.exe)) {
-          const at = this.#serviceArgv[0]==="/usr/bin/unshare" ? hostedFdNamespaceStage(this.#serviceArgv,p) : this.#serviceArgv.indexOf(p.exe);
+        if (profile.wrappers.some(pin => pin.path === recipeProcess.exe)) {
+          const at = this.#serviceArgv[0]==="/usr/bin/unshare" ? hostedFdNamespaceStage(this.#serviceArgv,recipeProcess) : this.#serviceArgv.indexOf(recipeProcess.exe);
           if (at < 0 || JSON.stringify(p.argv) !== JSON.stringify(this.#serviceArgv.slice(at))) invalid();
         } else {
           if (!this.#managedJobId) invalid(); assertHostedFdManagedGuard(p, profile, this.#managedJobId, remaining);
@@ -434,6 +439,7 @@ export class HostedFdLaunch {
         after.uidMap !== bootstrap.uidMap || after.gidMap !== bootstrap.gidMap ||
         JSON.stringify(after.descriptors) !== JSON.stringify(bootstrap.descriptors) ||
         JSON.stringify(nextUnit) !== JSON.stringify(unit) || observeHostedFdProcess(proxy.pid).birth !== proxy.birth) invalid();
+    recipeImages?.revalidate();
     return Object.freeze({ unit, proxy, bootstrap, endpoints: Object.freeze(endpoints) });
   }
   /** Called only by the existing authority owner's final synchronous fence. */

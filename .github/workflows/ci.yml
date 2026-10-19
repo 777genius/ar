@@ -478,6 +478,16 @@ jobs:
             src/worker-codex/tests/research-provider-root.test.ts \
             src/worker-codex/tests/research-launch-diagnostics.test.ts \
             src/worker-codex/tests/research-launch-diagnostics-privacy.test.ts
+      - name: Require actual private RootDirectory wrapper image identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 90s apt-get update
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 90s apt-get install --yes --no-install-recommends tini
+          node src/provider-codex/tests/fixtures/hosted-fd-recipe-root-native.mts --closure
+          sudo -n /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 45s \
+            "$(command -v node)" src/provider-codex/tests/fixtures/hosted-fd-recipe-root-native.mts
       - name: Require real shared-source leaf isolation in a fresh TEST namespace
         shell: bash
         run: |

@@ -4,6 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { FdCollectorRenderer, parseFdCollectorProfile, parseFdCollectorRows } from "../../core/host-infrastructure/fd-collector-profile";
 import * as childTransport from "../app-server/adapters/hosted-fd-child";
 import * as observation from "../app-server/adapters/hosted-fd-observation";
+import * as fullSetup from "../app-server/adapters/hosted-full-setup-channel";
+import * as recipeImages from "../app-server/adapters/hosted-fd-recipe-images";
 import * as namespaces from "../app-server/adapters/hosted-fd-namespace-stages";
 import { AppServerNamespaceArgKind } from "../app-server/domain/app-server-namespace-failure";
 import type { HostedActivationFence } from "../app-server/adapters/hosted-process-activation";
@@ -25,7 +27,7 @@ const unit = "subscription-runtime-hosted-01234567-89ab-cdef-0123-456789abcdef.s
 const file = (path: string) => ({ path, sha256: "a".repeat(64) });
 const executable = (path: string) => ({ ...file(path), elfFiles: [file(path), file("/TEST/loader")] });
 
-async function fixture(exitCode = 0, holdAfterInput = false, setupTimeoutMs = 5000) {
+async function fixture(exitCode = 0, holdAfterInput = false, setupTimeoutMs = 5000, namespaceRecipe = false) {
   // Real subprocess, private pipes, public gate and native exit/close/EOF.
   // Only external host observations, transport and release authority are fixtures;
   // this test proves stream lifecycle behavior, not Native qualification.
@@ -34,11 +36,13 @@ async function fixture(exitCode = 0, holdAfterInput = false, setupTimeoutMs = 50
       if (${holdAfterInput}) { process.stdout.write('TEST-input-finished\\n'); setInterval(() => {}, 1000); } });`], { stdio: "pipe" });
   const closed = once(peer, "close");
   const ready = once(peer.stdout, "data");
+  const serviceArgv = namespaceRecipe ? [...namespaces.hostedFdNamespacePrefix, process.execPath, "/runtime/bootstrap.js"] : [process.execPath];
+  const spawnArgs = ["--unit=" + unit, "--", ...serviceArgv];
   vi.spyOn(childTransport, "spawnHostedFdProcess").mockReturnValue(peer);
   vi.spyOn(childTransport, "readHostedFdProcessBirth").mockImplementation((child, childUnit, kind, command, args) => {
     expect(child).toBe(peer);
     expect([childUnit, kind, command, args]).toEqual([unit, HostedFdLaunchKind.Provider, "/usr/bin/systemd-run",
-      ["--unit=" + unit, "--", process.execPath]]);
+      spawnArgs]);
     return `${peer.pid}:TEST`;
   });
   const revoke = vi.spyOn(childTransport, "invalidateHostedFdProcess");
@@ -61,21 +65,22 @@ async function fixture(exitCode = 0, holdAfterInput = false, setupTimeoutMs = 50
   vi.spyOn(observation, "readHostedFdProfile").mockReturnValue(profile);
   const group = "/TEST/service";
   vi.spyOn(observation, "observeHostedFdProcess").mockImplementation(pid => ({
-    pid, parentPid: process.pid, birth: String(pid) + ":TEST", exe: process.execPath,
-    argv: pid === 999999 ? [process.execPath, "/runtime/bootstrap.js"] : [process.execPath],
+    pid, parentPid: namespaceRecipe && pid === 999999 ? 999998 : namespaceRecipe && pid === 999998 ? 999997 : process.pid,
+    birth: String(pid) + ":TEST", exe: namespaceRecipe && pid === 999997 ? "/usr/bin/unshare" : namespaceRecipe && pid === 999998 ? "/usr/bin/tini" : process.execPath,
+    argv: namespaceRecipe && pid === 999997 ? serviceArgv : namespaceRecipe && pid === 999998 ? serviceArgv.slice(18) : pid === 999999 ? [process.execPath, "/runtime/bootstrap.js"] : [process.execPath],
     group: `0::${group}`, net: "TEST-net", user: "TEST-user", mount: "TEST-mount", pidNamespace: "TEST-pid",
     uidMap: "TEST-uid", gidMap: "TEST-gid", status: "TEST", descriptors: remote,
   }));
-  vi.spyOn(observation, "observeHostedFdUnit").mockReturnValue({ unit, invocation: "TEST-invocation", group, mainPid: 999999, root: "",
+  vi.spyOn(observation, "observeHostedFdUnit").mockReturnValue({ unit, invocation: "TEST-invocation", group, mainPid: namespaceRecipe ? 999997 : 999999, root: "",
     lifecycle: { Type: "exec", ExitType: "main", RemainAfterExit: "no", KillMode: "control-group", SendSIGKILL: "yes",
       Restart: "no", Delegate: "no", KillSignal: "15", FinalKillSignal: "9", ProtectControlGroups: "yes", TimeoutStopUSec: "30000000" } });
-  vi.spyOn(observation, "hostedFdGroupPids").mockReturnValue([999999]);
+  vi.spyOn(observation, "hostedFdGroupPids").mockReturnValue(namespaceRecipe ? [999997, 999998, 999999] : [999999]);
   vi.spyOn(observation, "assertHostedFdBootstrap").mockImplementation(() => {});
   vi.spyOn(observation, "assertHostedFdConfinement").mockImplementation(() => {});
   vi.spyOn(observation, "collectHostedFdPeers").mockReturnValue(parseFdCollectorRows(
     [0, 1, 2].flatMap(fd => [`0 0 * ${100 + fd} * ${200 + fd}`, `0 0 * ${200 + fd} * ${100 + fd}`]).join("\n"), 32));
   const child: ChildProcessWithoutNullStreams = spawnHostedFdChild("/usr/bin/systemd-run",
-    ["--unit=" + unit, "--", process.execPath], {}, unit, HostedFdLaunchKind.Provider);
+    spawnArgs, {}, unit, HostedFdLaunchKind.Provider);
   const guard = hostedFdLaunch(child);
   const initialFact = guard.providerSetupFailureFact(SetupStage.Observing, new Error("hosted_fd_boundary_unresolved"));
   await ready;
@@ -84,6 +89,21 @@ async function fixture(exitCode = 0, holdAfterInput = false, setupTimeoutMs = 50
     release: (end: boolean) => guard.release({} as HostedActivationFence, "TEST-public-frame\n", end, () => {}),
     cleanup: async () => { if (peer.exitCode === null && peer.signalCode === null) peer.kill("SIGTERM"); await closed; } };
 }
+
+it("keeps the rootless canonical namespace lane unchanged and refuses aliases there", async () => {
+  const authenticate = vi.spyOn(recipeImages, "readHostedFdRecipeImages").mockImplementation(() => { throw Error("TEST rootless route must not authenticate a private dependency root"); });
+  vi.spyOn(fullSetup, "retainOriginalFullSetupIntent").mockReturnValue(undefined); // External full-setup backing is absent in this stream fixture.
+  const test = await fixture(0, false, 5000, true);
+  try {
+    expect(authenticate).not.toHaveBeenCalled();
+    const original = vi.mocked(observation.observeHostedFdProcess).getMockImplementation()!;
+    vi.mocked(observation.observeHostedFdProcess).mockImplementation(pid => {
+      const observed = original(pid); return pid === 999997 ? { ...observed, exe: "/TEST-foreign-root/usr/bin/unshare" } : observed;
+    });
+    expect(() => test.release(false)).toThrow("hosted_fd_namespace_stage_unresolved");
+    expect(authenticate).not.toHaveBeenCalled(); test.guard.invalidate();
+  } finally { await test.cleanup(); }
+});
 
 it("accepts native zero close and raw EOF after private input completion with an unused public gate", async () => {
   const test = await fixture();

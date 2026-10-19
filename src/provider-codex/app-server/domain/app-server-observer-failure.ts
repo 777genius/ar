@@ -1,6 +1,8 @@
 import { validatedNamespaceFailure, type AppServerNamespaceFailure } from "./app-server-namespace-failure";
 /** Source-owned failure locations only. None of these observations admit work. */
 export enum AppServerObserverPoint {
+  ImageAlias = "image_alias", ImageRoot = "image_root", ImageSource = "image_source", ImageOpen = "image_open", ImageView = "image_view",
+  ImageElf = "image_elf", ImageHash = "image_hash", ImageRejoin = "image_rejoin", ImageClose = "image_close",
   Namespace = "namespace", Native = "native", UnitInventory = "unit_inventory", UnitQuery = "unit_query", UnitDecode = "unit_decode",
   UnitArrays = "unit_arrays", UnitLifecycle = "unit_lifecycle", UnitGuards = "unit_guards", UnitRequery = "unit_requery", UnitRejoin = "unit_rejoin",
   BusInitial = "bus_initial", BusPins = "bus_pins", BusService = "bus_service", BusSocket = "bus_socket", BusProcess = "bus_process",
