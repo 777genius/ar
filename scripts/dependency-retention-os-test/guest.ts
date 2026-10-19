@@ -241,7 +241,12 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     evidence.kernelGatePhase = mode + "_receipt_owner_probe";
     const receipt = readHostedDependencyReceipt(binding); assert(receipt);
     const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
-    try { assert.equal(owner.read(binding.workspace)?.owner, null, "actual creator/drain release unresolved"); }
+    try {
+      const row = owner.read(binding.workspace);
+      try { evidence[mode + "ReceiptOwnerProbeObservation"] = receiptOwnerProbeObservation(policy, row); }
+      catch { evidence[mode + "ReceiptOwnerProbeObservation"] = { unavailable: true }; }
+      assert.equal(row?.owner, null, "actual creator/drain release unresolved");
+    }
     finally { owner.close(); }
     const probes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[12]\.json$/.test(name)).sort();
     assert.equal(probes.length, mode === "fresh" ? 1 : 2);
@@ -282,6 +287,56 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   assert.deepEqual(before, sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) })));
   assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
+}
+
+/** Closed-fact release observation for the owner probe: enums, booleans and
+ * counts only. Never record IDs, raw paths, bytes or stderr. */
+function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDependencyOwnerStore["read"]>): Record<string, unknown> {
+  const present = (path: string): boolean => { try { lstatSync(path); return true; } catch { return false; } };
+  const owner = row?.owner ?? null;
+  const attempt = owner && typeof owner === "object" && "attempt" in owner
+    ? owner.attempt as { attemptId?: unknown; epoch?: unknown } : undefined;
+  const attemptId = typeof attempt?.attemptId === "string" ? attempt.attemptId : null;
+  const attemptEpoch = typeof attempt?.epoch === "number" ? attempt.epoch : null;
+  const phaseValue: string = owner === null ? "none" : String(owner.phase);
+  const phase = phaseValue === "exclusive_mutation" || phaseValue === "running" || phaseValue === "fenced" ? phaseValue : "other";
+  const kindValue: string | undefined = owner === null || owner.kind === undefined ? undefined : String(owner.kind);
+  const ownerKind = owner === null ? "none" : kindValue === undefined ? "unspecified"
+    : kindValue === "consumer" || kindValue === "maintenance" ? kindValue : "other";
+  const continuity = (row as { generationContinuity?: { kind?: unknown } } | null)?.generationContinuity;
+  const continuityKind = row === null ? "no_record" : continuity === undefined ? "absent"
+    : continuity.kind === "baseline_authenticated_v1" ? "baseline_authenticated_v1"
+      : continuity.kind === "retired_ready_v1" ? "retired_ready_v1"
+        : continuity.kind === "retired_evicting_v1" ? "retired_evicting_v1" : "other";
+  const installers = policy + "/dependency-installers";
+  const activation = readHostedInstallationActivation().activation;
+  const rows = activation.ordinaryStarts.slice(0, 8).map(start => ({
+    unitClass: start.unit.startsWith("subscription-runtime-installer-") ? "installer"
+      : start.unit.startsWith("subscription-runtime-hosted-") ? "hosted"
+        : start.unit.startsWith("subscription-runtime-") ? "ordinary" : "other",
+    state: start.state === HostedCustodyReservationState.Reserved ? "reserved"
+      : start.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+    attemptFenceRecord: present(`${policy}/dependency-attempt-fences/${start.startId}.json`),
+    readerCompletionRecord: present(`${policy}/dependency-ordinary-reader-completions/${start.startId}.json`),
+    providerCompletionRecord: present(`${policy}/dependency-ordinary-provider-completions/${start.startId}.json`),
+    providerAttemptRecord: present(`${policy}/dependency-provider-attempts/${start.startId}.json`),
+    installerStartRecord: present(`${installers}/${start.startId}/start.json`),
+    installerTerminalRecord: present(`${installers}/${start.startId}/terminal.json`)
+  }));
+  let installerAttemptRecordCount = 0;
+  try { installerAttemptRecordCount = readdirSync(installers).filter(name => /^attempt-[a-f0-9-]{36}\.json$/.test(name)).length; }
+  catch { installerAttemptRecordCount = -1; }
+  return {
+    ownerRowPresent: row !== null, recordVersion: row === null ? "no_record" : row.version,
+    ownerPhase: phase, ownerKind, continuityKind,
+    attemptEpochMatchesRecord: attemptEpoch === null || row === null ? null : attemptEpoch === row.epoch,
+    activityLastEntry: row === null ? null : row.activity?.lastEntry !== undefined && row.activity?.lastEntry !== null,
+    activityLastRelease: row === null ? null : row.activity?.lastRelease !== undefined && row.activity?.lastRelease !== null,
+    ownerInstallerAttemptRecord: attemptId === null ? null : present(`${installers}/attempt-${attemptId}.json`),
+    installerAttemptRecordCount,
+    ordinaryStartCount: activation.ordinaryStarts.length, ordinaryStartRowsTruncated: activation.ordinaryStarts.length > 8,
+    ordinaryStartRows: rows
+  };
 }
 
 /** Captures bytes SENT to the inherited first-hop TEST relay. Incoming bus
