@@ -13,6 +13,7 @@ import { CodexAppServerThreadForkError } from "./app-server/application/app-serv
 import { CodexAppServerProviderError, CodexAppServerErrorKind, codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
 import { CodexModelUnavailableError, isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 import { CodexAppServerRateLimitsRejectedError, isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
+import { appServerLaunchStderrCauseFact } from "./app-server/application/app-server-launch-stderr";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
   const seen = new Set<Error>();
@@ -281,7 +282,8 @@ function codexFailureDetails(
     details.stderrTail = parsed.stderrTail;
   }
   if (message.trim()) {
-    details.rawCause = safeTail(message);
+    const launchFact = appServerLaunchStderrCauseFact(error);
+    details.rawCause = safeTail(launchFact === undefined ? message : `${message} <- ${launchFact}`);
   }
 
   return Object.keys(details).length === 0 ? undefined : details;

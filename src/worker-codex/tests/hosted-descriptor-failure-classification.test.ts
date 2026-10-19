@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { SubscriptionWorkerError } from "../../worker-core/errors";
 import { defaultSafeExecutionErrorClassifier, failureDetailsFromUnknown } from "../../worker-core/safe-execution/domain/safe-execution-policy";
+import { AppServerLaunchStderrFact, createAppServerLaunchStderrObservation } from "../../provider-codex/app-server/application/app-server-launch-stderr";
 
 it("preserves normalized failure classification while transporting closed cause facts", () => {
   const message = "hosted_custody_inherited_handle_denied";
@@ -12,4 +13,23 @@ it("preserves normalized failure classification while transporting closed cause 
     expect(failureDetailsFromUnknown(error)?.rawCause).toBe(error === denied ? `${message} <- ${fact}` : `Worker pool failed to start. <- ${message} <- ${fact}`);
   }
   expect(denied.message).toBe(message);
+});
+
+it("keeps app-server stderr observations outside failure and retry decisions", () => {
+  for (const fact of Object.values(AppServerLaunchStderrFact)) {
+    const original = new Error("codex_app_server_exited:70");
+    const observed = new Error(original.message, { cause: new Error(`app_server_stderr label=${fact}`) });
+    for (const wrap of [(error: Error) => error, (error: Error) => new SubscriptionWorkerError(
+      "subscription_worker_pool_slot_failed", "Worker pool slot failed to run a task.", { cause: error })]) {
+      const before = defaultSafeExecutionErrorClassifier(wrap(original)), after = defaultSafeExecutionErrorClassifier(wrap(observed));
+      expect({ reason: after.reason, retryable: after.retryable, safeMessage: after.safeMessage })
+        .toEqual({ reason: before.reason, retryable: before.retryable, safeMessage: before.safeMessage });
+    }
+  }
+  const observation = createAppServerLaunchStderrObservation();
+  observation.observe("hosted_app_server_research_bootstrap_timeout\n");
+  const cause = observation.snapshotCause();
+  expect(cause?.message).toBe("app_server_stderr label=research_bootstrap_deadline");
+  expect(failureDetailsFromUnknown(new Error("codex_app_server_exited:70", { cause }))?.rawCause)
+    .toBe("codex_app_server_exited:70 <- app_server_stderr label=research_bootstrap_deadline");
 });

@@ -73,6 +73,7 @@ import {
   AppServerRequestMayHaveReachedProviderError,
 } from "../domain/app-server-execution-safety";
 import { codexAppServerProcessArgs } from "./app-server-process-args";
+import { createAppServerLaunchStderrObservation } from "./app-server-launch-stderr";
 import { handleAppServerServerRequest } from "./app-server-server-request-handler";
 import { stopAppServerProcess } from "./app-server-process-stopper";
 import { handleAppServerReconnectProgress } from "./app-server-reconnect-handler";
@@ -225,14 +226,15 @@ export class CodexAppServerClient {
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
-    this.child.stderr.on("data", () => {
-      // Keep stderr private. Codex may include environment or auth diagnostics.
+    const launchStderr = createAppServerLaunchStderrObservation();
+    this.child.stderr.on("data", (chunk) => {
+      // Keep raw stderr private. Retain only an exact fixed bootstrap label.
+      launchStderr.observe(chunk);
     });
     this.child.on("exit", (code, signal) => {
       this.exited = true;
-      this.recordTerminalError(
-        new Error(`codex_app_server_exited:${code ?? signal}`),
-      );
+      const cause = launchStderr.snapshotCause();
+      this.recordTerminalError(new Error(`codex_app_server_exited:${code ?? signal}`, cause ? { cause } : undefined));
     });
     this.child.on("error", (error) => {
       this.recordTerminalError(error);
