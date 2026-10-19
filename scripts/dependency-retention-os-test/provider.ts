@@ -236,8 +236,25 @@ assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/hom
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
-// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups, 85-93/100-108 per-path enclosure denial, 94 .git write).
+// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups, 85+i per-path readable, 110+i EISDIR, 120+i ELOOP, 130+i EPERM, 140+i ENOTDIR, 150+i EROFS, 160+i other unexpected errno, 94 .git write).
 let probeFailureCode = 80;
+/** One bounded closed fact for an unexpected deny site: enum identities and
+ * counts only, never path names or contents. Best effort; exit code stands. */
+function denyFact(index: number, threw: boolean, errno: string, path: string): void {
+  try {
+    let kind = "missing", mode = -1, uid = -1, gid = -1, size = -1, entryCount = -1;
+    try {
+      const stat = lstatSync(path);
+      kind = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" :
+        stat.isFIFO() ? "fifo" : stat.isSocket() ? "socket" : "other";
+      mode = stat.mode & 0o7777; uid = stat.uid; gid = stat.gid; size = Number(stat.size);
+      if (kind === "directory") entryCount = readdirSync(path).length;
+    } catch { /* closed negatives stand */ }
+    writeFileSync(workspace + "/TEST-provider-probe-failed.json", JSON.stringify({ schemaVersion: 1, pathIndex: index,
+      threw, errno: ["ENOENT", "EACCES", "EISDIR", "ELOOP", "EPERM", "ENOTDIR", "EROFS"].includes(errno) ? errno : "other",
+      kind, mode, uid, gid, size, entryCount }) + "\n", { flag: "wx", mode: 0o600 });
+  } catch { /* closed exit channel alone survives */ }
+}
 function probe(): boolean {
   probeFailureCode = 80;
   const ids = { uid: process.getuid!(), euid: process.geteuid!(), gid: process.getgid!(), egid: process.getegid!() };
@@ -276,8 +293,10 @@ function probe(): boolean {
   const require = createRequire(workspace + "/package.json");
   assert.equal((require("is-number") as (value: unknown) => boolean)(42), true);
   // Per-path codes name the site through the closed exit channel alone:
-  // 85+i = path index i did not throw (readable/visible), 100+i = path index i
-  // threw an unexpected errno class, 94 = .git/config write was permitted.
+  // 85+i = path index i did not throw (readable/visible), 110+i = path index i
+  // threw EISDIR, 120+i = ELOOP, 130+i = EPERM, 140+i = ENOTDIR, 150+i =
+  // EROFS, 160+i = any other unexpected errno, 94 = .git/config write was
+  // permitted. An unexpected site also leaves one bounded closed fact file.
   const denyPaths = [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
     workspace.slice(0, -"/workspace".length) + "/state-sentinel", workspace.slice(0, -"/workspace".length) + "/output-sentinel",
     workspace.slice(0, -"/workspace".length) + "/encryption-key.hex",
@@ -286,9 +305,13 @@ function probe(): boolean {
   for (const [index, path] of denyPaths.entries()) {
     let thrown: unknown, threw = false;
     try { readFileSync(path); } catch (error) { threw = true; thrown = error; }
-    probeFailureCode = (threw ? 100 : 85) + index;
+    const errno = (thrown as NodeJS.ErrnoException).code ?? "";
+    const band = errno === "EISDIR" ? 110 : errno === "ELOOP" ? 120 : errno === "EPERM" ? 130 :
+      errno === "ENOTDIR" ? 140 : errno === "EROFS" ? 150 : 160;
+    probeFailureCode = (threw ? band : 85) + index;
+    if (!threw || !["ENOENT", "EACCES"].includes(errno)) denyFact(index, threw, errno, path);
     assert.ok(threw, "TEST enclosure denial required");
-    assert.equal(["ENOENT", "EACCES"].includes((thrown as NodeJS.ErrnoException).code ?? ""), true);
+    assert.equal(["ENOENT", "EACCES"].includes(errno), true);
   }
   probeFailureCode = 94;
   assert.throws(() => { const fd = openSync(workspace + "/.git/config", "a"); closeSync(fd); },

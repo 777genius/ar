@@ -1354,6 +1354,30 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
       finally { closeSync(fd); }
     } catch (error) { return { slot: index, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
   });
+  observation.probeFact = (() => {
+    // Bounded closed deny-site fact written by the failed provider probe:
+    // enum identities and counts only, never path names or contents.
+    try {
+      const before = lstatSync(workspace + "/TEST-provider-probe-failed.json");
+      if (!before.isFile() || before.isSymbolicLink() || before.uid !== 0 || before.nlink !== 1 || before.size <= 0 || before.size > 4096) return { present: false };
+      const fd = openSync(workspace + "/TEST-provider-probe-failed.json", constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096); let length = 0;
+        while (length < buffer.length) { const count = readSync(fd, buffer, length, buffer.length - length, length); if (!count) break; length += count; }
+        const raw: unknown = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { present: false };
+        const v = raw as Record<string, unknown>;
+        if (Object.keys(v).sort().join(",") !== "entryCount,errno,gid,kind,mode,pathIndex,schemaVersion,size,threw,uid" ||
+            v.schemaVersion !== 1 || typeof v.pathIndex !== "number" || !Number.isInteger(v.pathIndex) || v.pathIndex < 0 || v.pathIndex > 8 ||
+            typeof v.threw !== "boolean" || typeof v.errno !== "string" ||
+            !["ENOENT", "EACCES", "EISDIR", "ELOOP", "EPERM", "ENOTDIR", "EROFS", "other"].includes(v.errno) ||
+            typeof v.kind !== "string" || !["missing", "file", "directory", "symlink", "fifo", "socket", "other"].includes(v.kind) ||
+            ["mode", "uid", "gid", "size", "entryCount"].some(key => typeof v[key] !== "number" || !Number.isInteger(v[key]))) return { present: false };
+        return { present: true, pathIndex: v.pathIndex, threw: v.threw, errno: v.errno, kind: v.kind,
+          mode: v.mode, uid: v.uid, gid: v.gid, size: v.size, entryCount: v.entryCount };
+      } finally { closeSync(fd); }
+    } catch { return { present: false }; }
+  })();
   return observation;
 }
 
