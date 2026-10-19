@@ -1,6 +1,6 @@
 import type { TransientStartSample } from "./transient-start-diagnostic.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { sameSyntheticDiagnosticFile } from "./synthetic-cli-diagnostic.ts";
+import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic } from "./synthetic-cli-diagnostic.ts";
 import { attemptFailureReasons, type AttemptFailureReason, type SafeExecutionErrorCode } from "../../dist/worker-core/safe-execution/domain/safe-execution-policy.js";
 import type { SubscriptionWorkerErrorCode } from "../../dist/worker-core/errors.js";
 import { CodexGoalOriginReason, decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-goal-origin-diagnostic.js";
@@ -42,8 +42,53 @@ function facts(node: Record<string, unknown>, status: Status) {
     codes: [...new Set(selectedCodes.filter((code): code is typeof codes[number] => typeof code === "string" && codeSet.has(code)))] };
 }
 
+function selectedMessageFields(root: Record<string, unknown>, task: Record<string, unknown> | undefined,
+  attempt: Record<string, unknown> | undefined, source: SyntheticResultSource) {
+  // Bits follow these seven fixed source fields. Presence is separate from
+  // acceptance: unknown types/unsafe text never masquerade as absent fields.
+  return [
+    ["root.failureDetails.rawCause", source === "safe_execution_stdout" ? record(root.failureDetails)?.rawCause : undefined],
+    ["root.details.rawCause", source === "runtime_result_file" ? record(root.details)?.rawCause : undefined],
+    ["task.lastFailureDetails.rawCause", record(task?.lastFailureDetails)?.rawCause],
+    ["attempt.failureDetails.rawCause", record(attempt?.failureDetails)?.rawCause],
+    ["root.safeMessage", source === "safe_execution_stdout" ? root.safeMessage : undefined],
+    ["task.lastFailureMessage", task?.lastFailureMessage],
+    ["attempt.failureMessage", attempt?.failureMessage],
+  ] as const;
+}
+function selectedMessages(fields: ReturnType<typeof selectedMessageFields>, trusted: boolean, sourceSha: string) {
+  const messageFieldPresenceBits = fields.reduce((bits, [, value], index) => bits | (value === undefined ? 0 : 1 << index), 0);
+  const messageObservations: { field: typeof fields[number][0]; diagnostic: ReturnType<typeof syntheticCliStderrDiagnostic> }[] = [];
+  const seen = new Set<string>();
+  for (const [field, value] of fields) {
+    if (typeof value !== "string" || seen.has(value)) continue;
+    if (messageObservations.length === 3) break;
+    seen.add(value);
+    // JSON fields are framed as a line, without trimming, truncating or
+    // rewriting their text. The existing stderr filter decides acceptance.
+    const bytes = Buffer.from(value.endsWith("\n") ? value : value + "\n");
+    messageObservations.push({ field, diagnostic: syntheticCliStderrDiagnostic(bytes, {
+      fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length,
+    }, trusted, sourceSha) });
+  }
+  return { messageFieldPresenceBits, messageObservations };
+}
+
+function closedOrigin(value: unknown, rawCause: boolean) {
+  if (typeof value !== "string" || value.length > 4096 || Buffer.byteLength(value, "utf8") > 4096) return undefined;
+  const decode = (text: string) => decodeCodexGoalOriginDiagnostic(text) ??
+    (member(Object.values(CodexGoalOriginReason), text) ? { reason: text, locations: [] } : undefined);
+  const direct = decode(value); if (direct || !rawCause) return direct;
+  // worker-pool.ts:145 and safe-execution-policy.ts:602 own these exact
+  // wrapper/join bytes. No unknown prefix, partial token or raw segment escapes.
+  const segments = value.split(" <- ", 5);
+  if (segments.length < 2 || segments.length > 4 ||
+      segments.slice(0, -1).some(segment => segment !== "Worker pool failed to start.")) return undefined;
+  return decode(segments[segments.length - 1]!);
+}
+
 /** Observations only from the exact proved fake fresh fixture. Never copy
- * result bodies, messages, task IDs, account data, details or provider output. */
+ * raw result bodies/messages, task IDs, account data or provider output. */
 export function syntheticStructuredFailure(bytes: Uint8Array, sample: TransientStartSample, trusted: boolean,
   sourceSha: string, identity: Identity, source: SyntheticResultSource) {
   const refused = { purpose, state: "unavailable" as const };
@@ -70,18 +115,13 @@ export function syntheticStructuredFailure(bytes: Uint8Array, sample: TransientS
           root.runId !== identity.jobId || root.taskId !== identity.jobId ||
           ![root.changedFiles, root.evidence, root.blockers].every(value => Array.isArray(value) && value.every(item => typeof item === "string"))) return refused;
     } else return refused;
-    const nodes = [root, ...(task ? [task] : []), ...attempts];
-    const embedded = nodes.flatMap(node => [node.safeMessage, node.failureMessage, node.lastFailureMessage,
-      ...details(node).map(value => value.rawCause)]).flatMap(value => {
-      if (typeof value !== "string" || value.length > 4096) return [];
-      const diagnostic = decodeCodexGoalOriginDiagnostic(value);
-      if (diagnostic) return [diagnostic];
-      return member(Object.values(CodexGoalOriginReason), value) ? [{ reason: value, locations: [] }] : [];
-    })[0];
+    const fields = selectedMessageFields(root, task, attempts[0], source);
+    const embedded = fields.map(([field, value]) => closedOrigin(value, field.endsWith(".rawCause"))).find(value => value !== undefined);
     return { purpose, state: "captured" as const, source, root: facts(root, root.status as Status),
       ...(task ? { task: facts(task, task.status as Status), attemptCount: attempts.length,
         attempts: attempts.map(attempt => facts(attempt, attempt.status as Status)) } : {}),
-      ...(embedded ? { originDiagnostic: embedded } : {}) };
+      ...(embedded ? { originDiagnostic: embedded } : {}),
+      ...selectedMessages(fields, trusted, sourceSha) };
   } catch { return refused; }
 }
 

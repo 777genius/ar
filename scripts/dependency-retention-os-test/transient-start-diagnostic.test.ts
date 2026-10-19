@@ -14,6 +14,7 @@ import { SafeExecutionRunner } from "../../dist/worker-core/safe-execution/appli
 import { SafeExecutionError } from "../../dist/worker-core/safe-execution/domain/safe-execution-policy.js";
 import { InMemoryAttemptJournal } from "../../dist/worker-core/safe-execution/adapters/in-memory-attempt-journal.js";
 import { InMemoryWorkspaceLockStore } from "../../dist/worker-core/safe-execution/adapters/in-memory-workspace-lock-store.js";
+import { SubscriptionWorkerError } from "../../dist/worker-core/errors.js";
 const sample = (text: string) => {
   const bytes = Buffer.from(text);
   return classifyTransientStartFailure(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length });
@@ -33,7 +34,7 @@ test("structured observer consumes the actual failStartedTask producer before an
   let providerCalls=0;
   const runner=new SafeExecutionRunner({ journal:new InMemoryAttemptJournal(),lockStore:new InMemoryWorkspaceLockStore(),
     runtime:{createOwnerId:()=>"TEST-only-owner",currentPid:()=>undefined},
-    workspaceAccess:{canonicalizePath:async({path})=>path,assertGitWorkspace:async()=>{throw new SafeExecutionError("safe_execution_workspace_not_git","PRIVATE_CANARY");}} });
+    workspaceAccess:{canonicalizePath:async({path})=>path,assertGitWorkspace:async()=>{throw new SafeExecutionError("safe_execution_workspace_not_git","Bearer PRIVATE_CANARY");}} });
   const produced=await runner.run({taskId:syntheticIdentity.jobId,workspace:{mode:"existing_locked",path:syntheticIdentity.workspace,requireGitWorkspace:true},
     provider:"codex",effectMode:"read_only",job:{},originalPrompt:"TEST-only",pool:{run:async()=>{providerCalls++;return{};}}});
   assert.equal(providerCalls,0);assert.equal(produced.status,"failed");assert.equal(produced.attempts.length,0);
@@ -42,11 +43,29 @@ test("structured observer consumes the actual failStartedTask producer before an
   assert.equal(captured.attemptCount,0);assert(captured.root.codes.includes("safe_execution_workspace_not_git"));
   assert(captured.task?.codes.includes("safe_execution_workspace_not_git"));assert(!JSON.stringify(captured).includes("PRIVATE_CANARY"));
 });
+test("actual one-attempt wrapper keeps generic text refused and exposes only its exact closed origin fact", async () => {
+  let poolCalls=0;
+  const runner=new SafeExecutionRunner({journal:new InMemoryAttemptJournal(),lockStore:new InMemoryWorkspaceLockStore(),
+    runtime:{createOwnerId:()=>"TEST-only-owner",currentPid:()=>undefined},
+    workspaceAccess:{canonicalizePath:async({path})=>path,assertGitWorkspace:async()=>{}},
+    snapshotter:{capture:async({workspacePath})=>({mode:"git",workspacePath,capturedAt:new Date(),dirty:false,changedFiles:[],fingerprint:"TEST-only",summary:"TEST clean"})}});
+  const produced=await runner.run({taskId:syntheticIdentity.jobId,workspace:{mode:"existing_locked",path:syntheticIdentity.workspace,requireGitWorkspace:true},
+    provider:"codex",effectMode:"read_only",job:{},originalPrompt:"TEST-only",continuationMode:"disabled",policy:{maxAttempts:1},
+    pool:{run:async()=>{poolCalls++;throw new SubscriptionWorkerError("subscription_worker_start_failed","Worker pool failed to start.",
+      {cause:new Error("hosted_dependency_current_origin_unresolved")});}}});
+  assert.equal(poolCalls,1);assert.equal(produced.attempts.length,1);
+  const captured=resultSample(produced);assert.equal(captured.state,"captured");if(captured.state!=="captured")throw new Error("TEST producer rejected");
+  assert.equal(captured.attemptCount,1);assert(captured.root.codes.includes("subscription_worker_start_failed"));
+  assert.deepEqual(captured.originDiagnostic,{reason:"hosted_dependency_current_origin_unresolved",locations:[]});
+  assert.equal(captured.messageObservations[0]?.field,"root.failureDetails.rawCause");
+  assert.equal(captured.messageObservations[0]?.diagnostic.state,"unavailable");
+});
 test("structured synthetic failures select closed codes from genuine zero/one-attempt result shapes only", () => {
   const output = resultSample(failedRun());
   assert.deepEqual(output, { purpose:"TEST_synthetic_structured_failure_only",state:"captured",source:"safe_execution_stdout",
     root:{status:"failed",reason:"unknown_error",codes:["safe_execution_workspace_not_git"]},
-    task:{status:"failed",reason:"unknown_error",codes:[]},attemptCount:0,attempts:[] });
+    task:{status:"failed",reason:"unknown_error",codes:[]},attemptCount:0,attempts:[],messageFieldPresenceBits:16,
+    messageObservations:[{field:"root.safeMessage",diagnostic:{purpose:"TEST_synthetic_fresh_cli_redacted_text_only",state:"unavailable"}}] });
   const attempt = {taskId:syntheticIdentity.jobId,attemptNumber:1,status:"failed",failureReason:"account_unavailable",
     failureDetails:{subscriptionWorkerCode:"subscription_worker_account_unavailable",rawCause:"Bearer PRIVATE_CANARY"},accountId:"PRIVATE_CANARY"};
   const one = {...failedRun(),attempts:[attempt],task:{...failedRun().task,attempts:[attempt]}};
@@ -59,6 +78,38 @@ test("structured synthetic failures select closed codes from genuine zero/one-at
   assert.deepEqual(envelope.originDiagnostic,diagnostic);
   for(const value of [output,observed,envelope])for(const secret of ["PRIVATE_CANARY","Bearer",syntheticIdentity.jobId,"/var/lib"])
     assert(!JSON.stringify(value).includes(secret));
+});
+test("selected failure messages prefer rawCause, deduplicate, cap at three and retain unchanged redaction", () => {
+  const benign="Fixture startup failed at /private/TEST-probe.", attempt={taskId:syntheticIdentity.jobId,attemptNumber:1,status:"failed",
+    failureDetails:{rawCause:"Bearer PRIVATE_CANARY"},failureMessage:"UNSELECTED fifth message"};
+  const value={...failedRun(),failureDetails:{rawCause:benign},details:{rawCause:"UNSELECTED runtime-only field"},safeMessage:"Fixture fallback summary.",
+    task:{...failedRun().task,lastFailureDetails:{rawCause:benign},lastFailureMessage:"UNSELECTED fourth message",attempts:[attempt]},attempts:[attempt]};
+  const output=resultSample(value);assert.equal(output.state,"captured");if(output.state!=="captured")throw new Error("TEST capture rejected");
+  assert.equal(output.messageFieldPresenceBits,125);
+  assert.deepEqual(output.messageObservations.map(item=>item.field),["root.failureDetails.rawCause","attempt.failureDetails.rawCause","root.safeMessage"]);
+  assert.equal(output.messageObservations[0]?.diagnostic.state,"captured");assert.equal(output.messageObservations[1]?.diagnostic.state,"unavailable");
+  const text=JSON.stringify(output);assert(text.includes("<path>"));for(const forbidden of ["/private/TEST-probe","PRIVATE_CANARY","Bearer","UNSELECTED"])assert(!text.includes(forbidden));
+  const absent=resultSample(failedResult(),"runtime_result_file");assert.equal(absent.state,"captured");
+  if(absent.state!=="captured")throw new Error("TEST envelope rejected");assert.equal(absent.messageFieldPresenceBits,0);assert.deepEqual(absent.messageObservations,[]);
+  for(const message of ["api_key=PRIVATE_CANARY","x".repeat(5000),"multiline\nPRIVATE_CANARY","A".repeat(43)]){
+    const result=resultSample({...failedRun(),safeMessage:message});assert.equal(result.state,"captured");
+    if(result.state!=="captured")throw new Error("TEST shape rejected");assert.equal(result.messageObservations[0]?.diagnostic.state,"unavailable");
+  }
+});
+test("closed wrapper extraction accepts only exact bounded source joins and canonical final diagnostics", () => {
+  const origin="hosted_dependency_current_origin_unresolved", wrapper="Worker pool failed to start. <- ";
+  const diagnostic={reason:origin,locations:[{module:"hosted-current-dependency-origin",format:"js",line:95,column:28}]};
+  const observe=(rawCause:string)=>resultSample({...failedResult(),details:{rawCause}},"runtime_result_file");
+  for(const value of [origin,JSON.stringify(diagnostic)]){
+    const result=observe(wrapper+value);assert.equal(result.state,"captured");if(result.state!=="captured")throw new Error("TEST capture rejected");
+    assert.equal(result.originDiagnostic?.reason,origin);assert.equal(result.messageObservations[0]?.diagnostic.state,"unavailable");
+  }
+  for(const value of ["Worker pool failed to start! <- "+origin,wrapper+origin+"suffix",wrapper+"unknown_origin_code",
+    "prefix "+wrapper+origin,wrapper+"Bearer PRIVATE_CANARY <- "+origin,wrapper.repeat(4)+origin,
+    wrapper+JSON.stringify({...diagnostic,private:"PRIVATE_CANARY"}),wrapper+JSON.stringify(diagnostic,null,2)]){
+    const result=observe(value);assert.equal(result.state,"captured");if(result.state!=="captured")throw new Error("TEST capture rejected");
+    assert.equal(result.originDiagnostic,undefined);
+  }
 });
 test("structured synthetic failures refuse changed, partial, malformed, foreign and excessive input", () => {
   const base=failedRun();
