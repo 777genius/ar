@@ -283,7 +283,12 @@ function codexFailureDetails(
     details.stderrTail = parsed.stderrTail;
   }
   if (message.trim()) {
-    const launchFact = appServerProviderSetupCauseFact(error) ?? appServerLaunchStderrCauseFact(error);
+    const factHop = (source: unknown): string | undefined =>
+      appServerProviderSetupCauseFact(source) ?? appServerLaunchStderrCauseFact(source);
+    // The turn wrapper adds one hop: its own cause is the carrier of the
+    // launch fact, so one more own-data hop stays inside the closed lookup.
+    const launchFact = factHop(error) ??
+      (error instanceof CodexAppServerTurnError ? factHop(error.cause) : undefined);
     details.rawCause = safeTail(launchFact === undefined ? message : `${message} <- ${launchFact}`);
   }
 

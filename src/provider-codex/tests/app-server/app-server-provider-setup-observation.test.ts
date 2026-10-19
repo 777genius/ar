@@ -6,6 +6,7 @@ import { AppServerProviderSetupStage as Stage, AppServerProviderSetupCheckpoint 
   appServerProviderSetupCauseFact, type AppServerProviderSetupFact } from "../../app-server/domain/app-server-provider-setup-observation";
 import { resolveCodexExecutionProfile } from "../../codex-execution-profile";
 import { classifyCodexFailure } from "../../failure-classifier";
+import { turnFailureError } from "../../app-server/application/app-server-turn-failure";
 import { codexDriverFailure } from "../../codex-driver-failure";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { AppServerObserverPoint as Point, AppServerObserverCode as ObserverCode, AppServerObserverErrno as Errno,
@@ -89,6 +90,17 @@ it("keeps provider classification invariant for all stages/checkpoints and HTTP-
     expect(classifyCodexFailure(new Error(original.message, { cause }))).toEqual({ ...before,
       details: { ...before.details, rawCause: `${original.message} <- ${cause.message}` } });
   }
+});
+it("keeps the setup fact across the turn error wrapper without widening the closed lookup", () => {
+  const child = {}; retainAppServerProviderSetupFailure(child, base);
+  const cause = appServerProviderSetupFailureCause(child)!;
+  const exit = new Error("codex_app_server_exited:70", { cause });
+  const turn = turnFailureError(exit, { phase: "turn_error_before_output", turnNumber: 1, elapsedMs: 5 });
+  expect(classifyCodexFailure(turn).details?.rawCause).toContain(` <- ${cause.message}`);
+  expect(classifyCodexFailure(turn).details?.rawCause).not.toContain("TEST-secret-canary");
+  const shallow = turnFailureError(new Error("codex_app_server_exited:70", { cause: new Error(cause.message) }),
+    { phase: "turn_error_before_output", turnNumber: 1, elapsedMs: 5 });
+  expect(classifyCodexFailure(shallow).details?.rawCause).toBe(shallow.message);
 });
 it("projects setup facts before teardown into the unchanged real client exit and final failed result", async () => {
   const client = new CodexAppServerClient({ codexBinaryPath: "/TEST/unused", sourceEnv: {},
