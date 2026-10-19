@@ -15,7 +15,7 @@ import { hostedFdNamespacePrefix, hostedFdNamespaceStage, assertHostedFdNamespac
 import { retainOriginalFullSetupIntent, type OriginalFullSetup } from "./hosted-full-setup-channel";
 import { readHostedFdUnitPolicy, assertHostedFdUnitPolicy, sameHostedFdUnitLifecycle, type HostedFdUnitPolicy } from "./hosted-fd-unit-policy";
 import { AppServerProviderSetupStage, AppServerProviderSetupCheckpoint as SetupCheckpoint, AppServerProviderSetupCode,
-  appServerProviderSetupCode, type AppServerProviderSetupFact } from "../domain/app-server-provider-setup-observation";
+  appServerProviderSetupCode, type AppServerProviderSetupFact, type AppServerProviderSetupRejection } from "../domain/app-server-provider-setup-observation";
 import { AppServerObserverPoint, closedObserverFailure, type AppServerObserverFailure } from "../domain/app-server-observer-failure";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
@@ -104,6 +104,8 @@ export class HostedFdLaunch {
   #checkpointBegan = process.hrtime.bigint();
   #lastRejectedEntryElapsed = 0;
   #lastRejectedObserver: AppServerObserverFailure | undefined;
+  readonly #rejections: AppServerProviderSetupRejection[] = [];
+  #omittedRejections = 0;
   readonly #filtered = new PassThrough();
   readonly #logs: readonly { path: string; fd: number; dev: number; ino: number }[];
   readonly outputPaths: readonly string[];
@@ -337,9 +339,12 @@ export class HostedFdLaunch {
   async observe(): Promise<void> {
     while (true) {
       this.#remaining();
+      let collecting = false;
       try {
         if (this.kind !== HostedFdLaunchKind.Installer && !this.#ready) invalid();
+        collecting = true;
         this.#proof = this.#collect();
+        collecting = false;
         if(this.#fullSetup && !this.#fullSetupBorn){this.#markCheckpoint(SetupCheckpoint.FullSetup);this.#fullSetup.born(this.#physicalChild,this.#proof,()=>this.#remaining());this.#fullSetupBorn=true;}
         return;
       } catch (error) {
@@ -347,6 +352,9 @@ export class HostedFdLaunch {
         this.#lastRejectedCode = appServerProviderSetupCode(error);
         this.#lastRejectedEntryElapsed = this.#checkpointEntryElapsed;
         this.#lastRejectedObserver = closedObserverFailure(error, AppServerObserverPoint.Native, this.#checkpointElapsed());
+        if (collecting && this.#ready && this.kind === HostedFdLaunchKind.Provider) {
+          try { this.#recordRejection(); } catch { /* Diagnostic history cannot obstruct the existing retry/teardown. */ }
+        }
         this.#remaining(); await new Promise(resolve => setTimeout(resolve, 20));
       }
     }
@@ -354,6 +362,7 @@ export class HostedFdLaunch {
   #collect(): Proof {
     if (this.#collectAttempts === 0) this.#firstCollectElapsed = this.#elapsed();
     this.#collectAttempts = Math.min(65535, this.#collectAttempts + 1);
+    this.#markCheckpoint(SetupCheckpoint.Budget);
     this.#remaining();
     // This closure measures this actual spawn's original monotonic allowance;
     // it is not a caller timeout, admission token or new budget per child query.
@@ -495,7 +504,16 @@ export class HostedFdLaunch {
       collectAttempts: this.#collectAttempts, firstCollectElapsedMsCapped: this.#firstCollectElapsed,
       checkpointEntryElapsedMsCapped: final ? this.#releaseObserved ? this.#checkpointEntryElapsed : 0 : this.#lastRejectedEntryElapsed,
       budgetExpired: Number((process.hrtime.bigint() - this.#started) / 1000000n) >= this.#profile.limits.setupTimeoutMs,
-      ...(observer ? { observer } : {}) });
+      ...(observer ? { observer } : {}), rejections: Object.freeze([...this.#rejections]), omittedRejections: this.#omittedRejections });
+  }
+  #recordRejection(): void {
+    const observer = this.#lastRejectedObserver!;
+    const index = this.#rejections.findIndex(row => row.checkpoint === this.#lastRejectedCheckpoint && row.code === this.#lastRejectedCode &&
+      row.observer.point === observer.point && row.observer.code === observer.code && row.observer.errno === observer.errno);
+    if (index >= 0) { const row = this.#rejections[index]!; this.#rejections[index] = Object.freeze({ ...row, count: Math.min(65535, row.count + 1) }); }
+    else if (this.#rejections.length < 3) this.#rejections.push(Object.freeze({ checkpoint: this.#lastRejectedCheckpoint, code: this.#lastRejectedCode,
+      elapsedMsCapped: this.#elapsed(), checkpointEntryElapsedMsCapped: this.#lastRejectedEntryElapsed, observer, count: 1 }));
+    else this.#omittedRejections = Math.min(65535, this.#omittedRejections + 1);
   }
   #checkpointElapsed(): number { return Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - this.#checkpointBegan) / 1000000n))); }
   #elapsed(): number { return Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - this.#started) / 1000000n))); }

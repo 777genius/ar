@@ -36,6 +36,24 @@ it("transports only branded deepest observer facts and bounded timing, without g
     expect(fact(rejected)).toBeUndefined();
   }
 });
+it("retains at most three closed rejection samples without invoking nested getters or exporting caller data", () => {
+  const sample = { checkpoint: Checkpoint.Unit, code: Code.Unknown, elapsedMsCapped: 17, checkpointEntryElapsedMsCapped: 7,
+    observer: { point: Point.BusArrays, code: ObserverCode.Bus, errno: Errno.EACCES, elapsedMsCapped: 10 }, count: 3 };
+  const child = {}; retainAppServerProviderSetupFailure(child, { ...base, rejections: [sample], omittedRejections: 2 });
+  sample.observer.point = Point.Native;
+  expect(fact(child)).toContain("rejection1=unit,unknown,17,7,bus_arrays,bus,EACCES,10,3 omitted_rejections=2");
+  let reads = 0;
+  const getter = Object.defineProperty({ ...sample }, "checkpoint", { get() { reads++; return Checkpoint.Unit; } });
+  const arrayGetter = Object.defineProperty([sample], "0", { get() { reads++; return sample; } });
+  for (const change of [{ rejections: [sample, sample, sample, sample] }, { rejections: [getter] }, { rejections: arrayGetter },
+    { rejections: [{ ...sample, count: 0 }] }, { rejections: [{ ...sample, elapsedMsCapped: 60001 }] },
+    { rejections: [{ ...sample, code: "TEST-secret-canary" }] }, { rejections: [{ ...sample, observer: { ...sample.observer, errno: "TEST-secret-canary" } }] },
+    { omittedRejections: 65536 }, { omittedRejections: -1 }, { rejections: new Proxy([], { getOwnPropertyDescriptor() { throw Error("TEST-secret-canary"); } }) }]) {
+    const rejected = {}; retainAppServerProviderSetupFailure(rejected, { ...base, rejections: [sample], omittedRejections: 0, ...change } as AppServerProviderSetupFact);
+    expect(fact(rejected)).toBeUndefined();
+  }
+  expect(reads).toBe(0);
+});
 it("retains only the first closed snapshot with bounded numbers and no caller getters", () => {
   const child = {}; retainAppServerProviderSetupFailure(child, base);
   retainAppServerProviderSetupFailure(child, { ...base, checkpoint: Checkpoint.Unit });

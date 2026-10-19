@@ -9,6 +9,8 @@ import { hostedFdLaunch, hostedFdReadyMarker, HostedFdLaunchKind, spawnHostedFdC
 import { AppServerProviderSetupStage as SetupStage, AppServerProviderSetupCheckpoint as Checkpoint,
   AppServerProviderSetupCode as SetupCode } from "../app-server/domain/app-server-provider-setup-observation";
 
+import { AppServerObserverPoint as Point, AppServerObserverCode as ObserverCode, AppServerObserverErrno as Errno, retainObserverFailure } from "../app-server/domain/app-server-observer-failure";
+
 vi.mock("../app-server/adapters/hosted-process-activation", () => ({
   assertHostedActivationFence: vi.fn(), assertHostedOrdinaryProviderRelease: vi.fn(),
 }));
@@ -113,9 +115,41 @@ it("retains the last actual collector rejection before deadline teardown instead
     expect(fact!.firstCollectElapsedMsCapped).toBeLessThan(1500);
     expect(fact!.checkpointEntryElapsedMsCapped).toBeLessThanOrEqual(fact!.elapsedMsCapped);
     expect(fact!.budgetExpired).toBe(true);
+    expect(fact!.rejections).toHaveLength(1);
+    expect(fact!.rejections![0]!.count).toBeGreaterThan(1);
+    expect(fact!.omittedRejections).toBe(0);
     expect(JSON.stringify(fact)).not.toContain("canary");
     test.guard.invalidate();
     expect(() => test.guard.assertOriginalZeroWaitClosed()).toThrow("hosted_fd_boundary_unresolved");
+  } finally { await test.cleanup(); }
+});
+
+it("preserves the first three distinct ready collector failures when a later profile failure reaches the deadline", async () => {
+  const test = await fixture(0, false, 1500);
+  try {
+    expect(test.initialFact?.rejections).toEqual([]);
+    let calls = 0;
+    vi.spyOn(observation, "observeHostedFdUnit").mockImplementation(() => {
+      const original = Object.assign(new Error("TEST-private-target-and-auth-canary"), { code: "EACCES" });
+      const wrapped = new Error("system_bus_infrastructure_unqualified");
+      const point = [Point.BusArrays, Point.BusProcess, Point.BusPins, Point.BusService][Math.min(calls++, 3)]!;
+      retainObserverFailure(original, point, 17, wrapped);
+      if (calls === 5) vi.spyOn(observation, "readHostedFdProfile").mockImplementation(() => { throw Error("hosted_fd_boundary_unresolved"); });
+      throw wrapped;
+    });
+    let failure: unknown;
+    try { await test.guard.observe(); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe("hosted_fd_boundary_unresolved");
+    const fact = test.guard.providerSetupFailureFact(SetupStage.Observing, failure)!;
+    expect(fact).toMatchObject({ checkpoint: Checkpoint.Profile, code: SetupCode.Boundary, budgetExpired: true, ready: true, released: false });
+    expect(fact.rejections).toHaveLength(3);
+    expect(fact.rejections?.map(row => row.observer.point)).toEqual([Point.BusArrays, Point.BusProcess, Point.BusPins]);
+    expect(fact.rejections?.[0]).toMatchObject({ checkpoint: Checkpoint.Unit, code: SetupCode.Unknown, count: 1,
+      observer: { point: Point.BusArrays, code: ObserverCode.Unknown, errno: Errno.EACCES, elapsedMsCapped: 17 } });
+    expect(fact.rejections![0]!.elapsedMsCapped).toBeLessThan(fact.checkpointEntryElapsedMsCapped!);
+    expect(fact.omittedRejections).toBeGreaterThanOrEqual(2); // Repeated fourth kind counts observations, not unique kinds.
+    expect(JSON.stringify(fact)).not.toContain("canary");
+    test.guard.invalidate();
   } finally { await test.cleanup(); }
 });
 
