@@ -236,7 +236,7 @@ assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/hom
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
-// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups).
+// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-86 probe sites).
 let probeFailureCode = 80;
 function probe(): boolean {
   probeFailureCode = 80;
@@ -275,12 +275,14 @@ function probe(): boolean {
   probeFailureCode = 83;
   const require = createRequire(workspace + "/package.json");
   assert.equal((require("is-number") as (value: unknown) => boolean)(42), true);
+  probeFailureCode = 85;
   for (const path of [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
     workspace.slice(0, -"/workspace".length) + "/state-sentinel", workspace.slice(0, -"/workspace".length) + "/output-sentinel",
     workspace.slice(0, -"/workspace".length) + "/encryption-key.hex",
     "/var/lib/subscription-runtime-host-policy/privileged-sibling-sentinel", "/root", "/home/runner",
     "/run/dbus/system_bus_socket", "/run/systemd/private"])
     assert.throws(() => readFileSync(path), (e: unknown) => ["ENOENT", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
+  probeFailureCode = 86;
   assert.throws(() => { const fd = openSync(workspace + "/.git/config", "a"); closeSync(fd); },
     (e: unknown) => ["EROFS", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
   probeFailureCode = 84;
