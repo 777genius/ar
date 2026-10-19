@@ -8,10 +8,34 @@ import { resolveCodexExecutionProfile } from "../../codex-execution-profile";
 import { classifyCodexFailure } from "../../failure-classifier";
 import { codexDriverFailure } from "../../codex-driver-failure";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { AppServerObserverPoint as Point, AppServerObserverCode as ObserverCode, AppServerObserverErrno as Errno,
+  closedObserverFailure, retainObserverFailure } from "../../app-server/domain/app-server-observer-failure";
 
 const base: AppServerProviderSetupFact = { stage: Stage.Observing, checkpoint: Checkpoint.PeerJoin, code: Code.Boundary,
   ready: true, released: false, elapsedMsCapped: 4346, limitMs: 4346 };
 const fact = (child: object) => appServerProviderSetupFailureCause(child)?.message;
+it("transports only branded deepest observer facts and bounded timing, without generic causes or accessors", () => {
+  const original = Object.assign(new Error("TEST-private-path-auth-canary"), { code: "EACCES", path: "TEST-private-path-auth-canary" });
+  retainObserverFailure(original, Point.BusProcess, 17);
+  const wrapped = new Error("system_bus_infrastructure_unqualified"); retainObserverFailure(original, Point.UnitArrays, 20, wrapped);
+  const observer = closedObserverFailure(wrapped, Point.Native, 25);
+  expect(observer).toEqual({ point: Point.BusProcess, code: ObserverCode.Unknown, errno: Errno.EACCES, elapsedMsCapped: 17 });
+  const child = {}; retainAppServerProviderSetupFailure(child, { ...base, observer, collectAttempts: 3,
+    firstCollectElapsedMsCapped: 7, checkpointEntryElapsedMsCapped: 4123, budgetExpired: true });
+  expect(fact(child)).toContain("attempts=3 first_collect_ms=7 checkpoint_entry_ms=4123 budget_expired=1");
+  expect(fact(child)).toContain("observer=bus_process observer_code=unknown errno=EACCES observer_ms_capped=17");
+  expect(fact(child)).not.toContain("canary");
+  expect(closedObserverFailure(new Error(wrapped.message, { cause: wrapped }), Point.Native, 1).point).toBe(Point.Native);
+  let reads = 0;
+  const getter = Object.defineProperty({}, "code", { get() { reads++; throw Error("TEST-secret-canary"); } });
+  expect(closedObserverFailure(getter, Point.Native, 0).errno).toBe(Errno.None); expect(reads).toBe(0);
+  for (const change of [{ observer: { ...observer, point: "TEST-secret-canary" } }, { collectAttempts: 65536 },
+    { firstCollectElapsedMsCapped: -1 }, { checkpointEntryElapsedMsCapped: 60001 }, { budgetExpired: "TEST-secret-canary" }]) {
+    const rejected = {}; retainAppServerProviderSetupFailure(rejected, { ...base, observer, collectAttempts: 1,
+      firstCollectElapsedMsCapped: 1, checkpointEntryElapsedMsCapped: 1, budgetExpired: false, ...change } as AppServerProviderSetupFact);
+    expect(fact(rejected)).toBeUndefined();
+  }
+});
 it("retains only the first closed snapshot with bounded numbers and no caller getters", () => {
   const child = {}; retainAppServerProviderSetupFailure(child, base);
   retainAppServerProviderSetupFailure(child, { ...base, checkpoint: Checkpoint.Unit });

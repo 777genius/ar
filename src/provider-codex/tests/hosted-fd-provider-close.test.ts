@@ -109,6 +109,10 @@ it("retains the last actual collector rejection before deadline teardown instead
     expect(fact).toMatchObject({ stage: SetupStage.Observing, checkpoint: Checkpoint.Confinement,
       code: SetupCode.Unknown, ready: true, released: false, limitMs: 1500 });
     expect(fact!.elapsedMsCapped).toBeGreaterThanOrEqual(1500);
+    expect(fact!.collectAttempts).toBeGreaterThan(1);
+    expect(fact!.firstCollectElapsedMsCapped).toBeLessThan(1500);
+    expect(fact!.checkpointEntryElapsedMsCapped).toBeLessThanOrEqual(fact!.elapsedMsCapped);
+    expect(fact!.budgetExpired).toBe(true);
     expect(JSON.stringify(fact)).not.toContain("canary");
     test.guard.invalidate();
     expect(() => test.guard.assertOriginalZeroWaitClosed()).toThrow("hosted_fd_boundary_unresolved");

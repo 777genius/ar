@@ -3,13 +3,16 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseSystemBusInfrastructure, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT, SystemBusQueryRenderer, type SystemBusInfrastructure } from "@vioxen/subscription-runtime/core";
 import { verifySystemBusInfrastructure } from "../app-server/adapters/system-bus-infrastructure";
+import { AppServerObserverPoint as Point, AppServerObserverCode as Code, AppServerObserverErrno as Errno,
+  closedObserverFailure } from "../app-server/domain/app-server-observer-failure";
 
 // Regression boundary: matching JSON pins alone cannot qualify a bus. All OS
 // observations are synthetic; no manager, host file, socket or provider runs.
 const os = vi.hoisted(() => ({ files: new Map<string, Buffer>(), links: new Map<string, string>(),
   opened: new Map<number, string>(), nextFd: 100, service: {} as Record<string, string>, socket: {} as Record<string, string>,
   unsafePath: "", busOwner: "u 1", secondBirth: false, birthReads: 0,
-  queries: [] as string[][], typedReply: undefined as string | undefined, typedStatus: 0, unknownRow: false, afterTyped: "" }));
+  queries: [] as string[][], typedReply: undefined as string | undefined, typedStatus: 0, unknownRow: false, afterTyped: "",
+  readFault: "" }));
 const arrayFields = ["ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "EnvironmentFiles"];
 const zeroReply = "a(sasbttttuii) 0\na(sasbttttuii) 0\na(sasbttttuii) 0\na(sasbttttuii) 0\na(sasbttttuii) 0\na(sb) 0\n";
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -25,6 +28,7 @@ vi.mock("node:fs", () => ({
     return Math.max(0, count);
   },
   readFileSync: (path: string) => {
+    if (path === os.readFault) throw Object.assign(new Error("TEST-private-path-auth-canary"), { code: "EACCES", path: "TEST-private-path-auth-canary" });
     if (path === "/proc/42/stat" && os.secondBirth && ++os.birthReads > 1) return Buffer.from("42 (replacement) S 1 " + [...Array(17).fill("0"), "999"].join(" "));
     const value = os.files.get(path); if (!value) throw new Error("synthetic absent observation"); return value;
   },
@@ -69,7 +73,7 @@ beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   os.files.clear(); os.links.clear(); os.opened.clear(); os.nextFd = 100;
   os.unsafePath = ""; os.busOwner = "u 1"; os.secondBirth = false; os.birthReads = 0;
-  os.queries = []; os.typedReply = undefined; os.typedStatus = 0; os.unknownRow = false; os.afterTyped = "";
+  os.queries = []; os.typedReply = undefined; os.typedStatus = 0; os.unknownRow = false; os.afterTyped = ""; os.readFault = "";
   const elf = Buffer.alloc(32); elf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); elf.writeUInt16LE(62, 18);
   const executable = "/usr/bin/dbus-daemon", loader = "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2";
   os.files.set(executable, elf); os.files.set(loader, elf);
@@ -104,6 +108,21 @@ beforeEach(() => {
 });
 afterAll(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); });
 describe("actual finite system-bus admission observations", () => {
+  it.each(["namespace", "protocol", "native_errno", "outer_budget"])("retains closed inner %s facts while preserving the original catch-all rejection", fault => {
+    if (fault === "namespace") os.links.set("/proc/self/ns/net", "net:[2]");
+    if (fault === "protocol") os.typedReply = "TEST-secret-canary\n";
+    if (fault === "native_errno") os.readFault = "/proc/42/maps";
+    let error: unknown;
+    try { verifySystemBusInfrastructure(input, fault === "outer_budget" ? () => { throw Error("hosted_fd_boundary_unresolved"); } : undefined); }
+    catch (caught) { error = caught; }
+    expect((error as Error).message).toBe("system_bus_infrastructure_unqualified");
+    const detail = closedObserverFailure(error, Point.Native, 0);
+    expect(detail).toMatchObject(fault === "protocol" ? { point: Point.ArrayRead, code: Code.Arrays, errno: Errno.None } :
+      fault === "native_errno" ? { point: Point.BusProcess, code: Code.Unknown, errno: Errno.EACCES } :
+      fault === "outer_budget" ? { point: Point.BusInitial, code: Code.Boundary, errno: Errno.None } :
+      { point: Point.BusInitial, code: Code.Bus, errno: Errno.None });
+    expect(JSON.stringify(detail)).not.toContain("canary"); expect(os.opened.size).toBe(0);
+  });
   it("accepts the pinned fixed units plus actual ELF process, shared listener and registered PID1", () => {
     expect(() => verifySystemBusInfrastructure(input)).not.toThrow();
     const typed = os.queries.find(args => args.includes("get-property"));

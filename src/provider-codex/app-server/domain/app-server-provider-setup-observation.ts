@@ -1,7 +1,8 @@
+import { validatedObserverFailure, type AppServerObserverFailure } from "./app-server-observer-failure";
 /** Closed observations of a failed setup, never release or retry authority. */
 export enum AppServerProviderSetupStage { WaitingReady = "waiting_ready", Observing = "observing", FinalRelease = "final_release" }
 export enum AppServerProviderSetupCheckpoint {
-  None = "none", Profile = "profile", Unit = "unit", Candidate = "candidate", Namespace = "namespace",
+  None = "none", Profile = "profile", Unit = "unit", UnitProxy = "unit_proxy", Candidate = "candidate", Namespace = "namespace",
   Bootstrap = "bootstrap", Confinement = "confinement", PeerJoin = "peer_join", Postcheck = "postcheck",
   FullSetup = "full_setup", Owner = "owner", ToolRelease = "tool_release", NamespaceRelease = "namespace_release",
   Frame = "frame", Budget = "budget", Enqueue = "enqueue", PreRelease = "pre_release",
@@ -14,6 +15,9 @@ export interface AppServerProviderSetupFact {
   readonly stage: AppServerProviderSetupStage; readonly checkpoint: AppServerProviderSetupCheckpoint;
   readonly code: AppServerProviderSetupCode; readonly ready: boolean; readonly released: boolean;
   readonly elapsedMsCapped: number; readonly limitMs: number;
+  readonly collectAttempts?: number; readonly firstCollectElapsedMsCapped?: number;
+  readonly checkpointEntryElapsedMsCapped?: number; readonly budgetExpired?: boolean;
+  readonly observer?: AppServerObserverFailure;
 }
 const failures = new WeakMap<object, Readonly<AppServerProviderSetupFact>>();
 const causes = new WeakMap<object, string>();
@@ -45,13 +49,26 @@ export function retainAppServerProviderSetupFailure(child: object, fact: AppServ
         !Object.values(AppServerProviderSetupCode).includes(code) || typeof ready !== "boolean" || typeof released !== "boolean" ||
         !Number.isSafeInteger(elapsedMsCapped) || elapsedMsCapped < 0 || elapsedMsCapped > 60000 ||
         !Number.isSafeInteger(limitMs) || limitMs < 1 || limitMs > 60000) return;
-    failures.set(child, Object.freeze({ stage, checkpoint, code, ready, released, elapsedMsCapped, limitMs }));
+    const collectAttempts = fields.collectAttempts?.value, firstCollectElapsedMsCapped = fields.firstCollectElapsedMsCapped?.value;
+    const checkpointEntryElapsedMsCapped = fields.checkpointEntryElapsedMsCapped?.value, budgetExpired = fields.budgetExpired?.value;
+    const timed = [collectAttempts, firstCollectElapsedMsCapped, checkpointEntryElapsedMsCapped, budgetExpired].some(value => value !== undefined);
+    if (timed && (typeof collectAttempts !== "number" || !Number.isSafeInteger(collectAttempts) || collectAttempts < 0 || collectAttempts > 65535 ||
+        typeof firstCollectElapsedMsCapped !== "number" || !Number.isSafeInteger(firstCollectElapsedMsCapped) || firstCollectElapsedMsCapped < 0 || firstCollectElapsedMsCapped > 60000 ||
+        typeof checkpointEntryElapsedMsCapped !== "number" || !Number.isSafeInteger(checkpointEntryElapsedMsCapped) || checkpointEntryElapsedMsCapped < 0 || checkpointEntryElapsedMsCapped > 60000 ||
+        typeof budgetExpired !== "boolean")) return;
+    const observer = validatedObserverFailure(fields.observer?.value);
+    if (fields.observer?.value !== undefined && !observer) return;
+    failures.set(child, Object.freeze({ stage, checkpoint, code, ready, released, elapsedMsCapped, limitMs,
+      ...(timed ? { collectAttempts: collectAttempts!, firstCollectElapsedMsCapped: firstCollectElapsedMsCapped!,
+        checkpointEntryElapsedMsCapped: checkpointEntryElapsedMsCapped!, budgetExpired: budgetExpired! } : {}), ...(observer ? { observer } : {}) }));
   } catch { /* No raw error, caller object or collector text is retained. */ }
 }
 export function appServerProviderSetupFailureCause(child: object): Error | undefined {
   const fact = failures.get(child);
   if (!fact) return undefined;
-  const message = `app_server_setup stage=${fact.stage} checkpoint=${fact.checkpoint} code=${fact.code} ready=${Number(fact.ready)} released=${Number(fact.released)} elapsed_ms_capped=${fact.elapsedMsCapped} limit_ms=${fact.limitMs}`;
+  const message = `app_server_setup stage=${fact.stage} checkpoint=${fact.checkpoint} code=${fact.code} ready=${Number(fact.ready)} released=${Number(fact.released)} elapsed_ms_capped=${fact.elapsedMsCapped} limit_ms=${fact.limitMs}` +
+    (fact.collectAttempts === undefined ? "" : ` attempts=${fact.collectAttempts} first_collect_ms=${fact.firstCollectElapsedMsCapped} checkpoint_entry_ms=${fact.checkpointEntryElapsedMsCapped} budget_expired=${Number(fact.budgetExpired)}`) +
+    (fact.observer ? ` observer=${fact.observer.point} observer_code=${fact.observer.code} errno=${fact.observer.errno} observer_ms_capped=${fact.observer.elapsedMsCapped}` : "");
   const cause = new Error(message); causes.set(cause, message); return cause;
 }
 /** Only a genuine snapshot, via one own data cause. No message/getter parsing. */

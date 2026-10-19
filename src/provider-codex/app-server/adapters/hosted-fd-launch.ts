@@ -16,6 +16,7 @@ import { retainOriginalFullSetupIntent, type OriginalFullSetup } from "./hosted-
 import { readHostedFdUnitPolicy, assertHostedFdUnitPolicy, sameHostedFdUnitLifecycle, type HostedFdUnitPolicy } from "./hosted-fd-unit-policy";
 import { AppServerProviderSetupStage, AppServerProviderSetupCheckpoint as SetupCheckpoint, AppServerProviderSetupCode,
   appServerProviderSetupCode, type AppServerProviderSetupFact } from "../domain/app-server-provider-setup-observation";
+import { AppServerObserverPoint, closedObserverFailure, type AppServerObserverFailure } from "../domain/app-server-observer-failure";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
@@ -97,6 +98,12 @@ export class HostedFdLaunch {
   #lastRejectedCheckpoint = SetupCheckpoint.None;
   #lastRejectedCode = AppServerProviderSetupCode.Unknown;
   #releaseObserved = false;
+  #collectAttempts = 0;
+  #firstCollectElapsed = 0;
+  #checkpointEntryElapsed = 0;
+  #checkpointBegan = process.hrtime.bigint();
+  #lastRejectedEntryElapsed = 0;
+  #lastRejectedObserver: AppServerObserverFailure | undefined;
   readonly #filtered = new PassThrough();
   readonly #logs: readonly { path: string; fd: number; dev: number; ino: number }[];
   readonly outputPaths: readonly string[];
@@ -333,38 +340,44 @@ export class HostedFdLaunch {
       try {
         if (this.kind !== HostedFdLaunchKind.Installer && !this.#ready) invalid();
         this.#proof = this.#collect();
-        if(this.#fullSetup && !this.#fullSetupBorn){this.#setupCheckpoint=SetupCheckpoint.FullSetup;this.#fullSetup.born(this.#physicalChild,this.#proof,()=>this.#remaining());this.#fullSetupBorn=true;}
+        if(this.#fullSetup && !this.#fullSetupBorn){this.#markCheckpoint(SetupCheckpoint.FullSetup);this.#fullSetup.born(this.#physicalChild,this.#proof,()=>this.#remaining());this.#fullSetupBorn=true;}
         return;
       } catch (error) {
         this.#lastRejectedCheckpoint = this.#setupCheckpoint;
         this.#lastRejectedCode = appServerProviderSetupCode(error);
+        this.#lastRejectedEntryElapsed = this.#checkpointEntryElapsed;
+        this.#lastRejectedObserver = closedObserverFailure(error, AppServerObserverPoint.Native, this.#checkpointElapsed());
         this.#remaining(); await new Promise(resolve => setTimeout(resolve, 20));
       }
     }
   }
   #collect(): Proof {
+    if (this.#collectAttempts === 0) this.#firstCollectElapsed = this.#elapsed();
+    this.#collectAttempts = Math.min(65535, this.#collectAttempts + 1);
     this.#remaining();
     // This closure measures this actual spawn's original monotonic allowance;
     // it is not a caller timeout, admission token or new budget per child query.
     const remaining = () => this.#remaining();
-    this.#setupCheckpoint = SetupCheckpoint.Profile;
+    this.#markCheckpoint(SetupCheckpoint.Profile);
     const profile = readHostedFdProfile(remaining);
     if (!profile || JSON.stringify(profile) !== JSON.stringify(this.#profile) || !this.child.pid) invalid();
-    this.#setupCheckpoint = SetupCheckpoint.Unit;
-    const unit = observeHostedFdUnit(this.unit, this.#serviceArgv, remaining), proxy = observeHostedFdProcess(this.child.pid);
+    this.#markCheckpoint(SetupCheckpoint.Unit);
+    const unit = observeHostedFdUnit(this.unit, this.#serviceArgv, remaining);
+    this.#markCheckpoint(SetupCheckpoint.UnitProxy);
+    const proxy = observeHostedFdProcess(this.child.pid);
     assertHostedFdUnitPolicy(this.#originalUnitPolicy,unit.lifecycle);
     if (this.#proof && !sameHostedFdUnitLifecycle(this.#proof.unit.lifecycle,unit.lifecycle)) invalid();
     if (unit.root !== this.#root) invalid();
     if (proxy.birth !== this.#proxyBirth || proxy.net !== observeHostedFdProcess(process.pid).net) invalid();
     if (proxy.exe !== profile.node.path && !profile.wrappers.some(pin => pin.path === proxy.exe)) invalid();
-    this.#setupCheckpoint = SetupCheckpoint.Candidate;
+    this.#markCheckpoint(SetupCheckpoint.Candidate);
     const candidates = hostedFdGroupPids(unit.group).map(observeHostedFdProcess);
     const targetNames = this.kind === HostedFdLaunchKind.Remover ? ["hosted-dependency-remover-bootstrap.js"] :
       ["hosted-readonly-runtime-bootstrap.js", "hosted-readonly-host-launch-cli.js", "hosted-app-server-launcher.js"];
     const bootstraps = candidates.filter(p => p.exe === profile.node.path &&
       (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || this.kind !== HostedFdLaunchKind.Remover && p.argv[1] === "/runtime/bootstrap.js"));
     if (bootstraps.length !== 1 || !candidates.some(p => p.pid === unit.mainPid)) invalid();
-    this.#setupCheckpoint = SetupCheckpoint.Namespace;
+    this.#markCheckpoint(SetupCheckpoint.Namespace);
     assertHostedFdNamespaceAncestry(this.#serviceArgv,candidates,unit.mainPid);
     for (const p of candidates) {
       if (p.group !== `0::${unit.group}`) invalid();
@@ -384,11 +397,11 @@ export class HostedFdLaunch {
       }
     }
     const bootstrap = bootstraps[0]!;
-    this.#setupCheckpoint = SetupCheckpoint.Bootstrap;
+    this.#markCheckpoint(SetupCheckpoint.Bootstrap);
     assertHostedFdBootstrap(bootstrap, profile, remaining);
-    this.#setupCheckpoint = SetupCheckpoint.Confinement;
+    this.#markCheckpoint(SetupCheckpoint.Confinement);
     assertHostedFdConfinement(bootstrap, this.#serviceArgv, unit.root);
-    this.#setupCheckpoint = SetupCheckpoint.PeerJoin;
+    this.#markCheckpoint(SetupCheckpoint.PeerJoin);
     const peers = collectHostedFdPeers(profile, remaining), parent = hostedFdTable(process.pid), endpoints: string[] = [];
     for (const n of this.kind === HostedFdLaunchKind.Installer ? [0] : [0, 1, 2]) {
       const b = bootstrap.descriptors.find(fd => fd.fd === n), transferred = proxy.descriptors.find(fd => fd.fd === n);
@@ -403,7 +416,7 @@ export class HostedFdLaunch {
       const fd = bootstrap.descriptors.find(fd => fd.fd === n);
       return !fd || !fd.character || fd.rdev !== "259" || (fd.flags & 3) !== 1;
     })) invalid();
-    this.#setupCheckpoint = SetupCheckpoint.Postcheck;
+    this.#markCheckpoint(SetupCheckpoint.Postcheck);
     const after = observeHostedFdProcess(bootstrap.pid), nextUnit = observeHostedFdUnit(this.unit, this.#serviceArgv, remaining);
     assertHostedFdConfinement(after, this.#serviceArgv, nextUnit.root);
     if (after.birth !== bootstrap.birth || after.exe !== bootstrap.exe || after.group !== bootstrap.group ||
@@ -417,7 +430,7 @@ export class HostedFdLaunch {
   /** Called only by the existing authority owner's final synchronous fence. */
   release(fence: HostedActivationFence, frame: string | Buffer, end: boolean, revalidateOwner: () => void): void {
     this.#releaseObserved = true;
-    this.#setupCheckpoint = SetupCheckpoint.Owner;
+    this.#markCheckpoint(SetupCheckpoint.Owner);
     assertHostedActivationFence(fence);
     if (this.#released || !this.#proof) invalid();
     const current = this.#collect(), old = this.#proof;
@@ -432,37 +445,37 @@ export class HostedFdLaunch {
         JSON.stringify(current.bootstrap.argv) !== JSON.stringify(old.bootstrap.argv) ||
         JSON.stringify(current.bootstrap.descriptors) !== JSON.stringify(old.bootstrap.descriptors) ||
         current.endpoints.join(",") !== old.endpoints.join(",")) invalid();
-    this.#setupCheckpoint = SetupCheckpoint.Frame;
+    this.#markCheckpoint(SetupCheckpoint.Frame);
     if (Buffer.byteLength(frame) > 4 * 1024 * 1024) invalid();
     // Synchronous observations can outlast a deadline while JS timers cannot
     // run. The actual authority owner and own live setup budget are rechecked
     // after collection, inside the very same fence, immediately before enqueue.
-    this.#setupCheckpoint = SetupCheckpoint.Owner;
+    this.#markCheckpoint(SetupCheckpoint.Owner);
     revalidateOwner();
     if (this.kind === HostedFdLaunchKind.Foreground) {
       assertHostedDependencyToolParentFrame(fence, this.unit, frame);
       revalidateOwner();
     }
     if (this.kind === HostedFdLaunchKind.Provider) {
-      this.#setupCheckpoint = SetupCheckpoint.ToolRelease;
+      this.#markCheckpoint(SetupCheckpoint.ToolRelease);
       assertHostedDependencyToolRelease(this.child, fence, current.bootstrap, current.unit);
       // N3's synchronous namespace/file observations are also bounded by the
       // real owner lifetime and this same one-shot release fence.
-      this.#setupCheckpoint = SetupCheckpoint.Owner;
+      this.#markCheckpoint(SetupCheckpoint.Owner);
       revalidateOwner();
-      this.#setupCheckpoint = SetupCheckpoint.NamespaceRelease;
+      this.#markCheckpoint(SetupCheckpoint.NamespaceRelease);
       assertHostedOrdinaryProviderRelease(this.child, fence, current.bootstrap.pid);
-      this.#setupCheckpoint = SetupCheckpoint.Owner;
+      this.#markCheckpoint(SetupCheckpoint.Owner);
       revalidateOwner();
     }
     if (this.kind === HostedFdLaunchKind.Remover && (!end ||
         !Buffer.from(frame).equals(Buffer.from("subscription-runtime-remover-fd-release-v1\n")))) invalid();
-    this.#setupCheckpoint = SetupCheckpoint.Budget;
+    this.#markCheckpoint(SetupCheckpoint.Budget);
     this.#remaining();
     this.#fullSetup?.revalidate(()=>this.#remaining());
-    this.#setupCheckpoint = SetupCheckpoint.Owner;
+    this.#markCheckpoint(SetupCheckpoint.Owner);
     revalidateOwner();this.#remaining();
-    this.#setupCheckpoint = SetupCheckpoint.Enqueue;
+    this.#markCheckpoint(SetupCheckpoint.Enqueue);
     this.#input.write(frame);
     this.#released = true;
     if (end) this.#input.end();
@@ -472,13 +485,21 @@ export class HostedFdLaunch {
   providerSetupFailureFact(stage: AppServerProviderSetupStage, error: unknown): AppServerProviderSetupFact | undefined {
     if (this.kind !== HostedFdLaunchKind.Provider) return undefined;
     const final = stage === AppServerProviderSetupStage.FinalRelease;
+    const observer = final ? closedObserverFailure(error, AppServerObserverPoint.Native,
+      this.#releaseObserved ? this.#checkpointElapsed() : 0) : this.#lastRejectedObserver;
     return Object.freeze({ stage: !this.#ready && !final ? AppServerProviderSetupStage.WaitingReady : stage,
       checkpoint: final ? this.#releaseObserved ? this.#setupCheckpoint : SetupCheckpoint.PreRelease : this.#lastRejectedCheckpoint,
       code: final ? appServerProviderSetupCode(error) : this.#lastRejectedCode,
       ready: this.#ready, released: this.#released,
-      elapsedMsCapped: Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - this.#started) / 1000000n))),
-      limitMs: this.#profile.limits.setupTimeoutMs });
+      elapsedMsCapped: this.#elapsed(), limitMs: this.#profile.limits.setupTimeoutMs,
+      collectAttempts: this.#collectAttempts, firstCollectElapsedMsCapped: this.#firstCollectElapsed,
+      checkpointEntryElapsedMsCapped: final ? this.#releaseObserved ? this.#checkpointEntryElapsed : 0 : this.#lastRejectedEntryElapsed,
+      budgetExpired: Number((process.hrtime.bigint() - this.#started) / 1000000n) >= this.#profile.limits.setupTimeoutMs,
+      ...(observer ? { observer } : {}) });
   }
+  #checkpointElapsed(): number { return Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - this.#checkpointBegan) / 1000000n))); }
+  #elapsed(): number { return Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - this.#started) / 1000000n))); }
+  #markCheckpoint(point: SetupCheckpoint): void { this.#setupCheckpoint = point; this.#checkpointEntryElapsed = this.#elapsed(); this.#checkpointBegan = process.hrtime.bigint(); }
 
   static spawn(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
     unit: string, kind: HostedFdLaunchKind, original?: HostedFdOriginalSpawnCustody): ChildProcess {
