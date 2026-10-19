@@ -1,4 +1,4 @@
-import { fstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, type Stats } from "node:fs";
 
 /** Legacy launch-boundary check. Explicit stdio alone does not establish peer
  * provenance or close every inherited FD. Reject file/directory handles before provider
@@ -14,7 +14,9 @@ export function assertHostedProcessDescriptors(): void {
     if (descriptor <= 2) continue;
     try {
       const stat = fstatSync(descriptor);
-      if (stat.isFile() || stat.isDirectory()) throw new Error("hosted_custody_inherited_handle_denied");
+      if (stat.isFile() || stat.isDirectory()) throw new Error("hosted_custody_inherited_handle_denied", {
+        cause: hostedDescriptorDenialFact(descriptor, stat),
+      });
     } catch (error) {
       // The directory FD used by readdir may already be closed. No inherited
       // handle is ignored merely because its readlink target looks harmless.
@@ -54,4 +56,64 @@ export function assertHostedFdPreludeDescriptors(): void {
   if (count.eventPoll > 8 || count.eventFd > 8 || count.pipe > 32 || count.devNull > 8) {
     throw new Error("hosted_fd_prelude_descriptors_denied");
   }
+}
+
+
+enum DescriptorKind { File = "file", Directory = "directory" }
+enum DescriptorAccess { Read = "read", Write = "write", ReadWrite = "readwrite", Path = "path", Unknown = "unknown" }
+enum DescriptorRole { Event = "event", Progress = "progress", Temp = "temp", Unknown = "unknown" }
+
+function sameDescriptor(before: Stats, after: Stats): boolean {
+  return before.dev === after.dev && before.ino === after.ino && before.mode === after.mode && before.rdev === after.rdev;
+}
+
+/** Reads proc metadata only, never the denied descriptor or its target contents. */
+function flags(fd: number): number {
+  const handle = openSync(`/proc/self/fdinfo/${fd}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const bytes = Buffer.alloc(1025), length = readSync(handle, bytes, 0, bytes.length, 0);
+    if (length < 1 || length > 1024) throw new Error();
+    const matches = [...bytes.subarray(0, length).toString("ascii").matchAll(/^flags:\s+([0-7]{1,12})$/gm)];
+    if (matches.length !== 1) throw new Error();
+    return Number.parseInt(matches[0]![1]!, 8);
+  } finally { closeSync(handle); }
+}
+
+function access(value: number): DescriptorAccess {
+  if (value & 0o10000000) return DescriptorAccess.Path;
+  switch (value & 3) {
+    case 0: return DescriptorAccess.Read;
+    case 1: return DescriptorAccess.Write;
+    case 2: return DescriptorAccess.ReadWrite;
+    default: return DescriptorAccess.Unknown;
+  }
+}
+
+function role(target: string, kind: DescriptorKind): DescriptorRole {
+  if (kind !== DescriptorKind.File) return DescriptorRole.Unknown;
+  // Lexical categories only; a matching name establishes no ownership or trust.
+  const name = target.slice(target.lastIndexOf("/") + 1);
+  if (/^[^/\n]{1,200}\.events\.jsonl$/.test(name)) return DescriptorRole.Event;
+  if (/^[^/\n]{1,200}\.progress\.json$/.test(name)) return DescriptorRole.Progress;
+  if (/^[^/\n]{1,200}\.tmp$/.test(name)) return DescriptorRole.Temp;
+  return DescriptorRole.Unknown;
+}
+
+/** Closed diagnostic cause. Zero is the numeric unknown-FD sentinel. The
+ * original denial remains authoritative even if metadata disappears or drifts. */
+function hostedDescriptorDenialFact(descriptor: number, original: Stats): Error {
+  const fd = Number.isSafeInteger(descriptor) && descriptor >= 3 && descriptor <= 999999 ? descriptor : 0;
+  const kind = original.isDirectory() ? DescriptorKind.Directory : DescriptorKind.File;
+  let observedAccess = DescriptorAccess.Unknown, observedRole = DescriptorRole.Unknown;
+  if (fd !== 0) {
+    try {
+      if (!sameDescriptor(original, fstatSync(fd))) throw new Error();
+      const target = readlinkSync(`/proc/self/fd/${fd}`);
+      if (target.length > 4096) throw new Error();
+      const first = flags(fd), second = flags(fd);
+      if (first !== second || target !== readlinkSync(`/proc/self/fd/${fd}`) || !sameDescriptor(original, fstatSync(fd))) throw new Error();
+      observedAccess = access(first); observedRole = role(target, kind);
+    } catch { /* Observation failure cannot release or replace the denial. */ }
+  }
+  return new Error(`hosted_fd_fact fd=${fd} type=${kind} access=${observedAccess} role=${observedRole}`);
 }
