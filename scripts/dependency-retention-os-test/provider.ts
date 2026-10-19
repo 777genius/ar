@@ -60,7 +60,7 @@ function actualDefaultTestExecutable(): boolean {
 }
 let defaultTestExecutable: boolean;
 try { defaultTestExecutable = actualDefaultTestExecutable(); }
-catch { process.stderr.write("TEST_default_executable_identity_failed\n"); process.exit(70); }
+catch { process.stderr.write("TEST_default_executable_identity_failed\n"); process.exit(71); }
 
 /** Literal finite package files only; no caller pathname or fallback. The
  * fixed executable startup already joins readonly package/bin ancestors. */
@@ -151,7 +151,7 @@ async function fixedTestRefreshProtocol(): Promise<void> {
 }
 if (process.argv[2] === "exec") {
   try { await fixedTestRefreshProtocol(); process.exit(0); }
-  catch { process.stderr.write("TEST_fixed_refresh_protocol_failed\n"); process.exit(70); }
+  catch { process.stderr.write("TEST_fixed_refresh_protocol_failed\n"); process.exit(72); }
 }
 
 /** Synthetic catalog protocol on the real default package, never an account
@@ -218,7 +218,7 @@ async function fixedTestCatalogProtocol(): Promise<void> {
 }
 if (defaultTestExecutable && process.cwd() !== process.env.HOME) {
   try { await fixedTestCatalogProtocol(); process.exit(0); }
-  catch { process.stderr.write("TEST_catalog_protocol_refused\n"); process.exit(70); }
+  catch { process.stderr.write("TEST_catalog_protocol_refused\n"); process.exit(73); }
 }
 
 assert(process.argv.slice(2).includes("app-server"), "TEST provider refuses non app-server mode");
@@ -236,7 +236,10 @@ assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/hom
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
+// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups).
+let probeFailureCode = 80;
 function probe(): boolean {
+  probeFailureCode = 80;
   const ids = { uid: process.getuid!(), euid: process.geteuid!(), gid: process.getgid!(), egid: process.getegid!() };
   assert.deepEqual(ids, { uid: 65532, euid: 65532, gid: 65532, egid: 65532 });
   const status = readFileSync("/proc/self/status", "utf8");
@@ -245,6 +248,7 @@ function probe(): boolean {
   assert.match(status, /^Groups:\s*$/m);
   const uidMap = readFileSync("/proc/self/uid_map", "utf8").trim(), gidMap = readFileSync("/proc/self/gid_map", "utf8").trim();
   assert.match(uidMap, /^65532\s+0\s+1$/); assert.match(gidMap, /^65532\s+0\s+1$/);
+  probeFailureCode = 81;
   const namespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
   for (const kind of ["user", "mnt", "pid"] as const) {
     assert.match(config.guestNamespaces[kind], new RegExp(`^${kind}:\\[\\d+\\]$`));
@@ -252,6 +256,7 @@ function probe(): boolean {
     assert.notEqual(namespaces[kind], config.guestNamespaces[kind], `TEST actual ${kind} namespace isolation required`);
   }
   if (config.scenario === "readonly") {
+    probeFailureCode = 82;
     assert.equal(config.failSecondReadonlyTurn, true);
     const count = readdirSync(workspace).filter(name => /^TEST-readonly(?:-failed)?-probe\.json$/.test(name)).length;
     assert(count === 0 || count === 1, "TEST readonly provider refuses another turn");
@@ -267,6 +272,7 @@ function probe(): boolean {
     // this fixture never writes an envelope, receipt or foreground result.
     return count === 1;
   }
+  probeFailureCode = 83;
   const require = createRequire(workspace + "/package.json");
   assert.equal((require("is-number") as (value: unknown) => boolean)(42), true);
   for (const path of [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
@@ -277,6 +283,7 @@ function probe(): boolean {
     assert.throws(() => readFileSync(path), (e: unknown) => ["ENOENT", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
   assert.throws(() => { const fd = openSync(workspace + "/.git/config", "a"); closeSync(fd); },
     (e: unknown) => ["EROFS", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
+  probeFailureCode = 84;
   const count = readdirSync(workspace).filter(name => /^TEST-provider-probe-[1234]\.json$/.test(name)).length;
   assert(count < 4);
   writeFileSync(workspace + `/TEST-provider-probe-${count + 1}.json`, JSON.stringify({ schemaVersion: 1,
@@ -302,7 +309,11 @@ lines.on("line", line => {
         result = { goal: { threadId, objective, status: "active" } }; break;
       case "thread/goal/get": assert(started); result = { goal: { threadId, objective, status: complete ? "complete" : "active" } }; break;
       case "turn/start": {
-        assert(started && !turned); turned = true; const failed = probe(); complete = !failed;
+        assert(started && !turned); turned = true;
+        let failed: boolean;
+        try { failed = probe(); }
+        catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(probeFailureCode); }
+        complete = !failed;
         send({ id: request.id, result: { turn: { id: turnId } } });
         send({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
         if (failed) {
@@ -317,7 +328,7 @@ lines.on("line", line => {
       default: throw new Error("TEST unsupported protocol mode");
     }
     send({ id: request.id, result });
-  } catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(70); }
+  } catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(74); }
 });
 lines.once("close", () => process.exit(0));
-setTimeout(() => { process.stderr.write("TEST_provider_deadline\n"); process.exit(70); }, 90000).unref();
+setTimeout(() => { process.stderr.write("TEST_provider_deadline\n"); process.exit(75); }, 90000).unref();
