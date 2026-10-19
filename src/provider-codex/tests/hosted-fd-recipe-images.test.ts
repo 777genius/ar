@@ -125,6 +125,24 @@ it("cold-loads the exact finite compiled RootDirectory fixture closure", () => {
   expect(result.stdout).toBe("TEST finite root closure complete\n");
 });
 
+it("transports only bounded closed native/assertion facts across the actual fixture child boundary", () => {
+  const fixture = fileURLToPath(new URL("./fixtures/hosted-fd-recipe-root-native.mts", import.meta.url));
+  function run(selected: string): { output: string; fact: Record<string, unknown> } {
+    const result = spawnSync(globalThis.process.execPath, [fixture, "--diagnostic-case", selected], {
+      env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, encoding: "utf8", timeout: 10000, maxBuffer: 4096 });
+    expect(result.error).toBeUndefined(); expect(result.signal).toBeNull(); expect(result.status).toBe(1); expect(result.stdout).toBe("");
+    expect(result.stderr.length).toBeLessThan(2048); expect(result.stderr).toMatch(/^TEST-root-failure \{[\x20-\x7e]+\}\n$/);
+    expect(result.stderr).not.toMatch(/canary|private|auth|\/|\\|stack/);
+    return { output: result.stderr, fact: JSON.parse(result.stderr.slice("TEST-root-failure ".length)) as Record<string, unknown> };
+  }
+  expect(run("native").fact).toMatchObject({ mode: "diagnostic", stage: "diagnostic_case", name: "Error", errno: "EROFS" });
+  expect(run("nested").output).toBe(run("native").output);
+  expect(run("nested_assertion").fact).toMatchObject({ name: "AssertionError", operator: "strictEqual", actual: "number", actualNumber: 23, expectedNumber: 18 });
+  expect(run("string").fact).toMatchObject({ name: "AssertionError", actual: "string", expected: "string", actualNumber: -1, expectedNumber: -1 });
+  expect(run("poison").fact).toMatchObject({ primitive: "diagnostic_child", status: 1, stderrCode: "unknown" });
+  expect(run("bootstrap").fact).toMatchObject({ primitive: "diagnostic_child", status: 1, stderrCode: "module_missing" });
+});
+
 it.runIf(globalThis.process.platform === "linux")("checks the actual private RootDirectory alias and foreign view inode with the compiled image boundary", context => {
   const result = spawnSync(globalThis.process.execPath, [fileURLToPath(new URL("./fixtures/hosted-fd-recipe-root-native.mts", import.meta.url))],
     { env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, encoding: "utf8", timeout: 40000, maxBuffer: 8192 });
