@@ -1,7 +1,7 @@
 /** Exact signed image previously qualified by the H1 DATA pipeline.
  * Package availability still requires current authenticated complete indices. */
 import {ToolInputArchitecture,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
-export const qualifiedH1PackageVectorSha256="d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b";
+export const qualifiedH1PackageVectorSha256="fd9c77fcc36f9862b268684d9aa28c9c8be8764439e3f8d4095cd9c5c557459e";
 type QualifiedPackagePin=Readonly<Pick<AcquiredSignedPackage,"package"|"version"|"arch"|"sha256"|"size">>;
 export const qualifiedH1PackagePins:readonly QualifiedPackagePin[]=Object.freeze([
  Object.freeze({"package":"debconf","version":"1.5.86ubuntu1","arch":ToolInputArchitecture.All,"sha256":"bb390da466a7461bfc87aa3e6b7cd145dae84af3e26bf437f2c0c218ba226294","size":124096}),
@@ -42,7 +42,7 @@ export const qualifiedH1PackagePins:readonly QualifiedPackagePin[]=Object.freeze
  Object.freeze({"package":"netbase","version":"6.4","arch":ToolInputArchitecture.All,"sha256":"8cdbc9c3dca01e660759bf9d840f72e45ac72faf5d19ca1faecacaf6a60c1a87","size":13112}),
  Object.freeze({"package":"python3.12-minimal","version":"3.12.3-1ubuntu0.17","arch":ToolInputArchitecture.Amd64,"sha256":"d452689b9660845345a4c3e05e4ad82c082d5474e04031b7aa47f1a6d5610a6e","size":2334634}),
  Object.freeze({"package":"readline-common","version":"8.2-4build1","arch":ToolInputArchitecture.All,"sha256":"879bfd7f8a9bc4c0f7cdc777cdd8bc6de5f8c4a2ac80c060322a1b22f13504bb","size":56484}),
- Object.freeze({"package":"tzdata","version":"2026c-0ubuntu0.24.04.1","arch":ToolInputArchitecture.All,"sha256":"ef12c9ef81905b5ac558504b2f8c20da9be5f28861020b3fb5e8b15fb3fae2f6","size":279816}),
+ Object.freeze({"package":"tzdata","version":"2026e-0ubuntu0.24.04.1","arch":ToolInputArchitecture.All,"sha256":"2f6794a7f31753fc947d9ac02ff03ea46510f34864f9d132a93d7b105e3c4447","size":282136}),
  Object.freeze({"package":"util-linux","version":"2.39.3-9ubuntu6.6","arch":ToolInputArchitecture.Amd64,"sha256":"08eb17ba3b83378ed1e73d8335d0ce03b429c0bbeb07e374f536234edab02465","size":1128326}),
  Object.freeze({"package":"zlib1g","version":"1:1.3.dfsg-3.1ubuntu2.2","arch":ToolInputArchitecture.Amd64,"sha256":"84b9cf5752b29c9f92c27cd4c4ba9bbcc70b5ccf9b1b515421a28ae23212e273","size":62988}),
 ]);
