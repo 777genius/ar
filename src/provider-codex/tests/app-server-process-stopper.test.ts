@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AppServerProcessCleanupError, stopAppServerProcess } from "../app-server/application/app-server-process-stopper";
+import { AppServerProcessCleanupError, cleanExitGraceMs, stopAppServerProcess } from "../app-server/application/app-server-process-stopper";
 
 function fakeChild() {
   return Object.assign(new EventEmitter(), {
@@ -20,14 +20,32 @@ describe("app-server process stopper", () => {
     const signals: NodeJS.Signals[] = [];
     let descendantAlive = true;
 
-    await stopAppServerProcess({ child, exited: false, signal: (_, signal) => {
+    const stopped = stopAppServerProcess({ child, exited: false, signal: (_, signal) => {
       signals.push(signal);
       if (signal === "SIGTERM") child.emit("exit", 0, null);
       if (signal === "SIGKILL") descendantAlive = false;
     } });
+    await vi.advanceTimersByTimeAsync(cleanExitGraceMs);
+    await stopped;
 
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(descendantAlive).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets a clean stdin-EOF exit win the grace race before any signal", async () => {
+    vi.useFakeTimers();
+    const child = Object.assign(fakeChild(), { pid: 812347 });
+    child.stdin.end = vi.fn(() => { queueMicrotask(() => child.emit("exit", 0, null)); });
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("TEST group absent"), { code: "ESRCH" });
+    });
+    const signal = vi.fn();
+    const stopped = stopAppServerProcess({ child, exited: false, signal });
+    await vi.advanceTimersByTimeAsync(cleanExitGraceMs);
+    await stopped;
+
+    expect(signal).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -38,7 +56,7 @@ describe("app-server process stopper", () => {
     const stopped = stopAppServerProcess({ child, exited: false, signal });
 
     const outcome = stopped.then(() => null, (error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(cleanExitGraceMs + 5_000);
     expect(signal.mock.calls.map((call) => call[1])).toEqual(["SIGTERM", "SIGKILL"]);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await outcome).not.toBeNull();
@@ -72,7 +90,7 @@ describe("app-server process stopper", () => {
       if (signal === "SIGKILL") child.emit("exit", 0, null);
     } });
     const outcome = stopped.catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(cleanExitGraceMs + 5_000);
     if (empty) expect(await outcome).toBeUndefined();
     else expect(await outcome).toMatchObject({ name: "AppServerProcessCleanupUnresolvedError" });
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
@@ -95,7 +113,7 @@ describe("app-server process stopper", () => {
         if (where === "final" || (where === "escalation" && kills === 1)) throw failure;
       }
     } }).catch((error: unknown) => error);
-    if (where === "escalation") await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(cleanExitGraceMs + (where === "escalation" ? 5_000 : 0));
     const error = await result;
     expect(error).toBeInstanceOf(AppServerProcessCleanupError);
     expect((error as Error).cause).toBe(failure);
