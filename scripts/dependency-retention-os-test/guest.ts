@@ -440,6 +440,14 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
   // path or raw error text is recorded and no gate authority changes here.
   let checkpoint = "setup", handlerStage: string | null = null, handlerFailed = false;
   let childCode: number | null = null, childSignal: "null" | "other" | null = null;
+  // Closed-enum unit/state classes only; no ids or paths leave this fixture.
+  const classifyUnit = (value: string) => value.startsWith("subscription-runtime-hosted-") ? "hosted"
+    : value.startsWith("subscription-runtime-ordinary-") ? "ordinary"
+    : value.startsWith("subscription-runtime-outer-") ? "outer" : "other";
+  const classifyState = (value: string) => value === HostedCustodyReservationState.Reserved ? "reserved"
+    : value === HostedCustodyReservationState.Terminal ? "terminal" : "other";
+  const snapshotRows = readHostedInstallationActivation().activation.ordinaryStarts
+    .map(row => ({ unit: classifyUnit(row.unit), state: classifyState(row.state) }));
   const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
   const countProbes = () => readdirSync(workspace).filter(value => /^TEST-provider-probe-[123]\.json$/.test(value)).length;
   assert.equal(countProbes(), 2);
@@ -552,21 +560,46 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
       })(),
       // Closed-enum accounting of every start row the scenario window added, so an
       // unexpected second row is classified by unit kind/state/record only. No ids.
+      snapshotStarts: { count: snapshotRows.length,
+        units: snapshotRows.slice(0, 8).map(row => row.unit),
+        states: snapshotRows.slice(0, 8).map(row => row.state),
+        overflow: snapshotRows.length > 8 },
       postFailureAdded: (() => {
         try {
           const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
-          const unit = (value: string) => value.startsWith("subscription-runtime-hosted-") ? "hosted"
-            : value.startsWith("subscription-runtime-ordinary-") ? "ordinary"
-            : value.startsWith("subscription-runtime-outer-") ? "outer" : "other";
-          const state = (value: string) => value === HostedCustodyReservationState.Reserved ? "reserved"
-            : value === HostedCustodyReservationState.Terminal ? "terminal" : "other";
           const record = (startId: string) => { try { lstatSync(`${policy}/ordinary-starts/${startId}.json`); return "present"; } catch { return "absent"; } };
+          const privateJson = (name: string, startId: string): Record<string, unknown> | undefined => {
+            try {
+              const bytes = readHostedPrivateBytes(`${policy}/${name}/${startId}.json`, 16384);
+              return bytes ? JSON.parse(bytes.toString("utf8")) as Record<string, unknown> : undefined;
+            } catch { return undefined; }
+          };
+          const ordinary = added.find(row => classifyUnit(row.unit) === "ordinary");
+          const ordinaryRecord = ordinary ? privateJson("ordinary-starts", ordinary.startId) : undefined;
+          const identities = added.slice(0, 4).map(row => {
+            const start = privateJson("ordinary-starts", row.startId);
+            return {
+              unit: classifyUnit(row.unit),
+              providerAttemptRecord: privateJson("dependency-provider-attempts", row.startId) ? "present" : "absent",
+              correlationRecord: privateJson("ordinary-correlations", row.startId) ? "present" : "absent",
+              birthMatchesOrdinaryRecord: start && ordinaryRecord && typeof start.creatorPidBirth === "string" && typeof ordinaryRecord.creatorPidBirth === "string"
+                ? start.creatorPidBirth === ordinaryRecord.creatorPidBirth : null,
+              birthMatchesControlSinkChild: start && typeof start.creatorPidBirth === "string" && typeof birth === "string"
+                ? start.creatorPidBirth === birth : null,
+              creatorMatchesOrdinary: ordinary ? row.creatorId === ordinary.creatorId : null,
+              generationRelation: ordinary ? (row.generation > ordinary.generation ? "after_ordinary"
+                : row.generation === ordinary.generation ? "equal" : "before_ordinary") : "unknown",
+              recordWorkspaceMatches: start ? start.workspacePath === workspace : null
+            };
+          });
           return { count: added.length,
-            units: added.slice(0, 4).map(row => unit(row.unit)),
-            states: added.slice(0, 4).map(row => state(row.state)),
+            units: added.slice(0, 4).map(row => classifyUnit(row.unit)),
+            states: added.slice(0, 4).map(row => classifyState(row.state)),
             records: added.slice(0, 4).map(row => record(row.startId)),
-            overflow: added.length > 4 };
-        } catch { return { count: -1, units: ["unknown"], states: ["unknown"], records: ["unknown"], overflow: false }; }
+            identities, overflow: added.length > 4 };
+        } catch {
+          return { count: -1, units: ["unknown"], states: ["unknown"], records: ["unknown"], identities: [], overflow: false };
+        }
       })(),
       childDiagnostic: (() => {
         try {
