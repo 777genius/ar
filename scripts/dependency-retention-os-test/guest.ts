@@ -222,9 +222,12 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
       uid: stat.uid, mode: stat.mode & 0o777, dev: String(stat.dev), ino: String(stat.ino) }; }
     catch (error) { return { slot, present: false, missing: (error as NodeJS.ErrnoException).code === "ENOENT" }; }
   });
+  const releaseTrace = releaseChainTrace();
   for (const mode of ["fresh", "hot"] as const) {
     evidence.kernelGatePhase = mode + "_real_cli";
+    releaseTrace.reset();
     const foreground = await runHostedRuntimeForeground(node, args, workspace, env), cliStatus = hostedForegroundExitCode(foreground);
+    evidence[mode + "ReleaseChainObservation"] = releaseTrace.snapshot();
     if (cliStatus !== 0) {
       try { evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus,
         mode === "fresh" && verifyFreshSyntheticDiagnosticInputs(jobId, root, workspace, node, args, env)); }
@@ -289,6 +292,52 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
 }
 
+/** Closed-fact release chain trace. Wrappers record stage tokens and one
+ * classified error code, then rethrow — no product behavior change. */
+function releaseChainTrace() {
+  const stages: string[] = [];
+  const failure: { stage: string | null; class: string | null } = { stage: null, class: null };
+  const classify = (error: unknown): string => {
+    const code = error instanceof Error ? error.message : "";
+    const known: Record<string, string> = {
+      hosted_ordinary_reader_completion_held: "reader_completion_held",
+      hosted_dependency_provider_terminal_unresolved: "provider_terminal_unresolved",
+      hosted_custody_creator_not_fenced: "creator_not_fenced",
+      hosted_custody_stop_incomplete: "stop_incomplete",
+      hosted_activation_invalid: "activation_invalid",
+      hosted_readonly_conflicting_enrollment: "conflicting_enrollment",
+      child_invocation_consumed: "child_invocation_consumed"
+    };
+    if (code in known) return known[code]!;
+    const admission = error instanceof Error && "failure" in error ? (error as { failure?: unknown }).failure : undefined;
+    const failures = ["busy", "stale_attempt", "invalid_record", "workspace_changed", "needs_install", "unsafe_tree", "unsupported"];
+    if (typeof admission === "string" && failures.includes(admission)) return "admission_" + admission;
+    return "unclassified";
+  };
+  const wrap = (target: object, name: string, label: string) => {
+    const holder = target as Record<string, unknown>, original = holder[name];
+    if (typeof original !== "function") return;
+    holder[name] = function (this: unknown, ...args: unknown[]) {
+      stages.push(label);
+      try { return (original as (...a: unknown[]) => unknown).apply(this, args); }
+      catch (error) {
+        if (failure.stage === null) { failure.stage = label; failure.class = classify(error); }
+        throw error;
+      }
+    };
+  };
+  for (const name of ["runOrdinaryRuntimeLaunch", "recordOrdinaryRuntimeWaitCompletion", "withOrdinaryForegroundTerminal",
+    "completeOrdinaryDependencyReader", "releaseOrdinaryDependencyConsumer", "requestOrdinaryDependencyCleanup"])
+    wrap(HostedInstallationActivationStore.prototype, name, "store." + name);
+  for (const name of ["fenceOrdinaryCreator", "drainOrdinaryQueue", "confirmOrdinaryDescendants"])
+    wrap(HostedReadonlyHostKernel.prototype, name, "kernel." + name);
+  wrap(LocalDependencyOwnerStore.prototype, "compareAndSwap", "owner.compareAndSwap");
+  return {
+    reset: () => { stages.length = 0; failure.stage = null; failure.class = null; },
+    snapshot: () => ({ stages: stages.slice(0, 32), stageCount: stages.length, failureStage: failure.stage, failureClass: failure.class })
+  };
+}
+
 /** Closed-fact release observation for the owner probe: enums, booleans and
  * counts only. Never record IDs, raw paths, bytes or stderr. */
 function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDependencyOwnerStore["read"]>): Record<string, unknown> {
@@ -323,9 +372,19 @@ function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDepen
     installerStartRecord: present(`${installers}/${start.startId}/start.json`),
     installerTerminalRecord: present(`${installers}/${start.startId}/terminal.json`)
   }));
-  let installerAttemptRecordCount = 0;
-  try { installerAttemptRecordCount = readdirSync(installers).filter(name => /^attempt-[a-f0-9-]{36}\.json$/.test(name)).length; }
-  catch { installerAttemptRecordCount = -1; }
+  let installerAttemptRecordCount = 0, installerAttemptDetails: unknown[] = [];
+  try {
+    const attempts = readdirSync(installers).filter(name => /^attempt-[a-f0-9-]{36}\.json$/.test(name)).slice(0, 4);
+    installerAttemptRecordCount = attempts.length;
+    installerAttemptDetails = attempts.map(name => {
+      try {
+        const row = JSON.parse(readFileSync(installers + "/" + name, "utf8")) as { startId?: unknown };
+        const id = typeof row.startId === "string" ? row.startId : "";
+        return id === "" ? { parseFailed: true }
+          : { startRecord: present(`${installers}/${id}/start.json`), terminalRecord: present(`${installers}/${id}/terminal.json`) };
+      } catch { return { parseFailed: true }; }
+    });
+  } catch { installerAttemptRecordCount = -1; }
   return {
     ownerRowPresent: row !== null, recordVersion: row === null ? "no_record" : row.version,
     ownerPhase: phase, ownerKind, continuityKind,
@@ -333,7 +392,7 @@ function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDepen
     activityLastEntry: row === null ? null : row.activity?.lastEntry !== undefined && row.activity?.lastEntry !== null,
     activityLastRelease: row === null ? null : row.activity?.lastRelease !== undefined && row.activity?.lastRelease !== null,
     ownerInstallerAttemptRecord: attemptId === null ? null : present(`${installers}/attempt-${attemptId}.json`),
-    installerAttemptRecordCount,
+    installerAttemptRecordCount, installerAttemptDetails,
     ordinaryStartCount: activation.ordinaryStarts.length, ordinaryStartRowsTruncated: activation.ordinaryStarts.length > 8,
     ordinaryStartRows: rows
   };
