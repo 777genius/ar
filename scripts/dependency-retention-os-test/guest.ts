@@ -513,15 +513,20 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     assert.equal(sentBytes, 0); assert.equal(countProbes(), 3);
     verifySystemBusInfrastructure(bus); const endpointAfter = lstatSync(SYSTEM_BUS_ENDPOINT);
     assert(endpointBefore.dev === endpointAfter.dev && endpointBefore.ino === endpointAfter.ino);
+    checkpoint = "rows_accounting";
     const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
     assert.equal(added.length, 1); const row = added[0]!; assert.equal(row.state, HostedCustodyReservationState.Terminal);
+    checkpoint = "output_identity";
     assert.deepEqual(outputPaths, [policy + "/foreground-output/" + row.unit + ".stdout", policy + "/foreground-output/" + row.unit + ".stderr"]);
+    checkpoint = "logs_accounting";
     const logs = outputPaths.map(path => { const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && !(stat.mode & 0o077));
       return { path, dev: String(stat.dev), ino: String(stat.ino), bytes: stat.size }; });
     assert(logs.reduce((sum, log) => sum + log.bytes, 0) > 0, "TEST successful payload did not exercise protected output");
+    checkpoint = "result_identity";
     const result = await readCodexGoalResultSummary(resultPath); assert(result.foregroundOutput);
     assert.equal(result.foregroundOutput.unit, row.unit);
     assert.equal(result.foregroundOutput.exitCode, 0);
+    checkpoint = "byte_compare";
     assert.equal(Buffer.byteLength(result.foregroundOutput.stdout), logs[0]!.bytes);
     assert.equal(Buffer.byteLength(result.foregroundOutput.stderr), logs[1]!.bytes);
     checkpoint = "verified";
@@ -544,6 +549,24 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
           try { lstatSync(`${policy}/ordinary-starts/${added[0]!.startId}.json`); return "row_and_record"; }
           catch { return "row_only"; }
         } catch { return "unknown"; }
+      })(),
+      // Closed-enum accounting of every start row the scenario window added, so an
+      // unexpected second row is classified by unit kind/state/record only. No ids.
+      postFailureAdded: (() => {
+        try {
+          const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+          const unit = (value: string) => value.startsWith("subscription-runtime-hosted-") ? "hosted"
+            : value.startsWith("subscription-runtime-ordinary-") ? "ordinary"
+            : value.startsWith("subscription-runtime-outer-") ? "outer" : "other";
+          const state = (value: string) => value === HostedCustodyReservationState.Reserved ? "reserved"
+            : value === HostedCustodyReservationState.Terminal ? "terminal" : "other";
+          const record = (startId: string) => { try { lstatSync(`${policy}/ordinary-starts/${startId}.json`); return "present"; } catch { return "absent"; } };
+          return { count: added.length,
+            units: added.slice(0, 4).map(row => unit(row.unit)),
+            states: added.slice(0, 4).map(row => state(row.state)),
+            records: added.slice(0, 4).map(row => record(row.startId)),
+            overflow: added.length > 4 };
+        } catch { return { count: -1, units: ["unknown"], states: ["unknown"], records: ["unknown"], overflow: false }; }
       })(),
       childDiagnostic: (() => {
         try {
