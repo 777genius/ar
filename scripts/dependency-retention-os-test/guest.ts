@@ -297,6 +297,15 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
 }
 
+const closedForegroundFailureTokens = ["hosted_foreground_result_unresolved", "hosted_activation_evidence_invalid",
+  "hosted_activation_fence_busy", "hosted_custody_legacy_lock_recovery_required", "hosted_custody_admission_denied",
+  "hosted_custody_runtime_not_started", "hosted_custody_runtime_stop_incomplete", "hosted_custody_inherited_handle_denied",
+  "hosted_custody_stdio_pipe_required", "hosted_custody_descriptor_invalid", "hosted_custody_kernel_evidence_invalid",
+  "hosted_custody_runtime_launch_denied", "hosted_fd_boundary_unresolved", "hosted_fd_profile_invalid"];
+function closedFailureToken(error: unknown): string {
+  return error instanceof Error && closedForegroundFailureTokens.includes(error.message) ? error.message : "unknown";
+}
+
 /** Closed-fact release chain trace. Wrappers record stage tokens and one
  * classified error code, then rethrow — no product behavior change. */
 function releaseChainTrace() {
@@ -731,21 +740,28 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   const foreground = await runHostedRuntimeForeground(node, args, workspace, { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" });
   const foregroundStatus = hostedForegroundExitCode(foreground);
   if (foregroundStatus !== 0) {
-    // Closed failure-class facts only: enums, booleans and counts. No output
-    // bytes, caller paths or raw error text ever enter the evidence.
+    // Closed failure-class facts only: enums, booleans and counts. Each reader
+    // is isolated so one rejected read cannot mask the other classes.
+    const facts: Record<string, unknown> = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
+      authenticated: typeof foreground !== "number", probePresent: existsSync(workspace + "/TEST-readonly-probe.json") };
     try {
-      const summary = await readCodexGoalResultSummary(resultPath), epoch = host.readEpoch();
-      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
-        authenticated: typeof foreground !== "number", resultStatus: summary.status ?? null, resultReason: summary.reason ?? null,
-        foregroundOutputPresent: !!summary.foregroundOutput,
-        outputExitCode: summary.foregroundOutput ? summary.foregroundOutput.exitCode : null,
-        phase: epoch.phase, outerState: epoch.outerRuntime ? epoch.outerRuntime.state : null,
-        completionPresent: epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null,
-        probePresent: existsSync(workspace + "/TEST-readonly-probe.json"), resultPresent: existsSync(resultPath) };
-    } catch {
-      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
-        authenticated: typeof foreground !== "number", unavailable: true };
-    }
+      const parsed: unknown = JSON.parse(readFileSync(resultPath, "utf8"));
+      const rawStatus = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { status?: unknown }).status : undefined;
+      facts.resultPresent = true;
+      facts.rawResultStatus = typeof rawStatus === "string" && ["completed", "failed", "partial", "blocked", "cancelled"].includes(rawStatus)
+        ? rawStatus : "unrecognized";
+    } catch (error) { facts.resultPresent = existsSync(resultPath); facts.rawResultRead = closedFailureToken(error); }
+    try {
+      const summary = await readCodexGoalResultSummary(resultPath);
+      facts.resultStatus = summary.status ?? null; facts.foregroundOutputPresent = !!summary.foregroundOutput;
+      facts.outputExitCode = summary.foregroundOutput ? summary.foregroundOutput.exitCode : null;
+    } catch (error) { facts.summaryRead = closedFailureToken(error); }
+    try {
+      const epoch = host.readEpoch();
+      facts.phase = epoch.phase; facts.outerState = epoch.outerRuntime ? epoch.outerRuntime.state : null;
+      facts.completionPresent = epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null;
+    } catch (error) { facts.epochRead = closedFailureToken(error); }
+    evidence.readonlyForegroundFailure = facts;
   }
   assert.equal(foregroundStatus, 0); assert(typeof foreground !== "number");
   const retrieved = await readCodexGoalResultSummary(resultPath); assert(retrieved.foregroundOutput);
