@@ -904,6 +904,11 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
     // Cleanup is the existing exact owned reservation path, never a completion
     // claim or blanket manager/process operation. Uncertainty remains retained.
     guard.invalidate();
+    // Product denial path (runHostedRuntimeForeground catch): the exact retained
+    // proxy is stopped with SIGTERM. systemd-run --wait reports a stop-killed
+    // unit as a clean wait (its documented contract), so the proxy is terminated
+    // before the owned stop can close it as an apparent success.
+    child.kill("SIGTERM");
     try { cleanupReleased = store.requestOrdinaryDependencyCleanup(); }
     catch (error) { cleanupReleased = null; evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
       releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
