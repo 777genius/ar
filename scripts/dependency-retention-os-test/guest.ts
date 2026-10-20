@@ -523,7 +523,24 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     assert(endpointBefore.dev === endpointAfter.dev && endpointBefore.ino === endpointAfter.ino);
     checkpoint = "rows_accounting";
     const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
-    assert.equal(added.length, 1); const row = added[0]!; assert.equal(row.state, HostedCustodyReservationState.Terminal);
+    // Canonical custody accounting for a successful window: this launch reserves
+    // exactly one ordinary reader row, and each spawned provider (probe 3) appends
+    // one hosted provider row. Rows are append-only and stay Reserved in the
+    // ordinary flow; window closure is the released consumer owner asserted
+    // after this scenario returns.
+    assert.equal(added.length, 2);
+    const readers = added.filter(value => !value.unit.startsWith("subscription-runtime-hosted-"));
+    const providers = added.filter(value => value.unit.startsWith("subscription-runtime-hosted-"));
+    assert.equal(readers.length, 1); assert.equal(providers.length, 1);
+    const row = readers[0]!, provider = providers[0]!;
+    assert.equal(row.state, HostedCustodyReservationState.Reserved);
+    assert.equal(provider.state, HostedCustodyReservationState.Reserved);
+    assert.equal(provider.creatorId, row.creatorId); assert.equal(provider.originSha256, row.originSha256);
+    assert(provider.generation > row.generation);
+    const present = (name: string): boolean => { try { lstatSync(name); return true; } catch { return false; } };
+    assert(present(`${policy}/ordinary-starts/${row.startId}.json`) && present(`${policy}/ordinary-starts/${provider.startId}.json`));
+    assert(present(`${policy}/dependency-provider-attempts/${provider.startId}.json`));
+    assert(present(`${policy}/ordinary-completed/${row.startId}.json`));
     checkpoint = "output_identity";
     assert.deepEqual(outputPaths, [policy + "/foreground-output/" + row.unit + ".stdout", policy + "/foreground-output/" + row.unit + ".stderr"]);
     checkpoint = "logs_accounting";
@@ -606,7 +623,7 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
           const value = JSON.parse(readFileSync("/run/TEST-control-sink-diagnostic.json", "utf8")) as Record<string, unknown>;
           const stages = ["argv_identity", "imports", "inventory", "foreground_request", "ordinary_launch", "spawn_submit", "spawn_returned",
             "guard", "observe", "observed_ipc",
-            "release", "wait_completion", "foreground_result", "publish", "consumer_release", "drained_ipc", "disconnect"];
+            "release", "wait_completion", "foreground_result", "publish", "reader_completion", "consumer_release", "drained_ipc", "disconnect"];
           const classes = ["clean", "inner_guard_failure", "assertion", "request_unresolved", "launch_invalidated", "input_overflow",
             "invocation_consumed", "operator_required", "authority_invalid", "activation_invalid", "activation_evidence_invalid",
             "publication_recovery_required", "activation_stop_incomplete", "activation_authority_required", "owned_unresolved",

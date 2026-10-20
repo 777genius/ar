@@ -223,8 +223,15 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
       stage = "publish";
       const result = store.withOrdinaryForegroundTerminal(facts, owner =>
         publishHostedForegroundResult(request, facts, owner));
+      // Product terminal contract (runHostedRuntimeForeground): the reader
+      // completion path is attempted first and only its legacy fallback
+      // releases the dependency consumer.
+      stage = "reader_completion";
+      let legacyRelease = true;
+      try { legacyRelease = !store.completeOrdinaryDependencyReader(facts); }
+      catch { legacyRelease = false; try { store.requestOrdinaryDependencyCleanup(); } catch { /* Retained uncertainty survives. */ } }
       stage = "consumer_release";
-      assert.equal(hostedForegroundExitCode(result), 0); assert(store.releaseOrdinaryDependencyConsumer());
+      assert.equal(hostedForegroundExitCode(result), 0); if (legacyRelease) assert(store.releaseOrdinaryDependencyConsumer());
       stage = "drained_ipc";
       process.send!({ phase: ControlSinkPhase.Drained, outputPaths: guard.outputPaths });
       stage = "disconnect";
