@@ -729,7 +729,25 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   host.verifyReadonlyMaterial(enrolled.identity);
   evidence.kernelGatePhase = "readonly_real_cli_provider_and_drain";
   const foreground = await runHostedRuntimeForeground(node, args, workspace, { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" });
-  assert.equal(hostedForegroundExitCode(foreground), 0); assert(typeof foreground !== "number");
+  const foregroundStatus = hostedForegroundExitCode(foreground);
+  if (foregroundStatus !== 0) {
+    // Closed failure-class facts only: enums, booleans and counts. No output
+    // bytes, caller paths or raw error text ever enter the evidence.
+    try {
+      const summary = await readCodexGoalResultSummary(resultPath), epoch = host.readEpoch();
+      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
+        authenticated: typeof foreground !== "number", resultStatus: summary.status ?? null, resultReason: summary.reason ?? null,
+        foregroundOutputPresent: !!summary.foregroundOutput,
+        outputExitCode: summary.foregroundOutput ? summary.foregroundOutput.exitCode : null,
+        phase: epoch.phase, outerState: epoch.outerRuntime ? epoch.outerRuntime.state : null,
+        completionPresent: epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null,
+        probePresent: existsSync(workspace + "/TEST-readonly-probe.json"), resultPresent: existsSync(resultPath) };
+    } catch {
+      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
+        authenticated: typeof foreground !== "number", unavailable: true };
+    }
+  }
+  assert.equal(foregroundStatus, 0); assert(typeof foreground !== "number");
   const retrieved = await readCodexGoalResultSummary(resultPath); assert(retrieved.foregroundOutput);
   assert.equal(retrieved.foregroundOutput.unit, foreground.unit);
   assert.equal(retrieved.foregroundOutput.exitCode, 0);
