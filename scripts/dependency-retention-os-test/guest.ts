@@ -288,7 +288,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   try { assert.equal(afterSinkOwner.read(binding.workspace)?.owner, null); } finally { afterSinkOwner.close(); }
   evidence.pendingNativeCases = ["direct_daemon_socket_sent_byte_capture", "noop_and_stale_same_inode_result", "unauthorized_destination_no_preread"];
   evidence.kernelGatePhase = "actual_final_release_deadline_denial";
-  results.push(await qualifyLateRelease(node, args, workspace, env, systemBusInfrastructure));
+  results.push(await qualifyLateRelease(node, args, workspace, env, systemBusInfrastructure, evidence));
   const afterLateReceipt = readHostedDependencyReceipt(binding); assert(afterLateReceipt);
   assert.equal(digest(JSON.stringify(afterLateReceipt)), readyDigest);
   assert.equal(readdirSync(policy + "/dependency-installers").filter(name => /^[a-f0-9-]{36}$/.test(name)).length, 1);
@@ -852,7 +852,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
 }
 
 async function qualifyLateRelease(commandPath: string, args: readonly string[], workspace: string, env: Record<string, string>,
-  systemBusInfrastructure: SystemBusInfrastructure) {
+  systemBusInfrastructure: SystemBusInfrastructure, evidence: Record<string, unknown>) {
   const store = new HostedInstallationActivationStore();
   const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
   const previousProbes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort();
@@ -864,7 +864,15 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
   const closed = once(child, "close"), guard = hostedFdLaunch(child);
   child.stdin?.on("error", () => {});
   let pausedMs = 0, requestedMs = 0, denied = false;
+  // Closed-fact TEST diagnostics only: enums, booleans and capped counts. No
+  // payload, id, path or raw error text is recorded and no gate authority
+  // changes here.
+  let releaseErrorClass = "none", releaseCall = 0, releaseCallClass = "none", cleanupReleased: boolean | null = null;
+  const classifyError = (error: unknown): string => error instanceof Error && error.message === "hosted_fd_boundary_unresolved" ? "boundary_unresolved"
+    : error instanceof Error && (error as { code?: unknown }).code === "ERR_ASSERTION" ? "assertion"
+      : error instanceof Error ? "other" : "non_error_throw";
   let typedEmptyArrays: readonly SystemdEmptyArrayFact[] | undefined;
+  const previousProbeCount = readdirSync(workspace).filter(name => /^TEST-provider-probe-[0-9]+\.json$/.test(name)).length;
   try {
     await guard.observe(); // Actual peer/unit/birth proof outside the fence.
     assert(actualUnit);
@@ -875,6 +883,7 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
     try {
       store.releaseOrdinaryRuntimeFrame((fence, revalidateOwner) => {
         guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1, env })), true, () => {
+          releaseCall += 1; releaseCallClass = releaseCall === 1 ? "first_revalidate" : releaseCall === 2 ? "tool_parent_revalidate" : "budget_revalidate";
           revalidateOwner();
           requestedMs = guard.remainingSetupMs() + 5;
           assert(requestedMs <= 60005);
@@ -885,15 +894,35 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
           pausedMs = Number(process.hrtime.bigint() - began) / 1_000_000;
         });
       });
-    } catch (error) { assert(error instanceof Error && error.message === "hosted_fd_boundary_unresolved"); denied = true; }
+    } catch (error) {
+      releaseErrorClass = classifyError(error);
+      assert(error instanceof Error && error.message === "hosted_fd_boundary_unresolved"); denied = true;
+    }
     assert(requestedMs > 0 && pausedMs >= requestedMs - 1, "TEST final-release clock boundary was not exercised");
     assert(denied, "TEST expired frame crossed actual final release");
   } finally {
     // Cleanup is the existing exact owned reservation path, never a completion
     // claim or blanket manager/process operation. Uncertainty remains retained.
     guard.invalidate();
-    assert(store.requestOrdinaryDependencyCleanup());
+    try { cleanupReleased = store.requestOrdinaryDependencyCleanup(); }
+    catch (error) { cleanupReleased = null; evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
+      releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
+      pausedMsCapped: Math.min(Math.round(pausedMs), 60005), cleanupErrorClass: classifyError(error) }; throw error; }
+    assert(cleanupReleased);
     const [code, signal] = await boundedWait(closed, 15000);
+    const childExitClass = signal !== null ? "signal" : code === 0 ? "exit0" : "nonzero";
+    const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+    evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
+      releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
+      pausedMsCapped: Math.min(Math.round(pausedMs), 60005), cleanupReleased, childExitClass,
+      codeCapped: typeof code === "number" ? Math.min(code, 255) : null, signaled: signal !== null,
+      probeAddedCount: Math.min(Math.max(readdirSync(workspace).filter(name => /^TEST-provider-probe-[0-9]+\.json$/.test(name)).length - previousProbeCount, 0), 8),
+      addedRows: added.slice(0, 4).map(row => ({
+        unit: row.unit.startsWith("subscription-runtime-hosted-") ? "hosted" : row.unit.startsWith("subscription-runtime-ordinary-") ? "ordinary" : "other",
+        state: row.state === HostedCustodyReservationState.Reserved ? "reserved" : row.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+        startRecord: (() => { try { lstatSync(`${policy}/ordinary-starts/${row.startId}.json`); return "present"; } catch { return "absent"; } })(),
+        completionRecord: (() => { try { lstatSync(`${policy}/ordinary-completed/${row.startId}.json`); return "present"; } catch { return "absent"; } })() })),
+      addedCount: added.length, addedOverflow: added.length > 4 };
     assert(code !== 0 || signal !== null, "TEST pre-payload deadline launch unexpectedly completed successfully");
   }
   assert.deepEqual(readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort(), previousProbes);
