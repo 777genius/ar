@@ -762,6 +762,24 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
         const epoch = host.readEpoch();
         facts.phase = epoch.phase; facts.outerState = epoch.outerRuntime ? epoch.outerRuntime.state : null;
         facts.completionPresent = epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null;
+        if (epoch.outerRuntime) try {
+          const shown = spawnSync("/usr/bin/systemctl", ["show", epoch.outerRuntime.unit, "--property=ExecMainCode",
+            "--property=ExecMainStatus", "--property=Result", "--property=ActiveState", "--property=SubState"],
+            { encoding: "utf8", timeout: 5000, maxBuffer: 65536, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
+          if (!shown.error && shown.signal === null && shown.status === 0 && shown.stderr === "") {
+            const rows = new Map(shown.stdout.trim().split("\n").map(line => {
+              const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)] as const;
+            }));
+            const code = rows.get("ExecMainCode");
+            facts.unitExecMainCode = code === "0" ? "exited" : code === "1" ? "killed" : code === "2" ? "dumped" : code === undefined ? "absent" : "other";
+            const unitStatus = Number(rows.get("ExecMainStatus"));
+            facts.unitExecMainStatus = Number.isSafeInteger(unitStatus) ? unitStatus : null;
+            const unitResult = rows.get("Result");
+            facts.unitResult = unitResult === undefined ? "absent" : ["success", "exit-code", "signal", "core-dump", "timeout",
+              "watchdog", "oom-kill", "startup-limit", "dependency", "assert", "resources", "protocol"].includes(unitResult) ? unitResult : "other";
+            facts.unitActiveState = rows.get("ActiveState") ?? null; facts.unitSubState = rows.get("SubState") ?? null;
+          } else facts.unitShow = "unavailable";
+        } catch { facts.unitShow = "unavailable"; }
       } catch (error) { facts.epochRead = closedFailureToken(error); }
       evidence.readonlyForegroundFailure = facts;
     } catch {
