@@ -359,16 +359,29 @@ function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDepen
         : continuity.kind === "retired_evicting_v1" ? "retired_evicting_v1" : "other";
   const installers = policy + "/dependency-installers";
   const activation = readHostedInstallationActivation().activation;
+  // Closed unit-state enum for the durable start's unit: a live unit with no
+  // zero record discriminates provider survival from an unpublishing terminal.
+  const unitState = (unit: string): string => {
+    try {
+      const text = command("/usr/bin/systemctl", ["show", "--property=LoadState,ActiveState,SubState", "--", unit], 5000);
+      const facts = new Map(text.split("\n").map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+      if (facts.get("LoadState") === "not-found") return "not_found";
+      const active = facts.get("ActiveState");
+      return ["active", "activating", "deactivating", "inactive", "failed"].includes(active ?? "") ? active! : "other";
+    } catch { return "unknown"; }
+  };
   const rows = activation.ordinaryStarts.slice(0, 8).map(start => ({
     unitClass: start.unit.startsWith("subscription-runtime-installer-") ? "installer"
       : start.unit.startsWith("subscription-runtime-hosted-") ? "hosted"
         : start.unit.startsWith("subscription-runtime-") ? "ordinary" : "other",
     state: start.state === HostedCustodyReservationState.Reserved ? "reserved"
       : start.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+    unitState: unitState(start.unit),
     attemptFenceRecord: present(`${policy}/dependency-attempt-fences/${start.startId}.json`),
     readerCompletionRecord: present(`${policy}/dependency-ordinary-reader-completions/${start.startId}.json`),
     providerCompletionRecord: present(`${policy}/dependency-ordinary-provider-completions/${start.startId}.json`),
     providerAttemptRecord: present(`${policy}/dependency-provider-attempts/${start.startId}.json`),
+    waitCompletionRecord: present(`${policy}/ordinary-completed/${start.startId}.json`),
     installerStartRecord: present(`${installers}/${start.startId}/start.json`),
     installerTerminalRecord: present(`${installers}/${start.startId}/terminal.json`)
   }));
