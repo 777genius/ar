@@ -246,7 +246,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
     try {
       const row = owner.read(binding.workspace);
-      try { evidence[mode + "ReceiptOwnerProbeObservation"] = receiptOwnerProbeObservation(policy, row); }
+      try { evidence[mode + "ReceiptOwnerProbeObservation"] = receiptOwnerProbeObservation(policy, row, workspace); }
       catch { evidence[mode + "ReceiptOwnerProbeObservation"] = { unavailable: true }; }
       assert.equal(row?.owner, null, "actual creator/drain release unresolved");
     }
@@ -340,7 +340,7 @@ function releaseChainTrace() {
 
 /** Closed-fact release observation for the owner probe: enums, booleans and
  * counts only. Never record IDs, raw paths, bytes or stderr. */
-function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDependencyOwnerStore["read"]>): Record<string, unknown> {
+function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDependencyOwnerStore["read"]>, workspace: string): Record<string, unknown> {
   const present = (path: string): boolean => { try { lstatSync(path); return true; } catch { return false; } };
   const owner = row?.owner ?? null;
   const attempt = owner && typeof owner === "object" && "attempt" in owner
@@ -398,9 +398,18 @@ function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDepen
       } catch { return { parseFailed: true }; }
     });
   } catch { installerAttemptRecordCount = -1; }
+  // Closed provider termination markers: which exit path the provider process
+  // actually took (EOF-driven clean exit vs a signaled stop).
+  let providerTerminationMarkers = "none";
+  try {
+    const markers = (JSON.parse(readFileSync(workspace + "/TEST-provider-termination.json", "utf8")) as { markers?: unknown }).markers;
+    const names = Array.isArray(markers) ? markers.filter(name => name === "stdin_eof" || name === "sigterm") : [];
+    providerTerminationMarkers = names.includes("stdin_eof") && names.includes("sigterm") ? "both"
+      : names.includes("stdin_eof") ? "stdin_eof" : names.includes("sigterm") ? "sigterm" : "none";
+  } catch { providerTerminationMarkers = "absent"; }
   return {
     ownerRowPresent: row !== null, recordVersion: row === null ? "no_record" : row.version,
-    ownerPhase: phase, ownerKind, continuityKind,
+    ownerPhase: phase, ownerKind, continuityKind, providerTerminationMarkers,
     attemptEpochMatchesRecord: attemptEpoch === null || row === null ? null : attemptEpoch === row.epoch,
     activityLastEntry: row === null ? null : row.activity?.lastEntry !== undefined && row.activity?.lastEntry !== null,
     activityLastRelease: row === null ? null : row.activity?.lastRelease !== undefined && row.activity?.lastRelease !== null,

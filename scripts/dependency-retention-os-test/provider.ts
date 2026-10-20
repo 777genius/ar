@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { constants, fstatSync, lstatSync, readSync, openSync, closeSync, readFileSync, readlinkSync, realpathSync, readdirSync, writeFileSync, type Stats } from "node:fs";
+import { constants, fstatSync, lstatSync, readSync, openSync, closeSync, readFileSync, readlinkSync, realpathSync, readdirSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { createTestCatalogProtocol } from "./default-codex-catalog-protocol.ts";
@@ -340,6 +340,23 @@ function probe(): boolean {
     result: "dependency_read_and_actual_enclosure_denial_passed", ids, uidMap, gidMap, namespaces, noNewPrivs: 1, capabilities: "zero" }) + "\n", { flag: "wx", mode: 0o600 });
   return false;
 }
+// Closed termination markers (enum facts only) discriminating a signaled stop
+// from an EOF-driven clean exit. The SIGTERM handler re-raises the default
+// disposition, so the observed exit stays signal-terminated exactly as before.
+let providerTerminationMarkers: string[] = [];
+function markProviderTermination(kind: "stdin_eof" | "sigterm"): void {
+  providerTerminationMarkers = [...new Set([...providerTerminationMarkers, kind])];
+  try {
+    const path = workspace + "/TEST-provider-termination.json";
+    try { unlinkSync(path); } catch { /* First marker. */ }
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1,
+      markers: ["stdin_eof", "sigterm"].filter(name => providerTerminationMarkers.includes(name)) }) + "\n", { mode: 0o600 });
+  } catch { /* Closed exit channel alone survives. */ }
+}
+process.once("SIGTERM", () => {
+  markProviderTermination("sigterm");
+  process.kill(process.pid, "SIGTERM"); // Re-raise default disposition.
+});
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let requests = 0;
 lines.on("line", line => {
@@ -380,5 +397,5 @@ lines.on("line", line => {
     send({ id: request.id, result });
   } catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(74); }
 });
-lines.once("close", () => process.exit(0));
+lines.once("close", () => { markProviderTermination("stdin_eof"); process.exit(0); });
 setTimeout(() => { process.stderr.write("TEST_provider_deadline\n"); process.exit(75); }, 90000).unref();
