@@ -537,16 +537,30 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
       checkpoint, handlerStage, handlerFailed, childCode, childSignal, observed, drained,
       prePayloadBytes, finalSentBytes: sentBytes,
       probeCount: (() => { try { return countProbes(); } catch { return null; } })(),
+      postFailureStart: (() => {
+        try {
+          const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+          if (added.length === 0) return "none";
+          try { lstatSync(`${policy}/ordinary-starts/${added[0]!.startId}.json`); return "row_and_record"; }
+          catch { return "row_only"; }
+        } catch { return "unknown"; }
+      })(),
       childDiagnostic: (() => {
         try {
           const value = JSON.parse(readFileSync("/run/TEST-control-sink-diagnostic.json", "utf8")) as Record<string, unknown>;
-          const stages = ["argv_identity", "imports", "inventory", "foreground_request", "ordinary_launch", "guard", "observe", "observed_ipc",
+          const stages = ["argv_identity", "imports", "inventory", "foreground_request", "ordinary_launch", "spawn_submit", "spawn_returned",
+            "guard", "observe", "observed_ipc",
             "release", "wait_completion", "foreground_result", "publish", "consumer_release", "drained_ipc", "disconnect"];
           const classes = ["clean", "inner_guard_failure", "assertion", "request_unresolved", "launch_invalidated", "input_overflow",
-            "invocation_consumed", "operator_required", "authority_invalid", "activation_invalid", "unclassified", "non_error_throw"];
+            "invocation_consumed", "operator_required", "authority_invalid", "activation_invalid", "activation_evidence_invalid",
+            "publication_recovery_required", "activation_stop_incomplete", "activation_authority_required", "owned_unresolved",
+            "descriptor_denied", "stdio_pipe_required", "descriptor_invalid", "frame_invalid", "creator_not_fenced",
+            "custody_stop_incomplete", "fd_boundary_unresolved", "unclassified", "non_error_throw"];
           return { available: true,
             stage: typeof value.stage === "string" && stages.includes(value.stage) ? value.stage : "other",
-            exitClass: typeof value.exitClass === "string" && classes.includes(value.exitClass) ? value.exitClass : "other" };
+            exitClass: typeof value.exitClass === "string" && classes.includes(value.exitClass) ? value.exitClass : "other",
+            requestFdCountBefore: Number.isSafeInteger(value.requestFdCountBefore) ? value.requestFdCountBefore : -1,
+            requestFdCountAfter: Number.isSafeInteger(value.requestFdCountAfter) ? value.requestFdCountAfter : -1 };
         } catch { return { available: false }; }
       })() };
   }

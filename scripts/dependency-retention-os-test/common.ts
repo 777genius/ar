@@ -140,9 +140,10 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
   // Closed-fact TEST diagnostics only: one stage token and one classified exit
   // code. No payload, path or raw error text is ever recorded, and these facts
   // have no authority or effect on production gates.
-  let stage = "argv_identity";
+  let stage = "argv_identity", requestFdCountBefore = -1, requestFdCountAfter = -1;
   const diagnostic = (exitClass: string) => {
-    try { writeFileSync("/run/TEST-control-sink-diagnostic.json", JSON.stringify({ schemaVersion: 1, stage, exitClass }) + "\n", { mode: 0o600 }); }
+    try { writeFileSync("/run/TEST-control-sink-diagnostic.json", JSON.stringify({ schemaVersion: 1, stage, exitClass,
+      requestFdCountBefore, requestFdCountAfter }) + "\n", { mode: 0o600 }); }
     catch { /* TEST-only diagnostic. */ }
   };
   const classifyExit = (error: unknown): string => {
@@ -151,7 +152,13 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
       hosted_foreground_result_unresolved: "request_unresolved", hosted_fd_launch_invalidated: "launch_invalidated",
       hosted_fd_input_overflow: "input_overflow", child_invocation_consumed: "invocation_consumed",
       hosted_readonly_host_operator_required: "operator_required", hosted_readonly_authority_invalid: "authority_invalid",
-      hosted_activation_invalid: "activation_invalid"
+      hosted_activation_invalid: "activation_invalid", hosted_activation_evidence_invalid: "activation_evidence_invalid",
+      hosted_activation_publication_recovery_required: "publication_recovery_required",
+      hosted_activation_stop_incomplete: "activation_stop_incomplete", hosted_activation_authority_required: "activation_authority_required",
+      hosted_ordinary_owned_unresolved: "owned_unresolved", hosted_custody_inherited_handle_denied: "descriptor_denied",
+      hosted_custody_stdio_pipe_required: "stdio_pipe_required", hosted_custody_descriptor_invalid: "descriptor_invalid",
+      hosted_custody_launch_frame_invalid: "frame_invalid", hosted_custody_creator_not_fenced: "creator_not_fenced",
+      hosted_custody_stop_incomplete: "custody_stop_incomplete", hosted_fd_boundary_unresolved: "fd_boundary_unresolved"
     };
     const code = error instanceof Error ? error.message : "";
     return code in known ? known[code]! : error instanceof Error ? "unclassified" : "non_error_throw";
@@ -169,10 +176,16 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
     stage = "inventory";
     const store = new HostedInstallationActivationStore(), launch = readHostedReadonlyHostInventory().runtimeLaunch;
     stage = "foreground_request";
+    requestFdCountBefore = readdirSync("/proc/self/fd").length;
     const request = requireHostedForegroundRequest(launch.args, launch.cwd);
+    requestFdCountAfter = readdirSync("/proc/self/fd").length;
     stage = "ordinary_launch";
-    const child = store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, actual =>
-      spawnHostedFdChild(actual.command, actual.args, { cwd: launch.cwd }, hostedFdInvocationUnit(actual.args), HostedFdLaunchKind.Foreground));
+    const child = store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, actual => {
+      stage = "spawn_submit";
+      const submitted = spawnHostedFdChild(actual.command, actual.args, { cwd: launch.cwd }, hostedFdInvocationUnit(actual.args), HostedFdLaunchKind.Foreground);
+      stage = "spawn_returned";
+      return submitted;
+    });
     stage = "guard";
     const closed = new Promise<void>((resolve, reject) => {
       child.once("error", reject); child.once("close", (code, signal) => code === 0 && signal === null ? resolve() : reject(new Error("TEST control-sink child failed")));
