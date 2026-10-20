@@ -65,7 +65,7 @@ test("structured synthetic failures select closed codes from genuine zero/one-at
   assert.deepEqual(output, { purpose:"TEST_synthetic_structured_failure_only",state:"captured",source:"safe_execution_stdout",
     root:{status:"failed",reason:"unknown_error",codes:["safe_execution_workspace_not_git"]},
     task:{status:"failed",reason:"unknown_error",codes:[]},attemptCount:0,attempts:[],messageFieldPresenceBits:16,
-    messageObservations:[{field:"root.safeMessage",diagnostic:{purpose:"TEST_synthetic_fresh_cli_redacted_text_only",state:"unavailable"}}] });
+    messageObservations:[{field:"root.safeMessage",diagnostic:{purpose:"TEST_synthetic_cli_redacted_text_only",state:"unavailable"}}] });
   const attempt = {taskId:syntheticIdentity.jobId,attemptNumber:1,status:"failed",failureReason:"account_unavailable",
     failureDetails:{subscriptionWorkerCode:"subscription_worker_account_unavailable",rawCause:"Bearer PRIVATE_CANARY"},accountId:"PRIVATE_CANARY"};
   const one = {...failedRun(),attempts:[attempt],task:{...failedRun().task,attempts:[attempt]}};
@@ -270,7 +270,12 @@ test("synthetic text requires exact fixture inputs and refuses live or changed p
   assert.equal(valid.providerSha256, syntheticProviderSha256);
   const sample = Buffer.from("Unclassified fixture failure\n"), context = { fullBytes: sample.length, offset: 0, initialBytes: sample.length, currentBytes: sample.length };
   assert.equal(syntheticCliStderrDiagnostic(sample, context, verifiedSyntheticCliInputs(valid), "a".repeat(40)).state, "captured");
-  for (const patch of [{ scenario: "current-dependency" }, { phase: "hot_real_cli" }, { entry: "/private/other.ts" },
+  // The hot phase is the same exact fixture invocation shape, so its bounded
+  // redacted stderr text stays inside this closed channel.
+  const hot = { ...valid, phase: "hot_real_cli" };
+  assert(verifiedSyntheticCliInputs(hot));
+  assert.equal(syntheticCliStderrDiagnostic(sample, context, verifiedSyntheticCliInputs(hot), "a".repeat(40)).state, "captured");
+  for (const patch of [{ scenario: "current-dependency" }, { phase: "cold_real_cli" }, { entry: "/private/other.ts" },
     { providerSha256: "0".repeat(64) }, { root: "/real/job" }, { command: "/usr/bin/node" }, { prompt: Buffer.from("user data") },
     { env: { ...valid.env, OPENAI_API_KEY: "PRIVATE_CANARY" } }, { args: args.map(value => value === "TEST-account" ? "real-account" : value) },
     { args: args.map(value => value === "TEST-synthetic-model" ? "gpt-6.1-sol" : value) },
@@ -283,7 +288,7 @@ test("synthetic text requires exact fixture inputs and refuses live or changed p
 });
 
 test("synthetic capture exports only exact source-defined origin failures past the text entropy filter", () => {
-  const purpose = "TEST_synthetic_fresh_cli_redacted_text_only", sha = "a".repeat(40);
+  const purpose = "TEST_synthetic_cli_redacted_text_only", sha = "a".repeat(40);
   const observe = (text: string, trusted = true, change = {}, sourceSha = sha) => {
     const bytes = Buffer.from(text);
     return syntheticCliStderrDiagnostic(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length, ...change }, trusted, sourceSha);
@@ -315,12 +320,12 @@ test("synthetic capture retains only a closed origin diagnostic behind unchanged
     const bytes = Buffer.from(JSON.stringify(value) + "\n");
     return syntheticCliStderrDiagnostic(bytes, { fullBytes: bytes.length, offset: 0, initialBytes: bytes.length, currentBytes: bytes.length, ...change }, trusted, "a".repeat(40));
   };
-  assert.deepEqual(observe(diagnostic), { purpose: "TEST_synthetic_fresh_cli_redacted_text_only", state: "captured",
+  assert.deepEqual(observe(diagnostic), { purpose: "TEST_synthetic_cli_redacted_text_only", state: "captured",
     closedReason: diagnostic.reason, locations: diagnostic.locations });
   for (const value of [{ ...diagnostic, private: "PRIVATE_CANARY" }, { ...diagnostic, reason: "PRIVATE_CANARY" },
     { ...diagnostic, locations: [{ ...diagnostic.locations[0], module: "/PRIVATE_CANARY" }] },
     { ...diagnostic, locations: [{ ...diagnostic.locations[0], line: 1000000 }] }]) {
-    assert.deepEqual(observe(value), { purpose: "TEST_synthetic_fresh_cli_redacted_text_only", state: "unavailable" });
+    assert.deepEqual(observe(value), { purpose: "TEST_synthetic_cli_redacted_text_only", state: "unavailable" });
   }
   assert.equal(observe(diagnostic, false).state, "unavailable");
   assert.equal(observe(diagnostic, true, { currentBytes: 1 }).state, "unavailable");

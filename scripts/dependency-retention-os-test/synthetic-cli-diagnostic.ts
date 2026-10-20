@@ -8,10 +8,13 @@ const syntheticPrompt = "Execute the fixed dependency-reading TEST probe. This i
 type SyntheticInputs = Readonly<{ scenario: string | undefined; phase: string; entry: string | undefined; command: string;
   jobId: string; root: string; workspace: string; args: readonly string[]; env: Readonly<Record<string, string | undefined>>;
   providerSha256: string; prompt: Uint8Array; auth: Uint8Array }>;
-/** Internal fixture proof only; no caller flag/config or real provider route. */
+/** Internal fixture proof only; no caller flag/config or real provider route.
+ * Both owned CLI phases share one exact fixture shape; the phase label is the
+ * only difference and is provenance-pinned to those two closed values. */
 export function verifiedSyntheticCliInputs(input: SyntheticInputs): boolean {
   try {
-    if (input.scenario !== "dependency" || input.phase !== "fresh_real_cli" || input.entry !== runtime + "/scripts/dependency-retention-os-test/guest.ts" ||
+    if (input.scenario !== "dependency" || (input.phase !== "fresh_real_cli" && input.phase !== "hot_real_cli") ||
+        input.entry !== runtime + "/scripts/dependency-retention-os-test/guest.ts" ||
         input.command !== runtime + "/toolchain/bin/node" || !/^TEST-os-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.jobId) ||
         input.root !== policy + "/dependency-test-jobs/jobs/" + input.jobId || input.workspace !== input.root + "/workspace" ||
         input.providerSha256 !== syntheticProviderSha256 || !Buffer.from(input.prompt).equals(Buffer.from(syntheticPrompt))) return false;
@@ -41,10 +44,11 @@ const closedOriginFailures = [
   CodexGoalOriginReason.Execution,
   CodexGoalOriginReason.Current,
 ] as const;
-/** Only an already-proved synthetic fresh fixture may export this bounded text.
- * Failure is preserved; this observation never alters a launch or authority. */
+/** Only an already-proved synthetic owned-CLI fixture (fresh or hot phase) may
+ * export this bounded text. Failure is preserved; this observation never alters
+ * a launch or authority. */
 export function syntheticCliStderrDiagnostic(bytes: Uint8Array, sample: TransientStartSample, trustedSyntheticInputs: boolean, sourceSha: string) {
-  const purpose = "TEST_synthetic_fresh_cli_redacted_text_only" as const;
+  const purpose = "TEST_synthetic_cli_redacted_text_only" as const;
   const refused = { purpose, state: "unavailable" as const };
   if (!trustedSyntheticInputs || !/^[a-f0-9]{40}$/.test(sourceSha) || bytes.length < 1 || bytes.length > 4096 || sample.offset !== 0 ||
       sample.fullBytes !== bytes.length || sample.initialBytes !== bytes.length || sample.currentBytes !== bytes.length ||

@@ -229,8 +229,13 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     const foreground = await runHostedRuntimeForeground(node, args, workspace, env), cliStatus = hostedForegroundExitCode(foreground);
     evidence[mode + "ReleaseChainObservation"] = releaseTrace.snapshot();
     if (cliStatus !== 0) {
-      try { evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus,
-        mode === "fresh" && verifyFreshSyntheticDiagnosticInputs(jobId, root, workspace, node, args, env)); }
+      try {
+        // Redacted fixture stderr text needs only the exact fixture proof for the
+        // current phase; the wider fixture channels stay fresh-only.
+        const synthetic = verifyOwnedSyntheticDiagnosticInputs(`${mode}_real_cli`, jobId, root, workspace, node, args, env);
+        evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus,
+          mode === "fresh" && synthetic, synthetic);
+      }
       catch { evidence.cliFailureObservation = { purpose: "TEST_owned_cli_failure_only", status: cliStatus, unavailable: true }; }
     }
     assert.equal(cliStatus, 0, `actual ${mode} CLI failed`);
@@ -1392,8 +1397,8 @@ function boundedProc(path: string, max: number): string {
   finally { closeSync(fd); }
 }
 
-function verifyFreshSyntheticDiagnosticInputs(jobId: string, root: string, workspace: string, command: string,
-  args: readonly string[], env: Readonly<Record<string, string | undefined>>): boolean {
+function verifyOwnedSyntheticDiagnosticInputs(phase: "fresh_real_cli" | "hot_real_cli", jobId: string, root: string,
+  workspace: string, command: string, args: readonly string[], env: Readonly<Record<string, string | undefined>>): boolean {
   try {
     if (process.env.TEST_OS_SCENARIO !== OwnedOsScenario.Dependency || !/^TEST-os-[a-f0-9-]{36}$/.test(jobId) ||
         root !== policy + "/dependency-test-jobs/jobs/" + jobId || workspace !== root + "/workspace") return false;
@@ -1414,12 +1419,13 @@ function verifyFreshSyntheticDiagnosticInputs(jobId: string, root: string, works
         return bytes.subarray(0, length);
       } finally { closeSync(fd); }
     };
-    return verifiedSyntheticCliInputs({ scenario: process.env.TEST_OS_SCENARIO, phase: "fresh_real_cli", entry: process.argv[1], command,
+    return verifiedSyntheticCliInputs({ scenario: process.env.TEST_OS_SCENARIO, phase, entry: process.argv[1], command,
       jobId, root, workspace, args, env, providerSha256: digest(read(runtime + "/codex/bin/provider.ts", 32768)),
       prompt: read(root + "/prompt", 4096), auth: read(root + "/auth/TEST-account/auth.json", 4096) });
   } catch { return false; }
 }
-function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number, trustedSyntheticInputs = false) {
+function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number,
+  trustedSyntheticInputs = false, syntheticStderrVerified = trustedSyntheticInputs) {
   const observation: Record<string, unknown> = { purpose: "TEST_owned_cli_failure_only", status };
   const { installation, activation } = readHostedInstallationActivation();
   assert(activation.ordinaryStarts.length <= 32);
@@ -1463,7 +1469,7 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
               stable, process.env.TEST_SOURCE_SHA ?? "", { jobId, workspace }, "safe_execution_stdout") } : {}),
             ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), sample),
               proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample),
-              ...(trustedSyntheticInputs ? { syntheticStderrDiagnostic: syntheticCliStderrDiagnostic(tail.subarray(0, count), sample,
+              ...(syntheticStderrVerified ? { syntheticStderrDiagnostic: syntheticCliStderrDiagnostic(tail.subarray(0, count), sample,
                 stable, process.env.TEST_SOURCE_SHA ?? "") } : {}) } : {}) };
         } finally { closeSync(fd); }
       } catch (error) { return { slot, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
