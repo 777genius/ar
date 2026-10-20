@@ -281,7 +281,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
       receiptSha256: currentReady, probe: observed, output: outputEvidence });
   }
   evidence.kernelGatePhase = "actual_inherited_relay_control_sink";
-  results.push(await qualifyRelayControlSink(systemBusInfrastructure, workspace, resultPath));
+  results.push(await qualifyRelayControlSink(systemBusInfrastructure, workspace, resultPath, evidence));
   const afterSink = readHostedDependencyReceipt(binding); assert(afterSink);
   assert.equal(digest(JSON.stringify(afterSink)), readyDigest);
   const afterSinkOwner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
@@ -428,13 +428,18 @@ function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDepen
 /** Captures bytes SENT to the inherited first-hop TEST relay. Incoming bus
  * replies, final manager state and Socket.bytesWritten are not send evidence.
  * This deliberately does not claim capture on a directly inherited daemon FD. */
-async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: string, resultPath: string) {
+async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: string, resultPath: string,
+  evidence: Record<string, unknown>) {
   verifySystemBusInfrastructure(bus);
   const endpointBefore = lstatSync(SYSTEM_BUS_ENDPOINT), name = "/run/TEST-control-relay-" + randomUUID();
   const server = createServer(), connection = once(server, "connection");
   let source: Socket | undefined, receiver: Socket | undefined, upstream: Socket | undefined;
   let child: ReturnType<typeof spawn> | undefined, birth: string | undefined, sentBytes = 0, prePayloadBytes = -1;
   let outputPaths: string[] = [], observed = false, drained = false;
+  // Closed-fact fixture diagnostics only: stage tokens and counts. No payload,
+  // path or raw error text is recorded and no gate authority changes here.
+  let checkpoint = "setup", handlerStage: string | null = null, handlerFailed = false;
+  let childCode: number | null = null, childSignal: "null" | "other" | null = null;
   const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
   const countProbes = () => readdirSync(workspace).filter(value => /^TEST-provider-probe-[123]\.json$/.test(value)).length;
   assert.equal(countProbes(), 2);
@@ -455,7 +460,7 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     const receiverEnd = once(receiver, "end");
     child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "control-sink"],
       { env: cleanEnv, stdio: ["pipe", source, source, "ipc"] });
-    assert(child.pid); birth = observeHostedFdProcess(child.pid).birth;
+    assert(child.pid); birth = observeHostedFdProcess(child.pid).birth; checkpoint = "child_spawned";
     const actual = observeHostedFdProcess(child.pid);
     assert.equal(actual.group, boundedProc("/proc/self/cgroup", 4096).trim());
     const stdio = actual.descriptors.filter(row => row.fd === 1 || row.fd === 2);
@@ -465,30 +470,47 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     const messageFailure = new Promise<never>((_resolve, reject) => { rejectMessage = reject; });
     void messageFailure.catch(() => {});
     child.on("message", (value: unknown) => { try {
+      handlerStage = "shape";
       assert(value && typeof value === "object" && !Array.isArray(value));
       const message = value as Record<string, unknown>;
+      handlerStage = "keys";
       assert.equal(Object.keys(message).sort().join(","), "outputPaths,phase");
+      handlerStage = "output_paths";
       assert(Array.isArray(message.outputPaths) && message.outputPaths.length === 2 && message.outputPaths.every(path => typeof path === "string"));
       if (message.phase === ControlSinkPhase.Observed) {
+        handlerStage = "observed_once";
         assert(!observed); observed = true; outputPaths = message.outputPaths as string[];
+        handlerStage = "reservation";
         const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
         assert.equal(added.length, 1); const reserved = added[0]!; assert.equal(reserved.state, HostedCustodyReservationState.Reserved);
+        handlerStage = "start_record";
         const startBytes = readHostedPrivateBytes(policy + "/ordinary-starts/" + reserved.startId + ".json", 16384); assert(startBytes);
         const start = parseHostedOrdinaryStart(JSON.parse(startBytes.toString("utf8")));
+        handlerStage = "start_identity";
         assert.equal(start.creatorPidBirth, birth); assert.equal(start.workspacePath, workspace);
         assert.equal(start.unit, reserved.unit); assert.equal(start.activationGeneration, reserved.generation);
+        handlerStage = "output_layout";
         assert.deepEqual(outputPaths, [policy + "/foreground-output/" + reserved.unit + ".stdout", policy + "/foreground-output/" + reserved.unit + ".stderr"]);
-        verifySystemBusInfrastructure(bus); assert.equal(countProbes(), 2); prePayloadBytes = sentBytes; assert.equal(prePayloadBytes, 0);
+        handlerStage = "relay_state";
+        verifySystemBusInfrastructure(bus); assert.equal(countProbes(), 2);
+        handlerStage = "payload_bytes";
+        prePayloadBytes = sentBytes; assert.equal(prePayloadBytes, 0);
+        handlerStage = "log_files";
         for (const path of outputPaths) { const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && stat.size === 0); }
+        handlerStage = "release_send";
         child!.send({ phase: ControlSinkPhase.Release });
       } else {
+        handlerStage = "drain_identity";
         assert.equal(message.phase, ControlSinkPhase.Drained); assert(observed && !drained); drained = true;
         assert.deepEqual(message.outputPaths, outputPaths);
       }
-    } catch (error) { rejectMessage(error); }
+    } catch (error) { handlerFailed = true; rejectMessage(error); }
     });
-    const [code, signal] = await boundedWait(Promise.race([closed, messageFailure]), 6 * 60000); assert.equal(code, 0); assert.equal(signal, null); assert(observed && drained);
-    source.end(); await boundedWait(receiverEnd, 2000); assert.equal(sentBytes, 0); assert.equal(countProbes(), 3);
+    const [code, signal] = await boundedWait(Promise.race([closed, messageFailure]), 6 * 60000);
+    childCode = code; childSignal = signal === null ? "null" : "other"; checkpoint = "child_closed";
+    assert.equal(code, 0); assert.equal(signal, null); assert(observed && drained);
+    source.end(); await boundedWait(receiverEnd, 2000); checkpoint = "relay_ended";
+    assert.equal(sentBytes, 0); assert.equal(countProbes(), 3);
     verifySystemBusInfrastructure(bus); const endpointAfter = lstatSync(SYSTEM_BUS_ENDPOINT);
     assert(endpointBefore.dev === endpointAfter.dev && endpointBefore.ino === endpointAfter.ino);
     const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
@@ -502,6 +524,7 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     assert.equal(result.foregroundOutput.exitCode, 0);
     assert.equal(Buffer.byteLength(result.foregroundOutput.stdout), logs[0]!.bytes);
     assert.equal(Buffer.byteLength(result.foregroundOutput.stderr), logs[1]!.bytes);
+    checkpoint = "verified";
     return { scenario: "actual_inherited_control_relay", outcome: "protected_output_replacement_and_real_drain", inheritedStdio: stdio.map(row => ({ fd: row.fd, target: row.target })),
       relayEndpoint: name, upstreamEndpoint: SYSTEM_BUS_ENDPOINT, upstreamManagerPid: 1, producerPidBirth: birth, prePayloadSentBytes: prePayloadBytes,
       finalSentBytes: sentBytes, actualStartId: row.startId, unit: row.unit, logs,
@@ -510,6 +533,22 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     if (child?.pid && birth && child.exitCode === null && observeHostedFdProcess(child.pid).birth === birth) child.kill("SIGTERM");
     source?.destroy(); receiver?.destroy(); upstream?.destroy();
     if (server.listening) await boundedWait(new Promise<void>(resolve => server.close(() => resolve())), 2000);
+    evidence.relayControlSinkObservation = { purpose: "TEST_relay_control_sink_closed_fact_classification",
+      checkpoint, handlerStage, handlerFailed, childCode, childSignal, observed, drained,
+      prePayloadBytes, finalSentBytes: sentBytes,
+      probeCount: (() => { try { return countProbes(); } catch { return null; } })(),
+      childDiagnostic: (() => {
+        try {
+          const value = JSON.parse(readFileSync("/run/TEST-control-sink-diagnostic.json", "utf8")) as Record<string, unknown>;
+          const stages = ["argv_identity", "imports", "inventory", "foreground_request", "ordinary_launch", "guard", "observe", "observed_ipc",
+            "release", "wait_completion", "foreground_result", "publish", "consumer_release", "drained_ipc", "disconnect"];
+          const classes = ["clean", "inner_guard_failure", "assertion", "request_unresolved", "launch_invalidated", "input_overflow",
+            "invocation_consumed", "operator_required", "authority_invalid", "activation_invalid", "unclassified", "non_error_throw"];
+          return { available: true,
+            stage: typeof value.stage === "string" && stages.includes(value.stage) ? value.stage : "other",
+            exitClass: typeof value.exitClass === "string" && classes.includes(value.exitClass) ? value.exitClass : "other" };
+        } catch { return { available: false }; }
+      })() };
   }
 }
 
