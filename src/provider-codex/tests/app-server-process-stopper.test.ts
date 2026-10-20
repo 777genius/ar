@@ -12,7 +12,7 @@ function fakeChild() {
 }
 
 describe("app-server process stopper", () => {
-  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 
   it("cleans up descendants when TERM exits only the parent without waiting", async () => {
     vi.useFakeTimers();
@@ -34,6 +34,7 @@ describe("app-server process stopper", () => {
   });
 
   it("lets a clean stdin-EOF exit win the grace race before any signal", async () => {
+    vi.stubEnv("SUBSCRIPTION_RUNTIME_SANDBOX_KIND", "hosted-codex-job");
     vi.useFakeTimers();
     const child = Object.assign(fakeChild(), { pid: 812347 });
     child.stdin.end = vi.fn(() => { queueMicrotask(() => child.emit("exit", 0, null)); });
@@ -46,6 +47,21 @@ describe("app-server process stopper", () => {
     await stopped;
 
     expect(signal).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("sends the first signal immediately outside hosted job runs", async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    const signals: NodeJS.Signals[] = [];
+    const stopped = stopAppServerProcess({ child, exited: false, signal: (_, kind) => {
+      signals.push(kind);
+      if (kind === "SIGTERM") child.emit("exit", 0, null);
+    } });
+    expect(signals).toEqual(["SIGTERM"]);
+    await stopped;
+
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
