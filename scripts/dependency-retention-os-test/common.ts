@@ -84,8 +84,11 @@ export function command(file: string, args: readonly string[], timeout = 30000, 
   fifth?: string | ((failure: CommandFailure) => void), tmpdir?: string): string {
   const onFailure = typeof fifth === "function" ? fifth : undefined;
   const temporary = typeof fifth === "string" ? fifth : tmpdir;
+  // Pipe stdin with immediate EOF, never /dev/null: the product descriptor
+  // boundary (assertHostedProcessDescriptors) requires FIFO/socket stdio and
+  // denies a character-device stdin before any operator action runs.
   const result = spawnSync(file, [...args], { cwd, env: temporary === undefined ? cleanEnv : { ...cleanEnv, TMPDIR: temporary }, encoding: "utf8", timeout,
-    maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    maxBuffer: 4 * 1024 * 1024, input: "", stdio: ["pipe", "pipe", "pipe"] });
   if (result.error || result.status !== 0 || result.signal !== null) {
     onFailure?.({ status: result.status, signal: result.signal, diagnostic: runtimeDiagnostic((result.stdout ?? "") + "\n" + (result.stderr ?? "")) });
   }
