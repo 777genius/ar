@@ -171,7 +171,7 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
     const { hostedFdLaunch, hostedFdInvocationUnit, HostedFdLaunchKind, spawnHostedFdChild } =
       await import("../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js");
     const { retryHostedFenceAcquisition } = await import("../../dist/provider-codex/app-server/adapters/hosted-fd-fence.js");
-    const { requireHostedForegroundRequest, publishHostedForegroundResult, hostedForegroundExitCode } =
+    const { requireHostedForegroundRequest, recheckHostedForegroundRequest, publishHostedForegroundResult, hostedForegroundExitCode } =
       await import("../../dist/worker-codex/hosted-foreground-result.js");
     stage = "inventory";
     const store = new HostedInstallationActivationStore(), launch = readHostedReadonlyHostInventory().runtimeLaunch;
@@ -180,12 +180,17 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
     const request = requireHostedForegroundRequest(launch.args, launch.cwd);
     requestFdCountAfter = readdirSync("/proc/self/fd").length;
     stage = "ordinary_launch";
-    const child = store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, actual => {
+    // Match the product launch contract (runHostedRuntimeForeground): the retained
+    // request and launch environment are handed to the activation store so descriptor
+    // boundary verification can exempt the request's own prior fd.
+    const frameEnv = { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" };
+    const child = store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, (actual, fence, original) => {
       stage = "spawn_submit";
-      const submitted = spawnHostedFdChild(actual.command, actual.args, { cwd: launch.cwd }, hostedFdInvocationUnit(actual.args), HostedFdLaunchKind.Foreground);
+      recheckHostedForegroundRequest(request, fence);
+      const submitted = spawnHostedFdChild(actual.command, actual.args, { cwd: launch.cwd }, hostedFdInvocationUnit(actual.args), HostedFdLaunchKind.Foreground, original);
       stage = "spawn_returned";
       return submitted;
-    });
+    }, request, frameEnv);
     stage = "guard";
     const closed = new Promise<void>((resolve, reject) => {
       child.once("error", reject); child.once("close", (code, signal) => code === 0 && signal === null ? resolve() : reject(new Error("TEST control-sink child failed")));
@@ -210,8 +215,7 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
       });
       stage = "release";
       await retryHostedFenceAcquisition(() => store.releaseOrdinaryRuntimeFrame((fence, revalidate) =>
-        guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1,
-          env: { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } })), true, revalidate)), guard.remainingSetupMs());
+        guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1, env: frameEnv })), true, revalidate)), guard.remainingSetupMs());
       stage = "wait_completion";
       await closed; store.recordOrdinaryRuntimeWaitCompletion();
       stage = "foreground_result";
