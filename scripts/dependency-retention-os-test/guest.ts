@@ -297,13 +297,13 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
 }
 
-const closedForegroundFailureTokens = ["hosted_foreground_result_unresolved", "hosted_activation_evidence_invalid",
-  "hosted_activation_fence_busy", "hosted_custody_legacy_lock_recovery_required", "hosted_custody_admission_denied",
-  "hosted_custody_runtime_not_started", "hosted_custody_runtime_stop_incomplete", "hosted_custody_inherited_handle_denied",
-  "hosted_custody_stdio_pipe_required", "hosted_custody_descriptor_invalid", "hosted_custody_kernel_evidence_invalid",
-  "hosted_custody_runtime_launch_denied", "hosted_fd_boundary_unresolved", "hosted_fd_profile_invalid"];
 function closedFailureToken(error: unknown): string {
-  return error instanceof Error && closedForegroundFailureTokens.includes(error.message) ? error.message : "unknown";
+  const tokens = ["hosted_foreground_result_unresolved", "hosted_activation_evidence_invalid",
+    "hosted_activation_fence_busy", "hosted_custody_legacy_lock_recovery_required", "hosted_custody_admission_denied",
+    "hosted_custody_runtime_not_started", "hosted_custody_runtime_stop_incomplete", "hosted_custody_inherited_handle_denied",
+    "hosted_custody_stdio_pipe_required", "hosted_custody_descriptor_invalid", "hosted_custody_kernel_evidence_invalid",
+    "hosted_custody_runtime_launch_denied", "hosted_fd_boundary_unresolved", "hosted_fd_profile_invalid"];
+  return error instanceof Error && tokens.includes(error.message) ? error.message : "unknown";
 }
 
 /** Closed-fact release chain trace. Wrappers record stage tokens and one
@@ -741,27 +741,33 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   const foregroundStatus = hostedForegroundExitCode(foreground);
   if (foregroundStatus !== 0) {
     // Closed failure-class facts only: enums, booleans and counts. Each reader
-    // is isolated so one rejected read cannot mask the other classes.
-    const facts: Record<string, unknown> = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
-      authenticated: typeof foreground !== "number", probePresent: existsSync(workspace + "/TEST-readonly-probe.json") };
+    // is isolated so one rejected read cannot mask the other classes. The outer
+    // guard keeps this observation from ever changing TEST behavior.
     try {
-      const parsed: unknown = JSON.parse(readFileSync(resultPath, "utf8"));
-      const rawStatus = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { status?: unknown }).status : undefined;
-      facts.resultPresent = true;
-      facts.rawResultStatus = typeof rawStatus === "string" && ["completed", "failed", "partial", "blocked", "cancelled"].includes(rawStatus)
-        ? rawStatus : "unrecognized";
-    } catch (error) { facts.resultPresent = existsSync(resultPath); facts.rawResultRead = closedFailureToken(error); }
-    try {
-      const summary = await readCodexGoalResultSummary(resultPath);
-      facts.resultStatus = summary.status ?? null; facts.foregroundOutputPresent = !!summary.foregroundOutput;
-      facts.outputExitCode = summary.foregroundOutput ? summary.foregroundOutput.exitCode : null;
-    } catch (error) { facts.summaryRead = closedFailureToken(error); }
-    try {
-      const epoch = host.readEpoch();
-      facts.phase = epoch.phase; facts.outerState = epoch.outerRuntime ? epoch.outerRuntime.state : null;
-      facts.completionPresent = epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null;
-    } catch (error) { facts.epochRead = closedFailureToken(error); }
-    evidence.readonlyForegroundFailure = facts;
+      const facts: Record<string, unknown> = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
+        authenticated: typeof foreground !== "number", probePresent: existsSync(workspace + "/TEST-readonly-probe.json") };
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(resultPath, "utf8"));
+        const rawStatus = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { status?: unknown }).status : undefined;
+        facts.resultPresent = true;
+        facts.rawResultStatus = typeof rawStatus === "string" && ["completed", "failed", "partial", "blocked", "cancelled"].includes(rawStatus)
+          ? rawStatus : "unrecognized";
+      } catch (error) { facts.resultPresent = existsSync(resultPath); facts.rawResultRead = closedFailureToken(error); }
+      try {
+        const summary = await readCodexGoalResultSummary(resultPath);
+        facts.resultStatus = summary.status ?? null; facts.foregroundOutputPresent = !!summary.foregroundOutput;
+        facts.outputExitCode = summary.foregroundOutput ? summary.foregroundOutput.exitCode : null;
+      } catch (error) { facts.summaryRead = closedFailureToken(error); }
+      try {
+        const epoch = host.readEpoch();
+        facts.phase = epoch.phase; facts.outerState = epoch.outerRuntime ? epoch.outerRuntime.state : null;
+        facts.completionPresent = epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null;
+      } catch (error) { facts.epochRead = closedFailureToken(error); }
+      evidence.readonlyForegroundFailure = facts;
+    } catch {
+      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only",
+        status: foregroundStatus, authenticated: typeof foreground !== "number", diagnostics: "unavailable" };
+    }
   }
   assert.equal(foregroundStatus, 0); assert(typeof foreground !== "number");
   const retrieved = await readCodexGoalResultSummary(resultPath); assert(retrieved.foregroundOutput);
