@@ -44,9 +44,6 @@ export type { CodexGoalCliIo } from "./codex-goal-cli-support";
 
 import {
   runCodexGoal,
-  codexGoalOutputPath,
-  codexGoalProgressPath,
-  codexGoalRuntimeEventsPath,
   type CodexGoalRunConfig,
   type CodexGoalRunDeps,
 } from "./codex-goal-runner";
@@ -214,7 +211,6 @@ export async function runCodexGoalCli(
   io: CodexGoalCliIo = defaultIo,
   trusted: CodexGoalCliTrustedComposition = {},
 ): Promise<number> {
-  let failureArtifacts: string | undefined;
   try {
     const runDeps = trusted.runDeps;
     let command = parseCodexGoalCliArgs(argv, io);
@@ -348,8 +344,6 @@ export async function runCodexGoalCli(
       command = { ...command, ...mapManagedGoalLayout(command) };
     }
     assertInProcessRunComposition(command, runDeps, () => cliLaunchInput(command));
-    failureArtifacts = JSON.stringify({ output: codexGoalOutputPath(command.config),
-      progress: codexGoalProgressPath(command.config), runtimeEvents: codexGoalRuntimeEventsPath(command.config) });
     if (command.lifecycle) {
       return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
     }
@@ -392,7 +386,6 @@ export async function runCodexGoalCli(
     try {
       const originDiagnostic = codexGoalOriginDiagnostic(error);
       io.writeStderr(`${originDiagnostic ? JSON.stringify(originDiagnostic) : error instanceof Error ? error.message : "codex goal failed"}\n`);
-      if (failureArtifacts !== undefined) io.writeStderr(`artifacts ${failureArtifacts}\n`);
     } catch (stderrError) {
       if (isBrokenPipeError(stderrError)) return 0;
       throw stderrError;
