@@ -905,7 +905,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
             else shape.kind = "other";
             // Closed error-family facts only: whitelisted codes, syscalls, path
             // roots and counts. No raw message bytes ever leave the runner.
-            const fsMatch = /^([A-Z]{2,10}): [a-z -]{4,40}, ([a-z_]{2,12}) '([^']*)'$/.exec(trimmed);
+            const fsMatch = /^([A-Z]{2,10}): [a-z -]{4,40}, ([a-z_]{2,12}) \x27([^\x27]*)\x27$/.exec(trimmed);
             if (fsMatch) {
               shape.errorClass = "fs_error";
               shape.fsCode = ["ENOENT", "EROFS", "EACCES", "EPERM", "ENOTDIR", "EEXIST", "EISDIR",
