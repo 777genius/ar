@@ -229,14 +229,18 @@ const providerConfig = defaultTestExecutable
 const config = JSON.parse(readFileSync(providerConfig, "utf8")) as {
   scenario?: "readonly"; failSecondReadonlyTurn?: true; inputSha256?: string; workspace: string; guestNamespaces: Record<"user" | "mnt" | "pid", string> };
 const workspace = config.workspace;
-if (config.scenario === "readonly") assert.match(workspace, /^\/mnt\/TEST-retention-readonly-storage\/jobs\/TEST-readonly-[a-f0-9-]{36}\/workspace$/);
-else assert.match(workspace, /^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}\/workspace$/);
-assert.equal(process.cwd(), process.env.HOME);
-assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/home/"));
+// One closed reachability marker: the provider began executing its config.
+try { writeFileSync(workspace + "/TEST-provider-start.json", JSON.stringify({ schemaVersion: 1 }) + "\n", { flag: "wx", mode: 0o600 }); } catch { /* Closed exit channel alone survives. */ }
+try {
+  if (config.scenario === "readonly") assert.match(workspace, /^\/mnt\/TEST-retention-readonly-storage\/jobs\/TEST-readonly-[a-f0-9-]{36}\/workspace$/);
+  else assert.match(workspace, /^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}\/workspace$/);
+  assert.equal(process.cwd(), process.env.HOME);
+  assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/home/"));
+} catch { markProviderFailure("startup", 71); process.stderr.write("TEST_provider_startup_failed\n"); process.exit(71); }
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
-// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups, 85+i per-path readable, 110+i unsealed EISDIR, 120+i ELOOP, 130+i EPERM, 140+i ENOTDIR, 150+i EROFS, 160+i other unexpected errno, 94 .git write).
+// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity/startup, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups, 85+i per-path readable, 110+i unsealed EISDIR, 120+i ELOOP, 130+i EPERM, 140+i ENOTDIR, 150+i EROFS, 160+i other unexpected errno, 94 .git write).
 let probeFailureCode = 80;
 /** One bounded closed fact for an unexpected deny site: enum identities and
  * counts only, never path names or contents. Best effort; exit code stands. */
@@ -355,7 +359,7 @@ function markProviderTermination(kind: "stdin_eof" | "sigterm"): void {
 }
 /** One closed failure marker before a hard provider exit: fixed site enum and
  * numeric exit code only. Best effort; the exit code stands unchanged. */
-function markProviderFailure(site: "probe" | "protocol" | "deadline", code: number): void {
+function markProviderFailure(site: "startup" | "probe" | "protocol" | "deadline", code: number): void {
   try {
     writeFileSync(workspace + "/TEST-provider-failure.json",
       JSON.stringify({ schemaVersion: 1, site, code }) + "\n", { flag: "wx", mode: 0o600 });

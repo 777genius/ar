@@ -21,6 +21,7 @@ import { inspectReadonlyInputs } from "../../dist/worker-codex/hosted-readonly-c
 import { runHostedRuntimeForeground } from "../../dist/worker-codex/hosted-readonly-foreground.js";
 import { hostedForegroundExitCode } from "../../dist/worker-codex/hosted-foreground-result.js";
 import { readCodexGoalResultSummary } from "../../dist/worker-codex/codex-goal-status-files.js";
+import { decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-goal-origin-diagnostic.js";
 import { collectCodexGoalStatus } from "../../dist/worker-codex/codex-goal-ops.js";
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { CodexProviderEgressProfileId, verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
@@ -744,6 +745,10 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
     // is isolated so one rejected read cannot mask the other classes. The outer
     // guard keeps this observation from ever changing TEST behavior.
     try {
+      const fixtureLiterals = ["TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
+        "TEST_provider_startup_failed", "TEST_default_executable_identity_failed", "TEST_catalog_protocol_refused",
+        "hosted_custody_runtime_bootstrap_denied", "AssertionError", "EPIPE",
+        "codex_app_server_turn", "hosted_foreground_result_unresolved"];
       const facts: Record<string, unknown> = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
         authenticated: typeof foreground !== "number", probePresent: existsSync(workspace + "/TEST-readonly-probe.json") };
       try {
@@ -782,6 +787,15 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
         } catch { facts.unitShow = "unavailable"; }
       } catch (error) { facts.epochRead = closedFailureToken(error); }
       try {
+        const rows = host.readEpoch().reservations.map(row => ({
+          state: row.state === HostedCustodyReservationState.Reserved ? "reserved" :
+            row.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+          kind: row.unit.startsWith("subscription-runtime-outer-") ? "outer" :
+            row.unit.startsWith("subscription-runtime-hosted-") ? "hosted" :
+            row.unit.startsWith("subscription-runtime-ordinary-") ? "ordinary" : "other" }));
+        facts.reservations = { count: rows.length, rows: rows.slice(0, 8) };
+      } catch (error) { facts.reservations = closedFailureToken(error); }
+      try {
         const path = workspace + "/TEST-provider-termination.json";
         facts.providerTermination = existsSync(path) ? "present" : "absent";
         if (facts.providerTermination === "present") {
@@ -797,10 +811,13 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
           const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
           const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { site?: unknown; code?: unknown } : {};
           const site = record.site, code = record.code;
-          facts.providerFailure = { site: typeof site === "string" && ["probe", "protocol", "deadline"].includes(site) ? site : "other",
+          facts.providerFailure = { site: typeof site === "string" && ["startup", "probe", "protocol", "deadline"].includes(site) ? site : "other",
             code: Number.isSafeInteger(code) ? code : null };
         }
       } catch { facts.providerFailure = "unreadable"; }
+      try {
+        facts.providerStart = existsSync(workspace + "/TEST-provider-start.json") ? "present" : "absent";
+      } catch { facts.providerStart = "unreadable"; }
       try {
         facts.probeFiles = { readonlyProbe: existsSync(workspace + "/TEST-readonly-probe.json"),
           readonlyFailedProbe: existsSync(workspace + "/TEST-readonly-failed-probe.json"),
@@ -823,22 +840,56 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
         const outer = host.readEpoch().outerRuntime;
         facts.foregroundLogsUnit = outer ? "present" : "absent";
         if (outer) {
-          const literals = ["TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
-            "hosted_custody_runtime_bootstrap_denied", "AssertionError", "EPIPE",
-            "codex_app_server_turn", "hosted_foreground_result_unresolved"];
           const logs: Record<string, unknown> = {};
           for (const kind of ["stdout", "stderr"] as const) {
             const path = `/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.${kind}`;
             try {
               const bytes = readFileSync(path), text = bytes.toString("utf8");
               const exited = /codex_app_server_exited:(\d+)/.exec(text), rpc = /json_rpc_process_exited:(\d+)/.exec(text);
-              logs[kind] = { present: true, byteLength: Math.min(bytes.length, 1048576), markers: literals.filter(name => text.includes(name)),
+              logs[kind] = { present: true, byteLength: Math.min(bytes.length, 1048576), markers: fixtureLiterals.filter(name => text.includes(name)),
                 appServerExitedCode: exited ? Number(exited[1]) : null, jsonRpcExitedCode: rpc ? Number(rpc[1]) : null };
             } catch (error) { logs[kind] = { present: existsSync(path), read: closedFailureToken(error) }; }
           }
           facts.foregroundLogs = logs;
         }
       } catch { facts.foregroundLogs = "unreadable"; }
+      try {
+        const outer = host.readEpoch().outerRuntime;
+        if (!outer) facts.stderrShape = "no_unit";
+        else {
+          let text: string | undefined;
+          try { text = readFileSync(`/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.stderr`, "utf8"); }
+          catch (error) { facts.stderrShape = { read: closedFailureToken(error) }; }
+          if (text !== undefined) {
+            const lines = text.split("\n").filter(line => line.length > 0);
+            const shape: Record<string, unknown> = { lineCount: Math.min(lines.length, 16),
+              lineLengths: lines.slice(0, 4).map(line => Math.min(line.length, 4096)) };
+            const trimmed = text.trim();
+            const diagnostic = decodeCodexGoalOriginDiagnostic(trimmed);
+            const prefix = /^\{"reason":"(hosted_[a-z_]+)","locations":/.exec(trimmed);
+            const reason = prefix ? prefix[1] : undefined;
+            if (trimmed === "") shape.kind = "empty";
+            else if (diagnostic) {
+              shape.kind = "origin_diagnostic"; shape.originReason = diagnostic.reason;
+              shape.originLocationCount = diagnostic.locations.length;
+              shape.originModules = [...new Set(diagnostic.locations.map(row => row.module))];
+              const first = diagnostic.locations[0];
+              if (first) shape.originFirst = { module: first.module, format: first.format, line: first.line, column: first.column };
+            } else if (prefix) {
+              shape.kind = "origin_diagnostic_prefix";
+              shape.originReason = reason === "hosted_dependency_current_origin_unresolved" ||
+                reason === "hosted_current_dependency_origin_unresolved" ? reason : "other";
+            } else if (lines.every(line => /^\(node:\d+\)/.test(line))) shape.kind = "node_warning";
+            else if (/^Running as unit: /.test(trimmed)) shape.kind = "running_as_unit";
+            else if (lines.every(line => fixtureLiterals.some(token => line.includes(token)))) shape.kind = "fixture_token";
+            else if (trimmed.startsWith("{") && trimmed.endsWith("}")) shape.kind = "json_like";
+            else if (lines.length === 1) shape.kind = "single_line";
+            else if (lines.length > 1) shape.kind = "multi_line";
+            else shape.kind = "other";
+            facts.stderrShape = shape;
+          }
+        }
+      } catch { facts.stderrShape = "unreadable"; }
       evidence.readonlyForegroundFailure = facts;
     } catch {
       evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only",

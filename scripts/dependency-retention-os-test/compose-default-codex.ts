@@ -6,7 +6,7 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, open
   realpathSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 const runtime = "/opt/subscription-runtime-dependency-os-TEST";
-const providerSha256 = "451eab27f549cc0aa2f62c7a84d101b68d711186c8c09483fb869636df030009";
+const providerSha256 = "47d2ed2c9f76529c20e042694c50e4a51e43a9f2eb5b93f0e2142409dd8809ac";
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 function missing(path: string): void {
   try { lstatSync(path); } catch (error) {
