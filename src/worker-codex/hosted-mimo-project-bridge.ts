@@ -1,7 +1,7 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync, lstatSync, mkdirSync, writeFileSync, existsSync, type Stats } from "node:fs";
 import { dirname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { assertResearchInitialRoot, assertResearchSharedHost, researchCommand, researchProcessIdentity } from "./research-launch-host";
 import { researchCustody, researchHash, researchPath, researchRecord, researchDirectoryIdentity, assertResearchDirectory } from "./research-launch-files";
 import type { LocalControllerMaintenanceFence } from "@vioxen/subscription-runtime/store-local-file";
@@ -189,7 +189,7 @@ export async function handleHostedMimoProjectBridge(value: unknown, observeContr
       sourceWorkspacePath: binding.sourceWorkspacePath, sourceRef: binding.sourceRef, expectedSourceCommit: binding.sourceCommit,
       newBranch: `feat/${request.jobId}`, promptBody: request.prompt!, preStartAdmission: admission,
       confirmPreStartAdmission: true, confirmRefill: true, startWorker: false, overwrite: false, dependencyBootstrap: "off", executionMode: "sync",
-      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], model: "mimo-v2.6-pro", executionEngine: "app-server",
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, accounts: ["account-q"], model: codexMimoDefaultModel, executionEngine: "app-server",
       maxAccountCycles: 1, prewarmOnStart: false, codexBinaryPath: binding.codexBinaryPath, serviceTier: "default", reasoningEffort: request.reasoningEffort ?? "medium",
       taskTimeoutMs: binding.taskTimeoutMs, appServerStartupTimeoutMs: binding.appServerStartupTimeoutMs }, hostedMimoSealedSourcePort(binding)));
   }
