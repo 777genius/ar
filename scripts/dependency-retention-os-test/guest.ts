@@ -781,6 +781,64 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
           } else facts.unitShow = "unavailable";
         } catch { facts.unitShow = "unavailable"; }
       } catch (error) { facts.epochRead = closedFailureToken(error); }
+      try {
+        const path = workspace + "/TEST-provider-termination.json";
+        facts.providerTermination = existsSync(path) ? "present" : "absent";
+        if (facts.providerTermination === "present") {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const markers = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { markers?: unknown }).markers : undefined;
+          facts.providerTerminationMarkers = Array.isArray(markers) ? ["stdin_eof", "sigterm"].filter(name => markers.includes(name)) : ["unrecognized"];
+        }
+      } catch { facts.providerTermination = "unreadable"; }
+      try {
+        const path = workspace + "/TEST-provider-failure.json";
+        if (!existsSync(path)) facts.providerFailure = "absent";
+        else {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { site?: unknown; code?: unknown } : {};
+          const site = record.site, code = record.code;
+          facts.providerFailure = { site: typeof site === "string" && ["probe", "protocol", "deadline"].includes(site) ? site : "other",
+            code: Number.isSafeInteger(code) ? code : null };
+        }
+      } catch { facts.providerFailure = "unreadable"; }
+      try {
+        facts.probeFiles = { readonlyProbe: existsSync(workspace + "/TEST-readonly-probe.json"),
+          readonlyFailedProbe: existsSync(workspace + "/TEST-readonly-failed-probe.json"),
+          providerProbeFailed: existsSync(workspace + "/TEST-provider-probe-failed.json"),
+          providerProbe1: existsSync(workspace + "/TEST-provider-probe-1.json") };
+      } catch { facts.probeFiles = "unreadable"; }
+      try {
+        const reviewed = workspace + "/reviewed/input.txt";
+        if (!existsSync(reviewed)) facts.reviewedHostAppend = "absent";
+        else {
+          let fd: number | undefined;
+          try { fd = openSync(reviewed, "a"); facts.reviewedHostAppend = "permitted"; }
+          catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            facts.reviewedHostAppend = ["EROFS", "EACCES", "EPERM"].includes(code ?? "") ? code : "other";
+          } finally { if (fd !== undefined) closeSync(fd); }
+        }
+      } catch { facts.reviewedHostAppend = "unreadable"; }
+      try {
+        const outer = host.readEpoch().outerRuntime;
+        facts.foregroundLogsUnit = outer ? "present" : "absent";
+        if (outer) {
+          const literals = ["TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
+            "hosted_custody_runtime_bootstrap_denied", "AssertionError", "EPIPE",
+            "codex_app_server_turn", "hosted_foreground_result_unresolved"];
+          const logs: Record<string, unknown> = {};
+          for (const kind of ["stdout", "stderr"] as const) {
+            const path = `/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.${kind}`;
+            try {
+              const bytes = readFileSync(path), text = bytes.toString("utf8");
+              const exited = /codex_app_server_exited:(\d+)/.exec(text), rpc = /json_rpc_process_exited:(\d+)/.exec(text);
+              logs[kind] = { present: true, byteLength: Math.min(bytes.length, 1048576), markers: literals.filter(name => text.includes(name)),
+                appServerExitedCode: exited ? Number(exited[1]) : null, jsonRpcExitedCode: rpc ? Number(rpc[1]) : null };
+            } catch (error) { logs[kind] = { present: existsSync(path), read: closedFailureToken(error) }; }
+          }
+          facts.foregroundLogs = logs;
+        }
+      } catch { facts.foregroundLogs = "unreadable"; }
       evidence.readonlyForegroundFailure = facts;
     } catch {
       evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only",

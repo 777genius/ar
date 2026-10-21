@@ -353,6 +353,14 @@ function markProviderTermination(kind: "stdin_eof" | "sigterm"): void {
       markers: ["stdin_eof", "sigterm"].filter(name => providerTerminationMarkers.includes(name)) }) + "\n", { mode: 0o600 });
   } catch { /* Closed exit channel alone survives. */ }
 }
+/** One closed failure marker before a hard provider exit: fixed site enum and
+ * numeric exit code only. Best effort; the exit code stands unchanged. */
+function markProviderFailure(site: "probe" | "protocol" | "deadline", code: number): void {
+  try {
+    writeFileSync(workspace + "/TEST-provider-failure.json",
+      JSON.stringify({ schemaVersion: 1, site, code }) + "\n", { flag: "wx", mode: 0o600 });
+  } catch { /* Closed exit channel alone survives. */ }
+}
 process.once("SIGTERM", () => {
   markProviderTermination("sigterm");
   process.kill(process.pid, "SIGTERM"); // Re-raise default disposition.
@@ -379,7 +387,7 @@ lines.on("line", line => {
         assert(started && !turned); turned = true;
         let failed: boolean;
         try { failed = probe(); }
-        catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(probeFailureCode); }
+        catch { markProviderFailure("probe", probeFailureCode); process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(probeFailureCode); }
         complete = !failed;
         send({ id: request.id, result: { turn: { id: turnId } } });
         send({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
@@ -395,7 +403,7 @@ lines.on("line", line => {
       default: throw new Error("TEST unsupported protocol mode");
     }
     send({ id: request.id, result });
-  } catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(74); }
+  } catch { markProviderFailure("protocol", 74); process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(74); }
 });
 lines.once("close", () => { markProviderTermination("stdin_eof"); process.exit(0); });
-setTimeout(() => { process.stderr.write("TEST_provider_deadline\n"); process.exit(75); }, 90000).unref();
+setTimeout(() => { markProviderFailure("deadline", 75); process.stderr.write("TEST_provider_deadline\n"); process.exit(75); }, 90000).unref();
