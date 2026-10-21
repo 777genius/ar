@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 export enum ProviderCallState {
   Dispatched = "dispatched", Completed = "completed", Failed = "failed", Cancelled = "cancelled", Unknown = "unknown",
 }
-export enum ProviderCallProtocol { Responses = "responses", AnthropicMessages = "anthropic_messages" }
+export enum ProviderCallProtocol { Responses = "responses", ChatCompletions = "chat_completions", AnthropicMessages = "anthropic_messages" }
 export interface ProviderCallObservation {
   readonly schemaVersion: 1;
   readonly callId: string;
@@ -35,11 +35,14 @@ export function createProviderCallObservation(model: string, observer?: Provider
   let tokens: ProviderCallObservation["tokens"] = { inputTotal: null, outputTotal: null, cacheRead: null, cacheWrite: null, reasoning: null, total: null };
   const emit = async (next: ProviderCallState) => {
     // Analytics errors cannot trigger another inference or replace its outcome.
-    try { await observer?.({ schemaVersion: 1, callId, revision: ++revision, requestedModel: model, occurredAt,
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([Promise.resolve(observer?.({ schemaVersion: 1, callId, revision: ++revision, requestedModel: model, occurredAt,
       state: next, dispatchEffect: responseReceived ? "dispatched" : "effect_unknown", actualModel,
       durationMs: next === ProviderCallState.Dispatched ? null : Math.max(0, Math.floor(performance.now() - started)),
       httpStatus: status, tokens, completeness: [ProviderCallState.Completed, ProviderCallState.Failed].includes(next) && tokens.inputTotal !== null && tokens.outputTotal !== null ? "complete" :
-        Object.values(tokens).some(v => v !== null) ? "partial" : "unknown" }); } catch { /* Producer reports its own delivery coverage. */ }
+        Object.values(tokens).some(v => v !== null) ? "partial" : "unknown" })),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, 1000); })]); } catch { /* Producer reports its own delivery coverage. */ }
+    finally { if (timer) clearTimeout(timer); }
   };
   return {
     dispatched: () => emit(ProviderCallState.Dispatched),
@@ -61,9 +64,10 @@ export function createProviderCallObservation(model: string, observer?: Provider
           total: inputTotal !== null && outputTotal !== null ? count(inputTotal + outputTotal) : null };
         return;
       }
-      const inputTotal = count(usage.input_tokens);
-      const outputTotal = count(usage.output_tokens);
-      const cached = count(record(usage.input_tokens_details)?.cached_tokens), reasoning = count(record(usage.output_tokens_details)?.reasoning_tokens);
+      const chat = protocol === ProviderCallProtocol.ChatCompletions;
+      const inputTotal = count(chat ? usage.prompt_tokens : usage.input_tokens);
+      const outputTotal = count(chat ? usage.completion_tokens : usage.output_tokens);
+      const cached = count(record(chat ? usage.prompt_tokens_details : usage.input_tokens_details)?.cached_tokens), reasoning = count(record(chat ? usage.completion_tokens_details : usage.output_tokens_details)?.reasoning_tokens);
       const cache = cached;
       tokens = { inputTotal, outputTotal, cacheRead: cache !== null && inputTotal !== null && cache <= inputTotal ? cache : null,
         cacheWrite: null,

@@ -56,3 +56,17 @@ it("does not invent an absent Anthropic cache bucket or inclusive input total", 
   } finally { await relay.close(); }
   expect(facts[1]).toMatchObject({ state: "completed", completeness: "partial", tokens: { inputTotal: null, cacheRead: 20, cacheWrite: null, outputTotal: 7, total: null } });
 });
+
+ it("projects standard Chat Completions usage through the real HTTP relay", async () => {
+  const facts: ProviderCallObservation[] = [];
+  const relay = await startProviderUsageRelay({ upstreamBaseUrl: "https://provider.test/v1", model: "chat-test", observe: fact => { facts.push(fact); }, fetchUpstream: async () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop" }], usage: { prompt_tokens: 40, completion_tokens: 8, prompt_tokens_details: { cached_tokens: 12 }, completion_tokens_details: { reasoning_tokens: 3 } } }), { headers: { "content-type": "application/json" } }) });
+  try { const response = await fetch(relay.baseUrl + "/chat/completions", { method: "POST", body: '{"model":"chat-test"}' }); expect(response.status).toBe(200); await response.text(); } finally { await relay.close(); }
+  expect(facts[1]).toMatchObject({ state: "completed", tokens: { inputTotal: 40, outputTotal: 8, cacheRead: 12, cacheWrite: null, reasoning: 3, total: 48 } });
+});
+it("bounds a never-settling observer before upstream dispatch and cleanup", async () => {
+  const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}"));
+  const relay = await startProviderUsageRelay({ upstreamBaseUrl: "https://provider.test/v1", model: "test", observe: () => new Promise<void>(() => {}), fetchUpstream: transport });
+  const started = performance.now();
+  try { const response = await fetch(relay.baseUrl + "/responses", { method: "POST", body: '{"model":"test"}' }); await response.text(); expect(transport).toHaveBeenCalledOnce(); } finally { await relay.close(); }
+  expect(performance.now() - started).toBeLessThan(4000);
+});

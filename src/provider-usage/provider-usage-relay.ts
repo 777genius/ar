@@ -53,7 +53,7 @@ export async function startProviderUsageRelay(input: {
           if (!hopByHop.has(name) && typeof value === "string") headers[name] = value;
         }
         call = createProviderCallObservation(input.model, input.observe,
-          suffix.endsWith("/messages") ? ProviderCallProtocol.AnthropicMessages : ProviderCallProtocol.Responses);
+          suffix.endsWith("/messages") ? ProviderCallProtocol.AnthropicMessages : suffix === "/chat/completions" ? ProviderCallProtocol.ChatCompletions : ProviderCallProtocol.Responses);
         await call.dispatched();
         const upstream = await (input.fetchUpstream ?? fetch)(target.href.replace(/\/$/, "") + suffix, {
           method: "POST", headers, body: body.toString("utf8"), signal: controller.signal, redirect: "manual",

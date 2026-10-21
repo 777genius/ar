@@ -48,3 +48,10 @@ v2 handoff and checked release-manifest gates before registering a producer.
 No rollout, tag movement, registry publication or approved-pin update is part of
 this source patch. Real provider calls on a disposable test repository remain
 required before claiming end-to-end provider coverage.
+
+Observer delivery is bounded to one second per dispatch/terminal observation.
+Observers should durably spool within that bound and own delivery-loss coverage;
+a never-settling asynchronous observer cannot indefinitely block inference or
+relay cleanup. Synchronous observers must not perform blocking work.
+Chat Completions uses its native prompt/completion token detail fields; cache
+buckets absent from upstream usage remain unknown.
