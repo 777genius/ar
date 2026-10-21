@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { parseResearchOperatorRequest } from "../research-launch-contract";
 import { resolveHostScratchTempRoot, type ScratchTempHost } from "../host-scratch-temp";
 const stateRoot = "/srv/worker-state/mimo-projects/test-project/test-stream";
@@ -7,7 +7,7 @@ const workspace = "/srv/workers/mimo-projects/test-project/test-stream/workspace
 it("research contract admits protected MiMo source/workspace prefix without weakening separation", () => {
   const request = { schemaVersion: 1, jobId: "test-job", taskId: "test-task", jobRootDir: stateRoot + "/jobs/test-job", workspacePath: workspace,
     promptPath: stateRoot + "/jobs/test-job/prompt.md", authRootDir: "/srv/worker-state/account-pools/live-codex-auth", accounts: ["account-q"],
-    codexBinaryPath: "/usr/bin/codex", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: "mimo-v2.6-pro", reasoningEffort: "medium",
+    codexBinaryPath: "/usr/bin/codex", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: codexMimoDefaultModel, reasoningEffort: "medium",
     serviceTier: "default", taskTimeoutMs: 600000, maxAccountCycles: 1, prewarmOnStart: false };
   expect(parseResearchOperatorRequest(request)).toMatchObject({ workspacePath: workspace, jobRootDir: request.jobRootDir });
   expect(() => parseResearchOperatorRequest({ ...request, promptPath: workspace + "/prompt.md" })).toThrow();
