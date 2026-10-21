@@ -32,8 +32,24 @@ export function classifyClaudeFailure(
   const existingFailure = providerFailureFromUnknown(error);
   if (existingFailure) return redactProviderFailure(existingFailure, options.redactor);
 
-  const message = error instanceof Error ? error.message : String(error);
-  const state = classifyClaudeRuntimeFailure(message);
+  let message = error instanceof Error ? error.message : String(error);
+  let state = classifyClaudeRuntimeFailure(message);
+  // Wrapper errors carry their root cause in `cause`; an unknown outer state
+  // must not mask a closed classification from the cause chain.
+  for (
+    let cause = error instanceof Error ? error.cause : undefined;
+    state === "unknown_runtime_failure" && cause !== undefined && !seen.has(cause);
+    cause = cause instanceof Error ? cause.cause : undefined
+  ) {
+    seen.add(cause);
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    const causeState = classifyClaudeRuntimeFailure(causeMessage);
+    if (causeState !== "unknown_runtime_failure") {
+      state = causeState;
+      message = causeMessage;
+      break;
+    }
+  }
 
   switch (state) {
     case "task_cancelled":
