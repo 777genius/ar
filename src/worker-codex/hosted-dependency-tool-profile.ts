@@ -24,7 +24,7 @@ export { createHostedDependencyToolProfile } from "./hosted-dependency-tool-prof
 import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
-  readRetainedHostedDependencyAttemptFacts, retireCurrentHostedDependencyWarmReady, invalidateCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime,
+  readRetainedHostedDependencyAttemptFacts, retireCurrentHostedDependencyWarmReady, invalidateCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime, isCurrentHostedDependencyManagedReadonlyOrigin,
   type CurrentHostedDependencyOrigin, type CurrentHostedDependencyOriginFacts } from "./hosted-current-dependency-origin";
 import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, captureDependencyLocalRootOnlySourceExposure, assertDependencySourceExposureCurrent,
@@ -535,7 +535,11 @@ export function invalidateHostedDependencyQualifiedToolEntry(entry: HostedDepend
  */
 export function readAdmittedHostedDependencyToolConfig(workspacePath: string | undefined,
   entry?: HostedDependencyQualifiedToolEntry): DependencyToolGuestConfig | undefined {
-  if ((!isHostedOrdinaryRuntime() && !isHostedManagedReadonlyOuterRuntime()) || workspacePath === undefined) return undefined;
+  // A managed readonly outer runtime is a dependency origin only when its epoch
+  // selects a dependency workspace; otherwise its start records legitimately do
+  // not exist and the raw origin collector would fault on their protected names.
+  const managed = isHostedManagedReadonlyOuterRuntime() && withHostedActivationFence(fence => isCurrentHostedDependencyManagedReadonlyOrigin(fence));
+  if ((!isHostedOrdinaryRuntime() && !managed) || workspacePath === undefined) return undefined;
   return withHostedActivationFence(fence => {
     if (!entry) {
       const context = readCurrentHostedDependencyOrigin(fence), facts = assertCurrentHostedDependencyOrigin(context,fence);
