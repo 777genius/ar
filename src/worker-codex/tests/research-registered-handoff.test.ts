@@ -241,6 +241,13 @@ function mutateReceipt() {
   writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, status: "admitted" }), { mode: 0o600 });
 }
 describe("registered durable handoff authorization (NEW TEST source fixtures only)", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // All Host effects still go through the offline kernel/service fixture;
+    // exercise the Linux launch contract locally without a real Host launch.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   it("retains registered prompt authority after sandbox preparation makes only the job root traversable", async () => {
     const authorization = await authorize();
     const before = readFileSync(local(selected().promptPath));
@@ -683,6 +690,13 @@ async function nativeProjectSelection() {
   return { request, ...loaded, reservedLaunch: reservation.launch };
 }
 describe("native project launch authorization", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // All Host effects still go through the offline kernel/service fixture;
+    // exercise the Linux launch contract locally without a real Host launch.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   // RED: a clone/serialized reservation must never mint native effect authority.
   it("requires the original reservation and consumes its native authorization once without preparing a sink", async () => {
     const selected = await nativeProjectSelection(); rmdirSync(local(sink));
