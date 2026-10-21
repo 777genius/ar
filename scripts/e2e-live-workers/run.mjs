@@ -318,6 +318,9 @@ async function codexProjectControllerStartsChildWorker() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: sourceWorkspace,
     });
@@ -535,6 +538,9 @@ async function codexProjectIntegrationLifecycleTools() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: workspacePath,
     });
@@ -1363,6 +1369,9 @@ async function claudeControlledControllerIntegratesReviewedOutput() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: workspacePath,
     });
@@ -1597,6 +1606,9 @@ async function claudeControlledControllerStartsChildWorker() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: sourceWorkspace,
     });
@@ -1879,6 +1891,9 @@ async function codexRealAppServerCommandApprovalDeniesRawPush() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: workspacePath,
     });
@@ -2423,6 +2438,10 @@ async function gitSandbox(path, files) {
     await writeFile(join(path, relativePath), content);
   }
   runChecked("git", ["init"], { cwd: path });
+  // Fixture sandboxes stay hermetic: user-global hooks must not gate synthetic test commits.
+  runChecked("git", ["config", "core.hooksPath", join(path, ".git", "e2e-no-hooks")], {
+    cwd: path,
+  });
   runChecked("git", ["config", "user.email", "subscription-runtime-e2e@example.test"], {
     cwd: path,
   });
