@@ -1,5 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { startProviderUsageRelay } from "../../provider-usage/provider-usage-relay";
+import type { ProviderCallObserver } from "../../provider-usage/provider-call-observation";
 
 import type {
   CanUseTool,
@@ -49,6 +51,7 @@ type AgentSdkModule = Pick<
 const claudeStructuredOutputToolName = "StructuredOutput";
 
 export type ClaudeAgentSdkTaskExecutionEngineOptions = {
+  readonly usageRelay?: { readonly upstreamBaseUrl: string; readonly observe: ProviderCallObserver };
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
   readonly binaryPath?: string;
   /** Test/integration seam kept structurally opaque so SDK types stay private. */
@@ -95,7 +98,9 @@ export class ClaudeAgentSdkTaskExecutionEngine
     else input.abortSignal.addEventListener("abort", abort, { once: true });
 
     let stream: Query | undefined;
+    let relay: Awaited<ReturnType<typeof startProviderUsageRelay>> | undefined;
     try {
+      if (this.options.usageRelay) relay = await startProviderUsageRelay({ ...this.options.usageRelay, model: input.model, timeoutMs: 30 * 60 * 1000 });
       const goalProtocol = input.execution?.mode === AgentRuntimeExecutionMode.Goal
         ? createClaudeAgentSdkGoalProtocol({
             completionCondition: input.execution.completionCondition,
@@ -172,10 +177,10 @@ export class ClaudeAgentSdkTaskExecutionEngine
             : {}),
         },
         ...(goalProtocol ? { mcpServers: goalProtocol.mcpServers } : {}),
-        env: claudeCliEnvForSession({
+        env: { ...claudeCliEnvForSession({
           session: input.session,
           baseEnv: this.options.baseEnv ?? process.env,
-        }),
+        }), ...(relay ? { ANTHROPIC_BASE_URL: relay.baseUrl } : {}) },
         ...permissionOptions(input),
         ...(input.runtimeThread?.resumeSessionId === undefined
           ? {}
@@ -211,6 +216,7 @@ export class ClaudeAgentSdkTaskExecutionEngine
       }
       throw new Error("claude_agent_sdk_result_missing");
     } finally {
+      await relay?.close();
       stream?.close();
       input.abortSignal.removeEventListener("abort", abort);
     }

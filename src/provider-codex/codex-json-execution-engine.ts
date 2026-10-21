@@ -16,6 +16,9 @@ import type {
 } from "@vioxen/subscription-runtime/core";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { startProviderUsageRelay } from "../provider-usage/provider-usage-relay";
+import type { ProviderCallObserver } from "../provider-usage/provider-call-observation";
+import { providerUsageRelayArgs } from "./provider-usage-relay-config";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import { classifyCodexFailure } from "./failure-classifier";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
@@ -179,6 +182,8 @@ export type CodexExecutionEngine = {
 };
 
 export type PackagedCodexJsonExecutionEngineOptions = {
+  /** Trusted caller pins the existing provider endpoint; never read from model input. */
+  readonly usageRelay?: { readonly upstreamBaseUrl: string; readonly observe: ProviderCallObserver };
   readonly codexBinaryPath: string;
   readonly modelBackend?: CodexModelBackend;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
@@ -230,8 +235,10 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
     const schemaPlan = input.outputSchemaPlan ??
       prepareCodexOutputSchemaPlan(input.outputSchema);
     const schemaFile = await writeOutputSchemaFile(schemaPlan);
+    let relay: Awaited<ReturnType<typeof startProviderUsageRelay>> | undefined;
     try {
-      const args = buildCodexJsonExecArgs({
+      if (this.options.usageRelay) relay = await startProviderUsageRelay({ ...this.options.usageRelay, model: input.model, timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs });
+      const args = [...buildCodexJsonExecArgs({
         jsonFlag: this.options.jsonFlag ?? "--json",
         modelBackend: this.modelBackend,
         ...(this.options.providerEgressPolicy === undefined
@@ -246,7 +253,13 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
           ? {}
           : { sandboxMode: input.sandboxMode }),
         ...(schemaFile === null ? {} : { outputSchemaPath: schemaFile.path }),
-      });
+      })];
+
+      if (relay) {
+        // Retain MiMo's existing env_key/auth contract. Official Codex uses its
+        // existing auth.json through requires_openai_auth, including OAuth.
+        args.unshift(...providerUsageRelayArgs(this.modelBackend, relay.baseUrl));
+      }
 
       const result = await input.runner.run({
         command: this.options.codexBinaryPath,
@@ -303,6 +316,7 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
         warnings: [],
       };
     } finally {
+      await relay?.close();
       await schemaFile?.dispose();
     }
   }
