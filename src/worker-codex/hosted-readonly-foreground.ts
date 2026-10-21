@@ -64,7 +64,7 @@ async function runHostedReadonlyCompletion(command: string, args: readonly strin
     const child = spawn(launch.command, [...launch.args], { cwd, env, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(frame);
     return child;
-  }); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
+  }, output); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   return await new Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>>((resolve) => {
     let failed = false, cleanupFailed = false;
     const close = () => {
