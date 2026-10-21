@@ -13,7 +13,7 @@ export enum CodexModelBackend {
 
 export const codexMimoModelProviderId = "mimo";
 
-export const codexMimoDefaultModel = "mimo-v2.6-pro";
+export const codexMimoDefaultModel = "mimo-v2.6-flash";
 
 /**
  * Confirmed during the 2026-09-25 manual Stage 0 smoke test (real Codex CLI,
