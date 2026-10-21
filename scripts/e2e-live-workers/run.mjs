@@ -330,8 +330,8 @@ async function codexProjectControllerStartsChildWorker() {
     await mkdir(registryRootDir, { recursive: true });
     await mkdir(jobsRoot, { recursive: true });
     await mkdir(worktreesRoot, { recursive: true });
-    await mkdir(join(root, "consumed-ledger"), { recursive: true });
-    await mkdir(join(root, "consumed-evidence"), { recursive: true });
+    await mkdir(join(root, "control", "consumed-output-ledger"), { recursive: true });
+    await mkdir(join(root, "control", "archives"), { recursive: true });
 
     const prefix = "pc-live-e2e-";
     const controllerJobId = `${prefix}controller`;
@@ -365,8 +365,8 @@ async function codexProjectControllerStartsChildWorker() {
       allowedBranches: ["main", "master"],
       allowedGitRemotes: ["origin"],
       allowedAccountIds: codexAccounts,
-      consumedOutputLedgerRoots: [join(root, "consumed-ledger")],
-      consumedOutputEvidenceRoots: [join(root, "consumed-evidence")],
+      consumedOutputLedgerRoots: [join(root, "control", "consumed-output-ledger")],
+      consumedOutputEvidenceRoots: [join(root, "control", "archives")],
     };
 
     assertToolOk(codexGoalTool("codex_goal_create_job", {
@@ -532,6 +532,8 @@ async function codexProjectControllerStartsChildWorker() {
 }
 
 async function codexProjectIntegrationLifecycleTools() {
+  const skip = codexProjectControlSkipReason();
+  if (skip) return { skipped: true, reason: skip };
   const root = await sandboxRoot("codex-project-integration-");
   try {
     const workspacePath = await gitSandbox(join(root, "workspace"), {
@@ -564,9 +566,9 @@ async function codexProjectIntegrationLifecycleTools() {
     const registryRootDir = join(root, "registry");
     const controllerJobId = "pc-integration-controller";
     const controllerJobRoot = join(root, "jobs", controllerJobId);
-    await mkdir(join(root, "consumed-ledger"), { recursive: true });
-    await mkdir(join(root, "consumed-evidence"), { recursive: true });
-    await codexGoalTool("codex_goal_create_job", {
+    await mkdir(join(root, "control", "consumed-output-ledger"), { recursive: true });
+    await mkdir(join(root, "control", "archives"), { recursive: true });
+    assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
       jobId: controllerJobId,
       description: "Sandbox project integration lifecycle e2e",
@@ -587,11 +589,11 @@ async function codexProjectIntegrationLifecycleTools() {
         tmuxSessionPrefixes: ["pc-integration-"],
         allowedBranches: [branch],
         allowedGitRemotes: ["origin"],
-        consumedOutputLedgerRoots: [join(root, "consumed-ledger")],
-        consumedOutputEvidenceRoots: [join(root, "consumed-evidence")],
+        consumedOutputLedgerRoots: [join(root, "control", "consumed-output-ledger")],
+        consumedOutputEvidenceRoots: [join(root, "control", "archives")],
       },
       confirmCreate: true,
-    });
+    }), "create project integration controller job");
 
     const attemptId = "pc-integration-attempt";
     assertToolOk(codexGoalTool("codex_goal_project_open_integration_attempt", {
@@ -767,6 +769,13 @@ async function codexProjectControllerManifestLivenessContract() {
       "codex_goal_project_controller_start",
     );
 
+    const custodySkip = linuxKernelCustodySkipReason();
+    if (custodySkip) {
+      return {
+        skipped: true,
+        reason: `broker-required fail-closed verified; ${custodySkip}`,
+      };
+    }
     assertToolOk(codexGoalTool("codex_goal_project_create_worktree", {
       registryRootDir,
       controllerJobId,
@@ -1054,7 +1063,7 @@ async function codexCommandPolicyRejectsProjectBypass() {
 }
 
 async function claudeControlledControllerRealCliLauncher() {
-  const skip = claudeSkipReason();
+  const skip = claudeProjectControlSkipReason();
   if (skip) return { skipped: true, reason: skip };
   const root = await sandboxRoot("claude-controlled-controller-");
   let provider = null;
@@ -1366,7 +1375,7 @@ async function claudeProjectControllerProductionMcpStart() {
 }
 
 async function claudeControlledControllerIntegratesReviewedOutput() {
-  const skip = claudeSkipReason();
+  const skip = claudeProjectControlSkipReason();
   if (skip) return { skipped: true, reason: skip };
   const root = await sandboxRoot("claude-controller-integration-");
   let provider = null;
@@ -1630,8 +1639,8 @@ async function claudeControlledControllerStartsChildWorker() {
     const authRoot = codexAuthRoot;
     await mkdir(registryRootDir, { recursive: true });
     await mkdir(jobsRoot, { recursive: true });
-    await mkdir(join(root, "consumed-ledger"), { recursive: true });
-    await mkdir(join(root, "consumed-evidence"), { recursive: true });
+    await mkdir(join(root, "control", "consumed-output-ledger"), { recursive: true });
+    await mkdir(join(root, "control", "archives"), { recursive: true });
     await mkdir(worktreesRoot, { recursive: true });
 
     const prefix = "claude-pc-live-e2e-";
@@ -1666,8 +1675,8 @@ async function claudeControlledControllerStartsChildWorker() {
       allowedBranches: ["main", "master"],
       allowedGitRemotes: ["origin"],
       allowedAccountIds: codexAccounts,
-      consumedOutputLedgerRoots: [join(root, "consumed-ledger")],
-      consumedOutputEvidenceRoots: [join(root, "consumed-evidence")],
+      consumedOutputLedgerRoots: [join(root, "control", "consumed-output-ledger")],
+      consumedOutputEvidenceRoots: [join(root, "control", "archives")],
     };
     assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
@@ -2216,7 +2225,17 @@ function claudeProjectControlSkipReason() {
 }
 
 function codexProjectControlSkipReason() {
-  return codexSkipReason() ?? (!hasCommand("tmux") ? "tmux command not found" : null);
+  return codexSkipReason() ??
+    (!hasCommand("tmux") ? "tmux command not found" : linuxKernelCustodySkipReason());
+}
+
+function linuxKernelCustodySkipReason() {
+  // Project-control custody and scoped admission read Linux procfs/mountinfo
+  // backings and fail closed on any other kernel by design
+  // (project_control_evidence_custody_platform_unsupported).
+  return process.platform === "linux"
+    ? null
+    : "project_control_evidence_custody_platform_unsupported: linux-only kernel custody";
 }
 
 function realCodexAccount(root, suffix, options = {}) {
