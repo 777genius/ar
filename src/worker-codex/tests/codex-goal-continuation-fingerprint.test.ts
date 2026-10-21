@@ -36,16 +36,16 @@ it("fails closed when a capacity pause cannot preserve raw-secret output", async
   await mkdir(config.jobRootDir, { recursive: true });
   await mkdir(workspacePath, { recursive: true });
   await writeFile(config.promptPath, "Continue the sandbox task.\n");
-  await execFileAsync("git", ["init", "--quiet"], { cwd: workspacePath });
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "init", "--quiet"], { cwd: workspacePath });
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.email", "test@example.com"], {
     cwd: workspacePath,
   });
-  await execFileAsync("git", ["config", "user.name", "Test"], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.name", "Test"], {
     cwd: workspacePath,
   });
   await writeFile(join(workspacePath, "README.md"), "fixture\n");
-  await execFileAsync("git", ["add", "README.md"], { cwd: workspacePath });
-  await execFileAsync("git", ["commit", "--quiet", "-m", "fixture"], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "add", "README.md"], { cwd: workspacePath });
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture"], {
     cwd: workspacePath,
   });
   const secret = ["sk-", "z".repeat(24)].join("");

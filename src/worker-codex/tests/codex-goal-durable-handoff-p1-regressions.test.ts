@@ -153,9 +153,9 @@ async function capture(
 }
 
 async function git(cwd: string, args: readonly string[]): Promise<void> {
-  await execFileAsync("git", args, { cwd });
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd });
 }
 
 async function gitText(cwd: string, args: readonly string[]): Promise<string> {
-  return (await execFileAsync("git", args, { cwd })).stdout;
+  return (await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd })).stdout;
 }
