@@ -71,6 +71,13 @@ async function initializeReportWorkspace(current: ReturnType<typeof start>): Pro
 }
 
 describe("external owned MiMo result publication", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // All Host effects still go through the offline kernel/service fixture;
+    // exercise the Linux launch contract locally without a real Host launch.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   // RED: turn/completed overwrites a truthful report outcome with done.
   it.each([
     ["done", "review_completed"], ["partial", "continue"], ["blocked", "ask_user"], ["failed", "recover"],
